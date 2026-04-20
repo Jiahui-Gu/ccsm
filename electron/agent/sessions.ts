@@ -1,0 +1,147 @@
+import { query, type Options, type PermissionMode, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+
+export type StartOptions = {
+  cwd: string;
+  model?: string;
+  permissionMode?: PermissionMode;
+  apiKey?: string;
+  resumeSessionId?: string;
+};
+
+export type EventHandler = (msg: SDKMessage) => void;
+export type ExitHandler = (info: { error?: string }) => void;
+
+// AsyncIterable queue: pushes messages into the streaming input of `query()`.
+// `query()` consumes via for-await; we resolve a pending waiter when a new
+// message arrives, or buffer if the consumer hasn't asked yet.
+class InputQueue implements AsyncIterable<SDKUserMessage> {
+  private buffer: SDKUserMessage[] = [];
+  private waiter: ((v: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(msg: SDKUserMessage): void {
+    if (this.closed) return;
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: msg, done: false });
+    } else {
+      this.buffer.push(msg);
+    }
+  }
+
+  end(): void {
+    this.closed = true;
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: undefined as unknown as SDKUserMessage, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        if (this.buffer.length > 0) {
+          return Promise.resolve({ value: this.buffer.shift()!, done: false });
+        }
+        if (this.closed) {
+          return Promise.resolve({ value: undefined as unknown as SDKUserMessage, done: true });
+        }
+        return new Promise((resolve) => {
+          this.waiter = resolve;
+        });
+      }
+    };
+  }
+}
+
+export class SessionRunner {
+  private input = new InputQueue();
+  private q: Query | null = null;
+  private consumer: Promise<void> | null = null;
+  private disposed = false;
+
+  constructor(
+    public readonly id: string,
+    private readonly onEvent: EventHandler,
+    private readonly onExit: ExitHandler
+  ) {}
+
+  start(opts: StartOptions): void {
+    if (this.q) return;
+    const env: Record<string, string | undefined> = { ...process.env };
+    if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+
+    const options: Options = {
+      cwd: opts.cwd,
+      env,
+      permissionMode: opts.permissionMode ?? 'default',
+      model: opts.model,
+      resume: opts.resumeSessionId
+    };
+
+    this.q = query({ prompt: this.input, options });
+
+    this.consumer = (async () => {
+      try {
+        for await (const msg of this.q!) {
+          if (this.disposed) break;
+          this.onEvent(msg);
+        }
+        this.onExit({});
+      } catch (err) {
+        this.onExit({ error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  }
+
+  send(text: string): void {
+    if (!this.q || this.disposed) return;
+    const msg: SDKUserMessage = {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { role: 'user', content: text }
+    };
+    this.input.push(msg);
+  }
+
+  async interrupt(): Promise<void> {
+    if (!this.q) return;
+    try {
+      await this.q.interrupt();
+    } catch {
+      /* SDK throws if not in a tool call — ignore */
+    }
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (!this.q) return;
+    try {
+      await this.q.setPermissionMode(mode);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async setModel(model?: string): Promise<void> {
+    if (!this.q) return;
+    try {
+      await this.q.setModel(model);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  close(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.input.end();
+    try {
+      this.q?.close();
+    } catch {
+      /* ignore */
+    }
+    this.q = null;
+  }
+}
