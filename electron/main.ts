@@ -117,6 +117,11 @@ app.whenReady().then(() => {
     sessions.setModel(sessionId, model)
   );
   ipcMain.handle('agent:close', (_e, sessionId: string) => sessions.close(sessionId));
+  ipcMain.handle(
+    'agent:resolvePermission',
+    (_e, sessionId: string, requestId: string, decision: 'allow' | 'deny') =>
+      sessions.resolvePermission(sessionId, requestId, decision)
+  );
 
   createWindow();
 });

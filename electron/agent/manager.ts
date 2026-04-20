@@ -24,7 +24,8 @@ class SessionsManager {
         ({ error }) => {
           this.emit('agent:exit', { sessionId, error });
           this.runners.delete(sessionId);
-        }
+        },
+        (req) => this.emit('agent:permissionRequest', { sessionId, ...req })
       );
       await runner.start(opts);
       this.runners.set(sessionId, runner);
@@ -60,6 +61,12 @@ class SessionsManager {
     if (!r) return false;
     await r.setModel(model);
     return true;
+  }
+
+  resolvePermission(sessionId: string, requestId: string, decision: 'allow' | 'deny'): boolean {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    return r.resolvePermission(requestId, decision);
   }
 
   close(sessionId: string): boolean {

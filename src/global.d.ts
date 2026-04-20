@@ -10,6 +10,12 @@ type StartOpts = {
 type StartResult = { ok: true } | { ok: false; error: string };
 type AgentEvent = { sessionId: string; message: SDKMessage };
 type AgentExit = { sessionId: string; error?: string };
+type AgentPermissionRequest = {
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
 
 declare global {
   interface Window {
@@ -29,8 +35,14 @@ declare global {
       agentSetPermissionMode: (sessionId: string, mode: PermissionMode) => Promise<boolean>;
       agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;
       agentClose: (sessionId: string) => Promise<boolean>;
+      agentResolvePermission: (
+        sessionId: string,
+        requestId: string,
+        decision: 'allow' | 'deny'
+      ) => Promise<boolean>;
       onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
+      onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
     };
   }
 }
