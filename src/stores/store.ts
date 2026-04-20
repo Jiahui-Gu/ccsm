@@ -1,11 +1,5 @@
 import { create } from 'zustand';
-import {
-  mockGroups,
-  mockSessions,
-  mockRecentProjects,
-  activeSessionId as initialActiveId,
-  type RecentProject
-} from '../mock/data';
+import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
@@ -68,11 +62,15 @@ function firstUsableGroupId(groups: Group[]): string {
   return g ? g.id : groups[0]?.id ?? 'g1';
 }
 
+const defaultGroups: Group[] = [
+  { id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }
+];
+
 export const useStore = create<State & Actions>((set, get) => ({
-  sessions: mockSessions.map((s) => ({ ...s })),
-  groups: mockGroups.map((g) => ({ ...g })),
-  recentProjects: mockRecentProjects,
-  activeId: initialActiveId,
+  sessions: [],
+  groups: defaultGroups,
+  recentProjects: [],
+  activeId: '',
   focusedGroupId: null,
   model: 'claude-opus-4',
   permission: 'auto',
@@ -316,7 +314,7 @@ export async function hydrateStore(): Promise<void> {
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
-      recentProjects: persisted.recentProjects ?? mockRecentProjects
+      recentProjects: persisted.recentProjects ?? []
     });
   }
   hydrated = true;
