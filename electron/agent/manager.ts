@@ -15,7 +15,7 @@ class SessionsManager {
     };
   }
 
-  start(sessionId: string, opts: StartOptions): { ok: true } | { ok: false; error: string } {
+  async start(sessionId: string, opts: StartOptions): Promise<{ ok: true } | { ok: false; error: string }> {
     if (this.runners.has(sessionId)) return { ok: true };
     try {
       const runner = new SessionRunner(
@@ -26,7 +26,7 @@ class SessionsManager {
           this.runners.delete(sessionId);
         }
       );
-      runner.start(opts);
+      await runner.start(opts);
       this.runners.set(sessionId, runner);
       return { ok: true };
     } catch (err) {

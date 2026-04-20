@@ -160,8 +160,11 @@ function renderBlock(b: MessageBlock) {
   }
 }
 
+const EMPTY_BLOCKS: readonly MessageBlock[] = [];
+
 export function ChatStream() {
-  const blocks = useStore((s) => s.messagesBySession[s.activeId] ?? []);
+  const activeId = useStore((s) => s.activeId);
+  const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
   return (
     <div className="flex-1 overflow-y-auto min-w-0">
       <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
