@@ -18,7 +18,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | Item | Status | Notes |
 |---|---|---|
 | Electron shell (main + preload) | ✅ | `electron/main.ts` boots a single window. |
-| React 18 + TS + Tailwind v3 | ✅ | webpack 5 dev server on port 4100. |
+| React 18 + TS + Tailwind v4 | ✅ | webpack 5 dev server on port 4100; Tailwind v4 CSS-based config via `@import "tailwindcss"` (no `tailwind.config.js`). |
 | Hand-rolled Radix-based ui/ primitives | ✅ | Dialog / DropdownMenu / ContextMenu / Tooltip / Toast / ConfirmDialog / Button / IconButton / InlineRename / StateGlyph. |
 | framer-motion / lucide-react / @dnd-kit | ✅ | Installed and used in Sidebar. |
 | Zustand store | ✅ | `src/stores/store.ts` holds sessions/groups/recentProjects/UI state + actions; consumed across the app. |
