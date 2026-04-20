@@ -1,6 +1,6 @@
 # Implementation Status
 
-最后更新：2026-04-21
+最后更新：2026-04-21 (PR #10)
 
 这是 agentory-next 当前实现进度的对账表。每个 PR 合并后必须更新本文件，让"已实现 vs 待实现"始终一目了然。
 
@@ -23,7 +23,7 @@
 | framer-motion / lucide-react / @dnd-kit | ✅ | 已装并在 Sidebar 用。 |
 | Zustand store | ✅ | `src/stores/store.ts` 持有 sessions/groups/recentProjects/UI 状态 + 15 actions；App.tsx 全量消费。 |
 | better-sqlite3 持久化 | 🟡 | `electron/db.ts` 起 WAL，`app_state(key,value)` 单表；`db:load`/`db:save` IPC + preload bridge；renderer 通过 `hydrateStore()` 启动加载、debounced 250ms 写回。schema 是单 JSON blob，结构化 schema 留给后续。 |
-| Claude Agent SDK 集成 | ⬜ | 未装包，未起 sidecar。 |
+| Claude Agent SDK 集成 | 🟡 | 主进程已接：`electron/agent/sessions.ts` (per-session `SessionRunner` 用 streaming-input AsyncIterable) + `electron/agent/manager.ts` (单例注册表)；IPC：`agent:start/send/interrupt/setPermissionMode/setModel/close` + push `agent:event`/`agent:exit`；preload bridge + global.d.ts 已扩展。API key 从主进程 keychain 注入到子进程 `ANTHROPIC_API_KEY`，不经 renderer。renderer 端（ChatStream/InputBar）尚未消费，留给 PR #11/#12。 |
 | `~/.claude/projects/` 导入 | ⬜ | |
 | 全局快捷键注册 | 🟡 | `App.tsx` 注册了 Cmd+K / Cmd+, / Cmd+B；Cmd+N / Cmd+Shift+N 未实现。 |
 
