@@ -25,7 +25,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | better-sqlite3 persistence | 🟡 | `electron/db.ts` opens with WAL, single `app_state(key,value)` table; `db:load`/`db:save` IPC + preload bridge; renderer hydrates on boot, debounced 250ms write-back. Schema is a single JSON blob; structured schema is post-MVP. |
 | Claude Agent SDK integration | ✅ | Main process: `electron/agent/sessions.ts` (`SessionRunner` with streaming-input AsyncIterable) + `electron/agent/manager.ts` (singleton registry); IPC: `agent:start/send/interrupt/setPermissionMode/setModel/close/resolvePermission` + push events `agent:event` / `agent:exit` / `agent:permissionRequest`; preload + global.d.ts extended; API key injected into the SDK env in main process (never crosses renderer); ChatStream + InputBar consume real events; canUseTool round-trips through WaitingBlock. |
 | `~/.claude/projects/` import | ⬜ | |
-| Global shortcut registration | 🟡 | `App.tsx` registers Cmd+K / Cmd+, / Cmd+B; Cmd+N / Cmd+Shift+N not implemented. |
+| Global shortcut registration | ✅ | `App.tsx` registers Cmd+K / Cmd+, / Cmd+B / Cmd+N (new session) / Cmd+Shift+N (new group). |
 
 ## 2. Sidebar (`src/components/Sidebar.tsx`)
 
@@ -95,7 +95,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | Item | Status | Notes |
 |---|---|---|
 | ToastProvider mounted | ✅ | |
-| Real triggers: state change / SDK error / API key missing | 🟡 | Persist write failure already wired to a toast (5s throttled). Real-world state-change and SDK-error triggers wait until those data sources are live. |
+| Real triggers: state change / SDK error / API key missing | 🟡 | Persist write failure already wired to a toast (5s throttled). Background-session permission requests now toast (`<session> needs your input`) via the lifecycle → `setBackgroundWaitingHandler` bridge. SDK crash + API key missing still pending. |
 
 ## 9. Persistence (mvp-design.md §10)
 
@@ -120,9 +120,9 @@ This file is the reconciliation table for what's actually implemented in agentor
 | **P0** | Markdown rendering for assistant text | Today every reply is raw whitespace-pre-wrap; code blocks and lists are unreadable. Without this, the user's "no reply" complaint stays valid even though replies ARE arriving. |
 | **P0** | Tool result wiring (`tool_use_id` → `tool_result` fold-in) | Tool block currently always says "(no captured output yet)". No way to see what `Read` / `Bash` / `Grep` actually returned. |
 | **P0** | Auto-scroll + "↓ Jump to latest" | Long replies disappear off-screen mid-stream because nothing follows the tail. |
-| P1 | `~/.claude/projects/` import scanner | User has 160+ historical sessions in the old setup. Without import, the new app starts empty and feels like a regression. |
-| P1 | Session state change → Toast | Background sessions entering waiting are currently silent. |
-| P1 | Cmd+N / Cmd+Shift+N shortcuts | Listed in §11 but not registered. |
+| P1 | `~/.claude/projects/` import scanner | User has 160+ historical sessions in the old setup. Without import, the new app starts empty. (Per user 2026-04-20: starting empty is acceptable for now — deferring.) |
+| P1 | ~~Session state change → Toast~~ | ✅ Done in PR #22. Background sessions entering waiting now toast. |
+| P1 | ~~Cmd+N / Cmd+Shift+N shortcuts~~ | ✅ Done in PR #22. |
 | P2 | Waiting indicator: oklch amber breathing glow | Polish, not a blocker. Currently red dot. |
 | P2 | electron-updater wiring | Required before public-ish builds; not for self-use. |
 | P2 | Tests (vitest + playwright) | Should land before any external user. |
@@ -132,6 +132,10 @@ This file is the reconciliation table for what's actually implemented in agentor
 PRs land into `working`, then `working` → `main` via release-tag CI. See git log for the most recent landings.
 
 Most recent landings (newest first):
+- PR #22 — P1 state toast on background sessions + Cmd+N / Cmd+Shift+N shortcuts
+- PR #21 — ChatStream P0: markdown + tool result wiring + auto-scroll
+- PR #20 — docs: fix Tailwind version (v4, not v3)
+- PR #19 — doc realignment (translate to English, fix drifts, update status)
 - PR #18 — wire canUseTool through IPC to WaitingBlock
 - PR #17 — push model / permission changes to all started sessions
 - PR #16 — drop mock seed, render real first-run empty state
