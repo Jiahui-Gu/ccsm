@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
+import { scanImportableSessions } from './import-scanner';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
@@ -123,6 +124,8 @@ app.whenReady().then(() => {
     (_e, sessionId: string, requestId: string, decision: 'allow' | 'deny') =>
       sessions.resolvePermission(sessionId, requestId, decision)
   );
+
+  ipcMain.handle('import:scan', () => scanImportableSessions());
 
   installUpdaterIpc();
 

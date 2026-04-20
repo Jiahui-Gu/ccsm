@@ -51,7 +51,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       const res = await api.agentStart(sessionId, {
         cwd: session.cwd,
         model,
-        permissionMode: toSdkPermissionMode(permission)
+        permissionMode: toSdkPermissionMode(permission),
+        resumeSessionId: session.resumeSessionId
       });
       if (!res.ok) {
         setRunning(sessionId, false);

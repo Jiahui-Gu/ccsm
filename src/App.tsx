@@ -7,6 +7,7 @@ import { InputBar } from './components/InputBar';
 import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
+import { ImportDialog } from './components/ImportDialog';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
@@ -59,6 +60,7 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
@@ -123,15 +125,24 @@ export default function App() {
                 >
                   + New session
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(true)}
+                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-sm font-mono text-xs text-fg-secondary hover:text-fg-primary hover:bg-bg-hover border border-border-subtle outline-none focus-visible:ring-1 focus-visible:ring-border-strong transition-colors duration-120 ease-out"
+                >
+                  Import from Claude Code…
+                </button>
               </div>
             </main>
           </div>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
             onOpenSettings={() => setSettingsOpen(true)}
             onNewSession={() => createSession(null)}
+            onOpenImport={() => setImportOpen(true)}
             onSelectSession={selectSession}
             onFocusGroup={focusGroup}
           />
@@ -182,11 +193,13 @@ export default function App() {
           </main>
         </div>
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onOpenSettings={() => setSettingsOpen(true)}
           onNewSession={() => createSession(null)}
+          onOpenImport={() => setImportOpen(true)}
           onSelectSession={selectSession}
           onFocusGroup={focusGroup}
         />

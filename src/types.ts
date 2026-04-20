@@ -12,6 +12,9 @@ export interface Session {
   model: string;
   groupId: string;
   agentType: AgentType;
+  // Set when the session was imported from a Claude Code CLI transcript.
+  // Passed to agentStart on first send so the SDK resumes the same thread.
+  resumeSessionId?: string;
 }
 
 export interface Group {
