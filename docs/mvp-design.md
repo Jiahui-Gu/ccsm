@@ -1,71 +1,73 @@
 # Agentory-next MVP Design
 
-冻结日期：2026-04-18
-状态：MVP 设计锁定，开始 scaffold 前的 single source of truth。
+Frozen: 2026-04-18 (last realignment: 2026-04-20)
+Status: MVP design locked — single source of truth before scaffolding.
 
-## 1. 定位与原则
+## 1. Positioning & Principles
 
-- **核心差异**：group-first / repo-agnostic。Group 是用户定义的任务/领域容器，repo 只是 session 的元数据。
-- **成功指标**：作者本人连续 30 天日用，且体验优于裸 CLI。朋友不在 KPI 内。
-- **硬截止**：8 周达到 daily-self-use。
-- **设计原则**：
-  - CLI 视觉 + GUI 交互（详见 MEMORY 中"CLI visual + GUI interaction"）。
-  - 不发明用户不会维护的状态。
-  - 不约束用户。可逆 + 默认放行。
-  - 状态优先派生自系统信号。
+- **Core differentiator**: group-first / repo-agnostic. A group is a user-defined task/domain container; the repo is just metadata on a session.
+- **Success metric**: author uses it daily for 30 consecutive days and prefers it to raw CLI. Friends are not in the KPI.
+- **Hard deadline**: 8 weeks to daily-self-use.
+- **Design principles**:
+  - CLI visual + GUI interaction (see MEMORY).
+  - Don't invent state users won't maintain.
+  - Don't constrain the user. Reversible by default.
+  - State is derived from system signals first.
 
-## 2. 技术栈（锁定）
+## 2. Tech stack (locked)
 
-Electron · React 18 · TypeScript · Tailwind v4 · shadcn/ui · Zustand · @dnd-kit · Claude Agent SDK（Node sidecar / main process）· SQLite（better-sqlite3）· 自定义 React renderer（无 xterm）· Vitest · Playwright。
+Electron · React 18 · TypeScript · Tailwind v3 · hand-rolled Radix primitives (`src/components/ui/`) · framer-motion · Zustand · @dnd-kit · Claude Agent SDK (main process) · SQLite (better-sqlite3) · custom React renderer (no xterm) · Vitest · Playwright.
 
-> 从 Tauri 2 切到 Electron：纯壳层选择。视觉/交互由 React+Tailwind 决定，与壳层无关。Electron 选择换取更成熟的生态、更小的踩坑面、Node SDK 的进程内集成。
+> Not using shadcn/ui: shell wrapper is ~30 lines, shadcn's high-value components (Dialog/Command/Form) don't cover this project's GUI-style rendering needs, and token mapping cost (`--sidebar-*` ↔ `bg-bg-sidebar`) is high. Build directly on Radix primitives instead.
 
-## 3. MVP 范围
+> Tauri 2 → Electron: pure shell choice. Visual/interaction is decided by React+Tailwind, independent of the shell. Electron chosen for mature ecosystem, smaller surface area for problems, and in-process integration of the Node SDK.
 
-In：
-1. Claude Code（Agent SDK）
-2. 自定义 group
-3. 三态生命周期 ● / ⚡ / 🅿
-4. 一个 group 里跨 repo 的 session
-5. CLI 视觉风格的结构化对话流渲染
-6. Import：扫 `~/.claude/projects/` 的历史 session
-7. 全局搜索 / Command Palette（Cmd/Ctrl+K）
-8. Settings（API key、data dir、theme、font、shortcuts、auto-update）
-9. Sidebar 折叠
-10. Session header（名字 + group + 状态 + rename + move-to-group）
-11. Toast 通知（状态变化、错误）
-12. Status bar（cwd + 当前 model）
-13. Auto-update 检查（在 Settings 内）
-14. Onboarding 首屏（Create / Import）
+## 3. MVP Scope
 
-Out：Codex / Gemini 适配器、IM bridge、server mode、MCP marketplace、mobile、团队功能、消息 queue、tabs/split-view、account 区、slash command 自动补全、多 agent。
+In:
+1. Claude Code (Agent SDK)
+2. Custom groups
+3. Two-state lifecycle: idle / waiting (see §4)
+4. Cross-repo sessions inside one group
+5. CLI-visual-style structured rendering of the conversation stream
+6. Import: scan `~/.claude/projects/` for historical sessions
+7. Global search / Command Palette (Cmd/Ctrl+K)
+8. Settings (API key, data dir, theme, font, shortcuts, auto-update)
+9. Sidebar collapse
+10. Session right-click menu (rename + move-to-group + delete) — operate inline in the sidebar; no standalone Session header
+11. Toast notifications (state changes, errors)
+12. Status bar (cwd + model + permission)
+13. Auto-update check (inside Settings)
+14. Onboarding first run: MVP simplifies to "when no session exists, the ChatStream area shows large Create / Import buttons" (see §5)
 
-## 4. 状态机
+Out: Codex / Gemini adapters, IM bridge, server mode, MCP marketplace, mobile, team features, message queue, tabs/split-view, account area, slash command autocomplete, multi-agent.
 
-二态：`idle` · `waiting`（需要用户输入）。UI 上只有 waiting 会提醒（呼吸光晕），idle 是静态默认态。
+## 4. State machine
 
-合法迁移：
+Two states: `idle` · `waiting` (needs user input). Only waiting alerts on the UI (breathing glow); idle is the static default.
+
+Legal transitions:
 ```
-┌─────────┐  agent 停下等输入    ┌─────────┐
-│  idle   │ ──────────────────▶ │ waiting │
-│ (静态)  │                     │ (呼吸)  │
-│         │ ◀────────────────── │         │
-└─────────┘  用户点进这个 session └─────────┘
+┌─────────┐  agent stops, awaits  ┌─────────┐
+│  idle   │ ────────────────────▶ │ waiting │
+│ (static)│                       │(breathe)│
+│         │ ◀──────────────────── │         │
+└─────────┘  user clicks session  └─────────┘
 ```
 
-设计意图：
-- **没有显式 "park"**。用户切到别的 session 而不回复，就是隐式 park —— 用户不用维护、不用按钮。
-- **没有 "running"**。跑没跑不是用户的决策轴，是 SDK 内部细节。用户只关心"这个 session 需不需要我"。
-- **点击 = 已知悉**：点 waiting session 后立刻回到 idle，呼吸光晕停止。
+Design intent:
+- **No explicit "park"**. Switching away from a session without replying is implicit park — no maintenance, no button.
+- **No "running"**. Whether the SDK is currently executing is not a user decision axis; it's an internal SDK detail. The user only cares "does this session need me?"
+- **Click = acknowledged**: clicking a waiting session immediately drops it back to idle and stops the breathing glow.
 
-边界：
-- SDK crash / 进程退出 → 置 waiting，对话流尾部插 `[session interrupted]` 标记。
-- 用户在 waiting 状态发送输入 → SDK `query({ resume: sessionId })` 恢复上下文。
-- 删除 session：单一通用确认弹窗，不分状态。
+Edge cases:
+- SDK crash / process exit → set to waiting, append `[session interrupted]` marker at the tail of the conversation stream.
+- User sends input while in waiting state → SDK `query({ resume: sessionId })` to restore context.
+- Delete session: single generic confirm dialog, regardless of state.
 
-## 5. Sidebar 结构
+## 5. Sidebar layout
 
-两列布局，左侧 sidebar 可展开树。视觉极简：无分区 border、无 section 标签，区域靠留白 + 颜色层级自然分隔。
+Two-column layout, expandable tree on the left. Visually minimal: no section borders, no section labels, regions separated naturally by whitespace + color hierarchy.
 
 ```
 Agentory                    [«]
@@ -74,177 +76,182 @@ Agentory                    [«]
 
 ▾ Group A                  [+]
     session 1
-  ✦ session 2              ← waiting：呼吸光晕
+  • session 2              ← waiting: status dot
 ▾ Group B                  [+]
     session 3
-+ New group                        ← quiet row, nav 末尾
++ New group                        ← quiet row, end of nav
 
-[⋯]  [⚙ Settings]
+▸ Archived Groups                  ← bottom pinned collapsible block
+[⚙ Settings]
 ```
 
-**设计决定（已定，勿反复改）**
+**Locked decisions (do not relitigate)**
 
-- **无分区视觉**：不画 `border-t` / section header / 背景色区块。层级靠 weight + color + 留白。
-- **Archive / Deleted 不占顶层空间**。它们是月频操作，进底部 `[⋯ More]` DropdownMenu（Archive / Deleted / Collapse all groups）。
-- **高频 vs 低频动作分层**：
-  - 顶部：Search（⌘K）、New Session —— 每天用。
-  - nav 内：Group list、New group（quiet row，周频）。
-  - 底部：`⋯` More、Settings —— 月频或更低。
-- **Group 行**：点击 chevron 折叠，右侧 hover 显示 `[+]`；collapsed 时显示 session 总数。
-- **Session 行**：Agent icon + 名字；active 左侧 3px accent 竖条；waiting 时 icon 外包 oklch amber 的呼吸光晕（framer-motion，1.6s 循环）。不做角标。
-- **Session 内排序**：用户拖拽决定（数组序即真相）。不按状态自动排。
-- **拖拽**：`@dnd-kit` 整行 draggable，activationConstraint `distance: 6px`。支持组内重排 + 跨组迁移（同时改 `groupId` 和位置）。DragOverlay 浮层 = 原行克隆，不倾斜；原位透明度 0.4。
-- **右键菜单**：
-  - Session：Rename / Move to group ▾ / Delete
-  - Group：Rename / Delete
-- **Rename**：inline edit，Enter 提交 / Esc 取消。
-- **Unpark 无按钮**：没有 park 这个状态，不需要 unpark。切 session 回来就是回来。
-- **首次启动**：仅 "Create your first session" / "Import session" 两个入口。
-- **没 group 就新建 session**：自动建默认 group。
+- **No section visuals**: no `border-t` / section header / background-color blocks. Hierarchy via weight + color + whitespace.
+- **Archive as a bottom pinned collapsible block**: positioned at the end of the nav, above Settings, collapsed by default. MVP does NOT ship a Deleted view (delete is a hard delete; soft-delete + Deleted view is post-MVP).
+- **High-frequency vs low-frequency action layering**:
+  - Top: Search (⌘K), New Session — daily.
+  - In nav: group list, New group (quiet row, weekly).
+  - Bottom: Archived Groups block, Settings — monthly or rarer.
+- **Group row**: chevron toggles collapse; `[+]` shows on hover at the right; collapsed group shows total session count.
+- **Session row**: agent icon + name; active sessions get a 3px accent vertical bar on the left; waiting sessions show a status dot on the right (MVP: red dot; oklch amber breathing glow is a polish follow-up, not a blocker for MVP). No badges.
+- **Session ordering inside a group**: user-defined drag order (array order is the truth). Do NOT auto-sort by state.
+- **Drag & drop**: `@dnd-kit`, full-row draggable, `activationConstraint: { distance: 6px }`. Supports reordering within a group + cross-group migration (changes both `groupId` and position). DragOverlay is a clone of the original row, no tilt; original opacity 0.4.
+- **Right-click menus**:
+  - Session: Rename / Move to group ▾ / Delete
+  - Group: Rename / Delete
+- **Rename**: inline edit; Enter commits / Esc cancels.
+- **No unpark button**: there is no park state, so no unpark is needed. Switching back to the session IS coming back.
+- **First launch**: only "Create your first session" / "Import session" entry points.
+- **No group → create session**: auto-create a default group.
 
-### 5.1 Sidebar 折叠（实现已定）
+### 5.1 Sidebar collapse (implementation locked)
 
-- 展开宽 `256px` / 折叠宽 `48px`。
-- 过渡：`framer-motion` width 动画，220ms，`cubic-bezier(0.32, 0.72, 0, 1)`。
-- 折叠触发方式三个，等价：
-  1. 顶部 `[«]` / `[»]` IconButton
-  2. `⌘B` / `Ctrl+B` 全局快捷键
-  3. 右边缘 1.5px 宽可点击 rail（hover 时 1px accent hairline 显现）
-- **不迁 shadcn Sidebar**：外壳只有 ~30 行，shadcn 的价值（Dialog/Command/Form 等复杂组件）在此 ROI 低，且需做 token 映射（`--sidebar-*` ↔ `bg-bg-sidebar`）增加认知负担。内部 `GroupRow`/`SessionRow` 是 Agentory 专属 UI（rollup、state glyphs、cwdTail），无库可救，继续手搓。
-- 折叠状态本地持久化（SQLite）。
+- Expanded width `256px` / collapsed width `48px`.
+- Transition: `framer-motion` width animation, 220ms, `cubic-bezier(0.32, 0.72, 0, 1)`.
+- Three equivalent collapse triggers:
+  1. Top `[«]` / `[»]` IconButton
+  2. `⌘B` / `Ctrl+B` global shortcut
+  3. Right-edge 1.5px clickable rail (1px accent hairline shows on hover)
+- **Do not migrate to shadcn Sidebar**: the wrapper is ~30 lines; shadcn's value (Dialog/Command/Form etc.) is low-ROI here and adds token-mapping cognitive load (`--sidebar-*` ↔ `bg-bg-sidebar`). Internal `GroupRow` / `SessionRow` are Agentory-specific UI (rollup, state glyphs, cwdTail) — no library helps; keep hand-rolled.
+- Collapsed state persisted locally (SQLite).
 
-### 5.2 Archive 行为
+### 5.2 Archive behavior
 
-- Archive 一个 group：组内所有 session 冻结，只读不可交互。
-- 从底部 `⋯` 菜单进入 Archive / Deleted 视图（MVP 可以是简单的列表弹层，不必做成独立路由）。
+- Archive a group: every session inside is frozen, read-only, non-interactive.
+- Archive area lives in the sidebar's bottom pinned collapsible block; expand it to see all archived groups.
+- Unarchive via the archived group's right-click menu.
+- MVP does NOT ship Deleted view: delete = hard delete (already gated by ConfirmDialog). Soft-delete + restore is post-MVP.
 
-## 6. 全局搜索 / Command Palette
+## 6. Global search / Command Palette
 
-- 唯一入口：Cmd/Ctrl+K，或 sidebar 顶部搜索框点击。
-- 单一弹层，混合结果：
-  - Sessions（按名字、group、cwd 模糊匹配）
+- Single entry: Cmd/Ctrl+K, or click the sidebar top search box.
+- Single popover, mixed results:
+  - Sessions (fuzzy match on name, group, cwd)
   - Groups
-  - Commands（New session / New group / Toggle sidebar / Open settings / Switch theme）
-- Enter 跳转 / 执行；Esc 关闭。
-- 不做对话内容全文检索（MVP out，jsonl 量级未知，避免性能坑）。
+  - Commands (New session / New group / Toggle sidebar / Open settings / Switch theme)
+- Enter to navigate / execute; Esc to close.
+- No full-text search inside conversation content (out of MVP — jsonl volume unknown, avoid the perf rabbit hole).
 
-## 7. 右侧对话流
+## 7. Right-pane conversation stream
 
-5 项渲染规则（CLI 视觉风格）。无 session header，纯对话流；底部固定 status bar + 输入区。当前是哪个 session 由 sidebar 高亮表示。
+5 rendering rules (CLI visual style). No session header — pure conversation stream; bottom is fixed status bar + input area. The current session is indicated by sidebar highlight.
 
-### Q1 消息块样式
-- 等宽字体，无气泡，无背景色，无圆角。
-- 左侧标识符：`>` user · `●` assistant · `⏺` tool。
-- 块之间用一个空行分隔。
+### Q1 Message block style
+- Monospace font, no bubble, no background color, no rounded corners.
+- Left-side identifier: `>` user · `●` assistant · `⏺` tool.
+- Blocks are separated by a single empty line.
 
-### Q2 工具调用
-- `⏺` 默认折叠为一行：`⏺ Read(file.ts)` / `⏺ Bash(npm test)`。
-- 点击展开看参数 + 结果。
+### Q2 Tool calls
+- `⏺` collapsed by default to one line: `⏺ Read(file.ts)` / `⏺ Bash(npm test)`.
+- Click to expand the parameters + result.
 
-### Q3 输入区
-- 底部固定，多行 textarea。
-- **Enter 发送，Shift+Enter 换行**（跟用户的 CLI 习惯一致）。
-- ● Running 时输入框禁用，显示 Stop 按钮。
-- MVP 不实现 queue。
+### Q3 Input area
+- Bottom-fixed multi-line textarea.
+- **Enter to send, Shift+Enter for newline** (matches the user's CLI habit).
+- When the agent is running, the textarea is disabled and a Stop button shows.
+- MVP does not implement a queue.
 
-### Q4 滚动
-- 默认自动跟随到底部。
-- 用户手动上滚后停住，显示 "↓ Jump to latest" 按钮。
-- 点击按钮或发送新消息恢复跟随。
+### Q4 Scrolling
+- Auto-follow to bottom by default.
+- After the user manually scrolls up, follow stops and a "↓ Jump to latest" button appears.
+- Click the button or send a new message to resume follow.
 
-### Q5 ⚡ Waiting 提示
-- 对话流末尾插入高亮块，带操作按钮：
+### Q5 Waiting indicator
+- A highlighted block is appended to the tail of the conversation stream, with action buttons:
   - permission → Allow / Deny
   - plan approval → Approve / Reject
-  - 普通问题 → 输入框聚焦
-- 侧边栏对应 session 行同步显示 ⚡ 图标。
+  - generic question → focus the input box
+- The corresponding session row in the sidebar shows the waiting indicator in sync.
 
 ### Status bar
-- 输入框正上方一行 dim text：`cwd: <path>  ·  model: <claude-...>`。
-- 派生自 SDK / session 元数据，用户不维护。
+- A single dim-text line directly above the input box: `cwd: <path>  ·  model: <claude-...>`.
+- Derived from SDK / session metadata; not user-maintained.
 
 ## 8. Settings
 
-通过 sidebar 底部 ⚙ 或 Cmd/Ctrl+, 打开。模态弹层，分组：
-- General：theme（system / light / dark）、font family、font size。
-- Account：Anthropic API key（本地存储，明文 OK，MVP 单用户）。
-- Data：data dir 路径（显示，不可改 MVP，避免迁移坑）、`~/.claude/projects/` 路径（只读显示）。
-- Shortcuts：列出所有快捷键（只读 MVP，不让用户改 — 改键 = 维护负担）。
-- Updates：当前版本 + "Check for updates" 按钮（基于 electron-updater，手动触发，不后台静默）。
+Opened via the sidebar bottom ⚙ or Cmd/Ctrl+,. Modal popover, grouped:
+- General: theme (system / light / dark), font family, font size.
+- Account: Anthropic API key (local storage, plaintext acceptable for MVP single-user).
+- Data: data dir path (display, not editable in MVP — avoid migration pain), `~/.claude/projects/` path (read-only display).
+- Shortcuts: list of all shortcuts (read-only in MVP — remapping = maintenance burden).
+- Updates: current version + "Check for updates" button (electron-updater, manual trigger, no silent background).
 
-## 9. Toast 通知
+## 9. Toast notifications
 
-bottom-right，3s 自动消失，最多堆 3 个。触发：
-- session 状态变化（● → ⚡，特别是后台 session 进入 Waiting）
-- SDK 错误 / crash
-- API key 缺失 / 无效
-- 不为成功操作发 toast（user-initiated 操作有视觉反馈即可，避免噪音）
+bottom-right, auto-dismiss in 3s, max 3 stacked. Triggered by:
+- Session state change (idle → waiting, especially background sessions entering waiting)
+- SDK error / crash
+- API key missing / invalid
+- Do NOT toast on success (user-initiated actions already get visual feedback; avoid noise).
 
-## 10. 数据 / 持久化
+## 10. Data / persistence
 
-- SQLite 存：group / session 元数据 / 用户自定义顺序 / 自定义名称 / sidebar 折叠状态 / theme。
-- 对话历史：依赖 SDK 在 `~/.claude/projects/` 的 jsonl，不重复存。
-- 启动时：扫 `~/.claude/projects/` 与 SQLite 对账；jsonl 中存在但本地未挂到 group 的 session → 进入"Imported"默认 group。
-- API key：OS keychain（electron `safeStorage`），不入 SQLite。
+- SQLite stores: group / session metadata / user-defined order / custom names / sidebar collapsed state / theme.
+- Conversation history: relies on SDK's jsonl in `~/.claude/projects/` — not duplicated locally.
+- On startup: reconcile `~/.claude/projects/` against SQLite; sessions present in jsonl but not attached to any group → land in a default "Imported" group.
+- API key: OS keychain (Electron `safeStorage`); not stored in SQLite.
 
-## 11. 快捷键（MVP 全集）
+## 11. Shortcuts (MVP full set)
 
-- Cmd/Ctrl+K：搜索 / Command Palette
-- Cmd/Ctrl+,：Settings
-- Cmd/Ctrl+N：新 session（在当前 group，无则建默认 group）
-- Cmd/Ctrl+Shift+N：新 group
-- Cmd/Ctrl+B：折叠/展开 sidebar
-- Enter：发送
-- Shift+Enter：换行
-- Esc：关闭弹层 / 取消 inline edit
+- Cmd/Ctrl+K: Search / Command Palette
+- Cmd/Ctrl+,: Settings
+- Cmd/Ctrl+N: New session (in current group, or auto-create default group)
+- Cmd/Ctrl+Shift+N: New group
+- Cmd/Ctrl+B: Toggle sidebar
+- Enter: send
+- Shift+Enter: newline
+- Esc: close popover / cancel inline edit
 
-不做：自定义快捷键、vim mode、多 chord。
+Not doing: custom shortcuts, vim mode, multi-chord.
 
-## 12. 不在 MVP 的（明确写下来防止漂移）
+## 12. Out of MVP (written down explicitly to prevent drift)
 
-- 多 agent（Codex / Gemini）
+- Multi-agent (Codex / Gemini)
 - IM bridge / server mode / mobile
 - MCP marketplace
-- 消息 queue
-- Ctrl+C 作为通用中断（用 Stop 按钮）
-- slash command 自动补全
-- 团队 / 协作
-- tabs / split-view
-- account / 用户中心
-- 对话内容全文检索
-- 自定义快捷键
-- data dir 迁移
+- Message queue
+- Ctrl+C as universal interrupt (use the Stop button)
+- Slash command autocomplete
+- Team / collaboration
+- Tabs / split-view
+- Account / user center
+- Full-text search inside conversation
+- Custom shortcuts
+- Data dir migration
+- Soft-delete + Deleted view
+- Per-session model override (single global model setting in MVP)
 
-## 12.1 SDK 默认值（不暴露 UI，但已锁定）
+## 12.1 SDK defaults (not exposed in UI, but locked)
 
-- **Extended thinking**：调 `query()` 时硬编码开启 + 取该 model 支持的最大 budget。
-  - 理由：用户不在意这个旋钮；如果让选，他一定选最高的。那就直接给最高，省一次决策。
-  - 不做 effort selector。Opus 4 的 budget 上限在接 SDK 时 verify 当时数值，避免文档写死后漂移。
+- **Extended thinking**: hardcode on at the maximum budget supported by the model when calling `query()`.
+  - Reason: the user doesn't care about this knob; if asked, they'd always pick max. Just give max — saves a decision.
+  - No effort selector. Verify Opus 4 budget cap value when wiring the SDK to avoid drift from frozen docs.
 
-## 13. 待解决（不阻塞 scaffold）
+## 13. Open items (non-blocking)
 
-- Edge case 清单（来自之前 subagent 的竞品/审计）：放 `docs/triage.md`，post-MVP 再处理。
+- Edge case checklist (from the earlier subagent competitor / audit pass): lives in `docs/triage.md`, post-MVP.
 
-## 14. 完整 UI ASCII Mockup
+## 14. Full UI ASCII mockup
 
 ```
 ┌──────────────────────────────────┬────────────────────────────────────────────────────────┐
 │ [«]  Search…              ⌘K     │                                                        │
-│ [+ New Session]                  │  > 把 webhook handler 改成异步队列消费                  │
+│ [+ New Session]                  │  > make the webhook handler async                       │
 │ ─────────────────────────────    │                                                        │
-│ ▾ Backend Refactor        [+]    │  ● 我先看一下当前的 handler 实现，再给方案。            │
+│ ▾ Backend Refactor        [+]    │  ● Let me look at the current handler first.            │
 │   ● webhook-worker               │                                                        │
 │   ⚡ webhook-async  ◀ active     │  ⏺ Read(src/webhook/handler.ts)                        │
-│   🅿 old-sync-impl               │  ⏺ Grep("publish\\(", src/)                            │
+│                                  │  ⏺ Grep("publish\\(", src/)                            │
 │                                  │  ⏺ Bash(npm test -- webhook)                           │
 │ ▾ Investigations          [+]    │                                                        │
-│   ● oom-repro                    │  ● 方案：抽出 `WebhookJob`，用 BullMQ 做队列。          │
-│                                  │    需要新增 redis 依赖，确认可以吗？                    │
+│   ● oom-repro                    │  ● Plan: extract `WebhookJob`, use BullMQ.              │
+│                                  │    Need a new redis dep. OK to proceed?                 │
 │ ▸ Docs                    [+]    │                                                        │
 │                                  │  ┌──────────────────────────────────────────────────┐  │
 │ [+ New Group]                    │  │ ⚡ Permission requested                           │ │
-│ ▸ Archive                        │  │ Add dependency: bullmq@^5                         │ │
-│ ▸ Deleted                        │  │                          [ Deny ]  [ Allow ]      │ │
+│                                  │  │ Add dependency: bullmq@^5                         │ │
+│ ▸ Archived Groups                │  │                          [ Deny ]  [ Allow ]      │ │
 │                                  │  └──────────────────────────────────────────────────┘  │
 │                                  │                                                        │
 │                                  │                                       [↓ Jump to latest]│
@@ -254,7 +261,6 @@ bottom-right，3s 自动消失，最多堆 3 个。触发：
 │                                  │ │ Reply…  (Enter send · Shift+Enter newline)         │ │
 │                                  │ │                                                    │ │
 │                                  │ └────────────────────────────────────────────────────┘ │
-│ ─────────────────────────────    │                                                        │
 │ [⚙ Settings]                     │                                                        │
 └──────────────────────────────────┴────────────────────────────────────────────────────────┘
 
@@ -264,40 +270,40 @@ bottom-right，3s 自动消失，最多堆 3 个。触发：
                                                                               (toast, br)
 ```
 
-## 13. 架构约束：为远程前端预留
+## 15. Architecture constraint: reserve room for a remote frontend
 
-MVP 只做桌面端（前后端都在用户本地），但要让"未来在另一台设备跑前端、本机跑 daemon"成本可控。这条是项目级硬约束，不是某个 PR 的事。
+MVP is desktop-only (frontend and backend both on the user's machine), but we want "future: frontend on a different device, daemon on this machine" to be a manageable cost. This is a project-level hard constraint, not per-PR.
 
-### 目标场景（未来，非 MVP）
+### Future target scenario (NOT MVP)
 
-家里 Mac 跑 daemon（SDK + 文件操作 + 长任务），手机 / 公司笔记本 / iPad 跑前端，两端通过 GitHub OAuth 配对。daemon 不停转，前端可断可换。
+A Mac at home runs the daemon (SDK + filesystem ops + long-running tasks). Phone / work laptop / iPad runs the frontend; the two pair via GitHub OAuth. The daemon never sleeps; the frontend can disconnect and switch devices freely.
 
-### 现在该守的规矩
+### Rule to follow now
 
-**前端代码不准直接 `import { ipcRenderer }`，也不准 `import` 任何 `electron/*`。**
+**Frontend code is NOT allowed to `import { ipcRenderer }` or `import` anything from `electron/*`.**
 
-唯一允许的后端入口是 `window.agentory`（在 `src/global.d.ts` 定义）。任何新的后端能力先扩这个接口，再加 IPC 实现。
+The only allowed backend entry point is `window.agentory` (declared in `src/global.d.ts`). Any new backend capability extends this interface first, then adds an IPC implementation.
 
-理由：`window.agentory` 是一份"前后端契约"。把传输层（Electron IPC）藏在它后面，将来加 WebSocket 实现时只换 `preload.ts` 等价物，`src/` 一行不动。
+Reason: `window.agentory` is a frontend/backend contract. Hiding the transport (Electron IPC) behind it means a future WebSocket implementation only swaps `preload.ts`'s equivalent — `src/` doesn't change a line.
 
-### 设计后端能力时要问的问题
+### Questions to ask when designing a backend capability
 
-1. **能不能跨网络？** 如果某个调用假设零延迟、同步完成，远程模式会卡。流式/异步优先。
-2. **状态权威在哪？** 现在 store 在前端是权威。未来 daemon 是权威，前端是视图。新功能尽量让 store 能"接受 daemon 推过来的状态"，不要把"只有前端知道"的状态塞进 store。
-3. **路径有没有写死本地？** cwd、`~/.claude/projects/` 这些只在 daemon 那侧有意义。前端展示时永远把它当成"远端那台机器上的路径"。
+1. **Can it cross a network?** A call that assumes zero-latency synchronous completion will stall in remote mode. Stream-first / async-first.
+2. **Where is the source of truth?** Today the store is authoritative on the frontend. In the future the daemon is authoritative and the frontend is a view. New features should let the store accept state pushed from the daemon — don't put "frontend-only" state into the store.
+3. **Are paths hardcoded to local?** cwd, `~/.claude/projects/`, etc. only make sense on the daemon side. The frontend should always treat them as "paths on that other machine".
 
-### MVP 阶段不做的
+### Not doing in MVP
 
-- 不写 WebSocket server / 客户端
-- 不做 OAuth 配对
-- 不做 relay 服务
-- 不为"未来远程"加任何额外抽象层（接口已经够了，YAGNI）
+- No WebSocket server / client.
+- No OAuth pairing.
+- No relay service.
+- No extra abstraction layers "for the future remote case" — the interface is enough; YAGNI.
 
 ### Code review checklist
 
-PR 触发以下任一项必须 reject 或重写：
+A PR that triggers any of the below must be rejected or rewritten:
 
-- [ ] `src/` 下出现 `from 'electron'`
-- [ ] `src/` 下出现 `ipcRenderer` / `ipcMain`
-- [ ] 组件直接读写 `~/.claude/projects/` 之类的本地路径
-- [ ] 后端能力没经过 `window.agentory` 而是用 preload 临时暴露的全局
+- [ ] `from 'electron'` appears under `src/`
+- [ ] `ipcRenderer` / `ipcMain` appears under `src/`
+- [ ] Components directly read/write local paths like `~/.claude/projects/`
+- [ ] A backend capability bypasses `window.agentory` via a temporary preload-exposed global
