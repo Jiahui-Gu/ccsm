@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
+import { toSdkPermissionMode } from '../agent/permission';
 import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
@@ -199,8 +200,21 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
   },
 
-  setModel: (model) => set({ model }),
-  setPermission: (permission) => set({ permission }),
+  setModel: (model) => {
+    set({ model });
+    const api = window.agentory;
+    if (!api) return;
+    const started = Object.keys(get().startedSessions);
+    for (const id of started) void api.agentSetModel(id, model);
+  },
+  setPermission: (permission) => {
+    set({ permission });
+    const api = window.agentory;
+    if (!api) return;
+    const sdkMode = toSdkPermissionMode(permission);
+    const started = Object.keys(get().startedSessions);
+    for (const id of started) void api.agentSetPermissionMode(id, sdkMode);
+  },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setTheme: (theme) => set({ theme }),
