@@ -52,6 +52,7 @@ type Actions = {
   clearMessages: (sessionId: string) => void;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
+  resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
 };
 
 function nextId(prefix: string): string {
@@ -309,6 +310,20 @@ export const useStore = create<State & Actions>((set, get) => ({
       else delete next[sessionId];
       return { runningSessions: next };
     });
+  },
+
+  resolvePermission: (sessionId, requestId, decision) => {
+    const waitId = `wait-${requestId}`;
+    set((s) => {
+      const prev = s.messagesBySession[sessionId];
+      if (!prev) return s;
+      const next = prev.filter((b) => b.id !== waitId);
+      if (next.length === prev.length) return s;
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
+      };
+    });
+    void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
   }
 }));
 

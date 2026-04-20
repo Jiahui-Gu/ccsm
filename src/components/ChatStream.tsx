@@ -145,7 +145,7 @@ function ErrorBlock({ text }: { text: string }) {
   );
 }
 
-function renderBlock(b: MessageBlock) {
+function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void) {
   switch (b.kind) {
     case 'user':
       return <UserBlock text={b.text} />;
@@ -154,7 +154,13 @@ function renderBlock(b: MessageBlock) {
     case 'tool':
       return <ToolBlock name={b.name} brief={b.brief} result={b.result} />;
     case 'waiting':
-      return <WaitingBlock prompt={b.prompt} />;
+      return (
+        <WaitingBlock
+          prompt={b.prompt}
+          onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
+          onDeny={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+        />
+      );
     case 'error':
       return <ErrorBlock text={b.text} />;
   }
@@ -165,11 +171,12 @@ const EMPTY_BLOCKS: readonly MessageBlock[] = [];
 export function ChatStream() {
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
+  const resolvePermission = useStore((s) => s.resolvePermission);
   return (
     <div className="flex-1 overflow-y-auto min-w-0">
       <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
         {blocks.map((m) => (
-          <div key={m.id}>{renderBlock(m)}</div>
+          <div key={m.id}>{renderBlock(m, activeId, resolvePermission)}</div>
         ))}
       </div>
     </div>
