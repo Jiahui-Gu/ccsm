@@ -16,7 +16,7 @@ Status: MVP design locked — single source of truth before scaffolding.
 
 ## 2. Tech stack (locked)
 
-Electron · React 18 · TypeScript · Tailwind v3 · hand-rolled Radix primitives (`src/components/ui/`) · framer-motion · Zustand · @dnd-kit · Claude Agent SDK (main process) · SQLite (better-sqlite3) · custom React renderer (no xterm) · Vitest · Playwright.
+Electron · React 18 · TypeScript · Tailwind v4 (CSS-based config, `@import "tailwindcss"` in `src/styles/global.css`) · hand-rolled Radix primitives (`src/components/ui/`) · framer-motion · Zustand · @dnd-kit · Claude Agent SDK (main process) · SQLite (better-sqlite3) · custom React renderer (no xterm) · Vitest · Playwright.
 
 > Not using shadcn/ui: shell wrapper is ~30 lines, shadcn's high-value components (Dialog/Command/Form) don't cover this project's GUI-style rendering needs, and token mapping cost (`--sidebar-*` ↔ `bg-bg-sidebar`) is high. Build directly on Radix primitives instead.
 
