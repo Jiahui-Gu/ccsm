@@ -11,12 +11,20 @@ export function subscribeAgentEvents(): void {
 
   api.onAgentEvent((e) => {
     const blocks = sdkMessageToBlocks(e.message);
-    if (blocks.length > 0) useStore.getState().appendBlocks(e.sessionId, blocks);
+    const store = useStore.getState();
+    if (blocks.length > 0) store.appendBlocks(e.sessionId, blocks);
+    // Result message means the SDK turn is complete — clear the running flag
+    // so InputBar re-enables. Any other message means a turn is in flight.
+    if (e.message.type === 'result') {
+      store.setRunning(e.sessionId, false);
+    }
   });
 
   api.onAgentExit((e) => {
+    const store = useStore.getState();
+    store.setRunning(e.sessionId, false);
     if (!e.error) return;
-    useStore.getState().appendBlocks(e.sessionId, [
+    store.appendBlocks(e.sessionId, [
       { kind: 'error', id: `exit-${Date.now().toString(36)}`, text: e.error }
     ]);
   });
