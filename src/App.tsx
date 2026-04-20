@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { TooltipProvider } from './components/ui/Tooltip';
-import { ToastProvider } from './components/ui/Toast';
+import { ToastProvider, useToast } from './components/ui/Toast';
 import { Sidebar } from './components/Sidebar';
 import { ChatStream } from './components/ChatStream';
 import { InputBar } from './components/InputBar';
@@ -8,6 +8,7 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { useStore } from './stores/store';
+import { setPersistErrorHandler } from './stores/persist';
 
 export default function App() {
   const sessions = useStore((s) => s.sessions);
@@ -86,6 +87,7 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
       <ToastProvider>
+        <PersistErrorBridge />
         <div className="flex h-full w-full bg-bg-app text-fg-primary">
           <Sidebar
             onCreateSession={(cwd) => createSession(cwd)}
@@ -127,4 +129,23 @@ export default function App() {
       </ToastProvider>
     </TooltipProvider>
   );
+}
+
+function PersistErrorBridge() {
+  const { push } = useToast();
+  useEffect(() => {
+    let lastShown = 0;
+    setPersistErrorHandler(() => {
+      const now = Date.now();
+      if (now - lastShown < 5000) return;
+      lastShown = now;
+      push({
+        kind: 'error',
+        title: 'Failed to save state',
+        body: 'Your recent changes may not survive restart. Check disk space.'
+      });
+    });
+    return () => setPersistErrorHandler(() => {});
+  }, [push]);
+  return null;
 }

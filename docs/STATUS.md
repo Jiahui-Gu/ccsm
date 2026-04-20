@@ -96,7 +96,7 @@
 | 项 | 状态 | 备注 |
 |---|---|---|
 | ToastProvider 已挂 | ✅ | |
-| 实际触发：状态变化 / SDK 错误 / API key 缺失 | ⬜ | 没有任何代码实际 fire toast。 |
+| 实际触发：状态变化 / SDK 错误 / API key 缺失 | 🟡 | persist 写盘失败已接 toast（5s 节流防 spam）；状态变化 / SDK 错误等真实场景不存在数据源前不接，避免无意义 toast。 |
 
 ## 9. 数据持久化（mvp-design.md §10）
 
