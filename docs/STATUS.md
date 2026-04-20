@@ -1,6 +1,6 @@
 # Implementation Status
 
-最后更新：2026-04-21 (PR #11)
+最后更新：2026-04-21 (PR #12)
 
 这是 agentory-next 当前实现进度的对账表。每个 PR 合并后必须更新本文件，让"已实现 vs 待实现"始终一目了然。
 
@@ -62,8 +62,8 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 多行 textarea + Enter 发送 / Shift+Enter 换行 | 🟡 | 输入捕获 + 空白校验通；发送行为是 console.log 或 stub。 |
-| Running 时禁用 + Stop 按钮 | ⬜ | 没有 running 状态来源。 |
+| 多行 textarea + Enter 发送 / Shift+Enter 换行 | ✅ | 输入捕获 + 空白校验 + IME 守护；首次发送会 lazy `agent:start`（带当前 cwd/model/permission），后续走 `agent:send`。本地 echo user block，SDK 的 user echo 在翻译层跳过避免重复。 |
+| Running 时禁用 + Stop 按钮 | ✅ | `runningSessions` 在 store；turn 期间 textarea disable + Send 换 Stop（点击调 `agent:interrupt`）；`result` SDK 消息或 `agent:exit` 会清 running。 |
 
 ## 5. StatusBar（`src/components/StatusBar.tsx`）
 

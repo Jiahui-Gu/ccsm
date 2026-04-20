@@ -26,6 +26,8 @@ type State = {
   theme: Theme;
   fontSize: FontSize;
   messagesBySession: Record<string, MessageBlock[]>;
+  startedSessions: Record<string, true>;
+  runningSessions: Record<string, true>;
 };
 
 type Actions = {
@@ -52,6 +54,8 @@ type Actions = {
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
   clearMessages: (sessionId: string) => void;
+  markStarted: (sessionId: string) => void;
+  setRunning: (sessionId: string, running: boolean) => void;
 };
 
 function nextId(prefix: string): string {
@@ -75,6 +79,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   theme: 'system',
   fontSize: 'md',
   messagesBySession: {},
+  startedSessions: {},
+  runningSessions: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -131,7 +137,17 @@ export const useStore = create<State & Actions>((set, get) => ({
         s.activeId === id ? remaining[0]?.id ?? '' : s.activeId;
       const nextMessages = { ...s.messagesBySession };
       delete nextMessages[id];
-      return { sessions: remaining, activeId: nextActive, messagesBySession: nextMessages };
+      const nextStarted = { ...s.startedSessions };
+      delete nextStarted[id];
+      const nextRunning = { ...s.runningSessions };
+      delete nextRunning[id];
+      return {
+        sessions: remaining,
+        activeId: nextActive,
+        messagesBySession: nextMessages,
+        startedSessions: nextStarted,
+        runningSessions: nextRunning
+      };
     });
   },
 
@@ -247,6 +263,25 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = { ...s.messagesBySession };
       delete next[sessionId];
       return { messagesBySession: next };
+    });
+  },
+
+  markStarted: (sessionId) => {
+    set((s) =>
+      s.startedSessions[sessionId]
+        ? s
+        : { startedSessions: { ...s.startedSessions, [sessionId]: true } }
+    );
+  },
+
+  setRunning: (sessionId, running) => {
+    set((s) => {
+      const has = !!s.runningSessions[sessionId];
+      if (has === running) return s;
+      const next = { ...s.runningSessions };
+      if (running) next[sessionId] = true;
+      else delete next[sessionId];
+      return { runningSessions: next };
     });
   }
 }));

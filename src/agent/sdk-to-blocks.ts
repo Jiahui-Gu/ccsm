@@ -10,7 +10,12 @@ export function sdkMessageToBlocks(msg: SDKMessage): MessageBlock[] {
     case 'assistant':
       return assistantBlocks(msg);
     case 'user':
-      return userBlocks(msg);
+      // We render the user's outgoing text locally in InputBar for zero-latency
+      // echo. The SDK echoes the same text back as a user message — skip it to
+      // avoid duplicates. Tool_result echoes also live in user messages but
+      // those don't render as separate turns either (the tool block carries
+      // the result).
+      return [];
     case 'system':
       // SDK system messages (init, compact_boundary, api_retry, …) carry no
       // user-visible chat content; surfacing them as chat blocks would be noise.
@@ -50,29 +55,6 @@ function assistantBlocks(msg: any): MessageBlock[] {
     }
   }
   return out;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function userBlocks(msg: any): MessageBlock[] {
-  // User messages can be plain text (from us) or tool_result echoes (from SDK).
-  // Tool-result echoes don't render as separate user turns — the tool block
-  // carries the result. Plain text becomes a `user` block.
-  const baseId = msg.uuid ?? cryptoRandom();
-  const content = msg.message?.content;
-  if (typeof content === 'string') {
-    return [{ kind: 'user', id: baseId, text: content }];
-  }
-  if (Array.isArray(content)) {
-    const texts: string[] = [];
-    for (const c of content as AnyContent[]) {
-      if (c.type === 'text' && typeof (c as { text: string }).text === 'string') {
-        texts.push((c as { text: string }).text);
-      }
-    }
-    if (texts.length === 0) return [];
-    return [{ kind: 'user', id: baseId, text: texts.join('\n') }];
-  }
-  return [];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
