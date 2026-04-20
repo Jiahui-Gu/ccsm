@@ -7,6 +7,7 @@ import type { MessageBlock } from '../types';
 import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
+import { diffFromToolInput, type DiffSpec } from '../utils/diff';
 
 function UserBlock({ text }: { text: string }) {
   return (
@@ -88,15 +89,18 @@ function ToolBlock({
   name,
   brief,
   result,
-  isError
+  isError,
+  input
 }: {
   name: string;
   brief: string;
   result?: string;
   isError?: boolean;
+  input?: unknown;
 }) {
   const [open, setOpen] = useState(false);
   const hasResult = typeof result === 'string';
+  const diff = diffFromToolInput(name, input);
   return (
     <div className="font-mono text-sm">
       <button
@@ -138,16 +142,54 @@ function ToolBlock({
             transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
             style={{ overflow: 'hidden' }}
           >
-            <pre
-              className={`mt-1 ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${
-                isError ? 'border-state-error/40 text-state-error-fg' : 'border-border-subtle text-fg-tertiary'
-              }`}
-            >
-              {hasResult ? result : '(running…)'}
-            </pre>
+            {diff ? (
+              <DiffView diff={diff} />
+            ) : (
+              <pre
+                className={`mt-1 ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${
+                  isError ? 'border-state-error/40 text-state-error-fg' : 'border-border-subtle text-fg-tertiary'
+                }`}
+              >
+                {hasResult ? result : '(running…)'}
+              </pre>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+function DiffView({ diff }: { diff: DiffSpec }) {
+  return (
+    <div className="mt-1 ml-6 rounded-sm border border-border-subtle overflow-hidden">
+      <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-[11px] text-fg-tertiary">
+        {diff.filePath}
+      </div>
+      <div className="font-mono text-xs">
+        {diff.hunks.map((h, i) => (
+          <div key={i} className={i > 0 ? 'border-t border-border-subtle' : ''}>
+            {h.removed.map((line, j) => (
+              <div
+                key={`r-${j}`}
+                className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg"
+              >
+                <span aria-hidden className="pl-1 select-none text-state-error">-</span>
+                <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
+              </div>
+            ))}
+            {h.added.map((line, j) => (
+              <div
+                key={`a-${j}`}
+                className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary"
+              >
+                <span aria-hidden className="pl-1 select-none text-state-running">+</span>
+                <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -478,7 +520,7 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
     case 'assistant':
       return <AssistantBlock text={b.text} />;
     case 'tool':
-      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} />;
+      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} />;
     case 'todo':
       return <TodoBlock todos={b.todos} />;
     case 'waiting':
