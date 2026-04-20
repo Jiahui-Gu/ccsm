@@ -264,6 +264,123 @@ function ErrorBlock({ text }: { text: string }) {
   );
 }
 
+function QuestionBlock({
+  questions,
+  onSubmit
+}: {
+  questions: import('../types').QuestionSpec[];
+  onSubmit: (answersText: string) => void;
+}) {
+  const [picks, setPicks] = useState<Array<Set<number>>>(() => questions.map(() => new Set()));
+  const submitRef = useRef<HTMLButtonElement>(null);
+  const [submitted, setSubmitted] = useState(false);
+
+  const togglePick = (qIdx: number, optIdx: number, multi: boolean) => {
+    if (submitted) return;
+    setPicks((prev) => {
+      const next = prev.slice();
+      const set = new Set(next[qIdx]);
+      if (multi) {
+        if (set.has(optIdx)) set.delete(optIdx);
+        else set.add(optIdx);
+      } else {
+        set.clear();
+        set.add(optIdx);
+      }
+      next[qIdx] = set;
+      return next;
+    });
+  };
+
+  const allAnswered = questions.every((_, i) => picks[i] && picks[i].size > 0);
+
+  const submit = () => {
+    if (!allAnswered || submitted) return;
+    const lines: string[] = [];
+    questions.forEach((q, i) => {
+      const labels = Array.from(picks[i]).map((j) => q.options[j]?.label).filter(Boolean);
+      lines.push(`Q: ${q.question}`);
+      lines.push(`A: ${labels.join(', ')}`);
+    });
+    setSubmitted(true);
+    onSubmit(lines.join('\n'));
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      className="relative my-2 rounded-md border border-state-waiting/40 bg-state-waiting/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
+    >
+      <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md" />
+      <div className="flex items-center gap-2 text-base text-fg-primary font-semibold">
+        <StateGlyph state="waiting" size="sm" />
+        <span>Question awaiting answer</span>
+      </div>
+      <div className="mt-3 space-y-4">
+        {questions.map((q, qi) => (
+          <div key={qi} className="space-y-2">
+            {q.header && (
+              <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{q.header}</div>
+            )}
+            <div className="text-sm text-fg-primary">{q.question}</div>
+            <div className="space-y-1">
+              {q.options.map((opt, oi) => {
+                const selected = picks[qi]?.has(oi) ?? false;
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    disabled={submitted}
+                    onClick={() => togglePick(qi, oi, !!q.multiSelect)}
+                    className={
+                      'w-full text-left px-3 py-2 rounded-sm border transition-colors duration-100 ' +
+                      (selected
+                        ? 'border-state-waiting/70 bg-state-waiting/10'
+                        : 'border-border-subtle hover:bg-bg-hover hover:border-border-default') +
+                      (submitted ? ' cursor-not-allowed opacity-70' : '')
+                    }
+                  >
+                    <div className="flex items-start gap-2">
+                      <span
+                        aria-hidden
+                        className={
+                          'mt-1 h-3 w-3 shrink-0 rounded-' +
+                          (q.multiSelect ? 'sm' : 'full') +
+                          ' border ' +
+                          (selected ? 'bg-state-waiting border-state-waiting' : 'border-border-strong')
+                        }
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-fg-primary">{opt.label}</div>
+                        {opt.description && (
+                          <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex justify-end">
+        <Button
+          ref={submitRef}
+          variant="primary"
+          size="md"
+          disabled={!allAnswered || submitted}
+          onClick={submit}
+        >
+          {submitted ? 'Submitted' : 'Submit answer'}
+        </Button>
+      </div>
+    </motion.div>
+  );
+}
+
 function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void) {
   switch (b.kind) {
     case 'user':
@@ -287,6 +404,22 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
           prompt={b.prompt}
           onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
           onDeny={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+        />
+      );
+    case 'question':
+      return (
+        <QuestionBlock
+          questions={b.questions}
+          onSubmit={(answersText) => {
+            const api = window.agentory;
+            if (!api) return;
+            // Soft-cancel the SDK's pending tool call, then deliver the user's
+            // answers as a plain message. The agent reads the next user turn
+            // instead of a tool result — slightly lossy compared to a real
+            // tool result, but works without main-process plumbing for now.
+            void api.agentResolvePermission(activeId, b.requestId, 'deny');
+            void api.agentSend(activeId, answersText);
+          }}
         />
       );
     case 'error':

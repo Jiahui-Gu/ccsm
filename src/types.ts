@@ -24,9 +24,22 @@ export interface Group {
   kind: 'normal' | 'archive' | 'deleted';
 }
 
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionSpec {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: QuestionOption[];
+}
+
 export type MessageBlock =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
   | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean }
   | { kind: 'waiting'; id: string; prompt: string; intent: 'permission' | 'plan' | 'question'; requestId?: string; plan?: string }
+  | { kind: 'question'; id: string; requestId: string; questions: QuestionSpec[] }
   | { kind: 'error'; id: string; text: string };
