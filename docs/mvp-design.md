@@ -263,3 +263,41 @@ bottom-right，3s 自动消失，最多堆 3 个。触发：
                                                   └──────────────────────────────────────┘
                                                                               (toast, br)
 ```
+
+## 13. 架构约束：为远程前端预留
+
+MVP 只做桌面端（前后端都在用户本地），但要让"未来在另一台设备跑前端、本机跑 daemon"成本可控。这条是项目级硬约束，不是某个 PR 的事。
+
+### 目标场景（未来，非 MVP）
+
+家里 Mac 跑 daemon（SDK + 文件操作 + 长任务），手机 / 公司笔记本 / iPad 跑前端，两端通过 GitHub OAuth 配对。daemon 不停转，前端可断可换。
+
+### 现在该守的规矩
+
+**前端代码不准直接 `import { ipcRenderer }`，也不准 `import` 任何 `electron/*`。**
+
+唯一允许的后端入口是 `window.agentory`（在 `src/global.d.ts` 定义）。任何新的后端能力先扩这个接口，再加 IPC 实现。
+
+理由：`window.agentory` 是一份"前后端契约"。把传输层（Electron IPC）藏在它后面，将来加 WebSocket 实现时只换 `preload.ts` 等价物，`src/` 一行不动。
+
+### 设计后端能力时要问的问题
+
+1. **能不能跨网络？** 如果某个调用假设零延迟、同步完成，远程模式会卡。流式/异步优先。
+2. **状态权威在哪？** 现在 store 在前端是权威。未来 daemon 是权威，前端是视图。新功能尽量让 store 能"接受 daemon 推过来的状态"，不要把"只有前端知道"的状态塞进 store。
+3. **路径有没有写死本地？** cwd、`~/.claude/projects/` 这些只在 daemon 那侧有意义。前端展示时永远把它当成"远端那台机器上的路径"。
+
+### MVP 阶段不做的
+
+- 不写 WebSocket server / 客户端
+- 不做 OAuth 配对
+- 不做 relay 服务
+- 不为"未来远程"加任何额外抽象层（接口已经够了，YAGNI）
+
+### Code review checklist
+
+PR 触发以下任一项必须 reject 或重写：
+
+- [ ] `src/` 下出现 `from 'electron'`
+- [ ] `src/` 下出现 `ipcRenderer` / `ipcMain`
+- [ ] 组件直接读写 `~/.claude/projects/` 之类的本地路径
+- [ ] 后端能力没经过 `window.agentory` 而是用 preload 临时暴露的全局
