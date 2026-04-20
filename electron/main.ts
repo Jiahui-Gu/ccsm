@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog, Notification, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
@@ -129,6 +129,11 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // On Windows, notifications need a stable AppUserModelID so the OS knows
+  // which app the toast belongs to (otherwise it shows "electron.exe").
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.agentory.desktop');
+  }
   initDb();
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
@@ -194,6 +199,29 @@ app.whenReady().then(() => {
   );
 
   ipcMain.handle('import:scan', () => scanImportableSessions());
+
+  ipcMain.handle(
+    'notification:show',
+    (e, payload: { sessionId: string; title: string; body?: string }) => {
+      if (!Notification.isSupported()) return false;
+      const win = BrowserWindow.fromWebContents(e.sender);
+      const n = new Notification({
+        title: payload.title,
+        body: payload.body ?? '',
+        silent: false
+      });
+      n.on('click', () => {
+        if (win) {
+          if (win.isMinimized()) win.restore();
+          win.show();
+          win.focus();
+          win.webContents.send('notification:focusSession', payload.sessionId);
+        }
+      });
+      n.show();
+      return true;
+    }
+  );
 
   installUpdaterIpc();
 
