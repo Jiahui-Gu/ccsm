@@ -249,6 +249,66 @@ function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => vo
   );
 }
 
+function TodoBlock({ todos }: { todos: import('../types').TodoItem[] }) {
+  const total = todos.length;
+  const done = todos.filter((t) => t.status === 'completed').length;
+  return (
+    <div className="my-1.5 rounded-md border border-border-subtle bg-bg-elevated/40 px-3 py-2">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">Todo</span>
+        <span className="font-mono text-[11px] text-fg-tertiary">
+          {done}/{total}
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {todos.map((t, i) => {
+          const inProgress = t.status === 'in_progress';
+          const completed = t.status === 'completed';
+          return (
+            <li key={i} className="flex items-start gap-2 text-sm">
+              <span
+                aria-hidden
+                className={
+                  'mt-1 inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-sm border ' +
+                  (completed
+                    ? 'bg-state-running border-state-running'
+                    : inProgress
+                    ? 'border-state-waiting'
+                    : 'border-border-strong')
+                }
+              >
+                {completed && (
+                  <svg viewBox="0 0 12 12" className="h-2.5 w-2.5 text-bg-app" aria-hidden>
+                    <path
+                      d="M2.5 6.5L5 9l4.5-5"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      fill="none"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
+                {inProgress && (
+                  <span className="block h-1.5 w-1.5 rounded-full bg-state-waiting animate-pulse" />
+                )}
+              </span>
+              <span
+                className={
+                  (completed ? 'text-fg-tertiary line-through ' : inProgress ? 'text-fg-primary ' : 'text-fg-secondary ') +
+                  'min-w-0 flex-1'
+                }
+              >
+                {inProgress && t.activeForm ? t.activeForm : t.content}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; title: string; detail?: string }) {
   const isWarn = tone === 'warn';
   return (
@@ -419,6 +479,8 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
       return <AssistantBlock text={b.text} />;
     case 'tool':
       return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} />;
+    case 'todo':
+      return <TodoBlock todos={b.todos} />;
     case 'waiting':
       if (b.intent === 'plan' && b.plan) {
         return (

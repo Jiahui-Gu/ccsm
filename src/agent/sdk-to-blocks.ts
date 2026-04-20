@@ -113,14 +113,24 @@ function assistantBlocks(msg: any): MessageBlock[] {
       out.push({ kind: 'assistant', id: `${baseId}:t${textIdx++}`, text: (c as { text: string }).text });
     } else if (c.type === 'tool_use') {
       const tu = c as { id: string; name: string; input: unknown };
-      out.push({
-        kind: 'tool',
-        id: `${baseId}:tu${toolIdx++}`,
-        toolUseId: tu.id,
-        name: tu.name,
-        brief: briefForTool(tu.name, tu.input),
-        expanded: false
-      });
+      if (tu.name === 'TodoWrite') {
+        const todos = parseTodos(tu.input);
+        out.push({
+          kind: 'todo',
+          id: `${baseId}:tu${toolIdx++}`,
+          toolUseId: tu.id,
+          todos
+        });
+      } else {
+        out.push({
+          kind: 'tool',
+          id: `${baseId}:tu${toolIdx++}`,
+          toolUseId: tu.id,
+          name: tu.name,
+          brief: briefForTool(tu.name, tu.input),
+          expanded: false
+        });
+      }
     }
   }
   return out;
@@ -220,4 +230,24 @@ function briefForTool(name: string, input: unknown): string {
 
 function cryptoRandom(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+function parseTodos(input: unknown): import('../types').TodoItem[] {
+  if (!input || typeof input !== 'object') return [];
+  const raw = (input as { todos?: unknown }).todos;
+  if (!Array.isArray(raw)) return [];
+  const out: import('../types').TodoItem[] = [];
+  for (const t of raw) {
+    if (!t || typeof t !== 'object') continue;
+    const o = t as Record<string, unknown>;
+    const content = typeof o.content === 'string' ? o.content : '';
+    if (!content) continue;
+    const status = o.status === 'in_progress' || o.status === 'completed' ? o.status : 'pending';
+    out.push({
+      content,
+      status,
+      activeForm: typeof o.activeForm === 'string' ? o.activeForm : undefined
+    });
+  }
+  return out;
 }

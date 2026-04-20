@@ -101,6 +101,49 @@ describe('sdkMessageToTranslation', () => {
     expect(b.detail).toContain('$0.012');
   });
 
+  it('TodoWrite tool_use becomes a todo block (not generic tool)', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({
+        type: 'assistant',
+        uuid: 'msg-todo',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-1',
+              name: 'TodoWrite',
+              input: {
+                todos: [
+                  { content: 'Write tests', status: 'completed' },
+                  { content: 'Implement feature', status: 'in_progress', activeForm: 'Implementing feature' },
+                  { content: 'Open PR', status: 'pending' }
+                ]
+              }
+            }
+          ]
+        }
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { kind: string; todos?: Array<{ content: string; status: string; activeForm?: string }> };
+    expect(b.kind).toBe('todo');
+    expect(b.todos).toHaveLength(3);
+    expect(b.todos![1].activeForm).toBe('Implementing feature');
+  });
+
+  it('TodoWrite with malformed input falls back to empty todo list', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({
+        type: 'assistant',
+        uuid: 'msg-empty-todo',
+        message: { content: [{ type: 'tool_use', id: 'tu-x', name: 'TodoWrite', input: { todos: 'no' } }] }
+      })
+    );
+    const b = out.append[0] as { kind: string; todos?: unknown[] };
+    expect(b.kind).toBe('todo');
+    expect(b.todos).toEqual([]);
+  });
+
   it('successful result with no usage / cost still renders a footer', () => {
     const out = sdkMessageToTranslation(
       asSdk({ type: 'result', subtype: 'success', is_error: false, uuid: 'res-2', num_turns: 1, duration_ms: 200 })
