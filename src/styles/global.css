@@ -1,0 +1,331 @@
+@import "tailwindcss";
+
+@theme {
+  /* Solid surfaces — depth comes from inset highlights + drop shadows,
+     not transparency. Order: app < sidebar < panel < elevated. */
+  --color-bg-app: oklch(0.16 0.003 240);
+  --color-bg-sidebar: oklch(0.225 0.003 240);
+  --color-bg-panel: oklch(0.18 0.003 240);
+  --color-bg-elevated: oklch(0.26 0.003 240);
+  --color-bg-hover: oklch(0.295 0.003 240);
+  --color-bg-active: oklch(0.33 0.004 240);
+
+  --color-fg-primary: oklch(0.93 0 0);
+  --color-fg-secondary: oklch(0.80 0 0);
+  --color-fg-tertiary: oklch(0.72 0 0);
+  --color-fg-disabled: oklch(0.60 0 0);
+  /* One stop below disabled — for "I'm here but please ignore me" labels
+     (e.g. archived group section header). Reads against bg-sidebar (0.225)
+     at ~AA-large minimum; never use for body text. */
+  --color-fg-faint: oklch(0.46 0 0);
+
+  --color-border-subtle: oklch(0.28 0 0);
+  --color-border-default: oklch(0.34 0 0);
+  --color-border-strong: oklch(0.44 0 0);
+
+  /* Persistent indicators use --color-accent-quiet (low chroma — won't fatigue
+     in peripheral vision over an 8h workday). Transient affordances (focus
+     rings, hover tap) use --color-accent (full saturation). */
+  --color-accent: oklch(0.74 0.13 215);
+  --color-accent-quiet: oklch(0.70 0.06 215);
+  --color-accent-fg: oklch(0.18 0 0);
+  --color-accent-soft: oklch(0.45 0.10 215 / 0.18);
+
+  /* State scale — error gets soft/default/strong/fg facets so danger weighting
+     is a token choice, not a magic number. */
+  --color-state-running: oklch(0.78 0.13 155);
+  --color-state-waiting: oklch(0.78 0.10 75);
+  --color-state-parked: var(--color-fg-tertiary);
+  --color-state-success: oklch(0.72 0.14 155);
+  --color-state-warning: oklch(0.78 0.16 75);
+  --color-state-error: oklch(0.65 0.20 25);
+  --color-state-error-soft: oklch(0.65 0.20 25 / 0.14);
+  --color-state-error-strong: oklch(0.60 0.22 25);
+  --color-state-error-fg: oklch(0.97 0 0);
+
+  /* Material craft tokens. Inner highlight = "light from above" trick that
+     makes a flat surface read as 3D without a real shadow. */
+  --surface-highlight: oklch(1 0 0 / 0.04);
+  --surface-shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 4px 16px oklch(0 0 0 / 0.2);
+
+  /* Apple's spring curve — used for hover / active / focus transitions. */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --font-sans: "Inter Variable", "Inter", "PingFang SC", "Microsoft YaHei UI", "Source Han Sans SC", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "Sarasa Mono SC", "Source Han Mono SC", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 18px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-md: 15px;
+  --text-md--line-height: 22px;
+  --text-lg: 17px;
+  --text-lg--line-height: 24px;
+
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+
+  /* ── Foreground pairings (CodePilot-style). Every surface has a matching
+     fg token so component code can use `bg-X / text-X-foreground` without
+     remembering which fg goes with which bg. ── */
+  --color-bg-app-foreground: var(--color-fg-primary);
+  --color-bg-panel-foreground: var(--color-fg-primary);
+  --color-bg-elevated-foreground: var(--color-fg-primary);
+  --color-bg-hover-foreground: var(--color-fg-primary);
+
+  /* ── Region-specific surfaces. Popover/card need their own tokens so
+     dropdowns and dialogs don't have to ride bg-elevated and accidentally
+     follow it when bg-elevated changes for other reasons. ── */
+  --color-popover: oklch(0.26 0.003 240);
+  --color-popover-foreground: var(--color-fg-primary);
+  --color-popover-border: var(--color-border-default);
+
+  --color-card: var(--color-bg-panel);
+  --color-card-foreground: var(--color-fg-primary);
+  --color-card-border: var(--color-border-subtle);
+
+  /* ── Status × facet matrix. Each status gets {base, foreground, muted,
+     border} so `bg-status-error-muted text-status-error border-status-error-border`
+     composes without inventing new shades inline. ── */
+  --color-status-success: oklch(0.72 0.14 155);
+  --color-status-success-foreground: oklch(0.78 0.14 155);
+  --color-status-success-muted: oklch(0.72 0.14 155 / 0.12);
+  --color-status-success-border: oklch(0.72 0.14 155 / 0.30);
+
+  --color-status-warning: oklch(0.78 0.16 75);
+  --color-status-warning-foreground: oklch(0.82 0.16 75);
+  --color-status-warning-muted: oklch(0.78 0.16 75 / 0.12);
+  --color-status-warning-border: oklch(0.78 0.16 75 / 0.30);
+
+  --color-status-error: oklch(0.65 0.20 25);
+  --color-status-error-foreground: oklch(0.72 0.20 25);
+  --color-status-error-muted: oklch(0.65 0.20 25 / 0.14);
+  --color-status-error-border: oklch(0.65 0.20 25 / 0.32);
+
+  --color-status-info: oklch(0.74 0.13 215);
+  --color-status-info-foreground: oklch(0.80 0.13 215);
+  --color-status-info-muted: oklch(0.74 0.13 215 / 0.12);
+  --color-status-info-border: oklch(0.74 0.13 215 / 0.30);
+
+  /* ── Terminal palette. Bash/shell tool output renders into this surface;
+     keeping it as its own token set means we can re-theme terminals
+     (e.g. solarized) without touching the rest of the app. ── */
+  --color-terminal-bg: oklch(0.13 0.004 240);
+  --color-terminal-foreground: oklch(0.87 0.006 106);
+  --color-terminal-muted: oklch(0.55 0.01 58);
+  --color-terminal-border: oklch(0.30 0.005 240);
+  --color-terminal-accent: oklch(0.55 0.17 155);
+  --color-terminal-hover-bg: oklch(0.22 0.005 240);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg-app);
+  color: var(--color-fg-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* Inter stylistic sets only on opt-in Latin contexts. Applying this to a
+   parent that contains CJK strips hinting on some renderers, so we do NOT
+   gate on [lang="en"] — that would catch Chinese descendants of an English
+   wrapper. Use .lang-latin explicitly on regions you know are ASCII. */
+.lang-latin {
+  font-feature-settings: "cv11", "ss01", "ss03";
+}
+
+/* Mono ligatures off — terminals don't ligate ==>, !=, etc. */
+.font-mono, [class*="font-mono"], pre, code {
+  font-variant-ligatures: none;
+}
+
+@layer base {
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+
+  button:focus, button:focus-visible {
+    outline: none;
+  }
+
+  input, textarea {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    outline: none;
+  }
+
+  input:focus, textarea:focus {
+    outline: none;
+    box-shadow: none;
+  }
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-fg-primary);
+}
+
+/* Floating-element entrance keyframes used by Tooltip / DropdownMenu / ContextMenu.
+   Now use the Apple spring curve for a softer settle. */
+@keyframes tooltipIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes menuIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes overlayIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes dialogIn {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.97); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* Material craft utilities. */
+@layer utilities {
+  /* Typography scale — 4 semantic tiers. Components must pick one of these
+     instead of hand-rolling text-fg-* + size + case + tracking. Keeps the
+     sidebar / chat / status bar visually coherent.
+
+     Visual weight = brightness × weight × size × case. Section labels are
+     intentionally the LIGHTEST tier — they're map labels, not content. The
+     content (rows) should pull the eye first.
+
+       label-section : section headers, Capitalized, dim — recede
+       label-meta    : counts, timestamps, hint chips — recede
+       body-row      : default list-row text
+       body-emphasis : active row, primary button label
+  */
+  .text-label-section {
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 500;
+    color: oklch(0.60 0 0);
+    user-select: none;
+  }
+  /* Dimmest tier — for labels that should fade into the surface (e.g. the
+     "Archived Groups" header that we want users to look past unless they
+     explicitly need it). */
+  .text-label-faint {
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 500;
+    color: oklch(0.46 0 0);
+    user-select: none;
+  }
+  .text-label-meta {
+    font-size: 11px;
+    line-height: 14px;
+    font-weight: 400;
+    color: oklch(0.60 0 0);
+    font-variant-numeric: tabular-nums;
+  }
+  .text-body-row {
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 400;
+    color: oklch(0.80 0 0);
+  }
+  .text-body-emphasis {
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    color: oklch(0.93 0 0);
+  }
+
+  /* 1px lighter top edge — the "light from above" cue. Apply on any card-like
+     surface (sidebar, panel, elevated, dropdown, tooltip, input wrapper). */
+  .surface-highlight {
+    box-shadow: inset 0 1px 0 0 var(--surface-highlight);
+  }
+  /* Soft layered drop shadow for things floating over the canvas. Combine
+     with surface-highlight via class composition. */
+  .surface-elevated {
+    box-shadow:
+      inset 0 1px 0 0 var(--surface-highlight),
+      0 1px 2px oklch(0 0 0 / 0.3),
+      0 4px 16px oklch(0 0 0 / 0.2);
+  }
+  /* Sidebar's right edge: 1px hairline border + 1px inner light on its right
+     interior. Replaces the flat border-r treatment. */
+  .sidebar-edge {
+    box-shadow:
+      1px 0 0 0 var(--color-border-subtle),
+      inset -1px 0 0 0 oklch(1 0 0 / 0.02),
+      inset 0 1px 0 0 var(--surface-highlight);
+  }
+  /* Chat card: stronger drop shadow + subtle border highlight than a popover.
+     Used by the chat region container floating on app-bg. */
+  .surface-card {
+    box-shadow:
+      inset 0 1px 0 0 var(--surface-highlight),
+      0 1px 0 0 var(--color-border-subtle),
+      0 8px 32px oklch(0 0 0 / 0.25);
+  }
+}
+
+/* Accessibility: honor reduced-motion preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Persistent low-contrast scrollbar — fade on hover-of-container would create
+   peripheral motion, so we keep the thumb static. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-subtle);
+  border-radius: 99px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 150ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-default);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--color-border-strong);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}

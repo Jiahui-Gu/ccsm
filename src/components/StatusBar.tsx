@@ -1,0 +1,193 @@
+import React from 'react';
+import { ChevronDown, Folder } from 'lucide-react';
+import { cn } from '../lib/cn';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from './ui/DropdownMenu';
+import { mockRecentProjects } from '../mock/data';
+
+type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
+type PermissionMode = 'auto' | 'ask' | 'plan';
+
+function lastSegment(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '');
+  const segs = trimmed.split(/[\\/]/).filter(Boolean);
+  return segs[segs.length - 1] ?? path;
+}
+
+const Chip = React.forwardRef<
+  HTMLButtonElement,
+  { children: React.ReactNode; title?: string } & React.ButtonHTMLAttributes<HTMLButtonElement>
+>(function Chip({ children, title, ...rest }, ref) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      title={title}
+      {...rest}
+      className={cn(
+        'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
+        'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
+        'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+        'transition-colors duration-120 ease-out'
+      )}
+    >
+      {children}
+      <ChevronDown size={10} className="stroke-[1.75] opacity-70" />
+    </button>
+  );
+});
+
+type ChipOption<V extends string> =
+  | {
+      kind: 'item';
+      value: V;
+      primary: string;
+      secondary?: string;
+      icon?: React.ReactNode;
+    }
+  | { kind: 'separator' };
+
+type ChipMenuProps<V extends string> = {
+  label: string;
+  triggerLabel: string;
+  triggerTitle?: string;
+  options: ChipOption<V>[];
+  onSelect: (value: V) => void;
+};
+
+function ChipMenu<V extends string>({
+  label,
+  triggerLabel,
+  triggerTitle,
+  options,
+  onSelect
+}: ChipMenuProps<V>) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Chip title={triggerTitle}>{triggerLabel}</Chip>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side="top" align="start" className="min-w-[240px]">
+        <DropdownMenuLabel>{label}</DropdownMenuLabel>
+        {options.map((o, i) => {
+          if (o.kind === 'separator') return <DropdownMenuSeparator key={`sep-${i}`} />;
+          if (o.secondary) {
+            return (
+              <DropdownMenuItem
+                key={o.value}
+                onSelect={() => onSelect(o.value)}
+                className="flex-col items-start gap-0 h-auto py-1.5"
+              >
+                <span className="truncate w-full text-fg-primary">{o.primary}</span>
+                <span className="truncate w-full text-[11px] font-mono text-fg-tertiary leading-tight">
+                  {o.secondary}
+                </span>
+              </DropdownMenuItem>
+            );
+          }
+          return (
+            <DropdownMenuItem key={o.value} onSelect={() => onSelect(o.value)}>
+              {o.icon}
+              <span>{o.primary}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const BROWSE_FOLDER = '__browse__';
+
+const cwdOptions: ChipOption<string>[] = [
+  ...mockRecentProjects.map(
+    (p) =>
+      ({ kind: 'item', value: p.path, primary: p.name, secondary: p.path }) as ChipOption<string>
+  ),
+  { kind: 'separator' },
+  {
+    kind: 'item',
+    value: BROWSE_FOLDER,
+    primary: 'Browse folder…',
+    icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
+  }
+];
+
+const modelOptions: ChipOption<ModelId>[] = [
+  { kind: 'item', value: 'claude-opus-4', primary: 'opus-4' },
+  { kind: 'item', value: 'claude-sonnet-4', primary: 'sonnet-4' },
+  { kind: 'item', value: 'claude-haiku-4', primary: 'haiku-4' }
+];
+
+const permissionOptions: ChipOption<PermissionMode>[] = [
+  { kind: 'item', value: 'auto', primary: 'auto' },
+  { kind: 'item', value: 'ask', primary: 'ask' },
+  { kind: 'item', value: 'plan', primary: 'plan' }
+];
+
+function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
+  for (const o of options) {
+    if (o.kind === 'item' && o.value === value) return o.primary;
+  }
+  return value;
+}
+
+export type StatusBarProps = {
+  cwd: string;
+  model: ModelId;
+  permission: PermissionMode;
+  onChangeCwd: (cwd: string | null) => void;
+  onChangeModel: (model: ModelId) => void;
+  onChangePermission: (mode: PermissionMode) => void;
+};
+
+export function StatusBar({
+  cwd,
+  model,
+  permission,
+  onChangeCwd,
+  onChangeModel,
+  onChangePermission
+}: StatusBarProps) {
+  const chips: React.ReactNode[] = [
+    <ChipMenu
+      key="cwd"
+      label="Working directory"
+      triggerLabel={lastSegment(cwd)}
+      triggerTitle={cwd}
+      options={cwdOptions}
+      onSelect={(v) => onChangeCwd(v === BROWSE_FOLDER ? null : v)}
+    />,
+    <ChipMenu
+      key="model"
+      label="Model"
+      triggerLabel={primaryOf(modelOptions, model)}
+      options={modelOptions}
+      onSelect={onChangeModel}
+    />,
+    <ChipMenu
+      key="permission"
+      label="Permission mode"
+      triggerLabel={primaryOf(permissionOptions, permission)}
+      options={permissionOptions}
+      onSelect={onChangePermission}
+    />
+  ];
+
+  return (
+    <div className="h-6 px-4 pt-0.5 flex items-center gap-1 font-mono text-xs select-none">
+      {chips.map((c, i) => (
+        <React.Fragment key={i}>
+          {i > 0 ? <span className="text-fg-disabled px-1">·</span> : null}
+          {c}
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}

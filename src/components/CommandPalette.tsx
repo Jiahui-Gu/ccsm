@@ -1,0 +1,197 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, Hash, Terminal, Settings, Plus } from 'lucide-react';
+import { cn } from '../lib/cn';
+import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
+import * as RD from '@radix-ui/react-dialog';
+import { AgentIcon } from './AgentIcon';
+import { mockGroups, mockSessions } from '../mock/data';
+
+type ResultKind = 'session' | 'group' | 'command';
+
+type Result = {
+  id: string;
+  kind: ResultKind;
+  label: string;
+  hint?: string;
+  icon: React.ReactNode;
+  onPick: () => void;
+};
+
+type Props = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onOpenSettings?: () => void;
+  onNewSession?: () => void;
+  onSelectSession?: (id: string) => void;
+  onFocusGroup?: (id: string) => void;
+};
+
+export function CommandPalette({
+  open,
+  onOpenChange,
+  onOpenSettings,
+  onNewSession,
+  onSelectSession,
+  onFocusGroup
+}: Props) {
+  const [q, setQ] = useState('');
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setQ('');
+      setActive(0);
+      // Focus after entrance animation so the ring settles cleanly.
+      const t = window.setTimeout(() => inputRef.current?.focus(), 80);
+      return () => window.clearTimeout(t);
+    }
+  }, [open]);
+
+  const results: Result[] = useMemo(() => {
+    const all: Result[] = [
+      ...mockSessions.map<Result>((s) => ({
+        id: `session:${s.id}`,
+        kind: 'session',
+        label: s.name,
+        hint: s.cwd,
+        icon: <AgentIcon agentType={s.agentType} state={s.state} size="sm" />,
+        onPick: () => {
+          onOpenChange(false);
+          onSelectSession?.(s.id);
+        }
+      })),
+      ...mockGroups
+        .filter((g) => g.kind === 'normal')
+        .map<Result>((g) => ({
+          id: `group:${g.id}`,
+          kind: 'group',
+          label: g.name,
+          hint: 'Group',
+          icon: <Hash size={13} className="stroke-[1.75] text-fg-tertiary" />,
+          onPick: () => {
+            onOpenChange(false);
+            onFocusGroup?.(g.id);
+          }
+        })),
+      {
+        id: 'cmd:new-session',
+        kind: 'command',
+        label: 'New session',
+        hint: '⌘N',
+        icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          onNewSession?.();
+        }
+      },
+      {
+        id: 'cmd:open-settings',
+        kind: 'command',
+        label: 'Open settings',
+        hint: '⌘,',
+        icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          onOpenSettings?.();
+        }
+      },
+      {
+        id: 'cmd:switch-theme',
+        kind: 'command',
+        label: 'Switch theme',
+        icon: <Terminal size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => onOpenChange(false)
+      }
+    ];
+    const needle = q.trim().toLowerCase();
+    if (!needle) return all;
+    return all.filter(
+      (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
+    );
+  }, [q, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup]);
+
+  useEffect(() => {
+    if (active >= results.length) setActive(0);
+  }, [results.length, active]);
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActive((a) => Math.min(a + 1, results.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActive((a) => Math.max(a - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      results[active]?.onPick();
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPortal>
+        <DialogOverlay />
+        <RD.Content
+          onKeyDown={onKeyDown}
+          className={cn(
+            'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[600px] max-w-[90vw]',
+            'rounded-lg border border-border-default bg-bg-panel',
+            'surface-highlight',
+            'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_8px_32px_oklch(0_0_0_/_0.45)]',
+            'outline-none',
+            'data-[state=open]:animate-[dialogIn_200ms_cubic-bezier(0.32,0.72,0,1)]',
+            'data-[state=closed]:opacity-0'
+          )}
+        >
+          <RD.Title className="sr-only">Command palette</RD.Title>
+          <div className="flex items-center gap-2 px-3 h-11 border-b border-border-subtle">
+            <Search size={14} className="stroke-[1.5] text-fg-tertiary shrink-0" />
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search sessions, groups, commands…"
+              className={cn(
+                'flex-1 bg-transparent text-base text-fg-primary placeholder:text-fg-tertiary',
+                'outline-none'
+              )}
+            />
+            <kbd className="font-mono text-xs px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
+              Esc
+            </kbd>
+          </div>
+          <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
+            {results.length === 0 && (
+              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">No matches</li>
+            )}
+            {results.map((r, i) => (
+              <li
+                key={r.id}
+                role="option"
+                aria-selected={i === active}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => r.onPick()}
+                className={cn(
+                  'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
+                  'text-sm',
+                  i === active
+                    ? 'bg-bg-hover text-fg-primary shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
+                    : 'text-fg-secondary'
+                )}
+              >
+                <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
+                <span className="flex-1 min-w-0 truncate">{r.label}</span>
+                {r.hint && (
+                  <span className="text-xs text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
+                    {r.hint}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </RD.Content>
+      </DialogPortal>
+    </Dialog>
+  );
+}
