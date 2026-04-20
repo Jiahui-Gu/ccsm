@@ -18,7 +18,7 @@ export const DropdownMenuLabel = forwardRef<
     <RDM.Label
       ref={ref}
       className={cn(
-        'px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-[0.08em] font-medium text-fg-tertiary',
+        'px-3 pt-1.5 pb-1 text-[11px] font-medium text-fg-tertiary',
         className
       )}
       {...rest}
