@@ -123,9 +123,8 @@ export default function App() {
               onChangePermission={setPermission}
             />
             <InputBar sessionId={active.id} />
-            <div className="px-4 pb-2 flex items-center justify-between font-mono text-xs text-fg-disabled select-none">
+            <div className="px-4 pb-2 font-mono text-xs text-fg-disabled select-none">
               <span>Enter send · Shift+Enter newline</span>
-              <span>12k / 200k tokens · 6% used</span>
             </div>
           </main>
         </div>
