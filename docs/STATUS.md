@@ -25,7 +25,7 @@
 | better-sqlite3 持久化 | 🟡 | `electron/db.ts` 起 WAL，`app_state(key,value)` 单表；`db:load`/`db:save` IPC + preload bridge；renderer 通过 `hydrateStore()` 启动加载、debounced 250ms 写回。schema 是单 JSON blob，结构化 schema 留给后续。 |
 | Claude Agent SDK 集成 | ⬜ | 未装包，未起 sidecar。 |
 | `~/.claude/projects/` 导入 | ⬜ | |
-| 全局快捷键注册 | 🟡 | `App.tsx` 注册了 Cmd+K / Cmd+,；Cmd+B / Cmd+N / Cmd+Shift+N 未实现。 |
+| 全局快捷键注册 | 🟡 | `App.tsx` 注册了 Cmd+K / Cmd+, / Cmd+B；Cmd+N / Cmd+Shift+N 未实现。 |
 
 ## 2. Sidebar（`src/components/Sidebar.tsx`）
 
@@ -46,7 +46,7 @@
 | "+ New Group" 按钮 | ✅ | onClick → `createGroup()`。 |
 | Archived Groups 底部折叠区 | ✅ | UI 已实现；archived 数据来自 mockGroups。 |
 | Deleted Groups 视图 | ⬜ | mvp-design.md §5 提到底部 ⋯ More；当前实现把 Deleted 略掉了，需对齐设计或更新设计。 |
-| Sidebar 折叠（256↔48） | ⬜ | mvp-design.md §5.1 详细规格，未实现。 |
+| Sidebar 折叠（256↔48） | ✅ | Cmd/Ctrl+B 切换，framer-motion 220ms width 动画，折叠态显示 expand/new/search/settings 四个 IconButton；状态持久化到 SQLite。 |
 
 ## 3. ChatStream（`src/components/ChatStream.tsx`）
 
