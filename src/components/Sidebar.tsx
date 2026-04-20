@@ -408,7 +408,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
       className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden"
     >
       {collapsed ? (
-        <div className="flex flex-col items-center w-12 h-full py-3 gap-2">
+        <div className="flex flex-col items-center w-full h-full py-3 gap-2">
           <IconButton
             variant="raised"
             size="md"
@@ -456,7 +456,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
           </IconButton>
         </div>
       ) : (
-      <div className="flex flex-col w-64 h-full">
+      <div className="flex flex-col w-full h-full">
           {/* Top: action zone — Search + New Session in one row.
               CodePilot-spec: h-8, bg-white/[0.06] semi-transparent on the
               sidebar's translucent surface, white/[0.08] hairline border,
