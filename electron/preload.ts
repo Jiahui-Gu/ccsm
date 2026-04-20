@@ -19,6 +19,15 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
+type UpdateStatus =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string; releaseDate?: string }
+  | { kind: 'not-available'; version: string }
+  | { kind: 'downloading'; percent: number; transferred: number; total: number }
+  | { kind: 'downloaded'; version: string }
+  | { kind: 'error'; message: string };
+
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
   saveState: (key: string, value: string): Promise<void> =>
@@ -61,6 +70,18 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: AgentPermissionRequest) => handler(payload);
     ipcRenderer.on('agent:permissionRequest', wrap);
     return () => ipcRenderer.removeListener('agent:permissionRequest', wrap);
+  },
+
+  updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
+  updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
+  updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
+    ipcRenderer.invoke('updates:download'),
+  updatesInstall: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
+    ipcRenderer.invoke('updates:install'),
+  onUpdateStatus: (handler: (s: UpdateStatus) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
+    ipcRenderer.on('updates:status', wrap);
+    return () => ipcRenderer.removeListener('updates:status', wrap);
   }
 };
 

@@ -4,6 +4,15 @@ import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 
+type LocalUpdateStatus =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string; releaseDate?: string }
+  | { kind: 'not-available'; version: string }
+  | { kind: 'downloading'; percent: number; transferred: number; total: number }
+  | { kind: 'downloaded'; version: string }
+  | { kind: 'error'; message: string };
+
 type Tab = 'general' | 'account' | 'data' | 'shortcuts' | 'updates';
 
 const TABS: { id: Tab; label: string }[] = [
@@ -247,17 +256,82 @@ function ShortcutsPane() {
 
 function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
+  const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
+
   useEffect(() => {
     window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
+    void window.agentory?.updatesStatus().then(setStatus).catch(() => {});
+    const off = window.agentory?.onUpdateStatus(setStatus);
+    return () => off?.();
   }, []);
+
+  const isChecking = status.kind === 'checking';
+  const isDownloading = status.kind === 'downloading';
+  const canCheck = !isChecking && !isDownloading && status.kind !== 'downloaded';
+
+  async function onCheck() {
+    if (!window.agentory) return;
+    setStatus({ kind: 'checking' });
+    await window.agentory.updatesCheck();
+    // Real status arrives via the push event; nothing to do here.
+  }
+
+  async function onDownload() {
+    await window.agentory?.updatesDownload();
+  }
+
+  function onInstall() {
+    void window.agentory?.updatesInstall();
+  }
+
   return (
     <>
       <Field label="Version">
         <span className="text-sm text-fg-secondary font-mono">{version}</span>
       </Field>
-      <Button variant="secondary" size="md" disabled title="Auto-update not yet wired">
-        Check for updates
-      </Button>
+      <Field label="Status">
+        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status)}</span>
+      </Field>
+      <div className="flex gap-2">
+        <Button variant="secondary" size="md" onClick={onCheck} disabled={!canCheck}>
+          {isChecking ? 'Checking…' : 'Check for updates'}
+        </Button>
+        {status.kind === 'available' && (
+          <Button variant="primary" size="md" onClick={onDownload}>
+            Download {status.version}
+          </Button>
+        )}
+        {status.kind === 'downloaded' && (
+          <Button variant="primary" size="md" onClick={onInstall}>
+            Restart & install
+          </Button>
+        )}
+      </div>
     </>
   );
+}
+
+function describeStatus(s: LocalUpdateStatus): string {
+  switch (s.kind) {
+    case 'idle':
+      return 'No update check performed yet.';
+    case 'checking':
+      return 'Checking for updates…';
+    case 'available':
+      return `Update available: ${s.version}`;
+    case 'not-available':
+      return 'You are on the latest version.';
+    case 'downloading':
+      return `Downloading… ${s.percent.toFixed(1)}% (${formatBytes(s.transferred)} / ${formatBytes(s.total)})`;
+    case 'downloaded':
+      return `Update ${s.version} ready — restart to install.`;
+    case 'error':
+      return `Update check failed: ${s.message}`;
+  }
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }

@@ -17,6 +17,15 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
+type UpdateStatus =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; version: string; releaseDate?: string }
+  | { kind: 'not-available'; version: string }
+  | { kind: 'downloading'; percent: number; transferred: number; total: number }
+  | { kind: 'downloaded'; version: string }
+  | { kind: 'error'; message: string };
+
 declare global {
   interface Window {
     agentory?: {
@@ -43,6 +52,12 @@ declare global {
       onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
       onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
+
+      updatesStatus: () => Promise<UpdateStatus>;
+      updatesCheck: () => Promise<UpdateStatus>;
+      updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+      updatesInstall: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+      onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
     };
   }
 }
