@@ -9,6 +9,9 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
+import { subscribeAgentEvents } from './agent/lifecycle';
+
+subscribeAgentEvents();
 
 export default function App() {
   const sessions = useStore((s) => s.sessions);
