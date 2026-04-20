@@ -131,4 +131,44 @@ describe('lifecycle: background waiting bridge', () => {
     expect(h.store.getState().runningSessions[sid]).toBeUndefined();
     expect(h.store.getState().messagesBySession[sid]).toBeUndefined();
   });
+
+  it('ExitPlanMode permission becomes a plan-intent waiting block with the plan markdown', async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/p');
+    const sid = h.store.getState().activeId;
+
+    const planMd = '# Plan\n1. Refactor auth\n2. Add tests';
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-plan',
+      toolName: 'ExitPlanMode',
+      input: { plan: planMd }
+    });
+
+    const blocks = h.store.getState().messagesBySession[sid];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: 'waiting',
+      intent: 'plan',
+      requestId: 'req-plan',
+      plan: planMd
+    });
+  });
+
+  it('non-ExitPlanMode tools still produce a permission-intent block (no plan field)', async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/p');
+    const sid = h.store.getState().activeId;
+
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-bash',
+      toolName: 'Bash',
+      input: { command: 'ls' }
+    });
+
+    const block = h.store.getState().messagesBySession[sid][0];
+    expect(block).toMatchObject({ kind: 'waiting', intent: 'permission' });
+    expect((block as { plan?: string }).plan).toBeUndefined();
+  });
 });
