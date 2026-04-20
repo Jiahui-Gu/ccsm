@@ -1,4 +1,12 @@
+import os from 'node:os';
+import path from 'node:path';
 import type { CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+
+function resolveCwd(cwd: string): string {
+  if (cwd === '~') return os.homedir();
+  if (cwd.startsWith('~/') || cwd.startsWith('~\\')) return path.join(os.homedir(), cwd.slice(2));
+  return cwd;
+}
 
 // SDK ships ESM-only (sdk.mjs). Electron main bundle is CJS, so a static
 // `import { query }` triggers ERR_REQUIRE_ESM at load. We need a real
@@ -113,7 +121,7 @@ export class SessionRunner {
       });
 
     const options: Options = {
-      cwd: opts.cwd,
+      cwd: resolveCwd(opts.cwd),
       env,
       permissionMode: opts.permissionMode ?? 'default',
       model: opts.model,
