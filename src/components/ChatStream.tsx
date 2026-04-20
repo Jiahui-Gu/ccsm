@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, AlertCircle } from 'lucide-react';
-import { mockMessages } from '../mock/data';
 import type { MessageBlock } from '../types';
+import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 
@@ -161,10 +161,11 @@ function renderBlock(b: MessageBlock) {
 }
 
 export function ChatStream() {
+  const blocks = useStore((s) => s.messagesBySession[s.activeId] ?? []);
   return (
     <div className="flex-1 overflow-y-auto min-w-0">
       <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
-        {mockMessages.map((m) => (
+        {blocks.map((m) => (
           <div key={m.id}>{renderBlock(m)}</div>
         ))}
       </div>

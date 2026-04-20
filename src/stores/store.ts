@@ -6,7 +6,7 @@ import {
   activeSessionId as initialActiveId,
   type RecentProject
 } from '../mock/data';
-import type { Group, Session } from '../types';
+import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
@@ -25,6 +25,7 @@ type State = {
   sidebarCollapsed: boolean;
   theme: Theme;
   fontSize: FontSize;
+  messagesBySession: Record<string, MessageBlock[]>;
 };
 
 type Actions = {
@@ -48,6 +49,9 @@ type Actions = {
   archiveGroup: (id: string) => void;
   unarchiveGroup: (id: string) => void;
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
+
+  appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
+  clearMessages: (sessionId: string) => void;
 };
 
 function nextId(prefix: string): string {
@@ -70,6 +74,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   sidebarCollapsed: false,
   theme: 'system',
   fontSize: 'md',
+  messagesBySession: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -124,7 +129,9 @@ export const useStore = create<State & Actions>((set, get) => ({
       const remaining = s.sessions.filter((x) => x.id !== id);
       const nextActive =
         s.activeId === id ? remaining[0]?.id ?? '' : s.activeId;
-      return { sessions: remaining, activeId: nextActive };
+      const nextMessages = { ...s.messagesBySession };
+      delete nextMessages[id];
+      return { sessions: remaining, activeId: nextActive, messagesBySession: nextMessages };
     });
   },
 
@@ -222,6 +229,25 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       groups: s.groups.map((g) => (g.id === id ? { ...g, collapsed } : g))
     }));
+  },
+
+  appendBlocks: (sessionId, blocks) => {
+    if (blocks.length === 0) return;
+    set((s) => {
+      const prev = s.messagesBySession[sessionId] ?? [];
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: [...prev, ...blocks] }
+      };
+    });
+  },
+
+  clearMessages: (sessionId) => {
+    set((s) => {
+      if (!(sessionId in s.messagesBySession)) return s;
+      const next = { ...s.messagesBySession };
+      delete next[sessionId];
+      return { messagesBySession: next };
+    });
   }
 }));
 
