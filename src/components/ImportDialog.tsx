@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronRight, ChevronDown } from 'lucide-react';
 import { Dialog, DialogContent, DialogBody, DialogFooter, DialogClose } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { bucketize, type DateBucketKey } from '../utils/date-buckets';
 
 type Scannable = {
   sessionId: string;
@@ -27,6 +29,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
 
   const [items, setItems] = useState<Scannable[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<DateBucketKey>>(new Set());
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
 
@@ -36,22 +39,19 @@ export function ImportDialog({ open, onOpenChange }: Props) {
     if (!api) return;
     setLoading(true);
     setSelected(new Set());
+    setCollapsed(new Set());
     api
       .scanImportable()
       .then((rows) => {
         const known = new Set(sessions.map((s) => s.id));
-        // Hide sessions whose CLI uuid we've already imported (we tag imported
-        // sessions with their resume id via name; a stricter dedup needs a
-        // dedicated field — leaving the simple "skip already-known store id"
-        // for now since the store id and CLI uuid are different namespaces).
         setItems(rows.filter((r) => !known.has(r.sessionId)));
       })
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
-    // sessions intentionally excluded from deps — we want a one-shot snapshot
-    // when the dialog opens, not a re-scan as the user creates sessions.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  const buckets = useMemo(() => bucketize(items), [items]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -67,6 +67,25 @@ export function ImportDialog({ open, onOpenChange }: Props) {
     else setSelected(new Set(items.map((i) => i.sessionId)));
   };
 
+  const toggleBucket = (ids: string[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = ids.every((id) => next.has(id));
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
+  const toggleCollapse = (key: DateBucketKey) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
   const doImport = async () => {
     const api = window.agentory;
     if (!api || selected.size === 0) return;
@@ -79,13 +98,12 @@ export function ImportDialog({ open, onOpenChange }: Props) {
       }
       const picked = items.filter((i) => selected.has(i.sessionId));
       for (const it of picked) {
-        const newId = importSession({
+        importSession({
           name: it.title,
           cwd: it.cwd,
           groupId,
           resumeSessionId: it.sessionId
         });
-        void newId;
       }
       onOpenChange(false);
     } finally {
@@ -119,32 +137,70 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                 </button>
                 <span className="font-mono text-xs text-fg-tertiary">{selected.size} selected</span>
               </div>
-              <ul className="max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle divide-y divide-border-subtle">
-                {items.map((it) => {
-                  const checked = selected.has(it.sessionId);
+              <div className="max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle">
+                {buckets.map((bucket, bIdx) => {
+                  const ids = bucket.items.map((i) => i.sessionId);
+                  const pickedCount = ids.filter((id) => selected.has(id)).length;
+                  const allPicked = pickedCount === ids.length;
+                  const isCollapsed = collapsed.has(bucket.key);
                   return (
-                    <li
-                      key={it.sessionId}
-                      onClick={() => toggle(it.sessionId)}
-                      className="flex items-start gap-2 px-3 py-2 hover:bg-bg-hover cursor-pointer"
+                    <div
+                      key={bucket.key}
+                      className={bIdx > 0 ? 'border-t border-border-subtle' : ''}
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggle(it.sessionId)}
-                        onClick={(e) => e.stopPropagation()}
-                        className="mt-0.5 accent-fg-primary"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-mono text-xs text-fg-primary truncate">{it.title}</div>
-                        <div className="font-mono text-[11px] text-fg-tertiary truncate">
-                          {it.cwd} · {new Date(it.mtime).toLocaleString()}
-                        </div>
+                      <div className="flex items-center gap-2 px-2 py-1.5 bg-bg-hover/30">
+                        <button
+                          type="button"
+                          onClick={() => toggleCollapse(bucket.key)}
+                          className="flex items-center justify-center w-4 h-4 text-fg-tertiary hover:text-fg-secondary"
+                          aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                        >
+                          {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+                        </button>
+                        <span className="font-mono text-xs text-fg-secondary flex-1">
+                          {bucket.label} · {bucket.items.length}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => toggleBucket(ids)}
+                          className="font-mono text-xs text-fg-tertiary hover:text-fg-secondary"
+                        >
+                          {allPicked ? 'Deselect group' : 'Select group'}
+                          {pickedCount > 0 && !allPicked && ` (${pickedCount}/${ids.length})`}
+                        </button>
                       </div>
-                    </li>
+                      {!isCollapsed && (
+                        <ul className="divide-y divide-border-subtle">
+                          {bucket.items.map((it) => {
+                            const checked = selected.has(it.sessionId);
+                            return (
+                              <li
+                                key={it.sessionId}
+                                onClick={() => toggle(it.sessionId)}
+                                className="flex items-start gap-2 px-3 py-2 hover:bg-bg-hover cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggle(it.sessionId)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="mt-0.5 accent-fg-primary"
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-mono text-xs text-fg-primary truncate">{it.title}</div>
+                                  <div className="font-mono text-[11px] text-fg-tertiary truncate">
+                                    {it.cwd} · {new Date(it.mtime).toLocaleString()}
+                                  </div>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
                   );
                 })}
-              </ul>
+              </div>
             </>
           )}
         </DialogBody>
