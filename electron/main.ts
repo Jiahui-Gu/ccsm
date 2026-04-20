@@ -2,6 +2,8 @@ import { app, BrowserWindow, Menu, ipcMain, safeStorage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
+import { sessions } from './agent/manager';
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -69,6 +71,8 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
+
+  sessions.bindSender(win.webContents);
 }
 
 app.whenReady().then(() => {
@@ -80,10 +84,35 @@ app.whenReady().then(() => {
   ipcMain.handle('keychain:getApiKey', () => readApiKey());
   ipcMain.handle('keychain:setApiKey', (_e, value: string) => writeApiKey(value));
   ipcMain.handle('keychain:hasEncryption', () => safeStorage.isEncryptionAvailable());
+
+  ipcMain.handle(
+    'agent:start',
+    (
+      _e,
+      sessionId: string,
+      opts: { cwd: string; model?: string; permissionMode?: PermissionMode; resumeSessionId?: string }
+    ) => {
+      const apiKey = readApiKey();
+      return sessions.start(sessionId, { ...opts, apiKey });
+    }
+  );
+  ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
+    sessions.send(sessionId, text)
+  );
+  ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
+  ipcMain.handle('agent:setPermissionMode', (_e, sessionId: string, mode: PermissionMode) =>
+    sessions.setPermissionMode(sessionId, mode)
+  );
+  ipcMain.handle('agent:setModel', (_e, sessionId: string, model?: string) =>
+    sessions.setModel(sessionId, model)
+  );
+  ipcMain.handle('agent:close', (_e, sessionId: string) => sessions.close(sessionId));
+
   createWindow();
 });
 
 app.on('window-all-closed', () => {
+  sessions.closeAll();
   closeDb();
   if (process.platform !== 'darwin') app.quit();
 });
