@@ -62,6 +62,15 @@ declare global {
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
       updatesInstall: () => Promise<{ ok: true } | { ok: false; reason: string }>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
+
+      window: {
+        minimize: () => Promise<void>;
+        toggleMaximize: () => Promise<boolean>;
+        close: () => Promise<void>;
+        isMaximized: () => Promise<boolean>;
+        onMaximizedChanged: (handler: (max: boolean) => void) => () => void;
+        platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
+      };
     };
   }
 }
