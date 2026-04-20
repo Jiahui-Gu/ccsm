@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, AlertCircle, ArrowDown, Sparkles } from 'lucide-react';
+import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { MessageBlock } from '../types';
@@ -245,79 +245,10 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
 
 const EMPTY_BLOCKS: readonly MessageBlock[] = [];
 
-// Custom event used by the empty-state prompt chips to hand a starter
-// prompt to the InputBar without introducing a store field just for this.
-// One-way: ChatStream dispatches → InputBar listens.
-export const DRAFT_FILL_EVENT = 'agentory:fill-draft';
-
-function lastPathSegment(p: string): string {
-  const trimmed = p.replace(/[\\/]+$/, '');
-  const segs = trimmed.split(/[\\/]/).filter(Boolean);
-  return segs[segs.length - 1] ?? p;
-}
-
-type StarterPrompt = { title: string; body: string };
-
-const STARTER_PROMPTS: StarterPrompt[] = [
-  {
-    title: 'Explain this codebase',
-    body: 'Give me a tour of this repo: the main entry points, how modules are organized, and the key abstractions I should know about.'
-  },
-  {
-    title: 'Find and fix a bug',
-    body: "Look through recent changes and tests for anything that looks broken, flaky, or inconsistent. Pick the most impactful one and fix it."
-  },
-  {
-    title: 'Add tests',
-    body: 'Identify a file with weak test coverage that I rely on, and add focused tests for the paths most likely to regress.'
-  },
-  {
-    title: 'Refactor for clarity',
-    body: 'Find the most confusing file or function in this repo. Propose a refactor that improves readability without changing behavior.'
-  }
-];
-
-function EmptyState({ cwd }: { cwd: string }) {
-  function pick(body: string) {
-    window.dispatchEvent(new CustomEvent(DRAFT_FILL_EVENT, { detail: body }));
-  }
+function EmptyState() {
   return (
     <div className="h-full flex items-center justify-center px-6">
-      <div className="w-full max-w-[640px] flex flex-col items-center gap-6">
-        <div className="flex flex-col items-center gap-2 text-center">
-          <div className="inline-flex items-center gap-2 text-fg-secondary">
-            <Sparkles size={14} className="stroke-[1.75] text-accent" />
-            <span className="font-mono text-sm">Ready when you are.</span>
-          </div>
-          <div className="font-mono text-xs text-fg-tertiary truncate max-w-full" title={cwd}>
-            Working in <span className="text-fg-secondary">{lastPathSegment(cwd)}</span>
-          </div>
-        </div>
-        <div className="w-full grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {STARTER_PROMPTS.map((p) => (
-            <button
-              key={p.title}
-              type="button"
-              onClick={() => pick(p.body)}
-              className={
-                'group text-left rounded-md border border-border-subtle bg-bg-elevated/40 ' +
-                'hover:bg-bg-elevated hover:border-border-default ' +
-                'focus-visible:border-border-strong focus-visible:ring-1 focus-visible:ring-border-strong ' +
-                'outline-none transition-colors duration-150 ease-out ' +
-                'px-3 py-2.5'
-              }
-            >
-              <div className="text-sm text-fg-primary">{p.title}</div>
-              <div className="mt-0.5 font-mono text-xs text-fg-tertiary line-clamp-2">
-                {p.body}
-              </div>
-            </button>
-          ))}
-        </div>
-        <div className="font-mono text-xs text-fg-disabled">
-          Or just type below. Enter to send · Shift+Enter for newline.
-        </div>
-      </div>
+      <div className="font-mono text-sm text-fg-tertiary select-none">Ready when you are.</div>
     </div>
   );
 }
@@ -330,7 +261,6 @@ const FOLLOW_THRESHOLD_PX = 32;
 export function ChatStream() {
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
-  const activeCwd = useStore((s) => s.sessions.find((x) => x.id === activeId)?.cwd ?? '');
   const resolvePermission = useStore((s) => s.resolvePermission);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -376,7 +306,7 @@ export function ChatStream() {
     <div className="relative flex-1 min-h-0 min-w-0 flex flex-col">
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto min-w-0">
         {blocks.length === 0 ? (
-          <EmptyState cwd={activeCwd} />
+          <EmptyState />
         ) : (
           <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
             {blocks.map((m) => (

@@ -4,7 +4,6 @@ import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { toSdkPermissionMode } from '../agent/permission';
-import { DRAFT_FILL_EVENT } from './ChatStream';
 
 // Per-session draft cache. Survives session switches within a process so
 // users don't lose half-typed prompts when they pop into another session.
@@ -29,27 +28,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
   React.useEffect(() => {
     setValue(draftCache.get(sessionId) ?? '');
-  }, [sessionId]);
-
-  // Starter prompts in the empty state dispatch DRAFT_FILL_EVENT with a
-  // body string. We fill it in, stash in draftCache for consistency with
-  // session-switch behavior, and focus the textarea so the user can edit
-  // or just press Enter.
-  React.useEffect(() => {
-    function onFill(e: Event) {
-      const text = (e as CustomEvent<string>).detail;
-      if (typeof text !== 'string') return;
-      setValue(text);
-      draftCache.set(sessionId, text);
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (!el) return;
-        el.focus();
-        el.setSelectionRange(el.value.length, el.value.length);
-      });
-    }
-    window.addEventListener(DRAFT_FILL_EVENT, onFill);
-    return () => window.removeEventListener(DRAFT_FILL_EVENT, onFill);
   }, [sessionId]);
 
   function update(next: string) {
