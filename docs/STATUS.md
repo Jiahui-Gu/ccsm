@@ -36,7 +36,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | Group collapse/expand + chevron rotation | ✅ | Collapsed flag persisted via store. |
 | Drag-reorder sessions + cross-group migration | ✅ | @dnd-kit + `moveSession`. |
 | Session active 3px accent vertical bar | ✅ | framer-motion enter animation. |
-| Session waiting indicator | 🟡 | Currently a small red dot. `mvp-design.md` §5 calls for an oklch amber breathing glow — visual polish follow-up. |
+| Session waiting indicator | ✅ | Session row uses an oklch amber breathing halo on the AgentIcon (1.6s framer-motion loop) — matches `mvp-design.md` §5. Group row shows a small amber dot when any child session is waiting. |
 | Session right-click Rename | ✅ | InlineRename commit → `renameSession`. |
 | Session right-click Move to group | ✅ | Submenu lists normal groups → `moveSession`; "New group…" creates then moves. |
 | Session right-click Delete | ✅ | ConfirmDialog → `deleteSession`. |
@@ -123,7 +123,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | P1 | `~/.claude/projects/` import scanner | User has 160+ historical sessions in the old setup. Without import, the new app starts empty. (Per user 2026-04-20: starting empty is acceptable for now — deferring.) |
 | P1 | ~~Session state change → Toast~~ | ✅ Done in PR #22. Background sessions entering waiting now toast. |
 | P1 | ~~Cmd+N / Cmd+Shift+N shortcuts~~ | ✅ Done in PR #22. |
-| P2 | Waiting indicator: oklch amber breathing glow | Polish, not a blocker. Currently red dot. |
+| P2 | ~~Waiting indicator: oklch amber breathing glow~~ | ✅ Already shipped on session row (`AgentIcon` 1.6s halo). Group row dot was red, now amber too (PR #23). |
 | P2 | electron-updater wiring | Required before public-ish builds; not for self-use. |
 | P2 | Tests (vitest + playwright) | Should land before any external user. |
 
