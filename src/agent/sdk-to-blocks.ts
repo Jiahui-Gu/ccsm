@@ -128,7 +128,8 @@ function assistantBlocks(msg: any): MessageBlock[] {
           toolUseId: tu.id,
           name: tu.name,
           brief: briefForTool(tu.name, tu.input),
-          expanded: false
+          expanded: false,
+          input: tu.input
         });
       }
     }
