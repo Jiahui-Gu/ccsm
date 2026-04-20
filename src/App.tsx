@@ -24,6 +24,28 @@ export default function App() {
   const setModel = useStore((s) => s.setModel);
   const setPermission = useStore((s) => s.setPermission);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const theme = useStore((s) => s.theme);
+  const fontSize = useStore((s) => s.fontSize);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const apply = () => {
+      const dark =
+        theme === 'dark' ||
+        (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      root.classList.toggle('dark', dark);
+    };
+    apply();
+    if (theme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, [theme]);
+
+  useEffect(() => {
+    const px = fontSize === 'sm' ? '12px' : fontSize === 'lg' ? '14px' : '13px';
+    document.documentElement.style.setProperty('--app-font-size', px);
+  }, [fontSize]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);

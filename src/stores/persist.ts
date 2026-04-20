@@ -1,5 +1,5 @@
 import type { Group, Session } from '../types';
-import type { ModelId, PermissionMode } from './store';
+import type { ModelId, PermissionMode, Theme, FontSize } from './store';
 
 export const STATE_KEY = 'main';
 
@@ -11,6 +11,8 @@ export interface PersistedState {
   model: ModelId;
   permission: PermissionMode;
   sidebarCollapsed: boolean;
+  theme?: Theme;
+  fontSize?: FontSize;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
