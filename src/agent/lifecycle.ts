@@ -1,5 +1,6 @@
 import { useStore } from '../stores/store';
 import { sdkMessageToTranslation } from './sdk-to-blocks';
+import type { MessageBlock } from '../types';
 
 let installed = false;
 
@@ -20,6 +21,26 @@ function describePermission(toolName: string, input: Record<string, unknown>): s
   };
   const detail = pick('command', 'file_path', 'path', 'pattern', 'url') || '';
   return detail ? `${toolName}: ${detail}` : toolName;
+}
+
+export function permissionRequestToWaitingBlock(req: {
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}): MessageBlock {
+  const isPlan = req.toolName === 'ExitPlanMode';
+  const planText = isPlan && typeof req.input.plan === 'string' ? (req.input.plan as string) : undefined;
+  const prompt = isPlan
+    ? 'Approve this plan to start executing it.'
+    : describePermission(req.toolName, req.input);
+  return {
+    kind: 'waiting',
+    id: `wait-${req.requestId}`,
+    prompt,
+    intent: isPlan ? 'plan' : 'permission',
+    requestId: req.requestId,
+    plan: planText
+  };
 }
 
 export function subscribeAgentEvents(): void {
@@ -51,22 +72,15 @@ export function subscribeAgentEvents(): void {
 
   api.onAgentPermissionRequest((req) => {
     const store = useStore.getState();
-    const prompt = describePermission(req.toolName, req.input);
-    store.appendBlocks(req.sessionId, [
-      {
-        kind: 'waiting',
-        id: `wait-${req.requestId}`,
-        prompt,
-        intent: 'permission',
-        requestId: req.requestId
-      }
-    ]);
+    const block = permissionRequestToWaitingBlock(req);
+    store.appendBlocks(req.sessionId, [block]);
     if (req.sessionId !== store.activeId) {
       const session = store.sessions.find((s) => s.id === req.sessionId);
+      const isPlan = block.kind === 'waiting' && block.intent === 'plan';
       backgroundWaitingHandler({
         sessionId: req.sessionId,
         sessionName: session?.name ?? 'Background session',
-        prompt
+        prompt: isPlan ? 'Plan ready for review' : (block.kind === 'waiting' ? block.prompt : '')
       });
     }
   });

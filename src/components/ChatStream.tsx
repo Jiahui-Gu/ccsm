@@ -207,6 +207,48 @@ function WaitingBlock({ prompt, onAllow, onDeny }: { prompt: string; onAllow?: (
   );
 }
 
+function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => void; onDeny?: () => void }) {
+  const approveRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const t = window.setTimeout(() => approveRef.current?.focus(), 150);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  return (
+    <motion.div
+      role="alertdialog"
+      aria-modal="false"
+      aria-labelledby="plan-title"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      className="relative my-2 rounded-md border border-state-waiting/40 bg-state-waiting/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
+    >
+      <span
+        aria-hidden
+        className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md"
+      />
+      <div id="plan-title" className="flex items-center gap-2 text-base text-fg-primary font-semibold">
+        <StateGlyph state="waiting" size="sm" />
+        <span>Plan ready for review</span>
+      </div>
+      <div className="mt-2 max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle bg-bg-app/40 px-3 py-2">
+        <div className="prose prose-invert prose-sm max-w-none font-mono text-sm text-fg-secondary [&_h1]:text-fg-primary [&_h2]:text-fg-primary [&_h3]:text-fg-primary [&_code]:text-fg-primary [&_pre]:bg-bg-elevated [&_pre]:rounded-sm">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
+        </div>
+      </div>
+      <div className="mt-3 flex justify-end gap-2">
+        <Button variant="secondary" size="md" onClick={onDeny}>
+          Reject
+        </Button>
+        <Button ref={approveRef} variant="primary" size="md" onClick={onAllow}>
+          Approve plan
+        </Button>
+      </div>
+    </motion.div>
+  );
+}
+
 function ErrorBlock({ text }: { text: string }) {
   return (
     <div
@@ -231,6 +273,15 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
     case 'tool':
       return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} />;
     case 'waiting':
+      if (b.intent === 'plan' && b.plan) {
+        return (
+          <PlanBlock
+            plan={b.plan}
+            onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
+            onDeny={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+          />
+        );
+      }
       return (
         <WaitingBlock
           prompt={b.prompt}

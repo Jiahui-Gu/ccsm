@@ -28,5 +28,5 @@ export type MessageBlock =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
   | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean }
-  | { kind: 'waiting'; id: string; prompt: string; intent: 'permission' | 'plan' | 'question'; requestId?: string }
+  | { kind: 'waiting'; id: string; prompt: string; intent: 'permission' | 'plan' | 'question'; requestId?: string; plan?: string }
   | { kind: 'error'; id: string; text: string };
