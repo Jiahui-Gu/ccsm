@@ -49,6 +49,7 @@ type Actions = {
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
+  setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
@@ -280,6 +281,23 @@ export const useStore = create<State & Actions>((set, get) => ({
       const prev = s.messagesBySession[sessionId] ?? [];
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: [...prev, ...blocks] }
+      };
+    });
+  },
+
+  setToolResult: (sessionId, toolUseId, result, isError) => {
+    set((s) => {
+      const prev = s.messagesBySession[sessionId];
+      if (!prev) return s;
+      let changed = false;
+      const next = prev.map((b) => {
+        if (b.kind !== 'tool' || b.toolUseId !== toolUseId) return b;
+        changed = true;
+        return { ...b, result, isError };
+      });
+      if (!changed) return s;
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
       };
     });
   },

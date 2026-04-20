@@ -1,5 +1,5 @@
 import { useStore } from '../stores/store';
-import { sdkMessageToBlocks } from './sdk-to-blocks';
+import { sdkMessageToTranslation } from './sdk-to-blocks';
 
 let installed = false;
 
@@ -22,9 +22,12 @@ export function subscribeAgentEvents(): void {
   installed = true;
 
   api.onAgentEvent((e) => {
-    const blocks = sdkMessageToBlocks(e.message);
+    const { append, toolResults } = sdkMessageToTranslation(e.message);
     const store = useStore.getState();
-    if (blocks.length > 0) store.appendBlocks(e.sessionId, blocks);
+    if (append.length > 0) store.appendBlocks(e.sessionId, append);
+    for (const tr of toolResults) {
+      store.setToolResult(e.sessionId, tr.toolUseId, tr.result, tr.isError);
+    }
     if (e.message.type === 'result') {
       store.setRunning(e.sessionId, false);
     }

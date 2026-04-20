@@ -13,6 +13,10 @@ import { subscribeAgentEvents } from './agent/lifecycle';
 
 subscribeAgentEvents();
 
+if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+  (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
+}
+
 export default function App() {
   const sessions = useStore((s) => s.sessions);
   const activeId = useStore((s) => s.activeId);
