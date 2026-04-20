@@ -31,11 +31,19 @@ export async function loadPersisted(): Promise<PersistedState | null> {
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 const WRITE_DEBOUNCE_MS = 250;
 
+let onPersistError: ((err: unknown) => void) | null = null;
+
+export function setPersistErrorHandler(handler: (err: unknown) => void): void {
+  onPersistError = handler;
+}
+
 export function schedulePersist(state: PersistedState): void {
   if (!window.agentory) return;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
-    window.agentory!.saveState(STATE_KEY, JSON.stringify(state)).catch(() => {});
+    window.agentory!.saveState(STATE_KEY, JSON.stringify(state)).catch((err) => {
+      if (onPersistError) onPersistError(err);
+    });
   }, WRITE_DEBOUNCE_MS);
 }
