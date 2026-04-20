@@ -12,7 +12,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "probe:e2e": "npm run build && node scripts/probe-e2e-send.mjs && node scripts/probe-e2e-switch.mjs"
+    "probe:e2e": "npm run build && node scripts/probe-e2e-send.mjs && node scripts/probe-e2e-switch.mjs && node scripts/probe-e2e-default-cwd.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.114",
