@@ -17,6 +17,7 @@ type Harness = {
   exitHandler: (e: AgentExit) => void;
   store: typeof import('../src/stores/store').useStore;
   setBackgroundWaitingHandler: typeof import('../src/agent/lifecycle').setBackgroundWaitingHandler;
+  notifyCalls: Array<{ sessionId: string; title: string; body?: string }>;
 };
 
 async function freshHarness(): Promise<Harness> {
@@ -26,6 +27,7 @@ async function freshHarness(): Promise<Harness> {
   let permHandler: ((r: PermReq) => void) | null = null;
   let eventHandler: ((e: AgentEvent) => void) | null = null;
   let exitHandler: ((e: AgentExit) => void) | null = null;
+  const notifyCalls: Array<{ sessionId: string; title: string; body?: string }> = [];
   (globalThis as unknown as { window: { agentory: unknown } }).window = {
     agentory: {
       onAgentEvent: (h: (e: AgentEvent) => void) => {
@@ -39,6 +41,10 @@ async function freshHarness(): Promise<Harness> {
       onAgentPermissionRequest: (h: (r: PermReq) => void) => {
         permHandler = h;
         return () => {};
+      },
+      notify: async (payload: { sessionId: string; title: string; body?: string }) => {
+        notifyCalls.push(payload);
+        return true;
       }
     }
   };
@@ -53,7 +59,8 @@ async function freshHarness(): Promise<Harness> {
     eventHandler,
     exitHandler,
     store: storeMod.useStore,
-    setBackgroundWaitingHandler: lifecycle.setBackgroundWaitingHandler
+    setBackgroundWaitingHandler: lifecycle.setBackgroundWaitingHandler,
+    notifyCalls
   };
 }
 
@@ -222,5 +229,51 @@ describe('lifecycle: background waiting bridge', () => {
 
     const block = h.store.getState().messagesBySession[sid][0];
     expect(block).toMatchObject({ kind: 'waiting', intent: 'permission' });
+  });
+
+  it('fires an OS notification for a NON-active session permission request', async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/active');
+    const activeId = h.store.getState().activeId;
+    h.store.getState().createSession('~/bg');
+    const bgId = h.store.getState().sessions[0].id;
+    h.store.getState().selectSession(activeId);
+    h.store.getState().renameSession(bgId, 'Background work');
+
+    h.permHandler({
+      sessionId: bgId,
+      requestId: 'req-n',
+      toolName: 'Bash',
+      input: { command: 'ls' }
+    });
+
+    expect(h.notifyCalls).toHaveLength(1);
+    expect(h.notifyCalls[0].sessionId).toBe(bgId);
+    expect(h.notifyCalls[0].title).toBe('Background work needs your input');
+    expect(h.notifyCalls[0].body).toBe('Bash: ls');
+  });
+
+  it('does not fire OS notification for the ACTIVE session when window is focused', async () => {
+    const h = await freshHarness();
+    // jsdom defaults to hasFocus()===false; force focused for this test.
+    const orig = (globalThis as unknown as { document?: Document }).document?.hasFocus;
+    if ((globalThis as unknown as { document?: Document }).document) {
+      (globalThis as unknown as { document: Document }).document.hasFocus = () => true;
+    }
+    h.store.getState().createSession('~/only');
+    const sid = h.store.getState().activeId;
+
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-q',
+      toolName: 'Read',
+      input: { file_path: '/etc/hosts' }
+    });
+
+    expect(h.notifyCalls).toEqual([]);
+
+    if (orig && (globalThis as unknown as { document?: Document }).document) {
+      (globalThis as unknown as { document: Document }).document.hasFocus = orig;
+    }
   });
 });

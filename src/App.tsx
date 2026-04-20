@@ -271,5 +271,15 @@ function BackgroundWaitingBridge() {
     });
     return () => setBackgroundWaitingHandler(() => {});
   }, [push, selectSession]);
+  // Subscribe to OS notification clicks → focus the session.
+  useEffect(() => {
+    const off = window.agentory?.onNotificationFocus((sessionId) => {
+      const exists = useStore.getState().sessions.some((s) => s.id === sessionId);
+      if (exists) selectSession(sessionId);
+    });
+    return () => {
+      if (off) off();
+    };
+  }, [selectSession]);
   return null;
 }

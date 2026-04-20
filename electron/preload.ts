@@ -76,6 +76,14 @@ const api = {
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
   > => ipcRenderer.invoke('import:scan'),
 
+  notify: (payload: { sessionId: string; title: string; body?: string }): Promise<boolean> =>
+    ipcRenderer.invoke('notification:show', payload),
+  onNotificationFocus: (handler: (sessionId: string) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
+    ipcRenderer.on('notification:focusSession', wrap);
+    return () => ipcRenderer.removeListener('notification:focusSession', wrap);
+  },
+
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
   updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>

@@ -57,6 +57,9 @@ declare global {
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
       >;
 
+      notify: (payload: { sessionId: string; title: string; body?: string }) => Promise<boolean>;
+      onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
+
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
