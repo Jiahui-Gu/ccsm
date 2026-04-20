@@ -21,7 +21,7 @@
 | React 18 + TS + Tailwind v3 | ✅ | webpack 5 dev server，端口 4100。 |
 | Radix-based 手搓 ui/ 原语 | ✅ | Dialog / DropdownMenu / ContextMenu / Tooltip / Toast / ConfirmDialog / Button / IconButton / InlineRename / StateGlyph。 |
 | framer-motion / lucide-react / @dnd-kit | ✅ | 已装并在 Sidebar 用。 |
-| Zustand store | ⬜ | 当前所有状态在 `App.tsx` 的 `useState`。 |
+| Zustand store | ✅ | `src/stores/store.ts` 持有 sessions/groups/recentProjects/UI 状态 + 15 actions；App.tsx 全量消费。 |
 | better-sqlite3 持久化 | ⬜ | 依赖已装，未接 IPC、未建 schema。 |
 | Claude Agent SDK 集成 | ⬜ | 未装包，未起 sidecar。 |
 | `~/.claude/projects/` 导入 | ⬜ | |
@@ -32,18 +32,18 @@
 | 项 | 状态 | 备注 |
 |---|---|---|
 | 顶部 New Session + Search 按钮 | ✅ | 真触发 createSession / 打开 palette。 |
-| Groups 列表渲染 | 🟡 | 数据来自 `mockGroups`。 |
-| Group 折叠/展开 + chevron 旋转动画 | 🟡 | collapsed 状态在 `GroupRow` 局部 useState，关闭后丢。 |
+| Groups 列表渲染 | ✅ | 数据来自 store（store 用 mock 初始化，待 SQLite 接入）。 |
+| Group 折叠/展开 + chevron 旋转动画 | ✅ | collapsed 持久化到 store。 |
 | 拖拽 session 重排 + 跨组迁移 | ✅ | @dnd-kit + `onMoveSession`，App.tsx 已实现 setSessions。 |
 | Session active 3px accent 竖条 | ✅ | framer-motion enter 动画。 |
 | Session waiting 状态点 | 🟡 | 用红色小圆点表示，但 mvp-design.md §5 写的是"icon 外包 oklch amber 的呼吸光晕"——视觉对齐要 follow up。 |
-| Session 右键 Rename | 🟡 | inline edit UI 通；commit 后只更新本地 useState，不持久化。 |
-| Session 右键 Move to group | 🟡 | 子菜单列出 groups，选中后是 stub。 |
-| Session 右键 Delete | 🟡 | ConfirmDialog 展示完整；onConfirm 是 stub。 |
-| Group 右键 Rename | 🟡 | 同 Session rename，不持久化。 |
-| Group 右键 Archive/Unarchive | ⬜ | 菜单项存在；onSelect 是 stub。 |
-| Group 右键 Delete group | 🟡 | ConfirmDialog 通；onConfirm 是 stub。 |
-| "+ New Group" 按钮 | 🟡 | Groups header 右侧 IconButton 存在，无 onClick handler。 |
+| Session 右键 Rename | ✅ | InlineRename commit → `renameSession`。 |
+| Session 右键 Move to group | ✅ | 子菜单列出 normal groups → `moveSession`；"New group…" 创建后 move。 |
+| Session 右键 Delete | ✅ | ConfirmDialog → `deleteSession`。 |
+| Group 右键 Rename | ✅ | InlineRename commit → `renameGroup`。 |
+| Group 右键 Archive/Unarchive | ✅ | `archiveGroup` / `unarchiveGroup`。 |
+| Group 右键 Delete group | ✅ | ConfirmDialog → `deleteGroup`（连带删 sessions）。 |
+| "+ New Group" 按钮 | ✅ | onClick → `createGroup()`。 |
 | Archived Groups 底部折叠区 | ✅ | UI 已实现；archived 数据来自 mockGroups。 |
 | Deleted Groups 视图 | ⬜ | mvp-design.md §5 提到底部 ⋯ More；当前实现把 Deleted 略掉了，需对齐设计或更新设计。 |
 | Sidebar 折叠（256↔48） | ⬜ | mvp-design.md §5.1 详细规格，未实现。 |
