@@ -15,6 +15,7 @@ export interface PersistedState {
   theme?: Theme;
   fontSize?: FontSize;
   recentProjects?: RecentProject[];
+  tutorialSeen?: boolean;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

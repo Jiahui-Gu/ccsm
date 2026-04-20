@@ -20,6 +20,7 @@ type State = {
   sidebarCollapsed: boolean;
   theme: Theme;
   fontSize: FontSize;
+  tutorialSeen: boolean;
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
@@ -41,6 +42,7 @@ type Actions = {
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
+  markTutorialSeen: () => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -81,6 +83,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   sidebarCollapsed: false,
   theme: 'system',
   fontSize: 'md',
+  tutorialSeen: false,
   messagesBySession: {},
   startedSessions: {},
   runningSessions: {},
@@ -240,6 +243,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setTheme: (theme) => set({ theme }),
   setFontSize: (fontSize) => set({ fontSize }),
+  markTutorialSeen: () => set({ tutorialSeen: true }),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -380,7 +384,8 @@ export async function hydrateStore(): Promise<void> {
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
-      recentProjects: persisted.recentProjects ?? []
+      recentProjects: persisted.recentProjects ?? [],
+      tutorialSeen: persisted.tutorialSeen ?? false
     });
   }
   hydrated = true;
@@ -396,7 +401,8 @@ export async function hydrateStore(): Promise<void> {
       sidebarCollapsed: s.sidebarCollapsed,
       theme: s.theme,
       fontSize: s.fontSize,
-      recentProjects: s.recentProjects
+      recentProjects: s.recentProjects,
+      tutorialSeen: s.tutorialSeen
     };
     schedulePersist(snapshot);
   });
