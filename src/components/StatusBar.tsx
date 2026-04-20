@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from './ui/DropdownMenu';
-import { mockRecentProjects } from '../mock/data';
+import { useStore } from '../stores/store';
 
 type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 type PermissionMode = 'auto' | 'ask' | 'plan';
@@ -105,20 +105,6 @@ function ChipMenu<V extends string>({
 
 const BROWSE_FOLDER = '__browse__';
 
-const cwdOptions: ChipOption<string>[] = [
-  ...mockRecentProjects.map(
-    (p) =>
-      ({ kind: 'item', value: p.path, primary: p.name, secondary: p.path }) as ChipOption<string>
-  ),
-  { kind: 'separator' },
-  {
-    kind: 'item',
-    value: BROWSE_FOLDER,
-    primary: 'Browse folder…',
-    icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
-  }
-];
-
 const modelOptions: ChipOption<ModelId>[] = [
   { kind: 'item', value: 'claude-opus-4', primary: 'opus-4' },
   { kind: 'item', value: 'claude-sonnet-4', primary: 'sonnet-4' },
@@ -155,6 +141,22 @@ export function StatusBar({
   onChangeModel,
   onChangePermission
 }: StatusBarProps) {
+  const recentProjects = useStore((s) => s.recentProjects);
+  const cwdOptions: ChipOption<string>[] = [
+    ...recentProjects.map(
+      (p) =>
+        ({ kind: 'item', value: p.path, primary: p.name, secondary: p.path }) as ChipOption<string>
+    ),
+    ...(recentProjects.length > 0
+      ? ([{ kind: 'separator' }] as ChipOption<string>[])
+      : []),
+    {
+      kind: 'item',
+      value: BROWSE_FOLDER,
+      primary: 'Browse folder…',
+      icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
+    }
+  ];
   const chips: React.ReactNode[] = [
     <ChipMenu
       key="cwd"

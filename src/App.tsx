@@ -25,6 +25,7 @@ export default function App() {
   const moveSession = useStore((s) => s.moveSession);
   const createSession = useStore((s) => s.createSession);
   const changeCwd = useStore((s) => s.changeCwd);
+  const pushRecentProject = useStore((s) => s.pushRecentProject);
   const setModel = useStore((s) => s.setModel);
   const setPermission = useStore((s) => s.setPermission);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -109,7 +110,15 @@ export default function App() {
               cwd={active.cwd}
               model={model}
               permission={permission}
-              onChangeCwd={(p) => p && changeCwd(p)}
+              onChangeCwd={async (p) => {
+                let next = p;
+                if (next === null) {
+                  next = (await window.agentory?.pickDirectory()) ?? null;
+                }
+                if (!next) return;
+                changeCwd(next);
+                pushRecentProject(next);
+              }}
               onChangeModel={setModel}
               onChangePermission={setPermission}
             />
