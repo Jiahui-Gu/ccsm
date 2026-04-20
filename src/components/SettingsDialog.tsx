@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { cn } from '../lib/cn';
-import { Dialog, DialogContent, DialogBody } from './ui/Dialog';
+import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
+import { useStore } from '../stores/store';
 
 type Tab = 'general' | 'account' | 'data' | 'shortcuts' | 'updates';
 
@@ -110,8 +111,10 @@ function Select<T extends string>({
 }
 
 function GeneralPane() {
-  const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
-  const [fontSize, setFontSize] = useState<'sm' | 'md' | 'lg'>('md');
+  const theme = useStore((s) => s.theme);
+  const fontSize = useStore((s) => s.fontSize);
+  const setTheme = useStore((s) => s.setTheme);
+  const setFontSize = useStore((s) => s.setFontSize);
   return (
     <>
       <Field label="Theme">
@@ -142,32 +145,75 @@ function GeneralPane() {
 
 function AccountPane() {
   const [key, setKey] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [encAvailable, setEncAvailable] = useState(true);
+
+  useEffect(() => {
+    const api = window.agentory;
+    if (!api) {
+      setLoaded(true);
+      return;
+    }
+    Promise.all([api.getApiKey(), api.hasEncryption()]).then(([k, enc]) => {
+      setKey(k);
+      setEncAvailable(enc);
+      setLoaded(true);
+    });
+  }, []);
+
+  const save = async () => {
+    const api = window.agentory;
+    if (!api) return;
+    const ok = await api.setApiKey(key.trim());
+    setStatus(ok ? 'Saved.' : 'Failed to save (encryption unavailable).');
+    setTimeout(() => setStatus(null), 2000);
+  };
+
   return (
     <>
-      <Field label="Anthropic API key" hint="Stored in OS keychain. Required for Claude Code sessions.">
+      <Field
+        label="Anthropic API key"
+        hint={
+          encAvailable
+            ? 'Stored in OS keychain. Required for Claude Code sessions.'
+            : 'OS encryption unavailable — key cannot be saved on this system.'
+        }
+      >
         <input
           type="password"
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder="sk-ant-…"
+          placeholder={loaded ? 'sk-ant-…' : 'Loading…'}
+          disabled={!loaded || !encAvailable}
           className={cn(
             'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
             'text-sm font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-            'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+            'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+            'disabled:opacity-60 disabled:cursor-not-allowed'
           )}
         />
       </Field>
-      <Button variant="secondary" size="md">Test connection</Button>
+      <div className="flex items-center gap-3">
+        <Button variant="primary" size="md" onClick={save} disabled={!loaded || !encAvailable}>
+          Save
+        </Button>
+        {status && <span className="text-xs text-fg-secondary">{status}</span>}
+      </div>
     </>
   );
 }
 
 function DataPane() {
+  const [dataDir, setDataDir] = useState<string>('Loading…');
+  useEffect(() => {
+    window.agentory?.getDataDir().then(setDataDir).catch(() => setDataDir('(unavailable)'));
+  }, []);
   return (
     <>
       <Field label="Data directory" hint="Where Agentory stores groups, sessions, and preferences.">
-        <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono">
-          {'~/.agentory-next/'}
+        <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all">
+          {dataDir}
         </code>
       </Field>
       <Field label="Claude sessions directory" hint="Read-only. Managed by Claude Code SDK.">
@@ -200,12 +246,18 @@ function ShortcutsPane() {
 }
 
 function UpdatesPane() {
+  const [version, setVersion] = useState<string>('…');
+  useEffect(() => {
+    window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
+  }, []);
   return (
     <>
       <Field label="Version">
-        <span className="text-sm text-fg-secondary font-mono">0.0.1</span>
+        <span className="text-sm text-fg-secondary font-mono">{version}</span>
       </Field>
-      <Button variant="secondary" size="md">Check for updates</Button>
+      <Button variant="secondary" size="md" disabled title="Auto-update not yet wired">
+        Check for updates
+      </Button>
     </>
   );
 }

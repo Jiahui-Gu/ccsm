@@ -1,6 +1,6 @@
 # Implementation Status
 
-最后更新：2026-04-20
+最后更新：2026-04-21
 
 这是 agentory-next 当前实现进度的对账表。每个 PR 合并后必须更新本文件，让"已实现 vs 待实现"始终一目了然。
 
@@ -77,12 +77,12 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| 弹层骨架 + 分组 tabs | 🟡 | UI 通；所有控件无副作用。 |
-| Theme 切换 | ⬜ | |
-| Anthropic API key（safeStorage） | ⬜ | |
-| Data dir 显示 | ⬜ | |
-| Shortcuts 只读列表 | ⬜ | |
-| Updates "Check for updates" | ⬜ | |
+| 弹层骨架 + 分组 tabs | ✅ | UI 通；tab 切换正常。 |
+| Theme 切换 | ✅ | `theme: system|light|dark` 持久化到 store；App.tsx 监听 `prefers-color-scheme` 并切换 `<html>.dark` class。 |
+| Anthropic API key（safeStorage） | ✅ | `keychain:get/setApiKey` IPC + Electron `safeStorage`，加密文件落 userData，无加密时禁用输入。 |
+| Data dir 显示 | ✅ | `app:getDataDir` IPC 返回真实 `app.getPath('userData')`。 |
+| Shortcuts 只读列表 | ✅ | 静态目录，符合 mvp-design.md "MVP 不开放 remap"。 |
+| Updates "Check for updates" | 🟡 | 版本号通过 `app:getVersion` 读真实 package.json；按钮禁用，等 electron-updater PR。 |
 
 ## 7. CommandPalette（`src/components/CommandPalette.tsx`）
 
