@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   ChevronRight,
@@ -11,6 +11,7 @@ import {
   DragOverlay,
   PointerSensor,
   closestCenter,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -45,6 +46,16 @@ import type { Group, Session } from '../types';
 // derived from state. The array order handed down from the store is the
 // source of truth; don't re-sort it here.
 
+// Cross-group DnD uses three drop-target id flavors via closestCenter:
+//   - session id            → insert before that session
+//   - group id              → append to empty SortableContext (only when open)
+//   - `header:<groupId>`    → append to that group (works even if collapsed,
+//                             and drives hover-to-expand on collapsed groups)
+const HEADER_PREFIX = 'header:';
+const headerDroppableId = (groupId: string) => `${HEADER_PREFIX}${groupId}`;
+const parseHeaderDroppable = (id: string) =>
+  id.startsWith(HEADER_PREFIX) ? id.slice(HEADER_PREFIX.length) : null;
+
 function GroupRow({
   group,
   sessions,
@@ -74,16 +85,46 @@ function GroupRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isSpecial = group.kind !== 'normal';
   const menuDisabled = group.kind === 'deleted';
+  const { isOver, setNodeRef: setHeaderDropRef } = useDroppable({
+    id: headerDroppableId(group.id),
+    data: { type: 'group-header', groupId: group.id }
+  });
+  // Hover-to-expand: if a session is dragged over a collapsed group's header
+  // for 400ms, open it so the user can drop further into its list. Cancel if
+  // they leave before the timer fires.
+  const expandTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!isOver || !collapsed) {
+      if (expandTimerRef.current !== null) {
+        window.clearTimeout(expandTimerRef.current);
+        expandTimerRef.current = null;
+      }
+      return;
+    }
+    expandTimerRef.current = window.setTimeout(() => {
+      setGroupCollapsed(group.id, false);
+      expandTimerRef.current = null;
+    }, 400);
+    return () => {
+      if (expandTimerRef.current !== null) {
+        window.clearTimeout(expandTimerRef.current);
+        expandTimerRef.current = null;
+      }
+    };
+  }, [isOver, collapsed, group.id, setGroupCollapsed]);
   return (
     <div className="mb-2">
       <ContextMenu>
         <ContextMenuTrigger asChild disabled={menuDisabled}>
           <div
+            ref={setHeaderDropRef}
+            data-group-header-id={group.id}
             className={cn(
               'group/row relative flex items-center h-7 px-2 rounded-sm transition-colors duration-120 ease-out',
               focused
                 ? 'bg-bg-active shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
-                : 'hover:bg-bg-hover'
+                : 'hover:bg-bg-hover',
+              isOver && 'ring-1 ring-inset ring-accent bg-bg-active'
             )}
           >
             {focused && (
@@ -383,12 +424,19 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
     if (!over || active.id === over.id) return;
     const activeId = String(active.id);
     const overId = String(over.id);
-    // over.id is either a session id (drop on row) or a group id (drop on empty ul via SortableContext id)
+    const headerGroupId = parseHeaderDroppable(overId);
+    if (headerGroupId) {
+      // Dropped on a group header → append to that group.
+      onMoveSession(activeId, headerGroupId, null);
+      return;
+    }
     const overSession = sessions.find((s) => s.id === overId);
     if (overSession) {
       onMoveSession(activeId, overSession.groupId, overSession.id);
-    } else {
-      // dropped on empty group container — append
+      return;
+    }
+    // Dropped on an empty SortableContext keyed by group id.
+    if (normal.some((g) => g.id === overId)) {
       onMoveSession(activeId, overId, null);
     }
   }
