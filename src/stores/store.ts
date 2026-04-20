@@ -29,6 +29,7 @@ type Actions = {
   selectSession: (id: string) => void;
   focusGroup: (id: string | null) => void;
   createSession: (cwd: string | null) => void;
+  importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string }) => string;
   renameSession: (id: string, name: string) => void;
   deleteSession: (id: string) => void;
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
@@ -130,6 +131,23 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, name } : x))
     }));
+  },
+
+  importSession: ({ name, cwd, groupId, resumeSessionId }) => {
+    const { sessions, model } = get();
+    const id = nextId('s');
+    const imported: Session = {
+      id,
+      name,
+      state: 'idle',
+      cwd,
+      model,
+      groupId,
+      agentType: 'claude-code',
+      resumeSessionId
+    };
+    set({ sessions: [imported, ...sessions], activeId: id, focusedGroupId: null });
+    return id;
   },
 
   deleteSession: (id) => {

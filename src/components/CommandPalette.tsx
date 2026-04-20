@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon } from 'lucide-react';
+import { Search, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
@@ -22,6 +22,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   onOpenSettings?: () => void;
   onNewSession?: () => void;
+  onOpenImport?: () => void;
   onSelectSession?: (id: string) => void;
   onFocusGroup?: (id: string) => void;
 };
@@ -31,6 +32,7 @@ export function CommandPalette({
   onOpenChange,
   onOpenSettings,
   onNewSession,
+  onOpenImport,
   onSelectSession,
   onFocusGroup
 }: Props) {
@@ -112,6 +114,16 @@ export function CommandPalette({
         onPick: () => {
           onOpenChange(false);
           toggleSidebar();
+        }
+      },
+      {
+        id: 'cmd:import',
+        kind: 'command',
+        label: 'Import from Claude Code…',
+        icon: <DownloadCloud size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          onOpenImport?.();
         }
       },
       {
