@@ -1,5 +1,6 @@
-import { app, BrowserWindow, Menu } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain } from 'electron';
 import * as path from 'path';
+import { initDb, loadState, saveState, closeDb } from './db';
 
 const isDev = !app.isPackaged;
 
@@ -35,9 +36,15 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  initDb();
+  ipcMain.handle('db:load', (_e, key: string) => loadState(key));
+  ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
+  closeDb();
   if (process.platform !== 'darwin') app.quit();
 });
 

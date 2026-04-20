@@ -22,7 +22,7 @@
 | Radix-based 手搓 ui/ 原语 | ✅ | Dialog / DropdownMenu / ContextMenu / Tooltip / Toast / ConfirmDialog / Button / IconButton / InlineRename / StateGlyph。 |
 | framer-motion / lucide-react / @dnd-kit | ✅ | 已装并在 Sidebar 用。 |
 | Zustand store | ✅ | `src/stores/store.ts` 持有 sessions/groups/recentProjects/UI 状态 + 15 actions；App.tsx 全量消费。 |
-| better-sqlite3 持久化 | ⬜ | 依赖已装，未接 IPC、未建 schema。 |
+| better-sqlite3 持久化 | 🟡 | `electron/db.ts` 起 WAL，`app_state(key,value)` 单表；`db:load`/`db:save` IPC + preload bridge；renderer 通过 `hydrateStore()` 启动加载、debounced 250ms 写回。schema 是单 JSON blob，结构化 schema 留给后续。 |
 | Claude Agent SDK 集成 | ⬜ | 未装包，未起 sidecar。 |
 | `~/.claude/projects/` 导入 | ⬜ | |
 | 全局快捷键注册 | 🟡 | `App.tsx` 注册了 Cmd+K / Cmd+,；Cmd+B / Cmd+N / Cmd+Shift+N 未实现。 |
@@ -102,7 +102,7 @@
 
 | 项 | 状态 |
 |---|---|
-| SQLite schema（groups / sessions / ui_state） | ⬜ |
+| SQLite schema（groups / sessions / ui_state） | 🟡 单 JSON blob，未拆表 |
 | Boot：扫 `~/.claude/projects/` 对账 | ⬜ |
 | API key keychain 存储 | ⬜ |
 
