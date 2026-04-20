@@ -101,8 +101,8 @@ function createWindow() {
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
     backgroundColor: '#0B0B0C',
-    titleBarStyle: 'default',
-    frame: true,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    frame: process.platform === 'darwin',
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
@@ -122,6 +122,10 @@ function createWindow() {
 
   installContextMenu(win);
   sessions.bindSender(win.webContents);
+
+  const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
+  win.on('maximize', emitMax);
+  win.on('unmaximize', emitMax);
 }
 
 app.whenReady().then(() => {
@@ -142,6 +146,23 @@ app.whenReady().then(() => {
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
+  });
+
+  ipcMain.handle('window:minimize', (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.minimize();
+  });
+  ipcMain.handle('window:toggleMaximize', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return false;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+    return win.isMaximized();
+  });
+  ipcMain.handle('window:close', (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.close();
+  });
+  ipcMain.handle('window:isMaximized', (e) => {
+    return BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false;
   });
 
   ipcMain.handle(

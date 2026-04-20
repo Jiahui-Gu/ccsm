@@ -86,6 +86,19 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
     ipcRenderer.on('updates:status', wrap);
     return () => ipcRenderer.removeListener('updates:status', wrap);
+  },
+
+  window: {
+    minimize: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('window:toggleMaximize'),
+    close: (): Promise<void> => ipcRenderer.invoke('window:close'),
+    isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
+    onMaximizedChanged: (handler: (max: boolean) => void): (() => void) => {
+      const wrap = (_e: IpcRendererEvent, max: boolean) => handler(max);
+      ipcRenderer.on('window:maximizedChanged', wrap);
+      return () => ipcRenderer.removeListener('window:maximizedChanged', wrap);
+    },
+    platform: process.platform
   }
 };
 
