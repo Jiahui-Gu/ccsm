@@ -76,11 +76,38 @@ describe('sdkMessageToTranslation', () => {
     expect(out.append[1]).toMatchObject({ kind: 'status', tone: 'warn', title: 'Rate limit hit' });
   });
 
-  it('drops successful result messages (no noise on completion)', () => {
+  it('successful result emits a stats footer status block', () => {
     const out = sdkMessageToTranslation(
-      asSdk({ type: 'result', subtype: 'success', is_error: false })
+      asSdk({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        uuid: 'res-1',
+        num_turns: 3,
+        duration_ms: 12500,
+        total_cost_usd: 0.0123,
+        usage: { input_tokens: 4500, output_tokens: 1200, cache_read_input_tokens: 8000 }
+      })
     );
-    expect(out.append).toEqual([]);
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { kind: string; tone: string; title: string; detail?: string };
+    expect(b.kind).toBe('status');
+    expect(b.tone).toBe('info');
+    expect(b.title).toBe('Done');
+    expect(b.detail).toContain('3 turns');
+    expect(b.detail).toContain('12.5s');
+    expect(b.detail).toMatch(/13k in/);
+    expect(b.detail).toContain('1.2k out');
+    expect(b.detail).toContain('$0.012');
+  });
+
+  it('successful result with no usage / cost still renders a footer', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({ type: 'result', subtype: 'success', is_error: false, uuid: 'res-2', num_turns: 1, duration_ms: 200 })
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { detail?: string };
+    expect(b.detail).toBe('1 turn · 200ms');
   });
 
   it('emits an error block on failed result', () => {
