@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Forwarder — keeps the actual gate definitions in scripts/ci.sh so they
+# stay versioned and visible. Skip with `git push --no-verify` if you must.
+
+set -e
+
+bash "$(git rev-parse --show-toplevel)/scripts/ci.sh"
