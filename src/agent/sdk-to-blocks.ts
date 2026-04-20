@@ -159,9 +159,48 @@ function stringifyToolResult(content: unknown): string {
 }
 
 function resultBlocks(msg: any): MessageBlock[] {
-  if (msg.subtype === 'success' || msg.is_error === false) return [];
+  if (msg.subtype === 'success' || msg.is_error === false) {
+    return [resultStatsFooter(msg)];
+  }
   const text = typeof msg.error === 'string' ? msg.error : msg.subtype ?? 'Run failed';
   return [{ kind: 'error', id: msg.uuid ?? cryptoRandom(), text }];
+}
+
+function resultStatsFooter(msg: any): MessageBlock {
+  const parts: string[] = [];
+  if (typeof msg.num_turns === 'number') parts.push(`${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}`);
+  if (typeof msg.duration_ms === 'number') parts.push(formatDuration(msg.duration_ms));
+  const usage = msg.usage ?? {};
+  const inTok = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+  const outTok = usage.output_tokens ?? 0;
+  if (inTok || outTok) {
+    parts.push(`${formatTokens(inTok)} in / ${formatTokens(outTok)} out`);
+  }
+  if (typeof msg.total_cost_usd === 'number' && msg.total_cost_usd > 0) {
+    parts.push(`$${msg.total_cost_usd.toFixed(msg.total_cost_usd < 0.01 ? 4 : 3)}`);
+  }
+  return {
+    kind: 'status',
+    id: msg.uuid ?? cryptoRandom(),
+    tone: 'info',
+    title: 'Done',
+    detail: parts.join(' · ')
+  };
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const rem = Math.round(s - m * 60);
+  return `${m}m${rem}s`;
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
 function briefForTool(name: string, input: unknown): string {
