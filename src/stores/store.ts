@@ -11,6 +11,8 @@ import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 export type PermissionMode = 'auto' | 'ask' | 'plan';
+export type Theme = 'system' | 'light' | 'dark';
+export type FontSize = 'sm' | 'md' | 'lg';
 
 type State = {
   sessions: Session[];
@@ -21,6 +23,8 @@ type State = {
   model: ModelId;
   permission: PermissionMode;
   sidebarCollapsed: boolean;
+  theme: Theme;
+  fontSize: FontSize;
 };
 
 type Actions = {
@@ -35,6 +39,8 @@ type Actions = {
   setPermission: (mode: PermissionMode) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
+  setTheme: (theme: Theme) => void;
+  setFontSize: (size: FontSize) => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -62,6 +68,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   model: 'claude-opus-4',
   permission: 'auto',
   sidebarCollapsed: false,
+  theme: 'system',
+  fontSize: 'md',
 
   selectSession: (id) => {
     set((s) => ({
@@ -160,6 +168,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   setPermission: (permission) => set({ permission }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+  setTheme: (theme) => set({ theme }),
+  setFontSize: (fontSize) => set({ fontSize }),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -228,7 +238,9 @@ export async function hydrateStore(): Promise<void> {
       activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
       model: persisted.model,
       permission: persisted.permission,
-      sidebarCollapsed: persisted.sidebarCollapsed ?? false
+      sidebarCollapsed: persisted.sidebarCollapsed ?? false,
+      theme: persisted.theme ?? 'system',
+      fontSize: persisted.fontSize ?? 'md'
     });
   }
   hydrated = true;
@@ -241,7 +253,9 @@ export async function hydrateStore(): Promise<void> {
       activeId: s.activeId,
       model: s.model,
       permission: s.permission,
-      sidebarCollapsed: s.sidebarCollapsed
+      sidebarCollapsed: s.sidebarCollapsed,
+      theme: s.theme,
+      fontSize: s.fontSize
     };
     schedulePersist(snapshot);
   });

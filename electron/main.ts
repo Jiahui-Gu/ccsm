@@ -1,6 +1,41 @@
-import { app, BrowserWindow, Menu, ipcMain } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, safeStorage } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
+
+const KEYCHAIN_FILE = 'anthropic-key.bin';
+
+function keychainPath(): string {
+  return path.join(app.getPath('userData'), KEYCHAIN_FILE);
+}
+
+function readApiKey(): string {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return '';
+    const p = keychainPath();
+    if (!fs.existsSync(p)) return '';
+    const buf = fs.readFileSync(p);
+    return safeStorage.decryptString(buf);
+  } catch {
+    return '';
+  }
+}
+
+function writeApiKey(value: string): boolean {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return false;
+    const p = keychainPath();
+    if (!value) {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+      return true;
+    }
+    const enc = safeStorage.encryptString(value);
+    fs.writeFileSync(p, enc, { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const isDev = !app.isPackaged;
 
@@ -40,6 +75,11 @@ app.whenReady().then(() => {
   initDb();
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
+  ipcMain.handle('app:getDataDir', () => app.getPath('userData'));
+  ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('keychain:getApiKey', () => readApiKey());
+  ipcMain.handle('keychain:setApiKey', (_e, value: string) => writeApiKey(value));
+  ipcMain.handle('keychain:hasEncryption', () => safeStorage.isEncryptionAvailable());
   createWindow();
 });
 
