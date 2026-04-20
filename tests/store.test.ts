@@ -57,6 +57,23 @@ describe('store: createSession', () => {
     expect(useStore.getState().sessions[0].groupId).toBe(gid);
     expect(useStore.getState().sessions[1].groupId).toBe(gid);
   });
+
+  it('defaults cwd to most-recent project when caller passes null', () => {
+    useStore.getState().pushRecentProject('C:/Users/me/projects/alpha');
+    useStore.getState().createSession(null);
+    expect(useStore.getState().sessions[0].cwd).toBe('C:/Users/me/projects/alpha');
+  });
+
+  it('falls back to ~ when recentProjects is empty', () => {
+    useStore.getState().createSession(null);
+    expect(useStore.getState().sessions[0].cwd).toBe('~');
+  });
+
+  it('explicit cwd argument wins over recentProjects default', () => {
+    useStore.getState().pushRecentProject('C:/Users/me/projects/alpha');
+    useStore.getState().createSession('C:/other/path');
+    expect(useStore.getState().sessions[0].cwd).toBe('C:/other/path');
+  });
 });
 
 describe('store: deleteSession', () => {
