@@ -110,7 +110,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | Item | Status |
 |---|---|
 | Onboarding first run (Create / Import) | 🟡 PR #16 ships a "no sessions yet" empty state with a Create CTA; Import CTA waits on the import scanner. |
-| Tests (vitest / playwright) | ⬜ |
+| Tests (vitest / playwright) | 🟡 PR #24 lands vitest with 37 unit tests across `sdk-to-blocks` (13), store actions (20), and lifecycle bridge (4). Playwright probes (probe-render / probe-chatstream / probe-shortcuts / probe-waiting-indicator) live in `scripts/`. End-to-end Playwright suite still pending. |
 | Auto-update (electron-updater) | ⬜ |
 
 ## MVP gap table (P0 / P1 / P2)
@@ -125,7 +125,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | P1 | ~~Cmd+N / Cmd+Shift+N shortcuts~~ | ✅ Done in PR #22. |
 | P2 | ~~Waiting indicator: oklch amber breathing glow~~ | ✅ Already shipped on session row (`AgentIcon` 1.6s halo). Group row dot was red, now amber too (PR #23). |
 | P2 | electron-updater wiring | Required before public-ish builds; not for self-use. |
-| P2 | Tests (vitest + playwright) | Should land before any external user. |
+| P2 | ~~Tests (vitest + playwright)~~ | 🟡 PR #24: vitest unit suite landed (37 tests). Playwright E2E still pending. |
 
 ## PR roadmap
 
