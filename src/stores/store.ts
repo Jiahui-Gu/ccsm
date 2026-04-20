@@ -98,7 +98,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusGroup: (id) => set({ focusedGroupId: id }),
 
   createSession: (cwd) => {
-    const { sessions, groups, focusedGroupId, activeId, model } = get();
+    const { sessions, groups, focusedGroupId, activeId, model, recentProjects } = get();
     const isUsable = (gid: string | null | undefined) => {
       if (!gid) return false;
       const g = groups.find((x) => x.id === gid);
@@ -111,11 +111,12 @@ export const useStore = create<State & Actions>((set, get) => ({
       ? activeGroupId!
       : firstUsableGroupId(groups);
     const id = nextId('s');
+    const defaultCwd = recentProjects[0]?.path ?? '~';
     const newSession: Session = {
       id,
       name: 'New session',
       state: 'idle',
-      cwd: cwd ?? '~',
+      cwd: cwd ?? defaultCwd,
       model,
       groupId: targetGroupId,
       agentType: 'claude-code'
