@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, safeStorage } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
@@ -84,6 +84,16 @@ app.whenReady().then(() => {
   ipcMain.handle('keychain:getApiKey', () => readApiKey());
   ipcMain.handle('keychain:setApiKey', (_e, value: string) => writeApiKey(value));
   ipcMain.handle('keychain:hasEncryption', () => safeStorage.isEncryptionAvailable());
+
+  ipcMain.handle('dialog:pickDirectory', async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openDirectory'],
+      title: 'Choose working directory'
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    return res.filePaths[0];
+  });
 
   ipcMain.handle(
     'agent:start',

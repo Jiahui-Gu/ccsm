@@ -22,6 +22,7 @@ const api = {
   getApiKey: (): Promise<string> => ipcRenderer.invoke('keychain:getApiKey'),
   setApiKey: (value: string): Promise<boolean> => ipcRenderer.invoke('keychain:setApiKey', value),
   hasEncryption: (): Promise<boolean> => ipcRenderer.invoke('keychain:hasEncryption'),
+  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
 
   agentStart: (sessionId: string, opts: StartOpts): Promise<StartResult> =>
     ipcRenderer.invoke('agent:start', sessionId, opts),
