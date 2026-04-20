@@ -1,12 +1,15 @@
 import type { CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 
 // SDK ships ESM-only (sdk.mjs). Electron main bundle is CJS, so a static
-// `import { query }` triggers ERR_REQUIRE_ESM at load. Lazy-load via dynamic
-// import on first start() and cache the module reference.
+// `import { query }` triggers ERR_REQUIRE_ESM at load. We need a real
+// dynamic import() — but TS with `module: CommonJS` rewrites import() to
+// require(), which re-triggers the same ESM error. Hide the call inside
+// `new Function` so TS leaves it alone and Node executes a true import().
 type SdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
+const dynamicImport = new Function('s', 'return import(s)') as (s: string) => Promise<SdkModule>;
 let sdkPromise: Promise<SdkModule> | null = null;
 function loadSdk(): Promise<SdkModule> {
-  if (!sdkPromise) sdkPromise = import('@anthropic-ai/claude-agent-sdk');
+  if (!sdkPromise) sdkPromise = dynamicImport('@anthropic-ai/claude-agent-sdk');
   return sdkPromise;
 }
 
