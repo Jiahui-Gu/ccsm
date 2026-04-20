@@ -9,7 +9,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
-import { subscribeAgentEvents } from './agent/lifecycle';
+import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
 
 subscribeAgentEvents();
 
@@ -28,6 +28,7 @@ export default function App() {
   const focusGroup = useStore((s) => s.focusGroup);
   const moveSession = useStore((s) => s.moveSession);
   const createSession = useStore((s) => s.createSession);
+  const createGroup = useStore((s) => s.createGroup);
   const changeCwd = useStore((s) => s.changeCwd);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
   const setModel = useStore((s) => s.setModel);
@@ -78,17 +79,25 @@ export default function App() {
       } else if (e.key === ',') {
         e.preventDefault();
         setSettingsOpen(true);
+      } else if (k === 'n' && e.shiftKey) {
+        e.preventDefault();
+        const id = createGroup();
+        focusGroup(id);
+      } else if (k === 'n') {
+        e.preventDefault();
+        createSession(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [createSession, createGroup, focusGroup, toggleSidebar]);
 
   if (!active) {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>
           <PersistErrorBridge />
+          <BackgroundWaitingBridge />
           <div className="flex h-full w-full bg-bg-app text-fg-primary">
             <Sidebar
               onCreateSession={(cwd) => createSession(cwd)}
@@ -135,6 +144,7 @@ export default function App() {
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
       <ToastProvider>
         <PersistErrorBridge />
+        <BackgroundWaitingBridge />
         <div className="flex h-full w-full bg-bg-app text-fg-primary">
           <Sidebar
             onCreateSession={(cwd) => createSession(cwd)}
@@ -201,5 +211,26 @@ function PersistErrorBridge() {
     });
     return () => setPersistErrorHandler(() => {});
   }, [push]);
+  return null;
+}
+
+function BackgroundWaitingBridge() {
+  const { push } = useToast();
+  const selectSession = useStore((s) => s.selectSession);
+  useEffect(() => {
+    setBackgroundWaitingHandler((info) => {
+      push({
+        kind: 'waiting',
+        title: `${info.sessionName} needs your input`,
+        body: info.prompt
+      });
+      // The toast is fire-and-forget; we deliberately do NOT auto-jump on
+      // click here because the dismiss-on-click in Toast.tsx and a
+      // separate "switch session" action would conflict. User clicks the
+      // sidebar row to switch — same as today.
+      void selectSession;
+    });
+    return () => setBackgroundWaitingHandler(() => {});
+  }, [push, selectSession]);
   return null;
 }

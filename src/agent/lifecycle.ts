@@ -3,6 +3,13 @@ import { sdkMessageToTranslation } from './sdk-to-blocks';
 
 let installed = false;
 
+type BackgroundWaitingHandler = (info: { sessionId: string; sessionName: string; prompt: string }) => void;
+let backgroundWaitingHandler: BackgroundWaitingHandler = () => {};
+
+export function setBackgroundWaitingHandler(h: BackgroundWaitingHandler): void {
+  backgroundWaitingHandler = h;
+}
+
 function describePermission(toolName: string, input: Record<string, unknown>): string {
   const pick = (...keys: string[]): string => {
     for (const k of keys) {
@@ -44,14 +51,23 @@ export function subscribeAgentEvents(): void {
 
   api.onAgentPermissionRequest((req) => {
     const store = useStore.getState();
+    const prompt = describePermission(req.toolName, req.input);
     store.appendBlocks(req.sessionId, [
       {
         kind: 'waiting',
         id: `wait-${req.requestId}`,
-        prompt: describePermission(req.toolName, req.input),
+        prompt,
         intent: 'permission',
         requestId: req.requestId
       }
     ]);
+    if (req.sessionId !== store.activeId) {
+      const session = store.sessions.find((s) => s.id === req.sessionId);
+      backgroundWaitingHandler({
+        sessionId: req.sessionId,
+        sessionName: session?.name ?? 'Background session',
+        prompt
+      });
+    }
   });
 }
