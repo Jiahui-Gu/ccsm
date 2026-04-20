@@ -128,7 +128,7 @@ function GroupRow({
                   {hasWaiting && (
                     <span
                       aria-label="Waiting for response"
-                      className="ml-1.5 shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-error"
+                      className="ml-1.5 shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-waiting"
                     />
                   )}
                   {!isSpecial && sessions.length > 0 && (

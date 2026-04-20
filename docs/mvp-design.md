@@ -94,7 +94,7 @@ Agentory                    [«]
   - In nav: group list, New group (quiet row, weekly).
   - Bottom: Archived Groups block, Settings — monthly or rarer.
 - **Group row**: chevron toggles collapse; `[+]` shows on hover at the right; collapsed group shows total session count.
-- **Session row**: agent icon + name; active sessions get a 3px accent vertical bar on the left; waiting sessions show a status dot on the right (MVP: red dot; oklch amber breathing glow is a polish follow-up, not a blocker for MVP). No badges.
+- **Session row**: agent icon + name; active sessions get a 3px accent vertical bar on the left; waiting sessions get an oklch amber breathing halo on the AgentIcon (framer-motion, 1.6s loop). The group row shows a small amber dot when any child session is waiting.
 - **Session ordering inside a group**: user-defined drag order (array order is the truth). Do NOT auto-sort by state.
 - **Drag & drop**: `@dnd-kit`, full-row draggable, `activationConstraint: { distance: 6px }`. Supports reordering within a group + cross-group migration (changes both `groupId` and position). DragOverlay is a clone of the original row, no tilt; original opacity 0.4.
 - **Right-click menus**:
