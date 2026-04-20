@@ -22,7 +22,7 @@ import {
   verticalListSortingStrategy
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { mockGroups } from '../mock/data';
+import { useStore } from '../stores/store';
 import { cn } from '../lib/cn';
 import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
@@ -64,10 +64,14 @@ function GroupRow({
 }) {
   const sessionIds = sessions.map((s) => s.id);
   const hasWaiting = sessions.some((s) => s.state === 'waiting');
-  const [collapsed, setCollapsed] = useState(group.collapsed);
+  const setGroupCollapsed = useStore((s) => s.setGroupCollapsed);
+  const renameGroup = useStore((s) => s.renameGroup);
+  const deleteGroup = useStore((s) => s.deleteGroup);
+  const archiveGroup = useStore((s) => s.archiveGroup);
+  const unarchiveGroup = useStore((s) => s.unarchiveGroup);
+  const collapsed = group.collapsed;
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [name, setName] = useState(group.name);
   const isSpecial = group.kind !== 'normal';
   const menuDisabled = group.kind === 'deleted';
   return (
@@ -95,7 +99,7 @@ function GroupRow({
             <button
               onClick={() => {
                 onFocus();
-                if (!renaming) setCollapsed(!collapsed);
+                if (!renaming) setGroupCollapsed(group.id, !collapsed);
               }}
               className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
               aria-expanded={!collapsed}
@@ -110,9 +114,9 @@ function GroupRow({
               </motion.span>
               {renaming ? (
                 <InlineRename
-                  value={name}
+                  value={group.name}
                   onCommit={(next) => {
-                    setName(next);
+                    renameGroup(group.id, next);
                     setRenaming(false);
                   }}
                   onCancel={() => setRenaming(false)}
@@ -120,7 +124,7 @@ function GroupRow({
                 />
               ) : (
                 <>
-                  <span className="truncate text-sm font-semibold text-fg-secondary">{name}</span>
+                  <span className="truncate text-sm font-semibold text-fg-secondary">{group.name}</span>
                   {hasWaiting && (
                     <span
                       aria-label="Waiting for response"
@@ -136,7 +140,11 @@ function GroupRow({
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onSelect={() => { /* wire to store later */ }}>
+          <ContextMenuItem
+            onSelect={() =>
+              group.kind === 'archive' ? unarchiveGroup(group.id) : archiveGroup(group.id)
+            }
+          >
             {group.kind === 'archive' ? 'Unarchive group' : 'Archive group'}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
@@ -152,7 +160,7 @@ function GroupRow({
             className="mt-px"
             data-group-id={group.id}
             role="listbox"
-          aria-label={name}
+          aria-label={group.name}
           onKeyDown={(e) => {
             const key = e.key;
             if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return;
@@ -189,17 +197,15 @@ function GroupRow({
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title={`Delete "${name}"?`}
+        title={`Delete "${group.name}"?`}
         description={
           sessions.length > 0
-            ? `This group contains ${sessions.length} session${sessions.length === 1 ? '' : 's'}. They will be moved to Deleted.`
+            ? `This group contains ${sessions.length} session${sessions.length === 1 ? '' : 's'}. They will be deleted with the group.`
             : 'This group is empty.'
         }
         confirmLabel="Delete group"
         destructive
-        onConfirm={() => {
-          /* wire to store later */
-        }}
+        onConfirm={() => deleteGroup(group.id)}
       />
     </div>
   );
@@ -208,8 +214,11 @@ function GroupRow({
 function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [name, setName] = useState(session.name);
-  const groups = mockGroups.filter((g) => g.kind === 'normal');
+  const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
+  const renameSession = useStore((s) => s.renameSession);
+  const deleteSession = useStore((s) => s.deleteSession);
+  const moveSession = useStore((s) => s.moveSession);
+  const createGroup = useStore((s) => s.createGroup);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
     data: { type: 'session', groupId: session.groupId }
@@ -263,16 +272,16 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           <span className="flex-1 min-w-0 leading-tight">
             {renaming ? (
               <InlineRename
-                value={name}
+                value={session.name}
                 onCommit={(next) => {
-                  setName(next);
+                  renameSession(session.id, next);
                   setRenaming(false);
                 }}
                 onCancel={() => setRenaming(false)}
                 inputClassName="text-base"
               />
             ) : (
-              <span className="truncate block">{name}</span>
+              <span className="truncate block">{session.name}</span>
             )}
           </span>
           {active && (
@@ -284,13 +293,11 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           <ConfirmDialog
             open={confirmDelete}
             onOpenChange={setConfirmDelete}
-            title={`Delete "${name}"?`}
+            title={`Delete "${session.name}"?`}
             description="The session and its conversation history will be removed."
             confirmLabel="Delete"
             destructive
-            onConfirm={() => {
-              /* wire to store later */
-            }}
+            onConfirm={() => deleteSession(session.id)}
           />
         </li>
       </ContextMenuTrigger>
@@ -303,9 +310,7 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
               <ContextMenuItem
                 key={g.id}
                 disabled={g.id === session.groupId}
-                onSelect={() => {
-                  /* wire to store later */
-                }}
+                onSelect={() => moveSession(session.id, g.id, null)}
               >
                 {g.name}
               </ContextMenuItem>
@@ -313,7 +318,8 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             <ContextMenuSeparator />
             <ContextMenuItem
               onSelect={() => {
-                /* wire to store later — create new group then move */
+                const id = createGroup();
+                moveSession(session.id, id, null);
               }}
             >
               New group…
@@ -356,8 +362,10 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string 
 }
 
 export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
-  const normal = mockGroups.filter((g) => g.kind === 'normal');
-  const archived = mockGroups.filter((g) => g.kind === 'archive');
+  const groups = useStore((s) => s.groups);
+  const createGroup = useStore((s) => s.createGroup);
+  const normal = groups.filter((g) => g.kind === 'normal');
+  const archived = groups.filter((g) => g.kind === 'archive');
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
@@ -430,6 +438,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
               tooltip="New group"
               tooltipSide="top"
               aria-label="New group"
+              onClick={() => createGroup()}
             >
               <Plus size={12} className="stroke-[1.75]" />
             </IconButton>
