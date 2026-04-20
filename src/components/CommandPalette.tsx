@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Hash, Terminal, Settings, Plus } from 'lucide-react';
+import { Search, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
-import { mockGroups, mockSessions } from '../mock/data';
+import { useStore } from '../stores/store';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -37,6 +37,12 @@ export function CommandPalette({
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const sessions = useStore((s) => s.sessions);
+  const groups = useStore((s) => s.groups);
+  const createGroup = useStore((s) => s.createGroup);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
 
   useEffect(() => {
     if (open) {
@@ -49,8 +55,9 @@ export function CommandPalette({
   }, [open]);
 
   const results: Result[] = useMemo(() => {
+    const nextTheme = theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark';
     const all: Result[] = [
-      ...mockSessions.map<Result>((s) => ({
+      ...sessions.map<Result>((s) => ({
         id: `session:${s.id}`,
         kind: 'session',
         label: s.name,
@@ -61,7 +68,7 @@ export function CommandPalette({
           onSelectSession?.(s.id);
         }
       })),
-      ...mockGroups
+      ...groups
         .filter((g) => g.kind === 'normal')
         .map<Result>((g) => ({
           id: `group:${g.id}`,
@@ -86,6 +93,28 @@ export function CommandPalette({
         }
       },
       {
+        id: 'cmd:new-group',
+        kind: 'command',
+        label: 'New group',
+        hint: '⌘⇧N',
+        icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          createGroup();
+        }
+      },
+      {
+        id: 'cmd:toggle-sidebar',
+        kind: 'command',
+        label: 'Toggle sidebar',
+        hint: '⌘B',
+        icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          toggleSidebar();
+        }
+      },
+      {
         id: 'cmd:open-settings',
         kind: 'command',
         label: 'Open settings',
@@ -99,9 +128,12 @@ export function CommandPalette({
       {
         id: 'cmd:switch-theme',
         kind: 'command',
-        label: 'Switch theme',
-        icon: <Terminal size={13} className="stroke-[1.75] text-fg-tertiary" />,
-        onPick: () => onOpenChange(false)
+        label: `Switch theme → ${nextTheme}`,
+        icon: <SunMoon size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          setTheme(nextTheme);
+        }
       }
     ];
     const needle = q.trim().toLowerCase();
@@ -109,7 +141,7 @@ export function CommandPalette({
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
-  }, [q, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup]);
+  }, [q, sessions, groups, theme, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme]);
 
   useEffect(() => {
     if (active >= results.length) setActive(0);
