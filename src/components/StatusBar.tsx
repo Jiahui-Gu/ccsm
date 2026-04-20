@@ -106,15 +106,15 @@ function ChipMenu<V extends string>({
 const BROWSE_FOLDER = '__browse__';
 
 const modelOptions: ChipOption<ModelId>[] = [
-  { kind: 'item', value: 'claude-opus-4', primary: 'opus-4' },
-  { kind: 'item', value: 'claude-sonnet-4', primary: 'sonnet-4' },
-  { kind: 'item', value: 'claude-haiku-4', primary: 'haiku-4' }
+  { kind: 'item', value: 'claude-opus-4', primary: 'opus-4', secondary: 'Most capable, slower and pricier' },
+  { kind: 'item', value: 'claude-sonnet-4', primary: 'sonnet-4', secondary: 'Balanced — recommended default' },
+  { kind: 'item', value: 'claude-haiku-4', primary: 'haiku-4', secondary: 'Fastest and cheapest, lower quality' }
 ];
 
 const permissionOptions: ChipOption<PermissionMode>[] = [
-  { kind: 'item', value: 'auto', primary: 'auto' },
-  { kind: 'item', value: 'ask', primary: 'ask' },
-  { kind: 'item', value: 'plan', primary: 'plan' }
+  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve all tool calls' },
+  { kind: 'item', value: 'ask', primary: 'ask', secondary: 'Ask before each tool call' },
+  { kind: 'item', value: 'plan', primary: 'plan', secondary: 'Plan only, no edits or commands' }
 ];
 
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
