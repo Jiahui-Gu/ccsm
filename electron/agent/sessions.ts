@@ -1,4 +1,14 @@
-import { query, type Options, type PermissionMode, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Options, PermissionMode, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+
+// SDK ships ESM-only (sdk.mjs). Electron main bundle is CJS, so a static
+// `import { query }` triggers ERR_REQUIRE_ESM at load. Lazy-load via dynamic
+// import on first start() and cache the module reference.
+type SdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
+let sdkPromise: Promise<SdkModule> | null = null;
+function loadSdk(): Promise<SdkModule> {
+  if (!sdkPromise) sdkPromise = import('@anthropic-ai/claude-agent-sdk');
+  return sdkPromise;
+}
 
 export type StartOptions = {
   cwd: string;
@@ -68,7 +78,7 @@ export class SessionRunner {
     private readonly onExit: ExitHandler
   ) {}
 
-  start(opts: StartOptions): void {
+  async start(opts: StartOptions): Promise<void> {
     if (this.q) return;
     const env: Record<string, string | undefined> = { ...process.env };
     if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
@@ -81,6 +91,7 @@ export class SessionRunner {
       resume: opts.resumeSessionId
     };
 
+    const { query } = await loadSdk();
     this.q = query({ prompt: this.input, options });
 
     this.consumer = (async () => {
