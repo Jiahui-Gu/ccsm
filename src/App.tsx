@@ -10,6 +10,7 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
+import { TitleBar } from './components/TitleBar';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
@@ -102,7 +103,9 @@ export default function App() {
         <ToastProvider>
           <PersistErrorBridge />
           <BackgroundWaitingBridge />
-          <div className="flex h-full w-full bg-bg-app text-fg-primary">
+          <div className="flex h-full w-full flex-col bg-bg-app text-fg-primary">
+            <TitleBar />
+            <div className="flex flex-1 min-h-0">
             <Sidebar
               onCreateSession={(cwd) => createSession(cwd)}
               onOpenSettings={() => setSettingsOpen(true)}
@@ -136,6 +139,7 @@ export default function App() {
                 </Button>
               </div>
             </main>
+            </div>
           </div>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
@@ -158,7 +162,9 @@ export default function App() {
       <ToastProvider>
         <PersistErrorBridge />
         <BackgroundWaitingBridge />
-        <div className="flex h-full w-full bg-bg-app text-fg-primary">
+        <div className="flex h-full w-full flex-col bg-bg-app text-fg-primary">
+          <TitleBar />
+          <div className="flex flex-1 min-h-0">
           <Sidebar
             onCreateSession={(cwd) => createSession(cwd)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -193,6 +199,7 @@ export default function App() {
               <span>Enter send · Shift+Enter newline</span>
             </div>
           </main>
+          </div>
         </div>
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
