@@ -53,6 +53,10 @@ declare global {
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
       onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
+      scanImportable: () => Promise<
+        Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
+      >;
+
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;

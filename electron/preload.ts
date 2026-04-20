@@ -72,6 +72,10 @@ const api = {
     return () => ipcRenderer.removeListener('agent:permissionRequest', wrap);
   },
 
+  scanImportable: (): Promise<
+    Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
+  > => ipcRenderer.invoke('import:scan'),
+
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
   updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
