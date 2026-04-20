@@ -171,4 +171,56 @@ describe('lifecycle: background waiting bridge', () => {
     expect(block).toMatchObject({ kind: 'waiting', intent: 'permission' });
     expect((block as { plan?: string }).plan).toBeUndefined();
   });
+
+  it('AskUserQuestion becomes an interactive question block with parsed options', async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/q');
+    const sid = h.store.getState().activeId;
+
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-q',
+      toolName: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            header: 'Auth',
+            question: 'Which auth method?',
+            multiSelect: false,
+            options: [
+              { label: 'JWT', description: 'Stateless tokens' },
+              { label: 'Session', description: 'Server-side state' }
+            ]
+          }
+        ]
+      }
+    });
+
+    const block = h.store.getState().messagesBySession[sid][0] as {
+      kind: string;
+      requestId?: string;
+      questions?: Array<{ question: string; options: Array<{ label: string }> }>;
+    };
+    expect(block.kind).toBe('question');
+    expect(block.requestId).toBe('req-q');
+    expect(block.questions).toHaveLength(1);
+    expect(block.questions![0].question).toBe('Which auth method?');
+    expect(block.questions![0].options.map((o) => o.label)).toEqual(['JWT', 'Session']);
+  });
+
+  it('AskUserQuestion with malformed input falls back to a generic permission block', async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/q2');
+    const sid = h.store.getState().activeId;
+
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-bad',
+      toolName: 'AskUserQuestion',
+      input: { questions: 'not an array' }
+    });
+
+    const block = h.store.getState().messagesBySession[sid][0];
+    expect(block).toMatchObject({ kind: 'waiting', intent: 'permission' });
+  });
 });
