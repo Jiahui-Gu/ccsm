@@ -82,9 +82,48 @@ export default function App() {
 
   if (!active) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-bg-app text-fg-secondary">
-        No sessions
-      </div>
+      <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+        <ToastProvider>
+          <PersistErrorBridge />
+          <div className="flex h-full w-full bg-bg-app text-fg-primary">
+            <Sidebar
+              onCreateSession={(cwd) => createSession(cwd)}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenPalette={() => setPaletteOpen(true)}
+              activeSessionId={activeId}
+              focusedGroupId={focusedGroupId}
+              onSelectSession={selectSession}
+              onFocusGroup={focusGroup}
+              sessions={sessions}
+              onMoveSession={moveSession}
+            />
+            <main className="flex-1 flex items-center justify-center my-2 mr-2 ml-0 rounded-lg bg-bg-panel border border-border-subtle surface-card">
+              <div className="flex flex-col items-center gap-3 text-center px-6">
+                <div className="font-mono text-sm text-fg-secondary">No sessions yet</div>
+                <div className="font-mono text-xs text-fg-tertiary max-w-[28ch]">
+                  Create a session to start a Claude Code agent in a working directory.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => createSession(null)}
+                  className="mt-1 inline-flex items-center gap-1.5 h-7 px-3 rounded-sm font-mono text-xs text-fg-primary bg-bg-hover hover:bg-bg-active border border-border-subtle outline-none focus-visible:ring-1 focus-visible:ring-border-strong transition-colors duration-120 ease-out"
+                >
+                  + New session
+                </button>
+              </div>
+            </main>
+          </div>
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <CommandPalette
+            open={paletteOpen}
+            onOpenChange={setPaletteOpen}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onNewSession={() => createSession(null)}
+            onSelectSession={selectSession}
+            onFocusGroup={focusGroup}
+          />
+        </ToastProvider>
+      </TooltipProvider>
     );
   }
 
