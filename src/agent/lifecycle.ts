@@ -114,7 +114,8 @@ export function subscribeAgentEvents(): void {
     const store = useStore.getState();
     const block = permissionRequestToWaitingBlock(req);
     store.appendBlocks(req.sessionId, [block]);
-    if (req.sessionId !== store.activeId) {
+    const isBackground = req.sessionId !== store.activeId;
+    if (isBackground) {
       const session = store.sessions.find((s) => s.id === req.sessionId);
       let prompt = '';
       if (block.kind === 'question') {
@@ -122,11 +123,25 @@ export function subscribeAgentEvents(): void {
       } else if (block.kind === 'waiting') {
         prompt = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
       }
-      backgroundWaitingHandler({
-        sessionId: req.sessionId,
-        sessionName: session?.name ?? 'Background session',
-        prompt
-      });
+      const sessionName = session?.name ?? 'Background session';
+      backgroundWaitingHandler({ sessionId: req.sessionId, sessionName, prompt });
+    }
+    // OS-level notification when the user almost certainly missed the in-app
+    // toast: window unfocused, or active-session toast suppressed in-app for
+    // a non-active session. Only ping for "needs your attention" requests
+    // (any permission/plan/question), never on routine assistant streaming.
+    const windowFocused = typeof document !== 'undefined' && document.hasFocus();
+    if (isBackground || !windowFocused) {
+      const session = store.sessions.find((s) => s.id === req.sessionId);
+      const sessionName = session?.name ?? 'Background session';
+      let title = `${sessionName} needs your input`;
+      let body: string | undefined;
+      if (block.kind === 'question') {
+        body = block.questions[0]?.question;
+      } else if (block.kind === 'waiting') {
+        body = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
+      }
+      void api.notify({ sessionId: req.sessionId, title, body });
     }
   });
 }
