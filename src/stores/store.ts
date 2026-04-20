@@ -20,6 +20,7 @@ type State = {
   focusedGroupId: string | null;
   model: ModelId;
   permission: PermissionMode;
+  sidebarCollapsed: boolean;
 };
 
 type Actions = {
@@ -32,6 +33,8 @@ type Actions = {
   changeCwd: (cwd: string) => void;
   setModel: (model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  toggleSidebar: () => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -58,6 +61,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusedGroupId: null,
   model: 'claude-opus-4',
   permission: 'auto',
+  sidebarCollapsed: false,
 
   selectSession: (id) => {
     set((s) => ({
@@ -154,6 +158,8 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   setModel: (model) => set({ model }),
   setPermission: (permission) => set({ permission }),
+  setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
+  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -221,7 +227,8 @@ export async function hydrateStore(): Promise<void> {
       groups: persisted.groups,
       activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
       model: persisted.model,
-      permission: persisted.permission
+      permission: persisted.permission,
+      sidebarCollapsed: persisted.sidebarCollapsed ?? false
     });
   }
   hydrated = true;
@@ -233,7 +240,8 @@ export async function hydrateStore(): Promise<void> {
       groups: s.groups,
       activeId: s.activeId,
       model: s.model,
-      permission: s.permission
+      permission: s.permission,
+      sidebarCollapsed: s.sidebarCollapsed
     };
     schedulePersist(snapshot);
   });
