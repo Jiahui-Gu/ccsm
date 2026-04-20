@@ -21,6 +21,7 @@ declare global {
       getApiKey: () => Promise<string>;
       setApiKey: (value: string) => Promise<boolean>;
       hasEncryption: () => Promise<boolean>;
+      pickDirectory: () => Promise<string | null>;
 
       agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
       agentSend: (sessionId: string, text: string) => Promise<boolean>;

@@ -38,6 +38,7 @@ type Actions = {
   deleteSession: (id: string) => void;
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
   changeCwd: (cwd: string) => void;
+  pushRecentProject: (path: string) => void;
   setModel: (model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -187,6 +188,19 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
   },
 
+  pushRecentProject: (p) => {
+    set((s) => {
+      const path = p.replace(/[\\/]+$/, '');
+      if (!path) return s;
+      const segs = path.split(/[\\/]/).filter(Boolean);
+      const name = segs[segs.length - 1] ?? path;
+      const without = s.recentProjects.filter((r) => r.path !== path);
+      const id = `p-${Date.now().toString(36)}`;
+      const next = [{ id, name, path }, ...without].slice(0, 8);
+      return { recentProjects: next };
+    });
+  },
+
   setModel: (model) => set({ model }),
   setPermission: (permission) => set({ permission }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
@@ -301,7 +315,8 @@ export async function hydrateStore(): Promise<void> {
       permission: persisted.permission,
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       theme: persisted.theme ?? 'system',
-      fontSize: persisted.fontSize ?? 'md'
+      fontSize: persisted.fontSize ?? 'md',
+      recentProjects: persisted.recentProjects ?? mockRecentProjects
     });
   }
   hydrated = true;
@@ -316,7 +331,8 @@ export async function hydrateStore(): Promise<void> {
       permission: s.permission,
       sidebarCollapsed: s.sidebarCollapsed,
       theme: s.theme,
-      fontSize: s.fontSize
+      fontSize: s.fontSize,
+      recentProjects: s.recentProjects
     };
     schedulePersist(snapshot);
   });

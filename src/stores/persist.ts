@@ -1,5 +1,6 @@
 import type { Group, Session } from '../types';
 import type { ModelId, PermissionMode, Theme, FontSize } from './store';
+import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
 
@@ -13,6 +14,7 @@ export interface PersistedState {
   sidebarCollapsed: boolean;
   theme?: Theme;
   fontSize?: FontSize;
+  recentProjects?: RecentProject[];
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
