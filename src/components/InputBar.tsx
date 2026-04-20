@@ -19,6 +19,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId));
   const started = useStore((s) => !!s.startedSessions[sessionId]);
   const running = useStore((s) => !!s.runningSessions[sessionId]);
+  const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
   const permission = useStore((s) => s.permission);
   const model = useStore((s) => s.model);
   const appendBlocks = useStore((s) => s.appendBlocks);
@@ -110,7 +111,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
-          placeholder={running ? 'Running… (input disabled)' : 'Reply…'}
+          placeholder={running ? 'Running… (input disabled)' : hasMessages ? 'Reply…' : 'Ask anything…'}
           disabled={running}
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
