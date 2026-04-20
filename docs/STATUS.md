@@ -1,6 +1,6 @@
 # Implementation Status
 
-最后更新：2026-04-21 (PR #10)
+最后更新：2026-04-21 (PR #11)
 
 这是 agentory-next 当前实现进度的对账表。每个 PR 合并后必须更新本文件，让"已实现 vs 待实现"始终一目了然。
 
@@ -52,7 +52,7 @@
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| Block 渲染（user / assistant / tool / waiting / error） | 🟡 | 渲染规则齐全；数据来自 `mockMessages`，与 active session 无关联。 |
+| Block 渲染（user / assistant / tool / waiting / error） | ✅ | 渲染规则齐全；数据来自 store `messagesBySession[activeId]`，由 `src/agent/lifecycle.ts` 订阅 `agent:event`/`agent:exit` 经 `sdk-to-blocks.ts` 翻译写入。waiting 暂未真接（permission flow 后续 PR）。 |
 | Tool 调用折叠/展开 | ✅ | framer-motion chevron 旋转 + 内容展开。 |
 | Waiting block Allow/Deny 按钮 | 🟡 | 按钮+焦点管理完整；按下后无效果（无 SDK）。 |
 | 自动滚动到底 + "↓ Jump to latest" | ⬜ | mvp-design.md §7 Q4。 |
