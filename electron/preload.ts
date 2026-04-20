@@ -12,6 +12,12 @@ type StartResult = { ok: true } | { ok: false; error: string };
 
 type AgentEvent = { sessionId: string; message: SDKMessage };
 type AgentExit = { sessionId: string; error?: string };
+type AgentPermissionRequest = {
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+};
 
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
@@ -35,6 +41,12 @@ const api = {
   agentSetModel: (sessionId: string, model?: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:setModel', sessionId, model),
   agentClose: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('agent:close', sessionId),
+  agentResolvePermission: (
+    sessionId: string,
+    requestId: string,
+    decision: 'allow' | 'deny'
+  ): Promise<boolean> =>
+    ipcRenderer.invoke('agent:resolvePermission', sessionId, requestId, decision),
   onAgentEvent: (handler: (e: AgentEvent) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: AgentEvent) => handler(payload);
     ipcRenderer.on('agent:event', wrap);
@@ -44,6 +56,11 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: AgentExit) => handler(payload);
     ipcRenderer.on('agent:exit', wrap);
     return () => ipcRenderer.removeListener('agent:exit', wrap);
+  },
+  onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: AgentPermissionRequest) => handler(payload);
+    ipcRenderer.on('agent:permissionRequest', wrap);
+    return () => ipcRenderer.removeListener('agent:permissionRequest', wrap);
   }
 };
 
