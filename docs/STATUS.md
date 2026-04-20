@@ -89,7 +89,7 @@
 | 项 | 状态 | 备注 |
 |---|---|---|
 | Cmd+K 打开 | ✅ | App.tsx 全局 keydown。 |
-| Sessions / Groups / Commands 三段搜索 | 🟡 | UI 通；commands 部分接到 onNewSession / onSelectSession / onOpenSettings；缺 New group / Toggle sidebar / Switch theme。 |
+| Sessions / Groups / Commands 三段搜索 | ✅ | 数据来自 store；commands 全接：New session / New group / Toggle sidebar / Open settings / Switch theme（循环 system→dark→light）。 |
 
 ## 8. Toast（`src/components/ui/Toast.tsx`）
 
