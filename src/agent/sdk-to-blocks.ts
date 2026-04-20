@@ -1,29 +1,31 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { MessageBlock } from '../types';
 
-// Translate one SDK message into zero or more MessageBlocks for ChatStream.
-// Tool calls become collapsed `tool` blocks (result wired up later when the
-// matching tool_result user message arrives — for MVP we keep tool + result
-// in separate blocks rather than reconciling, which keeps this fn pure).
-export function sdkMessageToBlocks(msg: SDKMessage): MessageBlock[] {
+export type ToolResultPatch = {
+  toolUseId: string;
+  result: string;
+  isError: boolean;
+};
+
+export type SdkTranslation = {
+  append: MessageBlock[];
+  toolResults: ToolResultPatch[];
+};
+
+const EMPTY: SdkTranslation = { append: [], toolResults: [] };
+
+export function sdkMessageToTranslation(msg: SDKMessage): SdkTranslation {
   switch (msg.type) {
     case 'assistant':
-      return assistantBlocks(msg);
+      return { append: assistantBlocks(msg), toolResults: [] };
     case 'user':
-      // We render the user's outgoing text locally in InputBar for zero-latency
-      // echo. The SDK echoes the same text back as a user message — skip it to
-      // avoid duplicates. Tool_result echoes also live in user messages but
-      // those don't render as separate turns either (the tool block carries
-      // the result).
-      return [];
+      return { append: [], toolResults: extractToolResults(msg) };
     case 'system':
-      // SDK system messages (init, compact_boundary, api_retry, …) carry no
-      // user-visible chat content; surfacing them as chat blocks would be noise.
-      return [];
+      return EMPTY;
     case 'result':
-      return resultBlocks(msg);
+      return { append: resultBlocks(msg), toolResults: [] };
     default:
-      return [];
+      return EMPTY;
   }
 }
 
@@ -48,6 +50,7 @@ function assistantBlocks(msg: any): MessageBlock[] {
       out.push({
         kind: 'tool',
         id: `${baseId}:tu${toolIdx++}`,
+        toolUseId: tu.id,
         name: tu.name,
         brief: briefForTool(tu.name, tu.input),
         expanded: false
@@ -55,6 +58,39 @@ function assistantBlocks(msg: any): MessageBlock[] {
     }
   }
   return out;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractToolResults(msg: any): ToolResultPatch[] {
+  const content: AnyContent[] = msg.message?.content ?? [];
+  if (!Array.isArray(content)) return [];
+  const out: ToolResultPatch[] = [];
+  for (const c of content) {
+    if (c.type !== 'tool_result') continue;
+    const tr = c as { tool_use_id: string; content: unknown; is_error?: boolean };
+    out.push({
+      toolUseId: tr.tool_use_id,
+      result: stringifyToolResult(tr.content),
+      isError: tr.is_error === true
+    });
+  }
+  return out;
+}
+
+function stringifyToolResult(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return JSON.stringify(content ?? '', null, 2);
+  // SDK tool_result.content is typically an array of {type:'text', text:string} parts.
+  const parts: string[] = [];
+  for (const part of content) {
+    if (part && typeof part === 'object' && (part as { type?: string }).type === 'text') {
+      const t = (part as { text?: unknown }).text;
+      if (typeof t === 'string') parts.push(t);
+    } else {
+      parts.push(JSON.stringify(part));
+    }
+  }
+  return parts.join('\n');
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,7 +103,6 @@ function resultBlocks(msg: any): MessageBlock[] {
 function briefForTool(name: string, input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const i = input as Record<string, unknown>;
-  // Cheap-but-useful summary per common tool. Truncate hard.
   const pick = (...keys: string[]): string => {
     for (const k of keys) {
       const v = i[k];
