@@ -18,10 +18,62 @@ describe('sdkMessageToTranslation', () => {
     expect(out.toolResults).toEqual([]);
   });
 
-  it('drops system messages (init / compact_boundary etc.)', () => {
+  it('drops unknown system subtypes (init etc.)', () => {
     const out = sdkMessageToTranslation(asSdk({ type: 'system', subtype: 'init' }));
     expect(out.append).toEqual([]);
     expect(out.toolResults).toEqual([]);
+  });
+
+  it('compact_boundary system message becomes an info status banner', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({
+        type: 'system',
+        subtype: 'compact_boundary',
+        uuid: 'sys-1',
+        compact_metadata: { trigger: 'auto', pre_tokens: 124000, post_tokens: 18000, duration_ms: 950 }
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    expect(out.append[0]).toMatchObject({ kind: 'status', tone: 'info' });
+    const b = out.append[0] as { title: string; detail?: string };
+    expect(b.title).toMatch(/auto-compacted/i);
+    expect(b.detail).toContain('124,000');
+    expect(b.detail).toContain('18,000');
+  });
+
+  it('api_retry system message becomes a warn status banner with attempt + delay', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({
+        type: 'system',
+        subtype: 'api_retry',
+        uuid: 'sys-2',
+        attempt: 2,
+        max_retries: 5,
+        retry_delay_ms: 4000,
+        error_status: 503,
+        error: 'server_error'
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { tone: string; title: string; detail?: string };
+    expect(b.tone).toBe('warn');
+    expect(b.title).toContain('2/5');
+    expect(b.detail).toContain('4s');
+    expect(b.detail).toContain('503');
+  });
+
+  it('assistant message with rate_limit error appends a rate-limit warn banner', () => {
+    const out = sdkMessageToTranslation(
+      asSdk({
+        type: 'assistant',
+        uuid: 'asst-1',
+        message: { id: 'm', content: [{ type: 'text', text: 'partial' }] },
+        error: 'rate_limit'
+      })
+    );
+    // text block + status banner
+    expect(out.append).toHaveLength(2);
+    expect(out.append[1]).toMatchObject({ kind: 'status', tone: 'warn', title: 'Rate limit hit' });
   });
 
   it('drops successful result messages (no noise on completion)', () => {
