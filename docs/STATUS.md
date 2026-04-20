@@ -81,7 +81,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | Anthropic API key (safeStorage) | ✅ | `keychain:get/setApiKey` IPC + Electron `safeStorage`; encrypted file in userData; input disabled when encryption is unavailable. |
 | Data dir display | ✅ | `app:getDataDir` IPC returns real `app.getPath('userData')`. |
 | Shortcuts read-only list | ✅ | Static catalog; matches "MVP does not allow remap". |
-| Updates "Check for updates" | 🟡 | Version pulled from real package.json via `app:getVersion`; button is disabled pending the electron-updater PR. |
+| Updates "Check for updates" | ✅ | PR #25: electron-updater wired with main-process IPC (`updates:check/download/install/status`) + preload bridge + Settings UI showing version, status (idle/checking/available/downloading/downloaded/error), Check button, Download button (when an update is available), Restart-and-install button (when downloaded). In dev mode the check returns synthetic "not-available" since there is no `app-update.yml` feed. Real feed activates once electron-builder publish lands. |
 
 ## 7. CommandPalette (`src/components/CommandPalette.tsx`)
 
@@ -111,7 +111,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 |---|---|
 | Onboarding first run (Create / Import) | 🟡 PR #16 ships a "no sessions yet" empty state with a Create CTA; Import CTA waits on the import scanner. |
 | Tests (vitest / playwright) | 🟡 PR #24 lands vitest with 37 unit tests across `sdk-to-blocks` (13), store actions (20), and lifecycle bridge (4). Playwright probes (probe-render / probe-chatstream / probe-shortcuts / probe-waiting-indicator) live in `scripts/`. End-to-end Playwright suite still pending. |
-| Auto-update (electron-updater) | ⬜ |
+| Auto-update (electron-updater) | ✅ PR #25 wires IPC + UI; needs electron-builder publish target to actually serve updates. |
 
 ## MVP gap table (P0 / P1 / P2)
 
@@ -124,7 +124,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | P1 | ~~Session state change → Toast~~ | ✅ Done in PR #22. Background sessions entering waiting now toast. |
 | P1 | ~~Cmd+N / Cmd+Shift+N shortcuts~~ | ✅ Done in PR #22. |
 | P2 | ~~Waiting indicator: oklch amber breathing glow~~ | ✅ Already shipped on session row (`AgentIcon` 1.6s halo). Group row dot was red, now amber too (PR #23). |
-| P2 | electron-updater wiring | Required before public-ish builds; not for self-use. |
+| P2 | ~~electron-updater wiring~~ | ✅ Done in PR #25. Needs an electron-builder publish target before it serves real updates. |
 | P2 | ~~Tests (vitest + playwright)~~ | 🟡 PR #24: vitest unit suite landed (37 tests). Playwright E2E still pending. |
 
 ## PR roadmap
