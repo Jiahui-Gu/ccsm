@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo } from 'react';
+import { Plus, Download } from 'lucide-react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
+import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
 import { ChatStream } from './components/ChatStream';
 import { InputBar } from './components/InputBar';
@@ -113,25 +115,25 @@ export default function App() {
               onMoveSession={moveSession}
             />
             <main className="flex-1 flex items-center justify-center my-2 mr-2 ml-0 rounded-lg bg-bg-panel border border-border-subtle surface-card">
-              <div className="flex flex-col items-center gap-3 text-center px-6">
-                <div className="font-mono text-sm text-fg-secondary">No sessions yet</div>
-                <div className="font-mono text-xs text-fg-tertiary max-w-[28ch]">
-                  Create a session to start a Claude Code agent in a working directory.
-                </div>
-                <button
-                  type="button"
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="secondary"
+                  size="md"
                   onClick={() => createSession(null)}
-                  className="mt-1 inline-flex items-center gap-1.5 h-7 px-3 rounded-sm font-mono text-xs text-fg-primary bg-bg-hover hover:bg-bg-active border border-border-subtle outline-none focus-visible:ring-1 focus-visible:ring-border-strong transition-colors duration-120 ease-out"
+                  className="w-44 justify-center"
                 >
-                  + New session
-                </button>
-                <button
-                  type="button"
+                  <Plus size={14} className="stroke-[2]" />
+                  <span>New Session</span>
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="md"
                   onClick={() => setImportOpen(true)}
-                  className="inline-flex items-center gap-1.5 h-7 px-3 rounded-sm font-mono text-xs text-fg-secondary hover:text-fg-primary hover:bg-bg-hover border border-border-subtle outline-none focus-visible:ring-1 focus-visible:ring-border-strong transition-colors duration-120 ease-out"
+                  className="w-44 justify-center"
                 >
-                  Import from Claude Code…
-                </button>
+                  <Download size={14} className="stroke-[2]" />
+                  <span>Import Session</span>
+                </Button>
               </div>
             </main>
           </div>
