@@ -35,7 +35,6 @@ type AnyContent =
   | { type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean }
   | { type: string; [k: string]: unknown };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function assistantBlocks(msg: any): MessageBlock[] {
   const out: MessageBlock[] = [];
   const baseId = msg.uuid ?? msg.message?.id ?? cryptoRandom();
@@ -60,7 +59,6 @@ function assistantBlocks(msg: any): MessageBlock[] {
   return out;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function extractToolResults(msg: any): ToolResultPatch[] {
   const content: AnyContent[] = msg.message?.content ?? [];
   if (!Array.isArray(content)) return [];
@@ -93,7 +91,6 @@ function stringifyToolResult(content: unknown): string {
   return parts.join('\n');
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function resultBlocks(msg: any): MessageBlock[] {
   if (msg.subtype === 'success' || msg.is_error === false) return [];
   const text = typeof msg.error === 'string' ? msg.error : msg.subtype ?? 'Run failed';
