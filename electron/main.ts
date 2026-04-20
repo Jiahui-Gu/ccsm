@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog } from 'electron';
+import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
@@ -43,10 +43,53 @@ function writeApiKey(value: string): boolean {
 
 const isDev = !app.isPackaged;
 
-// Hide the default application menu — Agentory is a single-window tool and
-// File/Edit/View/Window/Help adds noise without value. DevTools still opens
-// via openDevTools in dev.
-Menu.setApplicationMenu(null);
+// We don't want a visible File/Edit/View menu bar — Agentory is a single-
+// window tool and those menus add noise. But on Windows/Linux, setting the
+// app menu to null also removes the built-in Edit-role accelerators
+// (Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A / Ctrl+Z), which makes chat content
+// feel "not copyable". Install a minimal, hidden app menu whose only job
+// is to carry those accelerators, and hide the menu bar so it's not
+// visible. On macOS, the default app menu already handles this.
+if (process.platform === 'darwin') {
+  // Let Electron use its default macOS menu.
+} else {
+  const accelMenu = Menu.buildFromTemplate([
+    {
+      label: '&Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    }
+  ]);
+  Menu.setApplicationMenu(accelMenu);
+}
+
+// Right-click context menu for the renderer — Copy/Cut/Paste/Select All,
+// contextually enabled based on selection + editable state. Attached per
+// window in createMainWindow().
+function installContextMenu(win: BrowserWindow) {
+  win.webContents.on('context-menu', (_e, params) => {
+    const { selectionText, editFlags, isEditable } = params;
+    const hasSelection = !!selectionText && selectionText.trim().length > 0;
+    const items: MenuItemConstructorOptions[] = [];
+    if (isEditable) {
+      items.push({ role: 'cut', enabled: !!editFlags.canCut });
+    }
+    items.push({ role: 'copy', enabled: hasSelection && !!editFlags.canCopy });
+    if (isEditable) {
+      items.push({ role: 'paste', enabled: !!editFlags.canPaste });
+    }
+    items.push({ type: 'separator' }, { role: 'selectAll', enabled: !!editFlags.canSelectAll });
+    const menu = Menu.buildFromTemplate(items);
+    menu.popup({ window: win });
+  });
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -60,12 +103,15 @@ function createWindow() {
     backgroundColor: '#0B0B0C',
     titleBarStyle: 'default',
     frame: true,
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });
+
+  win.setMenuBarVisibility(false);
 
   if (isDev) {
     win.loadURL('http://localhost:4100');
@@ -74,6 +120,7 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
+  installContextMenu(win);
   sessions.bindSender(win.webContents);
 }
 
