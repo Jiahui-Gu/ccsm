@@ -47,6 +47,8 @@ export default [
         URL: 'readonly',
         AbortController: 'readonly',
         KeyboardEvent: 'readonly',
+        CustomEvent: 'readonly',
+        Event: 'readonly',
         HTMLElement: 'readonly',
         HTMLDivElement: 'readonly',
         HTMLInputElement: 'readonly',
