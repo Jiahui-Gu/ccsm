@@ -7,6 +7,7 @@ import {
   type RecentProject
 } from '../mock/data';
 import type { Group, Session } from '../types';
+import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 export type PermissionMode = 'auto' | 'ask' | 'plan';
@@ -207,3 +208,33 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
   }
 }));
+
+let hydrated = false;
+
+export async function hydrateStore(): Promise<void> {
+  if (hydrated) return;
+  const persisted = await loadPersisted();
+  if (persisted) {
+    const stillActive = persisted.sessions.some((s) => s.id === persisted.activeId);
+    useStore.setState({
+      sessions: persisted.sessions,
+      groups: persisted.groups,
+      activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
+      model: persisted.model,
+      permission: persisted.permission
+    });
+  }
+  hydrated = true;
+  // After (potential) hydration, subscribe to write-through.
+  useStore.subscribe((s) => {
+    const snapshot: PersistedState = {
+      version: 1,
+      sessions: s.sessions,
+      groups: s.groups,
+      activeId: s.activeId,
+      model: s.model,
+      permission: s.permission
+    };
+    schedulePersist(snapshot);
+  });
+}
