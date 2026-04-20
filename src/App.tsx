@@ -11,6 +11,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { TitleBar } from './components/TitleBar';
+import { Tutorial } from './components/Tutorial';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
@@ -40,6 +41,8 @@ export default function App() {
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const fontSize = useStore((s) => s.fontSize);
+  const tutorialSeen = useStore((s) => s.tutorialSeen);
+  const markTutorialSeen = useStore((s) => s.markTutorialSeen);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -117,27 +120,41 @@ export default function App() {
               sessions={sessions}
               onMoveSession={moveSession}
             />
-            <main className="flex-1 flex items-center justify-center my-2 mr-2 ml-0 rounded-lg bg-bg-panel border border-border-subtle surface-card">
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => createSession(null)}
-                  className="w-44 justify-center"
-                >
-                  <Plus size={14} className="stroke-[2]" />
-                  <span>New Session</span>
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => setImportOpen(true)}
-                  className="w-44 justify-center"
-                >
-                  <Download size={14} className="stroke-[2]" />
-                  <span>Import Session</span>
-                </Button>
-              </div>
+            <main className="flex-1 flex items-center justify-center my-2 mr-2 ml-0 rounded-lg bg-bg-panel border border-border-subtle surface-card overflow-hidden">
+              {tutorialSeen ? (
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    onClick={() => createSession(null)}
+                    className="w-44 justify-center"
+                  >
+                    <Plus size={14} className="stroke-[2]" />
+                    <span>New Session</span>
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    onClick={() => setImportOpen(true)}
+                    className="w-44 justify-center"
+                  >
+                    <Download size={14} className="stroke-[2]" />
+                    <span>Import Session</span>
+                  </Button>
+                </div>
+              ) : (
+                <Tutorial
+                  onNewSession={() => {
+                    markTutorialSeen();
+                    createSession(null);
+                  }}
+                  onImport={() => {
+                    markTutorialSeen();
+                    setImportOpen(true);
+                  }}
+                  onSkip={markTutorialSeen}
+                />
+              )}
             </main>
             </div>
           </div>

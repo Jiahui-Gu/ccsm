@@ -18,7 +18,7 @@ await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({ sessions: [], activeId: undefined });
+  window.__agentoryStore.setState({ sessions: [], activeId: undefined, tutorialSeen: true });
 });
 await win.waitForTimeout(300);
 
