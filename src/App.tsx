@@ -23,6 +23,7 @@ export default function App() {
   const changeCwd = useStore((s) => s.changeCwd);
   const setModel = useStore((s) => s.setModel);
   const setPermission = useStore((s) => s.setPermission);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -40,6 +41,9 @@ export default function App() {
       if (k === 'k' && !e.shiftKey) {
         e.preventDefault();
         setPaletteOpen((p) => !p);
+      } else if (k === 'b' && !e.shiftKey) {
+        e.preventDefault();
+        toggleSidebar();
       } else if (e.key === ',') {
         e.preventDefault();
         setSettingsOpen(true);

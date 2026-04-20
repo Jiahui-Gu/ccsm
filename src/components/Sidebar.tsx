@@ -364,6 +364,8 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string 
 export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
+  const collapsed = useStore((s) => s.sidebarCollapsed);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const normal = groups.filter((g) => g.kind === 'normal');
   const archived = groups.filter((g) => g.kind === 'archive');
   const [archiveOpen, setArchiveOpen] = useState(false);
@@ -401,8 +403,59 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
     >
     <motion.aside
       initial={false}
-      className="relative flex flex-col w-64 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden"
+      animate={{ width: collapsed ? 48 : 256 }}
+      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden"
     >
+      {collapsed ? (
+        <div className="flex flex-col items-center w-12 h-full py-3 gap-2">
+          <IconButton
+            variant="raised"
+            size="md"
+            onClick={toggleSidebar}
+            tooltip="Expand sidebar  ⌘B"
+            tooltipSide="right"
+            aria-label="Expand sidebar"
+            className="h-8 w-8"
+          >
+            <ChevronRight size={14} className="stroke-[1.5]" />
+          </IconButton>
+          <IconButton
+            variant="raised"
+            size="md"
+            onClick={() => onCreateSession?.(null)}
+            tooltip="New session"
+            tooltipSide="right"
+            aria-label="New session"
+            className="h-8 w-8"
+          >
+            <Plus size={14} className="stroke-[1.75]" />
+          </IconButton>
+          <IconButton
+            variant="raised"
+            size="md"
+            onClick={onOpenPalette}
+            tooltip="Search  ⌘K"
+            tooltipSide="right"
+            aria-label="Search"
+            className="h-8 w-8"
+          >
+            <Search size={14} className="stroke-[1.5]" />
+          </IconButton>
+          <div className="flex-1" />
+          <IconButton
+            variant="raised"
+            size="md"
+            onClick={onOpenSettings}
+            tooltip="Settings  ⌘,"
+            tooltipSide="right"
+            aria-label="Settings"
+            className="h-8 w-8"
+          >
+            <Settings size={13} className="stroke-[1.5]" />
+          </IconButton>
+        </div>
+      ) : (
       <div className="flex flex-col w-64 h-full">
           {/* Top: action zone — Search + New Session in one row.
               CodePilot-spec: h-8, bg-white/[0.06] semi-transparent on the
@@ -514,6 +567,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             </Button>
           </div>
         </div>
+      )}
     </motion.aside>
     <DragOverlay dropAnimation={{ duration: 150, easing: 'cubic-bezier(0.32,0.72,0,1)' }}>
       {draggingSession ? (

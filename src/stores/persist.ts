@@ -10,6 +10,7 @@ export interface PersistedState {
   activeId: string;
   model: ModelId;
   permission: PermissionMode;
+  sidebarCollapsed: boolean;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
