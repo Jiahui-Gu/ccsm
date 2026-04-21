@@ -35,6 +35,8 @@ declare global {
     agentory?: {
       loadState: (key: string) => Promise<string | null>;
       saveState: (key: string, value: string) => Promise<void>;
+      loadMessages: (sessionId: string) => Promise<unknown[]>;
+      saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>) => Promise<void>;
       getDataDir: () => Promise<string>;
       getVersion: () => Promise<string>;
       getApiKey: () => Promise<string>;

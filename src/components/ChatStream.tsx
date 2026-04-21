@@ -713,10 +713,19 @@ export function ChatStream() {
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
   const resolvePermission = useStore((s) => s.resolvePermission);
+  const loadMessages = useStore((s) => s.loadMessages);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
+
+  // Belt-and-suspenders: selectSession already triggers a load, but hot-reload
+  // and other edge paths can change activeId without going through it.
+  useEffect(() => {
+    if (!activeId) return;
+    const state = useStore.getState();
+    if (!(activeId in state.messagesBySession)) void loadMessages(activeId);
+  }, [activeId, loadMessages]);
 
   // Reset follow state when the active session changes.
   useEffect(() => {
