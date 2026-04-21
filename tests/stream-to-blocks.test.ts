@@ -339,6 +339,55 @@ describe('streamEventToTranslation', () => {
     expect(out.append[0]).toMatchObject({ kind: 'error' });
   });
 
+  it('error_during_execution with interrupted context becomes a neutral Interrupted status', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        session_id: 's',
+        uuid: 'res-int'
+      }),
+      { interrupted: true }
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { kind: string; tone?: string; title?: string };
+    expect(b.kind).toBe('status');
+    expect(b.tone).toBe('info');
+    expect(b.title).toBe('Interrupted');
+  });
+
+  it('error_during_execution without interrupt context still renders as error', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        session_id: 's',
+        uuid: 'res-err2'
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    expect(out.append[0]).toMatchObject({ kind: 'error' });
+  });
+
+  it('successful result ignores interrupted context (no demotion path taken)', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: 's',
+        uuid: 'res-ok',
+        num_turns: 1,
+        duration_ms: 500
+      }),
+      { interrupted: true }
+    );
+    expect(out.append).toHaveLength(1);
+    expect(out.append[0]).toMatchObject({ kind: 'status', title: 'Done' });
+  });
+
   it('returns empty translation for unknown frame types', () => {
     const out = streamEventToTranslation(asEvent({ type: 'agent_metadata', agent_id: 'a' }));
     expect(out).toEqual({ append: [], toolResults: [] });
