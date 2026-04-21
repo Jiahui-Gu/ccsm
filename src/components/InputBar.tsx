@@ -101,11 +101,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       <div
         className={cn(
           'relative rounded-md border bg-bg-elevated surface-highlight',
-          'transition-[border-color,box-shadow] duration-200',
+          'transition-[border-color] duration-200',
           '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
           'border-border-default',
-          'focus-within:border-border-strong',
-          'focus-within:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_0_0_3px_oklch(0.72_0.14_215_/_0.30)]'
+          'focus-within:border-accent'
         )}
       >
         <textarea

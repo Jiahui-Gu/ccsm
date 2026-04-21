@@ -58,7 +58,7 @@ function TitleButton({
         'flex h-full items-center justify-center text-fg-secondary',
         'transition-colors duration-100 ease-out',
         'hover:text-fg-primary',
-        danger ? 'hover:bg-[oklch(0.55_0.22_27)] hover:text-white' : 'hover:bg-bg-hover',
+        danger ? 'hover:bg-state-error hover:text-state-error-fg' : 'hover:bg-bg-hover',
         'focus:outline-none focus-visible:bg-bg-hover'
       )}
       style={{ width: 46 }}
