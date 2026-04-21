@@ -131,7 +131,9 @@ export function permissionRequestToWaitingBlock(req: {
     prompt,
     intent: isPlan ? 'plan' : 'permission',
     requestId: req.requestId,
-    plan: planText
+    plan: planText,
+    toolName: req.toolName,
+    toolInput: req.input
   };
 }
 
