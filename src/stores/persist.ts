@@ -1,5 +1,11 @@
 import type { Group, Session } from '../types';
-import type { PermissionMode, Theme, FontSize, WatchdogConfig } from './store';
+import type {
+  PermissionMode,
+  Theme,
+  FontSize,
+  WatchdogConfig,
+  NotificationSettings
+} from './store';
 import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
@@ -22,6 +28,7 @@ export interface PersistedState {
    * restarts. Falls back to the endpoint with is_default=1 if missing.
    */
   defaultEndpointId?: string | null;
+  notificationSettings?: NotificationSettings;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

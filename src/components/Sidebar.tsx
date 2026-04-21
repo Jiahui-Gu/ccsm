@@ -4,7 +4,8 @@ import {
   ChevronRight,
   Plus,
   Search,
-  Settings
+  Settings,
+  BellOff
 } from 'lucide-react';
 import {
   DndContext,
@@ -260,6 +261,7 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
   const deleteSession = useStore((s) => s.deleteSession);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
+  const setSessionNotificationsMuted = useStore((s) => s.setSessionNotificationsMuted);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
     data: { type: 'session', groupId: session.groupId }
@@ -325,6 +327,13 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
               <span className="truncate block">{session.name}</span>
             )}
           </span>
+          {session.notificationsMuted && (
+            <BellOff
+              size={12}
+              className="stroke-[1.5] text-fg-tertiary shrink-0"
+              aria-label="Notifications muted"
+            />
+          )}
           {active && (
             <span
               aria-label="Open in chat"
@@ -344,6 +353,13 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
+        <ContextMenuItem
+          onSelect={() =>
+            setSessionNotificationsMuted(session.id, !session.notificationsMuted)
+          }
+        >
+          {session.notificationsMuted ? 'Unmute notifications' : 'Mute notifications'}
+        </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>Move to group</ContextMenuSubTrigger>
           <ContextMenuSubContent>

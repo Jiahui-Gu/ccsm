@@ -110,8 +110,13 @@ const api = {
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
   > => ipcRenderer.invoke('import:scan'),
 
-  notify: (payload: { sessionId: string; title: string; body?: string }): Promise<boolean> =>
-    ipcRenderer.invoke('notification:show', payload),
+  notify: (payload: {
+    sessionId: string;
+    title: string;
+    body?: string;
+    eventType?: 'permission' | 'question' | 'turn_done' | 'test';
+    silent?: boolean;
+  }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
   onNotificationFocus: (handler: (sessionId: string) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
     ipcRenderer.on('notification:focusSession', wrap);

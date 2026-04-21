@@ -93,7 +93,13 @@ declare global {
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
       >;
 
-      notify: (payload: { sessionId: string; title: string; body?: string }) => Promise<boolean>;
+      notify: (payload: {
+        sessionId: string;
+        title: string;
+        body?: string;
+        eventType?: 'permission' | 'question' | 'turn_done' | 'test';
+        silent?: boolean;
+      }) => Promise<boolean>;
       onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
 
       updatesStatus: () => Promise<UpdateStatus>;

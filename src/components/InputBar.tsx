@@ -147,6 +147,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       >
         <textarea
           ref={textareaRef}
+          data-input-bar
           value={value}
           onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
