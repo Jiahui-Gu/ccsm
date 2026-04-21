@@ -38,12 +38,14 @@ fields.
 
 | Field path | Status | Reason |
 |---|---|---|
-| `system.subtype = "compact_boundary" / "api_retry"` and their fields | Inferred from existing `src/agent/sdk-to-blocks.ts` `systemBlocks()` handler. SDK message likely == stream-json frame here. Need real sample to confirm `compact_metadata.{trigger, pre_tokens, post_tokens, duration_ms}`. |
+| `system.subtype = "compact_boundary" / "api_retry"` and their fields | Inferred from existing `src/agent/sdk-to-blocks.ts` `systemBlocks()` handler. SDK message likely == stream-json frame here. Fixtures `compact_boundary.jsonl` / `api_retry.jsonl` reverse-engineered from those reads (`compact_metadata.{trigger,pre_tokens,post_tokens,duration_ms}` and `attempt/max_retries/retry_delay_ms/error_status`). Real samples still pending. |
 | `result.subtype` enum values | M1 lists `success/error/cancelled/error_max_turns/error_during_execution` but warns it's not exhaustive. Schema accepts any string. |
 | `result.error` field | Used by current `sdk-to-blocks.ts` (line 234) but not in M1's ResultFrame. Likely SDK-side enrichment; might or might not exist on raw stream-json. Marked optional. |
+| `assistant.error` field (sibling of `message`) | Confirmed against `src/agent/sdk-to-blocks.ts:85-101` `assistantBlocksWithError()` — read as `msg.error` (string codes: `rate_limit`, `billing_error`, `authentication_failed`, `invalid_request`, `server_error`, `max_output_tokens`). Now typed at AssistantEventSchema level so the rewrite cannot silently drop the error banner. |
 | `assistant.message.usage` fine-grained shape | Treated as `unknown` — Anthropic's usage schema evolves often (cache_*_tokens, server_tool_use_count, etc.). We expose UsageSchema for `result.usage` only. |
 | `stream_event.event` payload shape | Wraps Anthropic Messages streaming events (`message_start / content_block_delta / ...`). Inner shape varies; left as `unknown`. S2 §4.1 lines 296-326 documents the shape but it's better delegated to a dedicated partial-stream handler than baked into the top-level union. |
 | `agent_metadata` fields beyond `agent_id / parent_agent_id` | M1 only mentions those two. Likely has more (subagent name, tool budget, etc.). Passthrough catches them. |
+| `rewind_files` control command payload | Confirmed against sibling worktree `agentory-wt-control-rpc/electron/agent/control-rpc.ts:368` — `rewindFiles(toMessageId)` sends `{ subtype: 'rewind_files', message_id }`. Schema upgraded from `UnknownCommandSchema` to a named `RewindFilesCommandSchema`. |
 
 ## What's UNCONFIRMED — must be revisited with real samples
 
@@ -56,23 +58,50 @@ real samples and update the schemas.
    `UnknownCommandSchema`. **Risk: HIGH** — we can't actually send this command
    today.
 2. **`get_settings` control command**: same as above.
-3. **`rewind_files` control command**: same as above.
-4. **`summary` control command**: same as above.
-5. **`hook_event` inbound frame** (S2 line 293): mentioned in the SDK message
+3. **`summary` control command**: same as above.
+4. **`hook_event` inbound frame** (S2 line 293): mentioned in the SDK message
    list but no schema published. Currently NOT in `ClaudeStreamEventSchema` —
    it will fall into the `unknown` bucket, which is the safer default. Add a
    schema once we record one.
-6. **`tool_use_start` / `tool_result` as standalone top-level frames** (S2 line
+5. **`tool_use_start` / `tool_result` as standalone top-level frames** (S2 line
    292-293): mentioned but no schema. Most tool data flows through
    `assistant.message.content[].tool_use` / `user.message.content[].tool_result`
    blocks instead, so these top-level frames may be vestigial. Not in the union
    today — will be `unknown` if encountered.
-7. **`system.subtype` complete enum**: docs only show `init / compact_boundary
+6. **`system.subtype` complete enum**: docs only show `init / compact_boundary
    / api_retry`. There may be more (`rate_limit_warning`?, `mcp_error`?). Our
    `SystemOtherSchema` catch-all preserves them.
-8. **Permission rule fields on `can_use_tool` / `permission_suggestions[]`
+7. **Permission rule fields on `can_use_tool` / `permission_suggestions[]`
    inner shape**: M1 says `Array<unknown>` and lists "behavior, updatedInput"
    from S2 §5.2 line 406, but no full schema. Left as `unknown`.
+
+## Cross-worktree interface decisions (R4 review follow-up)
+
+- **Outbound `user` `session_id` is OPTIONAL.** claude.exe accepts the very
+  first user message without one (the cliSessionId is only minted and echoed
+  back on the first inbound `system.init` frame). control-rpc therefore sends
+  the first turn omitting `session_id`; `UserMessageEventSchema` reflects that.
+- **`serializeOutgoing` accepts `object` as well as `ClaudeOutgoingEvent`.**
+  control-rpc constructs control-request payloads as plain objects (e.g.
+  `{ subtype: 'rewind_files', message_id }`) and sends them via the parser
+  helper without first casting through `ClaudeOutgoingEvent`. The overload
+  keeps typed callers type-checked while the object overload removes the
+  cross-module type plumbing burden.
+- **`type='control_request'` is used by BOTH inbound and outbound frames** but
+  with different shapes. Inbound `ControlRequestEventSchema` carries
+  `request.subtype ∈ { can_use_tool | hook_callback | mcp_message | ... }`
+  (claude.exe asks us). Outbound `ControlCommandEventSchema` carries
+  `request.subtype ∈ { interrupt | set_permission_mode | set_model |
+  set_max_thinking_tokens | rewind_files | ... }` (we ask claude.exe). The
+  top-level `type` literal is the same string but the discriminator that
+  matters is `request.subtype`. Don't try to merge them — direction is the
+  context, not a wire field.
+- **`ControlRequestPayloadSchema` is `z.union`, not `discriminatedUnion`.**
+  `discriminatedUnion('subtype')` would reject any unknown subtype and force
+  the parser into the `'unknown'` bucket — meaning control-rpc would never
+  see future subtypes (e.g. `permission_decision_v2`) and couldn't even log
+  them. The union order is specific-first with `UnknownControlRequestSchema`
+  as the catch-all, so known shapes still narrow correctly under TS.
 
 ## Forward-compat policy
 
@@ -81,6 +110,8 @@ real samples and update the schemas.
 - Top-level inbound is `z.union(...)` (not strict discriminatedUnion on `type`)
   because the `system` family is itself a union of subtypes; the parser falls
   through to `'unknown'` rather than throwing on shapes we haven't pinned down.
+- `ControlRequestPayloadSchema` uses `z.union(...)` with a catch-all so
+  unknown control_request subtypes still parse as `control_request` frames.
 
 ## Test-only convention
 

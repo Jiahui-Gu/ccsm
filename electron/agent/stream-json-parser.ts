@@ -90,11 +90,19 @@ export function parseStreamJSONLine(raw: string): ParseResult {
 /**
  * Serialize an outbound event to a single NDJSON line (with trailing '\n').
  *
+ * Signature accepts either a typed `ClaudeOutgoingEvent` or a raw `object`.
+ * Cross-worktree convention: control-rpc constructs request payloads as plain
+ * objects (e.g. `{ subtype: 'rewind_files', message_id }`) and shouldn't be
+ * forced to cast through ClaudeOutgoingEvent before sending. The `object`
+ * overload makes that ergonomic while typed callers still get type-checking.
+ *
  * Note: we don't validate against the outgoing schema here — callers may want
  * to pass shapes that are not yet pinned down (e.g. apply_flag_settings whose
  * fields are unconfirmed). Validation is opt-in via the schemas if you want it.
  */
-export function serializeOutgoing(event: ClaudeOutgoingEvent): string {
+export function serializeOutgoing(event: ClaudeOutgoingEvent): string;
+export function serializeOutgoing(event: object): string;
+export function serializeOutgoing(event: ClaudeOutgoingEvent | object): string {
   const line = JSON.stringify(event);
   return line + '\n';
 }

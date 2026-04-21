@@ -188,13 +188,20 @@ export const AssistantMessageSchema = z
   })
   .passthrough();
 
+// Note: `error` is a sibling of `message`, NOT inside it. Confirmed against
+// `src/agent/sdk-to-blocks.ts` assistantBlocksWithError() which reads
+// `msg.error` (rate_limit / billing_error / authentication_failed /
+// invalid_request / server_error / max_output_tokens) and renders an error
+// banner. Without typed exposure here, the rewrite would silently drop those
+// banners (M2 #3 risk: tests pass, UI loses messages).
 export const AssistantEventSchema = z
   .object({
     type: z.literal('assistant'),
     session_id: z.string(),
     parent_tool_use_id: z.string().nullable().optional(),
     uuid: z.string().optional(),
-    message: AssistantMessageSchema
+    message: AssistantMessageSchema,
+    error: z.string().optional()
   })
   .passthrough();
 export type AssistantEvent = z.infer<typeof AssistantEventSchema>;
@@ -303,10 +310,24 @@ export const McpMessageRequestSchema = z
   })
   .passthrough();
 
-export const ControlRequestPayloadSchema = z.discriminatedUnion('subtype', [
+// Catch-all for forward-compat: claude.exe may add new control_request
+// subtypes (e.g. permission_decision_v2) we haven't seen. Without this,
+// `discriminatedUnion('subtype')` would reject the whole frame and the parser
+// would emit 'unknown' — meaning control-rpc never sees it and can't even log
+// "got unfamiliar subtype". Catch-all preserves the frame so callers can
+// decide forward-compat behavior themselves. Order matters: specific schemas
+// MUST come first so they win over the catch-all.
+export const UnknownControlRequestSchema = z
+  .object({
+    subtype: z.string()
+  })
+  .passthrough();
+
+export const ControlRequestPayloadSchema = z.union([
   CanUseToolRequestSchema,
   HookCallbackRequestSchema,
-  McpMessageRequestSchema
+  McpMessageRequestSchema,
+  UnknownControlRequestSchema
 ]);
 
 export const ControlRequestEventSchema = z
@@ -399,11 +420,14 @@ export type ClaudeStreamEvent =
 
 // (a) User message — written to stdin.
 //     M1 §3.2 lines 198-207.
+//     `session_id` is OPTIONAL: claude.exe accepts the first-turn user message
+//     without one (cliSessionId only flows back on the first system frame).
+//     control-rpc relies on this — schema must agree.
 export const UserMessageEventSchema = z
   .object({
     type: z.literal('user'),
     uuid: z.string(),
-    session_id: z.string(),
+    session_id: z.string().optional(),
     parent_tool_use_id: z.string().nullable().default(null),
     isSynthetic: z.boolean().default(false),
     message: z
@@ -478,8 +502,18 @@ export const SetMaxThinkingTokensCommandSchema = z
   })
   .passthrough();
 
-// rewind_files / apply_flag_settings / get_settings / summary: field shape
-// not confirmed. Accept any object with a `subtype` string for forward-compat.
+// rewind_files: confirmed against control-rpc agreement (sibling worktree
+// agentory-wt-control-rpc/electron/agent/control-rpc.ts:368 — `rewindFiles`
+// sends `{ subtype: 'rewind_files', message_id }`). SCHEMA-NOTES updated.
+export const RewindFilesCommandSchema = z
+  .object({
+    subtype: z.literal('rewind_files'),
+    message_id: z.string()
+  })
+  .passthrough();
+
+// apply_flag_settings / get_settings / summary: field shape not confirmed.
+// Accept any object with a `subtype` string for forward-compat.
 export const UnknownCommandSchema = z
   .object({ subtype: z.string() })
   .passthrough();
@@ -489,6 +523,7 @@ export const ControlCommandPayloadSchema = z.union([
   SetPermissionModeCommandSchema,
   SetModelCommandSchema,
   SetMaxThinkingTokensCommandSchema,
+  RewindFilesCommandSchema,
   UnknownCommandSchema
 ]);
 

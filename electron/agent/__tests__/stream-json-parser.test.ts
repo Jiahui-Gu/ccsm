@@ -8,6 +8,9 @@ import {
 } from '../stream-json-parser';
 import {
   ClaudeStreamEventSchema,
+  SystemApiRetrySchema,
+  SystemCompactBoundarySchema,
+  UserMessageEventSchema,
   type ClaudeOutgoingEvent
 } from '../stream-json-types';
 
@@ -261,5 +264,223 @@ describe('serializeOutgoing', () => {
     const parsed = JSON.parse(out.trimEnd());
     const result = ClaudeStreamEventSchema.safeParse(parsed);
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a plain object via the relaxed overload (control-rpc convenience)', () => {
+    // control-rpc constructs payloads as plain objects; serializeOutgoing
+    // should not require casting through ClaudeOutgoingEvent.
+    const out = serializeOutgoing({
+      type: 'control_request',
+      request_id: 'req_rw',
+      request: { subtype: 'rewind_files', message_id: 'msg_abc123' }
+    } as object);
+    expect(out.endsWith('\n')).toBe(true);
+    const parsed = JSON.parse(out.trimEnd());
+    expect(parsed.request.subtype).toBe('rewind_files');
+    expect(parsed.request.message_id).toBe('msg_abc123');
+  });
+});
+
+describe('R4 fix: AssistantEventSchema typed `error` field', () => {
+  it('parses an assistant frame with top-level error code (rate_limit) typed', () => {
+    const r = parseStreamJSONLine(
+      JSON.stringify({
+        type: 'assistant',
+        session_id: 'sid',
+        uuid: 'asst-1',
+        error: 'rate_limit',
+        message: {
+          id: 'msg_x',
+          role: 'assistant',
+          content: [{ type: 'text', text: '' }]
+        }
+      })
+    );
+    expect(r.type).toBe('event');
+    if (r.type !== 'event' || r.event.type !== 'assistant') throw new Error();
+    // Typed access — no `as any` cast.
+    const errorCode: string | undefined = r.event.error;
+    expect(errorCode).toBe('rate_limit');
+  });
+
+  it('still parses an assistant frame without an error field', () => {
+    const r = parseStreamJSONLine(
+      JSON.stringify({
+        type: 'assistant',
+        session_id: 'sid',
+        message: { id: 'm', role: 'assistant', content: [] }
+      })
+    );
+    expect(r.type).toBe('event');
+    if (r.type !== 'event' || r.event.type !== 'assistant') throw new Error();
+    expect(r.event.error).toBeUndefined();
+  });
+
+  it('exposes all six error codes used by sdk-to-blocks errorTitle()', () => {
+    const codes = [
+      'authentication_failed',
+      'billing_error',
+      'rate_limit',
+      'invalid_request',
+      'server_error',
+      'max_output_tokens'
+    ];
+    for (const code of codes) {
+      const r = parseStreamJSONLine(
+        JSON.stringify({
+          type: 'assistant',
+          session_id: 's',
+          error: code,
+          message: { id: 'm', role: 'assistant', content: [] }
+        })
+      );
+      if (r.type !== 'event' || r.event.type !== 'assistant') throw new Error(code);
+      expect(r.event.error).toBe(code);
+    }
+  });
+});
+
+describe('R4 fix: rewind_files command schema', () => {
+  it('serializes and round-trips a rewind_files control command with message_id', () => {
+    const out = serializeOutgoing({
+      type: 'control_request',
+      request_id: 'req_rw1',
+      request: { subtype: 'rewind_files', message_id: 'msg_target' }
+    });
+    const parsed = JSON.parse(out.trimEnd());
+    expect(parsed).toMatchObject({
+      type: 'control_request',
+      request_id: 'req_rw1',
+      request: { subtype: 'rewind_files', message_id: 'msg_target' }
+    });
+  });
+});
+
+describe('R4 fix: outgoing user message session_id is optional', () => {
+  it('serializes a first-turn user message without session_id', () => {
+    const out = serializeOutgoing({
+      type: 'user',
+      uuid: 'u-first',
+      // session_id intentionally omitted (first turn before cliSessionId echo)
+      parent_tool_use_id: null,
+      isSynthetic: false,
+      message: { role: 'user', content: 'hello' }
+    });
+    const parsed = JSON.parse(out.trimEnd());
+    expect(parsed.uuid).toBe('u-first');
+    expect(parsed.session_id).toBeUndefined();
+  });
+
+  it('still accepts a user message with session_id (continuation turn)', () => {
+    const out = serializeOutgoing({
+      type: 'user',
+      uuid: 'u-2',
+      session_id: '01HZJ1234ABCDXYZ',
+      parent_tool_use_id: null,
+      isSynthetic: false,
+      message: { role: 'user', content: 'continue' }
+    });
+    const parsed = JSON.parse(out.trimEnd());
+    expect(parsed.session_id).toBe('01HZJ1234ABCDXYZ');
+  });
+
+  it('UserMessageEventSchema validates both shapes', () => {
+    const without = UserMessageEventSchema.safeParse({
+      type: 'user',
+      uuid: 'u',
+      parent_tool_use_id: null,
+      isSynthetic: false,
+      message: { role: 'user', content: 'hi' }
+    });
+    expect(without.success).toBe(true);
+    const withSid = UserMessageEventSchema.safeParse({
+      type: 'user',
+      uuid: 'u',
+      session_id: 'sid',
+      parent_tool_use_id: null,
+      isSynthetic: false,
+      message: { role: 'user', content: 'hi' }
+    });
+    expect(withSid.success).toBe(true);
+  });
+});
+
+describe('R4 fix: control_request unknown subtypes survive (not dropped to "unknown")', () => {
+  it('parses an unknown control_request subtype as a control_request event', () => {
+    const r = parseStreamJSONLine(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'req_future',
+        request: {
+          subtype: 'permission_decision_v2',
+          some_new_field: { reason: 'forward-compat' }
+        }
+      })
+    );
+    expect(r.type).toBe('event');
+    if (r.type !== 'event' || r.event.type !== 'control_request') throw new Error();
+    expect(r.event.request.subtype).toBe('permission_decision_v2');
+    // passthrough preserves the unknown payload field
+    expect(
+      (r.event.request as Record<string, unknown>).some_new_field
+    ).toEqual({ reason: 'forward-compat' });
+  });
+
+  it('still narrows known subtypes correctly (catch-all does not eat them)', () => {
+    const r = parseStreamJSONLine(
+      JSON.stringify({
+        type: 'control_request',
+        request_id: 'req_known',
+        request: {
+          subtype: 'can_use_tool',
+          tool_name: 'Read',
+          tool_use_id: 'toolu_z',
+          input: { file_path: '/tmp/x' }
+        }
+      })
+    );
+    if (r.type !== 'event' || r.event.type !== 'control_request') throw new Error();
+    if (r.event.request.subtype !== 'can_use_tool') throw new Error('did not narrow');
+    // typed access only available on the can_use_tool branch
+    expect(r.event.request.tool_name).toBe('Read');
+  });
+});
+
+describe('R4 fix: compact_boundary fixture — typed field exposure', () => {
+  it('parses every line and exposes compact_metadata fields without `as any`', () => {
+    const results = parseAll('compact_boundary.jsonl');
+    expect(results).toHaveLength(2);
+    for (const r of results) {
+      expect(r.type).toBe('event');
+      if (r.type !== 'event' || r.event.type !== 'system') throw new Error();
+      // Narrow on subtype literal
+      const ev = r.event as Extract<typeof r.event, { subtype?: string }>;
+      expect(ev.subtype).toBe('compact_boundary');
+    }
+    // Validate first line's compact_metadata via the dedicated schema so we
+    // get typed access to pre_tokens / post_tokens / duration_ms / trigger.
+    const parsed = SystemCompactBoundarySchema.parse(
+      JSON.parse(readLines('compact_boundary.jsonl')[0])
+    );
+    expect(parsed.compact_metadata?.trigger).toBe('auto');
+    expect(parsed.compact_metadata?.pre_tokens).toBe(182340);
+    expect(parsed.compact_metadata?.post_tokens).toBe(54210);
+    expect(parsed.compact_metadata?.duration_ms).toBe(1820);
+  });
+});
+
+describe('R4 fix: api_retry fixture — typed field exposure', () => {
+  it('parses every line and exposes attempt / max_retries / retry_delay_ms / error_status', () => {
+    const results = parseAll('api_retry.jsonl');
+    expect(results).toHaveLength(2);
+    const lines = readLines('api_retry.jsonl');
+    const first = SystemApiRetrySchema.parse(JSON.parse(lines[0]));
+    expect(first.attempt).toBe(1);
+    expect(first.max_retries).toBe(5);
+    expect(first.retry_delay_ms).toBe(2000);
+    expect(first.error_status).toBe(529);
+    const second = SystemApiRetrySchema.parse(JSON.parse(lines[1]));
+    expect(second.attempt).toBe(2);
+    expect(second.error_status).toBe('overloaded_error'); // string variant
   });
 });
