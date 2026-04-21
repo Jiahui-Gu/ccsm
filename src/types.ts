@@ -36,8 +36,22 @@ export interface Session {
   // after creation; the renderer only sets `useWorktree` (and optionally
   // `sourceBranch`) up front.
   useWorktree?: boolean;
+  /**
+   * Absolute filesystem path of the provisioned worktree. Populated by the
+   * main process after the worktree is created; remains undefined for
+   * sessions that don't use a worktree OR whose provisioning failed.
+   */
   worktreePath?: string;
+  /**
+   * Friendly/branch name of the worktree (e.g. `claude/brave-turing-a1b2c3`).
+   * Drives the branch pill shown in the sidebar row and status bar.
+   */
   worktreeName?: string;
+  /**
+   * The branch the worktree was branched off from (user-selected at create
+   * time). Purely informational — used in tooltips and future "merge back"
+   * flows.
+   */
   sourceBranch?: string;
 }
 

@@ -12,6 +12,7 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { PrFlowProvider } from './components/PrFlowProvider';
+import { SessionCreateDialog } from './components/SessionCreateDialog';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
@@ -38,7 +39,6 @@ export default function App() {
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
   const moveSession = useStore((s) => s.moveSession);
-  const createSession = useStore((s) => s.createSession);
   const createGroup = useStore((s) => s.createGroup);
   const changeCwd = useStore((s) => s.changeCwd);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
@@ -101,6 +101,16 @@ export default function App() {
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+  const [createOpen, setCreateOpen] = React.useState(false);
+  // Seed cwd passed into SessionCreateDialog on the next open. Reset back to
+  // undefined whenever the dialog closes so the next open doesn't stick to a
+  // stale folder pick.
+  const [createSeedCwd, setCreateSeedCwd] = React.useState<string | null | undefined>(undefined);
+
+  const openCreateDialog = React.useCallback((cwd: string | null) => {
+    setCreateSeedCwd(cwd);
+    setCreateOpen(true);
+  }, []);
 
   // Bridge from the slash-command handlers (`/config`, `/model`) into the
   // local Settings open state.
@@ -137,12 +147,12 @@ export default function App() {
         focusGroup(id);
       } else if (k === 'n') {
         e.preventDefault();
-        createSession(null);
+        openCreateDialog(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createSession, createGroup, focusGroup, toggleSidebar]);
+  }, [createGroup, focusGroup, toggleSidebar, openCreateDialog]);
 
   if (!active) {
     return (
@@ -154,7 +164,7 @@ export default function App() {
           <AppShell
             sidebar={
               <Sidebar
-                onCreateSession={(cwd) => createSession(cwd)}
+                onCreateSession={(cwd) => openCreateDialog(cwd)}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onOpenPalette={() => setPaletteOpen(true)}
                 activeSessionId={activeId}
@@ -177,7 +187,7 @@ export default function App() {
                       <Button
                         variant="secondary"
                         size="md"
-                        onClick={() => createSession(null)}
+                        onClick={() => openCreateDialog(null)}
                         className="w-44 justify-center"
                       >
                         <Plus size={14} className="stroke-[2]" />
@@ -197,7 +207,7 @@ export default function App() {
                     <Tutorial
                       onNewSession={() => {
                         markTutorialSeen();
-                        createSession(null);
+                        openCreateDialog(null);
                       }}
                       onImport={() => {
                         markTutorialSeen();
@@ -212,12 +222,20 @@ export default function App() {
           />
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+          <SessionCreateDialog
+            open={createOpen}
+            onOpenChange={(o) => {
+              setCreateOpen(o);
+              if (!o) setCreateSeedCwd(undefined);
+            }}
+            initialCwd={createSeedCwd}
+          />
           <ClaudeCliMissingDialog />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
             onOpenSettings={() => setSettingsOpen(true)}
-            onNewSession={() => createSession(null)}
+            onNewSession={() => openCreateDialog(null)}
             onOpenImport={() => setImportOpen(true)}
             onSelectSession={selectSession}
             onFocusGroup={focusGroup}
@@ -236,7 +254,7 @@ export default function App() {
         <AppShell
           sidebar={
             <Sidebar
-              onCreateSession={(cwd) => createSession(cwd)}
+              onCreateSession={(cwd) => openCreateDialog(cwd)}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenPalette={() => setPaletteOpen(true)}
               activeSessionId={activeId}
@@ -258,6 +276,7 @@ export default function App() {
                 cwd={active.cwd}
                 model={active.model || model}
                 permission={permission}
+                worktreeName={active.worktreeName}
                 onChangeCwd={async (p) => {
                   let next = p;
                   if (next === null) {
@@ -279,13 +298,21 @@ export default function App() {
         />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+        <SessionCreateDialog
+          open={createOpen}
+          onOpenChange={(o) => {
+            setCreateOpen(o);
+            if (!o) setCreateSeedCwd(undefined);
+          }}
+          initialCwd={createSeedCwd}
+        />
         <ClaudeCliMissingDialog />
         <PrFlowProvider />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onOpenSettings={() => setSettingsOpen(true)}
-          onNewSession={() => createSession(null)}
+          onNewSession={() => openCreateDialog(null)}
           onOpenImport={() => setImportOpen(true)}
           onSelectSession={selectSession}
           onFocusGroup={focusGroup}

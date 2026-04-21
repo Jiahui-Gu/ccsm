@@ -6,7 +6,8 @@ import type {
   FontSizePx,
   Density,
   WatchdogConfig,
-  NotificationSettings
+  NotificationSettings,
+  CcWorktreeParentDir
 } from './store';
 import type { RecentProject } from '../mock/data';
 
@@ -46,6 +47,12 @@ export interface PersistedState {
    * the CLI flags are simply omitted (identical to legacy behavior).
    */
   permissionRules?: PermissionRules;
+  /** Branch prefix used by the worktree spawner when generating branch names. */
+  ccBranchPrefix?: string;
+  /** Parent directory mode/path for newly provisioned worktrees. */
+  ccWorktreeParentDir?: CcWorktreeParentDir;
+  /** Auto-archive a session's group after its associated PR is closed/merged. */
+  ccAutoArchiveOnPrClose?: boolean;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
