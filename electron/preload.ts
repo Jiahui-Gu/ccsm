@@ -9,7 +9,9 @@ type StartOpts = {
   endpointId?: string;
 };
 
-type StartResult = { ok: true } | { ok: false; error: string };
+type StartResult =
+  | { ok: true }
+  | { ok: false; error: string; errorCode?: 'CLAUDE_NOT_FOUND'; searchedPaths?: string[] };
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
@@ -73,6 +75,25 @@ type UpdateStatus =
   | { kind: 'downloading'; percent: number; transferred: number; total: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
+
+type CliInstallHints = {
+  os: string;
+  arch: string;
+  commands: {
+    native?: string;
+    packageManager?: string;
+    npm: string;
+  };
+  docsUrl: string;
+};
+
+type CliRetryResult =
+  | { found: true; path: string; version: string | null }
+  | { found: false; searchedPaths: string[] };
+
+type CliSetBinaryResult =
+  | { ok: true; version: string | null }
+  | { ok: false; error: string };
 
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
@@ -202,6 +223,15 @@ const api = {
     listByEndpoint: (id: string): Promise<ModelRow[]> =>
       ipcRenderer.invoke('models:listByEndpoint', id),
     listAll: (): Promise<EndpointWithModels[]> => ipcRenderer.invoke('models:listAll'),
+  },
+
+  cli: {
+    getInstallHints: (): Promise<CliInstallHints> => ipcRenderer.invoke('cli:getInstallHints'),
+    browseBinary: (): Promise<string | null> => ipcRenderer.invoke('cli:browseBinary'),
+    setBinaryPath: (p: string): Promise<CliSetBinaryResult> =>
+      ipcRenderer.invoke('cli:setBinaryPath', p),
+    openDocs: (): Promise<boolean> => ipcRenderer.invoke('cli:openDocs'),
+    retryDetect: (): Promise<CliRetryResult> => ipcRenderer.invoke('cli:retryDetect'),
   }
 };
 

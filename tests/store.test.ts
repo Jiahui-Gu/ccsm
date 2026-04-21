@@ -415,3 +415,88 @@ describe('store: selectSession bumps focusInputNonce', () => {
     expect(s.focusInputNonce).toBe(start + 1);
   });
 });
+
+describe('store: checkCli / CLI missing flow', () => {
+  beforeEach(() => {
+    // Every test in this suite stubs the cli API on window.agentory; reset
+    // to a known baseline each run.
+    (globalThis as { window?: unknown }).window = (globalThis as { window?: unknown }).window ?? {};
+    (window as unknown as { agentory?: unknown }).agentory = undefined;
+    useStore.setState({ cliStatus: { state: 'checking' } });
+  });
+
+  it('missing → user picks binary → found', async () => {
+    const retryDetect = vi
+      .fn()
+      .mockResolvedValueOnce({ found: false, searchedPaths: ['where claude (PATH)'] })
+      .mockResolvedValueOnce({ found: true, path: '/opt/claude', version: '2.1.5' });
+    const setBinaryPath = vi.fn().mockResolvedValue({ ok: true, version: '2.1.5' });
+    const browseBinary = vi.fn().mockResolvedValue('/opt/claude');
+    (window as unknown as { agentory: unknown }).agentory = {
+      cli: {
+        getInstallHints: vi.fn(),
+        browseBinary,
+        setBinaryPath,
+        openDocs: vi.fn(),
+        retryDetect,
+      },
+    };
+
+    await useStore.getState().checkCli();
+    let s = useStore.getState().cliStatus;
+    expect(s.state).toBe('missing');
+    if (s.state === 'missing') {
+      expect(s.dialogOpen).toBe(true);
+      expect(s.searchedPaths).toEqual(['where claude (PATH)']);
+    }
+
+    // Simulate the "I already have it → Browse" flow: UI calls setBinaryPath
+    // then re-runs checkCli.
+    const picked = await (
+      window as unknown as {
+        agentory: { cli: { browseBinary: () => Promise<string | null> } };
+      }
+    ).agentory.cli.browseBinary();
+    expect(picked).toBe('/opt/claude');
+    const res = await (
+      window as unknown as {
+        agentory: {
+          cli: { setBinaryPath: (p: string) => Promise<{ ok: boolean }> };
+        };
+      }
+    ).agentory.cli.setBinaryPath(picked as string);
+    expect(res.ok).toBe(true);
+
+    await useStore.getState().checkCli();
+    s = useStore.getState().cliStatus;
+    expect(s.state).toBe('found');
+    if (s.state === 'found') {
+      expect(s.binaryPath).toBe('/opt/claude');
+      expect(s.version).toBe('2.1.5');
+    }
+  });
+
+  it('setCliMissing / openCliDialog / closeCliDialog toggle dialogOpen', () => {
+    useStore.getState().setCliMissing(['where claude (PATH)']);
+    let s = useStore.getState().cliStatus;
+    if (s.state !== 'missing') throw new Error('expected missing');
+    expect(s.dialogOpen).toBe(true);
+
+    useStore.getState().closeCliDialog();
+    s = useStore.getState().cliStatus;
+    if (s.state !== 'missing') throw new Error('expected missing');
+    expect(s.dialogOpen).toBe(false);
+
+    useStore.getState().openCliDialog();
+    s = useStore.getState().cliStatus;
+    if (s.state !== 'missing') throw new Error('expected missing');
+    expect(s.dialogOpen).toBe(true);
+  });
+
+  it('checkCli without preload API marks status found (keeps app usable in tests)', async () => {
+    (window as unknown as { agentory?: unknown }).agentory = undefined;
+    await useStore.getState().checkCli();
+    const s = useStore.getState().cliStatus;
+    expect(s.state).toBe('found');
+  });
+});

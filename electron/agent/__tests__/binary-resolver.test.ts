@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveClaudeBinary, parseCmdShim, classifyInvocation, quoteCmdArg } from '../binary-resolver';
+import {
+  resolveClaudeBinary,
+  parseCmdShim,
+  classifyInvocation,
+  quoteCmdArg,
+  ClaudeNotFoundError,
+  detectClaudeVersion,
+} from '../binary-resolver';
 
 // We test against the real `where` (Windows) / `which` (POSIX) command on
 // PATH. Tests that need a guaranteed hit use AGENTORY_CLAUDE_BIN with a
@@ -65,6 +72,37 @@ describe('resolveClaudeBinary', () => {
       await expect(resolveClaudeBinary()).rejects.toThrow(
         /Claude CLI not found.*npm i -g @anthropic-ai\/claude-code/
       );
+    } finally {
+      process.env.PATH = savedPath;
+      if (savedPathLower !== undefined) process.env.path = savedPathLower;
+      else delete process.env.path;
+      if (savedPathExt !== undefined) process.env.PATHEXT = savedPathExt;
+      else delete process.env.PATHEXT;
+    }
+  });
+
+  it('throws ClaudeNotFoundError (not generic Error) with searchedPaths when PATH is scrubbed', async () => {
+    const savedPath = process.env.PATH;
+    const savedPathExt = process.env.PATHEXT;
+    const savedPathLower = process.env.path;
+    process.env.PATH = '';
+    process.env.path = '';
+    if (process.platform === 'win32') process.env.PATHEXT = '';
+    try {
+      let caught: unknown;
+      try {
+        await resolveClaudeBinary();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(ClaudeNotFoundError);
+      const err = caught as ClaudeNotFoundError;
+      expect(err.code).toBe('CLAUDE_NOT_FOUND');
+      expect(Array.isArray(err.searchedPaths)).toBe(true);
+      expect(err.searchedPaths.length).toBeGreaterThan(0);
+      // Should mention the lookup tool we attempted.
+      const joined = err.searchedPaths.join(' ').toLowerCase();
+      expect(joined).toMatch(/(where|which)/);
     } finally {
       process.env.PATH = savedPath;
       if (savedPathLower !== undefined) process.env.path = savedPathLower;
@@ -231,5 +269,71 @@ describe('quoteCmdArg', () => {
     // `foo\` inside `"..."` would normally end the quoted region badly; we
     // double the trailing backslashes before the closing quote.
     expect(quoteCmdArg('foo\\')).toBe('"foo\\\\"');
+  });
+});
+
+describe('detectClaudeVersion', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'agentory-version-'));
+  });
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // We build fake "binaries" that emit a fixed stdout. On Windows we use a
+  // .cmd script (detectClaudeVersion uses shell: true on Windows); on POSIX
+  // we use a chmod +x shell script.
+  function writeFakeBinary(stdout: string, exitCode: number = 0): string {
+    if (process.platform === 'win32') {
+      const p = join(tmpDir, 'fake.cmd');
+      // `echo` in cmd prints the literal string; use multiple lines if needed.
+      const lines = stdout.split('\n');
+      const body = [
+        '@echo off',
+        ...lines.map((l) => `echo ${l}`),
+        `exit /b ${exitCode}`,
+      ].join('\r\n');
+      writeFileSync(p, body);
+      return p;
+    }
+    const p = join(tmpDir, 'fake.sh');
+    writeFileSync(p, `#!/bin/sh\nprintf '%s\\n' "${stdout.replace(/"/g, '\\"')}"\nexit ${exitCode}\n`);
+    chmodSync(p, 0o755);
+    return p;
+  }
+
+  it('parses a well-formed "2.1.3" output', async () => {
+    const p = writeFakeBinary('2.1.3 (Claude Code)');
+    const got = await detectClaudeVersion(p);
+    expect(got).toBe('2.1.3');
+  });
+
+  it('parses a version embedded in a longer banner', async () => {
+    const p = writeFakeBinary('claude-code v1.0.12 — build abc123');
+    const got = await detectClaudeVersion(p);
+    expect(got).toBe('1.0.12');
+  });
+
+  it('returns null when --version output has no semver token', async () => {
+    const p = writeFakeBinary('hello world, no version here');
+    const got = await detectClaudeVersion(p);
+    expect(got).toBeNull();
+  });
+
+  it('returns null when the binary exits non-zero', async () => {
+    const p = writeFakeBinary('2.0.0', 1);
+    const got = await detectClaudeVersion(p);
+    expect(got).toBeNull();
+  });
+
+  it('returns null for a non-existent path', async () => {
+    const got = await detectClaudeVersion(join(tmpDir, 'does-not-exist'));
+    expect(got).toBeNull();
   });
 });
