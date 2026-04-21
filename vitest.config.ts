@@ -6,7 +6,7 @@ export default defineConfig({
     include: [
       'tests/**/*.test.ts',
       'tests/**/*.test.tsx',
-      'electron/**/__tests__/**/*.test.ts'
+      'electron/**/__tests__/**/*.test.ts',
     ],
     globals: true,
     setupFiles: ['tests/setup.ts']
