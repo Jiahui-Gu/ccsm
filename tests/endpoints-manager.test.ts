@@ -102,6 +102,20 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk-1' });
     expect(mgr.getPlainKey(row.id)).toBeNull();
   });
+
+  it('adds an endpoint with empty apiKey and persists without a stored key', () => {
+    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+    const row = mgr.addEndpoint({
+      name: 'Local relay',
+      baseUrl: 'http://127.0.0.1:8080',
+      apiKey: '',
+    });
+    expect(row.id).toBeTruthy();
+    expect(mgr.getPlainKey(row.id)).toBeNull();
+    // Row must round-trip via listEndpoints.
+    const list = mgr.listEndpoints();
+    expect(list.find((e) => e.id === row.id)?.name).toBe('Local relay');
+  });
 });
 
 function anthropicPage(ids: string[], has_more = false, last_id?: string) {
@@ -201,6 +215,27 @@ describe('EndpointsManager: testConnection', () => {
     if (!res.ok) {
       expect(res.status).toBe(401);
       expect(res.error).toContain('Authentication failed');
+    }
+  });
+
+  it('succeeds with an empty apiKey and omits the x-api-key header', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, anthropicPage([])));
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
+    const res = await mgr.testConnection({ baseUrl: 'https://relay.local', apiKey: '' });
+    expect(res.ok).toBe(true);
+    const init = fetchMock.mock.calls[0][1] as { headers: Record<string, string> };
+    expect(init.headers['x-api-key']).toBeUndefined();
+    expect(init.headers['anthropic-version']).toBeTruthy();
+  });
+
+  it('empty-key + 401 surfaces a "requires a key" hint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(401, { error: 'need key' }));
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
+    const res = await mgr.testConnection({ baseUrl: 'https://a', apiKey: '' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.status).toBe(401);
+      expect(res.error).toContain('requires a key');
     }
   });
 });
