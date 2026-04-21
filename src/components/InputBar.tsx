@@ -26,6 +26,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
   const resetWatchdogCount = useStore((s) => s.resetWatchdogCount);
+  const markInterrupted = useStore((s) => s.markInterrupted);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   React.useEffect(() => {
@@ -82,6 +83,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (!running) return;
     const api = window.agentory;
     if (!api) return;
+    // Flag the session BEFORE the IPC call so the upcoming
+    // `result { error_during_execution }` frame is rendered as a neutral
+    // "Interrupted" banner instead of an error block.
+    markInterrupted(sessionId);
     await api.agentInterrupt(sessionId);
     // running flag is cleared when the SDK emits its result message.
   }

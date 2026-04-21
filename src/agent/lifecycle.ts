@@ -152,8 +152,12 @@ export function subscribeAgentEvents(): void {
       }
       return;
     }
-    const { append, toolResults } = streamEventToTranslation(e.message);
     const store = useStore.getState();
+    const ctx =
+      e.message.type === 'result'
+        ? { interrupted: store.consumeInterrupted(e.sessionId) }
+        : {};
+    const { append, toolResults } = streamEventToTranslation(e.message, ctx);
     if (append.length > 0) store.appendBlocks(e.sessionId, append);
     for (const tr of toolResults) {
       store.setToolResult(e.sessionId, tr.toolUseId, tr.result, tr.isError);
