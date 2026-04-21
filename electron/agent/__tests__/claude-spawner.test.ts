@@ -11,11 +11,21 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: mockSpawnFn, default: { ...actual, spawn: mockSpawnFn } };
 });
 // Force the resolver path to never be hit (we always pass binaryPath).
-vi.mock('../binary-resolver', () => ({
-  resolveClaudeBinary: vi.fn(async () => '/should/not/be/called'),
-}));
+// classifyInvocation is preserved from the real module so paths without
+// .cmd/.exe suffixes pass through as `direct` invocations.
+vi.mock('../binary-resolver', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../binary-resolver')>();
+  return {
+    ...actual,
+    resolveClaudeBinary: vi.fn(async () => '/should/not/be/called'),
+    resolveClaudeInvocation: vi.fn(async () => ({
+      kind: 'direct' as const,
+      path: '/should/not/be/called',
+    })),
+  };
+});
 
-import { spawnClaude, buildSpawnArgs, buildSpawnEnv } from '../claude-spawner';
+import { spawnClaude, buildSpawnArgs, buildSpawnEnv, __test__ } from '../claude-spawner';
 
 const mockedSpawn = mockSpawnFn;
 
@@ -292,5 +302,260 @@ describe('spawnClaude', () => {
     // queueMicrotask is used in the impl; flush it.
     await Promise.resolve();
     expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('does not call SIGKILL when the child exits cleanly inside the grace window', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeChild();
+    mockedSpawn.mockImplementation(() => fake);
+
+    const ac = new AbortController();
+    const cp = await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: '/x/claude',
+      signal: ac.signal,
+      killGracePeriodMs: 100,
+    });
+    expect(cp).toBeTruthy();
+
+    ac.abort();
+    await Promise.resolve();
+    expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Child exits on its own before the kill timer fires.
+    fake.emit('exit', 0, 'SIGTERM');
+    vi.advanceTimersByTime(500);
+    expect(fake.kill).not.toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('captures the tail of stderr into an in-memory ring (~8KB cap)', async () => {
+    const fake = makeFakeChild();
+    mockedSpawn.mockImplementation(() => fake);
+
+    const cp = await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: '/x/claude',
+    });
+
+    // Write a small auth-error-shaped message and a much larger blob to
+    // verify trimming.
+    fake.stderr.write('error: invalid api key\n');
+    const big = Buffer.alloc(__test__.STDERR_RING_BYTES * 3, 0x41); // 'A'
+    fake.stderr.write(big);
+    // Allow the data event to flush.
+    await new Promise((r) => setImmediate(r));
+
+    const tail = cp.getRecentStderr();
+    expect(tail.length).toBeLessThanOrEqual(__test__.STDERR_RING_BYTES);
+    // The most recent bytes should be the 'A' fill.
+    expect(tail.endsWith('A')).toBe(true);
+    // And the early auth-error message should have been evicted.
+    expect(tail.includes('invalid api key')).toBe(false);
+  });
+
+  it('returns an empty stderr tail when the child wrote nothing', async () => {
+    const fake = makeFakeChild();
+    mockedSpawn.mockImplementation(() => fake);
+
+    const cp = await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: '/x/claude',
+    });
+    expect(cp.getRecentStderr()).toBe('');
+  });
+
+  it('multiple abort() calls on the same signal only fire SIGTERM once', async () => {
+    const fake = makeFakeChild();
+    mockedSpawn.mockImplementation(() => fake);
+
+    const ac = new AbortController();
+    await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: '/x/claude',
+      signal: ac.signal,
+    });
+    ac.abort();
+    ac.abort(); // no-op on AbortController, but defend in any case
+    await Promise.resolve();
+    const sigtermCalls = fake.kill.mock.calls.filter((c) => c[0] === 'SIGTERM');
+    expect(sigtermCalls).toHaveLength(1);
+  });
+});
+
+describe('SAFE_ENV whitelist', () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    for (const k of Object.keys(process.env)) delete process.env[k];
+    Object.assign(process.env, ORIGINAL_ENV);
+  });
+
+  // Windows iterates env with case-folded keys (`process.env.ComSpec` is
+  // returned as `COMSPEC` in Object.entries on Win11). Since the env we
+  // pass to the child preserves whatever case we got, we look up by ci
+  // for cross-platform tests.
+  const ci = (env: NodeJS.ProcessEnv, k: string): string | undefined => {
+    const lk = k.toLowerCase();
+    for (const [ek, ev] of Object.entries(env)) {
+      if (ek.toLowerCase() === lk) return ev;
+    }
+    return undefined;
+  };
+
+  it('passes enterprise-required Windows env (HOMEDRIVE/HOMEPATH/USERDOMAIN/COMPUTERNAME)', () => {
+    process.env.HOMEDRIVE = 'C:';
+    process.env.HOMEPATH = '\\Users\\test';
+    process.env.USERDOMAIN = 'CORP';
+    process.env.COMPUTERNAME = 'WORKSTATION-1';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'HOMEDRIVE')).toBe('C:');
+    expect(ci(env, 'HOMEPATH')).toBe('\\Users\\test');
+    expect(ci(env, 'USERDOMAIN')).toBe('CORP');
+    expect(ci(env, 'COMPUTERNAME')).toBe('WORKSTATION-1');
+  });
+
+  it('passes nvm/fnm/volta toolchain env via prefix match', () => {
+    process.env.NVM_DIR = '/home/u/.nvm';
+    process.env.FNM_DIR = '/home/u/.fnm';
+    process.env.FNM_MULTISHELL_PATH = '/tmp/fnm_multishell';
+    process.env.VOLTA_HOME = '/home/u/.volta';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'NVM_DIR')).toBe('/home/u/.nvm');
+    expect(ci(env, 'FNM_DIR')).toBe('/home/u/.fnm');
+    expect(ci(env, 'FNM_MULTISHELL_PATH')).toBe('/tmp/fnm_multishell');
+    expect(ci(env, 'VOLTA_HOME')).toBe('/home/u/.volta');
+  });
+
+  it('passes the entire LC_* family via prefix match', () => {
+    process.env.LC_MESSAGES = 'zh_CN.UTF-8';
+    process.env.LC_TIME = 'en_US.UTF-8';
+    process.env.LC_NUMERIC = 'C';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'LC_MESSAGES')).toBe('zh_CN.UTF-8');
+    expect(ci(env, 'LC_TIME')).toBe('en_US.UTF-8');
+    expect(ci(env, 'LC_NUMERIC')).toBe('C');
+  });
+
+  it('passes npm config (NPM_CONFIG_* and npm_config_*) via prefix', () => {
+    process.env.NPM_CONFIG_PREFIX = '/usr/local';
+    process.env.npm_config_registry = 'https://registry.npmjs.org/';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'NPM_CONFIG_PREFIX')).toBe('/usr/local');
+    expect(ci(env, 'npm_config_registry')).toBe('https://registry.npmjs.org/');
+  });
+
+  it('passes proxy + SSL + SSH-agent env', () => {
+    process.env.ALL_PROXY = 'socks://10.0.0.1:1080';
+    process.env.all_proxy = 'socks://10.0.0.1:1080';
+    process.env.SSL_CERT_FILE = '/etc/ssl/cert.pem';
+    process.env.SSL_CERT_DIR = '/etc/ssl/certs';
+    process.env.SSH_AUTH_SOCK = '/tmp/ssh-XXX/agent.123';
+    process.env.SSH_AGENT_PID = '12345';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'ALL_PROXY')).toBe('socks://10.0.0.1:1080');
+    expect(ci(env, 'all_proxy')).toBe('socks://10.0.0.1:1080');
+    expect(ci(env, 'SSL_CERT_FILE')).toBe('/etc/ssl/cert.pem');
+    expect(ci(env, 'SSL_CERT_DIR')).toBe('/etc/ssl/certs');
+    expect(ci(env, 'SSH_AUTH_SOCK')).toBe('/tmp/ssh-XXX/agent.123');
+    expect(ci(env, 'SSH_AGENT_PID')).toBe('12345');
+  });
+
+  it('passes Windows ProgramFiles* via prefix match', () => {
+    process.env.ProgramFiles = 'C:\\Program Files';
+    process.env['ProgramFiles(x86)'] = 'C:\\Program Files (x86)';
+    process.env.CommonProgramFiles = 'C:\\Program Files\\Common Files';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'ProgramFiles')).toBe('C:\\Program Files');
+    expect(ci(env, 'ProgramFiles(x86)')).toBe('C:\\Program Files (x86)');
+    expect(ci(env, 'CommonProgramFiles')).toBe('C:\\Program Files\\Common Files');
+  });
+
+  it('still drops NODE_OPTIONS even when smuggled via process.env', () => {
+    process.env.NODE_OPTIONS = '--inspect';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(env.NODE_OPTIONS).toBeUndefined();
+  });
+
+  it('drops random parent vars not on the whitelist', () => {
+    process.env.SOME_VENDOR_SECRET = 'leak';
+    process.env.RANDOM_THING = 'no';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(env.SOME_VENDOR_SECRET).toBeUndefined();
+    expect(env.RANDOM_THING).toBeUndefined();
+  });
+
+  it('uses canonical Windows casing (ComSpec, not COMSPEC) for whitelist hits', () => {
+    process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'ComSpec')).toBe('C:\\Windows\\System32\\cmd.exe');
+  });
+});
+
+describe('spawnClaude (Windows shim dispatch)', () => {
+  it('node-script invocation: spawns node with the script as argv[0]', async () => {
+    mockedSpawn.mockImplementation(() => makeFakeChild());
+
+    // Stub classifyInvocation to force the node-script branch.
+    const resolver = await import('../binary-resolver');
+    const spy = vi.spyOn(resolver, 'classifyInvocation').mockReturnValue({
+      kind: 'node-script',
+      node: 'C:/path/node.exe',
+      script: 'C:/path/cli.js',
+    });
+
+    await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: 'C:/path/claude.cmd',
+    });
+    const [bin, argv, opts] = mockedSpawn.mock.calls[0];
+    expect(bin).toBe('C:/path/node.exe');
+    expect((argv as string[])[0]).toBe('C:/path/cli.js');
+    expect((argv as string[]).slice(1, 6)).toEqual([
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+    ]);
+    expect((opts as { shell: boolean }).shell).toBe(false);
+
+    spy.mockRestore();
+  });
+
+  it('cmd-shell fallback: shell:true with cmd-quoted command line, no argv', async () => {
+    mockedSpawn.mockImplementation(() => makeFakeChild());
+
+    const resolver = await import('../binary-resolver');
+    const spy = vi.spyOn(resolver, 'classifyInvocation').mockReturnValue({
+      kind: 'cmd-shell',
+      path: 'C:\\Program Files\\weird shim\\claude.cmd',
+    });
+
+    await spawnClaude({
+      cwd: '/w',
+      configDir: '/c',
+      binaryPath: 'C:\\Program Files\\weird shim\\claude.cmd',
+      // Pass a malicious-looking arg to verify it's quoted, not interpreted.
+      resumeId: 'sess_a&b|c"d',
+    });
+
+    const [cmdline, argv, opts] = mockedSpawn.mock.calls[0];
+    expect((opts as { shell: boolean }).shell).toBe(true);
+    expect(argv).toEqual([]);
+    // The full command line must contain the binary path quoted (with the
+    // space) and the malicious arg both quoted AND caret-escaped.
+    expect(cmdline as string).toContain('"C:\\Program Files\\weird shim\\claude.cmd"');
+    // The shell metachars must be neutralized (caret-prefixed).
+    expect(cmdline as string).not.toMatch(/[^^]&/);
+    expect(cmdline as string).not.toMatch(/[^^]\|/);
+    expect(cmdline as string).toContain('^&');
+    expect(cmdline as string).toContain('^|');
+
+    spy.mockRestore();
   });
 });

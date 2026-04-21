@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveClaudeBinary } from '../binary-resolver';
+import { resolveClaudeBinary, parseCmdShim, classifyInvocation, quoteCmdArg } from '../binary-resolver';
 
 // We test against the real `where` (Windows) / `which` (POSIX) command on
 // PATH. Tests that need a guaranteed hit use AGENTORY_CLAUDE_BIN with a
@@ -90,5 +90,148 @@ describe('resolveClaudeBinary', () => {
       // would fail to find the .cmd shim.
       expect(probe!.toLowerCase()).toMatch(/[a-z]:[\\/]/);
     }
+  });
+});
+
+describe('parseCmdShim', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'agentory-shim-'));
+  });
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it('unwraps a native-binary forwarder shim (current claude-code 2.x layout)', () => {
+    // Reproduce the real shim layout: `<dir>/claude.cmd` -> `<dir>/node_modules/.../claude.exe`
+    const exePath = join(tmpDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+    // mkdirSync via writeFileSync requires the dir exist; build it.
+    const { mkdirSync } = require('node:fs');
+    mkdirSync(join(tmpDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin'), { recursive: true });
+    writeFileSync(exePath, 'fake-exe');
+    const cmdPath = join(tmpDir, 'claude.cmd');
+    writeFileSync(
+      cmdPath,
+      [
+        '@ECHO off',
+        'GOTO start',
+        ':find_dp0',
+        'SET dp0=%~dp0',
+        'EXIT /b',
+        ':start',
+        'SETLOCAL',
+        'CALL :find_dp0',
+        '"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*',
+        '',
+      ].join('\r\n')
+    );
+
+    const got = parseCmdShim(cmdPath);
+    expect(got).not.toBeNull();
+    expect(got!.kind).toBe('direct');
+    if (got!.kind === 'direct') {
+      // Path should resolve to our fake .exe (case-insensitive on Windows).
+      expect(got.path.toLowerCase()).toBe(exePath.toLowerCase());
+    }
+  });
+
+  it('unwraps a node-script shim (older npm layout)', () => {
+    const { mkdirSync } = require('node:fs');
+    mkdirSync(join(tmpDir, 'node_modules', 'foo', 'bin'), { recursive: true });
+    const nodeExe = join(tmpDir, 'node.exe');
+    writeFileSync(nodeExe, 'fake-node');
+    const scriptPath = join(tmpDir, 'node_modules', 'foo', 'bin', 'cli.js');
+    writeFileSync(scriptPath, '#!/usr/bin/env node\nconsole.log("hi")');
+    const cmdPath = join(tmpDir, 'foo.cmd');
+    writeFileSync(
+      cmdPath,
+      [
+        '@ECHO off',
+        'SETLOCAL',
+        'SET dp0=%~dp0',
+        '"%dp0%\\node.exe"  "%dp0%\\node_modules\\foo\\bin\\cli.js" %*',
+      ].join('\r\n')
+    );
+
+    const got = parseCmdShim(cmdPath);
+    expect(got).not.toBeNull();
+    expect(got!.kind).toBe('node-script');
+    if (got!.kind === 'node-script') {
+      expect(got.node.toLowerCase()).toBe(nodeExe.toLowerCase());
+      expect(got.script.toLowerCase()).toBe(scriptPath.toLowerCase());
+    }
+  });
+
+  it('returns null for an unrecognized shim shape', () => {
+    const cmdPath = join(tmpDir, 'weird.cmd');
+    writeFileSync(cmdPath, '@echo hello world\r\n');
+    expect(parseCmdShim(cmdPath)).toBeNull();
+  });
+
+  it('returns null when the .cmd file does not exist', () => {
+    expect(parseCmdShim(join(tmpDir, 'missing.cmd'))).toBeNull();
+  });
+});
+
+describe('classifyInvocation', () => {
+  it('non-Windows: always returns direct', () => {
+    if (process.platform === 'win32') return; // n/a on Windows
+    expect(classifyInvocation('/usr/local/bin/claude')).toEqual({
+      kind: 'direct',
+      path: '/usr/local/bin/claude',
+    });
+  });
+
+  it('Windows .exe: returns direct without parsing', () => {
+    if (process.platform !== 'win32') return; // n/a off Windows
+    const got = classifyInvocation('C:\\Program Files\\foo\\claude.exe');
+    expect(got).toEqual({ kind: 'direct', path: 'C:\\Program Files\\foo\\claude.exe' });
+  });
+
+  it('Windows unrecognized .cmd: falls back to cmd-shell', () => {
+    if (process.platform !== 'win32') return;
+    const tmpDir = mkdtempSync(join(tmpdir(), 'agentory-classify-'));
+    try {
+      const cmd = join(tmpDir, 'weird.cmd');
+      writeFileSync(cmd, '@echo nothing useful\r\n');
+      const got = classifyInvocation(cmd);
+      expect(got).toEqual({ kind: 'cmd-shell', path: cmd });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('quoteCmdArg', () => {
+  it('wraps simple args in double quotes', () => {
+    expect(quoteCmdArg('hello')).toBe('"hello"');
+  });
+
+  it('escapes embedded double quotes via backslash', () => {
+    // Inner `"` becomes `\"`; surrounding caret-escape leaves the `\"` as-is.
+    expect(quoteCmdArg('a"b')).toBe('"a\\"b"');
+  });
+
+  it('caret-escapes cmd.exe metacharacters', () => {
+    const out = quoteCmdArg('a&b|c<d>e');
+    expect(out).toContain('^&');
+    expect(out).toContain('^|');
+    expect(out).toContain('^<');
+    expect(out).toContain('^>');
+  });
+
+  it('does not lose backslashes in normal paths', () => {
+    expect(quoteCmdArg('C:\\foo\\bar')).toBe('"C:\\foo\\bar"');
+  });
+
+  it('handles trailing backslashes correctly (CRT rule)', () => {
+    // `foo\` inside `"..."` would normally end the quoted region badly; we
+    // double the trailing backslashes before the closing quote.
+    expect(quoteCmdArg('foo\\')).toBe('"foo\\\\"');
   });
 });
