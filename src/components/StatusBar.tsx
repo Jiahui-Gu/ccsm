@@ -11,7 +11,15 @@ import {
 } from './ui/DropdownMenu';
 import { useStore } from '../stores/store';
 
-type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
+// Permission mode values match claude.exe's `--permission-mode` flag 1:1.
+// We intentionally use the official CLI names (title-cased for display)
+// rather than invented shortnames like `yolo` / `standard`. The CLI also
+// accepts `auto` (classifier-driven, research-preview, requires account
+// enablement) and `dontAsk` (legacy alias for `default`). We omit `auto`
+// from the chip to keep the picker simple and avoid exposing a mode most
+// users can't enable; we omit `dontAsk` because it's redundant with
+// `default`.
+type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
 
 function lastSegment(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
@@ -116,22 +124,22 @@ function ChipMenu<V extends string>({
 
 const BROWSE_FOLDER = '__browse__';
 
-// Labels describe what claude.exe actually does per mode. There is no CLI
-// setting that prompts on every single tool — reads are always auto-approved
-// below `bypassPermissions` and above `plan`. The chip wording reflects that
-// instead of promising behaviour the CLI can't deliver.
+// Labels describe what claude.exe actually does per mode, and the `primary`
+// string is the official CLI flag value title-cased. `default` prompts before
+// any tool use that isn't a read; reads are auto-approved. `acceptEdits` adds
+// file-edit auto-approval on top. `bypassPermissions` skips every check.
 const permissionOptions: ChipOption<PermissionMode>[] = [
-  { kind: 'item', value: 'plan', primary: 'plan', secondary: 'Plan only — no edits or commands' },
-  { kind: 'item', value: 'ask', primary: 'standard', secondary: 'Auto-approve reads; ask before writes, edits, and shell' },
-  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve reads and edits; ask before shell' },
-  { kind: 'item', value: 'yolo', primary: 'yolo', secondary: 'Auto-approve everything (use with care)' }
+  { kind: 'item', value: 'plan', primary: 'Plan', secondary: 'Read-only analysis. No edits, no shell.' },
+  { kind: 'item', value: 'default', primary: 'Default', secondary: 'Auto-approve reads. Ask before edits and shell.' },
+  { kind: 'item', value: 'acceptEdits', primary: 'Accept Edits', secondary: 'Auto-approve reads and edits. Ask before shell.' },
+  { kind: 'item', value: 'bypassPermissions', primary: 'Bypass Permissions', secondary: 'Auto-approve everything. Use with care.' }
 ];
 
 const permissionTooltips: Record<PermissionMode, string> = {
-  plan: 'Plan mode — agent drafts a plan; no file edits or shell until you approve',
-  ask: 'Standard — reads auto-approved; writes, edits, and shell require confirmation',
-  auto: 'Auto-accept edits — reads and file edits auto-approved; shell requires confirmation',
-  yolo: 'Bypass all permission checks — every tool call runs without asking'
+  plan: 'Plan mode — read-only analysis; no file edits or shell until you approve.',
+  default: 'Default — auto-approve reads; ask before edits and shell.',
+  acceptEdits: 'Accept Edits — auto-approve reads and file edits; ask before shell.',
+  bypassPermissions: 'Bypass Permissions — every tool call runs without asking. Use with care.'
 };
 
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
@@ -244,7 +252,7 @@ export function StatusBar({
       label="Permission mode"
       triggerLabel={primaryOf(permissionOptions, permission)}
       triggerTitle={permissionTooltips[permission]}
-      triggerAccent={permission === 'yolo' ? 'warn' : undefined}
+      triggerAccent={permission === 'bypassPermissions' ? 'warn' : undefined}
       options={permissionOptions}
       onSelect={onChangePermission}
     />
