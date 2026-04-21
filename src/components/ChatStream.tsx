@@ -12,6 +12,7 @@ import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
 import { FileTree } from './FileTree';
 import { Terminal } from './Terminal';
+import { CodeBlock, HighlightedLine, languageFromPath } from './CodeBlock';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
@@ -51,11 +52,13 @@ function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean
                   </code>
                 );
               }
-              return (
-                <code className={className} {...rest}>
-                  {children}
-                </code>
-              );
+              const lang = className?.replace(/^language-/, '') ?? '';
+              const code = Array.isArray(children)
+                ? children.filter((c): c is string => typeof c === 'string').join('')
+                : typeof children === 'string'
+                ? children
+                : '';
+              return <CodeBlock code={code} language={lang} />;
             },
             pre: ({ children }) => (
               <pre className="my-2 p-3 rounded-md bg-bg-elevated border border-border-subtle overflow-x-auto font-mono text-sm whitespace-pre">
@@ -329,6 +332,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
     // see the interaction working without the round-trip.
     console.log('[diff-hunk]', decision, { filePath: diff.filePath, hunkIndex: idx });
   };
+  const lang = languageFromPath(diff.filePath);
   return (
     <div className="mt-1 ml-6 rounded-sm border border-border-subtle overflow-hidden">
       <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-[11px] text-fg-tertiary">
@@ -364,7 +368,9 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                   className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg"
                 >
                   <span aria-hidden className="pl-1 select-none text-state-error">-</span>
-                  <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
+                  <span className="pr-2 font-mono">
+                    {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
+                  </span>
                 </div>
               ))}
               {h.added.map((line, j) => (
@@ -373,7 +379,9 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                   className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary"
                 >
                   <span aria-hidden className="pl-1 select-none text-state-running">+</span>
-                  <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
+                  <span className="pr-2 font-mono">
+                    {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
+                  </span>
                 </div>
               ))}
               <div className="relative flex items-center justify-end gap-1.5 px-2 py-1 bg-bg-elevated/50 border-t border-border-subtle">
