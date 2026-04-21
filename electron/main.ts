@@ -114,7 +114,8 @@ function createWindow() {
   win.setMenuBarVisibility(false);
 
   if (isDev) {
-    win.loadURL('http://localhost:4100');
+    const port = process.env.AGENTORY_DEV_PORT || '4100';
+    win.loadURL(`http://localhost:${port}`);
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));

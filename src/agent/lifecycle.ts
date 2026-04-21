@@ -1,6 +1,7 @@
 import { useStore } from '../stores/store';
 import { streamEventToTranslation, PartialAssistantStreamer } from './stream-to-blocks';
-import type { MessageBlock, QuestionSpec } from '../types';
+import { parseQuestions } from './ask-user-question';
+import type { MessageBlock } from '../types';
 
 let installed = false;
 
@@ -132,35 +133,6 @@ export function permissionRequestToWaitingBlock(req: {
     requestId: req.requestId,
     plan: planText
   };
-}
-
-function parseQuestions(input: Record<string, unknown>): QuestionSpec[] {
-  const raw = input.questions;
-  if (!Array.isArray(raw)) return [];
-  const out: QuestionSpec[] = [];
-  for (const q of raw) {
-    if (!q || typeof q !== 'object') continue;
-    const obj = q as Record<string, unknown>;
-    const question = typeof obj.question === 'string' ? obj.question : '';
-    if (!question) continue;
-    const options = Array.isArray(obj.options)
-      ? obj.options
-          .filter((o): o is Record<string, unknown> => !!o && typeof o === 'object')
-          .map((o) => ({
-            label: typeof o.label === 'string' ? o.label : '',
-            description: typeof o.description === 'string' ? o.description : undefined
-          }))
-          .filter((o) => o.label)
-      : [];
-    if (options.length === 0) continue;
-    out.push({
-      question,
-      header: typeof obj.header === 'string' ? obj.header : undefined,
-      multiSelect: obj.multiSelect === true,
-      options
-    });
-  }
-  return out;
 }
 
 export function subscribeAgentEvents(): void {

@@ -1,8 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
+import { ChevronRight, AlertCircle, ArrowDown, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import * as RadioGroup from '@radix-ui/react-radio-group';
+import * as Checkbox from '@radix-ui/react-checkbox';
 import type { MessageBlock } from '../types';
 import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
@@ -10,6 +12,7 @@ import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
 import { FileTree } from './FileTree';
 import { Terminal } from './Terminal';
+import { CodeBlock, HighlightedLine, languageFromPath } from './CodeBlock';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
@@ -49,11 +52,13 @@ function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean
                   </code>
                 );
               }
-              return (
-                <code className={className} {...rest}>
-                  {children}
-                </code>
-              );
+              const lang = className?.replace(/^language-/, '') ?? '';
+              const code = Array.isArray(children)
+                ? children.filter((c): c is string => typeof c === 'string').join('')
+                : typeof children === 'string'
+                ? children
+                : '';
+              return <CodeBlock code={code} language={lang} />;
             },
             pre: ({ children }) => (
               <pre className="my-2 p-3 rounded-md bg-bg-elevated border border-border-subtle overflow-x-auto font-mono text-sm whitespace-pre">
@@ -119,7 +124,18 @@ function ToolBlock({
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
   return (
-    <div className="font-mono text-sm">
+    <div
+      className={
+        'font-mono text-sm ' +
+        (isError
+          ? 'relative rounded-sm border border-state-error/40 bg-state-error-soft/50 pl-3 pr-2 py-1 my-0.5'
+          : '')
+      }
+      role={isError ? 'alert' : undefined}
+    >
+      {isError && (
+        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-error rounded-l-sm" />
+      )}
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
@@ -132,21 +148,32 @@ function ToolBlock({
             transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
             className="inline-flex"
           >
-            <ChevronRight size={11} className="stroke-[1.75] -ml-px" />
+            <ChevronRight
+              size={11}
+              className={'stroke-[1.75] -ml-px ' + (isError ? 'text-state-error' : '')}
+            />
           </motion.span>
         </span>
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 truncate flex items-baseline gap-1.5">
+          {isError && (
+            <AlertCircle
+              size={12}
+              className="text-state-error self-center shrink-0"
+              aria-label="tool failed"
+            />
+          )}
           <span
             className={
               isError
-                ? 'text-state-error group-hover:text-state-error transition-colors duration-150 ease-out'
+                ? 'text-state-error group-hover:text-state-error transition-colors duration-150 ease-out font-semibold'
                 : 'text-fg-secondary group-hover:text-fg-primary transition-colors duration-150 ease-out'
             }
           >
             {name}
           </span>
-          <span className="text-fg-tertiary text-xs">({brief})</span>
-          {!hasResult && <span className="text-fg-tertiary text-xs ml-2">…</span>}
+          <span className={isError ? 'text-state-error/80 text-xs' : 'text-fg-tertiary text-xs'}>({brief})</span>
+          {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">failed</span>}
+          {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
         </span>
       </button>
       <AnimatePresence initial={false}>
@@ -159,6 +186,7 @@ function ToolBlock({
             transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
             style={{ overflow: 'hidden' }}
           >
+            {input !== undefined && input !== null && !diff && <PrettyInput input={input} />}
             {diff ? (
               <DiffView diff={diff} />
             ) : isFileTree ? (
@@ -181,35 +209,229 @@ function ToolBlock({
   );
 }
 
+const LONG_STRING_THRESHOLD = 200;
+
+// Pretty-prints tool input with 2-space indent, subtle syntax coloring
+// (keys vs strings vs other), and click-to-expand for long string values.
+// Keeps the pre element copy-friendly: expanded content is inline plain text.
+function PrettyInput({ input }: { input: unknown }) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const toggle = (path: string) =>
+    setExpanded((prev) => ({ ...prev, [path]: !prev[path] }));
+
+  function render(value: unknown, indent: number, path: string): React.ReactNode[] {
+    const pad = '  '.repeat(indent);
+    if (value === null) return [<span key={path} className="text-fg-tertiary">null</span>];
+    if (typeof value === 'boolean' || typeof value === 'number') {
+      return [<span key={path} className="text-fg-secondary">{String(value)}</span>];
+    }
+    if (typeof value === 'string') {
+      const long = value.length > LONG_STRING_THRESHOLD;
+      if (long && !expanded[path]) {
+        return [
+          <span key={`${path}:open`} className="text-fg-tertiary">&quot;</span>,
+          <span key={`${path}:body`} className="text-state-running/90 whitespace-pre-wrap">
+            {value.slice(0, LONG_STRING_THRESHOLD)}
+          </span>,
+          <span key={`${path}:ell`} className="text-fg-tertiary">…</span>,
+          <button
+            key={`${path}:btn`}
+            type="button"
+            onClick={() => toggle(path)}
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+            aria-expanded={false}
+          >
+            +{value.length - LONG_STRING_THRESHOLD} chars
+          </button>,
+          <span key={`${path}:close`} className="text-fg-tertiary">&quot;</span>
+        ];
+      }
+      return [
+        <span key={`${path}:open`} className="text-fg-tertiary">&quot;</span>,
+        <span key={`${path}:body`} className="text-state-running/90 whitespace-pre-wrap">{value}</span>,
+        <span key={`${path}:close`} className="text-fg-tertiary">&quot;</span>,
+        long ? (
+          <button
+            key={`${path}:btn`}
+            type="button"
+            onClick={() => toggle(path)}
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+            aria-expanded={true}
+          >
+            collapse
+          </button>
+        ) : null
+      ];
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) return [<span key={path}>[]</span>];
+      const parts: React.ReactNode[] = [<span key={`${path}:o`}>[</span>, '\n'];
+      value.forEach((item, i) => {
+        parts.push(pad + '  ');
+        parts.push(...render(item, indent + 1, `${path}.${i}`));
+        if (i < value.length - 1) parts.push(',');
+        parts.push('\n');
+      });
+      parts.push(pad, <span key={`${path}:c`}>]</span>);
+      return parts;
+    }
+    if (typeof value === 'object') {
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length === 0) return [<span key={path}>{'{}'}</span>];
+      const parts: React.ReactNode[] = [<span key={`${path}:o`}>{'{'}</span>, '\n'];
+      entries.forEach(([k, v], i) => {
+        parts.push(pad + '  ');
+        parts.push(
+          <span key={`${path}.${k}:k`} className="text-accent">{`"${k}"`}</span>,
+          <span key={`${path}.${k}:colon`} className="text-fg-tertiary">: </span>
+        );
+        parts.push(...render(v, indent + 1, `${path}.${k}`));
+        if (i < entries.length - 1) parts.push(',');
+        parts.push('\n');
+      });
+      parts.push(pad, <span key={`${path}:c`}>{'}'}</span>);
+      return parts;
+    }
+    return [<span key={path}>{String(value)}</span>];
+  }
+
+  return (
+    <AnimatePresence initial={false}>
+      <motion.pre
+        key="input"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.15, ease: [0, 0, 0.2, 1] }}
+        className="mt-1 ml-6 pl-3 border-l border-border-subtle text-xs font-mono text-fg-secondary whitespace-pre-wrap mb-1"
+      >
+        <span className="text-fg-tertiary text-[10px] uppercase tracking-wider mr-2">input</span>
+        {render(input, 0, 'root')}
+      </motion.pre>
+    </AnimatePresence>
+  );
+}
+
 function DiffView({ diff }: { diff: DiffSpec }) {
+  // Per-hunk accept/reject state. `null` = pending, 'accepted' / 'rejected'
+  // once the user acts. Today this is UI-only — the partial-write IPC back
+  // to the main process is a follow-up (see PR body). Buttons emit
+  // console.log so the shape of the event stream is easy to see in devtools
+  // while that path is being wired up.
+  const [decisions, setDecisions] = useState<Array<'accepted' | 'rejected' | null>>(
+    () => diff.hunks.map(() => null)
+  );
+  const decide = (idx: number, decision: 'accepted' | 'rejected') => {
+    setDecisions((prev) => {
+      const next = prev.slice();
+      next[idx] = decision;
+      return next;
+    });
+    // TODO(partial-write): replace with an IPC that writes just this hunk to
+    // diff.filePath via a main-process handler. Today we log so reviewers can
+    // see the interaction working without the round-trip.
+    console.log('[diff-hunk]', decision, { filePath: diff.filePath, hunkIndex: idx });
+  };
+  const lang = languageFromPath(diff.filePath);
   return (
     <div className="mt-1 ml-6 rounded-sm border border-border-subtle overflow-hidden">
       <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-[11px] text-fg-tertiary">
         {diff.filePath}
       </div>
       <div className="font-mono text-xs">
-        {diff.hunks.map((h, i) => (
-          <div key={i} className={i > 0 ? 'border-t border-border-subtle' : ''}>
-            {h.removed.map((line, j) => (
-              <div
-                key={`r-${j}`}
-                className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg"
-              >
-                <span aria-hidden className="pl-1 select-none text-state-error">-</span>
-                <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
+        {diff.hunks.map((h, i) => {
+          const decision = decisions[i];
+          return (
+            <div
+              key={i}
+              className={
+                (i > 0 ? 'border-t border-border-subtle ' : '') +
+                'relative group'
+              }
+            >
+              <AnimatePresence>
+                {decision === 'rejected' && (
+                  <motion.div
+                    key="rej-overlay"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 0.55 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+                    className="absolute inset-0 bg-bg-app pointer-events-none"
+                    aria-hidden
+                  />
+                )}
+              </AnimatePresence>
+              {h.removed.map((line, j) => (
+                <div
+                  key={`r-${j}`}
+                  className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg"
+                >
+                  <span aria-hidden className="pl-1 select-none text-state-error">-</span>
+                  <span className="pr-2 font-mono">
+                    {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
+                  </span>
+                </div>
+              ))}
+              {h.added.map((line, j) => (
+                <div
+                  key={`a-${j}`}
+                  className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary"
+                >
+                  <span aria-hidden className="pl-1 select-none text-state-running">+</span>
+                  <span className="pr-2 font-mono">
+                    {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
+                  </span>
+                </div>
+              ))}
+              <div className="relative flex items-center justify-end gap-1.5 px-2 py-1 bg-bg-elevated/50 border-t border-border-subtle">
+                <AnimatePresence mode="wait" initial={false}>
+                  {decision ? (
+                    <motion.span
+                      key={`label-${decision}`}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+                      className={
+                        'font-mono text-[10px] uppercase tracking-wider ' +
+                        (decision === 'accepted'
+                          ? 'text-state-running'
+                          : 'text-state-error')
+                      }
+                    >
+                      {decision}
+                    </motion.span>
+                  ) : (
+                    <motion.div
+                      key="buttons"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15, ease: [0, 0, 0.2, 1] }}
+                      className="flex items-center gap-1.5"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => decide(i, 'rejected')}
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
+                      >
+                        Reject
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => decide(i, 'accepted')}
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-running/60"
+                      >
+                        Accept
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
-            ))}
-            {h.added.map((line, j) => (
-              <div
-                key={`a-${j}`}
-                className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary"
-              >
-                <span aria-hidden className="pl-1 select-none text-state-running">+</span>
-                <span className="whitespace-pre-wrap pr-2">{line || '\u00A0'}</span>
-              </div>
-            ))}
-          </div>
-        ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -478,44 +700,94 @@ function QuestionBlock({
               <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{q.header}</div>
             )}
             <div className="text-sm text-fg-primary">{q.question}</div>
-            <div className="space-y-1">
-              {q.options.map((opt, oi) => {
-                const selected = picks[qi]?.has(oi) ?? false;
-                return (
-                  <button
-                    key={oi}
-                    type="button"
-                    disabled={submitted}
-                    onClick={() => togglePick(qi, oi, !!q.multiSelect)}
-                    className={
-                      'w-full text-left px-3 py-2 rounded-sm border transition-colors duration-100 ' +
-                      (selected
-                        ? 'border-state-waiting/70 bg-state-waiting/10'
-                        : 'border-border-subtle hover:bg-bg-hover hover:border-border-default') +
-                      (submitted ? ' cursor-not-allowed opacity-70' : '')
-                    }
-                  >
-                    <div className="flex items-start gap-2">
-                      <span
-                        aria-hidden
-                        className={
-                          'mt-1 h-3 w-3 shrink-0 rounded-' +
-                          (q.multiSelect ? 'sm' : 'full') +
-                          ' border ' +
-                          (selected ? 'bg-state-waiting border-state-waiting' : 'border-border-strong')
-                        }
-                      />
+            {q.multiSelect ? (
+              <div className="space-y-1" role="group" aria-label={q.question}>
+                {q.options.map((opt, oi) => {
+                  const selected = picks[qi]?.has(oi) ?? false;
+                  const id = `q${qi}-o${oi}`;
+                  return (
+                    <motion.label
+                      key={oi}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+                      htmlFor={id}
+                      className={
+                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out outline-none ' +
+                        (selected
+                          ? 'border-state-waiting/70 bg-state-waiting/10'
+                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
+                        (submitted ? ' cursor-not-allowed opacity-70' : '')
+                      }
+                    >
+                      <Checkbox.Root
+                        id={id}
+                        checked={selected}
+                        disabled={submitted}
+                        onCheckedChange={() => togglePick(qi, oi, true)}
+                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong data-[state=checked]:bg-state-waiting data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+                      >
+                        <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
+                          <Check size={10} strokeWidth={3} />
+                        </Checkbox.Indicator>
+                      </Checkbox.Root>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-fg-primary">{opt.label}</div>
                         {opt.description && (
                           <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
                         )}
                       </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                    </motion.label>
+                  );
+                })}
+              </div>
+            ) : (
+              <RadioGroup.Root
+                value={(picks[qi] && picks[qi].size > 0 ? String(Array.from(picks[qi])[0]) : '')}
+                onValueChange={(v) => {
+                  const idx = parseInt(v, 10);
+                  if (!Number.isNaN(idx)) togglePick(qi, idx, false);
+                }}
+                disabled={submitted}
+                className="space-y-1"
+                aria-label={q.question}
+              >
+                {q.options.map((opt, oi) => {
+                  const selected = picks[qi]?.has(oi) ?? false;
+                  const id = `q${qi}-o${oi}`;
+                  return (
+                    <motion.label
+                      key={oi}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+                      htmlFor={id}
+                      className={
+                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out ' +
+                        (selected
+                          ? 'border-state-waiting/70 bg-state-waiting/10'
+                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
+                        (submitted ? ' cursor-not-allowed opacity-70' : '')
+                      }
+                    >
+                      <RadioGroup.Item
+                        id={id}
+                        value={String(oi)}
+                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border border-border-strong data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+                      >
+                        <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
+                      </RadioGroup.Item>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-fg-primary">{opt.label}</div>
+                        {opt.description && (
+                          <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
+                        )}
+                      </div>
+                    </motion.label>
+                  );
+                })}
+              </RadioGroup.Root>
+            )}
           </div>
         ))}
       </div>
@@ -568,11 +840,16 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
           onSubmit={(answersText) => {
             const api = window.agentory;
             if (!api) return;
-            // Soft-cancel the SDK's pending tool call, then deliver the user's
-            // answers as a plain message. The agent reads the next user turn
-            // instead of a tool result — slightly lossy compared to a real
-            // tool result, but works without main-process plumbing for now.
-            void api.agentResolvePermission(activeId, b.requestId, 'deny');
+            // Two flows land here:
+            //  1. can_use_tool path (SDK-era / possible future): answers the
+            //     pending permission with "deny" and sends the answer as a
+            //     fresh user message — slightly lossy but unblocks the turn.
+            //  2. tool_use path (current claude.exe spawn): no requestId, the
+            //     bogus tool_result has already landed, agent is waiting on
+            //     the next user turn. Just send the answer text.
+            if (b.requestId) {
+              void api.agentResolvePermission(activeId, b.requestId, 'deny');
+            }
             void api.agentSend(activeId, answersText);
           }}
         />
