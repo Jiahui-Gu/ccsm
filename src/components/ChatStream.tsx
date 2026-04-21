@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { MessageBlock } from '../types';
+import type { MessageBlock, ImageAttachment } from '../types';
 import { useStore } from '../stores/store';
+import { attachmentToDataUrl, formatSize } from '../lib/attachments';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
@@ -21,11 +22,34 @@ const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 // instead of leaking as literal `\u001b[...m` noise.
 const SHELL_OUTPUT_TOOLS = new Set(['Bash', 'BashOutput']);
 
-function UserBlock({ text }: { text: string }) {
+function UserBlock({ text, images }: { text: string; images?: ImageAttachment[] }) {
   return (
     <div className="flex gap-3 text-base">
       <span className="text-fg-tertiary select-none w-3 shrink-0 font-mono">&gt;</span>
-      <span className="text-fg-secondary whitespace-pre-wrap min-w-0">{text}</span>
+      <div className="min-w-0 flex-1 flex flex-col gap-1.5">
+        {images && images.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {images.map((img) => (
+              <a
+                key={img.id}
+                href={attachmentToDataUrl(img)}
+                target="_blank"
+                rel="noreferrer"
+                title={`${img.name} · ${formatSize(img.size)}`}
+                className="group relative block overflow-hidden rounded-sm border border-border-subtle hover:border-border-strong transition-colors duration-150 ease-out"
+              >
+                <img
+                  src={attachmentToDataUrl(img)}
+                  alt={img.name}
+                  className="h-20 w-20 object-cover transition-transform duration-200 ease-out group-hover:scale-[1.02]"
+                  draggable={false}
+                />
+              </a>
+            ))}
+          </div>
+        )}
+        {text && <span className="text-fg-secondary whitespace-pre-wrap">{text}</span>}
+      </div>
     </div>
   );
 }
@@ -593,7 +617,7 @@ function renderBlock(
 ) {
   switch (b.kind) {
     case 'user':
-      return <UserBlock text={b.text} />;
+      return <UserBlock text={b.text} images={b.images} />;
     case 'assistant':
       return <AssistantBlock text={b.text} streaming={b.streaming} />;
     case 'tool':

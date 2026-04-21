@@ -263,6 +263,20 @@ export class SessionRunner {
     }
   }
 
+  /**
+   * Send a user message carrying a prebuilt Anthropic content-block array
+   * (e.g. text + image blocks). Image drop/paste flows route through here
+   * instead of `send(text)`.
+   */
+  sendContent(content: readonly unknown[]): void {
+    if (!this.rpc || this.disposed) return;
+    try {
+      this.rpc.sendUserMessageContent(content, this.cliSessionId);
+    } catch (err) {
+      console.warn('[sessions] sendUserMessageContent failed', err);
+    }
+  }
+
   async interrupt(): Promise<void> {
     if (!this.rpc) return;
     try {

@@ -76,6 +76,7 @@ declare global {
 
       agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
       agentSend: (sessionId: string, text: string) => Promise<boolean>;
+      agentSendContent: (sessionId: string, content: unknown[]) => Promise<boolean>;
       agentInterrupt: (sessionId: string) => Promise<boolean>;
       agentSetPermissionMode: (sessionId: string, mode: PermissionMode) => Promise<boolean>;
       agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;

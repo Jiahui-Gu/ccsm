@@ -77,6 +77,12 @@ const api = {
     ipcRenderer.invoke('agent:start', sessionId, opts),
   agentSend: (sessionId: string, text: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:send', sessionId, text),
+  /**
+   * Send a user message carrying a prebuilt Anthropic content-block array
+   * (text + image blocks etc.). Image drop/paste goes through this channel.
+   */
+  agentSendContent: (sessionId: string, content: unknown[]): Promise<boolean> =>
+    ipcRenderer.invoke('agent:sendContent', sessionId, content),
   agentInterrupt: (sessionId: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:interrupt', sessionId),
   agentSetPermissionMode: (sessionId: string, mode: PermissionMode): Promise<boolean> =>
