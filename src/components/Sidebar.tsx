@@ -29,6 +29,7 @@ import { cn } from '../lib/cn';
 import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
 import { AgentIcon } from './AgentIcon';
+import { DragRegion } from './WindowControls';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -471,6 +472,11 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
       transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
       className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden"
     >
+      {/* Top drag strip — mirrors the right pane's 32px drag strip so the
+          two panes share a horizontal title-bar band. On macOS this is
+          where the OS draws the traffic lights (`hiddenInset` reserves
+          ~78px on the left); on win/linux it's just a drag-to-move area. */}
+      <DragRegion className="shrink-0 w-full" style={{ height: 32 }} />
       {collapsed ? (
         <div className="flex flex-col items-center w-full h-full py-3 gap-2">
           <IconButton

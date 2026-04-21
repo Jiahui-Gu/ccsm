@@ -103,8 +103,16 @@ function createWindow() {
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
     backgroundColor: '#0B0B0C',
+    // On macOS: `hiddenInset` keeps OS-drawn traffic lights (top-left) and
+    //   hides the title bar. On Windows/Linux: fully frameless — we self-
+    //   draw the three controls inside the right pane (see WindowControls).
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     frame: process.platform === 'darwin',
+    // Windows 11: ask DWM to round the outer corners so the window edge
+    //   matches the radii of our internal panels. Without this the window
+    //   is a sharp rectangle and rounded interior surfaces look clipped
+    //   where they meet it. Ignored on macOS/Linux/<Win11.
+    roundedCorners: true,
     autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,

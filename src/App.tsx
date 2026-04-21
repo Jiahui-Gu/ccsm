@@ -10,7 +10,7 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
-import { TitleBar } from './components/TitleBar';
+import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
@@ -106,9 +106,7 @@ export default function App() {
         <ToastProvider>
           <PersistErrorBridge />
           <BackgroundWaitingBridge />
-          <div className="flex h-full w-full flex-col bg-bg-app text-fg-primary">
-            <TitleBar />
-            <div className="flex flex-1 min-h-0">
+          <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
             <Sidebar
               onCreateSession={(cwd) => createSession(cwd)}
               onOpenSettings={() => setSettingsOpen(true)}
@@ -120,43 +118,47 @@ export default function App() {
               sessions={sessions}
               onMoveSession={moveSession}
             />
-            <main className="flex-1 flex items-center justify-center my-2 mr-2 ml-0 rounded-lg bg-bg-panel border border-border-subtle surface-card overflow-hidden">
-              {tutorialSeen ? (
-                <div className="flex items-center gap-3">
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    onClick={() => createSession(null)}
-                    className="w-44 justify-center"
-                  >
-                    <Plus size={14} className="stroke-[2]" />
-                    <span>New Session</span>
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    onClick={() => setImportOpen(true)}
-                    className="w-44 justify-center"
-                  >
-                    <Download size={14} className="stroke-[2]" />
-                    <span>Import Session</span>
-                  </Button>
-                </div>
-              ) : (
-                <Tutorial
-                  onNewSession={() => {
-                    markTutorialSeen();
-                    createSession(null);
-                  }}
-                  onImport={() => {
-                    markTutorialSeen();
-                    setImportOpen(true);
-                  }}
-                  onSkip={markTutorialSeen}
-                />
-              )}
+            <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
+              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
+                <WindowControls />
+              </DragRegion>
+              <div className="flex-1 flex items-center justify-center min-h-0">
+                {tutorialSeen ? (
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onClick={() => createSession(null)}
+                      className="w-44 justify-center"
+                    >
+                      <Plus size={14} className="stroke-[2]" />
+                      <span>New Session</span>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="md"
+                      onClick={() => setImportOpen(true)}
+                      className="w-44 justify-center"
+                    >
+                      <Download size={14} className="stroke-[2]" />
+                      <span>Import Session</span>
+                    </Button>
+                  </div>
+                ) : (
+                  <Tutorial
+                    onNewSession={() => {
+                      markTutorialSeen();
+                      createSession(null);
+                    }}
+                    onImport={() => {
+                      markTutorialSeen();
+                      setImportOpen(true);
+                    }}
+                    onSkip={markTutorialSeen}
+                  />
+                )}
+              </div>
             </main>
-            </div>
           </div>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
@@ -179,9 +181,7 @@ export default function App() {
       <ToastProvider>
         <PersistErrorBridge />
         <BackgroundWaitingBridge />
-        <div className="flex h-full w-full flex-col bg-bg-app text-fg-primary">
-          <TitleBar />
-          <div className="flex flex-1 min-h-0">
+        <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
           <Sidebar
             onCreateSession={(cwd) => createSession(cwd)}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -193,7 +193,10 @@ export default function App() {
             sessions={sessions}
             onMoveSession={moveSession}
           />
-          <main className="flex-1 flex flex-col min-w-0 my-2 mr-2 ml-0 rounded-lg overflow-hidden bg-bg-panel border border-border-subtle surface-card">
+          <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
+            <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
+              <WindowControls />
+            </DragRegion>
             <ChatStream />
             <StatusBar
               cwd={active.cwd}
@@ -216,7 +219,6 @@ export default function App() {
               <span>Enter send · Shift+Enter newline</span>
             </div>
           </main>
-          </div>
         </div>
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
