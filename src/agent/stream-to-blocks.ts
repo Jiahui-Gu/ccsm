@@ -247,13 +247,16 @@ function stringifyToolResult(content: unknown): string {
 
 function resultBlocks(msg: ResultEvent): MessageBlock[] {
   if (msg.subtype === 'success' || msg.is_error === false) {
-    return [resultStatsFooter(msg)];
+    // Suppress the per-turn "Done" status banner — it's noisy and Claude
+    // Desktop doesn't render one. resultStatsFooter() is kept below in case
+    // we want to re-enable a compact footer later.
+    return [];
   }
   const text = typeof msg.error === 'string' ? msg.error : msg.subtype ?? 'Run failed';
   return [{ kind: 'error', id: msg.uuid ?? cryptoRandom(), text }];
 }
 
-function resultStatsFooter(msg: ResultEvent): MessageBlock {
+function _resultStatsFooter(msg: ResultEvent): MessageBlock {
   const parts: string[] = [];
   if (typeof msg.num_turns === 'number') parts.push(`${msg.num_turns} turn${msg.num_turns === 1 ? '' : 's'}`);
   if (typeof msg.duration_ms === 'number') parts.push(formatDuration(msg.duration_ms));

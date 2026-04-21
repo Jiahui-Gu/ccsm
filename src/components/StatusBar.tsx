@@ -33,7 +33,7 @@ const Chip = React.forwardRef<
       className={cn(
         'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
         accent === 'warn'
-          ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-400/10'
+          ? 'text-state-warning hover:text-status-warning-foreground hover:bg-status-warning-muted'
           : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
         'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
         'transition-colors duration-120 ease-out'

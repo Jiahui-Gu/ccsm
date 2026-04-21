@@ -122,7 +122,7 @@ function GroupRow({
             className={cn(
               'group/row relative flex items-center h-7 px-2 rounded-sm transition-colors duration-120 ease-out',
               focused
-                ? 'bg-bg-active shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
+                ? 'bg-bg-active'
                 : 'hover:bg-bg-hover',
               isOver && 'ring-1 ring-inset ring-accent bg-bg-active'
             )}
@@ -294,7 +294,7 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
             'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent',
             selected
-              ? 'bg-bg-active text-fg-primary shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
+              ? 'bg-bg-active text-fg-primary'
               : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
             active && 'font-medium text-fg-primary'
           )}
