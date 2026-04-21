@@ -593,8 +593,9 @@ function EndpointEditorDialog({
   const [testResult, setTestResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const isEdit = !!value.id;
-  const keyRequired = !isEdit;
-  const canTest = baseUrl.trim().length > 0 && (apiKey.length > 0 || value.hasExistingKey);
+  // API key is optional — local relays and some self-hosted endpoints do not
+  // require auth. See endpoints-manager: empty key omits the x-api-key header.
+  const canTest = baseUrl.trim().length > 0;
 
   async function onTest() {
     if (!window.agentory) return;
@@ -611,7 +612,6 @@ function EndpointEditorDialog({
   async function onSave() {
     if (!window.agentory) return;
     if (!name.trim() || !baseUrl.trim()) return;
-    if (keyRequired && !apiKey) return;
     setSaving(true);
     try {
       if (isEdit && value.id) {
@@ -690,11 +690,11 @@ function EndpointEditorDialog({
             </div>
           </Field>
           <Field
-            label="API key"
+            label="API key (optional)"
             hint={
               value.hasExistingKey
                 ? 'Leave blank to keep the existing key.'
-                : 'Stored encrypted via the OS keychain. Never sent to the renderer.'
+                : 'Optional \u2014 leave blank if your endpoint does not require authentication.'
             }
           >
             <div className="flex items-center gap-2">
@@ -747,7 +747,7 @@ function EndpointEditorDialog({
             size="md"
             onClick={onSave}
             disabled={
-              !name.trim() || !baseUrl.trim() || saving || (keyRequired && !apiKey)
+              !name.trim() || !baseUrl.trim() || saving
             }
           >
             {saving ? 'Saving…' : isEdit ? 'Save' : 'Add'}
