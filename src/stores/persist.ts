@@ -3,6 +3,8 @@ import type {
   PermissionMode,
   Theme,
   FontSize,
+  FontSizePx,
+  Density,
   WatchdogConfig,
   NotificationSettings
 } from './store';
@@ -21,8 +23,14 @@ export interface PersistedState {
   // read. Writes always use the current `PermissionMode`.
   permission: PermissionMode | string;
   sidebarCollapsed: boolean;
+  /** Sidebar width as a fraction of window width. See State.sidebarWidthPct. */
+  sidebarWidthPct?: number;
   theme?: Theme;
   fontSize?: FontSize;
+  /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
+  fontSizePx?: FontSizePx;
+  /** UI density (compact/normal/comfortable). */
+  density?: Density;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
   watchdog?: WatchdogConfig;

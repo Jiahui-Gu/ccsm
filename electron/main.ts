@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb, loadClaudeBinPath, saveClaudeBinPath } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
@@ -9,6 +10,7 @@ import { showNotification, type ShowNotificationPayload } from './notifications'
 import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
+import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -520,6 +522,29 @@ app.whenReady().then(() => {
     }
   );
   // ────────────────────────── end CLI wizard ───────────────────────────────
+
+  // Memory (CLAUDE.md) editor IPC. Paths are validated inside the memory
+  // module — see isAllowedMemoryPath(). Only files named CLAUDE.md are
+  // accepted; anything else returns an error so a compromised renderer can't
+  // use us as an arbitrary-file-read primitive.
+  ipcMain.handle('memory:read', (_e, p: string) => readMemoryFile(p));
+  ipcMain.handle('memory:write', (_e, p: string, content: string) =>
+    writeMemoryFile(p, content)
+  );
+  ipcMain.handle('memory:exists', (_e, p: string) => memoryFileExists(p));
+  ipcMain.handle('memory:userPath', () => {
+    // ~/.claude/CLAUDE.md. Resolved here so the renderer never has to know
+    // about homedir semantics (different on Windows vs Unix).
+    return path.join(os.homedir(), '.claude', 'CLAUDE.md');
+  });
+  ipcMain.handle('memory:projectPath', (_e, cwd: string) => {
+    // We still force CLAUDE.md basename in the *write* path, but we compose
+    // the full path here so the renderer doesn't have to remember the
+    // filename. If cwd is empty or not absolute, return null so the UI can
+    // show the "open a session" hint.
+    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return null;
+    return path.join(cwd, 'CLAUDE.md');
+  });
 
   ipcMain.handle(
     'notification:show',

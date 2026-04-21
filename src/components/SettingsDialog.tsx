@@ -26,10 +26,11 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'general' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'account' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'appearance' | 'memory' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'account' | 'data' | 'shortcuts' | 'updates';
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'general', label: 'General' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'memory', label: 'Memory' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'endpoints', label: 'Endpoints' },
   { id: 'autopilot', label: 'Autopilot' },
@@ -61,7 +62,7 @@ export function SettingsDialog({
   onOpenChange: (open: boolean) => void;
   initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'appearance');
 
   // Sync the tab when the dialog is reopened with a fresh initialTab (e.g.,
   // `/config` vs `/model` — the latter wants the endpoints tab).
@@ -93,7 +94,8 @@ export function SettingsDialog({
             ))}
           </nav>
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
-            {tab === 'general' && <GeneralPane />}
+            {tab === 'appearance' && <AppearancePane />}
+            {tab === 'memory' && <MemoryPane />}
             {tab === 'notifications' && <NotificationsPane />}
             {tab === 'endpoints' && <EndpointsPane />}
             {tab === 'autopilot' && <AutopilotPane />}
@@ -119,7 +121,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-function Select<T extends string>({
+function _Select<T extends string>({
   value,
   onChange,
   options
@@ -148,36 +150,308 @@ function Select<T extends string>({
   );
 }
 
-function GeneralPane() {
+function AppearancePane() {
   const theme = useStore((s) => s.theme);
-  const fontSize = useStore((s) => s.fontSize);
+  const fontSizePx = useStore((s) => s.fontSizePx);
+  const density = useStore((s) => s.density);
   const setTheme = useStore((s) => s.setTheme);
-  const setFontSize = useStore((s) => s.setFontSize);
+  const setFontSizePx = useStore((s) => s.setFontSizePx);
+  const setDensity = useStore((s) => s.setDensity);
+
+  const sizeStops: Array<12 | 13 | 14 | 15 | 16> = [12, 13, 14, 15, 16];
+
   return (
     <>
-      <Field label="Theme">
-        <Select
+      <Field label="Theme" hint="System follows your OS preference (and reacts live when it changes).">
+        <Segmented
           value={theme}
           onChange={setTheme}
           options={[
-            { value: 'system', label: 'System' },
+            { value: 'dark', label: 'Dark' },
             { value: 'light', label: 'Light' },
-            { value: 'dark', label: 'Dark' }
+            { value: 'system', label: 'System' },
           ]}
         />
       </Field>
-      <Field label="Font size" hint="Affects chat stream and sidebar">
-        <Select
-          value={fontSize}
-          onChange={setFontSize}
+      <Field label="Font size" hint="Applies to the whole app. Explicit small labels (meta, kbd) keep their intrinsic size.">
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={12}
+            max={16}
+            step={1}
+            value={fontSizePx}
+            onChange={(e) => {
+              const v = Number.parseInt(e.target.value, 10);
+              if (sizeStops.includes(v as 12 | 13 | 14 | 15 | 16)) {
+                setFontSizePx(v as 12 | 13 | 14 | 15 | 16);
+              }
+            }}
+            className="w-48 accent-accent cursor-pointer"
+            aria-label="Font size in pixels"
+          />
+          <span className="text-xs font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
+        </div>
+      </Field>
+      <Field label="Density" hint="Tightens or loosens row padding and spacing across the app.">
+        <Segmented
+          value={density}
+          onChange={setDensity}
           options={[
-            { value: 'sm', label: 'Small (12px)' },
-            { value: 'md', label: 'Medium (13px, default)' },
-            { value: 'lg', label: 'Large (14px)' }
+            { value: 'compact', label: 'Compact' },
+            { value: 'normal', label: 'Normal' },
+            { value: 'comfortable', label: 'Comfortable' },
           ]}
         />
       </Field>
     </>
+  );
+}
+
+function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <div
+      className={cn(
+        'inline-flex h-7 items-center rounded-sm border border-border-default',
+        'bg-bg-elevated p-0.5 gap-0.5'
+      )}
+      role="radiogroup"
+    >
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(o.value)}
+            className={cn(
+              'h-6 px-2.5 text-xs rounded-[3px] transition-[background-color,color,box-shadow] duration-150 ease-out',
+              'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60',
+              active
+                ? 'bg-bg-app text-fg-primary font-medium shadow-[inset_0_0_0_1px_var(--color-border-default)]'
+                : 'text-fg-secondary hover:text-fg-primary hover:bg-bg-hover'
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MemoryPane() {
+  const sessions = useStore((s) => s.sessions);
+  const activeId = useStore((s) => s.activeId);
+  const active = sessions.find((s) => s.id === activeId);
+  const cwd = active?.cwd ?? '';
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [userPath, setUserPath] = useState<string>('');
+
+  useEffect(() => {
+    const api = window.agentory;
+    if (!api) return;
+    api.memory.userPath().then(setUserPath).catch(() => setUserPath(''));
+  }, []);
+
+  useEffect(() => {
+    const api = window.agentory;
+    if (!api) return;
+    api.memory.projectPath(cwd).then(setProjectPath).catch(() => setProjectPath(null));
+  }, [cwd]);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="text-xs text-fg-tertiary">
+        CLAUDE.md files bias what the agent remembers between turns. Project
+        memory travels with the repo; user memory is global to your machine.
+        Writes here save directly to disk — no reload needed.
+      </div>
+      {projectPath ? (
+        <MemoryEditor
+          title="Project memory"
+          hint="Committed with the repo. Visible to anyone with access to the codebase."
+          path={projectPath}
+        />
+      ) : (
+        <div className="rounded-sm border border-border-subtle bg-bg-elevated px-3 py-4 text-xs text-fg-tertiary opacity-70">
+          <div className="font-medium text-fg-secondary mb-1">Project memory</div>
+          Open a session to edit project memory.
+        </div>
+      )}
+      {userPath && (
+        <MemoryEditor
+          title="User memory"
+          hint="Applies to every session on this machine, regardless of repo."
+          path={userPath}
+        />
+      )}
+    </div>
+  );
+}
+
+function MemoryEditor({
+  title,
+  hint,
+  path,
+}: {
+  title: string;
+  hint: string;
+  path: string;
+}) {
+  const [content, setContent] = useState<string>('');
+  const [exists, setExists] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [dirty, setDirty] = useState<boolean>(false);
+  const [saving, setSaving] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedTick, setSavedTick] = useState<number>(0);
+
+  const reload = React.useCallback(async () => {
+    const api = window.agentory;
+    if (!api) return;
+    setLoading(true);
+    setError(null);
+    const res = await api.memory.read(path);
+    setLoading(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setContent(res.content);
+    setExists(res.exists);
+    setDirty(false);
+  }, [path]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const save = React.useCallback(async () => {
+    const api = window.agentory;
+    if (!api) return;
+    if (!dirty || saving) return;
+    setSaving(true);
+    setError(null);
+    const res = await api.memory.write(path, content);
+    setSaving(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setExists(true);
+    setDirty(false);
+    setSavedTick(Date.now());
+  }, [dirty, saving, path, content]);
+
+  // Rough token estimate. For MVP we use the common length/4 heuristic —
+  // the real count varies by tokenizer but is close enough for a "this
+  // file is getting long" cue. If the user cares, they'll feel it.
+  const estTokens = Math.ceil(content.length / 4);
+
+  return (
+    <div className="rounded-sm border border-border-subtle bg-bg-elevated">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-fg-primary">{title}</div>
+          <div
+            className="text-[11px] font-mono text-fg-tertiary truncate"
+            title={path}
+          >
+            {path}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span
+            className={cn(
+              'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-sm font-mono',
+              estTokens > 8000
+                ? 'bg-status-warning-muted text-status-warning-foreground'
+                : 'bg-bg-hover text-fg-tertiary'
+            )}
+            title="Rough estimate (chars / 4). Not a real tokenizer."
+          >
+            ~{estTokens.toLocaleString()} tok
+          </span>
+          {!exists && !loading && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={async () => {
+                const api = window.agentory;
+                if (!api) return;
+                const res = await api.memory.write(path, content || '');
+                if (!res.ok) setError(res.error);
+                else {
+                  setExists(true);
+                  setDirty(false);
+                }
+              }}
+            >
+              Create
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={save}
+            disabled={!dirty || saving}
+            title={dirty ? 'Save' : 'No changes'}
+          >
+            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </Button>
+        </div>
+      </div>
+      <div className="px-3 pt-2 pb-3">
+        <div className="text-[11px] text-fg-tertiary mb-1.5">{hint}</div>
+        <textarea
+          value={content}
+          onChange={(e) => {
+            setContent(e.target.value);
+            setDirty(true);
+          }}
+          onBlur={() => void save()}
+          disabled={loading}
+          spellCheck={false}
+          rows={10}
+          placeholder={exists ? '' : 'This file will be created on save.'}
+          className={cn(
+            'w-full px-2.5 py-2 rounded-sm bg-bg-panel border border-border-default',
+            'text-xs font-mono leading-relaxed text-fg-primary placeholder:text-fg-disabled',
+            'outline-none resize-y',
+            'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+            'disabled:opacity-60 disabled:cursor-progress'
+          )}
+        />
+        <div className="flex items-center justify-between mt-1.5 h-4">
+          <span className="text-[11px] text-fg-tertiary">
+            {loading
+              ? 'Loading…'
+              : error
+              ? <span className="text-status-error-foreground">{error}</span>
+              : !exists
+              ? 'Not yet created on disk.'
+              : dirty
+              ? 'Unsaved changes.'
+              : savedTick > 0
+              ? 'Saved.'
+              : ''}
+          </span>
+          <span className="text-[11px] text-fg-tertiary tabular-nums">
+            {content.length.toLocaleString()} chars
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
 
