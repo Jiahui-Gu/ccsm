@@ -307,7 +307,7 @@ describe('streamEventToTranslation', () => {
     expect(out.toolResults[0].result).toBe('line one\nline two');
   });
 
-  it('successful result emits a stats footer', () => {
+  it('successful result emits no blocks (done banner suppressed)', () => {
     const out = streamEventToTranslation(
       asEvent({
         type: 'result',
@@ -321,16 +321,8 @@ describe('streamEventToTranslation', () => {
         usage: { input_tokens: 4500, output_tokens: 1200, cache_read_input_tokens: 8000 }
       })
     );
-    expect(out.append).toHaveLength(1);
-    const b = out.append[0] as { kind: string; tone: string; title: string; detail?: string };
-    expect(b.kind).toBe('status');
-    expect(b.tone).toBe('info');
-    expect(b.title).toBe('Done');
-    expect(b.detail).toContain('3 turns');
-    expect(b.detail).toContain('12.5s');
-    expect(b.detail).toMatch(/13k in/);
-    expect(b.detail).toContain('1.2k out');
-    expect(b.detail).toContain('$0.012');
+    expect(out.append).toHaveLength(0);
+    expect(out.toolResults).toHaveLength(0);
   });
 
   it('failed (abnormal end) result emits an error block', () => {
