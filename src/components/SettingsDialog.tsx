@@ -40,12 +40,20 @@ const SHORTCUTS: { keys: string; desc: string }[] = [
 
 export function SettingsDialog({
   open,
-  onOpenChange
+  onOpenChange,
+  initialTab
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTab?: Tab;
 }) {
-  const [tab, setTab] = useState<Tab>('general');
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
+
+  // Sync the tab when the dialog is reopened with a fresh initialTab (e.g.,
+  // `/config` vs `/model` — the latter wants the endpoints tab).
+  useEffect(() => {
+    if (open && initialTab) setTab(initialTab);
+  }, [open, initialTab]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -25,6 +25,23 @@ export type EndpointKind =
 export type EndpointStatus = 'ok' | 'error' | 'unchecked';
 export type DiscoverySource = 'probe' | 'listed' | 'manual';
 
+// Cumulative cost / token / turn counters for a single session. Aggregated
+// from `result` frames as they arrive (see agent/lifecycle). Used by the
+// `/cost` client handler and could drive a future footer chip.
+export interface SessionStats {
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export const EMPTY_SESSION_STATS: SessionStats = {
+  turns: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0
+};
+
 export interface Endpoint {
   id: string;
   name: string;
@@ -139,6 +156,7 @@ type State = {
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
+  statsBySession: Record<string, SessionStats>;
   // Marks sessions where the user clicked Stop. Consumed when the next
   // `result { error_during_execution }` frame arrives so we can render a
   // neutral "Interrupted" banner instead of an error block.
@@ -191,12 +209,14 @@ type Actions = {
   streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
   setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
+  replaceMessages: (sessionId: string, blocks: MessageBlock[]) => void;
   loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
   markInterrupted: (sessionId: string) => void;
   consumeInterrupted: (sessionId: string) => boolean;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
+  addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
 
   setEndpoints: (list: Endpoint[]) => void;
   setModelsForEndpoint: (endpointId: string, models: ModelInfo[]) => void;
@@ -271,6 +291,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   messagesBySession: {},
   startedSessions: {},
   runningSessions: {},
+  statsBySession: {},
   interruptedSessions: {},
   endpoints: [],
   modelsByEndpoint: {},
@@ -643,6 +664,25 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = { ...s.messagesBySession };
       delete next[sessionId];
       return { messagesBySession: next };
+    });
+  },
+
+  replaceMessages: (sessionId, blocks) => {
+    set((s) => ({
+      messagesBySession: { ...s.messagesBySession, [sessionId]: blocks }
+    }));
+  },
+
+  addSessionStats: (sessionId, delta) => {
+    set((s) => {
+      const prev = s.statsBySession[sessionId] ?? EMPTY_SESSION_STATS;
+      const next: SessionStats = {
+        turns: prev.turns + (delta.turns ?? 0),
+        inputTokens: prev.inputTokens + (delta.inputTokens ?? 0),
+        outputTokens: prev.outputTokens + (delta.outputTokens ?? 0),
+        costUsd: prev.costUsd + (delta.costUsd ?? 0)
+      };
+      return { statsBySession: { ...s.statsBySession, [sessionId]: next } };
     });
   },
 
