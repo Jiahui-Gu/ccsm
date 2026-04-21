@@ -1,11 +1,17 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
-import { toSdkPermissionMode } from '../agent/permission';
 import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = string;
-export type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
+// Values match the CLI's `--permission-mode` flag 1:1 so we can pass the enum
+// value straight through to claude.exe without a translation table. The CLI
+// also accepts `auto` (classifier-driven research-preview, gated on
+// Sonnet 4.6+ / account flag) and `dontAsk` (legacy alias for `default`). We
+// intentionally do NOT expose either here: `auto` requires capabilities users
+// can't self-enable today and would collide with our old UI value of the same
+// name; `dontAsk` is legacy and redundant.
+export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 
@@ -157,6 +163,31 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+// One-shot migration for persisted permission values. Legacy builds wrote
+// `standard` / `ask` / `auto` / `yolo` into the JSON blob; map them to the
+// official CLI names so no user sees an "undefined" permission chip after
+// upgrading. Unknown strings coerce to `default`.
+export function migratePermission(raw: unknown): PermissionMode {
+  switch (raw) {
+    case 'plan':
+    case 'default':
+    case 'acceptEdits':
+    case 'bypassPermissions':
+      return raw;
+    case 'standard':
+    case 'ask':
+      return 'default';
+    // Legacy `auto` was our alias for `acceptEdits`, NOT the CLI's
+    // classifier-driven `auto`. Migrate to what the user actually had.
+    case 'auto':
+      return 'acceptEdits';
+    case 'yolo':
+      return 'bypassPermissions';
+    default:
+      return 'default';
+  }
+}
+
 function firstUsableGroupId(groups: Group[]): string {
   const g = groups.find((x) => x.kind === 'normal');
   return g ? g.id : groups[0]?.id ?? 'g1';
@@ -177,7 +208,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   activeId: '',
   focusedGroupId: null,
   model: '',
-  permission: 'auto',
+  permission: 'default',
   sidebarCollapsed: false,
   theme: 'system',
   fontSize: 'md',
@@ -391,9 +422,9 @@ export const useStore = create<State & Actions>((set, get) => ({
     set({ permission });
     const api = window.agentory;
     if (!api) return;
-    const sdkMode = toSdkPermissionMode(permission);
+    // The enum value IS the CLI flag value — no translation needed.
     const started = Object.keys(get().startedSessions);
-    for (const id of started) void api.agentSetPermissionMode(id, sdkMode);
+    for (const id of started) void api.agentSetPermissionMode(id, permission);
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -711,7 +742,7 @@ export async function hydrateStore(): Promise<void> {
       groups: persisted.groups,
       activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
       model: persisted.model,
-      permission: persisted.permission,
+      permission: migratePermission(persisted.permission),
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',

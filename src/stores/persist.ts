@@ -16,7 +16,10 @@ export interface PersistedState {
   groups: Group[];
   activeId: string;
   model: string;
-  permission: PermissionMode;
+  // Loose type: older builds persisted legacy literals like `standard` /
+  // `ask` / `auto` / `yolo`. `migratePermission` in store.ts normalises on
+  // read. Writes always use the current `PermissionMode`.
+  permission: PermissionMode | string;
   sidebarCollapsed: boolean;
   theme?: Theme;
   fontSize?: FontSize;

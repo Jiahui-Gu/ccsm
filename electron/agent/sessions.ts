@@ -11,12 +11,21 @@ import {
   type ParsedStreamEvent,
 } from './control-rpc';
 
-// Permission mode accepted across the IPC boundary. The renderer translates
-// its UI-level modes (`plan`/`ask`/`auto`/`yolo`) via `toSdkPermissionMode`
-// in `src/agent/permission.ts` before calling agent:start / set-permission.
-// We still accept SDK-only legacy modes here so an older renderer build
-// doesn't break the spawner; unknown modes coerce to `'default'`.
-export type PermissionMode = CliPermissionMode | 'dontAsk' | 'auto';
+// Permission mode accepted across the IPC boundary. Values match the CLI's
+// `--permission-mode` flag 1:1 — the renderer's `PermissionMode` enum is
+// already aligned, so no translation is needed.
+//
+// We still accept legacy UI-only modes (`'dontAsk'`, `'auto'`, and the older
+// `'ask'` / `'yolo'` / `'standard'`) here so an older renderer build doesn't
+// break the spawner. Unknown values coerce to `'default'` in
+// `toCliPermissionMode` below.
+export type PermissionMode =
+  | CliPermissionMode
+  | 'dontAsk'
+  | 'auto'
+  | 'ask'
+  | 'yolo'
+  | 'standard';
 
 // IPC payload mirrors the on-wire stream-json events from claude.exe stdout.
 export type AgentMessage = ClaudeStreamEvent;
@@ -42,16 +51,35 @@ function resolveConfigDir(explicit: string | undefined): string {
 }
 
 /**
- * `PermissionMode` includes UI-only modes (`'dontAsk'`, `'auto'`) that the
- * claude.exe CLI doesn't accept. Drop them to `'default'` rather than passing
- * an invalid value to the spawner.
+ * Coerce any incoming permission mode to a CLI-accepted value. Handles:
+ *   - current UI enum (already CLI-aligned): passes through
+ *   - legacy UI aliases (`ask` → `default`, `yolo` → `bypassPermissions`, ...)
+ *   - SDK-only literals (`dontAsk` → `default`, `auto` → `acceptEdits`*)
+ *     *Note: the CLI's real classifier-driven `auto` mode is NOT accepted
+ *     here by design — we never surface it in the UI, so an `auto` on the
+ *     wire must be our legacy alias for `acceptEdits`.
+ * Unknown strings coerce to `'default'` rather than passing an invalid flag
+ * value to claude.exe.
  */
 function toCliPermissionMode(mode: PermissionMode | undefined): CliPermissionMode | undefined {
   if (!mode) return undefined;
-  if (mode === 'default' || mode === 'acceptEdits' || mode === 'plan' || mode === 'bypassPermissions') {
-    return mode;
+  switch (mode) {
+    case 'default':
+    case 'acceptEdits':
+    case 'plan':
+    case 'bypassPermissions':
+      return mode;
+    case 'ask':
+    case 'standard':
+    case 'dontAsk':
+      return 'default';
+    case 'auto':
+      return 'acceptEdits';
+    case 'yolo':
+      return 'bypassPermissions';
+    default:
+      return 'default';
   }
-  return 'default';
 }
 
 export type StartOptions = {
