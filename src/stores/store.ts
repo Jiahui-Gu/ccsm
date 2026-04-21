@@ -14,7 +14,17 @@ export type ModelId = string;
 // name; `dontAsk` is legacy and redundant.
 export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
 export type Theme = 'system' | 'light' | 'dark';
+/**
+ * Legacy categorical font size (`sm`/`md`/`lg`) — kept for persistence back-
+ * compat. New code should read `fontSizePx` instead. `migrateFontSize()`
+ * maps old values to pixels during hydration.
+ */
 export type FontSize = 'sm' | 'md' | 'lg';
+/** Root font-size in px. One of 12/13/14/15/16. */
+export type FontSizePx = 12 | 13 | 14 | 15 | 16;
+/** UI density — drives row padding / line height / block spacing via
+ * `--density-scale` CSS variable. Compact = tighter, Comfortable = airier. */
+export type Density = 'compact' | 'normal' | 'comfortable';
 
 export type EndpointKind =
   | 'anthropic'
@@ -148,8 +158,17 @@ type State = {
   model: ModelId;
   permission: PermissionMode;
   sidebarCollapsed: boolean;
+  /**
+   * Sidebar width as a percentage of the window width (0–1). Persisted as a
+   * fraction rather than px so the layout adapts gracefully across different
+   * window sizes / monitors. The resizable panel enforces min/max in px at
+   * render time; this is just the *desired* ratio.
+   */
+  sidebarWidthPct: number;
   theme: Theme;
   fontSize: FontSize;
+  fontSizePx: FontSizePx;
+  density: Density;
   tutorialSeen: boolean;
   watchdog: WatchdogConfig;
   watchdogCountsBySession: Record<string, number>;
@@ -199,6 +218,9 @@ type Actions = {
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
+  setFontSizePx: (px: FontSizePx) => void;
+  setDensity: (density: Density) => void;
+  setSidebarWidthPct: (pct: number) => void;
   markTutorialSeen: () => void;
   setWatchdog: (patch: Partial<WatchdogConfig>) => void;
   resetWatchdogCount: (sessionId: string) => void;
@@ -273,6 +295,56 @@ function firstUsableGroupId(groups: Group[]): string {
   return g ? g.id : groups[0]?.id ?? 'g1';
 }
 
+// ── Appearance helpers ──────────────────────────────────────────────────────
+
+/** Map the legacy `sm`/`md`/`lg` enum to the numeric pixel scale. The old
+ * values kept only three stops (12/13/14); the new slider exposes 12–16.
+ * `md` → 14 intentionally (new default), not 13 — we're rebalancing the
+ * whole scale to match Inter's optical size sweet spot. */
+export function legacyFontSizeToPx(v: FontSize): FontSizePx {
+  switch (v) {
+    case 'sm': return 12;
+    case 'md': return 14;
+    case 'lg': return 16;
+  }
+}
+
+/** Inverse — used when the user drags the new slider and we want the legacy
+ * `fontSize` field to stay consistent (older code paths still read it). */
+export function pxToLegacyFontSize(px: FontSizePx): FontSize {
+  if (px <= 12) return 'sm';
+  if (px >= 16) return 'lg';
+  return 'md';
+}
+
+export function sanitizeFontSizePx(raw: unknown): FontSizePx {
+  const n = typeof raw === 'number' ? Math.round(raw) : NaN;
+  if (n === 12 || n === 13 || n === 14 || n === 15 || n === 16) return n;
+  return 14;
+}
+
+export function sanitizeDensity(raw: unknown): Density {
+  if (raw === 'compact' || raw === 'normal' || raw === 'comfortable') return raw;
+  return 'normal';
+}
+
+export function sanitizeSidebarWidthPct(raw: unknown): number {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0.22;
+  return Math.max(0.12, Math.min(0.5, n));
+}
+
+/** Resolve `theme` + OS signal to the actual rendered theme. Exported so
+ * tests can lock OS state. `osPrefersDark` is the value of
+ * `matchMedia('(prefers-color-scheme: dark)').matches` at call time. */
+export function resolveEffectiveTheme(
+  theme: Theme,
+  osPrefersDark: boolean
+): 'light' | 'dark' {
+  if (theme === 'light') return 'light';
+  if (theme === 'dark') return 'dark';
+  return osPrefersDark ? 'dark' : 'light';
+}
+
 // Module-scoped set tracking in-flight db fetches, so rapid re-clicks on a
 // session don't issue redundant IPC round-trips.
 const inFlightLoads = new Set<string>();
@@ -290,8 +362,11 @@ export const useStore = create<State & Actions>((set, get) => ({
   model: '',
   permission: 'default',
   sidebarCollapsed: false,
+  sidebarWidthPct: 0.22,
   theme: 'system',
   fontSize: 'md',
+  fontSizePx: 14,
+  density: 'normal',
   tutorialSeen: false,
   watchdog: DEFAULT_WATCHDOG,
   watchdogCountsBySession: {},
@@ -525,7 +600,13 @@ export const useStore = create<State & Actions>((set, get) => ({
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setTheme: (theme) => set({ theme }),
-  setFontSize: (fontSize) => set({ fontSize }),
+  setFontSize: (fontSize) => set({ fontSize, fontSizePx: legacyFontSizeToPx(fontSize) }),
+  setFontSizePx: (fontSizePx) => set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
+  setDensity: (density) => set({ density }),
+  setSidebarWidthPct: (pct) => {
+    const clamped = Math.max(0.12, Math.min(0.5, pct));
+    set({ sidebarWidthPct: clamped });
+  },
   markTutorialSeen: () => set({ tutorialSeen: true }),
 
   setWatchdog: (patch) =>
@@ -924,8 +1005,13 @@ export async function hydrateStore(): Promise<void> {
       model: persisted.model,
       permission: migratePermission(persisted.permission),
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
+      sidebarWidthPct: sanitizeSidebarWidthPct(persisted.sidebarWidthPct),
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
+      fontSizePx: persisted.fontSizePx !== undefined
+        ? sanitizeFontSizePx(persisted.fontSizePx)
+        : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
+      density: sanitizeDensity(persisted.density),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) },
@@ -964,8 +1050,11 @@ export async function hydrateStore(): Promise<void> {
       model: s.model,
       permission: s.permission,
       sidebarCollapsed: s.sidebarCollapsed,
+      sidebarWidthPct: s.sidebarWidthPct,
       theme: s.theme,
       fontSize: s.fontSize,
+      fontSizePx: s.fontSizePx,
+      density: s.density,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
       watchdog: s.watchdog,

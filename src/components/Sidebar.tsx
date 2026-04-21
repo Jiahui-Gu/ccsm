@@ -468,9 +468,16 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
     >
     <motion.aside
       initial={false}
-      animate={{ width: collapsed ? 48 : 256 }}
+      // When collapsed we still animate down to a 48px rail; otherwise we
+      // stretch to whatever width the parent panel gives us (see
+      // `AppShell.tsx` — PanelGroup drives the outer width now). Using
+      // `100%` rather than a fixed number lets react-resizable-panels own
+      // the sizing contract; framer-motion's `animate` still gives us a
+      // smooth transition between rail ↔ expanded. Both values are strings
+      // so framer doesn't have to bridge px↔% during the tween.
+      animate={{ width: collapsed ? '48px' : '100%' }}
       transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-      className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden"
+      className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
       {/* Top drag strip — mirrors the right pane's 32px drag strip so the
           two panes share a horizontal title-bar band. On macOS this is

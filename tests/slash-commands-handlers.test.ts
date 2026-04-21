@@ -151,11 +151,11 @@ describe('/cost', () => {
 describe('/config and /model', () => {
   afterEach(() => setOpenSettingsListener(null));
 
-  it('/config opens settings (general tab)', () => {
+  it('/config opens settings (appearance tab)', () => {
     const calls: Array<string | undefined> = [];
     setOpenSettingsListener((tab) => calls.push(tab));
     handleConfig({ sessionId: 's', args: '' });
-    expect(calls).toEqual(['general']);
+    expect(calls).toEqual(['appearance']);
   });
   it('/model opens settings on endpoints tab', () => {
     const calls: Array<string | undefined> = [];
