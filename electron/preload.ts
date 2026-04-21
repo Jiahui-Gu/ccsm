@@ -173,6 +173,24 @@ const api = {
       ipcRenderer.invoke('memory:projectPath', cwd),
   },
 
+  pr: {
+    preflight: (cwd: string | null | undefined): Promise<unknown> =>
+      ipcRenderer.invoke('pr:preflight', cwd),
+    create: (args: {
+      cwd: string;
+      branch: string;
+      base: string;
+      title: string;
+      body: string;
+      draft: boolean;
+    }): Promise<unknown> => ipcRenderer.invoke('pr:create', args),
+    checks: (cwd: string, number: number): Promise<unknown> =>
+      ipcRenderer.invoke('pr:checks', cwd, number)
+  },
+
+  openExternal: (url: string): Promise<boolean> =>
+    ipcRenderer.invoke('shell:openExternal', url),
+
   notify: (payload: {
     sessionId: string;
     title: string;
