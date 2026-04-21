@@ -699,7 +699,7 @@ const EMPTY_BLOCKS: readonly MessageBlock[] = [];
 function EmptyState() {
   return (
     <div className="h-full flex items-center justify-center px-6">
-      <div className="font-mono text-sm text-fg-tertiary select-none">Ready when you are.</div>
+      <div className="font-mono text-sm text-fg-tertiary">Ready when you are.</div>
     </div>
   );
 }

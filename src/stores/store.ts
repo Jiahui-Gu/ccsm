@@ -44,6 +44,10 @@ type State = {
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
+  // Marks sessions where the user clicked Stop. Consumed when the next
+  // `result { error_during_execution }` frame arrives so we can render a
+  // neutral "Interrupted" banner instead of an error block.
+  interruptedSessions: Record<string, true>;
 };
 
 type Actions = {
@@ -80,6 +84,8 @@ type Actions = {
   clearMessages: (sessionId: string) => void;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
+  markInterrupted: (sessionId: string) => void;
+  consumeInterrupted: (sessionId: string) => boolean;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
 };
 
@@ -113,6 +119,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   messagesBySession: {},
   startedSessions: {},
   runningSessions: {},
+  interruptedSessions: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -191,12 +198,15 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete nextStarted[id];
       const nextRunning = { ...s.runningSessions };
       delete nextRunning[id];
+      const nextInterrupted = { ...s.interruptedSessions };
+      delete nextInterrupted[id];
       return {
         sessions: remaining,
         activeId: nextActive,
         messagesBySession: nextMessages,
         startedSessions: nextStarted,
-        runningSessions: nextRunning
+        runningSessions: nextRunning,
+        interruptedSessions: nextInterrupted
       };
     });
   },
@@ -439,6 +449,25 @@ export const useStore = create<State & Actions>((set, get) => ({
       else delete next[sessionId];
       return { runningSessions: next };
     });
+  },
+
+  markInterrupted: (sessionId) => {
+    set((s) =>
+      s.interruptedSessions[sessionId]
+        ? s
+        : { interruptedSessions: { ...s.interruptedSessions, [sessionId]: true } }
+    );
+  },
+
+  consumeInterrupted: (sessionId) => {
+    const was = !!get().interruptedSessions[sessionId];
+    if (!was) return false;
+    set((s) => {
+      const next = { ...s.interruptedSessions };
+      delete next[sessionId];
+      return { interruptedSessions: next };
+    });
+    return true;
   },
 
   resolvePermission: (sessionId, requestId, decision) => {

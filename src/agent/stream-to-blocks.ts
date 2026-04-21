@@ -74,7 +74,17 @@ export class PartialAssistantStreamer {
   }
 }
 
-export function streamEventToTranslation(event: ClaudeStreamEvent | { type: string }): StreamTranslation {
+export type TranslationContext = {
+  // True when the user clicked Stop on this session before the current
+  // frame arrived. Used to demote `error_during_execution` from an error
+  // block to a neutral "Interrupted" status banner.
+  interrupted?: boolean;
+};
+
+export function streamEventToTranslation(
+  event: ClaudeStreamEvent | { type: string },
+  ctx: TranslationContext = {}
+): StreamTranslation {
   switch (event.type) {
     case 'assistant':
       return { append: assistantBlocksWithError(event as AssistantEvent), toolResults: [] };
@@ -83,7 +93,7 @@ export function streamEventToTranslation(event: ClaudeStreamEvent | { type: stri
     case 'system':
       return { append: systemBlocks(event as SystemEvent), toolResults: [] };
     case 'result':
-      return { append: resultBlocks(event as ResultEvent), toolResults: [] };
+      return { append: resultBlocks(event as ResultEvent, ctx), toolResults: [] };
     default:
       return EMPTY;
   }
@@ -245,9 +255,23 @@ function stringifyToolResult(content: unknown): string {
   return parts.join('\n');
 }
 
-function resultBlocks(msg: ResultEvent): MessageBlock[] {
+function resultBlocks(msg: ResultEvent, ctx: TranslationContext): MessageBlock[] {
   if (msg.subtype === 'success' || msg.is_error === false) {
     return [resultStatsFooter(msg)];
+  }
+  // User-initiated interrupt: claude.exe emits `error_during_execution`
+  // when `agentInterrupt` lands mid-turn. Render it as a neutral status,
+  // not a red error block.
+  if (msg.subtype === 'error_during_execution' && ctx.interrupted) {
+    return [
+      {
+        kind: 'status',
+        id: msg.uuid ?? cryptoRandom(),
+        tone: 'info',
+        title: 'Interrupted',
+        detail: undefined
+      }
+    ];
   }
   const text = typeof msg.error === 'string' ? msg.error : msg.subtype ?? 'Run failed';
   return [{ kind: 'error', id: msg.uuid ?? cryptoRandom(), text }];
