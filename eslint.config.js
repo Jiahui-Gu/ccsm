@@ -113,12 +113,15 @@ export default [
         require: 'readonly',
         module: 'readonly',
         exports: 'readonly',
-        queueMicrotask: 'readonly',
+        // Node.js types namespace (e.g. NodeJS.Timeout) and Web APIs
+        // available in modern Node runtimes used by Electron main process.
         NodeJS: 'readonly',
         AbortSignal: 'readonly',
         AbortController: 'readonly',
         URL: 'readonly',
+        crypto: 'readonly',
         console: 'readonly',
+        queueMicrotask: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',

@@ -395,7 +395,6 @@ describe('ControlRpc — user messages and lifecycle', () => {
     const stdin = new PassThrough();
     let throwOnWrite = false;
     const realWrite = stdin.write.bind(stdin);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (stdin as any).write = (chunk: any, ...rest: any[]) => {
       if (throwOnWrite) throw new Error('EPIPE');
       return realWrite(chunk, ...rest);
