@@ -372,6 +372,9 @@ describe('streamEventToTranslation', () => {
   });
 
   it('successful result ignores interrupted context (no demotion path taken)', () => {
+    // Post-#71: per-turn "Done" status banner is intentionally suppressed.
+    // The interrupted context must not change that — successful results
+    // still emit no banner regardless of the interrupted flag.
     const out = streamEventToTranslation(
       asEvent({
         type: 'result',
@@ -384,8 +387,7 @@ describe('streamEventToTranslation', () => {
       }),
       { interrupted: true }
     );
-    expect(out.append).toHaveLength(1);
-    expect(out.append[0]).toMatchObject({ kind: 'status', title: 'Done' });
+    expect(out.append).toHaveLength(0);
   });
 
   it('returns empty translation for unknown frame types', () => {
