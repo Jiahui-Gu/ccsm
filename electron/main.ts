@@ -259,6 +259,19 @@ app.whenReady().then(() => {
     'endpoints:setManualModels',
     (_e, id: string, ids: string[]) => endpoints.setManualModelIds(id, Array.isArray(ids) ? ids : [])
   );
+  ipcMain.handle(
+    'endpoints:createMessage',
+    (
+      _e,
+      args: {
+        endpointId: string;
+        model: string;
+        maxTokens?: number;
+        messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+        system?: string;
+      }
+    ) => endpoints.createMessage(args)
+  );
   ipcMain.handle('models:listByEndpoint', (_e, id: string) => endpoints.listModels(id));
   ipcMain.handle('models:listAll', () => endpoints.listModelsAll());
 

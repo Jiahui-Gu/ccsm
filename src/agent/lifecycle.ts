@@ -181,6 +181,29 @@ export function subscribeAgentEvents(): void {
     }
     if (e.message.type === 'result') {
       store.setRunning(e.sessionId, false);
+      // Aggregate per-session cost / token counters for `/cost` and any
+      // future footer widgets. We accumulate every result frame (success or
+      // error subtypes still carry usage).
+      const r = e.message as {
+        num_turns?: number;
+        total_cost_usd?: number;
+        usage?: {
+          input_tokens?: number;
+          output_tokens?: number;
+          cache_creation_input_tokens?: number;
+          cache_read_input_tokens?: number;
+        };
+      };
+      const usage = r.usage ?? {};
+      store.addSessionStats(e.sessionId, {
+        turns: typeof r.num_turns === 'number' ? 1 : 1,
+        inputTokens:
+          (usage.input_tokens ?? 0) +
+          (usage.cache_creation_input_tokens ?? 0) +
+          (usage.cache_read_input_tokens ?? 0),
+        outputTokens: usage.output_tokens ?? 0,
+        costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0
+      });
       // Persist the finalized turn so reloading the app restores history.
       // Saving on `result` rather than on every delta avoids writing partial
       // streaming blocks; the bulk DELETE+INSERT is idempotent.

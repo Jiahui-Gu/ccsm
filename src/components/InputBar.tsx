@@ -8,6 +8,7 @@ import { SlashCommandPicker } from './SlashCommandPicker';
 import {
   SLASH_COMMANDS,
   detectSlashTrigger,
+  dispatchSlashCommand,
   filterSlashCommands,
   type SlashCommand
 } from '../slash-commands/registry';
@@ -334,6 +335,22 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // Valid turns: text with or without images, OR images with no text. Empty
     // text + no images is a no-op (same as before).
     if (!text && imgs.length === 0) return;
+
+    // Slash-command fast path: if the whole message is `/<name> [args]` and
+    // a client-side handler is registered, run it locally and return. This
+    // runs BEFORE the agentory/IPC guard so commands like `/help` still work
+    // in a browser-only probe harness where no Electron preload exists.
+    // Only trigger when there are no image attachments — a slash command with
+    // pasted images is almost certainly prose, not a bare invocation.
+    if (text.startsWith('/') && imgs.length === 0) {
+      const outcome = await dispatchSlashCommand(text, { sessionId, args: '' });
+      if (outcome === 'handled') {
+        update('');
+        return;
+      }
+      // 'pass-through' and 'unknown' fall through to the normal send path.
+    }
+
     const api = window.agentory;
     if (!api || !session) return;
 
