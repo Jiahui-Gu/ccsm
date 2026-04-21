@@ -177,3 +177,22 @@ export function closeDb(): void {
   db?.close();
   db = null;
 }
+
+const CLAUDE_BIN_PATH_KEY = 'claudeBinPath';
+
+/**
+ * Load the persisted user-picked claude binary path (the "Browse for binary"
+ * flow in the first-run wizard). Returns `null` when the user has not picked
+ * one; caller falls back to `AGENTORY_CLAUDE_BIN` env then PATH.
+ */
+export function loadClaudeBinPath(): string | null {
+  return loadState(CLAUDE_BIN_PATH_KEY);
+}
+
+export function saveClaudeBinPath(value: string | null): void {
+  if (value == null || value.length === 0) {
+    initDb().prepare('DELETE FROM app_state WHERE key = ?').run(CLAUDE_BIN_PATH_KEY);
+    return;
+  }
+  saveState(CLAUDE_BIN_PATH_KEY, value);
+}

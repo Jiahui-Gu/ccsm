@@ -101,6 +101,12 @@ export type StartOptions = {
    * once main.ts is migrated (batch 3, T9).
    */
   configDir?: string;
+  /**
+   * Pre-resolved claude binary path. When set, the spawner skips PATH lookup.
+   * Populated by main.ts from the persisted `claudeBinPath` state (user's
+   * "Browse for binary..." pick in the first-run wizard).
+   */
+  binaryPath?: string;
 };
 
 export type EventHandler = (msg: AgentMessage) => void;
@@ -161,6 +167,7 @@ export class SessionRunner {
       model: opts.model,
       resumeId: opts.resumeSessionId,
       envOverrides,
+      binaryPath: opts.binaryPath,
       signal: this.abort.signal,
     });
 

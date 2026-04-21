@@ -12,6 +12,8 @@ import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
+import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
+import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
@@ -43,6 +45,11 @@ export default function App() {
   const fontSize = useStore((s) => s.fontSize);
   const tutorialSeen = useStore((s) => s.tutorialSeen);
   const markTutorialSeen = useStore((s) => s.markTutorialSeen);
+  const checkCli = useStore((s) => s.checkCli);
+
+  useEffect(() => {
+    void checkCli();
+  }, [checkCli]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -122,6 +129,7 @@ export default function App() {
               <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
                 <WindowControls />
               </DragRegion>
+              <ClaudeCliMissingBanner />
               <div className="flex-1 flex items-center justify-center min-h-0">
                 {tutorialSeen ? (
                   <div className="flex items-center gap-3">
@@ -162,6 +170,7 @@ export default function App() {
           </div>
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+          <ClaudeCliMissingDialog />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
@@ -197,6 +206,7 @@ export default function App() {
             <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
               <WindowControls />
             </DragRegion>
+            <ClaudeCliMissingBanner />
             <ChatStream />
             <StatusBar
               cwd={active.cwd}
@@ -222,6 +232,7 @@ export default function App() {
         </div>
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+        <ClaudeCliMissingDialog />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

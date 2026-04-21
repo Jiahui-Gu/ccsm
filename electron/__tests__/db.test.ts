@@ -67,3 +67,26 @@ describe('db: messages table', () => {
     expect(loadMessages('s-1')).toEqual([]);
   });
 });
+
+describe('db: claudeBinPath', () => {
+  it('returns null when unset', async () => {
+    const { loadClaudeBinPath } = await freshDb();
+    expect(loadClaudeBinPath()).toBeNull();
+  });
+
+  it('roundtrips a saved path', async () => {
+    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
+    saveClaudeBinPath('/opt/claude/bin/claude');
+    expect(loadClaudeBinPath()).toBe('/opt/claude/bin/claude');
+  });
+
+  it('clears when passed null / empty string', async () => {
+    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
+    saveClaudeBinPath('/tmp/claude');
+    saveClaudeBinPath(null);
+    expect(loadClaudeBinPath()).toBeNull();
+    saveClaudeBinPath('/tmp/claude');
+    saveClaudeBinPath('');
+    expect(loadClaudeBinPath()).toBeNull();
+  });
+});
