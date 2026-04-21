@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [working, main]
+  push:
+    branches: [working, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    name: lint + typecheck + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Linux native builds for better-sqlite3 need python + build tools; the
+      # GitHub-hosted ubuntu image already has them, but setup-python makes
+      # it explicit and pins the version so upstream image changes don't
+      # surprise us.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+        env:
+          # electron-builder's postinstall needs this env to not fail on
+          # first install when the Electron binary cache is cold.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Rebuild better-sqlite3 against Node (tests run under node, not
+      # electron). The electron-builder `postinstall` above builds for the
+      # electron ABI; we overwrite with the node ABI for CI tests here.
+      - name: Rebuild better-sqlite3 for Node
+        run: npm rebuild better-sqlite3
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test

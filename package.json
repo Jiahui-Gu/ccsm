@@ -2,6 +2,16 @@
   "name": "agentory-next",
   "version": "0.0.1",
   "description": "Group-first manager for many Claude Code sessions",
+  "productName": "Agentory",
+  "author": {
+    "name": "Jiahui Gu",
+    "email": "noreply@agentory.dev"
+  },
+  "homepage": "https://github.com/Jiahui-Gu/Agentory-next",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jiahui-Gu/Agentory-next.git"
+  },
   "main": "dist/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n web,app -c blue,magenta \"npm:dev:web\" \"npm:dev:app\"",
@@ -12,7 +22,12 @@
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "probe:e2e": "npm run build && node scripts/probe-e2e-send.mjs && node scripts/probe-e2e-switch.mjs && node scripts/probe-e2e-default-cwd.mjs"
+    "probe:e2e": "npm run build && node scripts/probe-e2e-send.mjs && node scripts/probe-e2e-switch.mjs && node scripts/probe-e2e-default-cwd.mjs",
+    "make": "npm run build && electron-builder --publish never",
+    "make:win": "npm run build && electron-builder --win --publish never",
+    "make:mac": "npm run build && electron-builder --mac --publish never",
+    "make:linux": "npm run build && electron-builder --linux --publish never",
+    "postinstall": "electron-builder install-app-deps || true"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
@@ -46,6 +61,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4.0.0-beta.7",
     "@testing-library/dom": "^10.4.1",
@@ -62,6 +78,7 @@
     "concurrently": "^9.1.0",
     "css-loader": "^7.1.2",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.17.0",
     "eslint-plugin-react": "^7.37.2",
     "eslint-plugin-react-hooks": "^5.1.0",
@@ -79,5 +96,103 @@
     "webpack": "^5.97.1",
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.0"
+  },
+  "build": {
+    "appId": "com.agentory.next",
+    "productName": "Agentory",
+    "copyright": "Copyright (c) 2026 Jiahui Gu",
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/*.ts",
+      "!**/__tests__/**",
+      "!**/tests/**"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Jiahui-Gu",
+        "repo": "Agentory-next"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "writeUpdateInfo": false
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "maintainer": "Jiahui Gu <noreply@agentory.dev>",
+      "synopsis": "Group-first manager for many Claude Code sessions",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   }
 }

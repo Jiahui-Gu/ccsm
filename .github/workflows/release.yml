@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.0.0-dryrun)'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: lint + typecheck + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: Rebuild better-sqlite3 for Node
+        run: npm rebuild better-sqlite3
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+
+      # Warn (don't fail) if signing secrets aren't configured. The build
+      # still produces artifacts — just unsigned. Tracked per non-negotiable:
+      # "builds MUST continue unsigned if absent".
+      - name: Detect signing secrets
+        id: secrets
+        shell: bash
+        run: |
+          missing=()
+          if [ "${{ matrix.platform }}" = "win" ] || [ "${{ matrix.platform }}" = "mac" ]; then
+            if [ -z "${{ secrets.CSC_LINK }}" ]; then missing+=(CSC_LINK); fi
+            if [ -z "${{ secrets.CSC_KEY_PASSWORD }}" ]; then missing+=(CSC_KEY_PASSWORD); fi
+          fi
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            if [ -z "${{ secrets.APPLE_ID }}" ]; then missing+=(APPLE_ID); fi
+            if [ -z "${{ secrets.APPLE_ID_PASSWORD }}" ]; then missing+=(APPLE_ID_PASSWORD); fi
+            if [ -z "${{ secrets.APPLE_TEAM_ID }}" ]; then missing+=(APPLE_TEAM_ID); fi
+          fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::warning title=Unsigned build::Missing signing secrets: ${missing[*]}. Build will continue unsigned."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build web + electron
+        run: npm run build
+
+      # electron-builder invocation per OS. `--publish never` because we
+      # upload via softprops/action-gh-release below — that gives us a
+      # single source of release metadata and keeps `publish: github` in
+      # package.json reserved for the update feed only.
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: npx electron-builder --linux --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package (macOS)
+        if: matrix.platform == 'mac'
+        run: npx electron-builder --mac --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Skip notarization if Apple creds missing — electron-builder
+          # reads these env vars and falls back to unsigned when empty.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.secrets.outputs.signed == 'true' && 'true' || 'false' }}
+
+      - name: Package (Windows)
+        if: matrix.platform == 'win'
+        run: npx electron-builder --win --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Upload artifacts to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentory-${{ matrix.platform }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14
+
+      # Only create/update the GitHub Release when this was a real tag push —
+      # `workflow_dispatch` dry-runs stop at the artifact upload above so we
+      # don't pollute the Releases tab with `v0.0.0-dryrun` entries.
+      - name: Upload to GitHub Release (draft)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/latest*.yml
+            release/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -125,6 +125,7 @@ export default function App() {
         <ToastProvider>
           <PersistErrorBridge />
           <BackgroundWaitingBridge />
+          <UpdateDownloadedBridge />
           <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
             <Sidebar
               onCreateSession={(cwd) => createSession(cwd)}
@@ -202,6 +203,7 @@ export default function App() {
       <ToastProvider>
         <PersistErrorBridge />
         <BackgroundWaitingBridge />
+        <UpdateDownloadedBridge />
         <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
           <Sidebar
             onCreateSession={(cwd) => createSession(cwd)}
@@ -306,5 +308,37 @@ function BackgroundWaitingBridge() {
       if (off) off();
     };
   }, [selectSession]);
+  return null;
+}
+
+/**
+ * Listens for `update:downloaded` from the main process and shows a persistent
+ * toast with a Restart button. We only show the toast once per session — the
+ * Settings → Updates pane shows the same state for users who dismiss.
+ */
+function UpdateDownloadedBridge() {
+  const { push } = useToast();
+  useEffect(() => {
+    let shown = false;
+    const off = window.agentory?.onUpdateDownloaded((info) => {
+      if (shown) return;
+      shown = true;
+      push({
+        kind: 'info',
+        title: 'Update downloaded — restart to apply',
+        body: `Version ${info.version} is ready.`,
+        persistent: true,
+        action: {
+          label: 'Restart',
+          onClick: () => {
+            void window.agentory?.updatesInstall();
+          }
+        }
+      });
+    });
+    return () => {
+      if (off) off();
+    };
+  }, [push]);
   return null;
 }
