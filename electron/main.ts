@@ -340,6 +340,8 @@ app.whenReady().then(() => {
         permissionMode?: PermissionMode;
         resumeSessionId?: string;
         endpointId?: string;
+        allowedTools?: readonly string[];
+        disallowedTools?: readonly string[];
       }
     ) => {
       const envOverrides = resolveSessionEndpointEnv(opts.endpointId);

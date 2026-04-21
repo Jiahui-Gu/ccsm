@@ -1,4 +1,4 @@
-import type { Group, Session } from '../types';
+import type { Group, Session, PermissionRules } from '../types';
 import type {
   PermissionMode,
   Theme,
@@ -32,6 +32,12 @@ export interface PersistedState {
    */
   defaultEndpointId?: string | null;
   notificationSettings?: NotificationSettings;
+  /**
+   * Fine-grained per-tool allow/deny rules layered on top of `permission`.
+   * Missing on pre-feature persisted state — we fall back to empty arrays so
+   * the CLI flags are simply omitted (identical to legacy behavior).
+   */
+  permissionRules?: PermissionRules;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
