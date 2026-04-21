@@ -5,6 +5,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { appWindow } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -20,7 +21,7 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
-const win = await app.firstWindow();
+const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForTimeout(1500);
 

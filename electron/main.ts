@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain, safeStorage, dialog, Notification, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, Notification, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, closeDb } from './db';
@@ -126,6 +126,70 @@ function createWindow() {
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
   win.on('maximize', emitMax);
   win.on('unmaximize', emitMax);
+
+  // Minimize-to-tray: clicking close (or the OS X red dot, our own custom
+  // close button via window:close IPC) hides the window instead of quitting.
+  // The user can still really quit via the tray menu's Quit item, the
+  // app menu's Quit, or Cmd/Ctrl-Q.
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    win.hide();
+    if (process.platform === 'darwin') app.dock?.hide?.();
+  });
+}
+
+let tray: Tray | null = null;
+let isQuitting = false;
+
+function buildTrayIcon() {
+  // Tiny 16×16 placeholder (white square on transparent). On Windows/Linux
+  // the OS uses this directly; macOS auto-templates monochrome images.
+  // Replace with a real branded asset once we have one.
+  const size = 16;
+  const buffer = Buffer.alloc(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    buffer[i * 4 + 0] = 255;
+    buffer[i * 4 + 1] = 255;
+    buffer[i * 4 + 2] = 255;
+    buffer[i * 4 + 3] = 220;
+  }
+  const img = nativeImage.createFromBuffer(buffer, { width: size, height: size });
+  if (process.platform === 'darwin') img.setTemplateImage(true);
+  return img;
+}
+
+function ensureTray() {
+  if (tray) return tray;
+  tray = new Tray(buildTrayIcon());
+  tray.setToolTip('Agentory');
+  const showWindow = () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win) {
+      createWindow();
+      return;
+    }
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    if (process.platform === 'darwin') app.dock?.show?.();
+  };
+  tray.on('click', showWindow);
+  tray.on('double-click', showWindow);
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Show Agentory', click: showWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        }
+      }
+    ])
+  );
+  return tray;
 }
 
 app.whenReady().then(() => {
@@ -226,12 +290,24 @@ app.whenReady().then(() => {
   installUpdaterIpc();
 
   createWindow();
+  ensureTray();
+});
+
+app.on('before-quit', () => {
+  isQuitting = true;
 });
 
 app.on('window-all-closed', () => {
-  sessions.closeAll();
-  closeDb();
-  if (process.platform !== 'darwin') app.quit();
+  // Tray-resident: do NOT quit on Windows/Linux when the window closes;
+  // the user explicitly chose minimize-to-tray. macOS keeps its dock icon
+  // by convention. Real quit goes through tray Quit / Cmd-Q.
+  if (process.platform !== 'darwin' && isQuitting) {
+    sessions.closeAll();
+    closeDb();
+    app.quit();
+  } else if (process.platform === 'darwin') {
+    // mac convention: keep app alive even when window closes; only quit on Cmd-Q
+  }
 });
 
 app.on('activate', () => {
