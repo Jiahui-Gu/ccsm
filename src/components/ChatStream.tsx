@@ -1,8 +1,10 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
+import { ChevronRight, AlertCircle, ArrowDown, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import * as RadioGroup from '@radix-ui/react-radio-group';
+import * as Checkbox from '@radix-ui/react-checkbox';
 import type { MessageBlock } from '../types';
 import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
@@ -478,44 +480,94 @@ function QuestionBlock({
               <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{q.header}</div>
             )}
             <div className="text-sm text-fg-primary">{q.question}</div>
-            <div className="space-y-1">
-              {q.options.map((opt, oi) => {
-                const selected = picks[qi]?.has(oi) ?? false;
-                return (
-                  <button
-                    key={oi}
-                    type="button"
-                    disabled={submitted}
-                    onClick={() => togglePick(qi, oi, !!q.multiSelect)}
-                    className={
-                      'w-full text-left px-3 py-2 rounded-sm border transition-colors duration-100 ' +
-                      (selected
-                        ? 'border-state-waiting/70 bg-state-waiting/10'
-                        : 'border-border-subtle hover:bg-bg-hover hover:border-border-default') +
-                      (submitted ? ' cursor-not-allowed opacity-70' : '')
-                    }
-                  >
-                    <div className="flex items-start gap-2">
-                      <span
-                        aria-hidden
-                        className={
-                          'mt-1 h-3 w-3 shrink-0 rounded-' +
-                          (q.multiSelect ? 'sm' : 'full') +
-                          ' border ' +
-                          (selected ? 'bg-state-waiting border-state-waiting' : 'border-border-strong')
-                        }
-                      />
+            {q.multiSelect ? (
+              <div className="space-y-1" role="group" aria-label={q.question}>
+                {q.options.map((opt, oi) => {
+                  const selected = picks[qi]?.has(oi) ?? false;
+                  const id = `q${qi}-o${oi}`;
+                  return (
+                    <motion.label
+                      key={oi}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+                      htmlFor={id}
+                      className={
+                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out outline-none ' +
+                        (selected
+                          ? 'border-state-waiting/70 bg-state-waiting/10'
+                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
+                        (submitted ? ' cursor-not-allowed opacity-70' : '')
+                      }
+                    >
+                      <Checkbox.Root
+                        id={id}
+                        checked={selected}
+                        disabled={submitted}
+                        onCheckedChange={() => togglePick(qi, oi, true)}
+                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong data-[state=checked]:bg-state-waiting data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+                      >
+                        <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
+                          <Check size={10} strokeWidth={3} />
+                        </Checkbox.Indicator>
+                      </Checkbox.Root>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-fg-primary">{opt.label}</div>
                         {opt.description && (
                           <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
                         )}
                       </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                    </motion.label>
+                  );
+                })}
+              </div>
+            ) : (
+              <RadioGroup.Root
+                value={(picks[qi] && picks[qi].size > 0 ? String(Array.from(picks[qi])[0]) : '')}
+                onValueChange={(v) => {
+                  const idx = parseInt(v, 10);
+                  if (!Number.isNaN(idx)) togglePick(qi, idx, false);
+                }}
+                disabled={submitted}
+                className="space-y-1"
+                aria-label={q.question}
+              >
+                {q.options.map((opt, oi) => {
+                  const selected = picks[qi]?.has(oi) ?? false;
+                  const id = `q${qi}-o${oi}`;
+                  return (
+                    <motion.label
+                      key={oi}
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+                      htmlFor={id}
+                      className={
+                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out ' +
+                        (selected
+                          ? 'border-state-waiting/70 bg-state-waiting/10'
+                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
+                        (submitted ? ' cursor-not-allowed opacity-70' : '')
+                      }
+                    >
+                      <RadioGroup.Item
+                        id={id}
+                        value={String(oi)}
+                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border border-border-strong data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+                      >
+                        <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
+                      </RadioGroup.Item>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-fg-primary">{opt.label}</div>
+                        {opt.description && (
+                          <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
+                        )}
+                      </div>
+                    </motion.label>
+                  );
+                })}
+              </RadioGroup.Root>
+            )}
           </div>
         ))}
       </div>
@@ -568,11 +620,16 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
           onSubmit={(answersText) => {
             const api = window.agentory;
             if (!api) return;
-            // Soft-cancel the SDK's pending tool call, then deliver the user's
-            // answers as a plain message. The agent reads the next user turn
-            // instead of a tool result — slightly lossy compared to a real
-            // tool result, but works without main-process plumbing for now.
-            void api.agentResolvePermission(activeId, b.requestId, 'deny');
+            // Two flows land here:
+            //  1. can_use_tool path (SDK-era / possible future): answers the
+            //     pending permission with "deny" and sends the answer as a
+            //     fresh user message — slightly lossy but unblocks the turn.
+            //  2. tool_use path (current claude.exe spawn): no requestId, the
+            //     bogus tool_result has already landed, agent is waiting on
+            //     the next user turn. Just send the answer text.
+            if (b.requestId) {
+              void api.agentResolvePermission(activeId, b.requestId, 'deny');
+            }
             void api.agentSend(activeId, answersText);
           }}
         />

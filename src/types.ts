@@ -48,6 +48,6 @@ export type MessageBlock =
   | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean; input?: unknown }
   | { kind: 'todo'; id: string; toolUseId?: string; todos: TodoItem[] }
   | { kind: 'waiting'; id: string; prompt: string; intent: 'permission' | 'plan' | 'question'; requestId?: string; plan?: string }
-  | { kind: 'question'; id: string; requestId: string; questions: QuestionSpec[] }
+  | { kind: 'question'; id: string; requestId?: string; toolUseId?: string; questions: QuestionSpec[] }
   | { kind: 'status'; id: string; tone: 'info' | 'warn'; title: string; detail?: string }
   | { kind: 'error'; id: string; text: string };

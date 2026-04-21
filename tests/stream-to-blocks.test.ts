@@ -134,6 +134,78 @@ describe('streamEventToTranslation', () => {
     });
   });
 
+  it('AskUserQuestion tool_use becomes a question block with parsed options', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-q',
+        message: {
+          id: 'm-q',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-q1',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  {
+                    question: 'Pick a stack',
+                    header: 'Stack',
+                    multiSelect: false,
+                    options: [
+                      { label: 'TypeScript', description: 'types first' },
+                      { label: 'Rust' }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as {
+      kind: string;
+      toolUseId?: string;
+      questions?: Array<{ question: string; multiSelect?: boolean; options: Array<{ label: string }> }>;
+    };
+    expect(b.kind).toBe('question');
+    expect(b.toolUseId).toBe('tu-q1');
+    expect(b.questions).toHaveLength(1);
+    expect(b.questions![0].question).toBe('Pick a stack');
+    expect(b.questions![0].multiSelect).toBe(false);
+    expect(b.questions![0].options.map((o) => o.label)).toEqual(['TypeScript', 'Rust']);
+  });
+
+  it('AskUserQuestion with malformed input falls back to a generic tool block', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-q2',
+        message: {
+          id: 'm-q2',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-q2',
+              name: 'AskUserQuestion',
+              input: { questions: 'not an array' }
+            }
+          ]
+        }
+      })
+    );
+    expect(out.append).toHaveLength(1);
+    const b = out.append[0] as { kind: string; name?: string };
+    expect(b.kind).toBe('tool');
+    expect(b.name).toBe('AskUserQuestion');
+  });
+
   it('TodoWrite tool_use becomes a todo block (not generic tool)', () => {
     const out = streamEventToTranslation(
       asEvent({
