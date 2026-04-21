@@ -120,13 +120,18 @@ export class SessionRunner {
         this.onPermissionRequest({ requestId, toolName, input });
       });
 
+    const permissionMode = opts.permissionMode ?? 'default';
+    const isBypass = permissionMode === 'bypassPermissions';
     const options: Options = {
       cwd: resolveCwd(opts.cwd),
       env,
-      permissionMode: opts.permissionMode ?? 'default',
+      permissionMode,
       model: opts.model,
       resume: opts.resumeSessionId,
-      canUseTool,
+      // The SDK refuses bypassPermissions unless allowDangerouslySkipPermissions
+      // is also set. Skip canUseTool too — the bypass mode short-circuits before
+      // the prompt would fire and the SDK throws if both are present.
+      ...(isBypass ? { allowDangerouslySkipPermissions: true } : { canUseTool }),
       includePartialMessages: true
     };
 
