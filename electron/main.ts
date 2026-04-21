@@ -335,6 +335,11 @@ app.whenReady().then(() => {
   ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
     sessions.send(sessionId, text)
   );
+  ipcMain.handle(
+    'agent:sendContent',
+    (_e, sessionId: string, content: unknown[]) =>
+      sessions.sendContent(sessionId, Array.isArray(content) ? content : [])
+  );
   ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
   ipcMain.handle('agent:setPermissionMode', (_e, sessionId: string, mode: PermissionMode) =>
     sessions.setPermissionMode(sessionId, mode)

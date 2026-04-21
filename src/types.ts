@@ -51,8 +51,22 @@ export interface TodoItem {
   activeForm?: string;
 }
 
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+// A single image attached to a user message. `data` is raw base64 (no
+// `data:...;base64,` prefix) so it can be dropped directly into an Anthropic
+// content block as `source.data`. Persisted inline with the message block —
+// ChatStream reconstructs a data-URL for thumbnail rendering on demand.
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  mediaType: ImageMediaType;
+  data: string;
+  size: number;
+}
+
 export type MessageBlock =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
   | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean; input?: unknown }
   | { kind: 'todo'; id: string; toolUseId?: string; todos: TodoItem[] }
