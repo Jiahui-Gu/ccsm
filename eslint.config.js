@@ -108,7 +108,9 @@ export default [
         __filename: 'readonly',
         require: 'readonly',
         module: 'readonly',
-        exports: 'readonly'
+        exports: 'readonly',
+        queueMicrotask: 'readonly',
+        NodeJS: 'readonly'
       }
     }
   }
