@@ -24,7 +24,30 @@ export interface Session {
   // Per-session OS notification mute. When true, dispatch suppresses all
   // notification events for this session regardless of global settings.
   notificationsMuted?: boolean;
+  // Per-session override of the global per-tool permission rules. When
+  // present, `mergeRules(global, session)` determines the effective rules
+  // passed to claude.exe via `--allowedTools` / `--disallowedTools`.
+  // Omit to fall back to global rules untouched.
+  permissionRules?: PermissionRules;
 }
+
+// Fine-grained per-tool permission rules layered on top of `PermissionMode`.
+// Patterns follow claude.exe's flag syntax:
+//   - bare tool name         → "Bash", "Read"
+//   - tool + pattern         → "Bash(git:*)", "Read(**/*.secret)"
+//   - wildcard pattern       → "Bash(*)" (matches the user's own
+//     ~/.claude/settings.json convention)
+// Both arrays are passed as-is to the CLI — we do not translate patterns.
+// Validation is sanity-only (non-empty, balanced parens) per MVP scope.
+export interface PermissionRules {
+  allowedTools: string[];
+  disallowedTools: string[];
+}
+
+export const EMPTY_PERMISSION_RULES: PermissionRules = {
+  allowedTools: [],
+  disallowedTools: []
+};
 
 export interface Group {
   id: string;
