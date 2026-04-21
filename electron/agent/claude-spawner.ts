@@ -153,6 +153,21 @@ export const SAFE_ENV: { exact: readonly string[]; prefixes: readonly string[] }
     'ProgramFiles',  // ProgramFiles, ProgramFiles(x86), ProgramFilesPath
     'CommonProgram', // CommonProgramFiles, CommonProgramFiles(x86)
     'ProgramData',   // ProgramData, ProgramData(x86) (rare but cheap)
+    // Anthropic / claude.exe credentials + endpoint configuration. This is
+    // the core self-host differentiator: user points ANTHROPIC_BASE_URL at
+    // their own gateway, sets ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY, and
+    // claude.exe authenticates without needing a stored ~/.claude login.
+    // Covers: ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+    // ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL, ANTHROPIC_SMALL_FAST_MODEL,
+    // ANTHROPIC_CUSTOM_HEADERS, and any future ANTHROPIC_* the CLI adds.
+    'ANTHROPIC_',
+    // claude.exe runtime flags (Bedrock/Vertex routing, proxy, etc.).
+    // Covers: CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX,
+    // CLAUDE_CODE_SKIP_AUTH_LOGIN, CLAUDE_CODE_DISABLE_*, etc. We still
+    // force CLAUDE_CONFIG_DIR / CLAUDE_CODE_ENTRYPOINT below to our own
+    // values — prefix inclusion just means we pass them through first,
+    // then overwrite the two we own.
+    'CLAUDE_CODE_',
   ],
 };
 
@@ -202,8 +217,12 @@ export function buildSpawnEnv(opts: {
   // Required: isolate config so we never pollute the user's ~/.claude.
   env.CLAUDE_CONFIG_DIR = opts.configDir;
 
-  // Identifies us in server-side logs.
-  env.CLAUDE_CODE_ENTRYPOINT = env.CLAUDE_CODE_ENTRYPOINT ?? 'agentory-desktop';
+  // Identifies us in server-side logs. We unconditionally overwrite the
+  // parent's CLAUDE_CODE_ENTRYPOINT (which will be `cli` when Agentory is
+  // spawned from a Claude Code session for dogfooding) so every spawn from
+  // Agentory reports as `agentory-desktop`. envOverrides below can still
+  // rename it (e.g. for tests).
+  env.CLAUDE_CODE_ENTRYPOINT = 'agentory-desktop';
 
   // Caller overrides win — this is where ANTHROPIC_BASE_URL /
   // ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_SKIP_AUTH_LOGIN come in.
