@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, Notification, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { initDb, loadState, saveState, closeDb } from './db';
+import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
@@ -202,6 +202,12 @@ app.whenReady().then(() => {
   initDb();
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
+  ipcMain.handle('db:loadMessages', (_e, sessionId: string) => loadMessages(sessionId));
+  ipcMain.handle(
+    'db:saveMessages',
+    (_e, sessionId: string, blocks: Array<{ id: string; kind: string }>) =>
+      saveMessages(sessionId, blocks)
+  );
   ipcMain.handle('app:getDataDir', () => app.getPath('userData'));
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('keychain:getApiKey', () => readApiKey());

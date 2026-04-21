@@ -82,6 +82,7 @@ type Actions = {
   streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
   setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
+  loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
   markInterrupted: (sessionId: string) => void;
@@ -97,6 +98,10 @@ function firstUsableGroupId(groups: Group[]): string {
   const g = groups.find((x) => x.kind === 'normal');
   return g ? g.id : groups[0]?.id ?? 'g1';
 }
+
+// Module-scoped set tracking in-flight db fetches, so rapid re-clicks on a
+// session don't issue redundant IPC round-trips.
+const inFlightLoads = new Set<string>();
 
 const defaultGroups: Group[] = [
   { id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }
@@ -129,6 +134,13 @@ export const useStore = create<State & Actions>((set, get) => ({
         x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
       )
     }));
+    // Lazy-load persisted history on first view after app restart. The store
+    // only holds messages in memory; on fresh boot messagesBySession[id] is
+    // undefined until we fetch from the db. An empty array means "known to be
+    // empty", so only fetch when the key is truly missing.
+    if (id && !(id in get().messagesBySession)) {
+      void get().loadMessages(id);
+    }
   },
 
   focusGroup: (id) => set({ focusedGroupId: id }),
@@ -209,6 +221,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         interruptedSessions: nextInterrupted
       };
     });
+    // Wipe the persisted rows so a deleted session can't resurrect its
+    // history if a new session happens to reuse the id.
+    void window.agentory?.saveMessages(id, []);
   },
 
   moveSession: (sessionId, targetGroupId, beforeSessionId) => {
@@ -432,6 +447,29 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
   },
 
+  loadMessages: async (sessionId) => {
+    const api = window.agentory;
+    if (!api || typeof api.loadMessages !== 'function') return;
+    if (inFlightLoads.has(sessionId)) return;
+    inFlightLoads.add(sessionId);
+    try {
+      const rows = await api.loadMessages(sessionId);
+      // Don't clobber blocks that arrived via streaming while we awaited the
+      // db round-trip — if something is already there, keep it.
+      set((s) => {
+        if (s.messagesBySession[sessionId]) return s;
+        return {
+          messagesBySession: {
+            ...s.messagesBySession,
+            [sessionId]: rows as MessageBlock[]
+          }
+        };
+      });
+    } finally {
+      inFlightLoads.delete(sessionId);
+    }
+  },
+
   markStarted: (sessionId) => {
     set((s) =>
       s.startedSessions[sessionId]
@@ -507,6 +545,10 @@ export async function hydrateStore(): Promise<void> {
     });
   }
   hydrated = true;
+  // Kick off a load for the restored active session so the right pane paints
+  // history immediately on boot, not on the next click.
+  const active = useStore.getState().activeId;
+  if (active) void useStore.getState().loadMessages(active);
   // After (potential) hydration, subscribe to write-through.
   useStore.subscribe((s) => {
     const snapshot: PersistedState = {

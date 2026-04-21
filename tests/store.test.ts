@@ -315,3 +315,71 @@ describe('store: streamAssistantText + appendBlocks coalesce', () => {
     expect(blocks[1]).toMatchObject({ id: 'msg-1:tu0', kind: 'tool' });
   });
 });
+
+describe('store: loadMessages + selectSession autoload (session restore)', () => {
+  it('loadMessages pulls from the IPC bridge and writes to messagesBySession', async () => {
+    const persisted = [
+      { kind: 'user', id: 'u1', text: 'hi' },
+      { kind: 'assistant', id: 'a1', text: 'hello there' }
+    ];
+    const load = vi.fn().mockResolvedValue(persisted);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load }
+    };
+
+    await useStore.getState().loadMessages('s-ghost');
+    expect(load).toHaveBeenCalledWith('s-ghost');
+    expect(useStore.getState().messagesBySession['s-ghost']).toEqual(persisted);
+  });
+
+  it('loadMessages does not clobber blocks that arrived mid-flight', async () => {
+    let resolve!: (v: unknown[]) => void;
+    const load = vi.fn(
+      () => new Promise<unknown[]>((r) => { resolve = r; })
+    );
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load }
+    };
+
+    const promise = useStore.getState().loadMessages('s-race');
+    // Simulate a streaming block landing before the db fetch resolves.
+    useStore.getState().appendBlocks('s-race', [
+      { kind: 'assistant', id: 'live-1', text: 'streaming' }
+    ]);
+    resolve([{ kind: 'user', id: 'stale', text: 'old' }]);
+    await promise;
+
+    const blocks = useStore.getState().messagesBySession['s-race'];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ id: 'live-1' });
+  });
+
+  it('selectSession triggers loadMessages when history is missing', () => {
+    const load = vi.fn().mockResolvedValue([]);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load }
+    };
+    useStore.setState({
+      sessions: [
+        { id: 's-x', name: 's-x', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().selectSession('s-x');
+    expect(load).toHaveBeenCalledWith('s-x');
+  });
+
+  it('selectSession skips the load when messagesBySession already has an entry', () => {
+    const load = vi.fn().mockResolvedValue([]);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load }
+    };
+    useStore.setState({
+      sessions: [
+        { id: 's-y', name: 's-y', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
+      ],
+      messagesBySession: { 's-y': [] }
+    });
+    useStore.getState().selectSession('s-y');
+    expect(load).not.toHaveBeenCalled();
+  });
+});
