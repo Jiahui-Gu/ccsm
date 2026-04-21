@@ -41,6 +41,17 @@ class SessionsManager {
     return true;
   }
 
+  /**
+   * Forward a prebuilt Anthropic content-block array (text + image blocks
+   * etc.) to the session's stdin. Used by image drop/paste flows.
+   */
+  sendContent(sessionId: string, content: readonly unknown[]): boolean {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    r.sendContent(content);
+    return true;
+  }
+
   async interrupt(sessionId: string): Promise<boolean> {
     const r = this.runners.get(sessionId);
     if (!r) return false;

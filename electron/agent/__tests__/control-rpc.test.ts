@@ -345,6 +345,27 @@ describe('ControlRpc — user messages and lifecycle', () => {
     expect(typeof frame.uuid).toBe('string');
   });
 
+  it('sendUserMessageContent forwards a content-block array verbatim', () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    const content = [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: 'what is this?' },
+    ];
+    rpc.sendUserMessageContent(content, 'cli_session_99');
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    expect(frame.type).toBe('user');
+    expect(frame.session_id).toBe('cli_session_99');
+    expect((frame.message as { content: unknown }).content).toEqual(content);
+  });
+
+  it('sendUserMessageContent throws after close', () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    rpc.close();
+    expect(() => rpc.sendUserMessageContent([{ type: 'text', text: 'x' }])).toThrow(/closed/);
+  });
+
   it('sending after close throws a friendly error (not EPIPE)', () => {
     const m = makeStdin();
     const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });

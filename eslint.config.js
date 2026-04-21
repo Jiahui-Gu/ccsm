@@ -63,6 +63,12 @@ export default [
         MouseEvent: 'readonly',
         FocusEvent: 'readonly',
         DragEvent: 'readonly',
+        File: 'readonly',
+        FileList: 'readonly',
+        FileReader: 'readonly',
+        Blob: 'readonly',
+        btoa: 'readonly',
+        atob: 'readonly',
         getComputedStyle: 'readonly',
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly'

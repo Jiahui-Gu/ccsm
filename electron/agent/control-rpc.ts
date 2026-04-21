@@ -479,6 +479,20 @@ export class ControlRpc {
    * `UserMessageEventSchema.session_id` is OPTIONAL in stream-json types.)
    */
   sendUserMessage(text: string, sessionId?: string): void {
+    this.sendUserMessageContent([{ type: 'text', text }], sessionId);
+  }
+
+  /**
+   * Send a user message whose `content` is a pre-built array of Anthropic
+   * content blocks (text / image / etc.). Used by the image drop/paste flows
+   * where the renderer assembles `{type:'image', source:{type:'base64', ...}}`
+   * alongside the text block.
+   *
+   * `UserMessageEventSchema.content` already accepts `z.array(ContentBlockSchema)`,
+   * and `ContentBlockSchema` uses `.passthrough()` with unknown types falling
+   * through, so `image` blocks flow end-to-end without schema changes.
+   */
+  sendUserMessageContent(content: readonly unknown[], sessionId?: string): void {
     if (this.closed) {
       throw new Error('ControlRpc: closed; cannot send user message');
     }
@@ -493,7 +507,7 @@ export class ControlRpc {
       ...(sessionId ? { session_id: sessionId } : {}),
       parent_tool_use_id: null,
       isSynthetic: false,
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: { role: 'user', content },
     });
   }
 
