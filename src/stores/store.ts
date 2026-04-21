@@ -9,6 +9,24 @@ export type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 
+// Auto-prompt watchdog: when an agent stops without uttering the done token,
+// the lifecycle replies for the user so the agent doesn't sit idle. Tunables
+// live in user settings; per-session counts cap how many auto-replies fire
+// before a human must actually weigh in.
+export interface WatchdogConfig {
+  enabled: boolean;
+  doneToken: string;
+  otherwisePostfix: string;
+  maxAutoReplies: number;
+}
+
+export const DEFAULT_WATCHDOG: WatchdogConfig = {
+  enabled: false,
+  doneToken: '我真的已经做完了',
+  otherwisePostfix: '继续做，别问我任何事，你来做决策。',
+  maxAutoReplies: 20
+};
+
 type State = {
   sessions: Session[];
   groups: Group[];
@@ -21,6 +39,8 @@ type State = {
   theme: Theme;
   fontSize: FontSize;
   tutorialSeen: boolean;
+  watchdog: WatchdogConfig;
+  watchdogCountsBySession: Record<string, number>;
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
@@ -43,6 +63,9 @@ type Actions = {
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
   markTutorialSeen: () => void;
+  setWatchdog: (patch: Partial<WatchdogConfig>) => void;
+  resetWatchdogCount: (sessionId: string) => void;
+  bumpWatchdogCount: (sessionId: string) => number;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -85,6 +108,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   theme: 'system',
   fontSize: 'md',
   tutorialSeen: false,
+  watchdog: DEFAULT_WATCHDOG,
+  watchdogCountsBySession: {},
   messagesBySession: {},
   startedSessions: {},
   runningSessions: {},
@@ -245,6 +270,26 @@ export const useStore = create<State & Actions>((set, get) => ({
   setTheme: (theme) => set({ theme }),
   setFontSize: (fontSize) => set({ fontSize }),
   markTutorialSeen: () => set({ tutorialSeen: true }),
+
+  setWatchdog: (patch) =>
+    set((s) => ({ watchdog: { ...s.watchdog, ...patch } })),
+
+  resetWatchdogCount: (sessionId) =>
+    set((s) => {
+      if (!(sessionId in s.watchdogCountsBySession)) return s;
+      const next = { ...s.watchdogCountsBySession };
+      delete next[sessionId];
+      return { watchdogCountsBySession: next };
+    }),
+
+  bumpWatchdogCount: (sessionId) => {
+    const cur = get().watchdogCountsBySession[sessionId] ?? 0;
+    const nextN = cur + 1;
+    set((s) => ({
+      watchdogCountsBySession: { ...s.watchdogCountsBySession, [sessionId]: nextN }
+    }));
+    return nextN;
+  },
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -428,7 +473,8 @@ export async function hydrateStore(): Promise<void> {
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
       recentProjects: persisted.recentProjects ?? [],
-      tutorialSeen: persisted.tutorialSeen ?? false
+      tutorialSeen: persisted.tutorialSeen ?? false,
+      watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) }
     });
   }
   hydrated = true;
@@ -445,7 +491,8 @@ export async function hydrateStore(): Promise<void> {
       theme: s.theme,
       fontSize: s.fontSize,
       recentProjects: s.recentProjects,
-      tutorialSeen: s.tutorialSeen
+      tutorialSeen: s.tutorialSeen,
+      watchdog: s.watchdog
     };
     schedulePersist(snapshot);
   });
