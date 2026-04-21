@@ -20,8 +20,15 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
-type EndpointKind = 'anthropic';
+type EndpointKind =
+  | 'anthropic'
+  | 'openai-compat'
+  | 'ollama'
+  | 'bedrock'
+  | 'vertex'
+  | 'unknown';
 type EndpointStatus = 'ok' | 'error' | 'unchecked';
+type DiscoverySource = 'probe' | 'listed' | 'manual';
 type EndpointRow = {
   id: string;
   name: string;
@@ -33,6 +40,8 @@ type EndpointRow = {
   lastRefreshedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  detectedKind: EndpointKind | null;
+  manualModelIds: string[];
 };
 type ModelRow = {
   id: string;
@@ -40,13 +49,20 @@ type ModelRow = {
   modelId: string;
   displayName: string | null;
   discoveredAt: number;
+  source: DiscoverySource;
+  existsConfirmed: boolean;
 };
 type EndpointWithModels = EndpointRow & { models: ModelRow[] };
 type TestConnectionResult =
   | { ok: true }
   | { ok: false; status?: number; error: string };
 type RefreshResult =
-  | { ok: true; count: number }
+  | {
+      ok: true;
+      count: number;
+      detectedKind: EndpointKind;
+      sourceStats: Record<DiscoverySource, number>;
+    }
   | { ok: false; error: string; status?: number };
 
 type UpdateStatus =
@@ -165,13 +181,21 @@ const api = {
     }): Promise<EndpointRow> => ipcRenderer.invoke('endpoints:add', input),
     update: (
       id: string,
-      patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
+      patch: {
+        name?: string;
+        baseUrl?: string;
+        apiKey?: string | null;
+        isDefault?: boolean;
+        kind?: EndpointKind;
+      }
     ): Promise<EndpointRow | null> => ipcRenderer.invoke('endpoints:update', id, patch),
     remove: (id: string): Promise<boolean> => ipcRenderer.invoke('endpoints:remove', id),
     testConnection: (args: { baseUrl: string; apiKey: string }): Promise<TestConnectionResult> =>
       ipcRenderer.invoke('endpoints:testConnection', args),
     refreshModels: (id: string): Promise<RefreshResult> =>
       ipcRenderer.invoke('endpoints:refreshModels', id),
+    setManualModels: (id: string, ids: string[]): Promise<EndpointRow | null> =>
+      ipcRenderer.invoke('endpoints:setManualModels', id, ids),
   },
 
   models: {
