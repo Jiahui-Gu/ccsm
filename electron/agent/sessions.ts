@@ -1,6 +1,16 @@
 import os from 'node:os';
 import path from 'node:path';
-import type { CanUseTool, Options, PermissionMode, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { spawnClaude, type ClaudeProcess, type PermissionMode as CliPermissionMode } from './claude-spawner';
+import { splitNDJSON } from './ndjson-splitter';
+import { parseStreamJSONLine } from './stream-json-parser';
+import type { ClaudeStreamEvent } from './stream-json-types';
+import {
+  ControlRpc,
+  type CanUseToolContext,
+  type CanUseToolDecision,
+  type ParsedStreamEvent,
+} from './control-rpc';
 
 function resolveCwd(cwd: string): string {
   if (cwd === '~') return os.homedir();
@@ -8,17 +18,31 @@ function resolveCwd(cwd: string): string {
   return cwd;
 }
 
-// SDK ships ESM-only (sdk.mjs). Electron main bundle is CJS, so a static
-// `import { query }` triggers ERR_REQUIRE_ESM at load. We need a real
-// dynamic import() — but TS with `module: CommonJS` rewrites import() to
-// require(), which re-triggers the same ESM error. Hide the call inside
-// `new Function` so TS leaves it alone and Node executes a true import().
-type SdkModule = typeof import('@anthropic-ai/claude-agent-sdk');
-const dynamicImport = new Function('s', 'return import(s)') as (s: string) => Promise<SdkModule>;
-let sdkPromise: Promise<SdkModule> | null = null;
-function loadSdk(): Promise<SdkModule> {
-  if (!sdkPromise) sdkPromise = dynamicImport('@anthropic-ai/claude-agent-sdk');
-  return sdkPromise;
+/**
+ * claude.exe refuses to run without `CLAUDE_CONFIG_DIR` (claude-spawner enforces
+ * this). main.ts hasn't been migrated to pass an explicit configDir yet — that's
+ * batch 3. For now we accept it via StartOptions, fall back to the env override,
+ * and finally to a stable per-user dir under the home directory so the user's
+ * own ~/.claude is never touched.
+ */
+function resolveConfigDir(explicit: string | undefined): string {
+  if (explicit && explicit.trim().length > 0) return explicit;
+  const env = process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+  if (env && env.trim().length > 0) return env;
+  return path.join(os.homedir(), '.agentory', 'claude-cli-config');
+}
+
+/**
+ * SDK's PermissionMode includes UI-only modes (`'dontAsk'`, `'auto'`) that the
+ * claude.exe CLI doesn't accept. Drop them to `'default'` rather than passing
+ * an invalid value to the spawner.
+ */
+function toCliPermissionMode(mode: PermissionMode | undefined): CliPermissionMode | undefined {
+  if (!mode) return undefined;
+  if (mode === 'default' || mode === 'acceptEdits' || mode === 'plan' || mode === 'bypassPermissions') {
+    return mode;
+  }
+  return 'default';
 }
 
 export type StartOptions = {
@@ -27,6 +51,12 @@ export type StartOptions = {
   permissionMode?: PermissionMode;
   apiKey?: string;
   resumeSessionId?: string;
+  /**
+   * Optional override for `CLAUDE_CONFIG_DIR`. main.ts currently doesn't pass
+   * one — see resolveConfigDir() for the fallback chain. Will become required
+   * once main.ts is migrated (batch 3, T9).
+   */
+  configDir?: string;
 };
 
 export type EventHandler = (msg: SDKMessage) => void;
@@ -37,57 +67,21 @@ export type PermissionRequestHandler = (req: {
   input: Record<string, unknown>;
 }) => void;
 
-// AsyncIterable queue: pushes messages into the streaming input of `query()`.
-// `query()` consumes via for-await; we resolve a pending waiter when a new
-// message arrives, or buffer if the consumer hasn't asked yet.
-class InputQueue implements AsyncIterable<SDKUserMessage> {
-  private buffer: SDKUserMessage[] = [];
-  private waiter: ((v: IteratorResult<SDKUserMessage>) => void) | null = null;
-  private closed = false;
-
-  push(msg: SDKUserMessage): void {
-    if (this.closed) return;
-    if (this.waiter) {
-      const w = this.waiter;
-      this.waiter = null;
-      w({ value: msg, done: false });
-    } else {
-      this.buffer.push(msg);
-    }
-  }
-
-  end(): void {
-    this.closed = true;
-    if (this.waiter) {
-      const w = this.waiter;
-      this.waiter = null;
-      w({ value: undefined as unknown as SDKUserMessage, done: true });
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
-    return {
-      next: (): Promise<IteratorResult<SDKUserMessage>> => {
-        if (this.buffer.length > 0) {
-          return Promise.resolve({ value: this.buffer.shift()!, done: false });
-        }
-        if (this.closed) {
-          return Promise.resolve({ value: undefined as unknown as SDKUserMessage, done: true });
-        }
-        return new Promise((resolve) => {
-          this.waiter = resolve;
-        });
-      }
-    };
-  }
-}
-
 export class SessionRunner {
-  private input = new InputQueue();
-  private q: Query | null = null;
+  private cp: ClaudeProcess | null = null;
+  private rpc: ControlRpc | null = null;
+  private abort: AbortController | null = null;
   private consumer: Promise<void> | null = null;
   private disposed = false;
-  private pendingPerms = new Map<string, (r: PermissionResult) => void>();
+  private cliSessionId: string | undefined;
+  private permissionMode: PermissionMode = 'default';
+  /**
+   * Pending can_use_tool decisions, keyed by the synthetic requestId we hand
+   * to the renderer. resolvePermission() looks the entry up to settle the
+   * promise that ControlRpc is awaiting before it writes the control_response.
+   */
+  private pendingPerms = new Map<string, (d: CanUseToolDecision) => void>();
+  private nextPermSeq = 0;
 
   constructor(
     public readonly id: string,
@@ -102,87 +96,157 @@ export class SessionRunner {
     this.pendingPerms.delete(requestId);
     resolve(
       decision === 'allow'
-        ? { behavior: 'allow', updatedInput: undefined }
-        : { behavior: 'deny', message: 'User denied tool use.' }
+        ? { allow: true }
+        : { allow: false, deny_reason: 'User denied tool use.' }
     );
     return true;
   }
 
   async start(opts: StartOptions): Promise<void> {
-    if (this.q) return;
-    const env: Record<string, string | undefined> = { ...process.env };
-    if (opts.apiKey) env.ANTHROPIC_API_KEY = opts.apiKey;
+    if (this.cp) return;
+    this.permissionMode = opts.permissionMode ?? 'default';
+    this.abort = new AbortController();
 
-    const canUseTool: CanUseTool = (toolName, input) =>
-      new Promise<PermissionResult>((resolve) => {
-        const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-        this.pendingPerms.set(requestId, resolve);
-        this.onPermissionRequest({ requestId, toolName, input });
-      });
+    const envOverrides: Record<string, string> = {};
+    if (opts.apiKey) envOverrides.ANTHROPIC_API_KEY = opts.apiKey;
 
-    const permissionMode = opts.permissionMode ?? 'default';
-    const isBypass = permissionMode === 'bypassPermissions';
-    const options: Options = {
+    this.cp = await spawnClaude({
       cwd: resolveCwd(opts.cwd),
-      env,
-      permissionMode,
+      configDir: resolveConfigDir(opts.configDir),
+      permissionMode: toCliPermissionMode(this.permissionMode),
       model: opts.model,
-      resume: opts.resumeSessionId,
-      // The SDK refuses bypassPermissions unless allowDangerouslySkipPermissions
-      // is also set. Skip canUseTool too — the bypass mode short-circuits before
-      // the prompt would fire and the SDK throws if both are present.
-      ...(isBypass ? { allowDangerouslySkipPermissions: true } : { canUseTool }),
-      includePartialMessages: true
-    };
+      resumeId: opts.resumeSessionId,
+      envOverrides,
+      signal: this.abort.signal,
+    });
 
-    const { query } = await loadSdk();
-    this.q = query({ prompt: this.input, options });
+    this.rpc = new ControlRpc(this.cp.stdin, {
+      onCanUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
+    });
 
+    const stdout = this.cp.stdout;
+    const cp = this.cp;
     this.consumer = (async () => {
       try {
-        for await (const msg of this.q!) {
+        for await (const ev of splitNDJSON(stdout)) {
           if (this.disposed) break;
-          this.onEvent(msg);
+          if (ev.type === 'error') {
+            // Splitter errors (line cap exceeded, incomplete UTF-8 at EOF). Log
+            // via console — the renderer doesn't have a channel for these and
+            // they're rare protocol-violation diagnostics, not user-facing.
+            console.warn('[sessions] ndjson splitter error', ev.error.message);
+            continue;
+          }
+          this.handleLine(ev.raw);
         }
-        this.onExit({});
+        const { code, signal } = await cp.wait();
+        const err = code === 0 || code === null
+          ? undefined
+          : `claude.exe exited with code=${code}${signal ? ` signal=${signal}` : ''}` +
+            (cp.getRecentStderr() ? `\n${cp.getRecentStderr()}` : '');
+        this.onExit({ error: err });
       } catch (err) {
         this.onExit({ error: err instanceof Error ? err.message : String(err) });
+      } finally {
+        this.cleanupAfterExit();
       }
     })();
   }
 
+  private handleLine(raw: string): void {
+    const result = parseStreamJSONLine(raw);
+    if (result.type === 'parse-error') {
+      console.warn('[sessions] failed to parse stream-json line', result.error.message);
+      return;
+    }
+    if (result.type === 'unknown') {
+      console.warn('[sessions] unknown stream-json frame', result.reason);
+      return;
+    }
+    const event = result.event;
+    // Capture cliSessionId from the first system frame so subsequent user
+    // messages can carry it.
+    if (event.type === 'system' && (event as { subtype?: string }).subtype === 'init') {
+      const sid = (event as { session_id?: string }).session_id;
+      if (sid && !this.cliSessionId) this.cliSessionId = sid;
+    }
+    if (
+      event.type === 'control_request' ||
+      event.type === 'control_response' ||
+      event.type === 'control_cancel_request'
+    ) {
+      this.rpc?.handleIncoming(event as unknown as ParsedStreamEvent);
+      return;
+    }
+    // Forward everything else to the consumer. The on-wire shape of the
+    // remaining frames (system / assistant / user / result / stream_event /
+    // agent_metadata) is structurally compatible with what sdk-to-blocks reads
+    // off `SDKMessage` — the cast bridges the two type universes until batch 3
+    // swaps callers over to ClaudeStreamEvent directly.
+    this.onEvent(event as unknown as SDKMessage);
+  }
+
+  private handleCanUseTool(
+    toolName: string,
+    input: unknown,
+    ctx: CanUseToolContext
+  ): Promise<CanUseToolDecision> {
+    return new Promise<CanUseToolDecision>((resolve) => {
+      const requestId = `perm-${Date.now().toString(36)}-${(this.nextPermSeq++).toString(36)}`;
+      this.pendingPerms.set(requestId, resolve);
+      // If claude.exe cancels the request mid-flight, fail-closed via the
+      // signal so we don't leak the pending entry.
+      ctx.signal.addEventListener(
+        'abort',
+        () => {
+          if (this.pendingPerms.delete(requestId)) {
+            resolve({ allow: false, deny_reason: 'Permission request cancelled.' });
+          }
+        },
+        { once: true }
+      );
+      const safeInput =
+        input && typeof input === 'object' && !Array.isArray(input)
+          ? (input as Record<string, unknown>)
+          : { value: input };
+      this.onPermissionRequest({ requestId, toolName, input: safeInput });
+    });
+  }
+
   send(text: string): void {
-    if (!this.q || this.disposed) return;
-    const msg: SDKUserMessage = {
-      type: 'user',
-      parent_tool_use_id: null,
-      message: { role: 'user', content: text }
-    };
-    this.input.push(msg);
+    if (!this.rpc || this.disposed) return;
+    try {
+      this.rpc.sendUserMessage(text, this.cliSessionId);
+    } catch (err) {
+      console.warn('[sessions] sendUserMessage failed', err);
+    }
   }
 
   async interrupt(): Promise<void> {
-    if (!this.q) return;
+    if (!this.rpc) return;
     try {
-      await this.q.interrupt();
+      await this.rpc.interrupt();
     } catch {
-      /* SDK throws if not in a tool call — ignore */
+      /* timeout / channel broken — let close() handle hard kill */
     }
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.q) return;
+    if (!this.rpc) return;
+    this.permissionMode = mode;
+    const cliMode = toCliPermissionMode(mode);
+    if (!cliMode) return;
     try {
-      await this.q.setPermissionMode(mode);
+      await this.rpc.setPermissionMode(cliMode);
     } catch {
-      /* ignore */
+      /* ignore — claude.exe may not honour mid-session changes for every mode */
     }
   }
 
   async setModel(model?: string): Promise<void> {
-    if (!this.q) return;
+    if (!this.rpc || !model) return;
     try {
-      await this.q.setModel(model);
+      await this.rpc.setModel(model);
     } catch {
       /* ignore */
     }
@@ -192,15 +256,30 @@ export class SessionRunner {
     if (this.disposed) return;
     this.disposed = true;
     for (const resolve of this.pendingPerms.values()) {
-      resolve({ behavior: 'deny', message: 'Session closed.' });
+      resolve({ allow: false, deny_reason: 'Session closed.' });
     }
     this.pendingPerms.clear();
-    this.input.end();
+    this.rpc?.close();
     try {
-      this.q?.close();
+      this.cp?.stdin.end();
     } catch {
       /* ignore */
     }
-    this.q = null;
+    // Trigger SIGTERM → SIGKILL via the abort signal the spawner is watching.
+    this.abort?.abort();
+  }
+
+  private cleanupAfterExit(): void {
+    this.disposed = true;
+    for (const resolve of this.pendingPerms.values()) {
+      resolve({ allow: false, deny_reason: 'Session ended.' });
+    }
+    this.pendingPerms.clear();
+    this.rpc?.close();
+    this.rpc = null;
+    this.cp = null;
   }
 }
+
+// Re-export for tests that want to assert on the parsed event shape.
+export type { ClaudeStreamEvent };
