@@ -78,11 +78,50 @@ console.log(preSnippet);
 
 const tsOption = win.locator('label', { hasText: 'TypeScript' }).first();
 await tsOption.waitFor({ state: 'visible', timeout: 5000 });
-await tsOption.click();
-await win.waitForTimeout(300);
 
-const submitBtn = win.getByRole('button', { name: /submit answer/i });
-await submitBtn.click();
+// Keyboard navigation path: the first option should be auto-focused. Press
+// ArrowDown twice to move to Rust, then ArrowUp once to land on TypeScript,
+// then press Enter to submit. This exercises the full keyboard flow without
+// touching the mouse.
+const focusedKind = await win.evaluate(() => {
+  const el = document.activeElement;
+  if (!el) return '<none>';
+  return `${el.tagName}[role=${el.getAttribute('role') ?? ''} value=${el.getAttribute('value') ?? ''}]`;
+});
+console.log(`[probe-e2e-askuserquestion] initial focus = ${focusedKind}`);
+
+if (!/role=radio/.test(focusedKind)) {
+  // Fall back to focusing the radio group manually if autofocus missed.
+  const firstRadio = win.locator('[role="radio"]').first();
+  await firstRadio.focus();
+}
+
+await win.keyboard.press('ArrowDown');
+await win.waitForTimeout(80);
+await win.keyboard.press('ArrowDown');
+await win.waitForTimeout(80);
+await win.keyboard.press('ArrowUp');
+await win.waitForTimeout(80);
+
+const focusedAfter = await win.evaluate(() => {
+  const el = document.activeElement;
+  if (!el) return '<none>';
+  return {
+    role: el.getAttribute('role'),
+    value: el.getAttribute('value'),
+    state: el.getAttribute('data-state')
+  };
+});
+console.log('[probe-e2e-askuserquestion] focused after arrow nav:', JSON.stringify(focusedAfter));
+
+if (focusedAfter.role !== 'radio' || focusedAfter.value !== '1') {
+  fail(
+    `expected radio value=1 (TypeScript) focused after arrow nav, got ${JSON.stringify(focusedAfter)}`,
+    app
+  );
+}
+
+await win.keyboard.press('Enter');
 
 const submitted = win.getByRole('button', { name: /submitted/i });
 try {
