@@ -6,3 +6,4 @@ dist/
 .env.local
 agentory-data.db
 agentory-data.db-journal
+scripts/spike-*
