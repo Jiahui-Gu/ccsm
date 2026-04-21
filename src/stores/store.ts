@@ -76,6 +76,13 @@ type State = {
   modelsByEndpoint: Record<string, ModelInfo[]>;
   defaultEndpointId: string | null;
   endpointsLoaded: boolean;
+  // Monotonic counter bumped whenever a user-driven action requests that the
+  // InputBar textarea take focus (e.g. clicking a session in the sidebar,
+  // matching Claude Desktop's behavior). InputBar `useEffect`s on this and
+  // calls `.focus()`. Initial value is 0 so first-render comparisons are
+  // trivial — InputBar skips the first observation to avoid stealing focus
+  // on app mount. Don't bump from background/system events; only user clicks.
+  focusInputNonce: number;
 };
 
 type Actions = {
@@ -164,6 +171,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   modelsByEndpoint: {},
   defaultEndpointId: null,
   endpointsLoaded: false,
+  focusInputNonce: 0,
 
   selectSession: (id) => {
     set((s) => ({
@@ -171,7 +179,12 @@ export const useStore = create<State & Actions>((set, get) => ({
       focusedGroupId: null,
       sessions: s.sessions.map((x) =>
         x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
-      )
+      ),
+      // Bump so the InputBar pulls focus — matches Claude Desktop's UX
+      // when clicking a session in the sidebar. Other entry points that
+      // ultimately route through selectSession (tray/notification click,
+      // command palette) get the same behavior for free.
+      focusInputNonce: s.focusInputNonce + 1
     }));
     // Lazy-load persisted history on first view after app restart. The store
     // only holds messages in memory; on fresh boot messagesBySession[id] is
