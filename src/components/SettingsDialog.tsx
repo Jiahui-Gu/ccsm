@@ -13,10 +13,11 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'general' | 'endpoints' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'general' | 'notifications' | 'endpoints' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'endpoints', label: 'Endpoints' },
   { id: 'autopilot', label: 'Autopilot' },
   { id: 'account', label: 'Account' },
@@ -71,6 +72,7 @@ export function SettingsDialog({
           </nav>
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
             {tab === 'general' && <GeneralPane />}
+            {tab === 'notifications' && <NotificationsPane />}
             {tab === 'endpoints' && <EndpointsPane />}
             {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'account' && <AccountPane />}
@@ -152,6 +154,112 @@ function GeneralPane() {
           ]}
         />
       </Field>
+    </>
+  );
+}
+
+function NotificationsPane() {
+  const settings = useStore((s) => s.notificationSettings);
+  const setNotificationSettings = useStore((s) => s.setNotificationSettings);
+  const activeId = useStore((s) => s.activeId);
+  const [testStatus, setTestStatus] = useState<string | null>(null);
+
+  const Toggle = ({
+    checked,
+    onChange,
+    disabled
+  }: {
+    checked: boolean;
+    onChange: (v: boolean) => void;
+    disabled?: boolean;
+  }) => (
+    <label
+      className={cn(
+        'inline-flex items-center gap-2 select-none',
+        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-4 w-4 accent-accent"
+      />
+      <span className="text-sm text-fg-secondary">{checked ? 'On' : 'Off'}</span>
+    </label>
+  );
+
+  const onTest = async () => {
+    const api = window.agentory;
+    if (!api) {
+      setTestStatus('IPC unavailable.');
+      setTimeout(() => setTestStatus(null), 2000);
+      return;
+    }
+    const ok = await api.notify({
+      sessionId: activeId,
+      title: 'Agentory test notification',
+      body: 'If you can read this, OS notifications are working.',
+      eventType: 'test',
+      silent: !settings.sound
+    });
+    setTestStatus(ok ? 'Sent.' : 'Failed - OS notifications unavailable.');
+    setTimeout(() => setTestStatus(null), 2500);
+  };
+
+  const disableChildren = !settings.enabled;
+
+  return (
+    <>
+      <div className="text-xs text-fg-tertiary mb-4">
+        OS-level toasts when a session needs your attention. Suppressed when
+        the window is focused on that same session, and debounced per session
+        per event type so a chatty agent cannot spam you.
+      </div>
+      <Field label="Enable notifications">
+        <Toggle
+          checked={settings.enabled}
+          onChange={(v) => setNotificationSettings({ enabled: v })}
+        />
+      </Field>
+      <Field label="Permission prompts" hint="When a tool call is waiting on your approval.">
+        <Toggle
+          checked={settings.permission}
+          disabled={disableChildren}
+          onChange={(v) => setNotificationSettings({ permission: v })}
+        />
+      </Field>
+      <Field label="Questions" hint="When the agent uses AskUserQuestion to ask you something.">
+        <Toggle
+          checked={settings.question}
+          disabled={disableChildren}
+          onChange={(v) => setNotificationSettings({ question: v })}
+        />
+      </Field>
+      <Field
+        label="Turn done"
+        hint="Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped."
+      >
+        <Toggle
+          checked={settings.turnDone}
+          disabled={disableChildren}
+          onChange={(v) => setNotificationSettings({ turnDone: v })}
+        />
+      </Field>
+      <Field label="Sound" hint="Play the OS default notification sound.">
+        <Toggle
+          checked={settings.sound}
+          disabled={disableChildren}
+          onChange={(v) => setNotificationSettings({ sound: v })}
+        />
+      </Field>
+      <div className="flex items-center gap-3">
+        <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
+          Test notification
+        </Button>
+        {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
+      </div>
     </>
   );
 }

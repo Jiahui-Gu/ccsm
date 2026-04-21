@@ -51,6 +51,24 @@ export const DEFAULT_WATCHDOG: WatchdogConfig = {
   maxAutoReplies: 20
 };
 
+// OS-level notification preferences. Persisted as a single JSON blob alongside
+// the rest of app state — same envelope as `watchdog`.
+export interface NotificationSettings {
+  enabled: boolean;
+  permission: boolean;
+  question: boolean;
+  turnDone: boolean;
+  sound: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  enabled: true,
+  permission: true,
+  question: true,
+  turnDone: true,
+  sound: true
+};
+
 type State = {
   sessions: Session[];
   groups: Group[];
@@ -65,6 +83,7 @@ type State = {
   tutorialSeen: boolean;
   watchdog: WatchdogConfig;
   watchdogCountsBySession: Record<string, number>;
+  notificationSettings: NotificationSettings;
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
@@ -105,6 +124,8 @@ type Actions = {
   setWatchdog: (patch: Partial<WatchdogConfig>) => void;
   resetWatchdogCount: (sessionId: string) => void;
   bumpWatchdogCount: (sessionId: string) => number;
+  setNotificationSettings: (patch: Partial<NotificationSettings>) => void;
+  setSessionNotificationsMuted: (sessionId: string, muted: boolean) => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -163,6 +184,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   tutorialSeen: false,
   watchdog: DEFAULT_WATCHDOG,
   watchdogCountsBySession: {},
+  notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
   messagesBySession: {},
   startedSessions: {},
   runningSessions: {},
@@ -398,6 +420,16 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
     return nextN;
   },
+
+  setNotificationSettings: (patch) =>
+    set((s) => ({ notificationSettings: { ...s.notificationSettings, ...patch } })),
+
+  setSessionNotificationsMuted: (sessionId, muted) =>
+    set((s) => ({
+      sessions: s.sessions.map((x) =>
+        x.id === sessionId ? { ...x, notificationsMuted: muted } : x
+      )
+    })),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -686,7 +718,11 @@ export async function hydrateStore(): Promise<void> {
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) },
-      defaultEndpointId: persisted.defaultEndpointId ?? null
+      defaultEndpointId: persisted.defaultEndpointId ?? null,
+      notificationSettings: {
+        ...DEFAULT_NOTIFICATION_SETTINGS,
+        ...(persisted.notificationSettings ?? {})
+      }
     });
   }
   hydrated = true;
@@ -718,7 +754,8 @@ export async function hydrateStore(): Promise<void> {
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
       watchdog: s.watchdog,
-      defaultEndpointId: s.defaultEndpointId
+      defaultEndpointId: s.defaultEndpointId,
+      notificationSettings: s.notificationSettings
     };
     schedulePersist(snapshot);
   });
