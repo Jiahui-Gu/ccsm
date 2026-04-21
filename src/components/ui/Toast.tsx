@@ -5,11 +5,19 @@ import { StateGlyph } from './StateGlyph';
 
 export type ToastKind = 'info' | 'waiting' | 'error';
 
+export type ToastAction = {
+  label: string;
+  onClick: () => void;
+};
+
 type Toast = {
   id: string;
   kind: ToastKind;
   title: string;
   body?: string;
+  action?: ToastAction;
+  // When true, the toast stays until explicitly dismissed (no auto-timer).
+  persistent?: boolean;
 };
 
 type ToastCtx = {
@@ -44,8 +52,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         const next = xs.length >= MAX ? xs.slice(xs.length - MAX + 1) : xs;
         return [...next, { ...t, id }];
       });
-      const h = window.setTimeout(() => dismiss(id), TTL_MS);
-      timers.current.set(id, h);
+      // Persistent toasts stay until explicitly dismissed — used for "update
+      // downloaded, restart to apply" where dropping the toast before the
+      // user clicks would hide the only affordance.
+      if (!t.persistent) {
+        const h = window.setTimeout(() => dismiss(id), TTL_MS);
+        timers.current.set(id, h);
+      }
       return id;
     },
     [dismiss]
@@ -75,7 +88,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                     ? 'border-state-waiting/40'
                     : 'border-border-default'
               )}
-              onClick={() => dismiss(t.id)}
+              onClick={() => {
+                // Persistent toasts with an action shouldn't dismiss on a
+                // click anywhere — only the action button dismisses (so a
+                // stray click on the toast doesn't hide "Restart").
+                if (!(t.persistent && t.action)) dismiss(t.id);
+              }}
               role="status"
             >
               <div className="flex items-start gap-2">
@@ -91,6 +109,43 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium text-fg-primary leading-tight">{t.title}</div>
                   {t.body && <div className="mt-0.5 text-xs text-fg-tertiary">{t.body}</div>}
+                  {t.action && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          t.action!.onClick();
+                          dismiss(t.id);
+                        }}
+                        className={cn(
+                          'text-xs font-medium px-2 py-1 rounded-sm',
+                          'bg-bg-app border border-border-default text-fg-primary',
+                          'hover:bg-bg-elevated hover:border-border-strong',
+                          'active:scale-[0.98]',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          'transition-colors duration-150'
+                        )}
+                      >
+                        {t.action.label}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          dismiss(t.id);
+                        }}
+                        className={cn(
+                          'text-xs px-2 py-1 rounded-sm text-fg-tertiary',
+                          'hover:text-fg-secondary hover:bg-bg-app',
+                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          'transition-colors duration-150'
+                        )}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             </motion.div>
