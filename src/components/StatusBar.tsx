@@ -115,12 +115,23 @@ const modelOptions: ChipOption<ModelId>[] = [
   { kind: 'item', value: 'claude-haiku-4', primary: 'haiku-4', secondary: 'Fastest and cheapest, lower quality' }
 ];
 
+// Labels describe what claude.exe actually does per mode. There is no CLI
+// setting that prompts on every single tool — reads are always auto-approved
+// below `bypassPermissions` and above `plan`. The chip wording reflects that
+// instead of promising behaviour the CLI can't deliver.
 const permissionOptions: ChipOption<PermissionMode>[] = [
   { kind: 'item', value: 'plan', primary: 'plan', secondary: 'Plan only — no edits or commands' },
-  { kind: 'item', value: 'ask', primary: 'ask', secondary: 'Ask before each tool call' },
-  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve edits; ask for shell' },
-  { kind: 'item', value: 'yolo', primary: 'yolo', secondary: 'Approve everything (use with care)' }
+  { kind: 'item', value: 'ask', primary: 'standard', secondary: 'Auto-approve reads; ask before writes, edits, and shell' },
+  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve reads and edits; ask before shell' },
+  { kind: 'item', value: 'yolo', primary: 'yolo', secondary: 'Auto-approve everything (use with care)' }
 ];
+
+const permissionTooltips: Record<PermissionMode, string> = {
+  plan: 'Plan mode — agent drafts a plan; no file edits or shell until you approve',
+  ask: 'Standard — reads auto-approved; writes, edits, and shell require confirmation',
+  auto: 'Auto-accept edits — reads and file edits auto-approved; shell requires confirmation',
+  yolo: 'Bypass all permission checks — every tool call runs without asking'
+};
 
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
   for (const o of options) {
@@ -182,6 +193,7 @@ export function StatusBar({
       key="permission"
       label="Permission mode"
       triggerLabel={primaryOf(permissionOptions, permission)}
+      triggerTitle={permissionTooltips[permission]}
       triggerAccent={permission === 'yolo' ? 'warn' : undefined}
       options={permissionOptions}
       onSelect={onChangePermission}
