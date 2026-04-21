@@ -25,6 +25,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const appendBlocks = useStore((s) => s.appendBlocks);
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
+  const resetWatchdogCount = useStore((s) => s.resetWatchdogCount);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   React.useEffect(() => {
@@ -48,6 +49,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     appendBlocks(sessionId, [{ kind: 'user', id: nextLocalId(), text }]);
     update('');
     setRunning(sessionId, true);
+    // A real human turn resets the autopilot counter.
+    resetWatchdogCount(sessionId);
 
     if (!started) {
       const res = await api.agentStart(sessionId, {
