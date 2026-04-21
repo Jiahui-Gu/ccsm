@@ -13,10 +13,11 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'general' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'general' | 'endpoints' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
+  { id: 'endpoints', label: 'Endpoints' },
   { id: 'autopilot', label: 'Autopilot' },
   { id: 'account', label: 'Account' },
   { id: 'data', label: 'Data' },
@@ -70,6 +71,7 @@ export function SettingsDialog({
           </nav>
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
             {tab === 'general' && <GeneralPane />}
+            {tab === 'endpoints' && <EndpointsPane />}
             {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'account' && <AccountPane />}
             {tab === 'data' && <DataPane />}
@@ -403,4 +405,355 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function relativeTime(ts: number | null): string {
+  if (!ts) return 'never';
+  const delta = Date.now() - ts;
+  if (delta < 60_000) return 'just now';
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return `${Math.floor(delta / 86_400_000)}d ago`;
+}
+
+type EditingEndpoint = {
+  id?: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  isDefault: boolean;
+  hasExistingKey?: boolean;
+};
+
+function EndpointsPane() {
+  const endpoints = useStore((s) => s.endpoints);
+  const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
+  const endpointsLoaded = useStore((s) => s.endpointsLoaded);
+  const reloadEndpoints = useStore((s) => s.reloadEndpoints);
+  const refreshEndpointModels = useStore((s) => s.refreshEndpointModels);
+
+  const [editor, setEditor] = useState<EditingEndpoint | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onRefresh(id: string) {
+    setRefreshingId(id);
+    setError(null);
+    const res = await refreshEndpointModels(id);
+    setRefreshingId(null);
+    if (!res.ok) setError(res.error ?? 'Refresh failed');
+  }
+
+  async function onRemove(id: string) {
+    const api = window.agentory;
+    if (!api) return;
+    await api.endpoints.remove(id);
+    await reloadEndpoints();
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs text-fg-tertiary max-w-[440px]">
+          Agentory talks to any server that speaks the Anthropic REST API:
+          anthropic.com, a self-hosted gateway, or a LiteLLM / Kimi / DeepSeek
+          shim. Add one here and Agentory will discover its models via
+          <code className="font-mono text-fg-secondary mx-1">GET /v1/models</code>.
+        </div>
+        <Button variant="primary" size="md" onClick={() => setEditor(emptyEditor())}>
+          Add endpoint
+        </Button>
+      </div>
+
+      {error && (
+        <div className="mb-3 px-3 py-2 rounded-sm border border-state-error/40 bg-state-error/10 text-xs text-state-error">
+          {error}
+        </div>
+      )}
+
+      {!endpointsLoaded ? (
+        <div className="text-sm text-fg-tertiary">Loading endpoints…</div>
+      ) : endpoints.length === 0 ? (
+        <div className="text-sm text-fg-tertiary">
+          No endpoints yet. Click &quot;Add endpoint&quot; to point Agentory at Anthropic
+          or your own gateway.
+        </div>
+      ) : (
+        <ul className="divide-y divide-border-subtle rounded-sm border border-border-subtle bg-bg-elevated">
+          {endpoints.map((e) => {
+            const models = modelsByEndpoint[e.id] ?? [];
+            return (
+              <li key={e.id} className="flex items-center gap-3 px-3 py-2.5">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-fg-primary truncate">{e.name}</span>
+                    {e.isDefault && (
+                      <span className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-accent/15 text-accent">
+                        default
+                      </span>
+                    )}
+                    <StatusBadge status={e.lastStatus} />
+                  </div>
+                  <div className="text-[11px] font-mono text-fg-tertiary truncate" title={e.baseUrl}>
+                    {e.baseUrl}
+                  </div>
+                  <div className="text-[11px] text-fg-tertiary mt-0.5">
+                    {models.length} model{models.length === 1 ? '' : 's'} · refreshed{' '}
+                    {relativeTime(e.lastRefreshedAt)}
+                    {e.lastStatus === 'error' && e.lastError ? ` · ${e.lastError}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onRefresh(e.id)}
+                    disabled={refreshingId === e.id}
+                  >
+                    {refreshingId === e.id ? 'Refreshing…' : 'Refresh'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      setEditor({
+                        id: e.id,
+                        name: e.name,
+                        baseUrl: e.baseUrl,
+                        apiKey: '',
+                        isDefault: e.isDefault,
+                        hasExistingKey: true,
+                      })
+                    }
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => {
+                      if (window.confirm(`Remove endpoint "${e.name}"?`)) void onRemove(e.id);
+                    }}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {editor && (
+        <EndpointEditorDialog
+          value={editor}
+          onClose={() => setEditor(null)}
+          onSaved={async () => {
+            setEditor(null);
+            await reloadEndpoints();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function emptyEditor(): EditingEndpoint {
+  return { name: '', baseUrl: 'https://api.anthropic.com', apiKey: '', isDefault: false };
+}
+
+function StatusBadge({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
+  const cls =
+    status === 'ok'
+      ? 'bg-state-success/15 text-state-success'
+      : status === 'error'
+      ? 'bg-state-error/15 text-state-error'
+      : 'bg-bg-hover text-fg-tertiary';
+  const label = status === 'ok' ? 'connected' : status === 'error' ? 'error' : 'unchecked';
+  return (
+    <span className={cn('text-[10px] uppercase tracking-wide px-1 rounded-sm', cls)}>{label}</span>
+  );
+}
+
+function EndpointEditorDialog({
+  value,
+  onClose,
+  onSaved,
+}: {
+  value: EditingEndpoint;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [name, setName] = useState(value.name);
+  const [baseUrl, setBaseUrl] = useState(value.baseUrl);
+  const [apiKey, setApiKey] = useState('');
+  const [isDefault, setIsDefault] = useState(value.isDefault);
+  const [revealKey, setRevealKey] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const isEdit = !!value.id;
+  const keyRequired = !isEdit;
+  const canTest = baseUrl.trim().length > 0 && (apiKey.length > 0 || value.hasExistingKey);
+
+  async function onTest() {
+    if (!window.agentory) return;
+    setTesting(true);
+    setTestResult(null);
+    const res = await window.agentory.endpoints.testConnection({
+      baseUrl: baseUrl.trim(),
+      apiKey: apiKey || '',
+    });
+    setTesting(false);
+    setTestResult(res.ok ? 'ok' : res.error);
+  }
+
+  async function onSave() {
+    if (!window.agentory) return;
+    if (!name.trim() || !baseUrl.trim()) return;
+    if (keyRequired && !apiKey) return;
+    setSaving(true);
+    try {
+      if (isEdit && value.id) {
+        await window.agentory.endpoints.update(value.id, {
+          name: name.trim(),
+          baseUrl: baseUrl.trim(),
+          apiKey: apiKey ? apiKey : undefined,
+          isDefault,
+        });
+        await window.agentory.endpoints.refreshModels(value.id);
+      } else {
+        const row = await window.agentory.endpoints.add({
+          name: name.trim(),
+          baseUrl: baseUrl.trim(),
+          kind: 'anthropic',
+          apiKey: apiKey || undefined,
+          isDefault,
+        });
+        await window.agentory.endpoints.refreshModels(row.id);
+      }
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputClass = cn(
+    'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
+    'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
+    'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+  );
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent title={isEdit ? 'Edit endpoint' : 'Add endpoint'} width="520px">
+        <div className="px-5 pb-4">
+          <Field label="Name">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Anthropic, My LiteLLM"
+              className={inputClass}
+              autoFocus
+            />
+          </Field>
+          <Field label="Base URL" hint="Agentory appends /v1/models. Paste the root or include /v1.">
+            <input
+              type="text"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.anthropic.com"
+              className={cn(inputClass, 'font-mono')}
+            />
+          </Field>
+          <Field label="Protocol">
+            <div className="flex items-center gap-3 text-sm">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" checked readOnly className="accent-accent" />
+                <span className="text-fg-primary">Anthropic</span>
+              </label>
+              <label
+                title="Phase 2 — not yet supported"
+                className="inline-flex items-center gap-1.5 opacity-50 cursor-not-allowed"
+              >
+                <input type="radio" disabled className="accent-accent" />
+                <span>OpenAI-compatible</span>
+              </label>
+              <label
+                title="Phase 2 — not yet supported"
+                className="inline-flex items-center gap-1.5 opacity-50 cursor-not-allowed"
+              >
+                <input type="radio" disabled className="accent-accent" />
+                <span>Ollama</span>
+              </label>
+            </div>
+          </Field>
+          <Field
+            label="API key"
+            hint={
+              value.hasExistingKey
+                ? 'Leave blank to keep the existing key.'
+                : 'Stored encrypted via the OS keychain. Never sent to the renderer.'
+            }
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type={revealKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={value.hasExistingKey ? '••••••• (unchanged)' : 'sk-ant-…'}
+                className={cn(inputClass, 'font-mono')}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRevealKey((r) => !r)}
+                aria-label={revealKey ? 'Hide key' : 'Reveal key'}
+              >
+                {revealKey ? 'Hide' : 'Show'}
+              </Button>
+            </div>
+          </Field>
+          <Field label="Default endpoint" hint="Used for new sessions that don't pick one.">
+            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isDefault}
+                onChange={(e) => setIsDefault(e.target.checked)}
+                className="h-4 w-4 accent-accent"
+              />
+              <span className="text-sm text-fg-secondary">Make default</span>
+            </label>
+          </Field>
+          <div className="flex items-center gap-3 mt-4">
+            <Button variant="secondary" size="md" onClick={onTest} disabled={!canTest || testing}>
+              {testing ? 'Testing…' : 'Test connection'}
+            </Button>
+            {testResult === 'ok' && (
+              <span className="text-xs text-state-success">Connected.</span>
+            )}
+            {testResult && testResult !== 'ok' && (
+              <span className="text-xs text-state-error">{testResult}</span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border-subtle">
+          <Button variant="ghost" size="md" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
+            onClick={onSave}
+            disabled={
+              !name.trim() || !baseUrl.trim() || saving || (keyRequired && !apiKey)
+            }
+          >
+            {saving ? 'Saving…' : isEdit ? 'Save' : 'Add'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
