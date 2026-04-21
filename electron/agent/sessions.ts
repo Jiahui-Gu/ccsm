@@ -126,7 +126,8 @@ export class SessionRunner {
       permissionMode: opts.permissionMode ?? 'default',
       model: opts.model,
       resume: opts.resumeSessionId,
-      canUseTool
+      canUseTool,
+      includePartialMessages: true
     };
 
     const { query } = await loadSdk();
