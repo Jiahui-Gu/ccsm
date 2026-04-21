@@ -6,6 +6,7 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
+  endpointId?: string;
 };
 
 type StartResult = { ok: true } | { ok: false; error: string };
@@ -18,6 +19,35 @@ type AgentPermissionRequest = {
   toolName: string;
   input: Record<string, unknown>;
 };
+
+type EndpointKind = 'anthropic';
+type EndpointStatus = 'ok' | 'error' | 'unchecked';
+type EndpointRow = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  kind: EndpointKind;
+  isDefault: boolean;
+  lastStatus: EndpointStatus;
+  lastError: string | null;
+  lastRefreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+type ModelRow = {
+  id: string;
+  endpointId: string;
+  modelId: string;
+  displayName: string | null;
+  discoveredAt: number;
+};
+type EndpointWithModels = EndpointRow & { models: ModelRow[] };
+type TestConnectionResult =
+  | { ok: true }
+  | { ok: false; status?: number; error: string };
+type RefreshResult =
+  | { ok: true; count: number }
+  | { ok: false; error: string; status?: number };
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -111,6 +141,32 @@ const api = {
       return () => ipcRenderer.removeListener('window:maximizedChanged', wrap);
     },
     platform: process.platform
+  },
+
+  endpoints: {
+    list: (): Promise<EndpointRow[]> => ipcRenderer.invoke('endpoints:list'),
+    add: (input: {
+      name: string;
+      baseUrl: string;
+      kind?: EndpointKind;
+      apiKey?: string;
+      isDefault?: boolean;
+    }): Promise<EndpointRow> => ipcRenderer.invoke('endpoints:add', input),
+    update: (
+      id: string,
+      patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
+    ): Promise<EndpointRow | null> => ipcRenderer.invoke('endpoints:update', id, patch),
+    remove: (id: string): Promise<boolean> => ipcRenderer.invoke('endpoints:remove', id),
+    testConnection: (args: { baseUrl: string; apiKey: string }): Promise<TestConnectionResult> =>
+      ipcRenderer.invoke('endpoints:testConnection', args),
+    refreshModels: (id: string): Promise<RefreshResult> =>
+      ipcRenderer.invoke('endpoints:refreshModels', id),
+  },
+
+  models: {
+    listByEndpoint: (id: string): Promise<ModelRow[]> =>
+      ipcRenderer.invoke('models:listByEndpoint', id),
+    listAll: (): Promise<EndpointWithModels[]> => ipcRenderer.invoke('models:listAll'),
   }
 };
 
