@@ -12,6 +12,7 @@ import { FileTree } from './FileTree';
 import { Terminal } from './Terminal';
 import { CodeBlock, HighlightedLine, languageFromPath } from './CodeBlock';
 import { QuestionBlock } from './QuestionBlock';
+import { PermissionPromptBlock } from './PermissionPromptBlock';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
@@ -436,61 +437,6 @@ function DiffView({ diff }: { diff: DiffSpec }) {
   );
 }
 
-const denyStack: Array<() => void> = [];
-
-if (typeof window !== 'undefined') {
-  window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || denyStack.length === 0) return;
-    e.preventDefault();
-    denyStack[denyStack.length - 1]();
-  });
-}
-
-function WaitingBlock({ prompt, onAllow, onDeny }: { prompt: string; onAllow?: () => void; onDeny?: () => void }) {
-  const denyRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const t = window.setTimeout(() => denyRef.current?.focus(), 150);
-    const handler = () => onDeny?.();
-    denyStack.push(handler);
-    return () => {
-      window.clearTimeout(t);
-      const i = denyStack.lastIndexOf(handler);
-      if (i !== -1) denyStack.splice(i, 1);
-    };
-  }, [onDeny]);
-
-  return (
-    <motion.div
-      role="alertdialog"
-      aria-modal="false"
-      aria-labelledby="perm-title"
-      aria-describedby="perm-desc"
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-      className="relative my-2 rounded-md border border-state-waiting/40 bg-state-waiting/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
-    >
-      <span
-        aria-hidden
-        className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md"
-      />
-      <div id="perm-title" className="flex items-center gap-2 text-base text-fg-primary font-semibold">
-        <StateGlyph state="waiting" size="sm" />
-        <span>Permission requested</span>
-      </div>
-      <div id="perm-desc" className="mt-1.5 font-mono text-sm text-fg-secondary">{prompt}</div>
-      <div className="mt-3 flex justify-end gap-2">
-        <Button ref={denyRef} variant="secondary" size="md" onClick={onDeny}>
-          Deny
-        </Button>
-        <Button variant="primary" size="md" onClick={onAllow}>
-          Allow
-        </Button>
-      </div>
-    </motion.div>
-  );
-}
-
 function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => void; onDeny?: () => void }) {
   const approveRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -639,7 +585,12 @@ function ErrorBlock({ text }: { text: string }) {
 }
 
 
-function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void) {
+function renderBlock(
+  b: MessageBlock,
+  activeId: string,
+  resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
+  opts: { permissionAutoFocus?: boolean } = {}
+) {
   switch (b.kind) {
     case 'user':
       return <UserBlock text={b.text} />;
@@ -660,10 +611,13 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
         );
       }
       return (
-        <WaitingBlock
+        <PermissionPromptBlock
           prompt={b.prompt}
+          toolName={b.toolName}
+          toolInput={b.toolInput}
+          autoFocus={opts.permissionAutoFocus ?? true}
           onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
-          onDeny={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+          onReject={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
         />
       );
     case 'question':
@@ -769,9 +723,26 @@ export function ChatStream() {
           <EmptyState />
         ) : (
           <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
-            {blocks.map((m) => (
-              <div key={m.id}>{renderBlock(m, activeId, resolvePermission)}</div>
-            ))}
+            {(() => {
+              // Only the LAST pending permission block gets auto-focus. Older
+              // ones (unlikely but possible) stay put so we don't rip focus
+              // off the user mid-interaction.
+              let lastPermIdx = -1;
+              for (let i = blocks.length - 1; i >= 0; i--) {
+                const b = blocks[i];
+                if (b.kind === 'waiting' && b.intent === 'permission') {
+                  lastPermIdx = i;
+                  break;
+                }
+              }
+              return blocks.map((m, i) => (
+                <div key={m.id}>
+                  {renderBlock(m, activeId, resolvePermission, {
+                    permissionAutoFocus: i === lastPermIdx
+                  })}
+                </div>
+              ));
+            })()}
           </div>
         )}
       </div>

@@ -1,0 +1,188 @@
+import React, { useEffect, useRef } from 'react';
+import { motion } from 'framer-motion';
+import { ShieldAlert } from 'lucide-react';
+import { Button } from './ui/Button';
+
+export interface PermissionPromptBlockProps {
+  /** Short human description, e.g. "Bash: ls -la". Used as the fallback summary. */
+  prompt: string;
+  /** Raw tool name the agent is requesting permission for (e.g. "Bash"). */
+  toolName?: string;
+  /** Raw tool input arguments for detailed display. */
+  toolInput?: Record<string, unknown>;
+  onAllow?: () => void;
+  onReject?: () => void;
+  /** When false, suppress the auto-focus-on-mount behaviour. */
+  autoFocus?: boolean;
+}
+
+const PREVIEW_KEYS = ['command', 'file_path', 'path', 'pattern', 'url', 'plan'];
+
+function formatToolInputSummary(
+  input: Record<string, unknown> | undefined
+): Array<{ key: string; value: string }> {
+  if (!input) return [];
+  const out: Array<{ key: string; value: string }> = [];
+  // Show a curated subset first for predictable ordering, then any remaining
+  // string/number keys. Skip giant blobs so the prompt stays one screen.
+  const seen = new Set<string>();
+  for (const key of PREVIEW_KEYS) {
+    if (key in input) {
+      const v = input[key];
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        out.push({ key, value: String(v) });
+        seen.add(key);
+      }
+    }
+  }
+  for (const [key, v] of Object.entries(input)) {
+    if (seen.has(key)) continue;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      out.push({ key, value: String(v) });
+    }
+  }
+  return out;
+}
+
+export function PermissionPromptBlock({
+  prompt,
+  toolName,
+  toolInput,
+  onAllow,
+  onReject,
+  autoFocus = true
+}: PermissionPromptBlockProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const allowRef = useRef<HTMLButtonElement>(null);
+  const rejectRef = useRef<HTMLButtonElement>(null);
+
+  // Focus Reject on mount — safer default. Never steal focus away from an
+  // input the user is already typing in.
+  useEffect(() => {
+    if (!autoFocus) return;
+    const id = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      const isInteractiveElsewhere =
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        !rootRef.current?.contains(active) &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.isContentEditable ||
+          active.getAttribute('role') === 'combobox' ||
+          active.getAttribute('role') === 'textbox');
+      if (isInteractiveElsewhere) return;
+      rejectRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Global-ish Y/N hotkeys, scoped to this prompt: we only listen while
+  // mounted and only fire if the user isn't currently typing into an input /
+  // textarea / contenteditable.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const active = document.activeElement;
+      const typing =
+        active instanceof HTMLElement &&
+        (active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.isContentEditable);
+      // If typing AND focus is outside our prompt, don't hijack.
+      if (typing && !rootRef.current?.contains(active)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'y') {
+        e.preventDefault();
+        onAllow?.();
+      } else if (key === 'n') {
+        e.preventDefault();
+        onReject?.();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onAllow, onReject]);
+
+  const summary = formatToolInputSummary(toolInput);
+
+  return (
+    <motion.div
+      ref={rootRef}
+      role="alertdialog"
+      aria-modal="false"
+      aria-labelledby="perm-title"
+      aria-describedby="perm-desc"
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      className="relative my-2 rounded-md border border-accent/50 bg-accent/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
+    >
+      <span
+        aria-hidden
+        className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent rounded-l-md"
+      />
+      <div
+        id="perm-title"
+        className="flex items-center gap-2 text-base text-fg-primary font-semibold"
+      >
+        <ShieldAlert size={14} className="text-accent" aria-hidden />
+        <span>Permission required</span>
+        {toolName && (
+          <span className="font-mono text-xs text-fg-tertiary uppercase tracking-wider">
+            {toolName}
+          </span>
+        )}
+      </div>
+      <div id="perm-desc" className="mt-2 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
+        {prompt}
+      </div>
+      {summary.length > 0 && (
+        <dl className="mt-2 rounded-sm border border-border-subtle bg-bg-app/40 px-3 py-2 font-mono text-xs text-fg-secondary">
+          {summary.map(({ key, value }) => (
+            <div key={key} className="flex gap-2 py-0.5">
+              <dt className="text-fg-tertiary shrink-0">{key}</dt>
+              <dd className="min-w-0 break-words whitespace-pre-wrap text-fg-primary">
+                {value.length > 400 ? value.slice(0, 400) + '…' : value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button
+          ref={rejectRef}
+          variant="secondary"
+          size="md"
+          data-perm-action="reject"
+          onClick={onReject}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onReject?.();
+            }
+          }}
+        >
+          Reject (N)
+        </Button>
+        <Button
+          ref={allowRef}
+          variant="primary"
+          size="md"
+          data-perm-action="allow"
+          onClick={onAllow}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              onAllow?.();
+            }
+          }}
+        >
+          Allow (Y)
+        </Button>
+      </div>
+    </motion.div>
+  );
+}
