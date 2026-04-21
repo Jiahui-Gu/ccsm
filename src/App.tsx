@@ -11,6 +11,7 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
+import { PrFlowProvider } from './components/PrFlowProvider';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
@@ -279,6 +280,7 @@ export default function App() {
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <ClaudeCliMissingDialog />
+        <PrFlowProvider />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

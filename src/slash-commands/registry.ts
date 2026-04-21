@@ -1,15 +1,10 @@
 // Slash command registry.
 //
-// IMPORTANT: we do NOT interpret or execute these commands. This registry
-// exists purely to drive the in-chat discoverability picker. When the user
-// picks a command, we drop `/<name> ` into the textarea and let them hit
-// Enter — the raw text (including the slash) is passed through to the
-// underlying claude.exe process via the normal user-message path.
-//
-// Which commands actually *respond meaningfully* when sent through
-// `--input-format stream-json` is a separate question (see PR body). For
-// the picker, any command that the CLI exposes at a `/`-prompt is fair
-// game to advertise.
+// Entries here drive the in-chat discoverability picker AND dispatch. A
+// command with `passThrough: true` is forwarded to claude.exe as a normal
+// user message; one with `passThrough: false` must have a `clientHandler`
+// attached (see ./handlers.ts) because we intentionally do NOT forward it.
+// The handler owns UX and must not touch claude.exe directly.
 import {
   HelpCircle,
   Eraser,
@@ -29,10 +24,15 @@ import {
   Webhook,
   Users,
   FileSearch,
+  GitPullRequest,
   type LucideIcon
 } from 'lucide-react';
 
-export type SlashCommandCategory = 'built-in' | 'skill';
+// 'built-in' commands map 1:1 to the CLI's `/`-prompt menu.
+// 'skill' is reserved for future skill-based commands.
+// 'client' commands are fully handled inside Agentory — the agent never
+// sees them. Typically paired with `passThrough: false`.
+export type SlashCommandCategory = 'built-in' | 'skill' | 'client';
 
 // Context handed to a client-side handler. Intentionally minimal — we pass
 // only what the current MVP handlers need; expand if a future command warrants
@@ -74,6 +74,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'model',   description: 'Switch model for this session',                 icon: Cpu,              category: 'built-in', passThrough: false },
   { name: 'config',  description: 'Open settings',                                 icon: Settings,         category: 'built-in', passThrough: false },
   { name: 'cost',    description: 'Show session cost and token usage',             icon: CircleDollarSign, category: 'built-in', passThrough: false },
+  { name: 'pr',      description: 'Create a GitHub PR for the current worktree',   icon: GitPullRequest,   category: 'client',   passThrough: false },
   { name: 'resume',  description: 'Resume a previous session',                     icon: History,          category: 'built-in', passThrough: true  },
   { name: 'memory',  description: 'Manage CLAUDE.md memory',                       icon: Brain,            category: 'built-in', passThrough: true  },
   { name: 'init',    description: 'Initialize CLAUDE.md in current project',       icon: FolderPlus,       category: 'built-in', passThrough: true  },
@@ -136,13 +137,30 @@ export async function dispatchSlashCommand(
 }
 
 // Pure filter used by the picker and unit tests. Matches a substring against
-// both `name` and `description` (case-insensitive). No fuzzy; MVP.
+// both `name` and `description` (case-insensitive). Results are ranked so
+// the most "obviously meant" match is first — an exact name match beats a
+// name-prefix match beats a description hit. The activeIndex-defaulting-to-0
+// behavior then lines up with user intent: typing `/pr` + Enter commits
+// `/pr`, not the first entry that happens to contain "pr" in its description.
 export function filterSlashCommands(all: SlashCommand[], query: string): SlashCommand[] {
   const q = query.trim().toLowerCase();
   if (!q) return all;
-  return all.filter(
-    (c) => c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
-  );
+  type Ranked = { cmd: SlashCommand; rank: number; index: number };
+  const ranked: Ranked[] = [];
+  for (let i = 0; i < all.length; i++) {
+    const c = all[i];
+    const name = c.name.toLowerCase();
+    const desc = c.description.toLowerCase();
+    let rank: number;
+    if (name === q) rank = 0;
+    else if (name.startsWith(q)) rank = 1;
+    else if (name.includes(q)) rank = 2;
+    else if (desc.includes(q)) rank = 3;
+    else continue;
+    ranked.push({ cmd: c, rank, index: i });
+  }
+  ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
+  return ranked.map((r) => r.cmd);
 }
 
 // Detects whether the textarea content is currently "typing a slash
