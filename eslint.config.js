@@ -110,7 +110,18 @@ export default [
         module: 'readonly',
         exports: 'readonly',
         queueMicrotask: 'readonly',
-        NodeJS: 'readonly'
+        NodeJS: 'readonly',
+        AbortSignal: 'readonly',
+        AbortController: 'readonly',
+        URL: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+        setImmediate: 'readonly',
+        clearImmediate: 'readonly',
+        globalThis: 'readonly'
       }
     }
   }

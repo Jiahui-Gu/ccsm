@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,7 +77,7 @@ describe('resolveClaudeBinary', () => {
   it('returns a full existing path when claude is on PATH (smoke test)', async () => {
     // This test is conditional: only runs if the test machine has claude
     // installed. CI containers without it will skip — that's fine.
-    let probe: string | null = null;
+    let probe: string | null;
     try {
       probe = await resolveClaudeBinary();
     } catch {
@@ -111,7 +111,6 @@ describe('parseCmdShim', () => {
     // Reproduce the real shim layout: `<dir>/claude.cmd` -> `<dir>/node_modules/.../claude.exe`
     const exePath = join(tmpDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
     // mkdirSync via writeFileSync requires the dir exist; build it.
-    const { mkdirSync } = require('node:fs');
     mkdirSync(join(tmpDir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin'), { recursive: true });
     writeFileSync(exePath, 'fake-exe');
     const cmdPath = join(tmpDir, 'claude.cmd');
@@ -141,7 +140,6 @@ describe('parseCmdShim', () => {
   });
 
   it('unwraps a node-script shim (older npm layout)', () => {
-    const { mkdirSync } = require('node:fs');
     mkdirSync(join(tmpDir, 'node_modules', 'foo', 'bin'), { recursive: true });
     const nodeExe = join(tmpDir, 'node.exe');
     writeFileSync(nodeExe, 'fake-node');
