@@ -259,3 +259,59 @@ describe('store: setRunning', () => {
     expect(useStore.getState().runningSessions[sid]).toBeUndefined();
   });
 });
+
+describe('store: streamAssistantText + appendBlocks coalesce', () => {
+  it('streamAssistantText creates a streaming assistant block on first delta', () => {
+    useStore.getState().streamAssistantText('s1', 'msg-1:c0', 'Hel', false);
+    const blocks = useStore.getState().messagesBySession['s1'];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: 'assistant',
+      id: 'msg-1:c0',
+      text: 'Hel',
+      streaming: true
+    });
+  });
+
+  it('streamAssistantText appends to existing block on subsequent deltas', () => {
+    const s = useStore.getState();
+    s.streamAssistantText('s1', 'msg-1:c0', 'Hel', false);
+    s.streamAssistantText('s1', 'msg-1:c0', 'lo!', false);
+    const blocks = useStore.getState().messagesBySession['s1'];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ text: 'Hello!', streaming: true });
+  });
+
+  it('streamAssistantText with done=true clears the streaming flag', () => {
+    const s = useStore.getState();
+    s.streamAssistantText('s1', 'msg-1:c0', 'Hi', false);
+    s.streamAssistantText('s1', 'msg-1:c0', '', true);
+    const block = useStore.getState().messagesBySession['s1'][0] as { streaming?: boolean };
+    expect(block.streaming).toBe(false);
+  });
+
+  it('appendBlocks coalesces by id: finalized assistant block replaces the streamed one in place', () => {
+    const s = useStore.getState();
+    s.streamAssistantText('s1', 'msg-1:c0', 'partial', false);
+    s.appendBlocks('s1', [{ kind: 'assistant', id: 'msg-1:c0', text: 'final' }]);
+    const blocks = useStore.getState().messagesBySession['s1'];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ id: 'msg-1:c0', text: 'final' });
+    // streaming flag was set on the streamed block; the finalized version
+    // omits it entirely (undefined).
+    expect((blocks[0] as { streaming?: boolean }).streaming).toBeUndefined();
+  });
+
+  it('appendBlocks still appends new blocks while replacing matched ones', () => {
+    const s = useStore.getState();
+    s.streamAssistantText('s1', 'msg-1:c0', 'partial', false);
+    s.appendBlocks('s1', [
+      { kind: 'assistant', id: 'msg-1:c0', text: 'final' },
+      { kind: 'tool', id: 'msg-1:tu0', name: 'Bash', brief: 'ls', expanded: false }
+    ]);
+    const blocks = useStore.getState().messagesBySession['s1'];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ id: 'msg-1:c0', text: 'final' });
+    expect(blocks[1]).toMatchObject({ id: 'msg-1:tu0', kind: 'tool' });
+  });
+});
