@@ -237,7 +237,7 @@ app.whenReady().then(() => {
   ipcMain.handle('endpoints:list', () => endpoints.listEndpoints());
   ipcMain.handle(
     'endpoints:add',
-    (_e, input: { name: string; baseUrl: string; kind?: 'anthropic'; apiKey?: string; isDefault?: boolean }) =>
+    (_e, input: { name: string; baseUrl: string; kind?: import('./endpoints-manager').EndpointKind; apiKey?: string; isDefault?: boolean }) =>
       endpoints.addEndpoint(input)
   );
   ipcMain.handle(
@@ -254,6 +254,10 @@ app.whenReady().then(() => {
     (_e, args: { baseUrl: string; apiKey: string }) => endpoints.testConnection(args)
   );
   ipcMain.handle('endpoints:refreshModels', (_e, id: string) => endpoints.refreshModels(id));
+  ipcMain.handle(
+    'endpoints:setManualModels',
+    (_e, id: string, ids: string[]) => endpoints.setManualModelIds(id, Array.isArray(ids) ? ids : [])
+  );
   ipcMain.handle('models:listByEndpoint', (_e, id: string) => endpoints.listModels(id));
   ipcMain.handle('models:listAll', () => endpoints.listModelsAll());
 
