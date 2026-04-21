@@ -17,6 +17,7 @@ import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
+import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
 
 subscribeAgentEvents();
 
@@ -72,8 +73,19 @@ export default function App() {
   }, [fontSize]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+
+  // Bridge from the slash-command handlers (`/config`, `/model`) into the
+  // local Settings open state.
+  useEffect(() => {
+    setOpenSettingsListener((tab) => {
+      setSettingsTab(tab);
+      setSettingsOpen(true);
+    });
+    return () => setOpenSettingsListener(null);
+  }, []);
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
@@ -168,7 +180,7 @@ export default function App() {
               </div>
             </main>
           </div>
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
           <ClaudeCliMissingDialog />
           <CommandPalette
@@ -230,7 +242,7 @@ export default function App() {
             </div>
           </main>
         </div>
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <ClaudeCliMissingDialog />
         <CommandPalette

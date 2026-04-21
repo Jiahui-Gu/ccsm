@@ -77,6 +77,9 @@ type RefreshResultDecl =
       sourceStats: Record<DiscoverySourceDecl, number>;
     }
   | { ok: false; error: string; status?: number };
+type CreateMessageResultDecl =
+  | { ok: true; text: string }
+  | { ok: false; status?: number; error: string };
 
 type CliInstallHintsDecl = {
   os: string;
@@ -176,6 +179,13 @@ declare global {
         testConnection: (args: { baseUrl: string; apiKey: string }) => Promise<TestConnectionResultDecl>;
         refreshModels: (id: string) => Promise<RefreshResultDecl>;
         setManualModels: (id: string, ids: string[]) => Promise<EndpointRowDecl | null>;
+        createMessage: (args: {
+          endpointId: string;
+          model: string;
+          maxTokens?: number;
+          messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+          system?: string;
+        }) => Promise<CreateMessageResultDecl>;
       };
 
       models: {

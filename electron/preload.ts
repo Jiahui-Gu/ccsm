@@ -66,6 +66,9 @@ type RefreshResult =
       sourceStats: Record<DiscoverySource, number>;
     }
   | { ok: false; error: string; status?: number };
+type CreateMessageResult =
+  | { ok: true; text: string }
+  | { ok: false; status?: number; error: string };
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -217,6 +220,14 @@ const api = {
       ipcRenderer.invoke('endpoints:refreshModels', id),
     setManualModels: (id: string, ids: string[]): Promise<EndpointRow | null> =>
       ipcRenderer.invoke('endpoints:setManualModels', id, ids),
+    createMessage: (args: {
+      endpointId: string;
+      model: string;
+      maxTokens?: number;
+      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+      system?: string;
+    }): Promise<CreateMessageResult> =>
+      ipcRenderer.invoke('endpoints:createMessage', args),
   },
 
   models: {

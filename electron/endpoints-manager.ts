@@ -320,8 +320,69 @@ export class EndpointsManager {
   }
 
   /**
+   * One-off message creation against an existing endpoint. Used by the
+   * renderer's `/compact` command to summarise a transcript without spinning
+   * up a claude.exe child. Reads the plaintext key via `getPlainKey` (same
+   * flow as `refreshModels`) so the renderer never sees it directly.
+   */
+  async createMessage(args: {
+    endpointId: string;
+    model: string;
+    maxTokens?: number;
+    messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    system?: string;
+  }): Promise<{ ok: true; text: string } | { ok: false; status?: number; error: string }> {
+    const endpoint = this.getEndpoint(args.endpointId);
+    if (!endpoint) return { ok: false, error: 'Endpoint not found' };
+    const apiKey = this.getPlainKey(args.endpointId) ?? '';
+    if (!apiKey) return { ok: false, error: 'Endpoint has no API key configured' };
+    const base = normaliseBaseUrl(endpoint.baseUrl);
+    const url = `${base}/v1/messages`;
+    const body: Record<string, unknown> = {
+      model: args.model,
+      max_tokens: args.maxTokens ?? 4000,
+      messages: args.messages
+    };
+    if (args.system) body.system = args.system;
+    try {
+      const res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          ...buildAnthropicHeaders(apiKey),
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const text = await safeReadText(res);
+        return {
+          ok: false,
+          status: res.status,
+          error: describeHttpError(res.status, text)
+        };
+      }
+      const json = (await res.json()) as {
+        content?: Array<{ type?: string; text?: string }>;
+      };
+      const parts = Array.isArray(json.content) ? json.content : [];
+      const text = parts
+        .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+        .map((p) => p.text as string)
+        .join('\n')
+        .trim();
+      if (!text) {
+        return { ok: false, error: 'Empty response from model' };
+      }
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
    * Run the tiered discovery pipeline and upsert into `endpoint_models`.
    * Replaces the old single-call /v1/models implementation.
+   */
    */
   async refreshModels(
     endpointId: string

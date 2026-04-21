@@ -115,7 +115,14 @@ export function SlashCommandPicker({
                 <span className="text-fg-tertiary text-[12px] leading-[16px] truncate">
                   {cmd.description}
                 </span>
-                {cmd.category && cmd.category !== 'built-in' ? (
+                {cmd.clientHandler ? (
+                  <span
+                    className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-accent/80 px-1.5 py-0.5 rounded-sm border border-accent/40"
+                    title="Runs locally — not forwarded to claude.exe"
+                  >
+                    client
+                  </span>
+                ) : cmd.category && cmd.category !== 'built-in' ? (
                   <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-fg-tertiary px-1.5 py-0.5 rounded-sm border border-border-subtle">
                     {cmd.category}
                   </span>
