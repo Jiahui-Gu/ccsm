@@ -92,7 +92,11 @@ export default [
       // Lots of legitimate `as unknown as ...` for SDK boundary casts.
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-empty-object-type': 'off',
-      '@typescript-eslint/no-empty-function': 'off'
+      '@typescript-eslint/no-empty-function': 'off',
+      // TS function overloads legitimately re-declare the same name; defer to
+      // the typescript-eslint variant which understands overload signatures.
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-redeclare': 'error'
     },
     settings: {
       react: { version: 'detect' }

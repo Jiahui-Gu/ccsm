@@ -1,0 +1,1 @@
+{"type":"control_request","request_id":"req_001","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_02deadbeef","input":{"command":"rm -rf /tmp/x","description":"clean temp"},"title":"Run bash command","display_name":"rm -rf /tmp/x","description":"Delete temp directory"}}

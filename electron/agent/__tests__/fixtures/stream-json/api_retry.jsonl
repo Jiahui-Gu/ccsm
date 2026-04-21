@@ -1,0 +1,2 @@
+{"type":"system","subtype":"api_retry","session_id":"01HZJ1234ABCDXYZ","uuid":"c0f1e3a8-4132-4f5c-adbb-cc34ef5601a8","attempt":1,"max_retries":5,"retry_delay_ms":2000,"error_status":529}
+{"type":"system","subtype":"api_retry","session_id":"01HZJ1234ABCDXYZ","uuid":"d1a2f4b9-5243-4f6d-bedc-dd45f06712b9","attempt":2,"max_retries":5,"retry_delay_ms":4000,"error_status":"overloaded_error"}
