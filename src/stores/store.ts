@@ -114,6 +114,17 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   sound: true
 };
 
+// Claude Code worktree integration settings. All optional / have defaults so
+// existing persisted blobs upgrade cleanly. Wired to UI in a future Settings
+// dialog section; this PR only adds the store plumbing + defaults.
+export type CcWorktreeParentDir =
+  | { mode: 'default' }
+  | { mode: 'custom'; path: string };
+
+export const DEFAULT_CC_BRANCH_PREFIX = 'claude';
+export const DEFAULT_CC_WORKTREE_PARENT_DIR: CcWorktreeParentDir = { mode: 'default' };
+export const DEFAULT_CC_AUTO_ARCHIVE_ON_PR_CLOSE = false;
+
 // First-run gate: we block session spawn until we've confirmed the Claude CLI
 // exists on the user's machine. The dialog is non-dismissable but can be
 // "canceled" into a persistent banner; both re-open via the same store action.
@@ -198,12 +209,24 @@ type State = {
   // on app mount. Don't bump from background/system events; only user clicks.
   focusInputNonce: number;
   cliStatus: CliStatus;
+  // Claude Code worktree settings (no UI in this PR — Settings section is a
+  // later iteration). Defaults mirror `DEFAULT_CC_*` constants above.
+  ccBranchPrefix: string;
+  ccWorktreeParentDir: CcWorktreeParentDir;
+  ccAutoArchiveOnPrClose: boolean;
 };
+
+export interface CreateSessionOptions {
+  cwd?: string | null;
+  name?: string;
+  useWorktree?: boolean;
+  sourceBranch?: string;
+}
 
 type Actions = {
   selectSession: (id: string) => void;
   focusGroup: (id: string | null) => void;
-  createSession: (cwd: string | null) => void;
+  createSession: (cwd: string | null | CreateSessionOptions) => void;
   importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string }) => string;
   renameSession: (id: string, name: string) => void;
   deleteSession: (id: string) => void;
@@ -259,6 +282,10 @@ type Actions = {
   setCliMissing: (searchedPaths: string[]) => void;
   openCliDialog: () => void;
   closeCliDialog: () => void;
+
+  setCcBranchPrefix: (prefix: string) => void;
+  setCcWorktreeParentDir: (dir: CcWorktreeParentDir) => void;
+  setCcAutoArchiveOnPrClose: (enabled: boolean) => void;
 };
 
 function nextId(prefix: string): string {
@@ -383,6 +410,9 @@ export const useStore = create<State & Actions>((set, get) => ({
   permissionRules: EMPTY_PERMISSION_RULES,
   focusInputNonce: 0,
   cliStatus: DEFAULT_CLI_STATUS,
+  ccBranchPrefix: DEFAULT_CC_BRANCH_PREFIX,
+  ccWorktreeParentDir: DEFAULT_CC_WORKTREE_PARENT_DIR,
+  ccAutoArchiveOnPrClose: DEFAULT_CC_AUTO_ARCHIVE_ON_PR_CLOSE,
 
   selectSession: (id) => {
     set((s) => ({
@@ -408,7 +438,11 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   focusGroup: (id) => set({ focusedGroupId: id }),
 
-  createSession: (cwd) => {
+  createSession: (cwdOrOpts) => {
+    const opts: CreateSessionOptions =
+      cwdOrOpts == null || typeof cwdOrOpts === 'string'
+        ? { cwd: cwdOrOpts ?? null }
+        : cwdOrOpts;
     const {
       sessions,
       groups,
@@ -443,13 +477,15 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
     const newSession: Session = {
       id,
-      name: 'New session',
+      name: opts.name?.trim() || 'New session',
       state: 'idle',
-      cwd: cwd ?? defaultCwd,
+      cwd: opts.cwd ?? defaultCwd,
       model: initialModel,
       groupId: targetGroupId,
       agentType: 'claude-code',
       endpointId,
+      ...(opts.useWorktree ? { useWorktree: true } : {}),
+      ...(opts.sourceBranch ? { sourceBranch: opts.sourceBranch } : {}),
     };
     set({
       sessions: [newSession, ...sessions],
@@ -988,7 +1024,16 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (s.cliStatus.state !== 'missing') return s;
       return { cliStatus: { ...s.cliStatus, dialogOpen: false } };
     });
-  }
+  },
+
+  setCcBranchPrefix: (prefix) => {
+    // Trim + collapse whitespace. Empty string falls back to default so a
+    // cleared field doesn't yield `/<name>` branches.
+    const trimmed = prefix.trim();
+    set({ ccBranchPrefix: trimmed || DEFAULT_CC_BRANCH_PREFIX });
+  },
+  setCcWorktreeParentDir: (dir) => set({ ccWorktreeParentDir: dir }),
+  setCcAutoArchiveOnPrClose: (enabled) => set({ ccAutoArchiveOnPrClose: enabled })
 }));
 
 let hydrated = false;
@@ -1023,7 +1068,10 @@ export async function hydrateStore(): Promise<void> {
       permissionRules: {
         allowedTools: persisted.permissionRules?.allowedTools ?? [],
         disallowedTools: persisted.permissionRules?.disallowedTools ?? []
-      }
+      },
+      ccBranchPrefix: persisted.ccBranchPrefix?.trim() || DEFAULT_CC_BRANCH_PREFIX,
+      ccWorktreeParentDir: persisted.ccWorktreeParentDir ?? DEFAULT_CC_WORKTREE_PARENT_DIR,
+      ccAutoArchiveOnPrClose: persisted.ccAutoArchiveOnPrClose ?? DEFAULT_CC_AUTO_ARCHIVE_ON_PR_CLOSE
     });
   }
   hydrated = true;
@@ -1060,7 +1108,10 @@ export async function hydrateStore(): Promise<void> {
       watchdog: s.watchdog,
       defaultEndpointId: s.defaultEndpointId,
       notificationSettings: s.notificationSettings,
-      permissionRules: s.permissionRules
+      permissionRules: s.permissionRules,
+      ccBranchPrefix: s.ccBranchPrefix,
+      ccWorktreeParentDir: s.ccWorktreeParentDir,
+      ccAutoArchiveOnPrClose: s.ccAutoArchiveOnPrClose
     };
     schedulePersist(snapshot);
   });

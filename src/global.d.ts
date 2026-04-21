@@ -300,6 +300,13 @@ declare global {
         getForSession: (sessionId: string) => Promise<WorktreeRecordDecl | null>;
         onReady: (handler: (e: WorktreeReadyDecl) => void) => () => void;
       };
+
+      /**
+       * Reveal a filesystem path in the OS file manager (Explorer / Finder /
+       * Nautilus). Optional — main process has not wired this handler yet;
+       * tracked as a follow-up to feat/worktree-core. Callers MUST null-check.
+       */
+      openPath?: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>;
     };
   }
 }
