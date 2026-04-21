@@ -31,8 +31,15 @@ type UpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type EndpointKindDecl = 'anthropic';
+type EndpointKindDecl =
+  | 'anthropic'
+  | 'openai-compat'
+  | 'ollama'
+  | 'bedrock'
+  | 'vertex'
+  | 'unknown';
 type EndpointStatusDecl = 'ok' | 'error' | 'unchecked';
+type DiscoverySourceDecl = 'probe' | 'listed' | 'manual';
 type EndpointRowDecl = {
   id: string;
   name: string;
@@ -44,6 +51,8 @@ type EndpointRowDecl = {
   lastRefreshedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  detectedKind: EndpointKindDecl | null;
+  manualModelIds: string[];
 };
 type ModelRowDecl = {
   id: string;
@@ -51,13 +60,20 @@ type ModelRowDecl = {
   modelId: string;
   displayName: string | null;
   discoveredAt: number;
+  source: DiscoverySourceDecl;
+  existsConfirmed: boolean;
 };
 type EndpointWithModelsDecl = EndpointRowDecl & { models: ModelRowDecl[] };
 type TestConnectionResultDecl =
   | { ok: true }
   | { ok: false; status?: number; error: string };
 type RefreshResultDecl =
-  | { ok: true; count: number }
+  | {
+      ok: true;
+      count: number;
+      detectedKind: EndpointKindDecl;
+      sourceStats: Record<DiscoverySourceDecl, number>;
+    }
   | { ok: false; error: string; status?: number };
 
 declare global {
@@ -129,11 +145,18 @@ declare global {
         }) => Promise<EndpointRowDecl>;
         update: (
           id: string,
-          patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
+          patch: {
+            name?: string;
+            baseUrl?: string;
+            apiKey?: string | null;
+            isDefault?: boolean;
+            kind?: EndpointKindDecl;
+          }
         ) => Promise<EndpointRowDecl | null>;
         remove: (id: string) => Promise<boolean>;
         testConnection: (args: { baseUrl: string; apiKey: string }) => Promise<TestConnectionResultDecl>;
         refreshModels: (id: string) => Promise<RefreshResultDecl>;
+        setManualModels: (id: string, ids: string[]) => Promise<EndpointRowDecl | null>;
       };
 
       models: {

@@ -15,8 +15,15 @@ export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermiss
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 
-export type EndpointKind = 'anthropic';
+export type EndpointKind =
+  | 'anthropic'
+  | 'openai-compat'
+  | 'ollama'
+  | 'bedrock'
+  | 'vertex'
+  | 'unknown';
 export type EndpointStatus = 'ok' | 'error' | 'unchecked';
+export type DiscoverySource = 'probe' | 'listed' | 'manual';
 
 export interface Endpoint {
   id: string;
@@ -29,6 +36,8 @@ export interface Endpoint {
   lastRefreshedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  detectedKind: EndpointKind | null;
+  manualModelIds: string[];
 }
 
 export interface ModelInfo {
@@ -37,6 +46,8 @@ export interface ModelInfo {
   modelId: string;
   displayName: string | null;
   discoveredAt: number;
+  source: DiscoverySource;
+  existsConfirmed: boolean;
 }
 
 // Auto-prompt watchdog: when an agent stops without uttering the done token,
@@ -687,7 +698,9 @@ export const useStore = create<State & Actions>((set, get) => ({
       lastError: e.lastError,
       lastRefreshedAt: e.lastRefreshedAt,
       createdAt: e.createdAt,
-      updatedAt: e.updatedAt
+      updatedAt: e.updatedAt,
+      detectedKind: e.detectedKind,
+      manualModelIds: e.manualModelIds
     }));
     const modelsByEndpoint: Record<string, ModelInfo[]> = {};
     for (const e of all) modelsByEndpoint[e.id] = e.models;

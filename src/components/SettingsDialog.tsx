@@ -531,7 +531,51 @@ type EditingEndpoint = {
   apiKey: string;
   isDefault: boolean;
   hasExistingKey?: boolean;
+  manualModelIds?: string[];
 };
+
+// Labels for the detected endpoint kind. `unknown` is a real outcome (most
+// 中转 relays that only forward /v1/messages), not an error — show it plainly.
+const KIND_LABEL: Record<string, string> = {
+  anthropic: 'Anthropic',
+  'openai-compat': 'OpenAI-compat',
+  ollama: 'Ollama',
+  bedrock: 'Bedrock',
+  vertex: 'Vertex',
+  unknown: 'Unknown',
+};
+
+function KindBadge({ kind }: { kind: string | null }) {
+  if (!kind) return null;
+  const label = KIND_LABEL[kind] ?? kind;
+  return (
+    <span
+      className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-bg-hover text-fg-secondary"
+      title={`Detected endpoint kind: ${label}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function SourceBreakdown({
+  counts,
+  total,
+}: {
+  counts: { probe: number; listed: number; manual: number };
+  total: number;
+}) {
+  const parts: string[] = [];
+  if (counts.listed) parts.push(`${counts.listed} listed`);
+  if (counts.probe) parts.push(`${counts.probe} probed`);
+  if (counts.manual) parts.push(`${counts.manual} manual`);
+  const tooltip = parts.length ? parts.join(' · ') : 'no discovery data yet';
+  return (
+    <span title={tooltip} className="cursor-help">
+      {total} model{total === 1 ? '' : 's'}
+    </span>
+  );
+}
 
 function EndpointsPane() {
   const endpoints = useStore((s) => s.endpoints);
@@ -590,10 +634,17 @@ function EndpointsPane() {
         <ul className="divide-y divide-border-subtle rounded-sm border border-border-subtle bg-bg-elevated">
           {endpoints.map((e) => {
             const models = modelsByEndpoint[e.id] ?? [];
+            const counts = {
+              probe: models.filter((m) => m.source === 'probe').length,
+              listed: models.filter((m) => m.source === 'listed').length,
+              manual: models.filter((m) => m.source === 'manual').length,
+            };
+            const is401 = e.lastStatus === 'error' && (e.lastError ?? '').toLowerCase().includes('auth');
+            const noneFound = e.lastStatus === 'ok' && models.length === 0;
             return (
-              <li key={e.id} className="flex items-center gap-3 px-3 py-2.5">
+              <li key={e.id} className="flex items-start gap-3 px-3 py-2.5">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-fg-primary truncate">{e.name}</span>
                     {e.isDefault && (
                       <span className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-accent/15 text-accent">
@@ -601,15 +652,31 @@ function EndpointsPane() {
                       </span>
                     )}
                     <StatusBadge status={e.lastStatus} />
+                    <KindBadge kind={e.detectedKind ?? e.kind} />
                   </div>
                   <div className="text-[11px] font-mono text-fg-tertiary truncate" title={e.baseUrl}>
                     {e.baseUrl}
                   </div>
                   <div className="text-[11px] text-fg-tertiary mt-0.5">
-                    {models.length} model{models.length === 1 ? '' : 's'} · refreshed{' '}
+                    <SourceBreakdown counts={counts} total={models.length} /> · refreshed{' '}
                     {relativeTime(e.lastRefreshedAt)}
-                    {e.lastStatus === 'error' && e.lastError ? ` · ${e.lastError}` : ''}
+                    {e.lastRefreshedAt ? ' (cached)' : ''}
                   </div>
+                  {is401 && (
+                    <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-error/40 bg-state-error/10 text-[11px] text-state-error">
+                      Auth failed — check your API key for this endpoint.
+                    </div>
+                  )}
+                  {noneFound && (
+                    <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-warning/40 bg-state-warning/10 text-[11px] text-fg-secondary">
+                      Could not auto-discover any models. Edit this endpoint and add manual model IDs below.
+                    </div>
+                  )}
+                  {e.lastStatus === 'error' && !is401 && e.lastError ? (
+                    <div className="mt-1.5 text-[11px] text-state-error truncate" title={e.lastError}>
+                      {e.lastError}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <Button
@@ -618,7 +685,7 @@ function EndpointsPane() {
                     onClick={() => onRefresh(e.id)}
                     disabled={refreshingId === e.id}
                   >
-                    {refreshingId === e.id ? 'Refreshing…' : 'Refresh'}
+                    {refreshingId === e.id ? 'Discovering…' : 'Discover models'}
                   </Button>
                   <Button
                     variant="secondary"
@@ -631,6 +698,7 @@ function EndpointsPane() {
                         apiKey: '',
                         isDefault: e.isDefault,
                         hasExistingKey: true,
+                        manualModelIds: e.manualModelIds,
                       })
                     }
                   >
@@ -700,6 +768,9 @@ function EndpointEditorDialog({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [manualIdsRaw, setManualIdsRaw] = useState<string>(
+    (value.manualModelIds ?? []).join('\n')
+  );
   const isEdit = !!value.id;
   // API key is optional — local relays and some self-hosted endpoints do not
   // require auth. See endpoints-manager: empty key omits the x-api-key header.
@@ -722,6 +793,8 @@ function EndpointEditorDialog({
     if (!name.trim() || !baseUrl.trim()) return;
     setSaving(true);
     try {
+      const manualIds = parseManualIds(manualIdsRaw);
+      let endpointId: string | undefined;
       if (isEdit && value.id) {
         await window.agentory.endpoints.update(value.id, {
           name: name.trim(),
@@ -729,7 +802,7 @@ function EndpointEditorDialog({
           apiKey: apiKey ? apiKey : undefined,
           isDefault,
         });
-        await window.agentory.endpoints.refreshModels(value.id);
+        endpointId = value.id;
       } else {
         const row = await window.agentory.endpoints.add({
           name: name.trim(),
@@ -738,7 +811,12 @@ function EndpointEditorDialog({
           apiKey: apiKey || undefined,
           isDefault,
         });
-        await window.agentory.endpoints.refreshModels(row.id);
+        endpointId = row.id;
+      }
+      if (endpointId) {
+        await window.agentory.endpoints.setManualModels(endpointId, manualIds);
+        // Kick discovery so the manual IDs are probe-validated right away.
+        await window.agentory.endpoints.refreshModels(endpointId);
       }
       await onSaved();
     } finally {
@@ -834,6 +912,21 @@ function EndpointEditorDialog({
               <span className="text-sm text-fg-secondary">Make default</span>
             </label>
           </Field>
+          <Field
+            label="Manual model IDs"
+            hint="Optional. One ID per line (or comma-separated). Used as probe hints when auto-discovery comes up empty — IDs that don't respond to a probe are still kept in the picker, marked unverified."
+          >
+            <textarea
+              value={manualIdsRaw}
+              onChange={(e) => setManualIdsRaw(e.target.value)}
+              rows={3}
+              placeholder={'claude-opus-4-5\nclaude-sonnet-4-5'}
+              className={cn(
+                inputClass,
+                'h-auto py-2 resize-y leading-snug font-mono text-xs'
+              )}
+            />
+          </Field>
           <div className="flex items-center gap-3 mt-4">
             <Button variant="secondary" size="md" onClick={onTest} disabled={!canTest || testing}>
               {testing ? 'Testing…' : 'Test connection'}
@@ -863,5 +956,19 @@ function EndpointEditorDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+
+function parseManualIds(raw: string): string[] {
+  // Split on newlines or commas; normalise whitespace so a pasted list like
+  // "a,b ,\n c" yields ["a","b","c"].
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    )
   );
 }

@@ -1,12 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db';
+import {
+  DiscoveryPipeline,
+  type DiscoverySource,
+  type EndpointKind as DiscoveryKind,
+} from './endpoints-discovery';
 
 /**
- * Phase 1 supports Anthropic-native protocol only. Other kinds are reserved
- * for Phase 2 (OpenAI-compat, Ollama, Bedrock, Vertex). Stored as a free TEXT
- * column so Phase 2 can add values without a schema migration.
+ * Endpoint "kind" spans the full taxonomy the discovery pipeline understands.
+ * The `kind` stored at creation time is the user's *declared* kind (defaults
+ * to anthropic); `detectedKind` is what the pipeline sniffed on last refresh.
+ * We keep both because: (a) declared kind drives header choice in probes,
+ * (b) detected kind is surfaced in the UI so users know what we think their
+ * endpoint is.
  */
-export type EndpointKind = 'anthropic';
+export type EndpointKind = DiscoveryKind;
 
 export type EndpointStatus = 'ok' | 'error' | 'unchecked';
 
@@ -21,6 +29,8 @@ export interface EndpointRow {
   lastRefreshedAt: number | null;
   createdAt: number;
   updatedAt: number;
+  detectedKind: EndpointKind | null;
+  manualModelIds: string[];
 }
 
 export interface ModelRow {
@@ -29,6 +39,8 @@ export interface ModelRow {
   modelId: string;
   displayName: string | null;
   discoveredAt: number;
+  source: DiscoverySource;
+  existsConfirmed: boolean;
 }
 
 export interface EndpointWithModels extends EndpointRow {
@@ -48,13 +60,9 @@ export interface UpdateEndpointInput {
   baseUrl?: string;
   apiKey?: string | null; // null = clear, undefined = leave as-is
   isDefault?: boolean;
+  kind?: EndpointKind;
 }
 
-/**
- * Abstraction over Electron's `safeStorage`. We inject it so unit tests can
- * run the DB layer without spinning up Electron, and so the codebase has a
- * single plaintext→ciphertext boundary we can audit.
- */
 export interface KeyCrypto {
   isAvailable: () => boolean;
   encrypt: (plain: string) => Buffer;
@@ -67,6 +75,8 @@ export interface EndpointsManagerDeps {
   crypto: KeyCrypto;
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** Inject a pre-built pipeline (tests); otherwise one is built from fetchImpl. */
+  pipeline?: DiscoveryPipeline;
 }
 
 interface RawEndpoint {
@@ -81,6 +91,8 @@ interface RawEndpoint {
   last_refreshed_at: number | null;
   created_at: number;
   updated_at: number;
+  detected_kind: string | null;
+  manual_model_ids: string | null;
 }
 
 interface RawModel {
@@ -89,33 +101,21 @@ interface RawModel {
   model_id: string;
   display_name: string | null;
   discovered_at: number;
-}
-
-/**
- * Anthropic's `GET /v1/models` response page.
- * https://docs.anthropic.com/en/api/models-list
- */
-interface AnthropicModelsPage {
-  data: Array<{
-    id: string;
-    display_name?: string;
-    type?: string;
-    created_at?: string;
-  }>;
-  has_more: boolean;
-  first_id?: string | null;
-  last_id?: string | null;
+  source: string | null;
+  exists_confirmed: number | null;
 }
 
 export class EndpointsManager {
   private readonly crypto: KeyCrypto;
   private readonly fetchImpl: FetchLike;
   private readonly now: () => number;
+  private readonly pipeline: DiscoveryPipeline;
 
   constructor(deps: EndpointsManagerDeps) {
     this.crypto = deps.crypto;
     this.fetchImpl = deps.fetchImpl ?? (globalThis.fetch as FetchLike);
     this.now = deps.now ?? (() => Date.now());
+    this.pipeline = deps.pipeline ?? new DiscoveryPipeline({ fetchImpl: this.fetchImpl });
   }
 
   // ---------- CRUD ----------
@@ -124,7 +124,8 @@ export class EndpointsManager {
     const rows = getDb()
       .prepare(
         `SELECT id, name, base_url, kind, api_key_encrypted, is_default,
-                last_status, last_error, last_refreshed_at, created_at, updated_at
+                last_status, last_error, last_refreshed_at, created_at, updated_at,
+                detected_kind, manual_model_ids
          FROM endpoints ORDER BY is_default DESC, created_at ASC`
       )
       .all() as RawEndpoint[];
@@ -135,17 +136,14 @@ export class EndpointsManager {
     const row = getDb()
       .prepare(
         `SELECT id, name, base_url, kind, api_key_encrypted, is_default,
-                last_status, last_error, last_refreshed_at, created_at, updated_at
+                last_status, last_error, last_refreshed_at, created_at, updated_at,
+                detected_kind, manual_model_ids
          FROM endpoints WHERE id = ?`
       )
       .get(id) as RawEndpoint | undefined;
     return row ? toEndpointRow(row) : null;
   }
 
-  /**
-   * Plaintext key read. Main-process only — never expose via IPC to the
-   * renderer. Used by session spawn to set per-session env.
-   */
   getPlainKey(id: string): string | null {
     const row = getDb()
       .prepare('SELECT api_key_encrypted FROM endpoints WHERE id = ?')
@@ -174,8 +172,9 @@ export class EndpointsManager {
       db.prepare(
         `INSERT INTO endpoints (
           id, name, base_url, kind, api_key_encrypted, is_default,
-          last_status, last_error, last_refreshed_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'unchecked', NULL, NULL, ?, ?)`
+          last_status, last_error, last_refreshed_at, created_at, updated_at,
+          detected_kind, manual_model_ids
+        ) VALUES (?, ?, ?, ?, ?, ?, 'unchecked', NULL, NULL, ?, ?, NULL, NULL)`
       ).run(id, input.name, input.baseUrl, kind, enc, isDefault, now, now);
     });
     run();
@@ -192,6 +191,7 @@ export class EndpointsManager {
     const name = patch.name ?? existing.name;
     const baseUrl = patch.baseUrl ?? existing.baseUrl;
     const isDefault = patch.isDefault === undefined ? existing.isDefault : patch.isDefault;
+    const kind = patch.kind ?? existing.kind;
 
     let enc: Buffer | null | 'keep' = 'keep';
     if (patch.apiKey === null) enc = null;
@@ -204,14 +204,14 @@ export class EndpointsManager {
       }
       if (enc === 'keep') {
         db.prepare(
-          `UPDATE endpoints SET name = ?, base_url = ?, is_default = ?, updated_at = ?
+          `UPDATE endpoints SET name = ?, base_url = ?, kind = ?, is_default = ?, updated_at = ?
            WHERE id = ?`
-        ).run(name, baseUrl, isDefault ? 1 : 0, now, id);
+        ).run(name, baseUrl, kind, isDefault ? 1 : 0, now, id);
       } else {
         db.prepare(
-          `UPDATE endpoints SET name = ?, base_url = ?, api_key_encrypted = ?, is_default = ?, updated_at = ?
+          `UPDATE endpoints SET name = ?, base_url = ?, kind = ?, api_key_encrypted = ?, is_default = ?, updated_at = ?
            WHERE id = ?`
-        ).run(name, baseUrl, enc, isDefault ? 1 : 0, now, id);
+        ).run(name, baseUrl, kind, enc, isDefault ? 1 : 0, now, id);
       }
     });
     run();
@@ -224,7 +224,6 @@ export class EndpointsManager {
     if (!target) return false;
     const run = db.transaction(() => {
       db.prepare('DELETE FROM endpoints WHERE id = ?').run(id);
-      // Promote the oldest remaining endpoint to default if we removed the default.
       if (target.isDefault) {
         const next = db
           .prepare('SELECT id FROM endpoints ORDER BY created_at ASC LIMIT 1')
@@ -241,12 +240,25 @@ export class EndpointsManager {
     return true;
   }
 
+  setManualModelIds(id: string, ids: string[]): EndpointRow | null {
+    const existing = this.getEndpoint(id);
+    if (!existing) return null;
+    const cleaned = Array.from(
+      new Set(ids.map((s) => s.trim()).filter((s) => s.length > 0))
+    );
+    const encoded = JSON.stringify(cleaned);
+    getDb()
+      .prepare('UPDATE endpoints SET manual_model_ids = ?, updated_at = ? WHERE id = ?')
+      .run(encoded, this.now(), id);
+    return this.getEndpoint(id);
+  }
+
   // ---------- Models ----------
 
   listModels(endpointId: string): ModelRow[] {
     const rows = getDb()
       .prepare(
-        `SELECT id, endpoint_id, model_id, display_name, discovered_at
+        `SELECT id, endpoint_id, model_id, display_name, discovered_at, source, exists_confirmed
          FROM endpoint_models WHERE endpoint_id = ? ORDER BY model_id ASC`
       )
       .all(endpointId) as RawModel[];
@@ -261,9 +273,10 @@ export class EndpointsManager {
   // ---------- Network: test + refresh ----------
 
   /**
-   * Lightweight connectivity probe. Issues `GET {baseUrl}/v1/models?limit=1`
-   * with the provided key and surfaces a structured result. Does NOT write to
-   * the DB — caller decides whether to persist status.
+   * Lightweight connectivity probe. Tries GET /v1/models first (cheap); if
+   * that 404s (relays that only expose /v1/messages) we probe a known
+   * Anthropic model id via POST /v1/messages as a secondary signal. A plain
+   * auth-failure on either branch is surfaced as-is.
    */
   async testConnection(args: {
     baseUrl: string;
@@ -275,7 +288,8 @@ export class EndpointsManager {
         method: 'GET',
         headers: buildAnthropicHeaders(args.apiKey),
       });
-      if (!res.ok) {
+      if (res.ok) return { ok: true };
+      if (res.status === 401 || res.status === 403) {
         const body = await safeReadText(res);
         return {
           ok: false,
@@ -283,67 +297,54 @@ export class EndpointsManager {
           error: describeHttpError(res.status, body, { hasKey: args.apiKey.length > 0 }),
         };
       }
-      return { ok: true };
+      // /v1/models not supported — fall through to a probe.
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // Secondary: run the discovery pipeline with a single canonical model;
+    // if it comes back with any confirmed model we consider the endpoint live.
+    try {
+      const result = await this.pipeline.discover({
+        baseUrl: args.baseUrl,
+        apiKey: args.apiKey,
+      });
+      if (!result.ok) {
+        return { ok: false, status: result.status, error: result.error ?? 'Discovery failed' };
+      }
+      if (result.models.some((m) => m.existsConfirmed)) return { ok: true };
+      return { ok: false, error: 'Endpoint reachable but no models discovered' };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }
 
   /**
-   * Fetch all pages of `GET /v1/models`, upsert into `endpoint_models`, and
-   * prune rows no longer present upstream. Updates endpoint last_status.
+   * Run the tiered discovery pipeline and upsert into `endpoint_models`.
+   * Replaces the old single-call /v1/models implementation.
    */
   async refreshModels(
     endpointId: string
-  ): Promise<{ ok: true; count: number } | { ok: false; error: string; status?: number }> {
+  ): Promise<
+    | { ok: true; count: number; detectedKind: EndpointKind; sourceStats: Record<DiscoverySource, number> }
+    | { ok: false; error: string; status?: number }
+  > {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint) return { ok: false, error: 'Endpoint not found' };
     const apiKey = this.getPlainKey(endpointId) ?? '';
+    const knownModelIds = this.listModels(endpointId).map((m) => m.modelId);
 
-    const collected: AnthropicModelsPage['data'] = [];
-    let afterId: string | undefined;
-    const pageLimit = 1000; // 100 models/page × 10 pages ceiling — plenty
+    const result = await this.pipeline.discover({
+      baseUrl: endpoint.baseUrl,
+      apiKey,
+      kind: endpoint.kind,
+      knownModelIds,
+      manualModelIds: endpoint.manualModelIds,
+    });
 
-    for (let page = 0; page < 10; page++) {
-      const url = buildModelsUrl(endpoint.baseUrl, {
-        limit: 100,
-        after_id: afterId,
-      });
-      let res: Response;
-      try {
-        res = await this.fetchImpl(url, {
-          method: 'GET',
-          headers: buildAnthropicHeaders(apiKey),
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.markEndpointStatus(endpointId, 'error', msg);
-        return { ok: false, error: msg };
-      }
-      if (!res.ok) {
-        const body = await safeReadText(res);
-        const msg = describeHttpError(res.status, body);
-        this.markEndpointStatus(endpointId, 'error', msg);
-        return { ok: false, error: msg, status: res.status };
-      }
-      let payload: AnthropicModelsPage;
-      try {
-        payload = (await res.json()) as AnthropicModelsPage;
-      } catch (err) {
-        const msg = `Malformed /v1/models response: ${err instanceof Error ? err.message : String(err)}`;
-        this.markEndpointStatus(endpointId, 'error', msg);
-        return { ok: false, error: msg };
-      }
-      if (!payload || !Array.isArray(payload.data)) {
-        const msg = 'Malformed /v1/models response: missing data array';
-        this.markEndpointStatus(endpointId, 'error', msg);
-        return { ok: false, error: msg };
-      }
-      collected.push(...payload.data);
-      if (collected.length >= pageLimit) break;
-      if (!payload.has_more) break;
-      afterId = payload.last_id ?? payload.data[payload.data.length - 1]?.id;
-      if (!afterId) break;
+    if (!result.ok) {
+      this.markEndpointStatus(endpointId, 'error', result.error ?? 'Discovery failed');
+      return { ok: false, error: result.error ?? 'Discovery failed', status: result.status };
     }
 
     const now = this.now();
@@ -351,20 +352,42 @@ export class EndpointsManager {
     const run = db.transaction(() => {
       db.prepare('DELETE FROM endpoint_models WHERE endpoint_id = ?').run(endpointId);
       const insert = db.prepare(
-        `INSERT INTO endpoint_models (id, endpoint_id, model_id, display_name, discovered_at)
-         VALUES (?, ?, ?, ?, ?)`
+        `INSERT INTO endpoint_models (id, endpoint_id, model_id, display_name, discovered_at, source, exists_confirmed)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
-      for (const m of collected) {
-        if (!m || typeof m.id !== 'string' || !m.id) continue;
-        insert.run(randomUUID(), endpointId, m.id, m.display_name ?? null, now);
+      for (const m of result.models) {
+        if (!m.id) continue;
+        // Pick a single canonical source label for display. Priority:
+        // listed > probe > manual, since that's increasing uncertainty.
+        const primary: DiscoverySource = m.sources.includes('listed')
+          ? 'listed'
+          : m.sources.includes('probe')
+          ? 'probe'
+          : 'manual';
+        insert.run(
+          randomUUID(),
+          endpointId,
+          m.id,
+          m.displayName ?? null,
+          now,
+          primary,
+          m.existsConfirmed ? 1 : 0
+        );
       }
       db.prepare(
-        `UPDATE endpoints SET last_status = 'ok', last_error = NULL, last_refreshed_at = ?, updated_at = ?
+        `UPDATE endpoints SET last_status = 'ok', last_error = NULL, last_refreshed_at = ?,
+                               detected_kind = ?, updated_at = ?
          WHERE id = ?`
-      ).run(now, now, endpointId);
+      ).run(now, result.detectedKind, now, endpointId);
     });
     run();
-    return { ok: true, count: collected.length };
+
+    return {
+      ok: true,
+      count: result.models.length,
+      detectedKind: result.detectedKind,
+      sourceStats: result.sourceStats,
+    };
   }
 
   // ---------- Helpers ----------
@@ -389,6 +412,17 @@ export class EndpointsManager {
   }
 }
 
+function parseManualIds(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === 'string');
+  } catch {
+    return [];
+  }
+}
+
 function toEndpointRow(r: RawEndpoint): EndpointRow {
   return {
     id: r.id,
@@ -401,22 +435,26 @@ function toEndpointRow(r: RawEndpoint): EndpointRow {
     lastRefreshedAt: r.last_refreshed_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    detectedKind: (r.detected_kind as EndpointKind | null) ?? null,
+    manualModelIds: parseManualIds(r.manual_model_ids),
   };
 }
 
 function toModelRow(r: RawModel): ModelRow {
+  const source = (r.source as DiscoverySource | null) ?? 'listed';
   return {
     id: r.id,
     endpointId: r.endpoint_id,
     modelId: r.model_id,
     displayName: r.display_name,
     discoveredAt: r.discovered_at,
+    source,
+    existsConfirmed: r.exists_confirmed == null ? true : r.exists_confirmed === 1,
   };
 }
 
 function normaliseBaseUrl(baseUrl: string): string {
   let u = baseUrl.trim();
-  // Strip trailing /v1 or /v1/ so callers can paste either form.
   u = u.replace(/\/+$/, '');
   u = u.replace(/\/v1$/i, '');
   return u;
@@ -435,10 +473,6 @@ function buildModelsUrl(
 }
 
 function buildAnthropicHeaders(apiKey: string): Record<string, string> {
-  // `x-api-key` is the canonical header for Anthropic's REST API. Proxies that
-  // emulate the Anthropic API generally accept it too. `anthropic-version` is
-  // required by the official API; we use the baseline GA version for model
-  // listing which has been stable since 2023-06-01.
   const headers: Record<string, string> = {
     'anthropic-version': '2023-06-01',
     accept: 'application/json',
