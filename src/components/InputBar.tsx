@@ -1,9 +1,16 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ArrowUp, Square } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { toSdkPermissionMode } from '../agent/permission';
+import { SlashCommandPicker } from './SlashCommandPicker';
+import {
+  SLASH_COMMANDS,
+  detectSlashTrigger,
+  filterSlashCommands,
+  type SlashCommand
+} from '../slash-commands/registry';
 
 // Per-session draft cache. Survives session switches within a process so
 // users don't lose half-typed prompts when they pop into another session.
@@ -40,6 +47,28 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // steal focus from wherever the user (or some other auto-focus) put it.
   const focusNonceSeenRef = useRef<number | null>(null);
 
+  // --- Slash-command picker state --------------------------------------
+  // We derive picker openness from (value, caret) rather than storing a
+  // separate `open` flag, so the picker cannot drift out of sync with the
+  // textarea content. `caret` is updated on every keyup/click/select.
+  const [caret, setCaret] = useState(0);
+  // `dismissed` lets the user Esc-out of the picker without needing to
+  // change the textarea content. Any edit re-arms it.
+  const [pickerDismissed, setPickerDismissed] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const trigger = useMemo(() => detectSlashTrigger(value, caret), [value, caret]);
+  const filtered = useMemo<SlashCommand[]>(
+    () => (trigger.active ? filterSlashCommands(SLASH_COMMANDS, trigger.query) : []),
+    [trigger]
+  );
+  const pickerOpen = trigger.active && !pickerDismissed && !running;
+  // Clamp activeIndex whenever the filtered list shrinks.
+  React.useEffect(() => {
+    if (!pickerOpen) return;
+    if (activeIndex >= filtered.length) setActiveIndex(Math.max(0, filtered.length - 1));
+  }, [pickerOpen, filtered.length, activeIndex]);
+
   React.useEffect(() => {
     setValue(draftCache.get(sessionId) ?? '');
   }, [sessionId]);
@@ -66,8 +95,34 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
   function update(next: string) {
     setValue(next);
+    // Any edit re-arms the picker (so the user can dismiss with Esc, then
+    // keep typing to reopen it if they're still in the `/...` prefix).
+    setPickerDismissed(false);
+    setActiveIndex(0);
+    // Keep caret in sync with the edit — textarea may not have fired
+    // onSelect/onKeyUp yet when onChange lands (and programmatic fills
+    // from Playwright skip those entirely).
+    const el = textareaRef.current;
+    if (el) setCaret(el.selectionStart ?? next.length);
+    else setCaret(next.length);
     if (next) draftCache.set(sessionId, next);
     else draftCache.delete(sessionId);
+  }
+
+  function commitSlashCommand(cmd: SlashCommand) {
+    const next = `/${cmd.name} `;
+    setValue(next);
+    draftCache.set(sessionId, next);
+    setCaret(next.length);
+    setPickerDismissed(true);
+    setActiveIndex(0);
+    // Restore caret to end after React re-renders the textarea.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+    });
   }
 
   async function send() {
@@ -128,10 +183,60 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // Skip Enter handling while IME composition is active — otherwise CJK
     // candidate selection accidentally sends the message.
     if (e.nativeEvent.isComposing || (e.nativeEvent as { keyCode?: number }).keyCode === 229) return;
+
+    // Slash picker navigation takes precedence when open.
+    if (pickerOpen && filtered.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex((i) => (i + 1) % filtered.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex((i) => (i - 1 + filtered.length) % filtered.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const cmd = filtered[activeIndex];
+        if (cmd) {
+          // Tab = complete-in-place, keep picker open so user can keep
+          // browsing. Insert `/<name>` without trailing space.
+          const next = `/${cmd.name}`;
+          setValue(next);
+          draftCache.set(sessionId, next);
+          setCaret(next.length);
+          requestAnimationFrame(() => {
+            const el = textareaRef.current;
+            if (!el) return;
+            el.setSelectionRange(next.length, next.length);
+          });
+        }
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const cmd = filtered[activeIndex];
+        if (cmd) commitSlashCommand(cmd);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPickerDismissed(true);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();
     }
+  }
+
+  function syncCaret() {
+    const el = textareaRef.current;
+    if (!el) return;
+    setCaret(el.selectionStart ?? 0);
   }
 
   return (
@@ -145,12 +250,22 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           'focus-within:border-accent'
         )}
       >
+        <SlashCommandPicker
+          open={pickerOpen}
+          query={trigger.active ? trigger.query : ''}
+          activeIndex={activeIndex}
+          onActiveIndexChange={setActiveIndex}
+          onSelect={commitSlashCommand}
+        />
         <textarea
           ref={textareaRef}
           data-input-bar
           value={value}
           onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
+          onKeyUp={syncCaret}
+          onClick={syncCaret}
+          onSelect={syncCaret}
           rows={2}
           placeholder={running ? 'Running… (input disabled)' : hasMessages ? 'Reply…' : 'Ask anything…'}
           disabled={running}
