@@ -10,6 +10,8 @@ type StartOpts = {
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
   endpointId?: string;
+  allowedTools?: readonly string[];
+  disallowedTools?: readonly string[];
 };
 
 type StartResult =

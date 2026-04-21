@@ -89,6 +89,37 @@ describe('buildSpawnArgs', () => {
     expect(args).not.toContain('--resume');
     expect(args).not.toContain('--permission-mode');
     expect(args).not.toContain('--model');
+    expect(args).not.toContain('--allowedTools');
+    expect(args).not.toContain('--disallowedTools');
+  });
+
+  it('appends --allowedTools with each pattern as its own token', () => {
+    const args = buildSpawnArgs({
+      allowedTools: ['Read', 'Bash(git:*)'],
+    });
+    const idx = args.indexOf('--allowedTools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Read');
+    expect(args[idx + 2]).toBe('Bash(git:*)');
+  });
+
+  it('appends --disallowedTools with each pattern as its own token', () => {
+    const args = buildSpawnArgs({
+      disallowedTools: ['Bash', 'Write'],
+    });
+    const idx = args.indexOf('--disallowedTools');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('Bash');
+    expect(args[idx + 2]).toBe('Write');
+  });
+
+  it('omits per-tool flags when arrays are empty (back-compat for legacy callers)', () => {
+    const args = buildSpawnArgs({
+      allowedTools: [],
+      disallowedTools: [],
+    });
+    expect(args).not.toContain('--allowedTools');
+    expect(args).not.toContain('--disallowedTools');
   });
 });
 
@@ -165,18 +196,29 @@ describe('spawnClaude', () => {
       resumeId: 'sess_xyz',
       permissionMode: 'plan',
       model: 'sonnet',
+      allowedTools: ['Read', 'Bash(git:*)'],
+      disallowedTools: ['Write'],
     });
 
     expect(mockedSpawn).toHaveBeenCalledTimes(1);
     const [bin, argv, opts] = mockedSpawn.mock.calls[0];
     expect(bin).toBe('/usr/local/bin/claude');
-    const argvJoined = (argv as string[]).join(' ');
+    const argvArr = argv as string[];
+    const argvJoined = argvArr.join(' ');
     expect(argvJoined).toContain('--output-format stream-json');
     expect(argvJoined).toContain('--verbose');
     expect(argvJoined).toContain('--input-format stream-json');
     expect(argvJoined).toContain('--resume sess_xyz');
     expect(argvJoined).toContain('--permission-mode plan');
     expect(argvJoined).toContain('--model sonnet');
+    // Per-tool flags: each pattern as its own token.
+    const aIdx = argvArr.indexOf('--allowedTools');
+    expect(aIdx).toBeGreaterThanOrEqual(0);
+    expect(argvArr[aIdx + 1]).toBe('Read');
+    expect(argvArr[aIdx + 2]).toBe('Bash(git:*)');
+    const dIdx = argvArr.indexOf('--disallowedTools');
+    expect(dIdx).toBeGreaterThanOrEqual(0);
+    expect(argvArr[dIdx + 1]).toBe('Write');
     expect(opts).toMatchObject({
       cwd: '/work',
       stdio: ['pipe', 'pipe', 'pipe'],

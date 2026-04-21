@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
-import type { Group, Session, MessageBlock } from '../types';
+import type { Group, Session, MessageBlock, PermissionRules } from '../types';
+import { EMPTY_PERMISSION_RULES } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = string;
@@ -165,6 +166,11 @@ type State = {
   modelsByEndpoint: Record<string, ModelInfo[]>;
   defaultEndpointId: string | null;
   endpointsLoaded: boolean;
+  // Global fine-grained per-tool permission rules. Layered on top of
+  // `permission` (the CLI permission mode) and forwarded to claude.exe as
+  // `--allowedTools` / `--disallowedTools`. Per-session overrides live on
+  // `Session.permissionRules` and merge in via `mergeRules()`.
+  permissionRules: PermissionRules;
   // Monotonic counter bumped whenever a user-driven action requests that the
   // InputBar textarea take focus (e.g. clicking a session in the sidebar,
   // matching Claude Desktop's behavior). InputBar `useEffect`s on this and
@@ -187,6 +193,8 @@ type Actions = {
   pushRecentProject: (path: string) => void;
   setModel: (model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
+  setPermissionRules: (patch: Partial<PermissionRules>) => void;
+  resetPermissionRules: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
@@ -297,6 +305,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   modelsByEndpoint: {},
   defaultEndpointId: null,
   endpointsLoaded: false,
+  permissionRules: EMPTY_PERMISSION_RULES,
   focusInputNonce: 0,
   cliStatus: DEFAULT_CLI_STATUS,
 
@@ -500,6 +509,19 @@ export const useStore = create<State & Actions>((set, get) => ({
     const started = Object.keys(get().startedSessions);
     for (const id of started) void api.agentSetPermissionMode(id, permission);
   },
+  setPermissionRules: (patch) => {
+    set((s) => ({
+      permissionRules: {
+        allowedTools: patch.allowedTools ?? s.permissionRules.allowedTools,
+        disallowedTools: patch.disallowedTools ?? s.permissionRules.disallowedTools
+      }
+    }));
+    // Rules only take effect on spawn. The CLI has no documented
+    // `set_permission_rules` control_request, so live sessions keep whatever
+    // rules they were started with. The Permissions UI surfaces this so the
+    // user isn't surprised.
+  },
+  resetPermissionRules: () => set({ permissionRules: EMPTY_PERMISSION_RULES }),
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setTheme: (theme) => set({ theme }),
@@ -911,6 +933,10 @@ export async function hydrateStore(): Promise<void> {
       notificationSettings: {
         ...DEFAULT_NOTIFICATION_SETTINGS,
         ...(persisted.notificationSettings ?? {})
+      },
+      permissionRules: {
+        allowedTools: persisted.permissionRules?.allowedTools ?? [],
+        disallowedTools: persisted.permissionRules?.disallowedTools ?? []
       }
     });
   }
@@ -944,7 +970,8 @@ export async function hydrateStore(): Promise<void> {
       tutorialSeen: s.tutorialSeen,
       watchdog: s.watchdog,
       defaultEndpointId: s.defaultEndpointId,
-      notificationSettings: s.notificationSettings
+      notificationSettings: s.notificationSettings,
+      permissionRules: s.permissionRules
     };
     schedulePersist(snapshot);
   });
