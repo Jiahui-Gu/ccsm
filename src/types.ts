@@ -12,6 +12,12 @@ export interface Session {
   model: string;
   groupId: string;
   agentType: AgentType;
+  /**
+   * Endpoint this session spawns against. Missing = fall back to the store's
+   * defaultEndpointId at spawn time. Intentionally optional so existing
+   * persisted sessions (pre-endpoint-discovery) continue to work.
+   */
+  endpointId?: string;
   // Set when the session was imported from a Claude Code CLI transcript.
   // Passed to agentStart on first send so the SDK resumes the same thread.
   resumeSessionId?: string;

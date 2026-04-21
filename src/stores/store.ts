@@ -4,10 +4,34 @@ import { toSdkPermissionMode } from '../agent/permission';
 import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
-export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
+export type ModelId = string;
 export type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
+
+export type EndpointKind = 'anthropic';
+export type EndpointStatus = 'ok' | 'error' | 'unchecked';
+
+export interface Endpoint {
+  id: string;
+  name: string;
+  baseUrl: string;
+  kind: EndpointKind;
+  isDefault: boolean;
+  lastStatus: EndpointStatus;
+  lastError: string | null;
+  lastRefreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ModelInfo {
+  id: string;
+  endpointId: string;
+  modelId: string;
+  displayName: string | null;
+  discoveredAt: number;
+}
 
 // Auto-prompt watchdog: when an agent stops without uttering the done token,
 // the lifecycle replies for the user so the agent doesn't sit idle. Tunables
@@ -48,6 +72,10 @@ type State = {
   // `result { error_during_execution }` frame arrives so we can render a
   // neutral "Interrupted" banner instead of an error block.
   interruptedSessions: Record<string, true>;
+  endpoints: Endpoint[];
+  modelsByEndpoint: Record<string, ModelInfo[]>;
+  defaultEndpointId: string | null;
+  endpointsLoaded: boolean;
 };
 
 type Actions = {
@@ -88,6 +116,13 @@ type Actions = {
   markInterrupted: (sessionId: string) => void;
   consumeInterrupted: (sessionId: string) => boolean;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
+
+  setEndpoints: (list: Endpoint[]) => void;
+  setModelsForEndpoint: (endpointId: string, models: ModelInfo[]) => void;
+  setDefaultEndpointId: (id: string | null) => void;
+  refreshAllEndpointModels: () => Promise<void>;
+  refreshEndpointModels: (endpointId: string) => Promise<{ ok: boolean; error?: string }>;
+  reloadEndpoints: () => Promise<void>;
 };
 
 function nextId(prefix: string): string {
@@ -113,7 +148,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   recentProjects: [],
   activeId: '',
   focusedGroupId: null,
-  model: 'claude-opus-4',
+  model: '',
   permission: 'auto',
   sidebarCollapsed: false,
   theme: 'system',
@@ -125,6 +160,10 @@ export const useStore = create<State & Actions>((set, get) => ({
   startedSessions: {},
   runningSessions: {},
   interruptedSessions: {},
+  endpoints: [],
+  modelsByEndpoint: {},
+  defaultEndpointId: null,
+  endpointsLoaded: false,
 
   selectSession: (id) => {
     set((s) => ({
@@ -146,7 +185,17 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusGroup: (id) => set({ focusedGroupId: id }),
 
   createSession: (cwd) => {
-    const { sessions, groups, focusedGroupId, activeId, model, recentProjects } = get();
+    const {
+      sessions,
+      groups,
+      focusedGroupId,
+      activeId,
+      model,
+      recentProjects,
+      defaultEndpointId,
+      modelsByEndpoint,
+      endpoints,
+    } = get();
     const isUsable = (gid: string | null | undefined) => {
       if (!gid) return false;
       const g = groups.find((x) => x.id === gid);
@@ -160,14 +209,23 @@ export const useStore = create<State & Actions>((set, get) => ({
       : firstUsableGroupId(groups);
     const id = nextId('s');
     const defaultCwd = recentProjects[0]?.path ?? '~';
+    const endpointId =
+      defaultEndpointId ?? endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id;
+    // Pick a sensible initial model: global `model` if set, else the default
+    // endpoint's first discovered model, else empty (user picks on first send).
+    let initialModel = model;
+    if (!initialModel && endpointId) {
+      initialModel = modelsByEndpoint[endpointId]?.[0]?.modelId ?? '';
+    }
     const newSession: Session = {
       id,
       name: 'New session',
       state: 'idle',
       cwd: cwd ?? defaultCwd,
-      model,
+      model: initialModel,
       groupId: targetGroupId,
-      agentType: 'claude-code'
+      agentType: 'claude-code',
+      endpointId,
     };
     set({
       sessions: [newSession, ...sessions],
@@ -183,16 +241,23 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId }) => {
-    const { sessions, model } = get();
+    const { sessions, model, defaultEndpointId, endpoints, modelsByEndpoint } = get();
     const id = nextId('s');
+    const endpointId =
+      defaultEndpointId ?? endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id;
+    let initialModel = model;
+    if (!initialModel && endpointId) {
+      initialModel = modelsByEndpoint[endpointId]?.[0]?.modelId ?? '';
+    }
     const imported: Session = {
       id,
       name,
       state: 'idle',
       cwd,
-      model,
+      model: initialModel,
       groupId,
       agentType: 'claude-code',
+      endpointId,
       resumeSessionId
     };
     set({ sessions: [imported, ...sessions], activeId: id, focusedGroupId: null });
@@ -276,11 +341,16 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   setModel: (model) => {
-    set({ model });
+    set((s) => ({
+      model,
+      sessions: s.sessions.map((x) => (x.id === s.activeId ? { ...x, model } : x))
+    }));
     const api = window.agentory;
     if (!api) return;
-    const started = Object.keys(get().startedSessions);
-    for (const id of started) void api.agentSetModel(id, model);
+    const activeId = get().activeId;
+    if (activeId && get().startedSessions[activeId]) {
+      void api.agentSetModel(activeId, model);
+    }
   },
   setPermission: (permission) => {
     set({ permission });
@@ -520,6 +590,67 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
     });
     void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
+  },
+
+  setEndpoints: (list) => set({ endpoints: list }),
+  setModelsForEndpoint: (endpointId, models) =>
+    set((s) => ({ modelsByEndpoint: { ...s.modelsByEndpoint, [endpointId]: models } })),
+  setDefaultEndpointId: (id) => set({ defaultEndpointId: id }),
+
+  reloadEndpoints: async () => {
+    const api = window.agentory;
+    if (!api) return;
+    const all = await api.models.listAll();
+    const endpoints: Endpoint[] = all.map((e) => ({
+      id: e.id,
+      name: e.name,
+      baseUrl: e.baseUrl,
+      kind: e.kind,
+      isDefault: e.isDefault,
+      lastStatus: e.lastStatus,
+      lastError: e.lastError,
+      lastRefreshedAt: e.lastRefreshedAt,
+      createdAt: e.createdAt,
+      updatedAt: e.updatedAt
+    }));
+    const modelsByEndpoint: Record<string, ModelInfo[]> = {};
+    for (const e of all) modelsByEndpoint[e.id] = e.models;
+    set((s) => {
+      const currentDefault = s.defaultEndpointId;
+      const stillExists = currentDefault && endpoints.some((e) => e.id === currentDefault);
+      const nextDefault = stillExists
+        ? currentDefault
+        : endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id ?? null;
+      return {
+        endpoints,
+        modelsByEndpoint,
+        defaultEndpointId: nextDefault,
+        endpointsLoaded: true
+      };
+    });
+  },
+
+  refreshEndpointModels: async (endpointId) => {
+    const api = window.agentory;
+    if (!api) return { ok: false, error: 'IPC unavailable' };
+    const res = await api.endpoints.refreshModels(endpointId);
+    // Re-read from DB regardless of outcome so last_status / last_error land.
+    await get().reloadEndpoints();
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
+  },
+
+  refreshAllEndpointModels: async () => {
+    const api = window.agentory;
+    if (!api) return;
+    const list = get().endpoints;
+    for (const e of list) {
+      // Don't thrash: refresh only if never refreshed OR older than 24h.
+      const stale =
+        !e.lastRefreshedAt || Date.now() - e.lastRefreshedAt > 24 * 60 * 60 * 1000;
+      if (!stale) continue;
+      await api.endpoints.refreshModels(e.id);
+    }
+    await get().reloadEndpoints();
   }
 }));
 
@@ -541,7 +672,8 @@ export async function hydrateStore(): Promise<void> {
       fontSize: persisted.fontSize ?? 'md',
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
-      watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) }
+      watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) },
+      defaultEndpointId: persisted.defaultEndpointId ?? null
     });
   }
   hydrated = true;
@@ -549,6 +681,15 @@ export async function hydrateStore(): Promise<void> {
   // history immediately on boot, not on the next click.
   const active = useStore.getState().activeId;
   if (active) void useStore.getState().loadMessages(active);
+
+  // Load endpoints + models from the main process. Keeps the IPC round-trip
+  // off the critical path for reading persisted state, but still runs before
+  // the first createSession / send.
+  await useStore.getState().reloadEndpoints();
+  // Auto-refresh stale endpoints opportunistically. Don't block hydration on
+  // network — fire-and-forget.
+  void useStore.getState().refreshAllEndpointModels();
+
   // After (potential) hydration, subscribe to write-through.
   useStore.subscribe((s) => {
     const snapshot: PersistedState = {
@@ -563,7 +704,8 @@ export async function hydrateStore(): Promise<void> {
       fontSize: s.fontSize,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
-      watchdog: s.watchdog
+      watchdog: s.watchdog,
+      defaultEndpointId: s.defaultEndpointId
     };
     schedulePersist(snapshot);
   });
