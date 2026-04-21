@@ -121,7 +121,18 @@ function ToolBlock({
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
   return (
-    <div className="font-mono text-sm">
+    <div
+      className={
+        'font-mono text-sm ' +
+        (isError
+          ? 'relative rounded-sm border border-state-error/40 bg-state-error-soft/50 pl-3 pr-2 py-1 my-0.5'
+          : '')
+      }
+      role={isError ? 'alert' : undefined}
+    >
+      {isError && (
+        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-error rounded-l-sm" />
+      )}
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
@@ -134,21 +145,32 @@ function ToolBlock({
             transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
             className="inline-flex"
           >
-            <ChevronRight size={11} className="stroke-[1.75] -ml-px" />
+            <ChevronRight
+              size={11}
+              className={'stroke-[1.75] -ml-px ' + (isError ? 'text-state-error' : '')}
+            />
           </motion.span>
         </span>
-        <span className="min-w-0 truncate">
+        <span className="min-w-0 truncate flex items-baseline gap-1.5">
+          {isError && (
+            <AlertCircle
+              size={12}
+              className="text-state-error self-center shrink-0"
+              aria-label="tool failed"
+            />
+          )}
           <span
             className={
               isError
-                ? 'text-state-error group-hover:text-state-error transition-colors duration-150 ease-out'
+                ? 'text-state-error group-hover:text-state-error transition-colors duration-150 ease-out font-semibold'
                 : 'text-fg-secondary group-hover:text-fg-primary transition-colors duration-150 ease-out'
             }
           >
             {name}
           </span>
-          <span className="text-fg-tertiary text-xs">({brief})</span>
-          {!hasResult && <span className="text-fg-tertiary text-xs ml-2">…</span>}
+          <span className={isError ? 'text-state-error/80 text-xs' : 'text-fg-tertiary text-xs'}>({brief})</span>
+          {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">failed</span>}
+          {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
         </span>
       </button>
       <AnimatePresence initial={false}>
