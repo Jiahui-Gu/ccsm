@@ -1,0 +1,2 @@
+{"type":"system","subtype":"compact_boundary","session_id":"01HZJ1234ABCDXYZ","uuid":"a8d9c1e6-2f10-4f3a-8b9b-aa12cd34ef56","compact_metadata":{"trigger":"auto","pre_tokens":182340,"post_tokens":54210,"duration_ms":1820}}
+{"type":"system","subtype":"compact_boundary","session_id":"01HZJ1234ABCDXYZ","uuid":"b9e0d2f7-3021-4f4b-9caa-bb23de45f067","compact_metadata":{"trigger":"manual","pre_tokens":98700,"post_tokens":21450,"duration_ms":960}}
