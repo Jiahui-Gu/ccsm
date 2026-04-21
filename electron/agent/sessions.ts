@@ -1,6 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import type { PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { spawnClaude, type ClaudeProcess, type PermissionMode as CliPermissionMode } from './claude-spawner';
 import { splitNDJSON } from './ndjson-splitter';
 import { parseStreamJSONLine } from './stream-json-parser';
@@ -11,6 +10,16 @@ import {
   type CanUseToolDecision,
   type ParsedStreamEvent,
 } from './control-rpc';
+
+// Permission mode accepted across the IPC boundary. The renderer translates
+// its UI-level modes (`plan`/`ask`/`auto`/`yolo`) via `toSdkPermissionMode`
+// in `src/agent/permission.ts` before calling agent:start / set-permission.
+// We still accept SDK-only legacy modes here so an older renderer build
+// doesn't break the spawner; unknown modes coerce to `'default'`.
+export type PermissionMode = CliPermissionMode | 'dontAsk' | 'auto';
+
+// IPC payload mirrors the on-wire stream-json events from claude.exe stdout.
+export type AgentMessage = ClaudeStreamEvent;
 
 function resolveCwd(cwd: string): string {
   if (cwd === '~') return os.homedir();
@@ -33,7 +42,7 @@ function resolveConfigDir(explicit: string | undefined): string {
 }
 
 /**
- * SDK's PermissionMode includes UI-only modes (`'dontAsk'`, `'auto'`) that the
+ * `PermissionMode` includes UI-only modes (`'dontAsk'`, `'auto'`) that the
  * claude.exe CLI doesn't accept. Drop them to `'default'` rather than passing
  * an invalid value to the spawner.
  */
@@ -59,7 +68,7 @@ export type StartOptions = {
   configDir?: string;
 };
 
-export type EventHandler = (msg: SDKMessage) => void;
+export type EventHandler = (msg: AgentMessage) => void;
 export type ExitHandler = (info: { error?: string }) => void;
 export type PermissionRequestHandler = (req: {
   requestId: string;
@@ -178,12 +187,9 @@ export class SessionRunner {
       this.rpc?.handleIncoming(event as unknown as ParsedStreamEvent);
       return;
     }
-    // Forward everything else to the consumer. The on-wire shape of the
-    // remaining frames (system / assistant / user / result / stream_event /
-    // agent_metadata) is structurally compatible with what sdk-to-blocks reads
-    // off `SDKMessage` — the cast bridges the two type universes until batch 3
-    // swaps callers over to ClaudeStreamEvent directly.
-    this.onEvent(event as unknown as SDKMessage);
+    // Forward everything else to the consumer as a typed stream-json event.
+    // The renderer's stream-to-blocks consumes this directly.
+    this.onEvent(event);
   }
 
   private handleCanUseTool(

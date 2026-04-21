@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode, AgentMessage } from './agent/sessions';
 
 type StartOpts = {
   cwd: string;
@@ -10,7 +10,7 @@ type StartOpts = {
 
 type StartResult = { ok: true } | { ok: false; error: string };
 
-type AgentEvent = { sessionId: string; message: SDKMessage };
+type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
 type AgentPermissionRequest = {
   sessionId: string;

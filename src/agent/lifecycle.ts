@@ -1,5 +1,5 @@
 import { useStore } from '../stores/store';
-import { sdkMessageToTranslation, PartialAssistantStreamer } from './sdk-to-blocks';
+import { streamEventToTranslation, PartialAssistantStreamer } from './stream-to-blocks';
 import type { MessageBlock, QuestionSpec } from '../types';
 
 let installed = false;
@@ -180,7 +180,7 @@ export function subscribeAgentEvents(): void {
       }
       return;
     }
-    const { append, toolResults } = sdkMessageToTranslation(e.message);
+    const { append, toolResults } = streamEventToTranslation(e.message);
     const store = useStore.getState();
     if (append.length > 0) store.appendBlocks(e.sessionId, append);
     for (const tr of toolResults) {
