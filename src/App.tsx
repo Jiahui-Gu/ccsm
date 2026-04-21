@@ -4,6 +4,7 @@ import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
 import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
+import { AppShell } from './components/AppShell';
 import { ChatStream } from './components/ChatStream';
 import { InputBar } from './components/InputBar';
 import { StatusBar } from './components/StatusBar';
@@ -15,6 +16,7 @@ import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
 import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
 import { useStore } from './stores/store';
+import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
 import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
@@ -43,7 +45,8 @@ export default function App() {
   const setPermission = useStore((s) => s.setPermission);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
-  const fontSize = useStore((s) => s.fontSize);
+  const fontSizePx = useStore((s) => s.fontSizePx);
+  const density = useStore((s) => s.density);
   const tutorialSeen = useStore((s) => s.tutorialSeen);
   const markTutorialSeen = useStore((s) => s.markTutorialSeen);
   const checkCli = useStore((s) => s.checkCli);
@@ -52,13 +55,22 @@ export default function App() {
     void checkCli();
   }, [checkCli]);
 
+  // Theme application — reactive to both the user's explicit choice AND, when
+  // the choice is `system`, the OS theme. We set BOTH `.dark` (historical,
+  // still referenced by legacy Tailwind variants) AND `.theme-light` (new,
+  // drives the light palette overrides in global.css). The mutual exclusion
+  // keeps the `html.theme-light` selector unambiguous — no `.dark.theme-light`
+  // combo will ever exist.
   useEffect(() => {
     const root = document.documentElement;
     const apply = () => {
-      const dark =
-        theme === 'dark' ||
-        (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-      root.classList.toggle('dark', dark);
+      const osPrefersDark =
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const effective = resolveEffectiveTheme(theme, osPrefersDark);
+      root.classList.toggle('dark', effective === 'dark');
+      root.classList.toggle('theme-light', effective === 'light');
+      root.dataset.theme = effective;
     };
     apply();
     if (theme !== 'system') return;
@@ -67,10 +79,22 @@ export default function App() {
     return () => mq.removeEventListener('change', apply);
   }, [theme]);
 
+  // Font size slider applies via CSS variable on <html>. Child text utilities
+  // honor this transitively through `font-size: var(--app-font-size)` on
+  // html/body. Explicit px overrides in components (e.g. text-[11px] labels)
+  // intentionally do NOT scale — those are information-density callouts the
+  // user's "body font size" shouldn't affect.
   useEffect(() => {
-    const px = fontSize === 'sm' ? '12px' : fontSize === 'lg' ? '14px' : '13px';
-    document.documentElement.style.setProperty('--app-font-size', px);
-  }, [fontSize]);
+    document.documentElement.style.setProperty('--app-font-size', `${fontSizePx}px`);
+  }, [fontSizePx]);
+
+  // Density class on <html>. Components consume `--density-scale` via
+  // .density-row / inline calc() — see global.css.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove('density-compact', 'density-normal', 'density-comfortable');
+    root.classList.add(`density-${density}`);
+  }, [density]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
@@ -126,61 +150,65 @@ export default function App() {
           <PersistErrorBridge />
           <BackgroundWaitingBridge />
           <UpdateDownloadedBridge />
-          <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
-            <Sidebar
-              onCreateSession={(cwd) => createSession(cwd)}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onOpenPalette={() => setPaletteOpen(true)}
-              activeSessionId={activeId}
-              focusedGroupId={focusedGroupId}
-              onSelectSession={selectSession}
-              onFocusGroup={focusGroup}
-              sessions={sessions}
-              onMoveSession={moveSession}
-            />
-            <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
-              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
-                <WindowControls />
-              </DragRegion>
-              <ClaudeCliMissingBanner />
-              <div className="flex-1 flex items-center justify-center min-h-0">
-                {tutorialSeen ? (
-                  <div className="flex items-center gap-3">
-                    <Button
-                      variant="secondary"
-                      size="md"
-                      onClick={() => createSession(null)}
-                      className="w-44 justify-center"
-                    >
-                      <Plus size={14} className="stroke-[2]" />
-                      <span>New Session</span>
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      size="md"
-                      onClick={() => setImportOpen(true)}
-                      className="w-44 justify-center"
-                    >
-                      <Download size={14} className="stroke-[2]" />
-                      <span>Import Session</span>
-                    </Button>
-                  </div>
-                ) : (
-                  <Tutorial
-                    onNewSession={() => {
-                      markTutorialSeen();
-                      createSession(null);
-                    }}
-                    onImport={() => {
-                      markTutorialSeen();
-                      setImportOpen(true);
-                    }}
-                    onSkip={markTutorialSeen}
-                  />
-                )}
-              </div>
-            </main>
-          </div>
+          <AppShell
+            sidebar={
+              <Sidebar
+                onCreateSession={(cwd) => createSession(cwd)}
+                onOpenSettings={() => setSettingsOpen(true)}
+                onOpenPalette={() => setPaletteOpen(true)}
+                activeSessionId={activeId}
+                focusedGroupId={focusedGroupId}
+                onSelectSession={selectSession}
+                onFocusGroup={focusGroup}
+                sessions={sessions}
+                onMoveSession={moveSession}
+              />
+            }
+            main={
+              <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
+                <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
+                  <WindowControls />
+                </DragRegion>
+                <ClaudeCliMissingBanner />
+                <div className="flex-1 flex items-center justify-center min-h-0">
+                  {tutorialSeen ? (
+                    <div className="flex items-center gap-3">
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        onClick={() => createSession(null)}
+                        className="w-44 justify-center"
+                      >
+                        <Plus size={14} className="stroke-[2]" />
+                        <span>New Session</span>
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        onClick={() => setImportOpen(true)}
+                        className="w-44 justify-center"
+                      >
+                        <Download size={14} className="stroke-[2]" />
+                        <span>Import Session</span>
+                      </Button>
+                    </div>
+                  ) : (
+                    <Tutorial
+                      onNewSession={() => {
+                        markTutorialSeen();
+                        createSession(null);
+                      }}
+                      onImport={() => {
+                        markTutorialSeen();
+                        setImportOpen(true);
+                      }}
+                      onSkip={markTutorialSeen}
+                    />
+                  )}
+                </div>
+              </main>
+            }
+          />
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
           <ClaudeCliMissingDialog />
@@ -204,46 +232,50 @@ export default function App() {
         <PersistErrorBridge />
         <BackgroundWaitingBridge />
         <UpdateDownloadedBridge />
-        <div className="app-shell flex h-full w-full bg-bg-app text-fg-primary">
-          <Sidebar
-            onCreateSession={(cwd) => createSession(cwd)}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onOpenPalette={() => setPaletteOpen(true)}
-            activeSessionId={activeId}
-            focusedGroupId={focusedGroupId}
-            onSelectSession={selectSession}
-            onFocusGroup={focusGroup}
-            sessions={sessions}
-            onMoveSession={moveSession}
-          />
-          <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
-            <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
-              <WindowControls />
-            </DragRegion>
-            <ClaudeCliMissingBanner />
-            <ChatStream />
-            <StatusBar
-              cwd={active.cwd}
-              model={active.model || model}
-              permission={permission}
-              onChangeCwd={async (p) => {
-                let next = p;
-                if (next === null) {
-                  next = (await window.agentory?.pickDirectory()) ?? null;
-                }
-                if (!next) return;
-                changeCwd(next);
-                pushRecentProject(next);
-              }}
-              onChangeModel={setModel}
-              onChangePermission={setPermission}
+        <AppShell
+          sidebar={
+            <Sidebar
+              onCreateSession={(cwd) => createSession(cwd)}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenPalette={() => setPaletteOpen(true)}
+              activeSessionId={activeId}
+              focusedGroupId={focusedGroupId}
+              onSelectSession={selectSession}
+              onFocusGroup={focusGroup}
+              sessions={sessions}
+              onMoveSession={moveSession}
             />
-            <InputBar sessionId={active.id} />
-            <div className="px-4 pb-2 font-mono text-xs text-fg-disabled select-none">
-              <span>Enter send · Shift+Enter newline</span>
-            </div>
-          </main>
-        </div>
+          }
+          main={
+            <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
+              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
+                <WindowControls />
+              </DragRegion>
+              <ClaudeCliMissingBanner />
+              <ChatStream />
+              <StatusBar
+                cwd={active.cwd}
+                model={active.model || model}
+                permission={permission}
+                onChangeCwd={async (p) => {
+                  let next = p;
+                  if (next === null) {
+                    next = (await window.agentory?.pickDirectory()) ?? null;
+                  }
+                  if (!next) return;
+                  changeCwd(next);
+                  pushRecentProject(next);
+                }}
+                onChangeModel={setModel}
+                onChangePermission={setPermission}
+              />
+              <InputBar sessionId={active.id} />
+              <div className="px-4 pb-2 font-mono text-xs text-fg-disabled select-none">
+                <span>Enter send · Shift+Enter newline</span>
+              </div>
+            </main>
+          }
+        />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <ClaudeCliMissingDialog />

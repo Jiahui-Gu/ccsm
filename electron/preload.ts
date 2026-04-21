@@ -158,6 +158,21 @@ const api = {
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
   > => ipcRenderer.invoke('import:scan'),
 
+  memory: {
+    read: (p: string): Promise<
+      | { ok: true; content: string; exists: boolean }
+      | { ok: false; error: string }
+    > => ipcRenderer.invoke('memory:read', p),
+    write: (p: string, content: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('memory:write', p, content),
+    exists: (p: string): Promise<boolean> => ipcRenderer.invoke('memory:exists', p),
+    /** Returns the absolute path to ~/.claude/CLAUDE.md (resolved in main). */
+    userPath: (): Promise<string> => ipcRenderer.invoke('memory:userPath'),
+    /** Returns <cwd>/CLAUDE.md, or null if cwd is empty / not absolute. */
+    projectPath: (cwd: string): Promise<string | null> =>
+      ipcRenderer.invoke('memory:projectPath', cwd),
+  },
+
   notify: (payload: {
     sessionId: string;
     title: string;

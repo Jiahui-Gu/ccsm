@@ -79,7 +79,7 @@ export function handleCost(ctx: SlashCommandContext): void {
 
 // ---------- /config ----------
 export function handleConfig(_ctx: SlashCommandContext): void {
-  openSettings('general');
+  openSettings('appearance');
 }
 
 // ---------- /model ----------

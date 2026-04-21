@@ -7,10 +7,12 @@
 // and assert on emitted events.
 
 export type SettingsTab =
-  | 'general'
+  | 'appearance'
+  | 'memory'
   | 'notifications'
   | 'endpoints'
   | 'autopilot'
+  | 'permissions'
   | 'account'
   | 'data'
   | 'shortcuts'

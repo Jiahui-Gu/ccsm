@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/*
+  Tokens live in @theme so Tailwind's v4 resolver picks them up. These are the
+  DARK palette (the historical default). The LIGHT palette is applied by
+  overriding the same CSS custom properties inside `html.theme-light` below —
+  every `bg-bg-panel`, `text-fg-primary`, etc. Tailwind utility just resolves
+  to the active value, no component-level branching needed.
+*/
 @theme {
   /* Solid surfaces — depth comes from inset highlights + drop shadows,
      not transparency. Order: app < sidebar < panel < elevated. */
@@ -130,12 +137,159 @@ html, body, #root {
   background: var(--color-bg-app);
   color: var(--color-fg-primary);
   font-family: var(--font-sans);
-  font-size: var(--text-base);
+  /* --app-font-size is bumped by the Appearance settings slider (12–16px).
+     Using the token via CSS var means every `text-*` utility scales from the
+     root — if you need an override (e.g. a small meta label), use explicit
+     px in the component. Default 14 matches the legacy `md` stop. */
+  font-size: var(--app-font-size, 14px);
   line-height: var(--text-base--line-height);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow: hidden;
+}
+
+/*
+  Density scale. Multiplies padding / row heights in density-aware utilities
+  (see `.density-row` below). The three stops are intentionally narrow —
+  beyond ±15% the sidebar reads as broken, not "cozy". Applied to the
+  <html> element via JS based on user preference.
+*/
+html {
+  --density-scale: 1;
+}
+html.density-compact     { --density-scale: 0.88; }
+html.density-normal      { --density-scale: 1; }
+html.density-comfortable { --density-scale: 1.15; }
+
+/*
+  LIGHT palette.
+
+  This is NOT a mechanical inversion — a naive `1 - L` recipe produces a
+  glaring, tiring light mode. Instead we rebalance:
+    - Surfaces spread less in L than dark (humans see more L steps in the
+      upper range, so we crush the range to keep hierarchy without yelling).
+    - Borders tone down — pure black hairlines look dirty at 14px font size.
+    - Accent ring pulled down in L for contrast against light surfaces; hue
+      kept at 215 for visual identity continuity.
+    - Drop shadows slightly warmer (≈60° hue) so the app reads as "paper on
+      a desk" rather than "plastic". Warmth is Apple's cue for "lift".
+*/
+html.theme-light {
+  --color-bg-app: oklch(0.985 0.002 240);
+  --color-bg-sidebar: oklch(0.965 0.003 240);
+  --color-bg-panel: oklch(0.995 0.001 240);
+  --color-bg-elevated: oklch(0.975 0.003 240);
+  --color-bg-hover: oklch(0.935 0.004 240);
+  --color-bg-active: oklch(0.895 0.006 240);
+
+  --color-fg-primary: oklch(0.22 0.01 240);
+  --color-fg-secondary: oklch(0.36 0.008 240);
+  --color-fg-tertiary: oklch(0.48 0.006 240);
+  --color-fg-disabled: oklch(0.62 0.004 240);
+  --color-fg-faint: oklch(0.70 0.003 240);
+
+  --color-border-subtle: oklch(0.90 0.003 240);
+  --color-border-default: oklch(0.82 0.004 240);
+  --color-border-strong: oklch(0.70 0.005 240);
+
+  --color-accent: oklch(0.58 0.14 225);
+  --color-accent-quiet: oklch(0.62 0.08 225);
+  --color-accent-fg: oklch(0.99 0 0);
+  --color-accent-soft: oklch(0.58 0.14 225 / 0.14);
+
+  --color-state-running: oklch(0.55 0.14 155);
+  --color-state-waiting: oklch(0.58 0.12 75);
+  --color-state-parked: var(--color-fg-tertiary);
+  --color-state-success: oklch(0.55 0.14 155);
+  --color-state-warning: oklch(0.62 0.15 75);
+  --color-state-error: oklch(0.52 0.21 25);
+  --color-state-error-soft: oklch(0.52 0.21 25 / 0.10);
+  --color-state-error-strong: oklch(0.46 0.22 25);
+  --color-state-error-fg: oklch(0.99 0 0);
+
+  /* Inner highlight in dark = "light from above"; in light the analogue is
+     a soft warm inset shadow on the top edge, not a highlight. */
+  --surface-highlight: oklch(0 0 0 / 0.03);
+  --surface-shadow:
+    0 1px 2px oklch(0 0 0 / 0.06),
+    0 4px 16px oklch(0.6 0.02 60 / 0.08);
+
+  --color-bg-app-foreground: var(--color-fg-primary);
+  --color-bg-panel-foreground: var(--color-fg-primary);
+  --color-bg-elevated-foreground: var(--color-fg-primary);
+  --color-bg-hover-foreground: var(--color-fg-primary);
+
+  --color-popover: oklch(0.995 0.001 240);
+  --color-popover-foreground: var(--color-fg-primary);
+  --color-popover-border: var(--color-border-default);
+
+  --color-card: var(--color-bg-panel);
+  --color-card-foreground: var(--color-fg-primary);
+  --color-card-border: var(--color-border-subtle);
+
+  --color-status-success: oklch(0.55 0.14 155);
+  --color-status-success-foreground: oklch(0.48 0.14 155);
+  --color-status-success-muted: oklch(0.55 0.14 155 / 0.10);
+  --color-status-success-border: oklch(0.55 0.14 155 / 0.28);
+
+  --color-status-warning: oklch(0.62 0.15 75);
+  --color-status-warning-foreground: oklch(0.52 0.15 75);
+  --color-status-warning-muted: oklch(0.62 0.15 75 / 0.10);
+  --color-status-warning-border: oklch(0.62 0.15 75 / 0.28);
+
+  --color-status-error: oklch(0.52 0.21 25);
+  --color-status-error-foreground: oklch(0.48 0.21 25);
+  --color-status-error-muted: oklch(0.52 0.21 25 / 0.10);
+  --color-status-error-border: oklch(0.52 0.21 25 / 0.30);
+
+  --color-status-info: oklch(0.58 0.14 225);
+  --color-status-info-foreground: oklch(0.50 0.14 225);
+  --color-status-info-muted: oklch(0.58 0.14 225 / 0.10);
+  --color-status-info-border: oklch(0.58 0.14 225 / 0.28);
+
+  /* Terminal stays dark even in light mode — shell output is easier to
+     parse on dark, and every major terminal emulator ships dark by default.
+     Inverting it would break mental model + hurt ANSI color contrast. */
+  --color-terminal-bg: oklch(0.18 0.004 240);
+  --color-terminal-foreground: oklch(0.90 0.006 106);
+  --color-terminal-muted: oklch(0.58 0.01 58);
+  --color-terminal-border: oklch(0.30 0.005 240);
+  --color-terminal-accent: oklch(0.60 0.17 155);
+  --color-terminal-hover-bg: oklch(0.24 0.005 240);
+}
+
+html.theme-light ::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-fg-primary);
+}
+
+/* Light-mode label overrides — the hard-coded oklch() grays in the type
+   utilities below were authored for the dark palette. Remap them here so
+   text-label-* reads correctly on light surfaces too. */
+html.theme-light .text-label-section,
+html.theme-light .text-label-meta {
+  color: oklch(0.48 0.006 240);
+}
+html.theme-light .text-label-faint {
+  color: oklch(0.62 0.004 240);
+}
+html.theme-light .text-body-row {
+  color: oklch(0.36 0.008 240);
+}
+html.theme-light .text-body-emphasis {
+  color: oklch(0.22 0.01 240);
+}
+
+/* Light-mode scrollbar — the dark palette's border tokens are too dark to
+   read as "scrollbar" on a near-white surface. */
+html.theme-light ::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0.004 240);
+  background-clip: padding-box;
+}
+html.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.68 0.004 240);
+  background-clip: padding-box;
 }
 
 /* Inter stylistic sets only on opt-in Latin contexts. Applying this to a
@@ -346,4 +500,50 @@ html, body, #root {
   background: var(--color-border-strong);
   background-clip: padding-box;
   border: 2px solid transparent;
+}
+
+/*
+  Pane resize handle for react-resizable-panels' <Separator>.
+
+  Spec: 4px-wide invisible hit area, 1px visible divider that only appears on
+  hover / drag / focus — matches VS Code, Linear, Figma. We render it as a
+  4px-flex element with a 1px inner bar that animates opacity. The outer
+  element IS the cursor hit target, the inner is purely decorative.
+
+  Drag state: :active covers pointerdown-drag; the library itself doesn't add
+  a distinguishing attribute across versions, so CSS pseudo-classes are our
+  single source of truth.
+*/
+.pane-resize-handle {
+  position: relative;
+  flex: 0 0 4px;
+  width: 4px;
+  cursor: col-resize;
+  outline: none;
+  z-index: 10;
+  user-select: none;
+  touch-action: none;
+  transition: background-color 150ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1));
+}
+.pane-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  background: var(--color-border-default);
+  opacity: 0;
+  transition: opacity 180ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1)),
+              background-color 180ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1));
+  pointer-events: none;
+}
+.pane-resize-handle:hover::after,
+.pane-resize-handle:active::after,
+.pane-resize-handle:focus-visible::after {
+  opacity: 1;
+}
+.pane-resize-handle:active::after,
+.pane-resize-handle:focus-visible::after {
+  background: var(--color-accent);
 }

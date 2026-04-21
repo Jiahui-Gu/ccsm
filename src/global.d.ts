@@ -134,6 +134,19 @@ declare global {
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
       >;
 
+      memory: {
+        read: (p: string) => Promise<
+          | { ok: true; content: string; exists: boolean }
+          | { ok: false; error: string }
+        >;
+        write: (p: string, content: string) => Promise<
+          { ok: true } | { ok: false; error: string }
+        >;
+        exists: (p: string) => Promise<boolean>;
+        userPath: () => Promise<string>;
+        projectPath: (cwd: string) => Promise<string | null>;
+      };
+
       notify: (payload: {
         sessionId: string;
         title: string;
