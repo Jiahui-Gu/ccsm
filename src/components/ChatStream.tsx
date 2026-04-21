@@ -18,7 +18,7 @@ function UserBlock({ text }: { text: string }) {
   );
 }
 
-function AssistantBlock({ text }: { text: string }) {
+function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
     <div className="flex gap-3 text-base">
       <span className="text-fg-secondary select-none w-3 shrink-0 font-mono font-semibold leading-[22px]">●</span>
@@ -80,6 +80,12 @@ function AssistantBlock({ text }: { text: string }) {
         >
           {text}
         </ReactMarkdown>
+        {streaming && (
+          <span
+            aria-hidden
+            className="inline-block w-[7px] h-[14px] -mb-[2px] ml-0.5 bg-fg-primary/70 align-middle animate-pulse"
+          />
+        )}
       </div>
     </div>
   );
@@ -518,7 +524,7 @@ function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid:
     case 'user':
       return <UserBlock text={b.text} />;
     case 'assistant':
-      return <AssistantBlock text={b.text} />;
+      return <AssistantBlock text={b.text} streaming={b.streaming} />;
     case 'tool':
       return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} />;
     case 'todo':

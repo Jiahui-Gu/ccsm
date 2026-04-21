@@ -14,6 +14,57 @@ export type SdkTranslation = {
 
 const EMPTY: SdkTranslation = { append: [], toolResults: [] };
 
+// One chunk of streaming-text progress derived from a SDKPartialAssistantMessage.
+// `blockId` matches what assistantBlocks() will emit for the final assistant
+// message, so the eventual finalize replaces this streaming block by id.
+export type AssistantStreamPatch = {
+  blockId: string;
+  appendText: string;
+  done: boolean;
+};
+
+// Per-session streamer. Stateful because the wire protocol emits message_start
+// once (carrying message.id) and downstream content_block_delta events only
+// reference the index — we need to remember the current message.id to derive
+// stable block ids that match the final SDKAssistantMessage.
+export class PartialAssistantStreamer {
+  private currentMessageId: string | null = null;
+
+  consume(msg: any): AssistantStreamPatch | null {
+    const event = msg?.event;
+    if (!event || typeof event !== 'object') return null;
+    if (event.type === 'message_start') {
+      const id = event.message?.id;
+      this.currentMessageId = typeof id === 'string' ? id : null;
+      return null;
+    }
+    if (event.type === 'message_stop') {
+      this.currentMessageId = null;
+      return null;
+    }
+    if (!this.currentMessageId) return null;
+    if (event.type === 'content_block_delta') {
+      const d = event.delta;
+      if (!d || d.type !== 'text_delta') return null;
+      const text = typeof d.text === 'string' ? d.text : '';
+      if (!text) return null;
+      return {
+        blockId: `${this.currentMessageId}:c${event.index}`,
+        appendText: text,
+        done: false
+      };
+    }
+    if (event.type === 'content_block_stop') {
+      return {
+        blockId: `${this.currentMessageId}:c${event.index}`,
+        appendText: '',
+        done: true
+      };
+    }
+    return null;
+  }
+}
+
 export function sdkMessageToTranslation(msg: SDKMessage): SdkTranslation {
   switch (msg.type) {
     case 'assistant':
@@ -104,13 +155,19 @@ type AnyContent =
 
 function assistantBlocks(msg: any): MessageBlock[] {
   const out: MessageBlock[] = [];
-  const baseId = msg.uuid ?? msg.message?.id ?? cryptoRandom();
+  // Prefer the upstream message id so streamed deltas (keyed by message.id +
+  // content index) and the final assistant message's blocks share an id and
+  // coalesce in the store. Fall back to the SDK uuid only when the model
+  // payload didn't carry a message id (shouldn't happen for real responses).
+  const baseId = msg.message?.id ?? msg.uuid ?? cryptoRandom();
   const content: AnyContent[] = msg.message?.content ?? [];
-  let textIdx = 0;
   let toolIdx = 0;
-  for (const c of content) {
+  // Use the raw content-block index so streamed deltas (which carry the same
+  // index from the wire protocol) generate matching block ids.
+  for (let idx = 0; idx < content.length; idx++) {
+    const c = content[idx];
     if (c.type === 'text' && typeof (c as { text: string }).text === 'string') {
-      out.push({ kind: 'assistant', id: `${baseId}:t${textIdx++}`, text: (c as { text: string }).text });
+      out.push({ kind: 'assistant', id: `${baseId}:c${idx}`, text: (c as { text: string }).text });
     } else if (c.type === 'tool_use') {
       const tu = c as { id: string; name: string; input: unknown };
       if (tu.name === 'TodoWrite') {

@@ -170,7 +170,7 @@ describe('sdkMessageToTranslation', () => {
       })
     );
     expect(out.append).toEqual([
-      { kind: 'assistant', id: 'msg-1:t0', text: 'Sure, here is the plan.' }
+      { kind: 'assistant', id: 'msg-1:c0', text: 'Sure, here is the plan.' }
     ]);
   });
 

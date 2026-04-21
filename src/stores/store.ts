@@ -52,6 +52,7 @@ type Actions = {
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
+  streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
   setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
   markStarted: (sessionId: string) => void;
@@ -302,8 +303,50 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (blocks.length === 0) return;
     set((s) => {
       const prev = s.messagesBySession[sessionId] ?? [];
+      // Coalesce by id: if a block with the same id already exists (e.g. an
+      // assistant text block built up by streaming deltas), replace it in
+      // place with the finalized version rather than duplicating it.
+      let next = prev;
+      const toAppend: MessageBlock[] = [];
+      for (const b of blocks) {
+        const idx = next.findIndex((x) => x.id === b.id);
+        if (idx === -1) {
+          toAppend.push(b);
+        } else {
+          if (next === prev) next = prev.slice();
+          next[idx] = b;
+        }
+      }
+      if (toAppend.length === 0 && next === prev) return s;
+      const finalNext = toAppend.length > 0 ? [...next, ...toAppend] : next;
       return {
-        messagesBySession: { ...s.messagesBySession, [sessionId]: [...prev, ...blocks] }
+        messagesBySession: { ...s.messagesBySession, [sessionId]: finalNext }
+      };
+    });
+  },
+
+  streamAssistantText: (sessionId, blockId, appendText, done) => {
+    set((s) => {
+      const prev = s.messagesBySession[sessionId] ?? [];
+      const idx = prev.findIndex((b) => b.id === blockId);
+      if (idx === -1) {
+        // First delta for this content block — create it.
+        const block: MessageBlock = {
+          kind: 'assistant',
+          id: blockId,
+          text: appendText,
+          streaming: !done
+        };
+        return {
+          messagesBySession: { ...s.messagesBySession, [sessionId]: [...prev, block] }
+        };
+      }
+      const existing = prev[idx];
+      if (existing.kind !== 'assistant') return s;
+      const next = prev.slice();
+      next[idx] = { ...existing, text: existing.text + appendText, streaming: !done };
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
       };
     });
   },

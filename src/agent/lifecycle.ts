@@ -1,8 +1,18 @@
 import { useStore } from '../stores/store';
-import { sdkMessageToTranslation } from './sdk-to-blocks';
+import { sdkMessageToTranslation, PartialAssistantStreamer } from './sdk-to-blocks';
 import type { MessageBlock, QuestionSpec } from '../types';
 
 let installed = false;
+
+const streamers = new Map<string, PartialAssistantStreamer>();
+function streamerFor(sessionId: string): PartialAssistantStreamer {
+  let s = streamers.get(sessionId);
+  if (!s) {
+    s = new PartialAssistantStreamer();
+    streamers.set(sessionId, s);
+  }
+  return s;
+}
 
 type BackgroundWaitingHandler = (info: { sessionId: string; sessionName: string; prompt: string }) => void;
 let backgroundWaitingHandler: BackgroundWaitingHandler = () => {};
@@ -90,6 +100,16 @@ export function subscribeAgentEvents(): void {
   installed = true;
 
   api.onAgentEvent((e) => {
+    if (e.message.type === 'stream_event') {
+      const streamer = streamerFor(e.sessionId);
+      const patch = streamer.consume(e.message);
+      if (patch) {
+        useStore
+          .getState()
+          .streamAssistantText(e.sessionId, patch.blockId, patch.appendText, patch.done);
+      }
+      return;
+    }
     const { append, toolResults } = sdkMessageToTranslation(e.message);
     const store = useStore.getState();
     if (append.length > 0) store.appendBlocks(e.sessionId, append);
@@ -102,6 +122,7 @@ export function subscribeAgentEvents(): void {
   });
 
   api.onAgentExit((e) => {
+    streamers.delete(e.sessionId);
     const store = useStore.getState();
     store.setRunning(e.sessionId, false);
     if (!e.error) return;
