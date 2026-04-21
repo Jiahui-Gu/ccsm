@@ -8,6 +8,9 @@ import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
+import { FileTree } from './FileTree';
+
+const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
 function UserBlock({ text }: { text: string }) {
   return (
@@ -107,6 +110,7 @@ function ToolBlock({
   const [open, setOpen] = useState(false);
   const hasResult = typeof result === 'string';
   const diff = diffFromToolInput(name, input);
+  const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   return (
     <div className="font-mono text-sm">
       <button
@@ -150,6 +154,8 @@ function ToolBlock({
           >
             {diff ? (
               <DiffView diff={diff} />
+            ) : isFileTree ? (
+              <FileTree source={result as string} />
             ) : (
               <pre
                 className={`mt-1 ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${
