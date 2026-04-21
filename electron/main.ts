@@ -5,7 +5,7 @@ import { initDb, loadState, saveState, closeDb } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode } from './agent/sessions';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
