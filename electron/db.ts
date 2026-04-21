@@ -56,6 +56,17 @@ export function initDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
       ON endpoint_models(endpoint_id);
+
+    CREATE TABLE IF NOT EXISTS worktrees (
+      sessionId TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      baseRepo TEXT NOT NULL,
+      branch TEXT NOT NULL,
+      sourceBranch TEXT,
+      createdAt INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_worktrees_baseRepo ON worktrees(baseRepo);
   `);
   migrateEndpointDiscoveryColumns(db);
   return db;
@@ -148,6 +159,17 @@ export function __setDbForTests(instance: Database.Database | null): void {
       );
       CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
         ON endpoint_models(endpoint_id);
+
+      CREATE TABLE IF NOT EXISTS worktrees (
+        sessionId TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        baseRepo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        sourceBranch TEXT,
+        createdAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_worktrees_baseRepo ON worktrees(baseRepo);
     `);
     migrateEndpointDiscoveryColumns(instance);
   }
@@ -195,4 +217,62 @@ export function saveClaudeBinPath(value: string | null): void {
     return;
   }
   saveState(CLAUDE_BIN_PATH_KEY, value);
+}
+
+// ───────────────────────────── worktrees ──────────────────────────────────
+//
+// Per-session git worktree records. Consumed by WorktreeManager via the
+// storage adapter wired up in electron/main.ts. Schema lives in `initDb`
+// above; these helpers are just the CRUD surface so the manager doesn't
+// hand out raw SQL strings.
+
+export interface WorktreeRow {
+  sessionId: string;
+  name: string;
+  path: string;
+  baseRepo: string;
+  branch: string;
+  sourceBranch: string | null;
+  createdAt: number;
+}
+
+export function saveWorktree(row: WorktreeRow): void {
+  initDb()
+    .prepare(
+      `INSERT INTO worktrees (sessionId, name, path, baseRepo, branch, sourceBranch, createdAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(sessionId) DO UPDATE SET
+         name = excluded.name,
+         path = excluded.path,
+         baseRepo = excluded.baseRepo,
+         branch = excluded.branch,
+         sourceBranch = excluded.sourceBranch,
+         createdAt = excluded.createdAt`
+    )
+    .run(
+      row.sessionId,
+      row.name,
+      row.path,
+      row.baseRepo,
+      row.branch,
+      row.sourceBranch,
+      row.createdAt
+    );
+}
+
+export function loadWorktree(sessionId: string): WorktreeRow | null {
+  const row = initDb()
+    .prepare('SELECT * FROM worktrees WHERE sessionId = ?')
+    .get(sessionId) as WorktreeRow | undefined;
+  return row ?? null;
+}
+
+export function deleteWorktree(sessionId: string): void {
+  initDb().prepare('DELETE FROM worktrees WHERE sessionId = ?').run(sessionId);
+}
+
+export function listWorktreesDb(): WorktreeRow[] {
+  return initDb()
+    .prepare('SELECT * FROM worktrees ORDER BY createdAt ASC')
+    .all() as WorktreeRow[];
 }

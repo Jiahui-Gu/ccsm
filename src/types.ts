@@ -29,6 +29,16 @@ export interface Session {
   // passed to claude.exe via `--allowedTools` / `--disallowedTools`.
   // Omit to fall back to global rules untouched.
   permissionRules?: PermissionRules;
+  // ── Optional git-worktree binding ───────────────────────────────────────
+  // When `useWorktree` is true, the spawner asks WorktreeManager to create a
+  // disposable worktree for this session on first start, and tears it down
+  // on session close. The remaining fields are populated by the backend
+  // after creation; the renderer only sets `useWorktree` (and optionally
+  // `sourceBranch`) up front.
+  useWorktree?: boolean;
+  worktreePath?: string;
+  worktreeName?: string;
+  sourceBranch?: string;
 }
 
 // Fine-grained per-tool permission rules layered on top of `PermissionMode`.
