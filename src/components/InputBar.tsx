@@ -27,11 +27,42 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const setRunning = useStore((s) => s.setRunning);
   const resetWatchdogCount = useStore((s) => s.resetWatchdogCount);
   const markInterrupted = useStore((s) => s.markInterrupted);
+  const focusInputNonce = useStore((s) => s.focusInputNonce);
+  // True iff there's a pending permission/plan/question prompt for this
+  // session — those blocks auto-focus their own primary control (see the
+  // setTimeout(..., 150) in WaitingBlock/PlanBlock/QuestionBlock). We let
+  // them win and skip stealing focus into the textarea.
+  const hasPendingWaiting = useStore((s) =>
+    (s.messagesBySession[sessionId] ?? []).some((b) => b.kind === 'waiting')
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Skip the very first observation of focusInputNonce so app mount doesn't
+  // steal focus from wherever the user (or some other auto-focus) put it.
+  const focusNonceSeenRef = useRef<number | null>(null);
 
   React.useEffect(() => {
     setValue(draftCache.get(sessionId) ?? '');
   }, [sessionId]);
+
+  React.useEffect(() => {
+    if (focusNonceSeenRef.current === null) {
+      focusNonceSeenRef.current = focusInputNonce;
+      return;
+    }
+    if (focusNonceSeenRef.current === focusInputNonce) return;
+    focusNonceSeenRef.current = focusInputNonce;
+    if (hasPendingWaiting) return;
+    // Don't yank focus out of another text-entry surface the user is
+    // actively typing in (e.g. the inline-rename input on a session row,
+    // a settings dialog field, etc.). Sidebar clicks land focus on the
+    // session <li> (role="option"), which is fine to override.
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && ae !== textareaRef.current) {
+      const tag = ae.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || ae.isContentEditable) return;
+    }
+    textareaRef.current?.focus();
+  }, [focusInputNonce, hasPendingWaiting]);
 
   function update(next: string) {
     setValue(next);
