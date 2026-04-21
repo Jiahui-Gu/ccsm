@@ -436,10 +436,12 @@ function ShortcutsPane() {
 function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
   const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
+  const [autoCheck, setAutoCheck] = useState<boolean>(true);
 
   useEffect(() => {
     window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
     void window.agentory?.updatesStatus().then(setStatus).catch(() => {});
+    void window.agentory?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
     const off = window.agentory?.onUpdateStatus(setStatus);
     return () => off?.();
   }, []);
@@ -463,6 +465,14 @@ function UpdatesPane() {
     void window.agentory?.updatesInstall();
   }
 
+  async function onToggleAutoCheck(next: boolean) {
+    setAutoCheck(next);
+    if (window.agentory) {
+      const applied = await window.agentory.updatesSetAutoCheck(next);
+      setAutoCheck(applied);
+    }
+  }
+
   return (
     <>
       <Field label="Version">
@@ -470,6 +480,20 @@ function UpdatesPane() {
       </Field>
       <Field label="Status">
         <span className="text-sm text-fg-secondary font-mono">{describeStatus(status)}</span>
+      </Field>
+      <Field
+        label="Automatic checks"
+        hint="When on, Agentory checks GitHub for updates on launch and every 4 hours."
+      >
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={autoCheck}
+            onChange={(e) => void onToggleAutoCheck(e.target.checked)}
+            className="h-4 w-4 accent-accent"
+          />
+          <span className="text-sm text-fg-secondary">Check for updates automatically</span>
+        </label>
       </Field>
       <div className="flex gap-2">
         <Button variant="secondary" size="md" onClick={onCheck} disabled={!canCheck}>

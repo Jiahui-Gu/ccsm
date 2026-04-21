@@ -15,11 +15,76 @@ export type UpdateStatus =
 
 let lastStatus: UpdateStatus = { kind: 'idle' };
 let installed = false;
+let autoCheckEnabled = true;
+let periodicHandle: ReturnType<typeof setInterval> | null = null;
+
+// 4 hours. Electron-updater recommends not checking more often than hourly;
+// 4h is a reasonable default that keeps users on the latest signed build
+// without hammering GitHub releases.
+const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+// Named event channels — requested in the release infra spec in addition to
+// the aggregated `updates:status` channel. Keeping both channels is cheap and
+// makes renderer code (e.g. "show a toast on downloaded") trivial.
+const CHAN_AVAILABLE = 'update:available';
+const CHAN_DOWNLOADED = 'update:downloaded';
+const CHAN_ERROR = 'update:error';
+const CHAN_STATUS = 'updates:status';
+
+function sendAll(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, payload);
+  }
+}
 
 function broadcast(status: UpdateStatus): void {
   lastStatus = status;
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('updates:status', status);
+  sendAll(CHAN_STATUS, status);
+  // Fan out to the specific channels too so renderer listeners that only
+  // care about one transition don't have to switch on kind themselves.
+  if (status.kind === 'available') {
+    sendAll(CHAN_AVAILABLE, { version: status.version, releaseDate: status.releaseDate });
+  } else if (status.kind === 'downloaded') {
+    sendAll(CHAN_DOWNLOADED, { version: status.version });
+  } else if (status.kind === 'error') {
+    sendAll(CHAN_ERROR, { message: status.message });
+  }
+}
+
+/**
+ * Safe wrapper around autoUpdater.checkForUpdates() that handles the three
+ * common failure modes without crashing: not packaged (dev), network error,
+ * and missing update metadata (running a build before the first release).
+ */
+async function safeCheck(): Promise<void> {
+  if (!app.isPackaged) {
+    broadcast({ kind: 'not-available', version: app.getVersion() });
+    return;
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (e) {
+    broadcast({ kind: 'error', message: (e as Error).message });
+  }
+}
+
+function startPeriodicChecks(): void {
+  if (periodicHandle) return;
+  if (!autoCheckEnabled) return;
+  if (!app.isPackaged) return;
+  // Node's setInterval returns NodeJS.Timeout; Electron's `app` prevents
+  // premature quit while timers are pending. .unref() so it doesn't keep
+  // the event loop alive during shutdown.
+  periodicHandle = setInterval(() => {
+    void safeCheck();
+  }, CHECK_INTERVAL_MS);
+  (periodicHandle as unknown as { unref?: () => void }).unref?.();
+}
+
+function stopPeriodicChecks(): void {
+  if (periodicHandle) {
+    clearInterval(periodicHandle);
+    periodicHandle = null;
   }
 }
 
@@ -29,7 +94,7 @@ export function installUpdaterIpc(): void {
 
   // electron-updater is noisy by default; quiet it down — we surface state
   // through our own channel.
-  autoUpdater.autoDownload = false;
+  autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = null;
 
@@ -62,9 +127,6 @@ export function installUpdaterIpc(): void {
   ipcMain.handle('updates:status', () => lastStatus);
 
   ipcMain.handle('updates:check', async () => {
-    // In development the autoUpdater throws because there's no app-update.yml.
-    // Returning a synthetic "not-available" keeps the Settings UI behaving
-    // sanely without forcing the renderer to special-case dev mode.
     if (!app.isPackaged) {
       const status: UpdateStatus = { kind: 'not-available', version: app.getVersion() };
       broadcast(status);
@@ -72,9 +134,6 @@ export function installUpdaterIpc(): void {
     }
     try {
       const res = await autoUpdater.checkForUpdates();
-      // checkForUpdates resolves before update-available fires for the first
-      // time on a cold check; rely on the event broadcaster to push the real
-      // status. Returning lastStatus is best-effort.
       void res;
       return lastStatus;
     } catch (e) {
@@ -96,9 +155,33 @@ export function installUpdaterIpc(): void {
 
   ipcMain.handle('updates:install', () => {
     if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
-    // quitAndInstall: true (silent run-after install) is too aggressive for
-    // MVP — the user just clicked a button, they expect the install dialog.
+    // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
+    // on Windows (isSilent=false) and to relaunch after install on all OSes.
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
     return { ok: true as const };
   });
+
+  ipcMain.handle('updates:getAutoCheck', () => autoCheckEnabled);
+  ipcMain.handle('updates:setAutoCheck', (_e, enabled: boolean) => {
+    autoCheckEnabled = !!enabled;
+    if (autoCheckEnabled) {
+      startPeriodicChecks();
+      void safeCheck();
+    } else {
+      stopPeriodicChecks();
+    }
+    return autoCheckEnabled;
+  });
+
+  // Check once on ready + every 4h thereafter.
+  void safeCheck();
+  startPeriodicChecks();
+}
+
+// Exposed for tests — lets them reset module state between cases.
+export function __resetUpdaterForTests(): void {
+  installed = false;
+  autoCheckEnabled = true;
+  lastStatus = { kind: 'idle' };
+  stopPeriodicChecks();
 }

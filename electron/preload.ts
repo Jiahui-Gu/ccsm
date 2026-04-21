@@ -151,10 +151,31 @@ const api = {
     ipcRenderer.invoke('updates:download'),
   updatesInstall: (): Promise<{ ok: true } | { ok: false; reason: string }> =>
     ipcRenderer.invoke('updates:install'),
+  updatesGetAutoCheck: (): Promise<boolean> => ipcRenderer.invoke('updates:getAutoCheck'),
+  updatesSetAutoCheck: (enabled: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('updates:setAutoCheck', enabled),
   onUpdateStatus: (handler: (s: UpdateStatus) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
     ipcRenderer.on('updates:status', wrap);
     return () => ipcRenderer.removeListener('updates:status', wrap);
+  },
+  onUpdateAvailable: (
+    handler: (info: { version: string; releaseDate?: string }) => void
+  ): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: { version: string; releaseDate?: string }) =>
+      handler(payload);
+    ipcRenderer.on('update:available', wrap);
+    return () => ipcRenderer.removeListener('update:available', wrap);
+  },
+  onUpdateDownloaded: (handler: (info: { version: string }) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
+    ipcRenderer.on('update:downloaded', wrap);
+    return () => ipcRenderer.removeListener('update:downloaded', wrap);
+  },
+  onUpdateError: (handler: (info: { message: string }) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: { message: string }) => handler(payload);
+    ipcRenderer.on('update:error', wrap);
+    return () => ipcRenderer.removeListener('update:error', wrap);
   },
 
   window: {
