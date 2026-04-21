@@ -383,7 +383,6 @@ export class EndpointsManager {
    * Run the tiered discovery pipeline and upsert into `endpoint_models`.
    * Replaces the old single-call /v1/models implementation.
    */
-   */
   async refreshModels(
     endpointId: string
   ): Promise<
