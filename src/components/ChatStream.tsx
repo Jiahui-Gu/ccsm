@@ -1,10 +1,8 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, AlertCircle, ArrowDown, Check } from 'lucide-react';
+import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import * as RadioGroup from '@radix-ui/react-radio-group';
-import * as Checkbox from '@radix-ui/react-checkbox';
 import type { MessageBlock } from '../types';
 import { useStore } from '../stores/store';
 import { Button } from './ui/Button';
@@ -13,6 +11,7 @@ import { diffFromToolInput, type DiffSpec } from '../utils/diff';
 import { FileTree } from './FileTree';
 import { Terminal } from './Terminal';
 import { CodeBlock, HighlightedLine, languageFromPath } from './CodeBlock';
+import { QuestionBlock } from './QuestionBlock';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
@@ -639,172 +638,6 @@ function ErrorBlock({ text }: { text: string }) {
   );
 }
 
-function QuestionBlock({
-  questions,
-  onSubmit
-}: {
-  questions: import('../types').QuestionSpec[];
-  onSubmit: (answersText: string) => void;
-}) {
-  const [picks, setPicks] = useState<Array<Set<number>>>(() => questions.map(() => new Set()));
-  const submitRef = useRef<HTMLButtonElement>(null);
-  const [submitted, setSubmitted] = useState(false);
-
-  const togglePick = (qIdx: number, optIdx: number, multi: boolean) => {
-    if (submitted) return;
-    setPicks((prev) => {
-      const next = prev.slice();
-      const set = new Set(next[qIdx]);
-      if (multi) {
-        if (set.has(optIdx)) set.delete(optIdx);
-        else set.add(optIdx);
-      } else {
-        set.clear();
-        set.add(optIdx);
-      }
-      next[qIdx] = set;
-      return next;
-    });
-  };
-
-  const allAnswered = questions.every((_, i) => picks[i] && picks[i].size > 0);
-
-  const submit = () => {
-    if (!allAnswered || submitted) return;
-    const lines: string[] = [];
-    questions.forEach((q, i) => {
-      const labels = Array.from(picks[i]).map((j) => q.options[j]?.label).filter(Boolean);
-      lines.push(`Q: ${q.question}`);
-      lines.push(`A: ${labels.join(', ')}`);
-    });
-    setSubmitted(true);
-    onSubmit(lines.join('\n'));
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-      className="relative my-2 rounded-md border border-state-waiting/40 bg-state-waiting/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
-    >
-      <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md" />
-      <div className="flex items-center gap-2 text-base text-fg-primary font-semibold">
-        <StateGlyph state="waiting" size="sm" />
-        <span>Question awaiting answer</span>
-      </div>
-      <div className="mt-3 space-y-4">
-        {questions.map((q, qi) => (
-          <div key={qi} className="space-y-2">
-            {q.header && (
-              <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{q.header}</div>
-            )}
-            <div className="text-sm text-fg-primary">{q.question}</div>
-            {q.multiSelect ? (
-              <div className="space-y-1" role="group" aria-label={q.question}>
-                {q.options.map((opt, oi) => {
-                  const selected = picks[qi]?.has(oi) ?? false;
-                  const id = `q${qi}-o${oi}`;
-                  return (
-                    <motion.label
-                      key={oi}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
-                      htmlFor={id}
-                      className={
-                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out outline-none ' +
-                        (selected
-                          ? 'border-state-waiting/70 bg-state-waiting/10'
-                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
-                        (submitted ? ' cursor-not-allowed opacity-70' : '')
-                      }
-                    >
-                      <Checkbox.Root
-                        id={id}
-                        checked={selected}
-                        disabled={submitted}
-                        onCheckedChange={() => togglePick(qi, oi, true)}
-                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong data-[state=checked]:bg-state-waiting data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
-                      >
-                        <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
-                          <Check size={10} strokeWidth={3} />
-                        </Checkbox.Indicator>
-                      </Checkbox.Root>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-fg-primary">{opt.label}</div>
-                        {opt.description && (
-                          <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
-                        )}
-                      </div>
-                    </motion.label>
-                  );
-                })}
-              </div>
-            ) : (
-              <RadioGroup.Root
-                value={(picks[qi] && picks[qi].size > 0 ? String(Array.from(picks[qi])[0]) : '')}
-                onValueChange={(v) => {
-                  const idx = parseInt(v, 10);
-                  if (!Number.isNaN(idx)) togglePick(qi, idx, false);
-                }}
-                disabled={submitted}
-                className="space-y-1"
-                aria-label={q.question}
-              >
-                {q.options.map((opt, oi) => {
-                  const selected = picks[qi]?.has(oi) ?? false;
-                  const id = `q${qi}-o${oi}`;
-                  return (
-                    <motion.label
-                      key={oi}
-                      initial={{ opacity: 0, y: 4 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
-                      htmlFor={id}
-                      className={
-                        'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out ' +
-                        (selected
-                          ? 'border-state-waiting/70 bg-state-waiting/10'
-                          : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
-                        (submitted ? ' cursor-not-allowed opacity-70' : '')
-                      }
-                    >
-                      <RadioGroup.Item
-                        id={id}
-                        value={String(oi)}
-                        className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border border-border-strong data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
-                      >
-                        <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
-                      </RadioGroup.Item>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-fg-primary">{opt.label}</div>
-                        {opt.description && (
-                          <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
-                        )}
-                      </div>
-                    </motion.label>
-                  );
-                })}
-              </RadioGroup.Root>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="mt-3 flex justify-end">
-        <Button
-          ref={submitRef}
-          variant="primary"
-          size="md"
-          disabled={!allAnswered || submitted}
-          onClick={submit}
-        >
-          {submitted ? 'Submitted' : 'Submit answer'}
-        </Button>
-      </div>
-    </motion.div>
-  );
-}
 
 function renderBlock(b: MessageBlock, activeId: string, resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void) {
   switch (b.kind) {
