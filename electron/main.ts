@@ -11,6 +11,12 @@ import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
+import {
+  runPreflight,
+  createPr,
+  fetchPrChecks,
+  type CreatePrArgs
+} from './pr';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -378,6 +384,32 @@ app.whenReady().then(() => {
   );
 
   ipcMain.handle('import:scan', () => scanImportableSessions());
+
+  // ───────────────────────────── /pr flow ──────────────────────────────────
+  //
+  // Renderer → main IPC for preflight checks, PR creation, and CI polling.
+  // All spawn() happens in main; the renderer never touches git / gh /
+  // process.env.PATH directly. See electron/pr.ts for the helpers.
+  ipcMain.handle('pr:preflight', (_e, cwd: string | null | undefined) => runPreflight(cwd));
+  ipcMain.handle(
+    'pr:create',
+    (_e, args: CreatePrArgs) => createPr(args)
+  );
+  ipcMain.handle(
+    'pr:checks',
+    (_e, cwd: string, number: number) => fetchPrChecks(cwd, number)
+  );
+  ipcMain.handle('shell:openExternal', async (_e, url: string) => {
+    // Only http(s). Everything else is a potential shell hijack.
+    if (!/^https?:\/\//i.test(url)) return false;
+    try {
+      await shell.openExternal(url);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  // ──────────────────────────── end /pr flow ───────────────────────────────
 
   // ───────────────────────────── CLI wizard ────────────────────────────────
   //

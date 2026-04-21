@@ -11,6 +11,7 @@ import { useStore } from '../stores/store';
 import type { MessageBlock } from '../types';
 import { SLASH_COMMANDS, type SlashCommandContext } from './registry';
 import { openSettings } from './ui-bridge';
+import { triggerPrFlow } from '../lib/pr-flow';
 
 function nextId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -224,6 +225,21 @@ export function blocksToTranscript(blocks: MessageBlock[]): string {
   return lines.join('\n');
 }
 
+// ---------- /pr ----------
+// Owned end-to-end by PrFlowProvider — preflight, Radix form, gh pr create,
+// CI polling. This handler just fires the trigger the provider registered
+// on mount. If the provider isn't mounted (e.g. early in boot), surface an
+// error block so the user knows why nothing happened.
+export function handlePr(ctx: SlashCommandContext): void {
+  const dispatched = triggerPrFlow(ctx.sessionId);
+  if (!dispatched) {
+    appendError(
+      ctx.sessionId,
+      '/pr flow is not available (PrFlowProvider not mounted).'
+    );
+  }
+}
+
 // Attach handlers to registry entries. Module side-effect; imported once by
 // the app bootstrap (src/index.tsx or wherever we kick things off) and once
 // by the unit tests that exercise dispatch.
@@ -238,3 +254,4 @@ attach('config', handleConfig);
 attach('model', handleModel);
 attach('help', handleHelp);
 attach('compact', handleCompact);
+attach('pr', handlePr);

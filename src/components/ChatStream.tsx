@@ -1,9 +1,18 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronRight, AlertCircle, ArrowDown } from 'lucide-react';
+import {
+  ChevronRight,
+  AlertCircle,
+  ArrowDown,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  ExternalLink,
+  GitPullRequest
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { MessageBlock, ImageAttachment } from '../types';
+import type { MessageBlock, ImageAttachment, PrCheckStatus } from '../types';
 import { useStore } from '../stores/store';
 import { attachmentToDataUrl, formatSize } from '../lib/attachments';
 import { Button } from './ui/Button';
@@ -608,6 +617,116 @@ function ErrorBlock({ text }: { text: string }) {
   );
 }
 
+type PrStatusBlockType = Extract<MessageBlock, { kind: 'pr-status' }>;
+
+function PrStatusBlock({ block }: { block: PrStatusBlockType }) {
+  const { phase, number, url, base, branch, checks = [], error } = block;
+  const openExternal = (u: string) => {
+    void window.agentory?.openExternal(u);
+  };
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 2 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+      role="status"
+      data-testid="pr-status-block"
+      data-pr-phase={phase}
+      className="relative my-1.5 rounded-md border border-border-subtle bg-bg-elevated/60 px-3 py-2 text-xs text-fg-secondary"
+    >
+      <span
+        aria-hidden
+        className="absolute left-0 top-0 bottom-0 w-[2px] rounded-l-md bg-accent"
+      />
+      <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-fg-tertiary">
+        <GitPullRequest size={12} className="text-accent" aria-hidden />
+        <span className="text-accent">PR</span>
+        {number !== undefined && <span className="text-fg-secondary">#{number}</span>}
+        {branch && base && (
+          <span className="text-fg-tertiary normal-case tracking-normal">
+            {branch} <span className="opacity-60">→</span> {base}
+          </span>
+        )}
+        <span className="ml-auto">{labelForPhase(phase)}</span>
+      </div>
+      {url && (
+        <div className="mt-1">
+          <button
+            type="button"
+            onClick={() => openExternal(url)}
+            className="inline-flex items-center gap-1 text-fg-primary hover:text-accent transition-colors duration-150 ease-out underline-offset-2 hover:underline"
+            data-testid="pr-status-link"
+          >
+            <span className="font-mono text-[11px]">{url}</span>
+            <ExternalLink size={10} className="opacity-60" aria-hidden />
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] leading-[16px] text-state-error-fg">
+          {error}
+        </div>
+      )}
+      {checks.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {checks.map((c) => (
+            <li key={c.name} className="flex items-center gap-1.5 font-mono text-[11px]">
+              <CheckGlyph status={c.status} conclusion={c.conclusion} />
+              <span className="text-fg-secondary">{c.name}</span>
+              {c.detailsUrl && (
+                <button
+                  type="button"
+                  onClick={() => openExternal(c.detailsUrl!)}
+                  className="text-fg-tertiary hover:text-accent transition-colors duration-150 ease-out"
+                  aria-label={`Open details for ${c.name}`}
+                >
+                  <ExternalLink size={10} aria-hidden />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </motion.div>
+  );
+}
+
+function labelForPhase(phase: PrStatusBlockType['phase']): string {
+  switch (phase) {
+    case 'opening':
+      return 'opening…';
+    case 'open':
+      return 'open';
+    case 'polling':
+      return 'CI running…';
+    case 'done':
+      return 'CI complete';
+    case 'failed':
+      return 'failed';
+  }
+}
+
+function CheckGlyph({
+  status,
+  conclusion
+}: {
+  status: PrCheckStatus['status'];
+  conclusion: PrCheckStatus['conclusion'];
+}) {
+  if (status !== 'completed') {
+    return <Loader2 size={11} className="animate-spin text-fg-tertiary" aria-label="running" />;
+  }
+  if (
+    conclusion === 'success' ||
+    conclusion === 'skipped' ||
+    conclusion === 'neutral'
+  ) {
+    return <CheckCircle2 size={11} className="text-state-success" aria-label="passed" />;
+  }
+  return <XCircle size={11} className="text-state-error" aria-label="failed" />;
+}
+
 
 function renderBlock(
   b: MessageBlock,
@@ -667,6 +786,8 @@ function renderBlock(
       );
     case 'status':
       return <StatusBanner tone={b.tone} title={b.title} detail={b.detail} />;
+    case 'pr-status':
+      return <PrStatusBlock block={b} />;
     case 'error':
       return <ErrorBlock text={b.text} />;
   }

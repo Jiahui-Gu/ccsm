@@ -219,6 +219,20 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   }
 
   function commitSlashCommand(cmd: SlashCommand) {
+    // Client-handled commands that take no arguments (all current ones —
+    // /pr, /clear, /cost, /config, /model, /help, /compact) should run
+    // immediately on commit rather than leaving `/name<space>` parked in
+    // the textarea waiting for another Enter press. Dispatch handles the
+    // per-command logic (openSettings, triggerPrFlow, etc.).
+    if (cmd.clientHandler) {
+      void dispatchSlashCommand(`/${cmd.name}`, { sessionId, args: '' });
+      setValue('');
+      draftCache.delete(sessionId);
+      setCaret(0);
+      setPickerDismissed(true);
+      setActiveIndex(0);
+      return;
+    }
     const next = `/${cmd.name} `;
     setValue(next);
     draftCache.set(sessionId, next);
