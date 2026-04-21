@@ -1,7 +1,12 @@
 import type { WebContents } from 'electron';
 import { SessionRunner, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
+import { ClaudeNotFoundError } from './binary-resolver';
 
 type Sender = (channel: string, payload: unknown) => void;
+
+export type StartResult =
+  | { ok: true }
+  | { ok: false; error: string; errorCode?: 'CLAUDE_NOT_FOUND'; searchedPaths?: string[] };
 
 class SessionsManager {
   private runners = new Map<string, SessionRunner>();
@@ -14,7 +19,7 @@ class SessionsManager {
     };
   }
 
-  async start(sessionId: string, opts: StartOptions): Promise<{ ok: true } | { ok: false; error: string }> {
+  async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
     try {
       const runner = new SessionRunner(
@@ -30,6 +35,14 @@ class SessionsManager {
       this.runners.set(sessionId, runner);
       return { ok: true };
     } catch (err) {
+      if (err instanceof ClaudeNotFoundError) {
+        return {
+          ok: false,
+          error: err.message,
+          errorCode: 'CLAUDE_NOT_FOUND',
+          searchedPaths: err.searchedPaths,
+        };
+      }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   }

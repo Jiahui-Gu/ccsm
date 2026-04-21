@@ -1,13 +1,14 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb } from './db';
+import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb, loadClaudeBinPath, saveClaudeBinPath } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
+import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -329,7 +330,8 @@ app.whenReady().then(() => {
       // or the endpoint has no stored key (user is still relying on parent
       // env). Per-endpoint keys always win.
       const apiKey = envOverrides?.ANTHROPIC_API_KEY ? undefined : readApiKey();
-      return sessions.start(sessionId, { ...opts, apiKey, envOverrides });
+      const binaryPath = loadClaudeBinPath() ?? undefined;
+      return sessions.start(sessionId, { ...opts, apiKey, envOverrides, binaryPath });
     }
   );
   ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
@@ -355,6 +357,150 @@ app.whenReady().then(() => {
   );
 
   ipcMain.handle('import:scan', () => scanImportableSessions());
+
+  // ───────────────────────────── CLI wizard ────────────────────────────────
+  //
+  // First-run detection flow: renderer polls `cli:retryDetect` on mount, and
+  // the store opens a blocking modal when found=false. User then either:
+  //   (a) copies an install command from `cli:getInstallHints` → installs
+  //       externally → clicks Retry;
+  //   (b) clicks Browse → `cli:browseBinary` → `cli:setBinaryPath` persists
+  //       their pick to `app_state`;
+  //   (c) clicks the docs link → `cli:openDocs`.
+  //
+  // The persisted path wins over $AGENTORY_CLAUDE_BIN and PATH on subsequent
+  // `agent:start` (see handler above). Intentionally no bundled binary and no
+  // auto-downloader — both would drag us into code-signing + update infra that
+  // is out of scope for MVP (and legally murky for claude.exe specifically).
+  const CLAUDE_DOCS_URL = 'https://code.claude.com/docs/en/setup';
+
+  ipcMain.handle('cli:getInstallHints', () => {
+    const platform = process.platform;
+    const arch = process.arch;
+    const NPM = 'npm install -g @anthropic-ai/claude-code';
+    if (platform === 'win32') {
+      return {
+        os: 'win32',
+        arch,
+        commands: {
+          native: 'irm https://claude.ai/install.ps1 | iex',
+          packageManager: 'winget install Anthropic.ClaudeCode',
+          npm: NPM,
+        },
+        docsUrl: CLAUDE_DOCS_URL,
+      };
+    }
+    if (platform === 'darwin') {
+      return {
+        os: 'darwin',
+        arch,
+        commands: {
+          native: 'curl -fsSL https://claude.ai/install.sh | bash',
+          packageManager: 'brew install --cask claude-code',
+          npm: NPM,
+        },
+        docsUrl: CLAUDE_DOCS_URL,
+      };
+    }
+    return {
+      os: platform,
+      arch,
+      commands: {
+        native: 'curl -fsSL https://claude.ai/install.sh | bash',
+        npm: NPM,
+      },
+      docsUrl: CLAUDE_DOCS_URL,
+    };
+  });
+
+  ipcMain.handle('cli:browseBinary', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const filters =
+      process.platform === 'win32'
+        ? [
+            { name: 'Executables', extensions: ['exe', 'cmd', 'bat'] },
+            { name: 'All files', extensions: ['*'] },
+          ]
+        : [{ name: 'All files', extensions: ['*'] }];
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      title: 'Select claude binary',
+      filters,
+    });
+    if (res.canceled || res.filePaths.length === 0) return null;
+    return res.filePaths[0];
+  });
+
+  ipcMain.handle(
+    'cli:setBinaryPath',
+    async (_e, rawPath: string): Promise<
+      { ok: true; version: string | null } | { ok: false; error: string }
+    > => {
+      const p = typeof rawPath === 'string' ? rawPath.trim() : '';
+      if (!p) return { ok: false, error: 'Empty path' };
+      try {
+        if (!fs.existsSync(p)) return { ok: false, error: 'File does not exist' };
+        const stat = fs.statSync(p);
+        if (!stat.isFile()) return { ok: false, error: 'Not a regular file' };
+        // POSIX: require exec bit. Windows has no concept of it — `fs.access(X_OK)`
+        // falls back to checking PATHEXT, which for an absolute path is moot; we
+        // rely on `--version` succeeding below instead.
+        if (process.platform !== 'win32') {
+          try {
+            fs.accessSync(p, fs.constants.X_OK);
+          } catch {
+            return { ok: false, error: 'File is not executable' };
+          }
+        }
+        const version = await detectClaudeVersion(p);
+        if (version === null) {
+          return {
+            ok: false,
+            error: 'Could not verify binary: `--version` failed or timed out',
+          };
+        }
+        saveClaudeBinPath(p);
+        return { ok: true, version };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  );
+
+  ipcMain.handle('cli:openDocs', async () => {
+    await shell.openExternal(CLAUDE_DOCS_URL);
+    return true;
+  });
+
+  ipcMain.handle(
+    'cli:retryDetect',
+    async (): Promise<
+      { found: true; path: string; version: string | null } | { found: false; searchedPaths: string[] }
+    > => {
+      // Persisted path wins: if the user already picked one, try that first
+      // (and refresh its version). Don't silently wipe it on failure — the
+      // user may have renamed / temporarily moved the binary; let them
+      // re-pick explicitly.
+      const persisted = loadClaudeBinPath();
+      if (persisted) {
+        if (fs.existsSync(persisted)) {
+          const version = await detectClaudeVersion(persisted);
+          if (version !== null) return { found: true, path: persisted, version };
+        }
+      }
+      try {
+        const path = await resolveClaudeBinary();
+        const version = await detectClaudeVersion(path);
+        return { found: true, path, version };
+      } catch (err) {
+        if (err instanceof ClaudeNotFoundError) {
+          return { found: false, searchedPaths: err.searchedPaths };
+        }
+        return { found: false, searchedPaths: [err instanceof Error ? err.message : String(err)] };
+      }
+    }
+  );
+  // ────────────────────────── end CLI wizard ───────────────────────────────
 
   ipcMain.handle(
     'notification:show',

@@ -365,6 +365,13 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       });
       if (!res.ok) {
         setRunning(sessionId, false);
+        if (res.errorCode === 'CLAUDE_NOT_FOUND') {
+          // Don't surface this as a chat-level error — flip global state so
+          // the wizard takes over. Also rewind the user's local-echo so they
+          // can retry immediately once the CLI is configured.
+          useStore.getState().setCliMissing(res.searchedPaths ?? []);
+          return;
+        }
         appendBlocks(sessionId, [
           { kind: 'error', id: `start-${Date.now().toString(36)}`, text: res.error }
         ]);

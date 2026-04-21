@@ -12,7 +12,9 @@ type StartOpts = {
   endpointId?: string;
 };
 
-type StartResult = { ok: true } | { ok: false; error: string };
+type StartResult =
+  | { ok: true }
+  | { ok: false; error: string; errorCode?: 'CLAUDE_NOT_FOUND'; searchedPaths?: string[] };
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
 type AgentPermissionRequest = {
@@ -59,6 +61,23 @@ type TestConnectionResultDecl =
 type RefreshResultDecl =
   | { ok: true; count: number }
   | { ok: false; error: string; status?: number };
+
+type CliInstallHintsDecl = {
+  os: string;
+  arch: string;
+  commands: {
+    native?: string;
+    packageManager?: string;
+    npm: string;
+  };
+  docsUrl: string;
+};
+type CliRetryResultDecl =
+  | { found: true; path: string; version: string | null }
+  | { found: false; searchedPaths: string[] };
+type CliSetBinaryResultDecl =
+  | { ok: true; version: string | null }
+  | { ok: false; error: string };
 
 declare global {
   interface Window {
@@ -139,6 +158,14 @@ declare global {
       models: {
         listByEndpoint: (id: string) => Promise<ModelRowDecl[]>;
         listAll: () => Promise<EndpointWithModelsDecl[]>;
+      };
+
+      cli: {
+        getInstallHints: () => Promise<CliInstallHintsDecl>;
+        browseBinary: () => Promise<string | null>;
+        setBinaryPath: (p: string) => Promise<CliSetBinaryResultDecl>;
+        openDocs: () => Promise<boolean>;
+        retryDetect: () => Promise<CliRetryResultDecl>;
       };
     };
   }

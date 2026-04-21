@@ -6,6 +6,28 @@ const INSTALL_HINT =
   'Claude CLI not found. Install with: npm i -g @anthropic-ai/claude-code';
 
 /**
+ * Thrown by `resolveClaudeBinary()` when the CLI could not be located via any
+ * of: persisted `claudeBinPath`, `AGENTORY_CLAUDE_BIN` env var, or the
+ * platform's PATH lookup (`where`/`which`).
+ *
+ * Carries `searchedPaths` so the UI can show the user *where* we looked, which
+ * makes the first-run wizard actionable rather than a generic "not found".
+ */
+export class ClaudeNotFoundError extends Error {
+  public readonly code = 'CLAUDE_NOT_FOUND' as const;
+  public readonly searchedPaths: string[];
+
+  constructor(message: string, searchedPaths: string[]) {
+    super(message);
+    this.name = 'ClaudeNotFoundError';
+    this.searchedPaths = searchedPaths;
+    // Required for `instanceof` checks to survive across transpilation targets
+    // where the built-in Error doesn't preserve the prototype chain.
+    Object.setPrototypeOf(this, ClaudeNotFoundError.prototype);
+  }
+}
+
+/**
  * How to actually invoke claude on this machine.
  *
  *   - `direct`: spawn `path` with no shell. Safe on POSIX, and on Windows
@@ -31,9 +53,15 @@ export type ResolvedInvocation =
  * `resolveClaudeInvocation()` if you actually want to spawn it.
  */
 export async function resolveClaudeBinary(): Promise<string> {
+  const searched: string[] = [];
   const override = process.env.AGENTORY_CLAUDE_BIN;
   if (override && override.length > 0) {
+    searched.push(`AGENTORY_CLAUDE_BIN=${override}`);
     if (!existsSync(override)) {
+      // Throw the generic Error (not ClaudeNotFoundError) because the user
+      // explicitly set the env var to something bogus — surface a targeted
+      // message, not the "we couldn't find it" wizard. Manager's outer catch
+      // still reports this as a plain start failure.
       throw new Error(
         `AGENTORY_CLAUDE_BIN points to a non-existent file: ${override}`
       );
@@ -43,11 +71,12 @@ export async function resolveClaudeBinary(): Promise<string> {
 
   const isWin = process.platform === 'win32';
   const tool = isWin ? 'where' : 'which';
+  searched.push(`${tool} claude (PATH)`);
 
   const found = await runLookup(tool, 'claude');
   if (found) return found;
 
-  throw new Error(INSTALL_HINT);
+  throw new ClaudeNotFoundError(INSTALL_HINT, searched);
 }
 
 /**
@@ -265,6 +294,69 @@ function runLookup(tool: string, target: string): Promise<string | null> {
         return;
       }
       done(null);
+    });
+  });
+}
+
+/**
+ * Spawn `<binPath> --version` with a 5s timeout and parse a semver-ish token
+ * out of the output. Returns `null` on timeout, non-zero exit, or unparseable
+ * output — callers treat a version of `null` as "unknown, don't hard-block".
+ *
+ * We use `shell: true` on Windows because the user-picked binary path may
+ * itself be a `.cmd` shim (see CVE-2024-27980 notes in claude-spawner).
+ */
+export function detectClaudeVersion(binPath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const done = (v: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(v);
+    };
+
+    const timer = setTimeout(() => {
+      try {
+        child?.kill('SIGTERM');
+      } catch {
+        /* ignore */
+      }
+      done(null);
+    }, 5000);
+    timer.unref?.();
+
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      const useShell = process.platform === 'win32';
+      const cmd = useShell ? quoteCmdArg(binPath) + ' --version' : binPath;
+      const argv = useShell ? [] : ['--version'];
+      child = spawn(cmd, argv, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: useShell,
+      });
+    } catch {
+      done(null);
+      return;
+    }
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (c: string) => (stdout += c));
+    child.stderr?.on('data', (c: string) => (stderr += c));
+    child.on('error', () => done(null));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        done(null);
+        return;
+      }
+      const combined = `${stdout}\n${stderr}`;
+      // Accept e.g. "1.0.12", "2.1.3 (Claude Code)", "claude-code v2.1.3".
+      const m = combined.match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/);
+      done(m ? m[1] : null);
     });
   });
 }
