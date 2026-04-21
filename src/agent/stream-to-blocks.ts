@@ -9,6 +9,7 @@ import type {
   UserEvent
 } from '../../electron/agent/stream-json-types';
 import type { MessageBlock, TodoItem } from '../types';
+import { parseQuestions } from './ask-user-question';
 
 export type ToolResultPatch = {
   toolUseId: string;
@@ -175,6 +176,28 @@ function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
           toolUseId: tu.id,
           todos: parseTodos(tu.input)
         });
+      } else if (tu.name === 'AskUserQuestion') {
+        const questions = parseQuestions(tu.input);
+        if (questions.length > 0) {
+          out.push({
+            kind: 'question',
+            id: `${baseId}:tu${toolIdx++}`,
+            toolUseId: tu.id,
+            questions
+          });
+        } else {
+          // Malformed AskUserQuestion input — fall back to a regular tool block
+          // so the user at least sees the raw payload instead of nothing.
+          out.push({
+            kind: 'tool',
+            id: `${baseId}:tu${toolIdx++}`,
+            toolUseId: tu.id,
+            name: tu.name,
+            brief: briefForTool(tu.name, tu.input),
+            expanded: false,
+            input: tu.input
+          });
+        }
       } else {
         out.push({
           kind: 'tool',
