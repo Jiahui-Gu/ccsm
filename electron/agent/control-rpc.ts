@@ -26,6 +26,15 @@ import { randomUUID } from 'node:crypto';
 // These mirror the shapes defined in M1 §3.4 (stream-json types) and the
 // outbound serializer that the stream-json-parser worktree will export. We keep
 // minimal local copies so this module is self-contained for tests/typecheck.
+//
+// Cross-worktree contract (locked with stream-json fixer):
+//   - `UserMessageEventSchema.session_id` is OPTIONAL (claude.exe accepts the
+//     first user turn before any system frame, with no session_id field).
+//   - `serializeOutgoing(event: ClaudeOutgoingEvent | object): string` —
+//     dual signature so this module can pass its locally-typed outbound objects
+//     without a cast after the merge.
+//   - `rewind_files` command schema uses `message_id` (named field, confirmed
+//     in stream-json fixer's schema upgrade).
 // ---------------------------------------------------------------------------
 
 /**
@@ -44,12 +53,7 @@ export type ParsedStreamEvent =
 export interface ControlRequestFrame {
   type: 'control_request';
   request_id: string;
-  request:
-    | CanUseToolRequest
-    | HookCallbackRequest
-    | McpMessageRequest
-    // Forward-compat: unknown subtypes are tolerated (logged + ignored).
-    | { subtype: string; [k: string]: unknown };
+  request: CanUseToolRequest | HookCallbackRequest | McpMessageRequest;
 }
 
 export interface CanUseToolRequest {
@@ -92,10 +96,11 @@ export interface ControlCancelRequestFrame {
 
 /**
  * MOVE TO ./stream-json-parser after batch merge.
- * Outbound serializer. Real impl will live alongside the parser; for now we
- * inline the trivial JSON.stringify+"\n" form that M1 §3.2 specifies.
+ * Outbound serializer. Real impl exposes the dual signature
+ * `(event: ClaudeOutgoingEvent | object) => string`; this stub keeps the same
+ * shape so swapping the import is a no-op.
  */
-function serializeOutgoing(obj: unknown): string {
+function serializeOutgoing(obj: object): string {
   return JSON.stringify(obj) + '\n';
 }
 
@@ -131,6 +136,10 @@ export interface McpMessageHandler {
   (serverName: string, message: unknown, signal: AbortSignal): Promise<unknown>;
 }
 
+export interface Logger {
+  warn: (msg: string, meta?: unknown) => void;
+}
+
 export interface ControlRpcOpts {
   onCanUseTool: CanUseToolHandler;
   /** If absent, hook_callback is acknowledged with `{}` (no-op). */
@@ -145,10 +154,14 @@ export interface ControlRpcOpts {
    * Timeout for outbound control_request → control_response round-trip. Beyond
    * this, the returned promise rejects so the spawner layer can decide whether
    * to hard-kill. Defaults to 5_000ms (matches the M1 §5.3 5s SIGKILL grace).
+   *
+   * NOTE: applies to ALL outbound subtypes (interrupt / set_model /
+   * set_permission_mode / set_max_thinking_tokens / rewind_files). If a future
+   * command needs a different budget, add a per-subtype override.
    */
-  interruptHardKillTimeoutMs?: number;
+  outboundResponseTimeoutMs?: number;
   /** Optional logger; defaults to console.warn for unknown subtypes / errors. */
-  logger?: { warn: (msg: string, meta?: unknown) => void };
+  logger?: Logger;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,28 +178,42 @@ interface PendingInbound {
   controller: AbortController;
 }
 
+const DEFAULT_OUTBOUND_TIMEOUT_MS = 5_000;
+
+const consoleLogger: Logger = {
+  warn: (msg, meta) => {
+    if (meta !== undefined) console.warn(msg, meta);
+    else console.warn(msg);
+  },
+};
+
 export class ControlRpc {
   private readonly stdin: NodeJS.WritableStream;
-  private readonly opts: Required<Pick<ControlRpcOpts, 'interruptHardKillTimeoutMs'>> & ControlRpcOpts;
+  private readonly opts: ControlRpcOpts;
+  private readonly logger: Logger;
+  private readonly outboundTimeoutMs: number;
   private readonly outbound = new Map<string, PendingOutbound>();
   private readonly inbound = new Map<string, PendingInbound>();
   private closed = false;
   private stdinUsable = true;
+  private brokenReason: string | null = null;
 
   constructor(stdin: NodeJS.WritableStream, opts: ControlRpcOpts) {
     this.stdin = stdin;
-    this.opts = {
-      interruptHardKillTimeoutMs: 5_000,
-      ...opts,
-    };
+    this.opts = opts;
+    this.logger = opts.logger ?? consoleLogger;
+    this.outboundTimeoutMs = opts.outboundResponseTimeoutMs ?? DEFAULT_OUTBOUND_TIMEOUT_MS;
 
     // EPIPE / closed stream: mark unusable so subsequent writes throw friendly
-    // errors instead of crashing the main process.
-    const markBroken = () => {
-      this.stdinUsable = false;
-    };
-    stdin.on('error', markBroken);
-    stdin.on('close', markBroken);
+    // errors AND fail any in-flight outbound immediately (don't make the caller
+    // wait the full outboundResponseTimeoutMs to find out the channel is dead).
+    stdin.on('error', (err: unknown) => {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.markBroken(`stdin error: ${reason}`);
+    });
+    stdin.on('close', () => {
+      this.markBroken('stdin closed');
+    });
   }
 
   // ---------------- inbound dispatch ----------------
@@ -216,16 +243,43 @@ export class ControlRpc {
   private handleControlRequest(frame: ControlRequestFrame): void {
     const { request_id, request } = frame;
     const subtype = (request as { subtype?: string }).subtype;
+
+    // Reject duplicate request_id from claude.exe. Overwriting the inbound map
+    // would silently drop the first handler's abort hook; per M1 spec each
+    // request_id is unique per session, so a duplicate is a protocol violation.
+    // Drop + warn rather than crash or overwrite.
+    if (this.inbound.has(request_id)) {
+      this.logger.warn('[control-rpc] duplicate inbound control_request request_id, dropped', {
+        request_id,
+        subtype,
+      });
+      return;
+    }
+
     const controller = new AbortController();
     this.inbound.set(request_id, { controller });
 
     const finish = (response: unknown) => {
+      // Double-check the request is still tracked. If `control_cancel_request`
+      // arrived between the handler resolving and us reaching here, the entry
+      // was already removed and we MUST NOT write a response — claude.exe is
+      // no longer expecting one and an orphan response could confuse it.
+      if (!this.inbound.has(request_id)) return;
       this.inbound.delete(request_id);
-      this.writeFrame({ type: 'control_response', request_id, response });
+      try {
+        this.writeFrame({ type: 'control_response', request_id, response });
+      } catch (err) {
+        // Channel went away mid-write. Already logged inside writeFrame's
+        // markBroken path; nothing more to do here.
+        this.logger.warn('[control-rpc] failed to write control_response', {
+          request_id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     };
 
     const fail = (err: unknown, fallback: Record<string, unknown>) => {
-      this.opts.logger?.warn?.('[control-rpc] handler failed', {
+      this.logger.warn('[control-rpc] handler failed', {
         request_id,
         subtype,
         error: err instanceof Error ? err.message : String(err),
@@ -308,23 +362,21 @@ export class ControlRpc {
         return;
       }
 
-      default: {
-        // Forward-compat: log + drop. Don't reply — replying with a nonsense
-        // shape could confuse newer claude.exe versions more than silence.
-        this.opts.logger?.warn?.('[control-rpc] unknown control_request subtype', {
-          request_id,
-          subtype,
-        });
-        this.inbound.delete(request_id);
-        return;
-      }
+      // NO default branch: per R1 review, the upstream stream-json parser
+      // routes any control_request with an unknown subtype into its `unknown`
+      // bucket (discriminatedUnion has no catch-all), so a frame with a novel
+      // subtype never reaches handleControlRequest. If the parser ever changes
+      // that policy, restore a default branch here that logs + drops.
     }
   }
 
   private handleControlResponse(frame: ControlResponseFrame): void {
     const pending = this.outbound.get(frame.request_id);
     if (!pending) {
-      this.opts.logger?.warn?.('[control-rpc] orphan control_response', {
+      // Either an orphan from claude.exe (unlikely), or a late response that
+      // arrived after we already timed out / rejected and cleared the entry.
+      // Either way, nothing to settle — log and move on.
+      this.logger.warn('[control-rpc] orphan control_response (no pending or already settled)', {
         request_id: frame.request_id,
       });
       return;
@@ -338,6 +390,8 @@ export class ControlRpc {
     const pending = this.inbound.get(frame.request_id);
     if (!pending) return;
     pending.controller.abort();
+    // Remove from the map BEFORE the handler finishes so finish() will detect
+    // the cancellation and skip writing a response.
     this.inbound.delete(frame.request_id);
   }
 
@@ -365,6 +419,11 @@ export class ControlRpc {
     );
   }
 
+  /**
+   * Rewind in-memory file edits to the state at `toMessageId`. Field name
+   * `message_id` is locked with the stream-json fixer's schema upgrade
+   * (cross-worktree contract).
+   */
   rewindFiles(toMessageId: string): Promise<void> {
     return this.sendControlRequest({ subtype: 'rewind_files', message_id: toMessageId }).then(
       () => undefined,
@@ -376,8 +435,13 @@ export class ControlRpc {
    * but most callers should prefer the typed wrappers above.
    */
   sendControlRequest(request: { subtype: string; [k: string]: unknown }): Promise<unknown> {
-    if (this.closed || !this.stdinUsable) {
-      return Promise.reject(new Error('ControlRpc: stdin is closed; cannot send control_request'));
+    if (this.closed) {
+      return Promise.reject(new Error('ControlRpc: closed; cannot send control_request'));
+    }
+    if (!this.stdinUsable) {
+      return Promise.reject(
+        new Error(`ControlRpc: channel broken (${this.brokenReason ?? 'unknown'}); cannot send control_request`),
+      );
     }
     const request_id = `req_${randomUUID()}`;
     return new Promise<unknown>((resolve, reject) => {
@@ -385,10 +449,10 @@ export class ControlRpc {
         this.outbound.delete(request_id);
         reject(
           new Error(
-            `ControlRpc: control_request "${request.subtype}" timed out after ${this.opts.interruptHardKillTimeoutMs}ms`,
+            `ControlRpc: control_request "${request.subtype}" timed out after ${this.outboundTimeoutMs}ms`,
           ),
         );
-      }, this.opts.interruptHardKillTimeoutMs);
+      }, this.outboundTimeoutMs);
       // Don't keep the event loop alive just for this timer.
       if (typeof timer.unref === 'function') timer.unref();
 
@@ -408,13 +472,20 @@ export class ControlRpc {
   /**
    * Convenience: send a plain user text message. Not a control_request, but
    * shares the same stdin so it lives here to keep ownership clean.
-   * sessionId is the claude.exe-issued cliSessionId (from system frame). For
+   *
+   * `sessionId` is the claude.exe-issued cliSessionId (from system frame). For
    * the very first turn before init, callers may pass undefined and claude.exe
-   * will fill it in.
+   * accepts the message without it. (Cross-worktree contract:
+   * `UserMessageEventSchema.session_id` is OPTIONAL in stream-json types.)
    */
   sendUserMessage(text: string, sessionId?: string): void {
-    if (this.closed || !this.stdinUsable) {
-      throw new Error('ControlRpc: stdin is closed; cannot send user message');
+    if (this.closed) {
+      throw new Error('ControlRpc: closed; cannot send user message');
+    }
+    if (!this.stdinUsable) {
+      throw new Error(
+        `ControlRpc: channel broken (${this.brokenReason ?? 'unknown'}); cannot send user message`,
+      );
     }
     this.writeFrame({
       type: 'user',
@@ -445,14 +516,43 @@ export class ControlRpc {
 
   // ---------------- internals ----------------
 
-  private writeFrame(obj: unknown): void {
+  /**
+   * Channel went away (EPIPE / stdin close / synchronous write throw). Mark
+   * the channel unusable AND fail every in-flight outbound immediately so
+   * callers don't sit waiting `outboundResponseTimeoutMs` for a reply that
+   * will never come. Inbound handlers are aborted too — their AbortSignal
+   * fires so they can short-circuit, and any subsequent finish() call is a
+   * no-op because we drop the inbound entries here.
+   *
+   * Idempotent: only the first call records a reason and fans out the error.
+   */
+  private markBroken(reason: string): void {
+    if (!this.stdinUsable) return;
+    this.stdinUsable = false;
+    this.brokenReason = reason;
+    const err = new Error(`ControlRpc: channel broken (${reason})`);
+    for (const [, pending] of this.outbound) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.outbound.clear();
+    for (const [, pending] of this.inbound) {
+      pending.controller.abort();
+    }
+    this.inbound.clear();
+  }
+
+  private writeFrame(obj: object): void {
     if (!this.stdinUsable) {
-      throw new Error('ControlRpc: stdin is closed; cannot write frame');
+      throw new Error(
+        `ControlRpc: channel broken (${this.brokenReason ?? 'unknown'}); cannot write frame`,
+      );
     }
     try {
       this.stdin.write(serializeOutgoing(obj));
     } catch (err) {
-      this.stdinUsable = false;
+      const reason = err instanceof Error ? err.message : String(err);
+      this.markBroken(`write threw: ${reason}`);
       throw err instanceof Error ? err : new Error(String(err));
     }
   }

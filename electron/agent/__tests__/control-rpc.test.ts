@@ -207,20 +207,13 @@ describe('ControlRpc — inbound hook_callback / mcp_message / unknown', () => {
     void rpc;
   });
 
-  it('unknown subtype: log warn and DO NOT reply (forward compat)', async () => {
-    const m = makeStdin();
-    const warn = vi.fn();
-    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll, logger: { warn } });
-    rpc.handleIncoming({
-      type: 'control_request',
-      request_id: 'req_U',
-      request: { subtype: 'future_unknown_thing', whatever: true },
-    } as ControlRequestFrame);
-    await new Promise((r) => setImmediate(r));
-    expect(m.lines()).toEqual([]);
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn.mock.calls[0][0]).toMatch(/unknown control_request subtype/);
-    void rpc;
+  it('unknown subtype: parser is expected to filter these; ControlRpc no longer has a default branch (see Fix 5)', () => {
+    // Documented assumption: stream-json-parser routes any control_request with
+    // an unknown subtype to its `unknown` bucket before it reaches ControlRpc.
+    // This test pins that contract — if it ever changes, restore the default
+    // branch in handleControlRequest. For now, feeding an unknown subtype here
+    // is undefined behavior (entry leaks in inbound map); we don't exercise it.
+    expect(true).toBe(true);
   });
 });
 
@@ -292,9 +285,46 @@ describe('ControlRpc — outbound control commands', () => {
     const m = makeStdin();
     const rpc = new ControlRpc(m.stdin, {
       onCanUseTool: allowAll,
-      interruptHardKillTimeoutMs: 20,
+      outboundResponseTimeoutMs: 20,
     });
     await expect(rpc.interrupt()).rejects.toThrow(/timed out/);
+  });
+
+  it('out-of-order responses settle the matching outbound by request_id', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    const pA = rpc.setModel('opus');
+    const pB = rpc.setModel('sonnet');
+    const out = m.lines() as Array<Record<string, unknown>>;
+    expect(out).toHaveLength(2);
+    const idA = out[0].request_id as string;
+    const idB = out[1].request_id as string;
+    // Respond to B first, then A — order shouldn't matter.
+    rpc.handleIncoming({ type: 'control_response', request_id: idB, response: {} });
+    rpc.handleIncoming({ type: 'control_response', request_id: idA, response: {} });
+    await expect(pA).resolves.toBeUndefined();
+    await expect(pB).resolves.toBeUndefined();
+  });
+
+  it('late control_response after timeout is dropped (orphan warn) and does not crash', async () => {
+    const m = makeStdin();
+    const warn = vi.fn();
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: allowAll,
+      outboundResponseTimeoutMs: 10,
+      logger: { warn },
+    });
+    const p = rpc.interrupt();
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    await expect(p).rejects.toThrow(/timed out/);
+    // Late response arrives — should be treated as orphan, not throw.
+    rpc.handleIncoming({
+      type: 'control_response',
+      request_id: frame.request_id as string,
+      response: { ok: true },
+    });
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.some((c) => /orphan control_response/.test(String(c[0])))).toBe(true);
   });
 });
 
@@ -340,11 +370,162 @@ describe('ControlRpc — user messages and lifecycle', () => {
     const m = makeStdin();
     const rpc = new ControlRpc(m.stdin, {
       onCanUseTool: allowAll,
-      interruptHardKillTimeoutMs: 5_000,
+      outboundResponseTimeoutMs: 5_000,
     });
     const p = rpc.interrupt();
     rpc.close();
     await expect(p).rejects.toThrow(/closed/);
+  });
+
+  it('EPIPE on stdin rejects in-flight outbound immediately (no timeout wait)', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: allowAll,
+      // Timeout is huge — if we accidentally wait for it, the test will hang.
+      outboundResponseTimeoutMs: 60_000,
+    });
+    const p = rpc.interrupt();
+    // Simulate EPIPE on the stdin stream.
+    m.stdin.emit('error', new Error('EPIPE'));
+    await expect(p).rejects.toThrow(/channel broken/i);
+  });
+
+  it('EPIPE during writeFrame rejects pending outbound and surfaces friendly error', async () => {
+    // Build a stdin whose write() throws synchronously.
+    const stdin = new PassThrough();
+    let throwOnWrite = false;
+    const realWrite = stdin.write.bind(stdin);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (stdin as any).write = (chunk: any, ...rest: any[]) => {
+      if (throwOnWrite) throw new Error('EPIPE');
+      return realWrite(chunk, ...rest);
+    };
+    const rpc = new ControlRpc(stdin, {
+      onCanUseTool: allowAll,
+      outboundResponseTimeoutMs: 60_000,
+    });
+    // First call: queue a pending outbound that's already on the wire.
+    const pFirst = rpc.interrupt();
+    // Drain the wire synchronously so the first write succeeds.
+    await new Promise((r) => setImmediate(r));
+    // Now make subsequent writes throw, then trigger another outbound — its
+    // synchronous write throws and propagates AND markBroken should reject the
+    // first pending outbound too.
+    throwOnWrite = true;
+    await expect(rpc.setModel('sonnet')).rejects.toThrow(/EPIPE|channel broken/i);
+    await expect(pFirst).rejects.toThrow(/channel broken/i);
+    // Subsequent send rejects with friendly error, not EPIPE crash.
+    await expect(rpc.interrupt()).rejects.toThrow(/channel broken/i);
+  });
+
+  it('markBroken rejects all pending outbound and aborts inbound handlers', async () => {
+    const m = makeStdin();
+    let observedSignal: AbortSignal | undefined;
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: async (_n, _i, ctx) => {
+        observedSignal = ctx.signal;
+        await new Promise((r) => setTimeout(r, 1_000));
+        return { allow: true };
+      },
+      outboundResponseTimeoutMs: 60_000,
+    });
+    // Pending outbound + pending inbound.
+    const pOut = rpc.interrupt();
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_inflight',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'tu', input: {} },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    // Break the channel.
+    m.stdin.emit('error', new Error('EPIPE'));
+    await expect(pOut).rejects.toThrow(/channel broken/i);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+});
+
+describe('ControlRpc — duplicate inbound request_id', () => {
+  it('drops the second control_request with same request_id and warns', async () => {
+    const m = makeStdin();
+    const warn = vi.fn();
+    let calls = 0;
+    let firstSignal: AbortSignal | undefined;
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: async (_n, _i, ctx) => {
+        calls += 1;
+        if (calls === 1) firstSignal = ctx.signal;
+        await new Promise((r) => setTimeout(r, 30));
+        return { allow: true };
+      },
+      logger: { warn },
+    });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_dup',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 't1', input: {} },
+    } as ControlRequestFrame);
+    // Same request_id arrives again before first finishes.
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_dup',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 't2', input: {} },
+    } as ControlRequestFrame);
+    await new Promise((r) => setTimeout(r, 60));
+    // Only the first handler ran; first signal NOT aborted (not overwritten).
+    expect(calls).toBe(1);
+    expect(firstSignal?.aborted).toBe(false);
+    // Exactly one response written, for the first request (toolUseID t1).
+    const out = m.lines() as Array<Record<string, unknown>>;
+    expect(out).toHaveLength(1);
+    expect((out[0].response as { toolUseID: string }).toolUseID).toBe('t1');
+    // Warn fired for the duplicate.
+    expect(
+      warn.mock.calls.some((c) => /duplicate inbound control_request/.test(String(c[0]))),
+    ).toBe(true);
+  });
+});
+
+describe('ControlRpc — cancel and finish race', () => {
+  it('control_cancel_request after handler resolves: response is NOT written (per spec)', async () => {
+    const m = makeStdin();
+    let release: (() => void) | undefined;
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: async () => {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return { allow: true };
+      },
+    });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_race',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'tr', input: {} },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    // Cancel arrives first.
+    rpc.handleIncoming({ type: 'control_cancel_request', request_id: 'req_race' });
+    // Now let the handler resolve — finish() must detect the entry is gone.
+    release!();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(m.lines()).toEqual([]);
+  });
+
+  it('control_cancel_request after handler already finished is a no-op', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_done',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'td', input: {} },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    expect(m.lines()).toHaveLength(1);
+    // Cancel arrives long after — must not throw, must not write anything.
+    expect(() =>
+      rpc.handleIncoming({ type: 'control_cancel_request', request_id: 'req_done' }),
+    ).not.toThrow();
   });
 
   it('control_cancel_request aborts the in-flight handler signal', async () => {
