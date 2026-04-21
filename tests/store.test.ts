@@ -18,7 +18,8 @@ beforeEach(() => {
       focusedGroupId: null,
       messagesBySession: {},
       startedSessions: {},
-      runningSessions: {}
+      runningSessions: {},
+      focusInputNonce: 0
     },
     true
   );
@@ -381,5 +382,36 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
     });
     useStore.getState().selectSession('s-y');
     expect(load).not.toHaveBeenCalled();
+  });
+});
+
+describe('store: selectSession bumps focusInputNonce', () => {
+  it('increments focusInputNonce on every selectSession call', () => {
+    useStore.getState().createSession('~/a');
+    useStore.getState().createSession('~/b');
+    const [sB, sA] = useStore.getState().sessions;
+    const start = useStore.getState().focusInputNonce;
+    useStore.getState().selectSession(sA.id);
+    const after1 = useStore.getState().focusInputNonce;
+    expect(after1).toBe(start + 1);
+    // Re-selecting the same session still bumps — the user clicked, so the
+    // input should re-focus regardless of whether activeId actually changed.
+    useStore.getState().selectSession(sA.id);
+    expect(useStore.getState().focusInputNonce).toBe(after1 + 1);
+    useStore.getState().selectSession(sB.id);
+    expect(useStore.getState().focusInputNonce).toBe(after1 + 2);
+  });
+
+  it('also flips a waiting session to idle while bumping the nonce', () => {
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    useStore.setState((s) => ({
+      sessions: s.sessions.map((x) => (x.id === sid ? { ...x, state: 'waiting' } : x))
+    }));
+    const start = useStore.getState().focusInputNonce;
+    useStore.getState().selectSession(sid);
+    const s = useStore.getState();
+    expect(s.sessions.find((x) => x.id === sid)?.state).toBe('idle');
+    expect(s.focusInputNonce).toBe(start + 1);
   });
 });
