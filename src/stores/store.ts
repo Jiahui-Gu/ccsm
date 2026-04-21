@@ -5,7 +5,7 @@ import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 
 export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
-export type PermissionMode = 'auto' | 'ask' | 'plan';
+export type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 

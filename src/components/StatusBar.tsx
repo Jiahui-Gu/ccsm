@@ -12,7 +12,7 @@ import {
 import { useStore } from '../stores/store';
 
 type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
-type PermissionMode = 'auto' | 'ask' | 'plan';
+type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 
 function lastSegment(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
@@ -22,8 +22,8 @@ function lastSegment(path: string): string {
 
 const Chip = React.forwardRef<
   HTMLButtonElement,
-  { children: React.ReactNode; title?: string } & React.ButtonHTMLAttributes<HTMLButtonElement>
->(function Chip({ children, title, ...rest }, ref) {
+  { children: React.ReactNode; title?: string; accent?: 'warn' } & React.ButtonHTMLAttributes<HTMLButtonElement>
+>(function Chip({ children, title, accent, ...rest }, ref) {
   return (
     <button
       ref={ref}
@@ -32,7 +32,9 @@ const Chip = React.forwardRef<
       {...rest}
       className={cn(
         'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
-        'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
+        accent === 'warn'
+          ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-400/10'
+          : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
         'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
         'transition-colors duration-120 ease-out'
       )}
@@ -57,6 +59,7 @@ type ChipMenuProps<V extends string> = {
   label: string;
   triggerLabel: string;
   triggerTitle?: string;
+  triggerAccent?: 'warn';
   options: ChipOption<V>[];
   onSelect: (value: V) => void;
 };
@@ -65,13 +68,14 @@ function ChipMenu<V extends string>({
   label,
   triggerLabel,
   triggerTitle,
+  triggerAccent,
   options,
   onSelect
 }: ChipMenuProps<V>) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Chip title={triggerTitle}>{triggerLabel}</Chip>
+        <Chip title={triggerTitle} accent={triggerAccent}>{triggerLabel}</Chip>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="min-w-[240px]">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
@@ -112,9 +116,10 @@ const modelOptions: ChipOption<ModelId>[] = [
 ];
 
 const permissionOptions: ChipOption<PermissionMode>[] = [
-  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve all tool calls' },
+  { kind: 'item', value: 'plan', primary: 'plan', secondary: 'Plan only — no edits or commands' },
   { kind: 'item', value: 'ask', primary: 'ask', secondary: 'Ask before each tool call' },
-  { kind: 'item', value: 'plan', primary: 'plan', secondary: 'Plan only, no edits or commands' }
+  { kind: 'item', value: 'auto', primary: 'auto', secondary: 'Auto-approve edits; ask for shell' },
+  { kind: 'item', value: 'yolo', primary: 'yolo', secondary: 'Approve everything (use with care)' }
 ];
 
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
@@ -177,6 +182,7 @@ export function StatusBar({
       key="permission"
       label="Permission mode"
       triggerLabel={primaryOf(permissionOptions, permission)}
+      triggerAccent={permission === 'yolo' ? 'warn' : undefined}
       options={permissionOptions}
       onSelect={onChangePermission}
     />
