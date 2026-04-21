@@ -1,10 +1,11 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, Notification, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
+import { showNotification, type ShowNotificationPayload } from './notifications';
 import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
 
@@ -198,7 +199,7 @@ app.whenReady().then(() => {
   // On Windows, notifications need a stable AppUserModelID so the OS knows
   // which app the toast belongs to (otherwise it shows "electron.exe").
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.agentory.desktop');
+    app.setAppUserModelId('com.agentory.next');
   }
   initDb();
 
@@ -344,24 +345,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle(
     'notification:show',
-    (e, payload: { sessionId: string; title: string; body?: string }) => {
-      if (!Notification.isSupported()) return false;
+    (e, payload: ShowNotificationPayload) => {
       const win = BrowserWindow.fromWebContents(e.sender);
-      const n = new Notification({
-        title: payload.title,
-        body: payload.body ?? '',
-        silent: false
-      });
-      n.on('click', () => {
-        if (win) {
-          if (win.isMinimized()) win.restore();
-          win.show();
-          win.focus();
-          win.webContents.send('notification:focusSession', payload.sessionId);
-        }
-      });
-      n.show();
-      return true;
+      return showNotification(payload, win);
     }
   );
 

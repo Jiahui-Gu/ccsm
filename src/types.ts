@@ -21,6 +21,9 @@ export interface Session {
   // Set when the session was imported from a Claude Code CLI transcript.
   // Passed to agentStart on first send so the SDK resumes the same thread.
   resumeSessionId?: string;
+  // Per-session OS notification mute. When true, dispatch suppresses all
+  // notification events for this session regardless of global settings.
+  notificationsMuted?: boolean;
 }
 
 export interface Group {

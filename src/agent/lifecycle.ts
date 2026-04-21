@@ -1,11 +1,18 @@
 import { useStore } from '../stores/store';
 import { streamEventToTranslation, PartialAssistantStreamer } from './stream-to-blocks';
 import { parseQuestions } from './ask-user-question';
+import { dispatchNotification, handleNotificationFocus } from '../notifications/dispatch';
 import type { MessageBlock } from '../types';
 
 let installed = false;
 
 const streamers = new Map<string, PartialAssistantStreamer>();
+// Wall-clock timestamps for currently-running turns. We use elapsed time as
+// one of the signals for whether a `turn_done` is worth notifying about — a
+// fast turn that wraps in <15s is rarely worth surfacing, but a long-running
+// one almost always is.
+const turnStartedAt = new Map<string, number>();
+const TURN_DONE_THRESHOLD_MS = 15_000;
 function streamerFor(sessionId: string): PartialAssistantStreamer {
   let s = streamers.get(sessionId);
   if (!s) {
@@ -144,6 +151,14 @@ export function subscribeAgentEvents(): void {
   installed = true;
 
   api.onAgentEvent((e) => {
+    // Record the wall-clock start of the current turn so we can decide later
+    // whether `turn_done` is worth a toast. We treat the first non-result
+    // message after a result (or the very first ever) as the turn start.
+    if (e.message.type !== 'stream_event' && e.message.type !== 'result') {
+      if (!turnStartedAt.has(e.sessionId)) {
+        turnStartedAt.set(e.sessionId, Date.now());
+      }
+    }
     if (e.message.type === 'stream_event') {
       const streamer = streamerFor(e.sessionId);
       const patch = streamer.consume(e.message);
@@ -172,6 +187,35 @@ export function subscribeAgentEvents(): void {
       const blocks = useStore.getState().messagesBySession[e.sessionId];
       if (blocks && blocks.length > 0 && typeof window.agentory?.saveMessages === 'function') {
         void window.agentory.saveMessages(e.sessionId, blocks);
+      }
+      // `turn_done` notification policy: only ping when the turn meaningfully
+      // consumed the user's patience — long (>15s), or errored, or this
+      // session isn't the one being watched. Fast, successful, focused turns
+      // are noise; we skip them.
+      const startedAt = turnStartedAt.get(e.sessionId);
+      turnStartedAt.delete(e.sessionId);
+      const durationMs = startedAt ? Date.now() - startedAt : 0;
+      const result = e.message as { subtype?: string; is_error?: boolean };
+      const errored =
+        !!result.is_error ||
+        result.subtype === 'error_max_turns' ||
+        result.subtype === 'error_during_execution';
+      const isActive = store.activeId === e.sessionId;
+      const windowFocused = typeof document !== 'undefined' && document.hasFocus();
+      const sessionFocused = isActive && windowFocused;
+      if (errored || durationMs >= TURN_DONE_THRESHOLD_MS || !sessionFocused) {
+        const session = store.sessions.find((s) => s.id === e.sessionId);
+        const sessionName = session?.name ?? 'Session';
+        const title = errored
+          ? `${sessionName} finished with an error`
+          : `${sessionName} is done`;
+        const body = errored ? 'Turn ended in error - check the chat.' : undefined;
+        void dispatchNotification({
+          sessionId: e.sessionId,
+          eventType: 'turn_done',
+          title,
+          body
+        });
       }
       maybeFireWatchdog(e.sessionId);
     }
@@ -203,22 +247,26 @@ export function subscribeAgentEvents(): void {
       const sessionName = session?.name ?? 'Background session';
       backgroundWaitingHandler({ sessionId: req.sessionId, sessionName, prompt });
     }
-    // OS-level notification when the user almost certainly missed the in-app
-    // toast: window unfocused, or active-session toast suppressed in-app for
-    // a non-active session. Only ping for "needs your attention" requests
-    // (any permission/plan/question), never on routine assistant streaming.
-    const windowFocused = typeof document !== 'undefined' && document.hasFocus();
-    if (isBackground || !windowFocused) {
-      const session = store.sessions.find((s) => s.id === req.sessionId);
-      const sessionName = session?.name ?? 'Background session';
-      let title = `${sessionName} needs your input`;
-      let body: string | undefined;
-      if (block.kind === 'question') {
-        body = block.questions[0]?.question;
-      } else if (block.kind === 'waiting') {
-        body = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
-      }
-      void api.notify({ sessionId: req.sessionId, title, body });
+    // OS-level notification dispatch is deduped/suppressed inside dispatch:
+    // mute, focus, debounce, and per-event-type toggles all live there. We
+    // just hand it the semantic event and let it decide whether to ping the OS.
+    const session = store.sessions.find((s) => s.id === req.sessionId);
+    const sessionName = session?.name ?? 'Background session';
+    const eventType = block.kind === 'question' ? 'question' : 'permission';
+    const titleSuffix = block.kind === 'question' ? 'has a question' : 'needs your input';
+    let body: string | undefined;
+    if (block.kind === 'question') {
+      body = block.questions[0]?.question;
+    } else if (block.kind === 'waiting') {
+      body = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
     }
+    void dispatchNotification({
+      sessionId: req.sessionId,
+      eventType,
+      title: `${sessionName} ${titleSuffix}`,
+      body
+    });
   });
+
+  api.onNotificationFocus?.(handleNotificationFocus);
 }
