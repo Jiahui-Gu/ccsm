@@ -10,5 +10,6 @@
     "rootDir": "electron",
     "lib": ["ES2022"]
   },
-  "include": ["electron/**/*"]
+  "include": ["electron/**/*"],
+  "exclude": ["electron/**/__tests__/**"]
 }
