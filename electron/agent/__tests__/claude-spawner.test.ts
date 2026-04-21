@@ -488,6 +488,56 @@ describe('SAFE_ENV whitelist', () => {
     expect(env.RANDOM_THING).toBeUndefined();
   });
 
+  it('forwards ANTHROPIC_* credentials + endpoint configuration from parent env', () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://gateway.example.com';
+    process.env.ANTHROPIC_API_KEY = 'sk-parent-api';
+    process.env.ANTHROPIC_AUTH_TOKEN = 'sk-parent-auth';
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'haiku-local';
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'sonnet-local';
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'opus-local';
+    process.env.ANTHROPIC_SMALL_FAST_MODEL = 'fast-local';
+    process.env.ANTHROPIC_CUSTOM_HEADERS = 'X-Org: foo';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'ANTHROPIC_BASE_URL')).toBe('https://gateway.example.com');
+    expect(ci(env, 'ANTHROPIC_API_KEY')).toBe('sk-parent-api');
+    expect(ci(env, 'ANTHROPIC_AUTH_TOKEN')).toBe('sk-parent-auth');
+    expect(ci(env, 'ANTHROPIC_DEFAULT_HAIKU_MODEL')).toBe('haiku-local');
+    expect(ci(env, 'ANTHROPIC_DEFAULT_SONNET_MODEL')).toBe('sonnet-local');
+    expect(ci(env, 'ANTHROPIC_DEFAULT_OPUS_MODEL')).toBe('opus-local');
+    expect(ci(env, 'ANTHROPIC_SMALL_FAST_MODEL')).toBe('fast-local');
+    expect(ci(env, 'ANTHROPIC_CUSTOM_HEADERS')).toBe('X-Org: foo');
+  });
+
+  it('forwards CLAUDE_CODE_* runtime flags (Bedrock/Vertex) from parent env', () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1';
+    process.env.CLAUDE_CODE_USE_VERTEX = '1';
+    process.env.CLAUDE_CODE_SKIP_AUTH_LOGIN = 'true';
+    const env = buildSpawnEnv({ configDir: '/cfg' });
+    expect(ci(env, 'CLAUDE_CODE_USE_BEDROCK')).toBe('1');
+    expect(ci(env, 'CLAUDE_CODE_USE_VERTEX')).toBe('1');
+    expect(ci(env, 'CLAUDE_CODE_SKIP_AUTH_LOGIN')).toBe('true');
+  });
+
+  it('always overwrites CLAUDE_CONFIG_DIR with the isolated path, even if parent sets one', () => {
+    process.env.CLAUDE_CONFIG_DIR = '/home/user/.claude';
+    const env = buildSpawnEnv({ configDir: '/isolated/cfg' });
+    expect(ci(env, 'CLAUDE_CONFIG_DIR')).toBe('/isolated/cfg');
+  });
+
+  it('envOverrides still win over forwarded ANTHROPIC_* parent vars', () => {
+    process.env.ANTHROPIC_BASE_URL = 'https://from-parent';
+    process.env.ANTHROPIC_API_KEY = 'sk-parent';
+    const env = buildSpawnEnv({
+      configDir: '/cfg',
+      envOverrides: {
+        ANTHROPIC_BASE_URL: 'https://from-override',
+        ANTHROPIC_API_KEY: 'sk-override',
+      },
+    });
+    expect(ci(env, 'ANTHROPIC_BASE_URL')).toBe('https://from-override');
+    expect(ci(env, 'ANTHROPIC_API_KEY')).toBe('sk-override');
+  });
+
   it('uses canonical Windows casing (ComSpec, not COMSPEC) for whitelist hits', () => {
     process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
     const env = buildSpawnEnv({ configDir: '/cfg' });

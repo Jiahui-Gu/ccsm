@@ -96,3 +96,117 @@ Pre-existing issues observed (not T10 scope, but logged for the backlog):
 ## Bug fixes committed in this task
 
 None. Source was not modified. Only addition: `scripts/probe-e2e-tool-call-dogfood.mjs` — a new probe script used to exercise the live claude.exe tool-call path.
+
+---
+
+## Follow-up (same day): real end-to-end — UI send → assistant reply
+
+The original report stopped at "Not logged in" because `CLAUDE_CONFIG_DIR`
+is pinned to an isolated dir with no credentials. That was the correct
+observation of behavior, but it short-circuited the actual e2e. A real
+user never logs in inside the isolated config — they set
+`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` as env vars (mirror of how
+they use the CLI). Those env vars were being dropped by the SAFE_ENV
+allowlist in `claude-spawner.ts` because the allowlist predates the
+self-host story.
+
+Per MEMORY.md, self-host via custom `ANTHROPIC_BASE_URL` + custom key is
+Agentory's structural moat, so env passthrough is not optional.
+
+### Fix
+
+`electron/agent/claude-spawner.ts` — added two prefixes to `SAFE_ENV.prefixes`:
+
+- `ANTHROPIC_` — covers `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS}_MODEL`,
+  `ANTHROPIC_SMALL_FAST_MODEL`, `ANTHROPIC_CUSTOM_HEADERS`, and any future
+  `ANTHROPIC_*` the CLI adds.
+- `CLAUDE_CODE_` — covers `CLAUDE_CODE_USE_BEDROCK`,
+  `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_SKIP_AUTH_LOGIN`, etc.
+
+Also hardened `CLAUDE_CODE_ENTRYPOINT`: previously it conditionally
+preserved the parent's value; now we unconditionally stamp
+`agentory-desktop` so server-side telemetry correctly identifies the
+client even when Agentory is dogfooded from inside a Claude Code session
+(where the parent sets `CLAUDE_CODE_ENTRYPOINT=cli`). `envOverrides` can
+still override it for tests.
+
+`CLAUDE_CONFIG_DIR` remains unconditionally overwritten to the isolated
+path — state isolation is preserved. Env-based credentials take
+precedence, which is exactly what claude.exe expects.
+
+Proxy vars (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY`) were
+already on the exact-match list.
+
+### New tests
+
+5 new tests in `electron/agent/__tests__/claude-spawner.test.ts`:
+
+- forwards `ANTHROPIC_*` credentials + endpoint configuration from parent env
+- forwards `CLAUDE_CODE_*` runtime flags (Bedrock/Vertex)
+- always overwrites `CLAUDE_CONFIG_DIR` with the isolated path
+- `envOverrides` still win over forwarded `ANTHROPIC_*` parent vars
+- existing "injects CLAUDE_CODE_ENTRYPOINT" test updated to reflect
+  unconditional stamping
+
+Total: 242/242 tests green (was 237 before this fix).
+
+### Real end-to-end (UI send → assistant reply)
+
+Script: `scripts/probe-e2e-env-passthrough.mjs`.
+
+Parent env: `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` set (values
+redacted). Launched Electron via Playwright with inherited env, clicked
+"New Session", typed the prompt, pressed Enter, waited up to 60s for an
+assistant block containing "OK".
+
+Prompt:
+
+```
+Reply with exactly the single word OK and nothing else.
+```
+
+Result: PASS in ~3.6s round-trip. Final chat region DOM innerText:
+
+```
+>
+Reply with exactly the single word OK and nothing else.
+●
+
+OK
+
+INFO
+Done
+— 1 turn · 3.6s · 32k in / 1 out · $0.487
+agentory-next
+·
+opus-4
+·
+auto
+Send
+Enter send · Shift+Enter newline
+```
+
+Interpretation:
+
+- `>` and `●` are the user and assistant author glyphs (CLI-visual
+  principle).
+- `OK` is the assistant reply, verbatim, matching the requested format.
+- `INFO Done — 1 turn · 3.6s · 32k in / 1 out · $0.487` is the
+  `StatusBanner` emitted from the `result` stream-json frame —
+  confirming the full turn round-tripped through `buildSpawnEnv` →
+  claude.exe → custom endpoint → stream-json → `streamToBlocks` →
+  renderer.
+- No "Not logged in" banner, no error blocks.
+
+### Updated verdict
+
+**End-to-end passes.** The SDK-removal migration is fully functional for
+the self-host workflow. A user who sets `ANTHROPIC_BASE_URL` +
+`ANTHROPIC_AUTH_TOKEN` in their shell and launches Agentory gets a real
+assistant turn with zero extra configuration and without their
+credentials being written to the isolated `~/.agentory/claude-cli-config/`.
+
+The earlier "Not logged in" observation was an artifact of the SAFE_ENV
+allowlist, not a protocol or spawn-layer bug.
+
