@@ -14,6 +14,76 @@ function streamerFor(sessionId: string): PartialAssistantStreamer {
   return s;
 }
 
+// Auto-prompt watchdog: when a session finishes a turn without uttering the
+// configured "done token", reply on the user's behalf so the agent keeps
+// going. Capped per-session so a runaway loop can't spam the SDK.
+function maybeFireWatchdog(sessionId: string): void {
+  const store = useStore.getState();
+  const cfg = store.watchdog;
+  if (!cfg.enabled) return;
+
+  // Don't fire while a permission prompt is pending — the agent isn't really
+  // idle, it's waiting on the user to approve a tool call.
+  const blocks = store.messagesBySession[sessionId] ?? [];
+  const hasPendingPermission = blocks.some(
+    (b) => (b.kind === 'waiting' && b.requestId) || (b.kind === 'question' && b.requestId)
+  );
+  if (hasPendingPermission) return;
+
+  // If the latest non-info signal is an error or rate-limit / API failure,
+  // bail too — auto-replying into a broken session just spams the SDK and
+  // racks up failed turns. The user needs to intervene.
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.kind === 'error') return;
+    if (b.kind === 'status' && b.tone === 'warn') return;
+    if (b.kind === 'assistant') break;
+    if (b.kind === 'user') break;
+  }
+
+  // Find the last assistant text block. Streaming blocks count too — by the
+  // time `result` lands, streaming has been finalized (streaming flag false).
+  let lastAssistantText = '';
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.kind === 'assistant') {
+      lastAssistantText = b.text;
+      break;
+    }
+  }
+  if (lastAssistantText.includes(cfg.doneToken)) return;
+
+  const count = store.watchdogCountsBySession[sessionId] ?? 0;
+  // maxAutoReplies <= 0 means unlimited.
+  if (cfg.maxAutoReplies > 0 && count >= cfg.maxAutoReplies) {
+    store.appendBlocks(sessionId, [
+      {
+        kind: 'status',
+        id: `watchdog-cap-${Date.now().toString(36)}`,
+        tone: 'warn',
+        title: 'Autopilot paused',
+        detail: `Reached ${cfg.maxAutoReplies} auto-replies without the done token; over to you.`
+      }
+    ]);
+    return;
+  }
+
+  const next = store.bumpWatchdogCount(sessionId);
+  const cap = cfg.maxAutoReplies > 0 ? `${cfg.maxAutoReplies}` : '∞';
+  const prompt = `如果你真的做完了，请回复我：${cfg.doneToken}\n\n否则：${cfg.otherwisePostfix}`;
+  store.appendBlocks(sessionId, [
+    {
+      kind: 'status',
+      id: `watchdog-${Date.now().toString(36)}`,
+      tone: 'info',
+      title: `Autopilot ${next}/${cap}`,
+      detail: 'Sent automatic follow-up because the agent stopped without the done token.'
+    }
+  ]);
+  void window.agentory?.agentSend(sessionId, prompt);
+  store.setRunning(sessionId, true);
+}
+
 type BackgroundWaitingHandler = (info: { sessionId: string; sessionName: string; prompt: string }) => void;
 let backgroundWaitingHandler: BackgroundWaitingHandler = () => {};
 
@@ -118,6 +188,7 @@ export function subscribeAgentEvents(): void {
     }
     if (e.message.type === 'result') {
       store.setRunning(e.sessionId, false);
+      maybeFireWatchdog(e.sessionId);
     }
   });
 

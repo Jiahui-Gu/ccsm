@@ -13,10 +13,11 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'general' | 'account' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'general' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
+  { id: 'autopilot', label: 'Autopilot' },
   { id: 'account', label: 'Account' },
   { id: 'data', label: 'Data' },
   { id: 'shortcuts', label: 'Shortcuts' },
@@ -69,6 +70,7 @@ export function SettingsDialog({
           </nav>
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
             {tab === 'general' && <GeneralPane />}
+            {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'account' && <AccountPane />}
             {tab === 'data' && <DataPane />}
             {tab === 'shortcuts' && <ShortcutsPane />}
@@ -146,6 +148,73 @@ function GeneralPane() {
             { value: 'md', label: 'Medium (13px, default)' },
             { value: 'lg', label: 'Large (14px)' }
           ]}
+        />
+      </Field>
+    </>
+  );
+}
+
+function AutopilotPane() {
+  const watchdog = useStore((s) => s.watchdog);
+  const setWatchdog = useStore((s) => s.setWatchdog);
+  const inputClass = cn(
+    'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
+    'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
+    'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+  );
+  return (
+    <>
+      <div className="text-xs text-fg-tertiary mb-4">
+        When an agent finishes a turn without saying the done token, Agentory
+        will reply on your behalf so it doesn&apos;t sit idle. Capped per session
+        to keep runaway loops in check.
+      </div>
+      <Field label="Enable autopilot" hint="Auto-reply when the agent stops without the done token.">
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={watchdog.enabled}
+            onChange={(e) => setWatchdog({ enabled: e.target.checked })}
+            className="h-4 w-4 accent-accent"
+          />
+          <span className="text-sm text-fg-secondary">{watchdog.enabled ? 'On' : 'Off'}</span>
+        </label>
+      </Field>
+      <Field
+        label="Done token"
+        hint="If the agent's last message contains this exact string, autopilot stops for the turn."
+      >
+        <input
+          type="text"
+          value={watchdog.doneToken}
+          onChange={(e) => setWatchdog({ doneToken: e.target.value })}
+          className={inputClass}
+        />
+      </Field>
+      <Field
+        label="Otherwise…"
+        hint="Appended after '如果你真的做完了，请回复我：<token>。\\n\\n否则：' in the auto-reply."
+      >
+        <textarea
+          value={watchdog.otherwisePostfix}
+          onChange={(e) => setWatchdog({ otherwisePostfix: e.target.value })}
+          rows={3}
+          className={cn(inputClass, 'h-auto py-2 resize-y leading-snug')}
+        />
+      </Field>
+      <Field
+        label="Max auto-replies per session"
+        hint="Resets when you send a real message. 0 = unlimited (use with care). Default 20."
+      >
+        <input
+          type="number"
+          min={0}
+          value={watchdog.maxAutoReplies}
+          onChange={(e) => {
+            const n = Number.parseInt(e.target.value, 10);
+            if (Number.isFinite(n) && n >= 0) setWatchdog({ maxAutoReplies: n });
+          }}
+          className={cn(inputClass, 'w-24')}
         />
       </Field>
     </>

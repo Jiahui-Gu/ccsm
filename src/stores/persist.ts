@@ -1,5 +1,5 @@
 import type { Group, Session } from '../types';
-import type { ModelId, PermissionMode, Theme, FontSize } from './store';
+import type { ModelId, PermissionMode, Theme, FontSize, WatchdogConfig } from './store';
 import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
@@ -16,6 +16,7 @@ export interface PersistedState {
   fontSize?: FontSize;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
+  watchdog?: WatchdogConfig;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
