@@ -6,6 +6,7 @@ import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
 import type { PermissionMode } from './agent/sessions';
+import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -200,6 +201,20 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.agentory.desktop');
   }
   initDb();
+
+  const cryptoAdapter: KeyCrypto = {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain),
+    decrypt: (cipher) => safeStorage.decryptString(cipher),
+  };
+  const endpoints = new EndpointsManager({ crypto: cryptoAdapter });
+
+  // First-run migration: if the parent env has ANTHROPIC_BASE_URL set and no
+  // endpoints exist yet, seed a "Default" endpoint with the env key so the
+  // self-host user flow Just Works on first launch. If neither is set, stay
+  // empty — the user will add endpoints via Settings.
+  void seedDefaultEndpointFromEnv(endpoints);
+
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
   ipcMain.handle('db:loadMessages', (_e, sessionId: string) => loadMessages(sessionId));
@@ -208,6 +223,52 @@ app.whenReady().then(() => {
     (_e, sessionId: string, blocks: Array<{ id: string; kind: string }>) =>
       saveMessages(sessionId, blocks)
   );
+
+  // Endpoints + models IPC
+  ipcMain.handle('endpoints:list', () => endpoints.listEndpoints());
+  ipcMain.handle(
+    'endpoints:add',
+    (_e, input: { name: string; baseUrl: string; kind?: 'anthropic'; apiKey?: string; isDefault?: boolean }) =>
+      endpoints.addEndpoint(input)
+  );
+  ipcMain.handle(
+    'endpoints:update',
+    (
+      _e,
+      id: string,
+      patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
+    ) => endpoints.updateEndpoint(id, patch)
+  );
+  ipcMain.handle('endpoints:remove', (_e, id: string) => endpoints.removeEndpoint(id));
+  ipcMain.handle(
+    'endpoints:testConnection',
+    (_e, args: { baseUrl: string; apiKey: string }) => endpoints.testConnection(args)
+  );
+  ipcMain.handle('endpoints:refreshModels', (_e, id: string) => endpoints.refreshModels(id));
+  ipcMain.handle('models:listByEndpoint', (_e, id: string) => endpoints.listModels(id));
+  ipcMain.handle('models:listAll', () => endpoints.listModelsAll());
+
+  // Main-process helper: resolve a session's endpoint env (base URL + plain
+  // key) so the spawner can inject them per-session without the renderer ever
+  // touching the plaintext key. Returns null if endpointId is unknown.
+  function resolveSessionEndpointEnv(
+    endpointId: string | undefined
+  ): Record<string, string> | undefined {
+    if (!endpointId) return undefined;
+    const ep = endpoints.getEndpoint(endpointId);
+    if (!ep) return undefined;
+    const overrides: Record<string, string> = {};
+    overrides.ANTHROPIC_BASE_URL = ep.baseUrl;
+    const key = endpoints.getPlainKey(endpointId);
+    if (key) {
+      overrides.ANTHROPIC_API_KEY = key;
+      overrides.ANTHROPIC_AUTH_TOKEN = key;
+    }
+    return overrides;
+  }
+  // Expose for agent:start below.
+  (global as unknown as { __agentoryEndpointEnv?: typeof resolveSessionEndpointEnv }).__agentoryEndpointEnv =
+    resolveSessionEndpointEnv;
   ipcMain.handle('app:getDataDir', () => app.getPath('userData'));
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('keychain:getApiKey', () => readApiKey());
@@ -246,10 +307,20 @@ app.whenReady().then(() => {
     (
       _e,
       sessionId: string,
-      opts: { cwd: string; model?: string; permissionMode?: PermissionMode; resumeSessionId?: string }
+      opts: {
+        cwd: string;
+        model?: string;
+        permissionMode?: PermissionMode;
+        resumeSessionId?: string;
+        endpointId?: string;
+      }
     ) => {
-      const apiKey = readApiKey();
-      return sessions.start(sessionId, { ...opts, apiKey });
+      const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
+      // Fall back to the global keychain key only when no endpoint was chosen
+      // or the endpoint has no stored key (user is still relying on parent
+      // env). Per-endpoint keys always win.
+      const apiKey = envOverrides?.ANTHROPIC_API_KEY ? undefined : readApiKey();
+      return sessions.start(sessionId, { ...opts, apiKey, envOverrides });
     }
   );
   ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
@@ -320,3 +391,28 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
+
+async function seedDefaultEndpointFromEnv(mgr: EndpointsManager): Promise<void> {
+  try {
+    const existing = mgr.listEndpoints();
+    if (existing.length > 0) return;
+    const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
+    if (!baseUrl) return;
+    const envKey =
+      process.env.ANTHROPIC_API_KEY?.trim() ||
+      process.env.ANTHROPIC_AUTH_TOKEN?.trim() ||
+      '';
+    const row = mgr.addEndpoint({
+      name: 'Default',
+      baseUrl,
+      kind: 'anthropic',
+      apiKey: envKey || undefined,
+      isDefault: true,
+    });
+    // Best-effort initial refresh. Failures are surfaced via the row's
+    // last_status — we don't block startup on this.
+    void mgr.refreshModels(row.id).catch(() => {});
+  } catch (err) {
+    console.warn('[main] seedDefaultEndpointFromEnv failed', err);
+  }
+}

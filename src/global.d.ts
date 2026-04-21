@@ -9,6 +9,7 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
+  endpointId?: string;
 };
 
 type StartResult = { ok: true } | { ok: false; error: string };
@@ -29,6 +30,35 @@ type UpdateStatus =
   | { kind: 'downloading'; percent: number; transferred: number; total: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
+
+type EndpointKindDecl = 'anthropic';
+type EndpointStatusDecl = 'ok' | 'error' | 'unchecked';
+type EndpointRowDecl = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  kind: EndpointKindDecl;
+  isDefault: boolean;
+  lastStatus: EndpointStatusDecl;
+  lastError: string | null;
+  lastRefreshedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+type ModelRowDecl = {
+  id: string;
+  endpointId: string;
+  modelId: string;
+  displayName: string | null;
+  discoveredAt: number;
+};
+type EndpointWithModelsDecl = EndpointRowDecl & { models: ModelRowDecl[] };
+type TestConnectionResultDecl =
+  | { ok: true }
+  | { ok: false; status?: number; error: string };
+type RefreshResultDecl =
+  | { ok: true; count: number }
+  | { ok: false; error: string; status?: number };
 
 declare global {
   interface Window {
@@ -79,6 +109,29 @@ declare global {
         isMaximized: () => Promise<boolean>;
         onMaximizedChanged: (handler: (max: boolean) => void) => () => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
+      };
+
+      endpoints: {
+        list: () => Promise<EndpointRowDecl[]>;
+        add: (input: {
+          name: string;
+          baseUrl: string;
+          kind?: EndpointKindDecl;
+          apiKey?: string;
+          isDefault?: boolean;
+        }) => Promise<EndpointRowDecl>;
+        update: (
+          id: string,
+          patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
+        ) => Promise<EndpointRowDecl | null>;
+        remove: (id: string) => Promise<boolean>;
+        testConnection: (args: { baseUrl: string; apiKey: string }) => Promise<TestConnectionResultDecl>;
+        refreshModels: (id: string) => Promise<RefreshResultDecl>;
+      };
+
+      models: {
+        listByEndpoint: (id: string) => Promise<ModelRowDecl[]>;
+        listAll: () => Promise<EndpointWithModelsDecl[]>;
       };
     };
   }

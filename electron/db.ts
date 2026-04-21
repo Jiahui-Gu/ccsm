@@ -12,6 +12,7 @@ export function initDb(): Database.Database {
   const file = path.join(dir, 'agentory.db');
   db = new Database(file);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS app_state (
       key TEXT PRIMARY KEY,
@@ -26,6 +27,31 @@ export function initDb(): Database.Database {
       createdAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId);
+
+    CREATE TABLE IF NOT EXISTS endpoints (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'anthropic',
+      api_key_encrypted BLOB,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      last_status TEXT,
+      last_error TEXT,
+      last_refreshed_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS endpoint_models (
+      id TEXT PRIMARY KEY,
+      endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+      model_id TEXT NOT NULL,
+      display_name TEXT,
+      discovered_at INTEGER NOT NULL,
+      UNIQUE(endpoint_id, model_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
+      ON endpoint_models(endpoint_id);
   `);
   return db;
 }
@@ -52,6 +78,56 @@ export function saveMessages(sessionId: string, blocks: Array<{ id: string; kind
     });
   });
   tx();
+}
+
+// Test-only: swap in an in-memory database. Never call from app code.
+export function __setDbForTests(instance: Database.Database | null): void {
+  db = instance;
+  if (instance) {
+    instance.pragma('foreign_keys = ON');
+    instance.exec(`
+      CREATE TABLE IF NOT EXISTS app_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        createdAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId);
+      CREATE TABLE IF NOT EXISTS endpoints (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'anthropic',
+        api_key_encrypted BLOB,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        last_status TEXT,
+        last_error TEXT,
+        last_refreshed_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS endpoint_models (
+        id TEXT PRIMARY KEY,
+        endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
+        model_id TEXT NOT NULL,
+        display_name TEXT,
+        discovered_at INTEGER NOT NULL,
+        UNIQUE(endpoint_id, model_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
+        ON endpoint_models(endpoint_id);
+    `);
+  }
+}
+
+export function getDb(): Database.Database {
+  return initDb();
 }
 
 export function loadState(key: string): string | null {

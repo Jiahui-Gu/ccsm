@@ -21,7 +21,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const running = useStore((s) => !!s.runningSessions[sessionId]);
   const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
   const permission = useStore((s) => s.permission);
-  const model = useStore((s) => s.model);
+  const defaultEndpointId = useStore((s) => s.defaultEndpointId);
   const appendBlocks = useStore((s) => s.appendBlocks);
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
@@ -54,11 +54,13 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     resetWatchdogCount(sessionId);
 
     if (!started) {
+      const endpointId = session.endpointId ?? defaultEndpointId ?? undefined;
       const res = await api.agentStart(sessionId, {
         cwd: session.cwd,
-        model,
+        model: session.model || undefined,
         permissionMode: toSdkPermissionMode(permission),
-        resumeSessionId: session.resumeSessionId
+        resumeSessionId: session.resumeSessionId,
+        endpointId
       });
       if (!res.ok) {
         setRunning(sessionId, false);
