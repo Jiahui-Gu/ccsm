@@ -123,7 +123,14 @@ declare global {
       updatesCheck: () => Promise<UpdateStatus>;
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
       updatesInstall: () => Promise<{ ok: true } | { ok: false; reason: string }>;
+      updatesGetAutoCheck: () => Promise<boolean>;
+      updatesSetAutoCheck: (enabled: boolean) => Promise<boolean>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
+      onUpdateAvailable: (
+        handler: (info: { version: string; releaseDate?: string }) => void
+      ) => () => void;
+      onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
+      onUpdateError: (handler: (info: { message: string }) => void) => () => void;
 
       window: {
         minimize: () => Promise<void>;
