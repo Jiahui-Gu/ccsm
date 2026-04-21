@@ -1,5 +1,5 @@
 import type { Group, Session } from '../types';
-import type { ModelId, PermissionMode, Theme, FontSize, WatchdogConfig } from './store';
+import type { PermissionMode, Theme, FontSize, WatchdogConfig } from './store';
 import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
@@ -9,7 +9,7 @@ export interface PersistedState {
   sessions: Session[];
   groups: Group[];
   activeId: string;
-  model: ModelId;
+  model: string;
   permission: PermissionMode;
   sidebarCollapsed: boolean;
   theme?: Theme;
@@ -17,6 +17,11 @@ export interface PersistedState {
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
   watchdog?: WatchdogConfig;
+  /**
+   * Default endpoint id for new sessions. Persisted so the user's pick survives
+   * restarts. Falls back to the endpoint with is_default=1 if missing.
+   */
+  defaultEndpointId?: string | null;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

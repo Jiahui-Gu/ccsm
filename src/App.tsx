@@ -197,7 +197,7 @@ export default function App() {
             <ChatStream />
             <StatusBar
               cwd={active.cwd}
-              model={model}
+              model={active.model || model}
               permission={permission}
               onChangeCwd={async (p) => {
                 let next = p;

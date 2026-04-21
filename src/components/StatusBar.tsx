@@ -11,7 +11,6 @@ import {
 } from './ui/DropdownMenu';
 import { useStore } from '../stores/store';
 
-type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 
 function lastSegment(path: string): string {
@@ -53,7 +52,8 @@ type ChipOption<V extends string> =
       secondary?: string;
       icon?: React.ReactNode;
     }
-  | { kind: 'separator' };
+  | { kind: 'separator' }
+  | { kind: 'label'; primary: string };
 
 type ChipMenuProps<V extends string> = {
   label: string;
@@ -77,10 +77,17 @@ function ChipMenu<V extends string>({
       <DropdownMenuTrigger asChild>
         <Chip title={triggerTitle} accent={triggerAccent}>{triggerLabel}</Chip>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" className="min-w-[240px]">
+      <DropdownMenuContent side="top" align="start" className="min-w-[240px] max-h-[360px] overflow-y-auto">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
         {options.map((o, i) => {
           if (o.kind === 'separator') return <DropdownMenuSeparator key={`sep-${i}`} />;
+          if (o.kind === 'label') {
+            return (
+              <DropdownMenuLabel key={`lbl-${i}`} className="pt-2">
+                {o.primary}
+              </DropdownMenuLabel>
+            );
+          }
           if (o.secondary) {
             return (
               <DropdownMenuItem
@@ -109,12 +116,6 @@ function ChipMenu<V extends string>({
 
 const BROWSE_FOLDER = '__browse__';
 
-const modelOptions: ChipOption<ModelId>[] = [
-  { kind: 'item', value: 'claude-opus-4', primary: 'opus-4', secondary: 'Most capable, slower and pricier' },
-  { kind: 'item', value: 'claude-sonnet-4', primary: 'sonnet-4', secondary: 'Balanced — recommended default' },
-  { kind: 'item', value: 'claude-haiku-4', primary: 'haiku-4', secondary: 'Fastest and cheapest, lower quality' }
-];
-
 // Labels describe what claude.exe actually does per mode. There is no CLI
 // setting that prompts on every single tool — reads are always auto-approved
 // below `bypassPermissions` and above `plan`. The chip wording reflects that
@@ -142,10 +143,10 @@ function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string
 
 export type StatusBarProps = {
   cwd: string;
-  model: ModelId;
+  model: string;
   permission: PermissionMode;
   onChangeCwd: (cwd: string | null) => void;
-  onChangeModel: (model: ModelId) => void;
+  onChangeModel: (model: string) => void;
   onChangePermission: (mode: PermissionMode) => void;
 };
 
@@ -158,6 +159,10 @@ export function StatusBar({
   onChangePermission
 }: StatusBarProps) {
   const recentProjects = useStore((s) => s.recentProjects);
+  const endpoints = useStore((s) => s.endpoints);
+  const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
+  const endpointsLoaded = useStore((s) => s.endpointsLoaded);
+
   const cwdOptions: ChipOption<string>[] = [
     ...recentProjects.map(
       (p) =>
@@ -173,6 +178,51 @@ export function StatusBar({
       icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
     }
   ];
+
+  // Build the grouped model option list: one `label` row per endpoint,
+  // followed by that endpoint's discovered models, separated between groups.
+  const modelOptions: ChipOption<string>[] = [];
+  if (!endpointsLoaded) {
+    modelOptions.push({ kind: 'label', primary: 'Loading…' });
+  } else if (endpoints.length === 0) {
+    modelOptions.push({ kind: 'label', primary: 'No endpoints configured' });
+  } else {
+    endpoints.forEach((e, idx) => {
+      if (idx > 0) modelOptions.push({ kind: 'separator' });
+      modelOptions.push({
+        kind: 'label',
+        primary: `${e.name}${e.isDefault ? ' (default)' : ''}`
+      });
+      const models = modelsByEndpoint[e.id] ?? [];
+      if (models.length === 0) {
+        modelOptions.push({
+          kind: 'label',
+          primary: e.lastStatus === 'error' ? e.lastError ?? 'Error' : 'No models yet — click Refresh in Settings'
+        });
+      } else {
+        for (const m of models) {
+          modelOptions.push({
+            kind: 'item',
+            value: m.modelId,
+            primary: m.displayName ?? m.modelId,
+            secondary: m.displayName ? m.modelId : undefined
+          });
+        }
+      }
+    });
+  }
+
+  // Render the trigger as the model's display name when known, else its id,
+  // else a friendly placeholder.
+  let modelTriggerLabel = model || '(pick model)';
+  for (const list of Object.values(modelsByEndpoint)) {
+    const found = list.find((m) => m.modelId === model);
+    if (found) {
+      modelTriggerLabel = found.displayName ?? found.modelId;
+      break;
+    }
+  }
+
   const chips: React.ReactNode[] = [
     <ChipMenu
       key="cwd"
@@ -185,7 +235,7 @@ export function StatusBar({
     <ChipMenu
       key="model"
       label="Model"
-      triggerLabel={primaryOf(modelOptions, model)}
+      triggerLabel={modelTriggerLabel}
       options={modelOptions}
       onSelect={onChangeModel}
     />,

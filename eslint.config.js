@@ -128,7 +128,11 @@ export default [
         clearInterval: 'readonly',
         setImmediate: 'readonly',
         clearImmediate: 'readonly',
-        globalThis: 'readonly'
+        globalThis: 'readonly',
+        global: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        URLSearchParams: 'readonly'
       }
     }
   }
