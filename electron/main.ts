@@ -2,7 +2,21 @@ import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dial
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { initDb, loadState, saveState, loadMessages, saveMessages, closeDb, loadClaudeBinPath, saveClaudeBinPath } from './db';
+import {
+  initDb,
+  loadState,
+  saveState,
+  loadMessages,
+  saveMessages,
+  closeDb,
+  loadClaudeBinPath,
+  saveClaudeBinPath,
+  saveWorktree,
+  loadWorktree,
+  deleteWorktree,
+  listWorktreesDb,
+  type WorktreeRow,
+} from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
 import { scanImportableSessions } from './import-scanner';
@@ -17,6 +31,17 @@ import {
   fetchPrChecks,
   type CreatePrArgs
 } from './pr';
+import {
+  WorktreeManager,
+  installWorktreeManager,
+  type WorktreeStorage,
+  type WorktreeRecord,
+} from './agent/worktree-manager';
+import {
+  resolveRepoRoot,
+  isGitRepo,
+  listBranches as gitListBranches,
+} from './agent/git-helpers';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -220,6 +245,26 @@ app.whenReady().then(() => {
   }
   initDb();
 
+  // ── WorktreeManager ────────────────────────────────────────────────────
+  // Sqlite-backed storage adapter. Marshals between WorktreeRecord (manager
+  // surface, with `sourceBranch: string | null`) and WorktreeRow (db surface,
+  // identical shape) — they're isomorphic right now, but keeping the marshal
+  // in one place means the db schema can drift later (renames, extra cols)
+  // without rippling into the manager.
+  const worktreeStorage: WorktreeStorage = {
+    save: (rec: WorktreeRecord) => saveWorktree(rec satisfies WorktreeRow),
+    remove: (sessionId) => deleteWorktree(sessionId),
+    getBySession: (sessionId) => loadWorktree(sessionId),
+    listAll: () => listWorktreesDb(),
+  };
+  const worktreeManager = new WorktreeManager({ storage: worktreeStorage });
+  installWorktreeManager(worktreeManager);
+  // Best-effort orphan reconcile on boot. We don't await — a slow `git
+  // worktree list` shouldn't block the first window from opening.
+  void worktreeManager.reconcileOrphans().catch((err) => {
+    console.warn('[main] worktree reconcileOrphans failed', err);
+  });
+
   const cryptoAdapter: KeyCrypto = {
     isAvailable: () => safeStorage.isEncryptionAvailable(),
     encrypt: (plain) => safeStorage.encryptString(plain),
@@ -339,7 +384,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle(
     'agent:start',
-    (
+    async (
       _e,
       sessionId: string,
       opts: {
@@ -350,6 +395,13 @@ app.whenReady().then(() => {
         endpointId?: string;
         allowedTools?: readonly string[];
         disallowedTools?: readonly string[];
+        // Worktree opt-in. When true, the spawner creates (or reuses) a
+        // disposable git worktree under the resolved repo root and runs
+        // claude.exe inside it. The renderer is informed of the resolved
+        // path via the `agent:worktreeReady` event so it can update its
+        // local Session record.
+        useWorktree?: boolean;
+        sourceBranch?: string;
       }
     ) => {
       const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
@@ -358,7 +410,58 @@ app.whenReady().then(() => {
       // env). Per-endpoint keys always win.
       const apiKey = envOverrides?.ANTHROPIC_API_KEY ? undefined : readApiKey();
       const binaryPath = loadClaudeBinPath() ?? undefined;
-      return sessions.start(sessionId, { ...opts, apiKey, envOverrides, binaryPath });
+
+      // ── Worktree binding ─────────────────────────────────────────────
+      // If the session opted into a worktree, swap `cwd` for the worktree
+      // path BEFORE spawning. We surface a structured failure to the
+      // renderer instead of starting in the wrong dir; the user is told
+      // exactly which git step blew up.
+      let effectiveCwd = opts.cwd;
+      let worktreeInfo: { path: string; name: string; branch: string; sourceBranch: string | null } | null = null;
+      if (opts.useWorktree) {
+        try {
+          const repoRoot = await resolveRepoRoot(opts.cwd);
+          if (!repoRoot) {
+            return {
+              ok: false as const,
+              error: `Cannot create worktree: ${opts.cwd} is not inside a git repository.`,
+            };
+          }
+          const rec = await worktreeManager.create(sessionId, repoRoot, opts.sourceBranch);
+          effectiveCwd = rec.path;
+          worktreeInfo = {
+            path: rec.path,
+            name: rec.name,
+            branch: rec.branch,
+            sourceBranch: rec.sourceBranch,
+          };
+        } catch (err) {
+          return {
+            ok: false as const,
+            error: `Worktree create failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+
+      const result = await sessions.start(sessionId, {
+        ...opts,
+        cwd: effectiveCwd,
+        apiKey,
+        envOverrides,
+        binaryPath,
+      });
+
+      // Inform the renderer of the resolved worktree so it can persist the
+      // path/name/branch onto the Session. Only emitted on success — failure
+      // flows return early above and the renderer learns via the rejected
+      // start result.
+      if (result.ok && worktreeInfo) {
+        const win = BrowserWindow.fromWebContents(_e.sender);
+        if (win && !win.webContents.isDestroyed()) {
+          win.webContents.send('agent:worktreeReady', { sessionId, ...worktreeInfo });
+        }
+      }
+      return result;
     }
   );
   ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
@@ -376,7 +479,37 @@ app.whenReady().then(() => {
   ipcMain.handle('agent:setModel', (_e, sessionId: string, model?: string) =>
     sessions.setModel(sessionId, model)
   );
-  ipcMain.handle('agent:close', (_e, sessionId: string) => sessions.close(sessionId));
+  ipcMain.handle('agent:close', async (_e, sessionId: string) => {
+    const closed = sessions.close(sessionId);
+    // Tear down the bound worktree, if any. We do this AFTER asking the
+    // session to close so the child process is no longer holding file
+    // handles inside the worktree on Windows. Errors are logged inside
+    // the manager — close() should never reject from the renderer's POV.
+    await worktreeManager.remove(sessionId).catch((err) => {
+      console.warn('[main] worktree remove failed', err);
+    });
+    return closed;
+  });
+
+  // ── Worktree IPC (read-only surface) ─────────────────────────────────
+  // create / remove are NOT exposed: they're driven by the session lifecycle
+  // (agent:start with useWorktree, agent:close). The renderer only needs
+  // to read branches for the new-session dialog and look up a session's
+  // current binding for status / display.
+  ipcMain.handle('worktree:listBranches', async (_e, repoRoot: string) => {
+    if (typeof repoRoot !== 'string' || repoRoot.length === 0) return [];
+    try {
+      if (!(await isGitRepo(repoRoot))) return [];
+      return await gitListBranches(repoRoot);
+    } catch (err) {
+      console.warn('[main] worktree:listBranches failed', err);
+      return [];
+    }
+  });
+  ipcMain.handle('worktree:getForSession', (_e, sessionId: string) => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
+    return worktreeManager.getBySession(sessionId);
+  });
   ipcMain.handle(
     'agent:resolvePermission',
     (_e, sessionId: string, requestId: string, decision: 'allow' | 'deny') =>
