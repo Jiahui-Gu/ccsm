@@ -1,7 +1,11 @@
-import type { PermissionMode as SDKPermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import type { PermissionMode } from '../stores/store';
 
-export function toSdkPermissionMode(mode: PermissionMode): SDKPermissionMode {
+// CLI-accepted permission modes (claude.exe `--permission-mode` flag and the
+// `set_permission_mode` control_request). Local copy so the renderer doesn't
+// drag in the SDK just for a string union.
+export type CliPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+
+export function toSdkPermissionMode(mode: PermissionMode): CliPermissionMode {
   switch (mode) {
     case 'plan':
       return 'plan';

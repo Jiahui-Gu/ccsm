@@ -1,6 +1,5 @@
 import type { WebContents } from 'electron';
-import type { PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { SessionRunner, type StartOptions } from './sessions';
+import { SessionRunner, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
 
 type Sender = (channel: string, payload: unknown) => void;
 
@@ -20,7 +19,7 @@ class SessionsManager {
     try {
       const runner = new SessionRunner(
         sessionId,
-        (msg: SDKMessage) => this.emit('agent:event', { sessionId, message: msg }),
+        (msg: AgentMessage) => this.emit('agent:event', { sessionId, message: msg }),
         ({ error }) => {
           this.emit('agent:exit', { sessionId, error });
           this.runners.delete(sessionId);
