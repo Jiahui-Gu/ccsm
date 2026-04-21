@@ -8,6 +8,7 @@ export type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 export type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
 export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
+export type LocaleSetting = 'system' | 'en' | 'zh';
 
 // Auto-prompt watchdog: when an agent stops without uttering the done token,
 // the lifecycle replies for the user so the agent doesn't sit idle. Tunables
@@ -38,6 +39,7 @@ type State = {
   sidebarCollapsed: boolean;
   theme: Theme;
   fontSize: FontSize;
+  localeSetting: LocaleSetting;
   tutorialSeen: boolean;
   watchdog: WatchdogConfig;
   watchdogCountsBySession: Record<string, number>;
@@ -62,6 +64,7 @@ type Actions = {
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
+  setLocale: (l: LocaleSetting) => void;
   markTutorialSeen: () => void;
   setWatchdog: (patch: Partial<WatchdogConfig>) => void;
   resetWatchdogCount: (sessionId: string) => void;
@@ -107,6 +110,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   sidebarCollapsed: false,
   theme: 'system',
   fontSize: 'md',
+  localeSetting: 'system',
   tutorialSeen: false,
   watchdog: DEFAULT_WATCHDOG,
   watchdogCountsBySession: {},
@@ -269,6 +273,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setTheme: (theme) => set({ theme }),
   setFontSize: (fontSize) => set({ fontSize }),
+  setLocale: (localeSetting) => set({ localeSetting }),
   markTutorialSeen: () => set({ tutorialSeen: true }),
 
   setWatchdog: (patch) =>
@@ -472,6 +477,7 @@ export async function hydrateStore(): Promise<void> {
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
+      localeSetting: persisted.localeSetting ?? 'system',
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) }
@@ -490,6 +496,7 @@ export async function hydrateStore(): Promise<void> {
       sidebarCollapsed: s.sidebarCollapsed,
       theme: s.theme,
       fontSize: s.fontSize,
+      localeSetting: s.localeSetting,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
       watchdog: s.watchdog

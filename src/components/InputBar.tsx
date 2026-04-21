@@ -3,6 +3,7 @@ import { ArrowUp, Square } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { useT } from '../i18n/useT';
 import { toSdkPermissionMode } from '../agent/permission';
 
 // Per-session draft cache. Survives session switches within a process so
@@ -27,6 +28,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const setRunning = useStore((s) => s.setRunning);
   const resetWatchdogCount = useStore((s) => s.resetWatchdogCount);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const t = useT();
 
   React.useEffect(() => {
     setValue(draftCache.get(sessionId) ?? '');
@@ -114,7 +116,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
           rows={2}
-          placeholder={running ? 'Running… (input disabled)' : hasMessages ? 'Reply…' : 'Ask anything…'}
+          placeholder={running ? t('inputBar.placeholderRunning') : hasMessages ? t('inputBar.placeholderReply') : t('inputBar.placeholderEmpty')}
           disabled={running}
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
@@ -129,22 +131,22 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             <Button
               variant="secondary"
               size="sm"
-              aria-label="Stop"
+              aria-label={t('inputBar.interrupt')}
               onClick={stop}
             >
               <Square size={10} className="stroke-[2.25]" />
-              <span>Stop</span>
+              <span>{t('inputBar.interrupt')}</span>
             </Button>
           ) : (
             <Button
               variant="primary"
               size="sm"
-              aria-label="Send message"
+              aria-label={t('inputBar.send')}
               disabled={!value.trim()}
               onClick={send}
             >
               <ArrowUp size={10} className="stroke-[2.25]" />
-              <span>Send</span>
+              <span>{t('inputBar.send')}</span>
             </Button>
           )}
         </div>

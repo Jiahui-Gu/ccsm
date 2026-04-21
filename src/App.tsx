@@ -15,6 +15,7 @@ import { Tutorial } from './components/Tutorial';
 import { useStore } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
+import { useT } from './i18n/useT';
 
 subscribeAgentEvents();
 
@@ -23,6 +24,7 @@ if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
 }
 
 export default function App() {
+  const t = useT();
   const sessions = useStore((s) => s.sessions);
   const activeId = useStore((s) => s.activeId);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
@@ -213,7 +215,7 @@ export default function App() {
             />
             <InputBar sessionId={active.id} />
             <div className="px-4 pb-2 font-mono text-xs text-fg-disabled select-none">
-              <span>Enter send · Shift+Enter newline</span>
+              <span>{t('app.sendShortcut')}</span>
             </div>
           </main>
           </div>

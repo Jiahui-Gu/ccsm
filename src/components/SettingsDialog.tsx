@@ -3,6 +3,7 @@ import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { useT } from '../i18n/useT';
 
 type LocalUpdateStatus =
   | { kind: 'idle' }
@@ -15,14 +16,7 @@ type LocalUpdateStatus =
 
 type Tab = 'general' | 'autopilot' | 'account' | 'data' | 'shortcuts' | 'updates';
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'general', label: 'General' },
-  { id: 'autopilot', label: 'Autopilot' },
-  { id: 'account', label: 'Account' },
-  { id: 'data', label: 'Data' },
-  { id: 'shortcuts', label: 'Shortcuts' },
-  { id: 'updates', label: 'Updates' }
-];
+const TAB_KEYS: Tab[] = ['general', 'autopilot', 'account', 'data', 'shortcuts', 'updates'];
 
 // Shortcut catalog mirrors mvp-design.md §11. Keep in sync when adding keys.
 const SHORTCUTS: { keys: string; desc: string }[] = [
@@ -44,27 +38,28 @@ export function SettingsDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const [tab, setTab] = useState<Tab>('general');
+  const t = useT();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="Settings" width="720px" hideClose={false}>
+      <DialogContent title={t('settings.title')} width="720px" hideClose={false}>
         <div className="flex min-h-[380px] border-t border-border-subtle">
           <nav className="w-[160px] shrink-0 border-r border-border-subtle py-2">
-            {TABS.map((t) => (
+            {TAB_KEYS.map((id) => (
               <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
+                key={id}
+                onClick={() => setTab(id)}
                 className={cn(
                   'flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
                   'transition-[background-color,color] duration-150 ease-out',
                   'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
-                  tab === t.id
+                  tab === id
                     ? 'bg-bg-active text-fg-primary font-medium'
                     : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary'
                 )}
                 style={{ width: 'calc(100% - 0.5rem)' }}
               >
-                {t.label}
+                {t(`settings.tab.${id}`)}
               </button>
             ))}
           </nav>
@@ -122,31 +117,45 @@ function Select<T extends string>({
 }
 
 function GeneralPane() {
+  const t = useT();
   const theme = useStore((s) => s.theme);
   const fontSize = useStore((s) => s.fontSize);
+  const localeSetting = useStore((s) => s.localeSetting);
   const setTheme = useStore((s) => s.setTheme);
   const setFontSize = useStore((s) => s.setFontSize);
+  const setLocale = useStore((s) => s.setLocale);
   return (
     <>
-      <Field label="Theme">
+      <Field label={t('settings.general.language')} hint={t('settings.general.languageHint')}>
+        <Select
+          value={localeSetting}
+          onChange={setLocale}
+          options={[
+            { value: 'system', label: t('settings.general.languageSystem') },
+            { value: 'en', label: t('settings.general.languageEn') },
+            { value: 'zh', label: t('settings.general.languageZh') }
+          ]}
+        />
+      </Field>
+      <Field label={t('settings.general.theme')}>
         <Select
           value={theme}
           onChange={setTheme}
           options={[
-            { value: 'system', label: 'System' },
-            { value: 'light', label: 'Light' },
-            { value: 'dark', label: 'Dark' }
+            { value: 'system', label: t('settings.general.themeSystem') },
+            { value: 'light', label: t('settings.general.themeLight') },
+            { value: 'dark', label: t('settings.general.themeDark') }
           ]}
         />
       </Field>
-      <Field label="Font size" hint="Affects chat stream and sidebar">
+      <Field label={t('settings.general.fontSize')} hint={t('settings.general.fontSizeHint')}>
         <Select
           value={fontSize}
           onChange={setFontSize}
           options={[
-            { value: 'sm', label: 'Small (12px)' },
-            { value: 'md', label: 'Medium (13px, default)' },
-            { value: 'lg', label: 'Large (14px)' }
+            { value: 'sm', label: t('settings.general.fontSizeSm') },
+            { value: 'md', label: t('settings.general.fontSizeMd') },
+            { value: 'lg', label: t('settings.general.fontSizeLg') }
           ]}
         />
       </Field>
@@ -155,6 +164,7 @@ function GeneralPane() {
 }
 
 function AutopilotPane() {
+  const t = useT();
   const watchdog = useStore((s) => s.watchdog);
   const setWatchdog = useStore((s) => s.setWatchdog);
   const inputClass = cn(
@@ -164,12 +174,8 @@ function AutopilotPane() {
   );
   return (
     <>
-      <div className="text-xs text-fg-tertiary mb-4">
-        When an agent finishes a turn without saying the done token, Agentory
-        will reply on your behalf so it doesn&apos;t sit idle. Capped per session
-        to keep runaway loops in check.
-      </div>
-      <Field label="Enable autopilot" hint="Auto-reply when the agent stops without the done token.">
+      <div className="text-xs text-fg-tertiary mb-4">{t('settings.autopilot.intro')}</div>
+      <Field label={t('settings.autopilot.enabled')} hint={t('settings.autopilot.enabledHint')}>
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -177,13 +183,12 @@ function AutopilotPane() {
             onChange={(e) => setWatchdog({ enabled: e.target.checked })}
             className="h-4 w-4 accent-accent"
           />
-          <span className="text-sm text-fg-secondary">{watchdog.enabled ? 'On' : 'Off'}</span>
+          <span className="text-sm text-fg-secondary">
+            {watchdog.enabled ? t('settings.autopilot.on') : t('settings.autopilot.off')}
+          </span>
         </label>
       </Field>
-      <Field
-        label="Done token"
-        hint="If the agent's last message contains this exact string, autopilot stops for the turn."
-      >
+      <Field label={t('settings.autopilot.doneToken')} hint={t('settings.autopilot.doneTokenHint')}>
         <input
           type="text"
           value={watchdog.doneToken}
@@ -191,10 +196,7 @@ function AutopilotPane() {
           className={inputClass}
         />
       </Field>
-      <Field
-        label="Otherwise…"
-        hint="Appended after '如果你真的做完了，请回复我：<token>。\\n\\n否则：' in the auto-reply."
-      >
+      <Field label={t('settings.autopilot.otherwise')} hint={t('settings.autopilot.otherwiseHint')}>
         <textarea
           value={watchdog.otherwisePostfix}
           onChange={(e) => setWatchdog({ otherwisePostfix: e.target.value })}
@@ -202,10 +204,7 @@ function AutopilotPane() {
           className={cn(inputClass, 'h-auto py-2 resize-y leading-snug')}
         />
       </Field>
-      <Field
-        label="Max auto-replies per session"
-        hint="Resets when you send a real message. 0 = unlimited (use with care). Default 20."
-      >
+      <Field label={t('settings.autopilot.maxReplies')} hint={t('settings.autopilot.maxRepliesHint')}>
         <input
           type="number"
           min={0}
@@ -222,6 +221,7 @@ function AutopilotPane() {
 }
 
 function AccountPane() {
+  const t = useT();
   const [key, setKey] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -244,25 +244,21 @@ function AccountPane() {
     const api = window.agentory;
     if (!api) return;
     const ok = await api.setApiKey(key.trim());
-    setStatus(ok ? 'Saved.' : 'Failed to save (encryption unavailable).');
+    setStatus(ok ? t('settings.account.saved') : t('settings.account.saveFailed'));
     setTimeout(() => setStatus(null), 2000);
   };
 
   return (
     <>
       <Field
-        label="Anthropic API key"
-        hint={
-          encAvailable
-            ? 'Stored in OS keychain. Required for Claude Code sessions.'
-            : 'OS encryption unavailable — key cannot be saved on this system.'
-        }
+        label={t('settings.account.apiKey')}
+        hint={encAvailable ? t('settings.account.apiKeyHint') : t('settings.account.apiKeyHintNoEnc')}
       >
         <input
           type="password"
           value={key}
           onChange={(e) => setKey(e.target.value)}
-          placeholder={loaded ? 'sk-ant-…' : 'Loading…'}
+          placeholder={loaded ? 'sk-ant-…' : '…'}
           disabled={!loaded || !encAvailable}
           className={cn(
             'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
@@ -274,7 +270,7 @@ function AccountPane() {
       </Field>
       <div className="flex items-center gap-3">
         <Button variant="primary" size="md" onClick={save} disabled={!loaded || !encAvailable}>
-          Save
+          {t('settings.account.save')}
         </Button>
         {status && <span className="text-xs text-fg-secondary">{status}</span>}
       </div>
@@ -283,18 +279,19 @@ function AccountPane() {
 }
 
 function DataPane() {
-  const [dataDir, setDataDir] = useState<string>('Loading…');
+  const t = useT();
+  const [dataDir, setDataDir] = useState<string>('…');
   useEffect(() => {
     window.agentory?.getDataDir().then(setDataDir).catch(() => setDataDir('(unavailable)'));
   }, []);
   return (
     <>
-      <Field label="Data directory" hint="Where Agentory stores groups, sessions, and preferences.">
+      <Field label={t('settings.data.dataDir')} hint={t('settings.data.dataDirHint')}>
         <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all">
           {dataDir}
         </code>
       </Field>
-      <Field label="Claude sessions directory" hint="Read-only. Managed by Claude Code SDK.">
+      <Field label={t('settings.data.sessionsDir')} hint={t('settings.data.sessionsDirHint')}>
         <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono">
           {'~/.claude/projects/'}
         </code>
@@ -304,11 +301,10 @@ function DataPane() {
 }
 
 function ShortcutsPane() {
+  const t = useT();
   return (
     <div>
-      <div className="text-xs text-fg-tertiary mb-3">
-        Keybindings are fixed in MVP — remapping adds maintenance burden without clear user value.
-      </div>
+      <div className="text-xs text-fg-tertiary mb-3">{t('settings.shortcuts.hint')}</div>
       <ul className="divide-y divide-border-subtle">
         {SHORTCUTS.map((s) => (
           <li key={s.keys} className="flex items-center justify-between h-8 text-sm">
@@ -324,6 +320,7 @@ function ShortcutsPane() {
 }
 
 function UpdatesPane() {
+  const t = useT();
   const [version, setVersion] = useState<string>('…');
   const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
 
@@ -342,37 +339,34 @@ function UpdatesPane() {
     if (!window.agentory) return;
     setStatus({ kind: 'checking' });
     await window.agentory.updatesCheck();
-    // Real status arrives via the push event; nothing to do here.
   }
-
   async function onDownload() {
     await window.agentory?.updatesDownload();
   }
-
   function onInstall() {
     void window.agentory?.updatesInstall();
   }
 
   return (
     <>
-      <Field label="Version">
+      <Field label={t('settings.updates.version')}>
         <span className="text-sm text-fg-secondary font-mono">{version}</span>
       </Field>
-      <Field label="Status">
-        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status)}</span>
+      <Field label={t('settings.updates.status')}>
+        <span className="text-sm text-fg-secondary font-mono">{describeStatus(t, status)}</span>
       </Field>
       <div className="flex gap-2">
         <Button variant="secondary" size="md" onClick={onCheck} disabled={!canCheck}>
-          {isChecking ? 'Checking…' : 'Check for updates'}
+          {isChecking ? t('settings.updates.checking') : t('settings.updates.check')}
         </Button>
         {status.kind === 'available' && (
           <Button variant="primary" size="md" onClick={onDownload}>
-            Download {status.version}
+            {t('settings.updates.download', { version: status.version })}
           </Button>
         )}
         {status.kind === 'downloaded' && (
           <Button variant="primary" size="md" onClick={onInstall}>
-            Restart & install
+            {t('settings.updates.install')}
           </Button>
         )}
       </div>
@@ -380,22 +374,26 @@ function UpdatesPane() {
   );
 }
 
-function describeStatus(s: LocalUpdateStatus): string {
+function describeStatus(t: (key: string, vars?: Record<string, string | number>) => string, s: LocalUpdateStatus): string {
   switch (s.kind) {
     case 'idle':
-      return 'No update check performed yet.';
+      return t('settings.updates.idle');
     case 'checking':
-      return 'Checking for updates…';
+      return t('settings.updates.checkingDetail');
     case 'available':
-      return `Update available: ${s.version}`;
+      return t('settings.updates.available', { version: s.version });
     case 'not-available':
-      return 'You are on the latest version.';
+      return t('settings.updates.notAvailable');
     case 'downloading':
-      return `Downloading… ${s.percent.toFixed(1)}% (${formatBytes(s.transferred)} / ${formatBytes(s.total)})`;
+      return t('settings.updates.downloading', {
+        percent: s.percent.toFixed(1),
+        transferred: formatBytes(s.transferred),
+        total: formatBytes(s.total)
+      });
     case 'downloaded':
-      return `Update ${s.version} ready — restart to install.`;
+      return t('settings.updates.downloaded', { version: s.version });
     case 'error':
-      return `Update check failed: ${s.message}`;
+      return t('settings.updates.error', { message: s.message });
   }
 }
 

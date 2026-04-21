@@ -1,6 +1,13 @@
 import { useStore } from '../stores/store';
 import { sdkMessageToTranslation, PartialAssistantStreamer } from './sdk-to-blocks';
 import type { MessageBlock, QuestionSpec } from '../types';
+import { translate, detectSystemLocale, type Locale } from '../i18n';
+
+function activeLocale(): Locale {
+  const setting = useStore.getState().localeSetting;
+  if (setting === 'system') return detectSystemLocale();
+  return setting;
+}
 
 let installed = false;
 
@@ -56,13 +63,14 @@ function maybeFireWatchdog(sessionId: string): void {
   const count = store.watchdogCountsBySession[sessionId] ?? 0;
   // maxAutoReplies <= 0 means unlimited.
   if (cfg.maxAutoReplies > 0 && count >= cfg.maxAutoReplies) {
+    const loc = activeLocale();
     store.appendBlocks(sessionId, [
       {
         kind: 'status',
         id: `watchdog-cap-${Date.now().toString(36)}`,
         tone: 'warn',
-        title: 'Autopilot paused',
-        detail: `Reached ${cfg.maxAutoReplies} auto-replies without the done token; over to you.`
+        title: translate(loc, 'watchdog.autopilotPaused'),
+        detail: translate(loc, 'watchdog.autopilotPausedDetail', { n: cfg.maxAutoReplies })
       }
     ]);
     return;
@@ -71,13 +79,14 @@ function maybeFireWatchdog(sessionId: string): void {
   const next = store.bumpWatchdogCount(sessionId);
   const cap = cfg.maxAutoReplies > 0 ? `${cfg.maxAutoReplies}` : '∞';
   const prompt = `如果你真的做完了，请回复我：${cfg.doneToken}\n\n否则：${cfg.otherwisePostfix}`;
+  const loc = activeLocale();
   store.appendBlocks(sessionId, [
     {
       kind: 'status',
       id: `watchdog-${Date.now().toString(36)}`,
       tone: 'info',
-      title: `Autopilot ${next}/${cap}`,
-      detail: 'Sent automatic follow-up because the agent stopped without the done token.'
+      title: translate(loc, 'watchdog.autopilotProgress', { n: next, cap }),
+      detail: translate(loc, 'watchdog.autopilotProgressDetail')
     }
   ]);
   void window.agentory?.agentSend(sessionId, prompt);

@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger
 } from './ui/DropdownMenu';
 import { useStore } from '../stores/store';
+import { useT } from '../i18n/useT';
 
 type ModelId = 'claude-opus-4' | 'claude-sonnet-4' | 'claude-haiku-4';
 type PermissionMode = 'plan' | 'ask' | 'auto' | 'yolo';
@@ -147,6 +148,11 @@ export function StatusBar({
   onChangePermission
 }: StatusBarProps) {
   const recentProjects = useStore((s) => s.recentProjects);
+  const t = useT();
+  const localizedPermissionOptions: ChipOption<PermissionMode>[] = permissionOptions.map((o) => {
+    if (o.kind !== 'item') return o;
+    return { ...o, primary: t(`permission.${o.value}`), secondary: t(`permission.${o.value}Secondary`) };
+  });
   const cwdOptions: ChipOption<string>[] = [
     ...recentProjects.map(
       (p) =>
@@ -158,14 +164,14 @@ export function StatusBar({
     {
       kind: 'item',
       value: BROWSE_FOLDER,
-      primary: 'Browse folder…',
+      primary: t('statusBar.browseFolder'),
       icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
     }
   ];
   const chips: React.ReactNode[] = [
     <ChipMenu
       key="cwd"
-      label="Working directory"
+      label={t('statusBar.cwd')}
       triggerLabel={lastSegment(cwd)}
       triggerTitle={cwd}
       options={cwdOptions}
@@ -173,17 +179,17 @@ export function StatusBar({
     />,
     <ChipMenu
       key="model"
-      label="Model"
+      label={t('statusBar.model')}
       triggerLabel={primaryOf(modelOptions, model)}
       options={modelOptions}
       onSelect={onChangeModel}
     />,
     <ChipMenu
       key="permission"
-      label="Permission mode"
-      triggerLabel={primaryOf(permissionOptions, permission)}
+      label={t('statusBar.permission')}
+      triggerLabel={primaryOf(localizedPermissionOptions, permission)}
       triggerAccent={permission === 'yolo' ? 'warn' : undefined}
-      options={permissionOptions}
+      options={localizedPermissionOptions}
       onSelect={onChangePermission}
     />
   ];

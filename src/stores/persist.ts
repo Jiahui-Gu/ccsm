@@ -1,5 +1,5 @@
 import type { Group, Session } from '../types';
-import type { ModelId, PermissionMode, Theme, FontSize, WatchdogConfig } from './store';
+import type { ModelId, PermissionMode, Theme, FontSize, WatchdogConfig, LocaleSetting } from './store';
 import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
@@ -14,6 +14,7 @@ export interface PersistedState {
   sidebarCollapsed: boolean;
   theme?: Theme;
   fontSize?: FontSize;
+  localeSetting?: LocaleSetting;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
   watchdog?: WatchdogConfig;

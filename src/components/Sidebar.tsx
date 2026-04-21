@@ -41,6 +41,7 @@ import {
 import { InlineRename } from './ui/InlineRename';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import type { Group, Session } from '../types';
+import { useT } from '../i18n/useT';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
 // derived from state. The array order handed down from the store is the
@@ -74,6 +75,7 @@ function GroupRow({
   onFocus: () => void;
 }) {
   const sessionIds = sessions.map((s) => s.id);
+  const t = useT();
   const hasWaiting = sessions.some((s) => s.state === 'waiting');
   const setGroupCollapsed = useStore((s) => s.setGroupCollapsed);
   const renameGroup = useStore((s) => s.renameGroup);
@@ -188,10 +190,10 @@ function GroupRow({
           >
             {group.kind === 'archive' ? 'Unarchive group' : 'Archive group'}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
+          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('sidebar.rename')}</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
-            Delete group…
+            {t('sidebar.delete')}…
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -253,6 +255,7 @@ function GroupRow({
 }
 
 function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
+  const t = useT();
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
@@ -343,9 +346,9 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
         </li>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
+        <ContextMenuItem onSelect={() => setRenaming(true)}>{t('sidebar.rename')}</ContextMenuItem>
         <ContextMenuSub>
-          <ContextMenuSubTrigger>Move to group</ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
           <ContextMenuSubContent>
             {groups.map((g) => (
               <ContextMenuItem
@@ -363,13 +366,13 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
                 moveSession(session.id, id, null);
               }}
             >
-              New group…
+              {t('sidebar.newGroup')}…
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
-          Delete
+          {t('sidebar.delete')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -403,6 +406,7 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string 
 }
 
 export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+  const t = useT();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
   const collapsed = useStore((s) => s.sidebarCollapsed);
@@ -472,9 +476,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             variant="raised"
             size="md"
             onClick={() => onCreateSession?.(null)}
-            tooltip="New session"
+            tooltip={t('sidebar.newSession')}
             tooltipSide="right"
-            aria-label="New session"
+            aria-label={t('sidebar.newSession')}
             className="h-8 w-8"
           >
             <Plus size={14} className="stroke-[1.75]" />
@@ -536,9 +540,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             <IconButton
               size="xs"
               variant="ghost"
-              tooltip="New group"
+              tooltip={t('sidebar.newGroup')}
               tooltipSide="top"
-              aria-label="New group"
+              aria-label={t('sidebar.newGroup')}
               onClick={() => createGroup()}
             >
               <Plus size={12} className="stroke-[1.75]" />
