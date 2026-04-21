@@ -280,7 +280,7 @@ export class EndpointsManager {
         return {
           ok: false,
           status: res.status,
-          error: describeHttpError(res.status, body),
+          error: describeHttpError(res.status, body, { hasKey: args.apiKey.length > 0 }),
         };
       }
       return { ok: true };
@@ -456,8 +456,17 @@ async function safeReadText(res: Response): Promise<string> {
   }
 }
 
-function describeHttpError(status: number, body: string): string {
-  if (status === 401 || status === 403) return `Authentication failed (HTTP ${status})`;
+function describeHttpError(
+  status: number,
+  body: string,
+  opts: { hasKey?: boolean } = {}
+): string {
+  if (status === 401 || status === 403) {
+    if (opts.hasKey === false) {
+      return `Endpoint requires a key \u2014 please enter one (HTTP ${status})`;
+    }
+    return `Authentication failed (HTTP ${status})`;
+  }
   if (status === 404) return `Endpoint does not expose /v1/models (HTTP 404)`;
   if (status === 429) return `Rate limited by upstream (HTTP 429)`;
   if (status >= 500) return `Upstream error (HTTP ${status})`;
