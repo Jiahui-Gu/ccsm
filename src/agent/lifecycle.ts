@@ -164,6 +164,13 @@ export function subscribeAgentEvents(): void {
     }
     if (e.message.type === 'result') {
       store.setRunning(e.sessionId, false);
+      // Persist the finalized turn so reloading the app restores history.
+      // Saving on `result` rather than on every delta avoids writing partial
+      // streaming blocks; the bulk DELETE+INSERT is idempotent.
+      const blocks = useStore.getState().messagesBySession[e.sessionId];
+      if (blocks && blocks.length > 0 && typeof window.agentory?.saveMessages === 'function') {
+        void window.agentory.saveMessages(e.sessionId, blocks);
+      }
       maybeFireWatchdog(e.sessionId);
     }
   });

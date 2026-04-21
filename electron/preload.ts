@@ -32,6 +32,10 @@ const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
   saveState: (key: string, value: string): Promise<void> =>
     ipcRenderer.invoke('db:save', key, value),
+  loadMessages: (sessionId: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('db:loadMessages', sessionId),
+  saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>): Promise<void> =>
+    ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
   getDataDir: (): Promise<string> => ipcRenderer.invoke('app:getDataDir'),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   getApiKey: (): Promise<string> => ipcRenderer.invoke('keychain:getApiKey'),
