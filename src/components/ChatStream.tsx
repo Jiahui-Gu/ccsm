@@ -9,8 +9,14 @@ import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
 import { FileTree } from './FileTree';
+import { Terminal } from './Terminal';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
+
+// Tool names whose output is a shell stream (raw text, often with ANSI
+// escapes). We render these in xterm so colors/cursor moves render properly
+// instead of leaking as literal `\u001b[...m` noise.
+const SHELL_OUTPUT_TOOLS = new Set(['Bash', 'BashOutput']);
 
 function UserBlock({ text }: { text: string }) {
   return (
@@ -111,6 +117,7 @@ function ToolBlock({
   const hasResult = typeof result === 'string';
   const diff = diffFromToolInput(name, input);
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
+  const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
   return (
     <div className="font-mono text-sm">
       <button
@@ -156,6 +163,8 @@ function ToolBlock({
               <DiffView diff={diff} />
             ) : isFileTree ? (
               <FileTree source={result as string} />
+            ) : isShellTool ? (
+              <Terminal data={hasResult ? (result ?? '') : ''} running={!hasResult} />
             ) : (
               <pre
                 className={`mt-1 ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${
