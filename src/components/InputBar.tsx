@@ -3,7 +3,6 @@ import { ArrowUp, Square } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
-import { toSdkPermissionMode } from '../agent/permission';
 import { SlashCommandPicker } from './SlashCommandPicker';
 import {
   SLASH_COMMANDS,
@@ -144,7 +143,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       const res = await api.agentStart(sessionId, {
         cwd: session.cwd,
         model: session.model || undefined,
-        permissionMode: toSdkPermissionMode(permission),
+        permissionMode: permission,
         resumeSessionId: session.resumeSessionId,
         endpointId
       });
