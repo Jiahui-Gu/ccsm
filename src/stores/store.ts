@@ -264,6 +264,7 @@ type Actions = {
   loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
+  setSessionState: (sessionId: string, state: Session['state']) => void;
   markInterrupted: (sessionId: string) => void;
   consumeInterrupted: (sessionId: string) => boolean;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
@@ -867,6 +868,18 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (running) next[sessionId] = true;
       else delete next[sessionId];
       return { runningSessions: next };
+    });
+  },
+
+  setSessionState: (sessionId, state) => {
+    set((s) => {
+      let changed = false;
+      const next = s.sessions.map((x) => {
+        if (x.id !== sessionId || x.state === state) return x;
+        changed = true;
+        return { ...x, state };
+      });
+      return changed ? { sessions: next } : s;
     });
   },
 
