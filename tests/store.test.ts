@@ -85,6 +85,21 @@ describe('store: createSession', () => {
     expect(s.cwd).toBe('/tmp/repo');
     expect(s.name).toBe('Spike');
   });
+
+  it('expands the target group when it was collapsed', () => {
+    const gid = useStore.getState().createGroup('Hidden');
+    useStore.getState().setGroupCollapsed(gid, true);
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession(null);
+    const g = useStore.getState().groups.find((x) => x.id === gid);
+    expect(g?.collapsed).toBe(false);
+  });
+
+  it('bumps focusInputNonce so the InputBar pulls focus', () => {
+    const before = useStore.getState().focusInputNonce;
+    useStore.getState().createSession('~/a');
+    expect(useStore.getState().focusInputNonce).toBe(before + 1);
+  });
 });
 
 describe('store: deleteSession', () => {
