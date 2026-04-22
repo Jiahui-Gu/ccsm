@@ -5,7 +5,6 @@ import type {
   FontSize,
   FontSizePx,
   Density,
-  WatchdogConfig,
   NotificationSettings
 } from './store';
 import type { RecentProject } from '../mock/data';
@@ -33,7 +32,6 @@ export interface PersistedState {
   density?: Density;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
-  watchdog?: WatchdogConfig;
   /**
    * Default endpoint id for new sessions. Persisted so the user's pick survives
    * restarts. Falls back to the endpoint with is_default=1 if missing.

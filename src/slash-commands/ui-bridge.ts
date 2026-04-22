@@ -10,7 +10,6 @@ export type SettingsTab =
   | 'appearance'
   | 'notifications'
   | 'endpoints'
-  | 'autopilot'
   | 'permissions'
   | 'updates';
 

@@ -78,26 +78,8 @@ export interface ModelInfo {
   existsConfirmed: boolean;
 }
 
-// Auto-prompt watchdog: when an agent stops without uttering the done token,
-// the lifecycle replies for the user so the agent doesn't sit idle. Tunables
-// live in user settings; per-session counts cap how many auto-replies fire
-// before a human must actually weigh in.
-export interface WatchdogConfig {
-  enabled: boolean;
-  doneToken: string;
-  otherwisePostfix: string;
-  maxAutoReplies: number;
-}
-
-export const DEFAULT_WATCHDOG: WatchdogConfig = {
-  enabled: false,
-  doneToken: '我真的已经做完了',
-  otherwisePostfix: '继续做，别问我任何事，你来做决策。',
-  maxAutoReplies: 20
-};
-
 // OS-level notification preferences. Persisted as a single JSON blob alongside
-// the rest of app state — same envelope as `watchdog`.
+// the rest of app state.
 export interface NotificationSettings {
   enabled: boolean;
   permission: boolean;
@@ -182,8 +164,6 @@ type State = {
   fontSizePx: FontSizePx;
   density: Density;
   tutorialSeen: boolean;
-  watchdog: WatchdogConfig;
-  watchdogCountsBySession: Record<string, number>;
   notificationSettings: NotificationSettings;
   messagesBySession: Record<string, MessageBlock[]>;
   startedSessions: Record<string, true>;
@@ -243,9 +223,6 @@ type Actions = {
   setDensity: (density: Density) => void;
   setSidebarWidthPct: (pct: number) => void;
   markTutorialSeen: () => void;
-  setWatchdog: (patch: Partial<WatchdogConfig>) => void;
-  resetWatchdogCount: (sessionId: string) => void;
-  bumpWatchdogCount: (sessionId: string) => number;
   setNotificationSettings: (patch: Partial<NotificationSettings>) => void;
   setSessionNotificationsMuted: (sessionId: string, muted: boolean) => void;
 
@@ -392,8 +369,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   fontSizePx: 14,
   density: 'normal',
   tutorialSeen: false,
-  watchdog: DEFAULT_WATCHDOG,
-  watchdogCountsBySession: {},
   notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
   messagesBySession: {},
   startedSessions: {},
@@ -659,26 +634,6 @@ export const useStore = create<State & Actions>((set, get) => ({
     set({ sidebarWidthPct: clamped });
   },
   markTutorialSeen: () => set({ tutorialSeen: true }),
-
-  setWatchdog: (patch) =>
-    set((s) => ({ watchdog: { ...s.watchdog, ...patch } })),
-
-  resetWatchdogCount: (sessionId) =>
-    set((s) => {
-      if (!(sessionId in s.watchdogCountsBySession)) return s;
-      const next = { ...s.watchdogCountsBySession };
-      delete next[sessionId];
-      return { watchdogCountsBySession: next };
-    }),
-
-  bumpWatchdogCount: (sessionId) => {
-    const cur = get().watchdogCountsBySession[sessionId] ?? 0;
-    const nextN = cur + 1;
-    set((s) => ({
-      watchdogCountsBySession: { ...s.watchdogCountsBySession, [sessionId]: nextN }
-    }));
-    return nextN;
-  },
 
   setNotificationSettings: (patch) =>
     set((s) => ({ notificationSettings: { ...s.notificationSettings, ...patch } })),
@@ -1077,7 +1032,6 @@ export async function hydrateStore(): Promise<void> {
       density: sanitizeDensity(persisted.density),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
-      watchdog: { ...DEFAULT_WATCHDOG, ...(persisted.watchdog ?? {}) },
       defaultEndpointId: persisted.defaultEndpointId ?? null,
       notificationSettings: {
         ...DEFAULT_NOTIFICATION_SETTINGS,
@@ -1171,7 +1125,6 @@ export async function hydrateStore(): Promise<void> {
       density: s.density,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
-      watchdog: s.watchdog,
       defaultEndpointId: s.defaultEndpointId,
       notificationSettings: s.notificationSettings,
       permissionRules: s.permissionRules
