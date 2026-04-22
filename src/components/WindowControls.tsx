@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Minus, Square, Copy, X } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { useTranslation } from '../i18n/useTranslation';
 
 // Cross-platform window chrome pieces.
 //
@@ -87,6 +88,7 @@ export function WindowControls({ className }: { className?: string }) {
   const platform = api?.window.platform ?? 'win32';
   const isMac = platform === 'darwin';
   const [isMax, setIsMax] = useState(false);
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (!api) return;
@@ -101,12 +103,12 @@ export function WindowControls({ className }: { className?: string }) {
 
   return (
     <NoDragRegion className={cn('flex h-full items-stretch shrink-0', className)}>
-      <TitleButton onClick={() => api?.window.minimize()} aria-label="Minimize">
+      <TitleButton onClick={() => api?.window.minimize()} aria-label={t('windowControls.minimize')}>
         <Minus size={12} className="stroke-[1.75]" />
       </TitleButton>
       <TitleButton
         onClick={() => api?.window.toggleMaximize()}
-        aria-label={isMax ? 'Restore' : 'Maximize'}
+        aria-label={isMax ? t('windowControls.restore') : t('windowControls.maximize')}
       >
         {isMax ? (
           <Copy size={11} className="stroke-[1.75] -scale-x-100" />
@@ -114,7 +116,7 @@ export function WindowControls({ className }: { className?: string }) {
           <Square size={11} className="stroke-[1.75]" />
         )}
       </TitleButton>
-      <TitleButton onClick={() => api?.window.close()} aria-label="Close" danger>
+      <TitleButton onClick={() => api?.window.close()} aria-label={t('windowControls.close')} danger>
         <X size={13} className="stroke-[1.75]" />
       </TitleButton>
     </NoDragRegion>

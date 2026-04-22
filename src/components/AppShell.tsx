@@ -1,6 +1,7 @@
 import React from 'react';
 import { Group, Panel, Separator, type PanelSize } from 'react-resizable-panels';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 /**
  * Two-pane shell with a draggable vertical divider.
@@ -28,6 +29,7 @@ export function AppShell({
 }) {
   const sidebarWidthPct = useStore((s) => s.sidebarWidthPct);
   const setSidebarWidthPct = useStore((s) => s.setSidebarWidthPct);
+  const { t } = useTranslation();
 
   // Percent value as a string, which is what the library's defaultSize prop
   // expects when we want percentage semantics. Clamp to a sane range so a
@@ -58,7 +60,7 @@ export function AppShell({
       </Panel>
       <Separator
         className="pane-resize-handle"
-        aria-label="Resize sidebar"
+        aria-label={t('appShell.resizeSidebar')}
       />
       <Panel
         id="main"

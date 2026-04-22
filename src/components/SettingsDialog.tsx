@@ -154,18 +154,18 @@ function AppearancePane() {
           ]}
         />
       </Field>
-      <Field label="Theme" hint="System follows your OS preference (and reacts live when it changes).">
+      <Field label={t('theme')} hint={t('themeHint')}>
         <Segmented
           value={theme}
           onChange={setTheme}
           options={[
-            { value: 'dark', label: 'Dark' },
-            { value: 'light', label: 'Light' },
-            { value: 'system', label: 'System' },
+            { value: 'dark', label: t('themeOptions.dark') },
+            { value: 'light', label: t('themeOptions.light') },
+            { value: 'system', label: t('themeOptions.system') },
           ]}
         />
       </Field>
-      <Field label="Font size" hint="Applies to the whole app. Explicit small labels (meta, kbd) keep their intrinsic size.">
+      <Field label={t('fontSize')} hint={t('fontSizeAppliesHint')}>
         <div className="flex items-center gap-3">
           <input
             type="range"
@@ -180,19 +180,19 @@ function AppearancePane() {
               }
             }}
             className="w-48 accent-accent cursor-pointer"
-            aria-label="Font size in pixels"
+            aria-label={t('fontSizeAria')}
           />
           <span className="text-xs font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
         </div>
       </Field>
-      <Field label="Density" hint="Tightens or loosens row padding and spacing across the app.">
+      <Field label={t('density')} hint={t('densityHint')}>
         <Segmented
           value={density}
           onChange={setDensity}
           options={[
-            { value: 'compact', label: 'Compact' },
-            { value: 'normal', label: 'Normal' },
-            { value: 'comfortable', label: 'Comfortable' },
+            { value: 'compact', label: t('densityOptions.compact') },
+            { value: 'normal', label: t('densityOptions.normal') },
+            { value: 'comfortable', label: t('densityOptions.comfortable') },
           ]}
         />
       </Field>
@@ -247,6 +247,7 @@ function NotificationsPane() {
   const setNotificationSettings = useStore((s) => s.setNotificationSettings);
   const activeId = useStore((s) => s.activeId);
   const [testStatus, setTestStatus] = useState<string | null>(null);
+  const { t } = useTranslation('settings');
 
   const Toggle = ({
     checked,
@@ -270,25 +271,25 @@ function NotificationsPane() {
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 accent-accent"
       />
-      <span className="text-sm text-fg-secondary">{checked ? 'On' : 'Off'}</span>
+      <span className="text-sm text-fg-secondary">{checked ? t('notifications.toggleOn') : t('notifications.toggleOff')}</span>
     </label>
   );
 
   const onTest = async () => {
     const api = window.agentory;
     if (!api) {
-      setTestStatus('IPC unavailable.');
+      setTestStatus(t('notifications.testIpcUnavailable'));
       setTimeout(() => setTestStatus(null), 2000);
       return;
     }
     const ok = await api.notify({
       sessionId: activeId,
-      title: 'Agentory test notification',
-      body: 'If you can read this, OS notifications are working.',
+      title: t('notifications.testTitle'),
+      body: t('notifications.testBody'),
       eventType: 'test',
       silent: !settings.sound
     });
-    setTestStatus(ok ? 'Sent.' : 'Failed - OS notifications unavailable.');
+    setTestStatus(ok ? t('notifications.testSent') : t('notifications.testFailed'));
     setTimeout(() => setTestStatus(null), 2500);
   };
 
@@ -297,24 +298,22 @@ function NotificationsPane() {
   return (
     <>
       <div className="text-xs text-fg-tertiary mb-4">
-        OS-level toasts when a session needs your attention. Suppressed when
-        the window is focused on that same session, and debounced per session
-        per event type so a chatty agent cannot spam you.
+        {t('notifications.intro')}
       </div>
-      <Field label="Enable notifications">
+      <Field label={t('notifications.enable')}>
         <Toggle
           checked={settings.enabled}
           onChange={(v) => setNotificationSettings({ enabled: v })}
         />
       </Field>
-      <Field label="Permission prompts" hint="When a tool call is waiting on your approval.">
+      <Field label={t('notifications.permissionPrompts')} hint={t('notifications.permissionPromptsHint')}>
         <Toggle
           checked={settings.permission}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ permission: v })}
         />
       </Field>
-      <Field label="Questions" hint="When the agent uses AskUserQuestion to ask you something.">
+      <Field label={t('notifications.questions')} hint={t('notifications.questionsHint')}>
         <Toggle
           checked={settings.question}
           disabled={disableChildren}
@@ -322,8 +321,8 @@ function NotificationsPane() {
         />
       </Field>
       <Field
-        label="Turn done"
-        hint="Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped."
+        label={t('notifications.turnDone')}
+        hint={t('notifications.turnDoneHint')}
       >
         <Toggle
           checked={settings.turnDone}
@@ -331,7 +330,7 @@ function NotificationsPane() {
           onChange={(v) => setNotificationSettings({ turnDone: v })}
         />
       </Field>
-      <Field label="Sound" hint="Play the OS default notification sound.">
+      <Field label={t('notifications.sound')} hint={t('notifications.soundHint')}>
         <Toggle
           checked={settings.sound}
           disabled={disableChildren}
@@ -340,7 +339,7 @@ function NotificationsPane() {
       </Field>
       <div className="flex items-center gap-3">
         <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
-          Test notification
+          {t('notifications.testButton')}
         </Button>
         {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
       </div>
@@ -352,14 +351,15 @@ function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
   const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
   const [autoCheck, setAutoCheck] = useState<boolean>(true);
+  const { t } = useTranslation('settings');
 
   useEffect(() => {
-    window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
+    window.agentory?.getVersion().then(setVersion).catch(() => setVersion(t('updates.versionUnknown')));
     void window.agentory?.updatesStatus().then(setStatus).catch(() => {});
     void window.agentory?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
     const off = window.agentory?.onUpdateStatus(setStatus);
     return () => off?.();
-  }, []);
+  }, [t]);
 
   const isChecking = status.kind === 'checking';
   const isDownloading = status.kind === 'downloading';
@@ -390,15 +390,15 @@ function UpdatesPane() {
 
   return (
     <>
-      <Field label="Version">
+      <Field label={t('version')}>
         <span className="text-sm text-fg-secondary font-mono">{version}</span>
       </Field>
-      <Field label="Status">
-        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status)}</span>
+      <Field label={t('updates.status')}>
+        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status, t)}</span>
       </Field>
       <Field
-        label="Automatic checks"
-        hint="When on, Agentory checks GitHub for updates on launch and every 4 hours."
+        label={t('updates.automaticChecks')}
+        hint={t('updates.automaticChecksHint')}
       >
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
           <input
@@ -407,21 +407,21 @@ function UpdatesPane() {
             onChange={(e) => void onToggleAutoCheck(e.target.checked)}
             className="h-4 w-4 accent-accent"
           />
-          <span className="text-sm text-fg-secondary">Check for updates automatically</span>
+          <span className="text-sm text-fg-secondary">{t('updates.automaticChecksToggle')}</span>
         </label>
       </Field>
       <div className="flex gap-2">
         <Button variant="secondary" size="md" onClick={onCheck} disabled={!canCheck}>
-          {isChecking ? 'Checking…' : 'Check for updates'}
+          {isChecking ? t('updates.checking') : t('checkForUpdates')}
         </Button>
         {status.kind === 'available' && (
           <Button variant="primary" size="md" onClick={onDownload}>
-            Download {status.version}
+            {t('updates.downloadVersion', { version: status.version })}
           </Button>
         )}
         {status.kind === 'downloaded' && (
           <Button variant="primary" size="md" onClick={onInstall}>
-            Restart & install
+            {t('updates.restartAndInstall')}
           </Button>
         )}
       </div>
@@ -429,22 +429,28 @@ function UpdatesPane() {
   );
 }
 
-function describeStatus(s: LocalUpdateStatus): string {
+type TFn = (key: string, opts?: Record<string, unknown>) => string;
+
+function describeStatus(s: LocalUpdateStatus, t: TFn): string {
   switch (s.kind) {
     case 'idle':
-      return 'No update check performed yet.';
+      return t('updates.statusIdle');
     case 'checking':
-      return 'Checking for updates…';
+      return t('updates.statusChecking');
     case 'available':
-      return `Update available: ${s.version}`;
+      return t('updates.statusAvailable', { version: s.version });
     case 'not-available':
-      return 'You are on the latest version.';
+      return t('updates.statusNotAvailable');
     case 'downloading':
-      return `Downloading… ${s.percent.toFixed(1)}% (${formatBytes(s.transferred)} / ${formatBytes(s.total)})`;
+      return t('updates.statusDownloading', {
+        percent: s.percent.toFixed(1),
+        transferred: formatBytes(s.transferred),
+        total: formatBytes(s.total),
+      });
     case 'downloaded':
-      return `Update ${s.version} ready — restart to install.`;
+      return t('updates.statusDownloaded', { version: s.version });
     case 'error':
-      return `Update check failed: ${s.message}`;
+      return t('updates.statusError', { message: s.message });
   }
 }
 
@@ -454,13 +460,13 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function relativeTime(ts: number | null): string {
-  if (!ts) return 'never';
+function relativeTime(ts: number | null, t: TFn): string {
+  if (!ts) return t('endpoints.relativeNever');
   const delta = Date.now() - ts;
-  if (delta < 60_000) return 'just now';
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
-  return `${Math.floor(delta / 86_400_000)}d ago`;
+  if (delta < 60_000) return t('endpoints.relativeJustNow');
+  if (delta < 3_600_000) return t('endpoints.relativeMinutes', { n: Math.floor(delta / 60_000) });
+  if (delta < 86_400_000) return t('endpoints.relativeHours', { n: Math.floor(delta / 3_600_000) });
+  return t('endpoints.relativeDays', { n: Math.floor(delta / 86_400_000) });
 }
 
 type EditingEndpoint = {
@@ -475,22 +481,24 @@ type EditingEndpoint = {
 
 // Labels for the detected endpoint kind. `unknown` is a real outcome (most
 // 中转 relays that only forward /v1/messages), not an error — show it plainly.
+// All values stay English brand names except `unknown` which is i18n'd via
+// the `endpoints.kindUnknown` key at render time.
 const KIND_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',
   'openai-compat': 'OpenAI-compat',
   ollama: 'Ollama',
   bedrock: 'Bedrock',
   vertex: 'Vertex',
-  unknown: 'Unknown',
 };
 
 function KindBadge({ kind }: { kind: string | null }) {
+  const { t } = useTranslation('settings');
   if (!kind) return null;
-  const label = KIND_LABEL[kind] ?? kind;
+  const label = KIND_LABEL[kind] ?? (kind === 'unknown' ? t('endpoints.kindUnknown') : kind);
   return (
     <span
       className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-bg-hover text-fg-secondary"
-      title={`Detected endpoint kind: ${label}`}
+      title={t('endpoints.kindLabelTooltip', { label })}
     >
       {label}
     </span>
@@ -510,16 +518,17 @@ function SourceBreakdown({
   };
   total: number;
 }) {
+  const { t } = useTranslation('settings');
   const parts: string[] = [];
-  if (counts.listed) parts.push(`${counts.listed} listed`);
-  if (counts.cliPicker) parts.push(`${counts.cliPicker} CLI picker`);
-  if (counts.envOverride) parts.push(`${counts.envOverride} env override`);
-  if (counts.fallback) parts.push(`${counts.fallback} fallback`);
-  if (counts.manual) parts.push(`${counts.manual} manual`);
-  const tooltip = parts.length ? parts.join(' \u00B7 ') : 'no discovery data yet';
+  if (counts.listed) parts.push(t('endpoints.sourceListed', { count: counts.listed }));
+  if (counts.cliPicker) parts.push(t('endpoints.sourceCliPicker', { count: counts.cliPicker }));
+  if (counts.envOverride) parts.push(t('endpoints.sourceEnvOverride', { count: counts.envOverride }));
+  if (counts.fallback) parts.push(t('endpoints.sourceFallback', { count: counts.fallback }));
+  if (counts.manual) parts.push(t('endpoints.sourceManual', { count: counts.manual }));
+  const tooltip = parts.length ? parts.join(' \u00B7 ') : t('endpoints.sourceNoData');
   return (
     <span title={tooltip} className="cursor-help">
-      {total} model{total === 1 ? '' : 's'}
+      {t('endpoints.modelCount', { count: total })}
     </span>
   );
 }
@@ -530,6 +539,7 @@ function EndpointsPane() {
   const endpointsLoaded = useStore((s) => s.endpointsLoaded);
   const reloadEndpoints = useStore((s) => s.reloadEndpoints);
   const refreshEndpointModels = useStore((s) => s.refreshEndpointModels);
+  const { t } = useTranslation('settings');
 
   const [editor, setEditor] = useState<EditingEndpoint | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -540,7 +550,7 @@ function EndpointsPane() {
     setError(null);
     const res = await refreshEndpointModels(id);
     setRefreshingId(null);
-    if (!res.ok) setError(res.error ?? 'Refresh failed');
+    if (!res.ok) setError(res.error ?? t('endpoints.refreshFailed'));
   }
 
   async function onRemove(id: string) {
@@ -554,13 +564,11 @@ function EndpointsPane() {
     <>
       <div className="flex items-center justify-between mb-4">
         <div className="text-xs text-fg-tertiary max-w-[440px]">
-          Agentory talks to any server that speaks the Anthropic REST API:
-          anthropic.com, a self-hosted gateway, or a LiteLLM / Kimi / DeepSeek
-          shim. Add one here and Agentory will discover its models via
+          {t('endpoints.intro')}
           <code className="font-mono text-fg-secondary mx-1">GET /v1/models</code>.
         </div>
         <Button variant="primary" size="md" onClick={() => setEditor(emptyEditor())}>
-          Add endpoint
+          {t('endpoints.addBtn')}
         </Button>
       </div>
 
@@ -571,11 +579,10 @@ function EndpointsPane() {
       )}
 
       {!endpointsLoaded ? (
-        <div className="text-sm text-fg-tertiary">Loading endpoints…</div>
+        <div className="text-sm text-fg-tertiary">{t('endpoints.loading')}</div>
       ) : endpoints.length === 0 ? (
         <div className="text-sm text-fg-tertiary">
-          No endpoints yet. Click &quot;Add endpoint&quot; to point Agentory at Anthropic
-          or your own gateway.
+          {t('endpoints.empty')}
         </div>
       ) : (
         <ul className="divide-y divide-border-subtle rounded-sm border border-border-subtle bg-bg-elevated">
@@ -597,7 +604,7 @@ function EndpointsPane() {
                     <span className="text-sm font-medium text-fg-primary truncate">{e.name}</span>
                     {e.isDefault && (
                       <span className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-accent/15 text-accent">
-                        default
+                        {t('endpoints.defaultBadge')}
                       </span>
                     )}
                     <StatusBadge status={e.lastStatus} />
@@ -607,18 +614,18 @@ function EndpointsPane() {
                     {e.baseUrl}
                   </div>
                   <div className="text-[11px] text-fg-tertiary mt-0.5">
-                    <SourceBreakdown counts={counts} total={models.length} /> · refreshed{' '}
-                    {relativeTime(e.lastRefreshedAt)}
-                    {e.lastRefreshedAt ? ' (cached)' : ''}
+                    <SourceBreakdown counts={counts} total={models.length} /> ·{' '}
+                    {t('endpoints.refreshed', { when: relativeTime(e.lastRefreshedAt, t) })}
+                    {e.lastRefreshedAt ? t('endpoints.cachedSuffix') : ''}
                   </div>
                   {is401 && (
                     <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-error/40 bg-state-error/10 text-[11px] text-state-error">
-                      Auth failed — check your API key for this endpoint.
+                      {t('endpoints.authFailed')}
                     </div>
                   )}
                   {noneFound && (
                     <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-warning/40 bg-state-warning/10 text-[11px] text-fg-secondary">
-                      Could not auto-discover any models. Edit this endpoint and add manual model IDs below.
+                      {t('endpoints.noModelsFound')}
                     </div>
                   )}
                   {e.lastStatus === 'error' && !is401 && e.lastError ? (
@@ -634,7 +641,7 @@ function EndpointsPane() {
                     onClick={() => onRefresh(e.id)}
                     disabled={refreshingId === e.id}
                   >
-                    {refreshingId === e.id ? 'Refreshing…' : 'Refresh models'}
+                    {refreshingId === e.id ? t('endpoints.refreshing') : t('endpoints.refreshModels')}
                   </Button>
                   <Button
                     variant="secondary"
@@ -651,16 +658,16 @@ function EndpointsPane() {
                       })
                     }
                   >
-                    Edit
+                    {t('endpoints.edit')}
                   </Button>
                   <Button
                     variant="danger"
                     size="sm"
                     onClick={() => {
-                      if (window.confirm(`Remove endpoint "${e.name}"?`)) void onRemove(e.id);
+                      if (window.confirm(t('endpoints.removeConfirm', { name: e.name }))) void onRemove(e.id);
                     }}
                   >
-                    Remove
+                    {t('endpoints.remove')}
                   </Button>
                 </div>
               </li>
@@ -688,13 +695,19 @@ function emptyEditor(): EditingEndpoint {
 }
 
 function StatusBadge({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
+  const { t } = useTranslation('settings');
   const cls =
     status === 'ok'
       ? 'bg-state-success/15 text-state-success'
       : status === 'error'
       ? 'bg-state-error/15 text-state-error'
       : 'bg-bg-hover text-fg-tertiary';
-  const label = status === 'ok' ? 'connected' : status === 'error' ? 'error' : 'unchecked';
+  const label =
+    status === 'ok'
+      ? t('endpoints.statusConnected')
+      : status === 'error'
+      ? t('endpoints.statusError')
+      : t('endpoints.statusUnchecked');
   return (
     <span className={cn('text-[10px] uppercase tracking-wide px-1 rounded-sm', cls)}>{label}</span>
   );
@@ -709,6 +722,7 @@ function EndpointEditorDialog({
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const { t } = useTranslation('settings');
   const [name, setName] = useState(value.name);
   const [baseUrl, setBaseUrl] = useState(value.baseUrl);
   const [apiKey, setApiKey] = useState('');
@@ -781,36 +795,36 @@ function EndpointEditorDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={isEdit ? 'Edit endpoint' : 'Add endpoint'} width="520px">
+      <DialogContent title={isEdit ? t('endpoints.editorEditTitle') : t('endpoints.editorAddTitle')} width="520px">
         <div className="px-5 pb-4">
-          <Field label="Name">
+          <Field label={t('endpoints.fieldName')}>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Anthropic, My LiteLLM"
+              placeholder={t('endpoints.fieldNamePlaceholder')}
               className={inputClass}
               autoFocus
             />
           </Field>
-          <Field label="Protocol">
-            <span className="text-sm text-fg-secondary">Anthropic-compatible (REST)</span>
+          <Field label={t('endpoints.fieldProtocol')}>
+            <span className="text-sm text-fg-secondary">{t('endpoints.fieldProtocolValue')}</span>
           </Field>
-          <Field label="Base URL" hint="Paste the API root, e.g. https://api.anthropic.com — Agentory uses it as-is for /v1/messages and probes /v1/models for discovery.">
+          <Field label={t('endpoints.fieldBaseUrl')} hint={t('endpoints.fieldBaseUrlHint')}>
             <input
               type="text"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.anthropic.com"
+              placeholder={t('endpoints.fieldBaseUrlPlaceholder')}
               className={cn(inputClass, 'font-mono')}
             />
           </Field>
           <Field
-            label="API key (optional)"
+            label={t('endpoints.fieldApiKey')}
             hint={
               value.hasExistingKey
-                ? 'Leave blank to keep the existing key.'
-                : 'Optional \u2014 leave blank if your endpoint does not require authentication.'
+                ? t('endpoints.fieldApiKeyHintExisting')
+                : t('endpoints.fieldApiKeyHintNew')
             }
           >
             <div className="flex items-center gap-2">
@@ -818,20 +832,20 @@ function EndpointEditorDialog({
                 type={revealKey ? 'text' : 'password'}
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={value.hasExistingKey ? '••••••• (unchanged)' : 'sk-ant-…'}
+                placeholder={value.hasExistingKey ? t('endpoints.fieldApiKeyPlaceholderUnchanged') : t('apiKeyPlaceholder')}
                 className={cn(inputClass, 'font-mono')}
               />
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setRevealKey((r) => !r)}
-                aria-label={revealKey ? 'Hide key' : 'Reveal key'}
+                aria-label={revealKey ? t('endpoints.hideKey') : t('endpoints.revealKey')}
               >
-                {revealKey ? 'Hide' : 'Show'}
+                {revealKey ? t('endpoints.hideBtn') : t('endpoints.showBtn')}
               </Button>
             </div>
           </Field>
-          <Field label="Default endpoint" hint="Used for new sessions that don't pick one.">
+          <Field label={t('endpoints.fieldDefault')} hint={t('endpoints.fieldDefaultHint')}>
             <label className="inline-flex items-center gap-2 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -839,12 +853,12 @@ function EndpointEditorDialog({
                 onChange={(e) => setIsDefault(e.target.checked)}
                 className="h-4 w-4 accent-accent"
               />
-              <span className="text-sm text-fg-secondary">Make default</span>
+              <span className="text-sm text-fg-secondary">{t('endpoints.fieldDefaultMake')}</span>
             </label>
           </Field>
           <Field
-            label="Manual model IDs"
-            hint="Optional. One ID per line (or comma-separated). Used as additional model picks alongside whatever claude.exe reports — IDs that aren't in claude's catalogue are still kept in the picker, marked unverified."
+            label={t('endpoints.fieldManualIds')}
+            hint={t('endpoints.fieldManualIdsHint')}
           >
             <textarea
               value={manualIdsRaw}
@@ -859,10 +873,10 @@ function EndpointEditorDialog({
           </Field>
           <div className="flex items-center gap-3 mt-4">
             <Button variant="secondary" size="md" onClick={onTest} disabled={!canTest || testing}>
-              {testing ? 'Testing…' : 'Test connection'}
+              {testing ? t('endpoints.testing') : t('testConnection')}
             </Button>
             {testResult === 'ok' && (
-              <span className="text-xs text-state-success">Connected.</span>
+              <span className="text-xs text-state-success">{t('endpoints.testOk')}</span>
             )}
             {testResult && testResult !== 'ok' && (
               <span className="text-xs text-state-error">{testResult}</span>
@@ -871,7 +885,7 @@ function EndpointEditorDialog({
         </div>
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border-subtle">
           <Button variant="ghost" size="md" onClick={onClose}>
-            Cancel
+            {t('endpoints.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -881,7 +895,7 @@ function EndpointEditorDialog({
               !name.trim() || !baseUrl.trim() || saving
             }
           >
-            {saving ? 'Saving…' : isEdit ? 'Save' : 'Add'}
+            {saving ? t('endpoints.saving') : isEdit ? t('endpoints.save') : t('endpoints.add')}
           </Button>
         </div>
       </DialogContent>
