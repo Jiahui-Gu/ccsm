@@ -190,6 +190,10 @@ type State = {
 export interface CreateSessionOptions {
   cwd?: string | null;
   name?: string;
+  /** Force the new session into this group, overriding the
+   *  focused/active-group fallback chain. Ignored if the id doesn't
+   *  resolve to a normal (non-special) group. */
+  groupId?: string;
 }
 
 type Actions = {
@@ -453,7 +457,9 @@ export const useStore = create<State & Actions>((set, get) => ({
       return !!g && g.kind === 'normal';
     };
     const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
-    const targetGroupId = isUsable(focusedGroupId)
+    const targetGroupId = isUsable(opts.groupId)
+      ? opts.groupId!
+      : isUsable(focusedGroupId)
       ? focusedGroupId!
       : isUsable(activeGroupId)
       ? activeGroupId!
