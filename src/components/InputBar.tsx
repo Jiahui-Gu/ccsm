@@ -140,6 +140,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
   const resetWatchdogCount = useStore((s) => s.resetWatchdogCount);
+  const watchdogEnabled = useStore((s) => s.watchdog.enabled);
+  const setWatchdog = useStore((s) => s.setWatchdog);
   const markInterrupted = useStore((s) => s.markInterrupted);
   const focusInputNonce = useStore((s) => s.focusInputNonce);
   // True iff there's a pending permission/plan/question prompt for this
@@ -645,6 +647,27 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             )}
           >
             <ImagePlus size={14} className="stroke-[2.25]" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setWatchdog({ enabled: !watchdogEnabled })}
+            aria-pressed={watchdogEnabled}
+            aria-label={`Autopilot ${watchdogEnabled ? 'on' : 'off'}`}
+            title={
+              watchdogEnabled
+                ? 'Autopilot on — auto-replies when the agent stops without the done token. Click to disable.'
+                : 'Autopilot off — click to enable auto-replies when the agent stalls.'
+            }
+            className={cn(
+              'inline-flex h-6 items-center px-1.5 rounded-sm text-[10px] font-mono uppercase tracking-wider',
+              'transition-[background-color,color,border-color] duration-150 ease-out',
+              'outline-none focus-visible:ring-1 focus-visible:ring-border-strong active:scale-95',
+              watchdogEnabled
+                ? 'bg-accent/15 text-accent border border-accent/40 hover:bg-accent/20'
+                : 'bg-transparent text-fg-tertiary border border-border-default hover:text-fg-primary hover:bg-bg-hover'
+            )}
+          >
+            Autopilot
           </button>
           {attachments.length > 0 && (
             <span className="font-mono text-[10px] uppercase tracking-wider text-fg-tertiary">
