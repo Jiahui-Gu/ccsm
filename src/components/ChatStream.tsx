@@ -641,8 +641,9 @@ function SystemTraceBlock({
   // (e.g. queued-message-cleared, autopilot-step) can land here without
   // schema churn.
   void subkind;
+  const { t } = useTranslation();
   const denied = decision === 'denied';
-  const label = denied ? 'Denied' : 'Allowed';
+  const label = denied ? t('chat.permResolvedDenied') : t('chat.permResolvedAllowed');
   return (
     <div
       role="status"

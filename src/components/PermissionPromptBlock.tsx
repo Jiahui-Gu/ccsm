@@ -75,90 +75,50 @@ export function PermissionPromptBlock({
   const allowRef = useRef<HTMLButtonElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
 
-  // Focus Reject on mount — safer default. Never steal focus away from an
-  // input the user is already typing in.
+  // Focus Reject on mount — safer default. Never steal focus away from any
+  // text-entry surface the user is currently in (input / textarea /
+  // contenteditable / combobox / textbox role).
   //
-  // Timing note: a single rAF is enough in dev (unbundled, fast paint) but
-  // races Framer Motion's transform/opacity transition under the prod bundle
-  // — the button is briefly non-focusable during the enter animation. Use
-  // double-rAF + setTimeout(0) fallback so we land after layout AND after
-  // animation start. As a final safety net, observe the root for a beat in
-  // case the button mounts late (rare under StrictMode double-invoke).
+  // EXCEPTIONS:
+  // 1. Sequential prompts are handled at the source: store.resolvePermission
+  //    skips bumping focusInputNonce when another wait block is still
+  //    pending, so the composer never steals focus between prompt #1 resolve
+  //    and prompt #2 mount.
+  // 2. The chat composer textarea (marked [data-input-bar]) is part of the
+  //    same chat surface as this prompt. When the prompt arrives and the
+  //    composer is focused but EMPTY (e.g. session-select bumped focus to a
+  //    fresh composer before the wait block landed), we steal focus to
+  //    Reject — the user hasn't started typing, so there's nothing to
+  //    interrupt. If the composer has typed content, we leave focus alone
+  //    (the user is mid-message; the prompt is still rendered, they'll act
+  //    on it after they finish typing).
+  // External text entries (rename input, dialog field, IME composition,
+  // settings textarea) are always respected.
   useEffect(() => {
     if (!autoFocus) return;
-    let cancelled = false;
-    const raf1: number[] = [];
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let observer: MutationObserver | null = null;
-
-    const shouldSkip = () => {
+    const raf = requestAnimationFrame(() => {
       const active = document.activeElement;
-      if (!(active instanceof HTMLElement)) return false;
-      if (active === document.body) return false;
-      if (rootRef.current?.contains(active)) return false;
-      const isTextEntry =
-        active.tagName === 'INPUT' ||
-        active.tagName === 'TEXTAREA' ||
-        active.isContentEditable ||
-        active.getAttribute('role') === 'combobox' ||
-        active.getAttribute('role') === 'textbox';
-      if (!isTextEntry) return false;
-      // Only refuse to steal focus when the user has actually typed something
-      // — an empty textarea (e.g. the composer freshly re-focused by our own
-      // focusInputNonce bump after resolving a previous prompt) shouldn't
-      // block the new prompt's autoFocus. Otherwise sequential prompts strand
-      // focus in the empty composer and the second Reject never gets it.
-      const value =
-        active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
-          ? active.value
-          : active.textContent ?? '';
-      return value.trim().length > 0;
-    };
-
-    const tryFocus = () => {
-      if (cancelled) return false;
-      if (shouldSkip()) return true; // treat as resolved — don't keep retrying
-      const btn = rejectRef.current;
-      if (!btn) return false;
-      btn.focus({ preventScroll: true });
-      return document.activeElement === btn;
-    };
-
-    // 1st rAF -> 2nd rAF -> setTimeout(0) -> setTimeout(50). Each step retries
-    // if the previous didn't actually land focus. Cheap; resolves on first hit.
-    const r1 = requestAnimationFrame(() => {
-      if (tryFocus()) return;
-      const r2 = requestAnimationFrame(() => {
-        if (tryFocus()) return;
-        timers.push(
-          setTimeout(() => {
-            if (tryFocus()) return;
-            timers.push(
-              setTimeout(() => {
-                if (tryFocus()) return;
-                // Final safety: watch for late mount/layout via MutationObserver
-                // for up to 500ms.
-                if (!rootRef.current) return;
-                observer = new MutationObserver(() => {
-                  if (tryFocus()) observer?.disconnect();
-                });
-                observer.observe(rootRef.current, { childList: true, subtree: true, attributes: true });
-                timers.push(setTimeout(() => observer?.disconnect(), 500));
-              }, 50)
-            );
-          }, 0)
-        );
-      });
-      raf1.push(r2);
+      if (active instanceof HTMLElement && active !== document.body && !rootRef.current?.contains(active)) {
+        const isTextEntry =
+          active.tagName === 'INPUT' ||
+          active.tagName === 'TEXTAREA' ||
+          active.isContentEditable ||
+          active.getAttribute('role') === 'combobox' ||
+          active.getAttribute('role') === 'textbox';
+        if (isTextEntry) {
+          const isComposer = active.hasAttribute('data-input-bar');
+          if (!isComposer) return;
+          // Composer-specific: only steal when it's empty.
+          const value =
+            active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+              ? active.value
+              : active.textContent ?? '';
+          if (value.trim().length > 0) return;
+        }
+      }
+      rejectRef.current?.focus({ preventScroll: true });
     });
-    raf1.push(r1);
-
-    return () => {
-      cancelled = true;
-      for (const id of raf1) cancelAnimationFrame(id);
-      for (const t of timers) clearTimeout(t);
-      observer?.disconnect();
-    };
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

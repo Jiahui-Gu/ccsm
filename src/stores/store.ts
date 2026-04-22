@@ -1024,14 +1024,24 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
       const next = prev.slice();
       next[idx] = trace;
+      // Centralized focus policy: after the user resolves any in-stream
+      // permission/plan prompt, focus returns to the composer so the next
+      // keystroke types into the chat. InputBar's effect guards against
+      // stealing focus from other text-entry surfaces (rename input,
+      // dialog field, IME composition).
+      //
+      // EXCEPTION: if another in-stream wait block is still pending for this
+      // session (sequential permission/plan prompts, or a queued
+      // ask-question), DO NOT bump composer focus. Otherwise the composer
+      // briefly grabs focus, the next prompt mounts, sees a focused textarea
+      // and (correctly) refuses to steal it — stranding focus on the empty
+      // composer instead of the new Reject button.
+      const hasPendingWait = next.some(
+        (b) => b.kind === 'waiting' || b.kind === 'question'
+      );
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: next },
-        // Centralized focus policy: after the user resolves any in-stream
-        // permission/plan prompt, focus returns to the composer so the next
-        // keystroke types into the chat. InputBar's effect guards against
-        // stealing focus from other text-entry surfaces (rename input,
-        // dialog field, IME composition).
-        focusInputNonce: s.focusInputNonce + 1
+        focusInputNonce: hasPendingWait ? s.focusInputNonce : s.focusInputNonce + 1
       };
     });
     void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
