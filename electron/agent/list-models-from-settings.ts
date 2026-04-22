@@ -14,13 +14,28 @@
  *
  * This module is pure — no spawning, no HTTP, no writes — so it is fast,
  * deterministic, and safe to call from anywhere on the main process.
+ *
+ * Sources surfaced (in priority order):
+ *   - 'settings'     — `settings.json` `model` field or `env.ANTHROPIC_*_MODEL`
+ *   - 'env'          — process env `ANTHROPIC_*_MODEL` not already in settings
+ *   - 'manual'       — user-typed ids from the endpoint Settings UI
+ *   - 'cli-picker'   — hardcoded mirror of claude.exe's `/model` picker
+ *   - 'env-override' — per-tier `ANTHROPIC_DEFAULT_<TIER>_MODEL` overrides
+ *   - 'fallback'     — static last-resort triple
  */
 
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { CLI_PICKER_MODELS, getCustomEnvOverrides } from './cli-picker-models';
 
-export type ModelSource = 'settings' | 'env' | 'manual' | 'fallback';
+export type ModelSource =
+  | 'settings'
+  | 'env'
+  | 'manual'
+  | 'cli-picker'
+  | 'env-override'
+  | 'fallback';
 
 export interface DiscoveredModel {
   id: string;
@@ -118,7 +133,13 @@ export async function listModelsFromSettings(
   const settings = await readSettings(configDir);
 
   // Dedupe by id, first-source-wins. Insertion order = priority order:
-  //   settings → env → manual → fallback.
+  //   settings → env → manual → cli-picker → env-override → fallback.
+  // Rationale: anything the user has actually configured (settings/env/manual)
+  // should keep its precise source tag; the hardcoded CLI picker entries fill
+  // in the canonical alias set every install ships with; the env-override
+  // entries (ANTHROPIC_DEFAULT_<TIER>_MODEL with companion NAME/DESCRIPTION)
+  // come last among "synthetic" sources so a user-typed manual id wins; the
+  // static fallback triple guarantees the picker is never empty.
   const merged = new Map<string, DiscoveredModel>();
   const add = (id: string | undefined, source: ModelSource): void => {
     if (!id) return;
@@ -156,7 +177,21 @@ export async function listModelsFromSettings(
     add(id, 'manual');
   }
 
-  // 4) Static fallback so the picker is never empty.
+  // 4) Hardcoded CLI picker list (claude.exe bundle factory). These are the
+  // aliases every CLI install offers via `/model`; they don't depend on
+  // settings.json or the active relay.
+  for (const m of CLI_PICKER_MODELS) {
+    add(m.id, 'cli-picker');
+  }
+
+  // 5) Per-tier env-var overrides (ANTHROPIC_DEFAULT_<TIER>_MODEL etc.).
+  // Tagged distinctly from 'env' so the UI can show "user customized this
+  // tier's default" separately from a raw ANTHROPIC_MODEL setting.
+  for (const m of getCustomEnvOverrides(env)) {
+    add(m.id, 'env-override');
+  }
+
+  // 6) Static fallback so the picker is never empty.
   for (const id of FALLBACK_MODELS) {
     add(id, 'fallback');
   }

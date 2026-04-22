@@ -1194,14 +1194,22 @@ function SourceBreakdown({
   counts,
   total,
 }: {
-  counts: { fallback: number; listed: number; manual: number };
+  counts: {
+    fallback: number;
+    listed: number;
+    manual: number;
+    cliPicker: number;
+    envOverride: number;
+  };
   total: number;
 }) {
   const parts: string[] = [];
   if (counts.listed) parts.push(`${counts.listed} listed`);
+  if (counts.cliPicker) parts.push(`${counts.cliPicker} CLI picker`);
+  if (counts.envOverride) parts.push(`${counts.envOverride} env override`);
   if (counts.fallback) parts.push(`${counts.fallback} fallback`);
   if (counts.manual) parts.push(`${counts.manual} manual`);
-  const tooltip = parts.length ? parts.join(' · ') : 'no discovery data yet';
+  const tooltip = parts.length ? parts.join(' \u00B7 ') : 'no discovery data yet';
   return (
     <span title={tooltip} className="cursor-help">
       {total} model{total === 1 ? '' : 's'}
@@ -1270,6 +1278,8 @@ function EndpointsPane() {
               fallback: models.filter((m) => m.source === 'fallback').length,
               listed: models.filter((m) => m.source === 'listed').length,
               manual: models.filter((m) => m.source === 'manual').length,
+              cliPicker: models.filter((m) => m.source === 'cli-picker').length,
+              envOverride: models.filter((m) => m.source === 'env-override').length,
             };
             const is401 = e.lastStatus === 'error' && (e.lastError ?? '').toLowerCase().includes('auth');
             const noneFound = e.lastStatus === 'ok' && models.length === 0;

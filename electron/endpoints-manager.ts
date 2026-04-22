@@ -21,21 +21,35 @@ export type EndpointKind =
   | 'unknown';
 
 /**
- * Model row source — `'listed'` is anything discovered from
- * `~/.claude/settings.json` or matching ANTHROPIC_* env vars (i.e. models the
- * user has actually configured the CLI to know about); `'fallback'` is the
- * hardcoded triple from {@link listModelsFromSettings}; `'manual'` is anything
- * the user typed into the "Manual model IDs" box on the endpoint page.
+ * Model row source — one of:
+ *   - 'listed'      — discovered from `~/.claude/settings.json` or matching
+ *                     ANTHROPIC_* env vars (i.e. models the user has actually
+ *                     configured the CLI to know about; collapses
+ *                     `settings`/`env` from the discovery module).
+ *   - 'cli-picker'  — entry from claude.exe's hardcoded `/model` picker list
+ *                     (mirrored in `cli-picker-models.ts`). Always available
+ *                     regardless of the active relay.
+ *   - 'env-override'— per-tier `ANTHROPIC_DEFAULT_<TIER>_MODEL` override that
+ *                     supplies a custom id + optional NAME/DESCRIPTION.
+ *   - 'fallback'    — hardcoded triple from {@link listModelsFromSettings}.
+ *   - 'manual'      — user-typed id from the endpoint Settings UI.
  *
  * Older rows may carry `'probe'` from before PR #95 — UI code treats unknown
  * variants as `'listed'`.
  */
-export type DiscoverySource = 'listed' | 'fallback' | 'manual';
+export type DiscoverySource =
+  | 'listed'
+  | 'cli-picker'
+  | 'env-override'
+  | 'fallback'
+  | 'manual';
 
 /** Map the discovery module's source taxonomy onto our DB row taxonomy. */
 function mapSource(s: ModelSource): DiscoverySource {
   if (s === 'manual') return 'manual';
   if (s === 'fallback') return 'fallback';
+  if (s === 'cli-picker') return 'cli-picker';
+  if (s === 'env-override') return 'env-override';
   // 'settings' and 'env' both mean "the CLI is configured to know about this
   // model" — collapse onto 'listed' which is what the UI surfaces.
   return 'listed';
@@ -424,9 +438,11 @@ export class EndpointsManager {
    * the underlying lister guarantees a non-empty result.
    *
    * Source taxonomy after this runs:
-   *   - 'listed'   — discovered from settings.json or env (`settings`/`env`).
-   *   - 'manual'   — user-typed id from the Settings UI.
-   *   - 'fallback' — from the hardcoded `FALLBACK_MODELS` list.
+   *   - 'listed'       — discovered from settings.json or env (`settings`/`env`).
+   *   - 'cli-picker'   — claude.exe's hardcoded `/model` picker entries.
+   *   - 'env-override' — `ANTHROPIC_DEFAULT_<TIER>_MODEL` per-tier overrides.
+   *   - 'manual'       — user-typed id from the Settings UI.
+   *   - 'fallback'     — from the hardcoded `FALLBACK_MODELS` list.
    *
    * Note: this does NOT touch the network. The endpoint argument is used
    * only to scope DB writes / `lastRefreshedAt`. Reachability is a separate
@@ -448,7 +464,13 @@ export class EndpointsManager {
     const now = this.now();
     const db = getDb();
     const detectedKind: EndpointKind = endpoint.kind ?? 'anthropic';
-    const sourceStats: Record<DiscoverySource, number> = { listed: 0, fallback: 0, manual: 0 };
+    const sourceStats: Record<DiscoverySource, number> = {
+      listed: 0,
+      'cli-picker': 0,
+      'env-override': 0,
+      fallback: 0,
+      manual: 0,
+    };
     const run = db.transaction(() => {
       db.prepare('DELETE FROM endpoint_models WHERE endpoint_id = ?').run(endpointId);
       const insert = db.prepare(
@@ -457,10 +479,13 @@ export class EndpointsManager {
       );
       for (const m of result.models) {
         const source = mapSource(m.source);
-        // Confirm only entries that came from a real signal (settings/env).
-        // Manual + fallback stay unconfirmed so the UI can show "user-typed"
-        // / "guessed" hints if it wants to.
-        const confirmed = source === 'listed';
+        // Confirm entries that came from a real signal (settings/env/cli-picker
+        // /env-override). Manual + fallback stay unconfirmed so the UI can
+        // show "user-typed" / "guessed" hints if it wants to.
+        const confirmed =
+          source === 'listed' ||
+          source === 'cli-picker' ||
+          source === 'env-override';
         insert.run(
           randomUUID(),
           endpointId,
