@@ -184,7 +184,7 @@ export function CommandPalette({
             'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[600px] max-w-[90vw]',
             'rounded-lg border border-border-default bg-bg-panel',
             'surface-highlight',
-            'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_8px_32px_oklch(0_0_0_/_0.45)]',
+            'shadow-[var(--surface-shadow)]',
             'outline-none',
             'data-[state=open]:animate-[dialogIn_200ms_cubic-bezier(0.32,0.72,0,1)]',
             'data-[state=closed]:opacity-0'
@@ -222,7 +222,7 @@ export function CommandPalette({
                   'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
                   'text-sm',
                   i === active
-                    ? 'bg-bg-hover text-fg-primary shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
+                    ? 'bg-bg-hover text-fg-primary surface-highlight'
                     : 'text-fg-secondary'
                 )}
               >
