@@ -140,4 +140,68 @@ describe('<SessionCreateDialog />', () => {
     const button = screen.getByRole('button', { name: /create session/i });
     expect(button).toBeDisabled();
   });
+
+  it('seeds cwd from window.agentory.recentCwds when no initialCwd and no in-app history', async () => {
+    const recentCwds = vi.fn().mockResolvedValue(['/cli/project-a', '/cli/project-b', '/cli/project-c']);
+    (window as unknown as { agentory: unknown }).agentory = {
+      recentCwds,
+      worktree: {
+        // Returns a flat string[] of branch names — matches the actual
+        // worktree.listBranches IPC contract used by the dialog.
+        listBranches: vi.fn().mockResolvedValue([]),
+      },
+    };
+    renderDialog({ initialCwd: null });
+    await flush();
+
+    const cwdInput = screen.getByTestId('session-create-cwd') as HTMLInputElement;
+    expect(recentCwds).toHaveBeenCalledTimes(1);
+    expect(cwdInput.value).toBe('/cli/project-a');
+
+    // The remaining entries are surfaced as datalist suggestions on the
+    // input so the user can pick from a dropdown without typing.
+    expect(cwdInput.getAttribute('list')).toBe('session-create-cwd-suggestions');
+    const datalist = document.getElementById(
+      'session-create-cwd-suggestions'
+    ) as HTMLDataListElement | null;
+    expect(datalist).not.toBeNull();
+    const options = Array.from(datalist!.querySelectorAll('option')).map((o) =>
+      (o as HTMLOptionElement).value
+    );
+    expect(options).toEqual(['/cli/project-a', '/cli/project-b', '/cli/project-c']);
+  });
+
+  it('does not stomp an explicit initialCwd with a recentCwds value', async () => {
+    const recentCwds = vi.fn().mockResolvedValue(['/cli/other']);
+    (window as unknown as { agentory: unknown }).agentory = {
+      recentCwds,
+      worktree: {
+        listBranches: vi.fn().mockResolvedValue([]),
+      },
+    };
+    renderDialog({ initialCwd: '/explicit/seed' });
+    await flush();
+
+    const cwdInput = screen.getByTestId('session-create-cwd') as HTMLInputElement;
+    expect(cwdInput.value).toBe('/explicit/seed');
+  });
+
+  it('prefers in-app recentProjects over CLI-derived recentCwds', async () => {
+    useStore.setState({
+      recentProjects: [{ id: 'rp-1', name: 'most-recent', path: '/in-app/most-recent' }],
+    } as Partial<ReturnType<typeof useStore.getState>>);
+
+    const recentCwds = vi.fn().mockResolvedValue(['/cli/different']);
+    (window as unknown as { agentory: unknown }).agentory = {
+      recentCwds,
+      worktree: {
+        listBranches: vi.fn().mockResolvedValue([]),
+      },
+    };
+    renderDialog({ initialCwd: null });
+    await flush();
+
+    const cwdInput = screen.getByTestId('session-create-cwd') as HTMLInputElement;
+    expect(cwdInput.value).toBe('/in-app/most-recent');
+  });
 });

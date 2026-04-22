@@ -52,7 +52,16 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
   const recentProjects = useStore((s) => s.recentProjects);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
 
-  const defaultCwd = initialCwd ?? recentProjects[0]?.path ?? '';
+  // CLI-derived recent cwds, populated from main's eager-scan cache. Used as
+  // the fallback default when the in-app `recentProjects` history is empty
+  // (typical first-run state) and as autocomplete suggestions in all cases.
+  // Kept separate from `recentProjects` because the latter is the user's
+  // in-app history and shouldn't be polluted by CLI scan results.
+  const [recentCwds, setRecentCwds] = useState<string[]>([]);
+  const recentCwdsListId = 'session-create-cwd-suggestions';
+
+  const defaultCwd =
+    initialCwd ?? recentProjects[0]?.path ?? recentCwds[0] ?? '';
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState(defaultCwd);
   const [useWorktree, setUseWorktree] = useState(false);
@@ -69,13 +78,47 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
   useEffect(() => {
     if (!open) return;
     setName('');
-    setCwd(initialCwd ?? recentProjects[0]?.path ?? '');
+    setCwd(initialCwd ?? recentProjects[0]?.path ?? recentCwds[0] ?? '');
     setUseWorktree(false);
     setSourceBranch('');
     setBranchState({ kind: 'idle' });
     // Delay focus so the Radix animation doesn't fight the focus move.
     const id = window.setTimeout(() => nameRef.current?.focus(), 40);
     return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Fetch the eager-scan cache from main on every open. The IPC resolves
+  // immediately when the cache is hot (the eager scan ran at app `ready`),
+  // so the user does not see a spinner. Empty result is a no-op — the
+  // existing in-app `recentProjects` fallback still applies.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    const api = window.agentory;
+    if (!api?.recentCwds) return;
+    api
+      .recentCwds()
+      .then((list) => {
+        if (cancelled) return;
+        setRecentCwds(list);
+        // Only seed cwd from the CLI-derived list if the dialog opened with
+        // no other source (no caller seed, no in-app history, no edit yet).
+        // Checking against `defaultCwd` avoids stomping a folder the user
+        // already typed during this open.
+        setCwd((current) => {
+          if (current.length > 0) return current;
+          if (initialCwd != null) return current;
+          if (recentProjects.length > 0) return current;
+          return list[0] ?? current;
+        });
+      })
+      .catch(() => {
+        /* IPC failure is non-fatal — dialog still works without suggestions. */
+      });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -214,7 +257,17 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                   placeholder="/path/to/repo"
                   className="flex-1"
                   data-testid="session-create-cwd"
+                  list={recentCwds.length > 0 ? recentCwdsListId : undefined}
+                  autoComplete="off"
+                  spellCheck={false}
                 />
+                {recentCwds.length > 0 && (
+                  <datalist id={recentCwdsListId} data-testid="session-create-cwd-suggestions">
+                    {recentCwds.map((p) => (
+                      <option key={p} value={p} />
+                    ))}
+                  </datalist>
+                )}
                 <IconButton
                   variant="raised"
                   size="md"
