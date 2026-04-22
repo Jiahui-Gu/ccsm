@@ -17,7 +17,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appWindow, isolatedUserData } from './probe-utils.mjs';
+import { appWindow, isolatedUserData, startBundleServer } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -28,17 +28,31 @@ function fail(msg, app) {
   process.exit(1);
 }
 
+const { port: PORT, close: closeServer } = await startBundleServer(root);
 const ud = isolatedUserData('agentory-probe-stream-esc');
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development' }
+  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+
+  // Wait for the CLI-detection success-flash dialog (if any) to settle so it
+  // doesn't steal focus from the textarea via Radix's focus trap during the
+  // post-interrupt focus assertion.
+  await win.waitForFunction(
+    () => {
+      const st = window.__agentoryStore?.getState();
+      return st?.cliStatus?.state === 'found' || st?.cliStatus?.state === 'missing';
+    },
+    null,
+    { timeout: 10_000 }
+  ).catch(() => {});
+  await win.waitForFunction(() => document.querySelector('[role="dialog"]') === null, null, { timeout: 5000 }).catch(() => {});
 
   const SID = 's-esc-stream';
   const BLOCK_ID = 'msg-esc:0';
@@ -185,5 +199,6 @@ try {
   await app.close().catch(() => {});
   process.exit(1);
 } finally {
+  closeServer();
   ud.cleanup();
 }
