@@ -372,6 +372,14 @@ const zh: EnCatalog = {
     modeDefaultTooltip: '默认 \u2014 自动批准读取；编辑和 shell 先询问。',
     modeAcceptEditsTooltip: '接受编辑 \u2014 自动批准读取与文件编辑；shell 先询问。',
     modeBypassTooltip: '跳过校验 \u2014 所有工具调用直接放行。请谨慎使用。'
+  },
+  cwdPopover: {
+    placeholder: '输入筛选或粘贴路径…',
+    recent: '最近使用',
+    empty: '没有匹配的最近目录',
+    browse: '选择文件夹…',
+    cwdMissingShort: '已不存在',
+    cwdMissingTooltip: '工作目录已不存在: {{cwd}}。请选择另一个目录后再发送。'
   }
 };
 

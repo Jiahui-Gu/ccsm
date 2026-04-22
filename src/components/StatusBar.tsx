@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, Folder } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
 import {
   DropdownMenu,
@@ -11,6 +11,7 @@ import {
 } from './ui/DropdownMenu';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
+import { CwdPopover } from './CwdPopover';
 
 // Permission mode values match claude.exe's `--permission-mode` flag 1:1.
 // We intentionally use the official CLI names (title-cased for display)
@@ -21,12 +22,6 @@ import { useTranslation } from '../i18n/useTranslation';
 // users can't enable; we omit `dontAsk` because it's redundant with
 // `default`.
 type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
-
-function lastSegment(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const segs = trimmed.split(/[\\/]/).filter(Boolean);
-  return segs[segs.length - 1] ?? path;
-}
 
 const Chip = React.forwardRef<
   HTMLButtonElement,
@@ -123,8 +118,6 @@ function ChipMenu<V extends string>({
   );
 }
 
-const BROWSE_FOLDER = '__browse__';
-
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
   for (const o of options) {
     if (o.kind === 'item' && o.value === value) return o.primary;
@@ -134,23 +127,26 @@ function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string
 
 export type StatusBarProps = {
   cwd: string;
+  cwdMissing?: boolean;
   model: string;
   permission: PermissionMode;
-  onChangeCwd: (cwd: string | null) => void;
+  onChangeCwdToPath: (cwd: string) => void;
+  onBrowseForCwd: () => void;
   onChangeModel: (model: string) => void;
   onChangePermission: (mode: PermissionMode) => void;
 };
 
 export function StatusBar({
   cwd,
+  cwdMissing,
   model,
   permission,
-  onChangeCwd,
+  onChangeCwdToPath,
+  onBrowseForCwd,
   onChangeModel,
   onChangePermission
 }: StatusBarProps) {
   const { t } = useTranslation();
-  const recentProjects = useStore((s) => s.recentProjects);
   const endpoints = useStore((s) => s.endpoints);
   const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
   const endpointsLoaded = useStore((s) => s.endpointsLoaded);
@@ -172,21 +168,15 @@ export function StatusBar({
     bypassPermissions: t('statusBar.modeBypassTooltip')
   };
 
-  const cwdOptions: ChipOption<string>[] = [
-    ...recentProjects.map(
-      (p) =>
-        ({ kind: 'item', value: p.path, primary: p.name, secondary: p.path }) as ChipOption<string>
-    ),
-    ...(recentProjects.length > 0
-      ? ([{ kind: 'separator' }] as ChipOption<string>[])
-      : []),
-    {
-      kind: 'item',
-      value: BROWSE_FOLDER,
-      primary: t('statusBar.browseFolder'),
-      icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
-    }
-  ];
+  const cwdChip = (
+    <CwdPopover
+      key="cwd"
+      cwd={cwd}
+      cwdMissing={cwdMissing}
+      onPick={onChangeCwdToPath}
+      onBrowse={onBrowseForCwd}
+    />
+  );
 
   // Build the grouped model option list: one `label` row per endpoint,
   // followed by that endpoint's discovered models, separated between groups.
@@ -233,14 +223,7 @@ export function StatusBar({
   }
 
   const chips: React.ReactNode[] = [
-    <ChipMenu
-      key="cwd"
-      label={t('statusBar.workingDirectory')}
-      triggerLabel={lastSegment(cwd)}
-      triggerTitle={cwd}
-      options={cwdOptions}
-      onSelect={(v) => onChangeCwd(v === BROWSE_FOLDER ? null : v)}
-    />,
+    cwdChip,
     <ChipMenu
       key="model"
       label={t('statusBar.model')}
