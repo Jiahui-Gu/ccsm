@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "Group-first manager for many Claude Code sessions",
   "productName": "Agentory",
+  "license": "MIT",
   "author": {
     "name": "Jiahui Gu",
     "email": "noreply@agentory.dev"
