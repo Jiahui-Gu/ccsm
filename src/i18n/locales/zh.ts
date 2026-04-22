@@ -233,15 +233,6 @@ const zh: EnCatalog = {
     apiKeyMissing: '缺少 Anthropic API Key。',
     cliMissing: '未安装 Claude Code CLI。'
   },
-  worktree: {
-    title: 'Worktree',
-    createWorktree: '创建 worktree',
-    deleteWorktree: '删除 worktree',
-    branchLabel: '分支',
-    pathLabel: '路径',
-    statusClean: '干净',
-    statusDirty: '有未提交更改'
-  },
   cli: {
     missingTitle: '未找到 Claude Code CLI',
     missingBody: 'Agentory 需要 Claude Code CLI 才能运行会话。安装后我们会自动检测。',
@@ -324,7 +315,7 @@ const zh: EnCatalog = {
   },
   sessionCreate: {
     title: '新建会话',
-    description: '选择一个工作目录；可选地用新的 git worktree 隔离 agent。',
+    description: '为 agent 选择一个工作目录。',
     name: '名称',
     nameHint: '可选 — 默认为"新会话"。',
     namePlaceholder: '新会话',
@@ -332,21 +323,8 @@ const zh: EnCatalog = {
     cwdHint: 'agent 在这个目录下运行。',
     cwdPlaceholder: '/path/to/repo',
     browseFolder: '选择文件夹',
-    baseBranch: '基础分支',
-    useWorktree: '使用 git worktree',
-    useWorktreeHint: '— 在独立分支上隔离这个会话',
     cancel: '取消',
-    create: '创建会话',
-    branchIdle: '先选一个工作目录，再列出分支。',
-    branchLoading: '读取分支…',
-    branchNonRepo: '不是 git 仓库 — worktree 不可用。',
-    branchUnavailable: 'Worktree 支持尚未加载（数据层未就绪）。',
-    branchError: '无法读取分支：{{message}}',
-    branchEmpty: '仓库还没有分支。',
-    branchRepository: '仓库：{{name}}',
-    branchOptionLoading: '加载中…',
-    branchOptionNoBranches: '（无分支）',
-    branchOptionUnavailable: '（不可用）'
+    create: '创建会话'
   },
   commandPalette: {
     title: '命令面板',
@@ -394,7 +372,6 @@ const zh: EnCatalog = {
     noModelsHint: '尚无模型 — 在设置里点刷新',
     pickModel: '(选择模型)',
     defaultSuffix: '（默认）',
-    worktreeBranchTitle: 'Worktree 分支：{{name}}',
     modePlanLabel: '规划',
     modeDefaultLabel: '默认',
     modeAcceptEditsLabel: '接受编辑',

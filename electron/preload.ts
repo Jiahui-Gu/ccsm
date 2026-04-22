@@ -9,30 +9,6 @@ type StartOpts = {
   endpointId?: string;
   allowedTools?: readonly string[];
   disallowedTools?: readonly string[];
-  // Worktree opt-in. When true, the main process creates a disposable git
-  // worktree under the resolved repo root and runs claude.exe inside it;
-  // an `agent:worktreeReady` event lands shortly after with the resolved
-  // path/name/branch so the renderer can update its Session.
-  useWorktree?: boolean;
-  sourceBranch?: string;
-};
-
-type WorktreeReady = {
-  sessionId: string;
-  path: string;
-  name: string;
-  branch: string;
-  sourceBranch: string | null;
-};
-
-type WorktreeRecordIpc = {
-  sessionId: string;
-  name: string;
-  path: string;
-  baseRepo: string;
-  branch: string;
-  sourceBranch: string | null;
-  createdAt: number;
 };
 
 type StartResult =
@@ -344,18 +320,6 @@ const api = {
     openDocs: (): Promise<boolean> => ipcRenderer.invoke('cli:openDocs'),
     retryDetect: (): Promise<CliRetryResult> => ipcRenderer.invoke('cli:retryDetect'),
   },
-
-  worktree: {
-    listBranches: (repoRoot: string): Promise<string[]> =>
-      ipcRenderer.invoke('worktree:listBranches', repoRoot),
-    getForSession: (sessionId: string): Promise<WorktreeRecordIpc | null> =>
-      ipcRenderer.invoke('worktree:getForSession', sessionId),
-    onReady: (handler: (e: WorktreeReady) => void): (() => void) => {
-      const wrap = (_e: IpcRendererEvent, payload: WorktreeReady) => handler(payload);
-      ipcRenderer.on('agent:worktreeReady', wrap);
-      return () => ipcRenderer.removeListener('agent:worktreeReady', wrap);
-    },
-  }
 };
 
 contextBridge.exposeInMainWorld('agentory', api);
