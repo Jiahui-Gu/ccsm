@@ -16,11 +16,12 @@ import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
 import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
+import { ModelPickerDialog } from './components/ModelPickerDialog';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
-import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
+import { setOpenSettingsListener, setOpenModelPickerListener, type SettingsTab } from './slash-commands/ui-bridge';
 import { initI18n } from './i18n';
 import { usePreferences } from './store/preferences';
 
@@ -144,6 +145,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
 
   // New sessions are created in-place — no modal. The store seeds `cwd`
   // from `recentProjects[0]?.path ?? '~'`; users repick later via the
@@ -160,6 +162,14 @@ export default function App() {
       setSettingsOpen(true);
     });
     return () => setOpenSettingsListener(null);
+  }, []);
+
+  // `/model` opens the in-chat model picker dialog (mirrors clicking the
+  // model chip in the StatusBar). Kept separate from the settings bridge so
+  // the two surfaces don't fight over a single open flag.
+  useEffect(() => {
+    setOpenModelPickerListener(() => setModelPickerOpen(true));
+    return () => setOpenModelPickerListener(null);
   }, []);
 
   const active = useMemo(
@@ -264,6 +274,7 @@ export default function App() {
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
           <ClaudeCliMissingDialog />
+          <ModelPickerDialog open={modelPickerOpen} onOpenChange={setModelPickerOpen} />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
@@ -335,6 +346,7 @@ export default function App() {
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <ClaudeCliMissingDialog />
+        <ModelPickerDialog open={modelPickerOpen} onOpenChange={setModelPickerOpen} />
         <PrFlowProvider />
         <CommandPalette
           open={paletteOpen}

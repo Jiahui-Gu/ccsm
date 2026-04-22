@@ -344,6 +344,11 @@ const en = {
     waitingOutput: 'waiting for output…',
     noOutput: '(no output)'
   },
+  modelPicker: {
+    title: 'Switch model',
+    description: 'Pick a model for this session.',
+    current: 'Current model'
+  },
   statusBar: {
     workingDirectory: 'Working directory',
     model: 'Model',

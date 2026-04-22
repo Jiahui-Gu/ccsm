@@ -14,7 +14,7 @@ import {
   handleHelp,
   blocksToTranscript
 } from '../src/slash-commands/handlers';
-import { setOpenSettingsListener } from '../src/slash-commands/ui-bridge';
+import { setOpenSettingsListener, setOpenModelPickerListener } from '../src/slash-commands/ui-bridge';
 
 // Snapshot of the pristine store so we can reset between tests. The store
 // module auto-attaches handlers via its own side-effects; handlers.ts also
@@ -149,7 +149,10 @@ describe('/cost', () => {
 });
 
 describe('/config and /model', () => {
-  afterEach(() => setOpenSettingsListener(null));
+  afterEach(() => {
+    setOpenSettingsListener(null);
+    setOpenModelPickerListener(null);
+  });
 
   it('/config opens settings (appearance tab)', () => {
     const calls: Array<string | undefined> = [];
@@ -157,11 +160,16 @@ describe('/config and /model', () => {
     handleConfig({ sessionId: 's', args: '' });
     expect(calls).toEqual(['appearance']);
   });
-  it('/model opens settings on connection tab', () => {
-    const calls: Array<string | undefined> = [];
-    setOpenSettingsListener((tab) => calls.push(tab));
+  it('/model opens the in-chat model picker (does NOT open settings)', () => {
+    const settingsCalls: Array<string | undefined> = [];
+    setOpenSettingsListener((tab) => settingsCalls.push(tab));
+    let pickerOpens = 0;
+    setOpenModelPickerListener(() => {
+      pickerOpens += 1;
+    });
     handleModel({ sessionId: 's', args: '' });
-    expect(calls).toEqual(['connection']);
+    expect(pickerOpens).toBe(1);
+    expect(settingsCalls).toEqual([]);
   });
 });
 

@@ -10,7 +10,7 @@
 import { useStore } from '../stores/store';
 import type { MessageBlock } from '../types';
 import { SLASH_COMMANDS, type SlashCommandContext } from './registry';
-import { openSettings } from './ui-bridge';
+import { openSettings, openModelPicker } from './ui-bridge';
 import { triggerPrFlow } from '../lib/pr-flow';
 
 function nextId(prefix: string): string {
@@ -84,10 +84,12 @@ export function handleConfig(_ctx: SlashCommandContext): void {
 }
 
 // ---------- /model ----------
-// No in-chat model dropdown exposed yet; route to the Connection tab where
-// the model defaults live.
+// Pop open the in-chat model picker (mirrors clicking the model chip in the
+// status bar). The picker reads `models[]` from the store and writes the
+// chosen id back through `setModel`, which both updates the active session
+// and notifies the running agent (see store.setModel).
 export function handleModel(_ctx: SlashCommandContext): void {
-  openSettings('connection');
+  openModelPicker();
 }
 
 // ---------- /help ----------

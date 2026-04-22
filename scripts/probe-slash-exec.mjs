@@ -97,8 +97,8 @@ const settings = page.getByRole('dialog');
 await settings.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {
   fail('/config did not open the Settings dialog');
 });
-const hasGeneral = await settings.getByText(/general/i).first().isVisible().catch(() => false);
-if (!hasGeneral) fail('Settings dialog missing General tab label');
+const hasTab = await settings.getByText(/appearance|connection|notifications/i).first().isVisible().catch(() => false);
+if (!hasTab) fail('Settings dialog missing tab labels (appearance/connection/notifications)');
 
 if (errors.length > 0) {
   console.error('--- console / page errors ---');

@@ -333,6 +333,11 @@ const zh: EnCatalog = {
     waitingOutput: '等待输出…',
     noOutput: '（无输出）'
   },
+  modelPicker: {
+    title: '切换模型',
+    description: '为当前会话选择模型。',
+    current: '当前模型'
+  },
   statusBar: {
     workingDirectory: '工作目录',
     model: '模型',
