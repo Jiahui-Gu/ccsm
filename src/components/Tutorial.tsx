@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, Download, Layers, FolderTree, MessageSquare, ArrowRight, ArrowLeft, Check } from 'lucide-react';
 import { Button } from './ui/Button';
 import { cn } from '../lib/cn';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Step = {
   key: string;
@@ -18,30 +19,31 @@ type Props = {
 };
 
 export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
+  const { t } = useTranslation();
   const [stepIdx, setStepIdx] = useState(0);
   const steps: Step[] = [
     {
       key: 'welcome',
-      title: 'A workbench for AI sessions',
-      body: 'Agentory turns Claude Code transcripts into something you can navigate. Think of it as a desktop client for the same agent — same power, less terminal.',
+      title: t('tutorial.welcomeTitle'),
+      body: t('tutorial.welcomeBody'),
       visual: <WelcomeVisual />
     },
     {
       key: 'sessions',
-      title: 'Run many sessions in parallel',
-      body: 'Each session is its own agent thread with its own working directory. Switch between them like tabs — the agents keep working in the background.',
+      title: t('tutorial.sessionsTitle'),
+      body: t('tutorial.sessionsBody'),
       visual: <SessionsVisual />
     },
     {
       key: 'groups',
-      title: 'Organize work by task, not by repo',
-      body: 'Group sessions across repositories. A real task usually spans more than one project — Agentory lets you keep them together.',
+      title: t('tutorial.groupsTitle'),
+      body: t('tutorial.groupsBody'),
       visual: <GroupsVisual />
     },
     {
       key: 'start',
-      title: 'Ready when you are',
-      body: 'Create a fresh session, or import what you already have from the Claude Code CLI.',
+      title: t('tutorial.startTitle'),
+      body: t('tutorial.startBody'),
       visual: <StartVisual />
     }
   ];
@@ -57,7 +59,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
         onClick={onSkip}
         className="absolute right-4 top-3 z-10 font-mono text-xs text-fg-tertiary hover:text-fg-secondary transition-colors"
       >
-        Skip
+        {t('tutorial.skip')}
       </button>
       <div className="flex-1 flex items-center justify-center px-12">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center max-w-4xl w-full">
@@ -71,7 +73,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
               className="space-y-4"
             >
               <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">
-                Step {stepIdx + 1} of {steps.length}
+                {t('tutorial.stepXofY', { current: stepIdx + 1, total: steps.length })}
               </div>
               <h1 className="text-2xl font-semibold text-fg-primary leading-tight">{step.title}</h1>
               <p className="text-sm text-fg-secondary leading-relaxed">{step.body}</p>
@@ -79,11 +81,11 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
                 <div className="flex items-center gap-3 pt-4">
                   <Button variant="primary" size="md" onClick={onNewSession} className="w-44 justify-center">
                     <Plus size={14} className="stroke-[2]" />
-                    <span>New Session</span>
+                    <span>{t('tutorial.newSessionBtn')}</span>
                   </Button>
                   <Button variant="secondary" size="md" onClick={onImport} className="w-44 justify-center">
                     <Download size={14} className="stroke-[2]" />
-                    <span>Import Session</span>
+                    <span>{t('tutorial.importSessionBtn')}</span>
                   </Button>
                 </div>
               )}
@@ -112,7 +114,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
           className={cn(isFirst && 'invisible')}
         >
           <ArrowLeft size={12} />
-          <span>Back</span>
+          <span>{t('tutorial.back')}</span>
         </Button>
         <div className="flex items-center gap-1.5">
           {steps.map((s, i) => (
@@ -120,7 +122,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
               key={s.key}
               type="button"
               onClick={() => setStepIdx(i)}
-              aria-label={`Go to step ${i + 1}`}
+              aria-label={t('tutorial.goToStepAria', { n: i + 1 })}
               className={cn(
                 'h-1.5 rounded-full transition-all duration-200',
                 i === stepIdx ? 'w-6 bg-fg-primary' : 'w-1.5 bg-border-strong hover:bg-fg-tertiary'
@@ -131,11 +133,11 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
         {isLast ? (
           <Button variant="ghost" size="sm" onClick={onSkip}>
             <Check size={12} />
-            <span>Done</span>
+            <span>{t('tutorial.done')}</span>
           </Button>
         ) : (
           <Button variant="ghost" size="sm" onClick={() => setStepIdx((i) => Math.min(steps.length - 1, i + 1))}>
-            <span>Next</span>
+            <span>{t('tutorial.next')}</span>
             <ArrowRight size={12} />
           </Button>
         )}

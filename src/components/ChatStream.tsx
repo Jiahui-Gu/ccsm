@@ -23,6 +23,7 @@ import { Terminal } from './Terminal';
 import { CodeBlock, HighlightedLine, languageFromPath } from './CodeBlock';
 import { QuestionBlock } from './QuestionBlock';
 import { PermissionPromptBlock } from './PermissionPromptBlock';
+import { useTranslation } from '../i18n/useTranslation';
 
 const FILE_TREE_TOOLS = new Set(['Glob', 'LS']);
 
@@ -151,6 +152,7 @@ function ToolBlock({
   isError?: boolean;
   input?: unknown;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const hasResult = typeof result === 'string';
   const diff = diffFromToolInput(name, input);
@@ -192,7 +194,7 @@ function ToolBlock({
             <AlertCircle
               size={12}
               className="text-state-error self-center shrink-0"
-              aria-label="tool failed"
+              aria-label={t('chat.toolFailedAria')}
             />
           )}
           <span
@@ -205,7 +207,7 @@ function ToolBlock({
             {name}
           </span>
           <span className={isError ? 'text-state-error/80 text-xs' : 'text-fg-tertiary text-xs'}>({brief})</span>
-          {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">failed</span>}
+          {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">{t('chat.toolFailedTag')}</span>}
           {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
         </span>
       </button>
@@ -232,7 +234,7 @@ function ToolBlock({
                   isError ? 'border-state-error/40 text-state-error-fg' : 'border-border-subtle text-fg-tertiary'
                 }`}
               >
-                {hasResult ? result : '(running…)'}
+                {hasResult ? result : t('chat.runningEllipsis')}
               </pre>
             )}
           </motion.div>
@@ -248,6 +250,7 @@ const LONG_STRING_THRESHOLD = 200;
 // (keys vs strings vs other), and click-to-expand for long string values.
 // Keeps the pre element copy-friendly: expanded content is inline plain text.
 function PrettyInput({ input }: { input: unknown }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const toggle = (path: string) =>
     setExpanded((prev) => ({ ...prev, [path]: !prev[path] }));
@@ -274,7 +277,7 @@ function PrettyInput({ input }: { input: unknown }) {
             className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
             aria-expanded={false}
           >
-            +{value.length - LONG_STRING_THRESHOLD} chars
+            {t('chat.expandStringChars', { count: value.length - LONG_STRING_THRESHOLD })}
           </button>,
           <span key={`${path}:close`} className="text-fg-tertiary">&quot;</span>
         ];
@@ -291,7 +294,7 @@ function PrettyInput({ input }: { input: unknown }) {
             className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
             aria-expanded={true}
           >
-            collapse
+            {t('chat.collapseString')}
           </button>
         ) : null
       ];
@@ -338,7 +341,7 @@ function PrettyInput({ input }: { input: unknown }) {
         transition={{ duration: 0.15, ease: [0, 0, 0.2, 1] }}
         className="mt-1 ml-6 pl-3 border-l border-border-subtle text-xs font-mono text-fg-secondary whitespace-pre-wrap mb-1"
       >
-        <span className="text-fg-tertiary text-[10px] uppercase tracking-wider mr-2">input</span>
+        <span className="text-fg-tertiary text-[10px] uppercase tracking-wider mr-2">{t('chat.inputBytes')}</span>
         {render(input, 0, 'root')}
       </motion.pre>
     </AnimatePresence>
@@ -346,6 +349,7 @@ function PrettyInput({ input }: { input: unknown }) {
 }
 
 function DiffView({ diff }: { diff: DiffSpec }) {
+  const { t } = useTranslation();
   // Per-hunk accept/reject state. `null` = pending, 'accepted' / 'rejected'
   // once the user acts. Today this is UI-only — the partial-write IPC back
   // to the main process is a follow-up (see PR body). Buttons emit
@@ -433,7 +437,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                           : 'text-state-error')
                       }
                     >
-                      {decision}
+                      {decision === 'accepted' ? t('chat.diffAccepted') : t('chat.diffRejected')}
                     </motion.span>
                   ) : (
                     <motion.div
@@ -449,14 +453,14 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                         onClick={() => decide(i, 'rejected')}
                         className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
                       >
-                        Reject
+                        {t('chat.diffReject')}
                       </button>
                       <button
                         type="button"
                         onClick={() => decide(i, 'accepted')}
                         className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-running/60"
                       >
-                        Accept
+                        {t('chat.diffAccept')}
                       </button>
                     </motion.div>
                   )}
@@ -471,6 +475,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
 }
 
 function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => void; onDeny?: () => void }) {
+  const { t } = useTranslation();
   const approveRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const t = window.setTimeout(() => approveRef.current?.focus(), 150);
@@ -493,7 +498,7 @@ function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => vo
       />
       <div id="plan-title" className="flex items-center gap-2 text-base text-fg-primary font-semibold">
         <StateGlyph state="waiting" size="sm" />
-        <span>Plan ready for review</span>
+        <span>{t('chat.planTitle')}</span>
       </div>
       <div className="mt-2 max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle bg-bg-app/40 px-3 py-2">
         <div className="prose prose-invert prose-sm max-w-none font-mono text-sm text-fg-secondary [&_h1]:text-fg-primary [&_h2]:text-fg-primary [&_h3]:text-fg-primary [&_code]:text-fg-primary [&_pre]:bg-bg-elevated [&_pre]:rounded-sm">
@@ -502,10 +507,10 @@ function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => vo
       </div>
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="secondary" size="md" onClick={onDeny}>
-          Reject
+          {t('chat.planReject')}
         </Button>
         <Button ref={approveRef} variant="primary" size="md" onClick={onAllow}>
-          Approve plan
+          {t('chat.planApprove')}
         </Button>
       </div>
     </motion.div>
@@ -513,12 +518,13 @@ function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => vo
 }
 
 function TodoBlock({ todos }: { todos: import('../types').TodoItem[] }) {
+  const { t } = useTranslation();
   const total = todos.length;
   const done = todos.filter((t) => t.status === 'completed').length;
   return (
     <div className="my-1.5 rounded-md border border-border-subtle bg-bg-elevated/40 px-3 py-2">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">Todo</span>
+        <span className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{t('chat.todoLabel')}</span>
         <span className="font-mono text-[11px] text-fg-tertiary">
           {done}/{total}
         </span>
@@ -573,6 +579,7 @@ function TodoBlock({ todos }: { todos: import('../types').TodoItem[] }) {
 }
 
 function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; title: string; detail?: string }) {
+  const { t } = useTranslation();
   const isWarn = tone === 'warn';
   return (
     <div
@@ -593,7 +600,7 @@ function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; title: s
       />
       <div className="flex items-baseline gap-2">
         <span className={'font-mono uppercase tracking-wider text-[10px] ' + (isWarn ? 'text-state-waiting' : 'text-fg-tertiary')}>
-          {isWarn ? 'WARN' : 'INFO'}
+          {isWarn ? t('chat.warnLabel') : t('chat.infoLabel')}
         </span>
         <span className={isWarn ? 'text-fg-primary' : 'text-fg-secondary'}>{title}</span>
         {detail && <span className="text-fg-tertiary">— {detail}</span>}
@@ -603,6 +610,7 @@ function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; title: s
 }
 
 function ErrorBlock({ text }: { text: string }) {
+  const { t } = useTranslation();
   return (
     <div
       role="alert"
@@ -610,7 +618,7 @@ function ErrorBlock({ text }: { text: string }) {
     >
       <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-error rounded-l-md" />
       <div className="flex items-start gap-2">
-        <AlertCircle size={14} className="text-state-error mt-0.5 shrink-0" aria-label="error" />
+        <AlertCircle size={14} className="text-state-error mt-0.5 shrink-0" aria-label={t('chat.errorLabel')} />
         <span className="whitespace-pre-wrap">{text}</span>
       </div>
     </div>
@@ -620,6 +628,7 @@ function ErrorBlock({ text }: { text: string }) {
 type PrStatusBlockType = Extract<MessageBlock, { kind: 'pr-status' }>;
 
 function PrStatusBlock({ block }: { block: PrStatusBlockType }) {
+  const { t } = useTranslation();
   const { phase, number, url, base, branch, checks = [], error } = block;
   const openExternal = (u: string) => {
     void window.agentory?.openExternal(u);
@@ -648,7 +657,7 @@ function PrStatusBlock({ block }: { block: PrStatusBlockType }) {
             {branch} <span className="opacity-60">→</span> {base}
           </span>
         )}
-        <span className="ml-auto">{labelForPhase(phase)}</span>
+        <span className="ml-auto">{labelForPhase(phase, t)}</span>
       </div>
       {url && (
         <div className="mt-1">
@@ -679,7 +688,7 @@ function PrStatusBlock({ block }: { block: PrStatusBlockType }) {
                   type="button"
                   onClick={() => openExternal(c.detailsUrl!)}
                   className="text-fg-tertiary hover:text-accent transition-colors duration-150 ease-out"
-                  aria-label={`Open details for ${c.name}`}
+                  aria-label={t('chat.prOpenDetailsAria', { name: c.name })}
                 >
                   <ExternalLink size={10} aria-hidden />
                 </button>
@@ -692,18 +701,18 @@ function PrStatusBlock({ block }: { block: PrStatusBlockType }) {
   );
 }
 
-function labelForPhase(phase: PrStatusBlockType['phase']): string {
+function labelForPhase(phase: PrStatusBlockType['phase'], t: (k: string) => string): string {
   switch (phase) {
     case 'opening':
-      return 'opening…';
+      return t('chat.prOpening');
     case 'open':
-      return 'open';
+      return t('chat.prOpen');
     case 'polling':
-      return 'CI running…';
+      return t('chat.prPolling');
     case 'done':
-      return 'CI complete';
+      return t('chat.prDone');
     case 'failed':
-      return 'failed';
+      return t('chat.prFailed');
   }
 }
 
@@ -714,17 +723,18 @@ function CheckGlyph({
   status: PrCheckStatus['status'];
   conclusion: PrCheckStatus['conclusion'];
 }) {
+  const { t } = useTranslation();
   if (status !== 'completed') {
-    return <Loader2 size={11} className="animate-spin text-fg-tertiary" aria-label="running" />;
+    return <Loader2 size={11} className="animate-spin text-fg-tertiary" aria-label={t('chat.prCheckRunning')} />;
   }
   if (
     conclusion === 'success' ||
     conclusion === 'skipped' ||
     conclusion === 'neutral'
   ) {
-    return <CheckCircle2 size={11} className="text-state-success" aria-label="passed" />;
+    return <CheckCircle2 size={11} className="text-state-success" aria-label={t('chat.prCheckPassed')} />;
   }
-  return <XCircle size={11} className="text-state-error" aria-label="failed" />;
+  return <XCircle size={11} className="text-state-error" aria-label={t('chat.prCheckFailed')} />;
 }
 
 
@@ -796,9 +806,10 @@ function renderBlock(
 const EMPTY_BLOCKS: readonly MessageBlock[] = [];
 
 function EmptyState() {
+  const { t } = useTranslation();
   return (
     <div className="h-full flex items-center justify-center px-6">
-      <div className="font-mono text-sm text-fg-tertiary">Ready when you are.</div>
+      <div className="font-mono text-sm text-fg-tertiary">{t('chat.ready')}</div>
     </div>
   );
 }
@@ -809,6 +820,7 @@ function EmptyState() {
 const FOLLOW_THRESHOLD_PX = 32;
 
 export function ChatStream() {
+  const { t } = useTranslation();
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
   const resolvePermission = useStore((s) => s.resolvePermission);
@@ -901,10 +913,10 @@ export function ChatStream() {
             transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
             onClick={jumpToLatest}
             className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-elevated border border-border-strong text-sm text-fg-primary shadow-md hover:bg-bg-hover transition-colors duration-150 ease-out"
-            aria-label="Jump to latest"
+            aria-label={t('chat.jumpToLatest')}
           >
             <ArrowDown size={14} />
-            <span>Jump to latest</span>
+            <span>{t('chat.jumpToLatest')}</span>
           </motion.button>
         )}
       </AnimatePresence>

@@ -3,6 +3,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
+import { useTranslation } from '../i18n/useTranslation';
 
 // Read-only ANSI renderer for tool output (Bash etc.). v0.1: append-only,
 // no input. The data prop is treated as the *full* output for the call —
@@ -50,6 +51,7 @@ export interface TerminalProps {
 }
 
 export function Terminal({ data, running }: TerminalProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -160,7 +162,7 @@ export function Terminal({ data, running }: TerminalProps) {
       />
       {empty && (
         <div className="px-3 py-1 font-mono text-[11px] text-fg-tertiary border-t border-border-subtle">
-          {running ? 'waiting for output…' : '(no output)'}
+          {running ? t('terminal.waitingOutput') : t('terminal.noOutput')}
         </div>
       )}
     </div>

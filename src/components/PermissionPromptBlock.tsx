@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ShieldAlert } from 'lucide-react';
 import { Button } from './ui/Button';
+import { useTranslation } from '../i18n/useTranslation';
 
 export interface PermissionPromptBlockProps {
   /** Short human description, e.g. "Bash: ls -la". Used as the fallback summary. */
@@ -52,6 +53,7 @@ export function PermissionPromptBlock({
   onReject,
   autoFocus = true
 }: PermissionPromptBlockProps) {
+  const { t } = useTranslation();
   const rootRef = useRef<HTMLDivElement>(null);
   const allowRef = useRef<HTMLButtonElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
@@ -129,7 +131,7 @@ export function PermissionPromptBlock({
         className="flex items-center gap-2 text-base text-fg-primary font-semibold"
       >
         <ShieldAlert size={14} className="text-accent" aria-hidden />
-        <span>Permission required</span>
+        <span>{t('permissionPrompt.title')}</span>
         {toolName && (
           <span className="font-mono text-xs text-fg-tertiary uppercase tracking-wider">
             {toolName}
@@ -165,7 +167,7 @@ export function PermissionPromptBlock({
             }
           }}
         >
-          Reject (N)
+          {t('permissionPrompt.rejectBtn')}
         </Button>
         <Button
           ref={allowRef}
@@ -180,7 +182,7 @@ export function PermissionPromptBlock({
             }
           }}
         >
-          Allow (Y)
+          {t('permissionPrompt.allowBtn')}
         </Button>
       </div>
     </motion.div>
