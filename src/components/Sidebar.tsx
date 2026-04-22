@@ -186,6 +186,8 @@ function GroupRow({
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
+          <ContextMenuSeparator />
           <ContextMenuItem
             onSelect={() =>
               group.kind === 'archive' ? unarchiveGroup(group.id) : archiveGroup(group.id)
@@ -193,8 +195,6 @@ function GroupRow({
           >
             {group.kind === 'archive' ? t('sidebar.unarchiveGroup') : t('sidebar.archiveGroup')}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
-          <ContextMenuSeparator />
           <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
             {t('sidebar.deleteGroupEllipsis')}
           </ContextMenuItem>
