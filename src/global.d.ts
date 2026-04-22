@@ -195,6 +195,14 @@ declare global {
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
       >;
 
+      /**
+       * Most-recently-used cwds derived from CLI transcripts. Cached in main
+       * via an eager scan at app `ready`, so this resolves quickly even on
+       * first call after window load. Empty array if the scan is still in
+       * flight or no transcripts are present.
+       */
+      recentCwds: () => Promise<string[]>;
+
       memory: {
         read: (p: string) => Promise<
           | { ok: true; content: string; exists: boolean }

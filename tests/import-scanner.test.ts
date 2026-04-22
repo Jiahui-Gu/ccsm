@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseHead } from '../electron/import-scanner';
+import { parseHead, deriveRecentCwds } from '../electron/import-scanner';
 
 const j = (o: unknown) => JSON.stringify(o);
 
@@ -72,5 +72,69 @@ describe('parseHead', () => {
   it('ignores malformed json lines', () => {
     const head = parseHead(['not json', j({ type: 'ai-title', aiTitle: 'OK' })]);
     expect(head?.title).toBe('OK');
+  });
+});
+
+describe('deriveRecentCwds', () => {
+  it('returns [] for empty input', () => {
+    expect(deriveRecentCwds([])).toEqual([]);
+  });
+
+  it('orders by mtime descending', () => {
+    expect(
+      deriveRecentCwds([
+        { cwd: '/a', mtime: 100 },
+        { cwd: '/b', mtime: 300 },
+        { cwd: '/c', mtime: 200 },
+      ])
+    ).toEqual(['/b', '/c', '/a']);
+  });
+
+  it('dedupes repeated cwds, keeping the most-recent occurrence', () => {
+    expect(
+      deriveRecentCwds([
+        { cwd: '/a', mtime: 100 },
+        { cwd: '/a', mtime: 500 },
+        { cwd: '/b', mtime: 300 },
+      ])
+    ).toEqual(['/a', '/b']);
+  });
+
+  it('drops the placeholder ~ entry the scanner emits when cwd is unknown', () => {
+    expect(
+      deriveRecentCwds([
+        { cwd: '~', mtime: 500 },
+        { cwd: '/real', mtime: 400 },
+      ])
+    ).toEqual(['/real']);
+  });
+
+  it('drops empty cwd strings defensively', () => {
+    expect(
+      deriveRecentCwds([
+        { cwd: '', mtime: 500 },
+        { cwd: '/real', mtime: 400 },
+      ])
+    ).toEqual(['/real']);
+  });
+
+  it('caps at the requested max', () => {
+    const sessions = Array.from({ length: 25 }, (_, i) => ({
+      cwd: `/p${i}`,
+      mtime: 1000 - i,
+    }));
+    const cwds = deriveRecentCwds(sessions, 10);
+    expect(cwds).toHaveLength(10);
+    // mtime descending → /p0 is newest
+    expect(cwds[0]).toBe('/p0');
+    expect(cwds[9]).toBe('/p9');
+  });
+
+  it('defaults max to 10', () => {
+    const sessions = Array.from({ length: 15 }, (_, i) => ({
+      cwd: `/p${i}`,
+      mtime: 1000 - i,
+    }));
+    expect(deriveRecentCwds(sessions)).toHaveLength(10);
   });
 });

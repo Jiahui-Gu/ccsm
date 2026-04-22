@@ -19,7 +19,11 @@ import {
 } from './db';
 import { sessions } from './agent/manager';
 import { installUpdaterIpc } from './updater';
-import { scanImportableSessions } from './import-scanner';
+import {
+  scanImportableSessions,
+  deriveRecentCwds,
+  type ScannableSession,
+} from './import-scanner';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
@@ -79,6 +83,58 @@ function writeApiKey(value: string): boolean {
 }
 
 const isDev = !app.isPackaged;
+
+// ───────────────────── importable-sessions cache ─────────────────────────
+//
+// The CLI transcripts under ~/.claude/projects can run into hundreds of
+// files; the head-parse is fast per file but the cumulative latency makes
+// the ImportDialog's "Scanning…" state visible for several seconds on cold
+// open. We kick off the scan eagerly at app `ready` and serve cached
+// results to renderers, refreshing in the background on each request so
+// newly-recorded sessions show up without a manual reload.
+//
+// `recentCwds` is derived from the same scan and powers the
+// SessionCreateDialog's default cwd / dropdown — same goal, no second IPC.
+let importableCache: ScannableSession[] = [];
+let recentCwdsCache: string[] = [];
+let importablePending: Promise<ScannableSession[]> | null = null;
+
+function refreshImportableCache(): Promise<ScannableSession[]> {
+  if (importablePending) return importablePending;
+  importablePending = scanImportableSessions()
+    .then((rows) => {
+      importableCache = rows;
+      recentCwdsCache = deriveRecentCwds(rows);
+      return rows;
+    })
+    .catch((err) => {
+      console.warn('[main] scanImportableSessions failed', err);
+      return importableCache;
+    })
+    .finally(() => {
+      importablePending = null;
+    }) as Promise<ScannableSession[]>;
+  return importablePending;
+}
+
+async function getImportableSessions(): Promise<ScannableSession[]> {
+  // If we have a hot cache, serve it instantly and refresh in the background
+  // so the next call sees fresher data. On cold cache (eager-load not done
+  // yet) await the in-flight (or new) scan so the renderer never gets [].
+  if (importableCache.length > 0) {
+    void refreshImportableCache();
+    return importableCache;
+  }
+  return refreshImportableCache();
+}
+
+async function getRecentCwds(): Promise<string[]> {
+  if (recentCwdsCache.length > 0 || importableCache.length > 0) {
+    return recentCwdsCache;
+  }
+  await refreshImportableCache();
+  return recentCwdsCache;
+}
 
 // We don't want a visible File/Edit/View menu bar — Agentory is a single-
 // window tool and those menus add noise. But on Windows/Linux, setting the
@@ -517,7 +573,8 @@ app.whenReady().then(() => {
       sessions.resolvePermission(sessionId, requestId, decision)
   );
 
-  ipcMain.handle('import:scan', () => scanImportableSessions());
+  ipcMain.handle('import:scan', () => getImportableSessions());
+  ipcMain.handle('import:recentCwds', () => getRecentCwds());
 
   // ───────────────────────────── /pr flow ──────────────────────────────────
   //
@@ -730,6 +787,11 @@ app.whenReady().then(() => {
 
   createWindow();
   ensureTray();
+
+  // Eager-load CLI transcripts so ImportDialog and SessionCreateDialog have
+  // data the moment the user opens them. Fire-and-forget; refreshImportableCache
+  // logs its own errors and stores [] on failure so getRecentCwds still resolves.
+  void refreshImportableCache();
 });
 
 app.on('before-quit', () => {
