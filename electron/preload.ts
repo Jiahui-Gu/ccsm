@@ -1,3 +1,4 @@
+import '@sentry/electron/preload';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { PermissionMode, AgentMessage } from './agent/sessions';
 

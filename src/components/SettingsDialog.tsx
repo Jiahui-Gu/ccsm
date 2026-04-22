@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
+import { Check } from 'lucide-react';
+import * as Checkbox from '@radix-ui/react-checkbox';
 import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
@@ -344,7 +346,79 @@ function NotificationsPane() {
         </Button>
         {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
       </div>
+      <div className="mt-6 pt-5 border-t border-border-subtle">
+        <CrashReportingField />
+      </div>
     </>
+  );
+}
+
+// Persisted via the existing `db:save` / `db:load` IPC under the
+// `crashReportingOptOut` app_state key. We store the OPT-OUT flag (default
+// false → reporting ON) so a missing row means "send"; that matches the
+// reading logic in electron/main.ts so the two never disagree.
+function CrashReportingField() {
+  const { t } = useTranslation('settings');
+  const [optOut, setOptOut] = useState<boolean>(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await window.agentory?.loadState('crashReportingOptOut');
+        if (cancelled) return;
+        setOptOut(raw === 'true' || raw === '1');
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onChange = (sendReports: boolean) => {
+    // UI is "Send crash reports" (positive). Persisted key is the inverse.
+    const nextOptOut = !sendReports;
+    setOptOut(nextOptOut);
+    void window.agentory?.saveState('crashReportingOptOut', String(nextOptOut));
+  };
+
+  const checked = !optOut;
+
+  return (
+    <label
+      className={cn(
+        'flex items-start gap-3 cursor-pointer select-none',
+        !hydrated && 'opacity-60'
+      )}
+    >
+      <Checkbox.Root
+        checked={checked}
+        disabled={!hydrated}
+        onCheckedChange={(v) => onChange(v === true)}
+        className={cn(
+          'mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong',
+          'data-[state=checked]:bg-accent data-[state=checked]:border-accent',
+          'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+          'focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app',
+          'transition-colors duration-150'
+        )}
+      >
+        <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
+          <Check size={10} strokeWidth={3} />
+        </Checkbox.Indicator>
+      </Checkbox.Root>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-fg-primary">
+          {t('crashReporting.label')}
+        </div>
+        <div className="text-xs text-fg-tertiary mt-0.5">
+          {t('crashReporting.description')}
+        </div>
+      </div>
+    </label>
   );
 }
 
