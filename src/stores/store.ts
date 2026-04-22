@@ -392,6 +392,32 @@ export function resolveEffectiveTheme(
 // session don't issue redundant IPC round-trips.
 const inFlightLoads = new Set<string>();
 
+/**
+ * Compact one-line summary of a tool input for the post-resolution trace
+ * block. Picks the most descriptive scalar field (command/path/url/...) and
+ * truncates aggressively — the user just needs a hint of what was decided,
+ * not the full payload. Returns "" when nothing useful is present.
+ */
+function summarizeInputForTrace(input: Record<string, unknown> | undefined): string {
+  if (!input) return '';
+  const PREFERRED = ['command', 'file_path', 'path', 'pattern', 'url', 'plan'];
+  for (const k of PREFERRED) {
+    const v = input[k];
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 120 ? v.slice(0, 120) + '…' : v;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  }
+  // Fallback: first scalar field by Object.entries order.
+  for (const [, v] of Object.entries(input)) {
+    if (typeof v === 'string' && v.length > 0) {
+      return v.length > 120 ? v.slice(0, 120) + '…' : v;
+    }
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  }
+  return '';
+}
+
 const defaultGroups: Group[] = [
   { id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }
 ];
@@ -977,8 +1003,27 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => {
       const prev = s.messagesBySession[sessionId];
       if (!prev) return s;
-      const next = prev.filter((b) => b.id !== waitId);
-      if (next.length === prev.length) return s;
+      const idx = prev.findIndex((b) => b.id === waitId);
+      if (idx === -1) return s;
+      // Replace the waiting block in place with a compact system trace so
+      // the chat retains a scrollable record of what the user allowed/denied
+      // (instead of the prompt vanishing without a trace). Keep the original
+      // ordering — important for sequential prompts.
+      const wait = prev[idx];
+      const toolName = wait.kind === 'waiting' ? (wait.toolName ?? 'tool') : 'tool';
+      const toolInput = wait.kind === 'waiting' ? wait.toolInput : undefined;
+      const toolInputSummary = summarizeInputForTrace(toolInput);
+      const trace: MessageBlock = {
+        kind: 'system',
+        id: `perm-resolved-${requestId}`,
+        subkind: 'permission-resolved',
+        toolName,
+        toolInputSummary,
+        decision: decision === 'allow' ? 'allowed' : 'denied',
+        timestamp: Date.now()
+      };
+      const next = prev.slice();
+      next[idx] = trace;
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: next },
         // Centralized focus policy: after the user resolves any in-stream

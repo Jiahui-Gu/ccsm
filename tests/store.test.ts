@@ -222,7 +222,7 @@ describe('store: messages + tool result wiring (PR G regression guard)', () => {
 });
 
 describe('store: resolvePermission', () => {
-  it('removes the matching waiting block and calls the IPC bridge', () => {
+  it('replaces the waiting block with a system trace and calls the IPC bridge', () => {
     const ipc = vi.fn().mockResolvedValue(true);
     (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
       agentory: { agentResolvePermission: ipc }
@@ -231,13 +231,64 @@ describe('store: resolvePermission', () => {
     useStore.getState().createSession('~/a');
     const sid = useStore.getState().activeId;
     useStore.getState().appendBlocks(sid, [
-      { kind: 'waiting', id: 'wait-req1', prompt: 'OK?', intent: 'permission', requestId: 'req1' }
+      {
+        kind: 'waiting',
+        id: 'wait-req1',
+        prompt: 'OK?',
+        intent: 'permission',
+        requestId: 'req1',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' }
+      }
     ]);
 
     useStore.getState().resolvePermission(sid, 'req1', 'allow');
 
-    expect(useStore.getState().messagesBySession[sid]).toEqual([]);
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    // Trace replaces the waiting block in place — the chat must keep a
+    // visible record so users can audit what they approved/denied later.
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].kind).toBe('system');
+    expect(blocks[0]).toMatchObject({
+      kind: 'system',
+      subkind: 'permission-resolved',
+      decision: 'allowed',
+      toolName: 'Bash',
+      toolInputSummary: 'ls'
+    });
     expect(ipc).toHaveBeenCalledWith(sid, 'req1', 'allow');
+  });
+
+  it('emits a "denied" trace on deny so the chat retains the rejection', () => {
+    const ipc = vi.fn().mockResolvedValue(true);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { agentResolvePermission: ipc }
+    };
+
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    useStore.getState().appendBlocks(sid, [
+      {
+        kind: 'waiting',
+        id: 'wait-req2',
+        prompt: 'rm?',
+        intent: 'permission',
+        requestId: 'req2',
+        toolName: 'Bash',
+        toolInput: { command: 'rm -rf /tmp/x' }
+      }
+    ]);
+
+    useStore.getState().resolvePermission(sid, 'req2', 'deny');
+
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: 'system',
+      decision: 'denied',
+      toolName: 'Bash'
+    });
+    expect(ipc).toHaveBeenCalledWith(sid, 'req2', 'deny');
   });
 
   it('is a no-op when no waiting block matches', () => {

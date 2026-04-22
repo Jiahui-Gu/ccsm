@@ -25,22 +25,39 @@ function formatToolInputSummary(
   if (!input) return [];
   const out: Array<{ key: string; value: string }> = [];
   // Show a curated subset first for predictable ordering, then any remaining
-  // string/number keys. Skip giant blobs so the prompt stays one screen.
+  // keys. Skip giant blobs so the prompt stays one screen — the existing
+  // 400-char ellipsis at render time handles overflow.
   const seen = new Set<string>();
+  const stringify = (v: unknown): string | null => {
+    if (v == null) return String(v);
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      return String(v);
+    }
+    if (typeof v === 'object') {
+      // JSON.stringify never coerces nested values to "[object Object]". Pretty
+      // print so the eventual <dd whitespace-pre-wrap> renders the structure
+      // legibly. Fallback to bracket notation if the object contains cycles.
+      try {
+        return JSON.stringify(v, null, 2);
+      } catch {
+        return Array.isArray(v) ? '[…]' : '{…}';
+      }
+    }
+    return null;
+  };
   for (const key of PREVIEW_KEYS) {
     if (key in input) {
-      const v = input[key];
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-        out.push({ key, value: String(v) });
+      const s = stringify(input[key]);
+      if (s !== null) {
+        out.push({ key, value: s });
         seen.add(key);
       }
     }
   }
   for (const [key, v] of Object.entries(input)) {
     if (seen.has(key)) continue;
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      out.push({ key, value: String(v) });
-    }
+    const s = stringify(v);
+    if (s !== null) out.push({ key, value: s });
   }
   return out;
 }
@@ -60,23 +77,88 @@ export function PermissionPromptBlock({
 
   // Focus Reject on mount — safer default. Never steal focus away from an
   // input the user is already typing in.
+  //
+  // Timing note: a single rAF is enough in dev (unbundled, fast paint) but
+  // races Framer Motion's transform/opacity transition under the prod bundle
+  // — the button is briefly non-focusable during the enter animation. Use
+  // double-rAF + setTimeout(0) fallback so we land after layout AND after
+  // animation start. As a final safety net, observe the root for a beat in
+  // case the button mounts late (rare under StrictMode double-invoke).
   useEffect(() => {
     if (!autoFocus) return;
-    const id = requestAnimationFrame(() => {
+    let cancelled = false;
+    const raf1: number[] = [];
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    let observer: MutationObserver | null = null;
+
+    const shouldSkip = () => {
       const active = document.activeElement;
-      const isInteractiveElsewhere =
-        active instanceof HTMLElement &&
-        active !== document.body &&
-        !rootRef.current?.contains(active) &&
-        (active.tagName === 'INPUT' ||
-          active.tagName === 'TEXTAREA' ||
-          active.isContentEditable ||
-          active.getAttribute('role') === 'combobox' ||
-          active.getAttribute('role') === 'textbox');
-      if (isInteractiveElsewhere) return;
-      rejectRef.current?.focus({ preventScroll: true });
+      if (!(active instanceof HTMLElement)) return false;
+      if (active === document.body) return false;
+      if (rootRef.current?.contains(active)) return false;
+      const isTextEntry =
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.isContentEditable ||
+        active.getAttribute('role') === 'combobox' ||
+        active.getAttribute('role') === 'textbox';
+      if (!isTextEntry) return false;
+      // Only refuse to steal focus when the user has actually typed something
+      // — an empty textarea (e.g. the composer freshly re-focused by our own
+      // focusInputNonce bump after resolving a previous prompt) shouldn't
+      // block the new prompt's autoFocus. Otherwise sequential prompts strand
+      // focus in the empty composer and the second Reject never gets it.
+      const value =
+        active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+          ? active.value
+          : active.textContent ?? '';
+      return value.trim().length > 0;
+    };
+
+    const tryFocus = () => {
+      if (cancelled) return false;
+      if (shouldSkip()) return true; // treat as resolved — don't keep retrying
+      const btn = rejectRef.current;
+      if (!btn) return false;
+      btn.focus({ preventScroll: true });
+      return document.activeElement === btn;
+    };
+
+    // 1st rAF -> 2nd rAF -> setTimeout(0) -> setTimeout(50). Each step retries
+    // if the previous didn't actually land focus. Cheap; resolves on first hit.
+    const r1 = requestAnimationFrame(() => {
+      if (tryFocus()) return;
+      const r2 = requestAnimationFrame(() => {
+        if (tryFocus()) return;
+        timers.push(
+          setTimeout(() => {
+            if (tryFocus()) return;
+            timers.push(
+              setTimeout(() => {
+                if (tryFocus()) return;
+                // Final safety: watch for late mount/layout via MutationObserver
+                // for up to 500ms.
+                if (!rootRef.current) return;
+                observer = new MutationObserver(() => {
+                  if (tryFocus()) observer?.disconnect();
+                });
+                observer.observe(rootRef.current, { childList: true, subtree: true, attributes: true });
+                timers.push(setTimeout(() => observer?.disconnect(), 500));
+              }, 50)
+            );
+          }, 0)
+        );
+      });
+      raf1.push(r2);
     });
-    return () => cancelAnimationFrame(id);
+    raf1.push(r1);
+
+    return () => {
+      cancelled = true;
+      for (const id of raf1) cancelAnimationFrame(id);
+      for (const t of timers) clearTimeout(t);
+      observer?.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
