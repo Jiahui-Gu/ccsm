@@ -1,10 +1,14 @@
 name: CI
 
+# Disabled — billing issues on the GitHub account. Re-enable by restoring
+# the pull_request / push triggers below. Manual runs still possible via
+# the Actions tab.
 on:
-  pull_request:
-    branches: [working, main]
-  push:
-    branches: [working, main]
+  workflow_dispatch:
+#  pull_request:
+#    branches: [working, main]
+#  push:
+#    branches: [working, main]
 
 concurrency:
   group: ci-${{ github.ref }}
