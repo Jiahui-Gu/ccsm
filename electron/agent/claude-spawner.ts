@@ -255,6 +255,18 @@ export function buildSpawnArgs(opts: {
     '--verbose',
     '--input-format',
     'stream-json',
+    // Delegate per-tool permission decisions to the host over the same stdio
+    // channel. Without this flag, claude.exe never emits `can_use_tool`
+    // control_requests for tools that would otherwise prompt (Write/Edit/etc.) —
+    // it falls back to the local rule engine and silently auto-allows or auto-
+    // denies based on settings + permissionMode. The literal value `"stdio"`
+    // (rather than an MCP tool name) is the magic token the CLI recognises as
+    // "the SDK consumer on the other side handles permissions"; this is what
+    // `@anthropic-ai/claude-agent-sdk` injects when a `canUseTool` callback is
+    // provided. The companion handshake (an `initialize` control_request) is
+    // sent by SessionRunner once the child is up.
+    '--permission-prompt-tool',
+    'stdio',
   ];
   if (opts.permissionMode) {
     args.push('--permission-mode', opts.permissionMode);

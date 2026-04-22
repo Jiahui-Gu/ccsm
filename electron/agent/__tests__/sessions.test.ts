@@ -27,8 +27,10 @@ interface FakeProc {
   getRecentStderr: () => string;
   /** Test-only helper to settle wait(). */
   __exit: (code: number | null, signal?: NodeJS.Signals | null) => void;
-  /** Read everything written to stdin as parsed JSON lines. */
+  /** Read stdin as parsed JSON lines, EXCLUDING the protocol initialize frame. */
   __stdinLines: () => unknown[];
+  /** Read every JSON line written to stdin (initialize included). */
+  __rawStdinLines: () => unknown[];
 }
 
 function makeFakeProc(): FakeProc {
@@ -55,6 +57,22 @@ function makeFakeProc(): FakeProc {
     getRecentStderr: () => '',
     __exit: (code, signal = null) => resolveWait({ code, signal }),
     __stdinLines: () =>
+      Buffer.concat(stdinChunks)
+        .toString('utf8')
+        .split('\n')
+        .filter((s) => s.length > 0)
+        .map((s) => JSON.parse(s))
+        // Filter out the `initialize` handshake SessionRunner sends right
+        // after spawn — most tests assert on user messages / outbound control
+        // requests and don't care about this protocol-level frame. The dedicated
+        // "sends an `initialize` control_request" test reads the unfiltered
+        // stream via __rawStdinLines below.
+        .filter((m) => {
+          if (typeof m !== 'object' || m === null) return true;
+          const obj = m as { type?: string; request?: { subtype?: string } };
+          return !(obj.type === 'control_request' && obj.request?.subtype === 'initialize');
+        }),
+    __rawStdinLines: () =>
       Buffer.concat(stdinChunks)
         .toString('utf8')
         .split('\n')
@@ -149,6 +167,32 @@ describe('SessionRunner.start', () => {
     await runner.start(baseOpts);
     expect(mockSpawnClaude).toHaveBeenCalledTimes(1);
     runner.close();
+  });
+
+  it('sends an `initialize` control_request immediately after spawn so claude.exe knows we handle can_use_tool over stdio', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const runner = new SessionRunner('s-init', () => {}, () => {}, () => {});
+    try {
+      await runner.start(baseOpts);
+      // Allow the queued control_request write to flush.
+      await new Promise((r) => setImmediate(r));
+      const lines = proc.__rawStdinLines();
+      const init = lines.find(
+        (l): l is { type: string; request: { subtype: string; hooks: unknown } } =>
+          typeof l === 'object' &&
+          l !== null &&
+          (l as { type?: string }).type === 'control_request' &&
+          (l as { request?: { subtype?: string } }).request?.subtype === 'initialize',
+      );
+      expect(init, 'expected an initialize control_request on stdin').toBeDefined();
+      // We send `hooks: {}` for now — no host-side hook handlers wired up. The
+      // exact value doesn't matter to claude.exe, but it MUST be present per
+      // the SDK schema (hooks is `record(string, array(...)).optional()`).
+      expect(init?.request.hooks).toEqual({});
+    } finally {
+      runner.close();
+    }
   });
 });
 
