@@ -12,26 +12,6 @@ type StartOpts = {
   endpointId?: string;
   allowedTools?: readonly string[];
   disallowedTools?: readonly string[];
-  useWorktree?: boolean;
-  sourceBranch?: string;
-};
-
-type WorktreeReadyDecl = {
-  sessionId: string;
-  path: string;
-  name: string;
-  branch: string;
-  sourceBranch: string | null;
-};
-
-type WorktreeRecordDecl = {
-  sessionId: string;
-  name: string;
-  path: string;
-  baseRepo: string;
-  branch: string;
-  sourceBranch: string | null;
-  createdAt: number;
 };
 
 type StartResult =
@@ -301,12 +281,6 @@ declare global {
         setBinaryPath: (p: string) => Promise<CliSetBinaryResultDecl>;
         openDocs: () => Promise<boolean>;
         retryDetect: () => Promise<CliRetryResultDecl>;
-      };
-
-      worktree: {
-        listBranches: (repoRoot: string) => Promise<string[]>;
-        getForSession: (sessionId: string) => Promise<WorktreeRecordDecl | null>;
-        onReady: (handler: (e: WorktreeReadyDecl) => void) => () => void;
       };
     };
   }

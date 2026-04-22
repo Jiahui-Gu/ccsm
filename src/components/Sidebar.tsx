@@ -5,8 +5,7 @@ import {
   Plus,
   Search,
   Settings,
-  BellOff,
-  GitBranch
+  BellOff
 } from 'lucide-react';
 import {
   DndContext,
@@ -296,11 +295,10 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             }
           }}
           className={cn(
-            'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-base',
+            'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-base h-9',
             'transition-[background-color,color,box-shadow] duration-150',
             '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
             'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent',
-            session.worktreeName ? 'min-h-9 py-1' : 'h-9',
             selected
               ? 'bg-bg-active text-fg-primary'
               : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
@@ -332,23 +330,6 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             ) : (
               <>
                 <span className="truncate block">{session.name}</span>
-                {session.worktreeName && (
-                  <span
-                    title={
-                      session.sourceBranch
-                        ? `${session.worktreeName} (from ${session.sourceBranch})`
-                        : session.worktreeName
-                    }
-                    className={cn(
-                      'mt-0.5 inline-flex items-center gap-1 max-w-full',
-                      'font-mono text-[10px] leading-[12px] text-fg-tertiary',
-                      'truncate'
-                    )}
-                  >
-                    <GitBranch size={9} className="stroke-[1.75] shrink-0" aria-hidden />
-                    <span className="truncate">{session.worktreeName}</span>
-                  </span>
-                )}
               </>
             )}
           </span>

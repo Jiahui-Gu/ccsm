@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, Folder, GitBranch } from 'lucide-react';
+import { ChevronDown, Folder } from 'lucide-react';
 import { cn } from '../lib/cn';
 import {
   DropdownMenu,
@@ -136,9 +136,6 @@ export type StatusBarProps = {
   cwd: string;
   model: string;
   permission: PermissionMode;
-  /** Worktree branch name to surface alongside cwd, when the active session
-   *  was spawned inside a git worktree. Undefined hides the pill entirely. */
-  worktreeName?: string;
   onChangeCwd: (cwd: string | null) => void;
   onChangeModel: (model: string) => void;
   onChangePermission: (mode: PermissionMode) => void;
@@ -148,7 +145,6 @@ export function StatusBar({
   cwd,
   model,
   permission,
-  worktreeName,
   onChangeCwd,
   onChangeModel,
   onChangePermission
@@ -237,23 +233,6 @@ export function StatusBar({
   }
 
   const chips: React.ReactNode[] = [
-    ...(worktreeName
-      ? [
-          <span
-            key="worktree"
-            title={t('statusBar.worktreeBranchTitle', { name: worktreeName })}
-            data-testid="statusbar-worktree-pill"
-            className={cn(
-              'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
-              'text-fg-tertiary',
-              'transition-colors duration-120 ease-out'
-            )}
-          >
-            <GitBranch size={10} className="stroke-[1.75] opacity-80" aria-hidden />
-            <span className="truncate max-w-[160px]">{worktreeName}</span>
-          </span>
-        ]
-      : []),
     <ChipMenu
       key="cwd"
       label={t('statusBar.workingDirectory')}
