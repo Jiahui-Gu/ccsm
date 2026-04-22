@@ -104,15 +104,37 @@ describe('registry shape', () => {
 });
 
 describe('/clear', () => {
-  it('creates a new session and switches to it, leaving a breadcrumb on the old', () => {
+  it('wipes the current session context without changing session count or activeId', () => {
     useStore.getState().createSession('/tmp/old');
     const oldId = useStore.getState().activeId;
+    // Seed transcript + state that /clear must wipe.
+    useStore.getState().appendBlocks(oldId, [
+      { kind: 'user', id: 'u1', text: 'hi' },
+      { kind: 'assistant', id: 'a1', text: 'hello' }
+    ]);
+    useStore.getState().markStarted(oldId);
+    useStore.getState().addSessionStats(oldId, { turns: 1, inputTokens: 100, outputTokens: 50, costUsd: 0.001 });
+    useStore.setState((s) => ({
+      sessions: s.sessions.map((x) => (x.id === oldId ? { ...x, resumeSessionId: 'cc-abc' } : x))
+    }));
+    const sessionCountBefore = useStore.getState().sessions.length;
+
     handleClear({ sessionId: oldId, args: '' });
+
     const s = useStore.getState();
-    expect(s.sessions.length).toBe(2);
-    expect(s.activeId).not.toBe(oldId);
-    const oldBlocks = s.messagesBySession[oldId] ?? [];
-    expect(oldBlocks.some((b) => b.kind === 'status' && b.title === 'New session created')).toBe(true);
+    expect(s.sessions.length).toBe(sessionCountBefore); // no new session
+    expect(s.activeId).toBe(oldId); // active session unchanged
+    const session = s.sessions.find((x) => x.id === oldId)!;
+    expect(session.resumeSessionId).toBeUndefined(); // resume id dropped
+    expect(s.startedSessions[oldId]).toBeUndefined();
+    expect(s.statsBySession[oldId]).toBeUndefined();
+    // Transcript only contains the new "Context cleared" breadcrumb.
+    const blocks = s.messagesBySession[oldId] ?? [];
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].kind).toBe('status');
+    if (blocks[0].kind === 'status') {
+      expect(blocks[0].title).toBe('Context cleared');
+    }
   });
 });
 
