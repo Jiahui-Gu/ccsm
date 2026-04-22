@@ -300,6 +300,7 @@ const zh: EnCatalog = {
     searchPlaceholder: '搜索会话、分组、命令…',
     escKey: 'Esc',
     noMatches: '无匹配项',
+    emptyHint: '输入以搜索会话、分组、命令…',
     groupHint: '分组',
     cmdNewSession: '新会话',
     cmdNewGroup: '新建分组',
