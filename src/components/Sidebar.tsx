@@ -441,6 +441,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
   const collapsed = useStore((s) => s.sidebarCollapsed);
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const normal = groups.filter((g) => g.kind === 'normal');
   const archived = groups.filter((g) => g.kind === 'archive');
@@ -486,16 +487,12 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
     >
     <motion.aside
       initial={false}
-      // When collapsed we still animate down to a 48px rail; otherwise we
-      // stretch to whatever width the parent panel gives us (see
-      // `AppShell.tsx` — PanelGroup drives the outer width now). Using
-      // `100%` rather than a fixed number lets react-resizable-panels own
-      // the sizing contract; framer-motion's `animate` still gives us a
-      // smooth transition between rail ↔ expanded. Both values are strings
-      // so framer doesn't have to bridge px↔% during the tween.
-      animate={{ width: collapsed ? '48px' : '100%' }}
+      // Collapsed → 48px rail. Expanded → user-resizable px width persisted in
+      // the store (see SidebarResizer + store.sidebarWidth). framer-motion
+      // tweens the change so collapse/expand stays smooth.
+      animate={{ width: collapsed ? 48 : sidebarWidth }}
       transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-      className="relative flex flex-col bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
+      className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
       {/* Top drag strip — mirrors the right pane's 32px drag strip so the
           two panes share a horizontal title-bar band. On macOS this is

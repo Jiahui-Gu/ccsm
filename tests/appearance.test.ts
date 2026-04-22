@@ -5,7 +5,11 @@ import {
   pxToLegacyFontSize,
   sanitizeFontSizePx,
   sanitizeDensity,
-  sanitizeSidebarWidthPct,
+  sanitizeSidebarWidth,
+  resolvePersistedSidebarWidth,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX,
 } from '../src/stores/store';
 
 describe('resolveEffectiveTheme', () => {
@@ -75,18 +79,44 @@ describe('density sanitize', () => {
 });
 
 describe('sidebar width sanitize', () => {
-  it('passes through in-range fractions', () => {
-    expect(sanitizeSidebarWidthPct(0.22)).toBeCloseTo(0.22);
-    expect(sanitizeSidebarWidthPct(0.4)).toBeCloseTo(0.4);
+  it('passes through in-range pixel values, rounding fractions', () => {
+    expect(sanitizeSidebarWidth(260)).toBe(260);
+    expect(sanitizeSidebarWidth(312.6)).toBe(313);
   });
 
   it('clamps below min and above max', () => {
-    expect(sanitizeSidebarWidthPct(0.0)).toBe(0.12);
-    expect(sanitizeSidebarWidthPct(0.95)).toBe(0.5);
+    expect(sanitizeSidebarWidth(0)).toBe(SIDEBAR_WIDTH_MIN);
+    expect(sanitizeSidebarWidth(50)).toBe(SIDEBAR_WIDTH_MIN);
+    expect(sanitizeSidebarWidth(9999)).toBe(SIDEBAR_WIDTH_MAX);
   });
 
   it('falls back to default when value is non-numeric', () => {
-    expect(sanitizeSidebarWidthPct(NaN)).toBeCloseTo(0.22);
-    expect(sanitizeSidebarWidthPct('25%')).toBeCloseTo(0.22);
+    expect(sanitizeSidebarWidth(NaN)).toBe(SIDEBAR_WIDTH_DEFAULT);
+    expect(sanitizeSidebarWidth('25%')).toBe(SIDEBAR_WIDTH_DEFAULT);
+    expect(sanitizeSidebarWidth(undefined)).toBe(SIDEBAR_WIDTH_DEFAULT);
+  });
+});
+
+describe('resolvePersistedSidebarWidth', () => {
+  it('prefers a persisted px value', () => {
+    expect(resolvePersistedSidebarWidth({ sidebarWidth: 320 })).toBe(320);
+  });
+
+  it('clamps a persisted px value out of range', () => {
+    expect(resolvePersistedSidebarWidth({ sidebarWidth: 50 })).toBe(SIDEBAR_WIDTH_MIN);
+    expect(resolvePersistedSidebarWidth({ sidebarWidth: 9999 })).toBe(SIDEBAR_WIDTH_MAX);
+  });
+
+  it('migrates legacy sidebarWidthPct to px using window width', () => {
+    const winWidth = typeof window !== 'undefined' ? window.innerWidth : 1440;
+    const expected = Math.min(
+      SIDEBAR_WIDTH_MAX,
+      Math.max(SIDEBAR_WIDTH_MIN, Math.round(0.22 * winWidth))
+    );
+    expect(resolvePersistedSidebarWidth({ sidebarWidthPct: 0.22 })).toBe(expected);
+  });
+
+  it('returns the default when nothing is persisted', () => {
+    expect(resolvePersistedSidebarWidth({})).toBe(SIDEBAR_WIDTH_DEFAULT);
   });
 });
