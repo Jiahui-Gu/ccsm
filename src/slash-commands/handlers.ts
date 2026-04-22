@@ -1,73 +1,38 @@
-// Client-side implementations for the slash commands listed in
-// src/slash-commands/registry.ts. Importing this module as a side-effect
-// attaches `clientHandler` to the relevant SLASH_COMMANDS entries; the
-// dispatcher in registry.ts then prefers them over pass-through.
+// Client-side handler for the one built-in command Agentory owns.
 //
-// Keep each handler small and inject dependencies through the single
-// SlashCommandContext argument; tests mock the store and window.agentory
-// directly (see tests/slash-commands-handlers.test.ts).
+// `/clear` must reach into the renderer state machine to wipe the active
+// session's transcript / queue / resume id without removing the session
+// row. The CLI's own `/clear` only knows how to wipe its in-process
+// context, so we run this locally and skip pass-through.
+//
+// `/compact` is pure pass-through — handled by the CLI itself.
+//
+// Importing this module attaches the handler as a side-effect, the same
+// pattern as before. Tests import it for the same reason.
 
 import { useStore } from '../stores/store';
 import type { MessageBlock } from '../types';
-import { SLASH_COMMANDS, type SlashCommandContext } from './registry';
-import { openSettings } from './ui-bridge';
-import { triggerPrFlow } from '../lib/pr-flow';
+import { BUILT_IN_COMMANDS, type SlashCommandContext } from './registry';
 
 function nextId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function appendStatus(
-  sessionId: string,
-  title: string,
-  detail?: string,
-  tone: 'info' | 'warn' = 'info'
-): void {
-  useStore.getState().appendBlocks(sessionId, [
-    { kind: 'status', id: nextId('local'), tone, title, detail }
-  ]);
-}
-
-function appendError(sessionId: string, text: string): void {
-  useStore.getState().appendBlocks(sessionId, [
-    { kind: 'error', id: nextId('local-err'), text }
-  ]);
-}
-
-function formatTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
-}
-
-function formatCost(usd: number): string {
-  if (usd <= 0) return '$0';
-  return `$${usd.toFixed(usd < 0.01 ? 4 : 3)}`;
-}
-
 // ---------- /clear ----------
 // Wipe the CURRENT session's conversation context (transcript, queue, stats,
-// resume id) without removing the session row. The CLI's `/clear` keeps you
-// in the same prompt — Agentory must do the same so the sidebar count stays
-// stable. After this runs the next user message triggers a fresh `agentStart`
-// (no `--resume`), giving claude.exe an empty context window.
-//
-// Earlier implementations called `store.createSession(...)` here, which made
-// the sidebar count jump by one on every /clear — surprising users into
-// thinking the command misfired. Don't do that.
+// resume id) without removing the session row. Earlier implementations
+// called `store.createSession(...)` here, which made the sidebar count jump
+// by one on every /clear — surprising users into thinking the command
+// misfired. Don't do that.
 export function handleClear(ctx: SlashCommandContext): void {
   const store = useStore.getState();
   const session = store.sessions.find((s) => s.id === ctx.sessionId);
   if (!session) return;
   const wasRunning = !!store.runningSessions[ctx.sessionId];
-  // Tear down any in-flight claude.exe conversation so the next message
-  // triggers `agentStart`, not `agentSend` against a stale process.
-  // Fire-and-forget — the IPC bridge may be absent in browser-only probes.
   if (wasRunning) {
     void window.agentory?.agentClose?.(ctx.sessionId);
   }
   store.resetSessionContext(ctx.sessionId);
-  // Drop a single breadcrumb so the user can see /clear actually ran.
   store.appendBlocks(ctx.sessionId, [
     {
       kind: 'status',
@@ -79,74 +44,9 @@ export function handleClear(ctx: SlashCommandContext): void {
   ]);
 }
 
-// ---------- /cost ----------
-// Render a local info banner with cumulative token / cost counters sourced
-// from statsBySession (aggregated in agent/lifecycle on each `result` frame).
-export function handleCost(ctx: SlashCommandContext): void {
-  const stats = useStore.getState().statsBySession[ctx.sessionId];
-  if (!stats || (stats.turns === 0 && stats.inputTokens === 0 && stats.outputTokens === 0)) {
-    appendStatus(ctx.sessionId, 'No cost data yet', 'Send a message first to see token usage.');
-    return;
-  }
-  const parts: string[] = [];
-  parts.push(`${stats.turns} turn${stats.turns === 1 ? '' : 's'}`);
-  parts.push(`${formatTokens(stats.inputTokens)} in / ${formatTokens(stats.outputTokens)} out`);
-  if (stats.costUsd > 0) parts.push(formatCost(stats.costUsd));
-  appendStatus(ctx.sessionId, 'Session cost', parts.join(' · '));
-}
-
-// ---------- /config ----------
-export function handleConfig(_ctx: SlashCommandContext): void {
-  openSettings('appearance');
-}
-
-// ---------- /model ----------
-// No in-chat model dropdown exposed yet; route to the Connection tab where
-// the model defaults live.
-export function handleModel(_ctx: SlashCommandContext): void {
-  openSettings('connection');
-}
-
-// ---------- /help ----------
-// Render a local info banner listing the registry with short descriptions.
-// Grouped by category; client-handled commands get a `(client)` suffix so
-// users can tell them apart from pass-through ones.
-export function handleHelp(ctx: SlashCommandContext): void {
-  const groups = new Map<string, Array<{ name: string; description: string; client: boolean }>>();
-  for (const cmd of SLASH_COMMANDS) {
-    const cat = cmd.category ?? 'built-in';
-    const list = groups.get(cat) ?? [];
-    list.push({
-      name: cmd.name,
-      description: cmd.description,
-      client: !!cmd.clientHandler
-    });
-    groups.set(cat, list);
-  }
-  const lines: string[] = [];
-  for (const [cat, list] of groups) {
-    lines.push(`[${cat}]`);
-    for (const c of list) {
-      const mark = c.client ? ' ⚠' : '';
-      const tag = c.client ? 'client' : 'passthru';
-      lines.push(`  /${c.name}${mark}  (${tag})  — ${c.description}`);
-    }
-  }
-  lines.push('');
-  lines.push('Commands starting with ⚠ are client-side only; others pass through to claude.exe and may be ignored in non-interactive mode.');
-  appendStatus(ctx.sessionId, 'Slash commands', lines.join('\n'));
-}
-
-// ---------- /compact ----------
-// Pass-through to claude.exe — Agentory no longer owns a one-off summarise
-// path now that endpoints/keys live in ~/.claude/settings.json (the renderer
-// has no API key to call /v1/messages with). The CLI's own /compact handles
-// it natively.
-//
-// `blocksToTranscript` is still exported below for tests and future reuse.
-
-// Exported for tests; also used by /compact. Flattens the visible message
-// blocks into a plain-text transcript the model can chew on.
+// Exported for tests that previously used it; flatten visible blocks into
+// a plain-text transcript. Kept around because dropping it would be a
+// pointless API churn for callers, and it's <30 LOC.
 export function blocksToTranscript(blocks: MessageBlock[]): string {
   const lines: string[] = [];
   for (const b of blocks) {
@@ -171,39 +71,17 @@ export function blocksToTranscript(blocks: MessageBlock[]): string {
         break;
       case 'waiting':
       case 'question':
-        // These are ephemeral — skip.
+        // Ephemeral — skip.
         break;
     }
   }
   return lines.join('\n');
 }
 
-// ---------- /pr ----------
-// Owned end-to-end by PrFlowProvider — preflight, Radix form, gh pr create,
-// CI polling. This handler just fires the trigger the provider registered
-// on mount. If the provider isn't mounted (e.g. early in boot), surface an
-// error block so the user knows why nothing happened.
-export function handlePr(ctx: SlashCommandContext): void {
-  const dispatched = triggerPrFlow(ctx.sessionId);
-  if (!dispatched) {
-    appendError(
-      ctx.sessionId,
-      '/pr flow is not available (PrFlowProvider not mounted).'
-    );
-  }
-}
-
-// Attach handlers to registry entries. Module side-effect; imported once by
-// the app bootstrap (src/index.tsx or wherever we kick things off) and once
-// by the unit tests that exercise dispatch.
+// Attach the local handler as a module side-effect, same as before.
 function attach(name: string, handler: (ctx: SlashCommandContext) => void | Promise<void>): void {
-  const entry = SLASH_COMMANDS.find((c) => c.name === name);
+  const entry = BUILT_IN_COMMANDS.find((c) => c.name === name);
   if (entry) entry.clientHandler = handler;
 }
 
 attach('clear', handleClear);
-attach('cost', handleCost);
-attach('config', handleConfig);
-attach('model', handleModel);
-attach('help', handleHelp);
-attach('pr', handlePr);

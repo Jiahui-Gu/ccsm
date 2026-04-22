@@ -84,38 +84,4 @@ export type MessageBlock =
     }
   | { kind: 'question'; id: string; requestId?: string; toolUseId?: string; questions: QuestionSpec[] }
   | { kind: 'status'; id: string; tone: 'info' | 'warn'; title: string; detail?: string }
-  | {
-      kind: 'pr-status';
-      id: string;
-      // Progress through the state machine: opening -> open -> polling ->
-      // (done | failed). Rendered as a live-updating block in chat.
-      phase: 'opening' | 'open' | 'polling' | 'done' | 'failed';
-      number?: number;
-      url?: string;
-      base?: string;
-      branch?: string;
-      checks?: PrCheckStatus[];
-      lastPollAt?: number;
-      // Populated when any check reaches a terminal failing conclusion, so
-      // the user can see log excerpts without opening the browser.
-      failedLogs?: Array<{ name: string; snippet: string }>;
-      error?: string;
-    }
   | { kind: 'error'; id: string; text: string };
-
-// Mirrors electron/pr.ts `PrCheck` — duplicated here because the renderer
-// can't import main-process types.
-export interface PrCheckStatus {
-  name: string;
-  status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'pending';
-  conclusion:
-    | 'success'
-    | 'failure'
-    | 'cancelled'
-    | 'skipped'
-    | 'timed_out'
-    | 'neutral'
-    | 'action_required'
-    | null;
-  detailsUrl?: string;
-}

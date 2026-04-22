@@ -69,42 +69,14 @@ type CliSetBinaryResultDecl =
   | { ok: true; version: string | null }
   | { ok: false; error: string };
 
-type PrPreflightErrorDecl = {
-  code: 'no-cwd' | 'not-git' | 'no-gh' | 'on-default-branch' | 'dirty-tree' | 'no-commits';
-  detail: string;
-  branch?: string;
-};
-type PrPreflightResultDecl =
-  | {
-      ok: true;
-      branch: string;
-      base: string;
-      availableBases: string[];
-      repoRoot: string;
-      suggestedTitle: string;
-      suggestedBody: string;
-    }
-  | { ok: false; errors: PrPreflightErrorDecl[] };
-type PrCreateResultDecl =
-  | { ok: true; url: string; number: number }
-  | { ok: false; error: string };
-type PrCheckDecl = {
+type CommandSourceDecl = 'user' | 'project' | 'plugin';
+type LoadedCommandDecl = {
   name: string;
-  status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'pending';
-  conclusion:
-    | 'success'
-    | 'failure'
-    | 'cancelled'
-    | 'skipped'
-    | 'timed_out'
-    | 'neutral'
-    | 'action_required'
-    | null;
-  detailsUrl?: string;
+  description?: string;
+  argumentHint?: string;
+  source: CommandSourceDecl;
+  pluginId?: string;
 };
-type PrChecksResultDecl =
-  | { ok: true; checks: PrCheckDecl[] }
-  | { ok: false; error: string };
 
 declare global {
   interface Window {
@@ -171,17 +143,8 @@ declare global {
         projectPath: (cwd: string) => Promise<string | null>;
       };
 
-      pr: {
-        preflight: (cwd: string | null | undefined) => Promise<PrPreflightResultDecl>;
-        create: (args: {
-          cwd: string;
-          branch: string;
-          base: string;
-          title: string;
-          body: string;
-          draft: boolean;
-        }) => Promise<PrCreateResultDecl>;
-        checks: (cwd: string, number: number) => Promise<PrChecksResultDecl>;
+      commands: {
+        list: (cwd: string | null | undefined) => Promise<LoadedCommandDecl[]>;
       };
 
       openExternal: (url: string) => Promise<boolean>;

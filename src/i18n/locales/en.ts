@@ -209,7 +209,11 @@ const en = {
     complete: 'complete',
     close: 'close',
     runsLocally: 'Runs locally — not forwarded to claude.exe',
-    clientTag: 'client'
+    clientTag: 'client',
+    groupBuiltIn: 'Built-in',
+    groupUser: 'User commands',
+    groupProject: 'Project commands',
+    groupPlugin: 'Plugin commands'
   },
   notifications: {
     sessionWaitingTitle: 'Session waiting',
