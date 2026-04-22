@@ -173,6 +173,25 @@ export class SessionRunner {
       onCanUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
     });
 
+    // Tell claude.exe we're an SDK-style consumer that handles permission
+    // decisions over stdio. Pairs with the `--permission-prompt-tool stdio`
+    // flag set by claude-spawner: without BOTH the flag AND this `initialize`
+    // control_request, the CLI falls back to the local rule engine and never
+    // emits `can_use_tool` requests, so the renderer never sees a permission
+    // prompt for tools like Write/Edit/NotebookEdit. We send `hooks: {}` for
+    // now (no host-side hook handlers); future work can extend this to wire up
+    // hook callbacks if/when we build a hook UI. Fire-and-forget — claude.exe
+    // responds with its commands list which we don't currently consume.
+    void this.rpc
+      .sendControlRequest({ subtype: 'initialize', hooks: {} })
+      .catch((err) => {
+        // Quietly ignore failures during teardown — close() races the
+        // initialize round-trip in tests / fast-cancel flows. Only log
+        // when we genuinely lost the handshake on a live session.
+        if (this.disposed) return;
+        console.warn('[sessions] initialize handshake failed', err);
+      });
+
     const stdout = this.cp.stdout;
     const cp = this.cp;
     this.consumer = (async () => {
