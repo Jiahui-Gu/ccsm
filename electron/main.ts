@@ -33,7 +33,11 @@ import {
   type CreatePrArgs
 } from './pr';
 
-const isDev = !app.isPackaged;
+// `app.isPackaged` is the canonical "are we shipping" signal. The
+// `AGENTORY_PROD_BUNDLE=1` env var lets E2E probes force-load the production
+// bundle from `dist/renderer/index.html` even though we're invoked via
+// `electron .`, so they don't require a running webpack-dev-server.
+const isDev = !app.isPackaged && process.env.AGENTORY_PROD_BUNDLE !== '1';
 
 // ───────────────────── importable-sessions cache ─────────────────────────
 //
