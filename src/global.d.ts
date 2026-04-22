@@ -87,6 +87,12 @@ declare global {
       saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>) => Promise<void>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
+      saveFile: (args: {
+        defaultName?: string;
+        content: string;
+      }) => Promise<
+        { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
+      >;
 
       agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
       agentSend: (sessionId: string, text: string) => Promise<boolean>;
