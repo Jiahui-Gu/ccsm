@@ -46,20 +46,37 @@ function formatCost(usd: number): string {
 }
 
 // ---------- /clear ----------
-// Create a fresh session in the same group and switch to it. The old session
-// gets an info banner so the user has a breadcrumb if they want to flip back.
+// Wipe the CURRENT session's conversation context (transcript, queue, stats,
+// resume id) without removing the session row. The CLI's `/clear` keeps you
+// in the same prompt — Agentory must do the same so the sidebar count stays
+// stable. After this runs the next user message triggers a fresh `agentStart`
+// (no `--resume`), giving claude.exe an empty context window.
+//
+// Earlier implementations called `store.createSession(...)` here, which made
+// the sidebar count jump by one on every /clear — surprising users into
+// thinking the command misfired. Don't do that.
 export function handleClear(ctx: SlashCommandContext): void {
   const store = useStore.getState();
-  const current = store.sessions.find((s) => s.id === ctx.sessionId);
-  // Leave a breadcrumb in the OLD session before switching away.
+  const session = store.sessions.find((s) => s.id === ctx.sessionId);
+  if (!session) return;
+  const wasRunning = !!store.runningSessions[ctx.sessionId];
+  // Tear down any in-flight claude.exe conversation so the next message
+  // triggers `agentStart`, not `agentSend` against a stale process.
+  // Fire-and-forget — the IPC bridge may be absent in browser-only probes.
+  if (wasRunning) {
+    void window.agentory?.agentClose?.(ctx.sessionId);
+  }
+  store.resetSessionContext(ctx.sessionId);
+  // Drop a single breadcrumb so the user can see /clear actually ran.
   store.appendBlocks(ctx.sessionId, [
-    { kind: 'status', id: nextId('clear'), tone: 'info', title: 'New session created', detail: 'Context cleared — switched to a fresh session.' }
+    {
+      kind: 'status',
+      id: nextId('clear'),
+      tone: 'info',
+      title: 'Context cleared',
+      detail: 'Conversation history wiped. The next message starts a fresh turn.'
+    }
   ]);
-  // `createSession` picks the focused / active group automatically and flips
-  // activeId. We don't need to pass cwd — it'll inherit from the active
-  // session's recent projects / defaults. If we DO know the old cwd though,
-  // use it so the fresh session starts in the same folder.
-  store.createSession(current?.cwd ?? null);
 }
 
 // ---------- /cost ----------
