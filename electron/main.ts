@@ -375,7 +375,6 @@ app.whenReady().then(() => {
   // Expose for agent:start below.
   (global as unknown as { __agentoryEndpointEnv?: typeof resolveSessionEndpointEnv }).__agentoryEndpointEnv =
     resolveSessionEndpointEnv;
-  ipcMain.handle('app:getDataDir', () => app.getPath('userData'));
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
   ipcMain.handle('dialog:pickDirectory', async () => {

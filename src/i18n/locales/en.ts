@@ -140,13 +140,10 @@ const en = {
     tabs: {
       general: 'General',
       appearance: 'Appearance',
-      memory: 'Memory',
       notifications: 'Notifications',
       endpoints: 'Endpoints',
       autopilot: 'Autopilot',
       permissions: 'Permissions',
-      data: 'Data',
-      shortcuts: 'Shortcuts',
       updates: 'Updates'
     },
     theme: 'Theme',
@@ -173,24 +170,8 @@ const en = {
     apiKeyHint: 'Stored in OS keychain. Required for Claude Code sessions.',
     apiKeyPlaceholder: 'sk-ant-…',
     testConnection: 'Test connection',
-    dataDirectory: 'Data directory',
-    dataDirectoryHint: 'Where Agentory stores groups, sessions, and preferences.',
-    claudeSessionsDirectory: 'Claude sessions directory',
-    claudeSessionsDirectoryHint: 'Read-only. Managed by Claude Code SDK.',
-    shortcutsHint:
-      'Keybindings are fixed in MVP — remapping adds maintenance burden without clear user value.',
     version: 'Version',
-    checkForUpdates: 'Check for updates',
-    shortcutDescriptions: {
-      palette: 'Search / Command Palette',
-      settings: 'Settings',
-      newSession: 'New session',
-      newGroup: 'New group',
-      toggleSidebar: 'Toggle sidebar',
-      send: 'Send message',
-      newline: 'Newline in input',
-      escape: 'Close dialog / cancel rename'
-    }
+    checkForUpdates: 'Check for updates'
   },
   permissions: {
     promptTitle: 'Permission requested',
