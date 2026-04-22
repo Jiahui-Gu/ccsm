@@ -557,7 +557,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
               bg-bg-sidebar/80 + backdrop-blur, so the buttons read as
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
-          <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+          <div className="px-3 pt-1 pb-2 flex items-center gap-2">
             <NewSessionButton onCreateSession={onCreateSession} />
             <IconButton
               variant="raised"
