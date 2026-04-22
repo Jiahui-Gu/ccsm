@@ -101,7 +101,7 @@
     "webpack-dev-server": "^5.2.0"
   },
   "build": {
-    "appId": "com.agentory.next",
+    "appId": "com.agentory.app",
     "productName": "Agentory",
     "copyright": "Copyright (c) 2026 Jiahui Gu",
     "asar": true,
