@@ -43,6 +43,7 @@ import {
 } from './ui/ContextMenu';
 import { InlineRename } from './ui/InlineRename';
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { useToast } from './ui/Toast';
 import { useTranslation } from '../i18n/useTranslation';
 import type { Group, Session } from '../types';
 
@@ -66,6 +67,7 @@ function GroupRow({
   activeSessionId,
   focused,
   anyGroupFocused,
+  autoRename,
   onSelectSession,
   onFocus
 }: {
@@ -74,6 +76,10 @@ function GroupRow({
   activeSessionId: string;
   focused: boolean;
   anyGroupFocused: boolean;
+  /** When true, the GroupRow mounts in inline-rename mode with the input
+   *  pre-focused — used right after `createGroup()` so the user can name the
+   *  group without an extra click. Cleared by the parent once consumed. */
+  autoRename?: boolean;
   onSelectSession: (id: string) => void;
   onFocus: () => void;
 }) {
@@ -83,11 +89,13 @@ function GroupRow({
   const setGroupCollapsed = useStore((s) => s.setGroupCollapsed);
   const renameGroup = useStore((s) => s.renameGroup);
   const deleteGroup = useStore((s) => s.deleteGroup);
+  const restoreGroup = useStore((s) => s.restoreGroup);
   const archiveGroup = useStore((s) => s.archiveGroup);
   const unarchiveGroup = useStore((s) => s.unarchiveGroup);
   const createSession = useStore((s) => s.createSession);
+  const toast = useToast();
   const collapsed = group.collapsed;
-  const [renaming, setRenaming] = useState(false);
+  const [renaming, setRenaming] = useState(!!autoRename);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isSpecial = group.kind !== 'normal';
   const menuDisabled = group.kind === 'deleted';
@@ -268,7 +276,16 @@ function GroupRow({
         }
         confirmLabel={t('sidebar.deleteGroup')}
         destructive
-        onConfirm={() => deleteGroup(group.id)}
+        onConfirm={() => {
+          const snap = deleteGroup(group.id);
+          if (snap) {
+            toast.push({
+              kind: 'info',
+              title: t('sidebar.groupDeletedToast', { name: snap.group.name }),
+              action: { label: t('common.undo'), onClick: () => restoreGroup(snap) }
+            });
+          }
+        }}
       />
     </div>
   );
@@ -277,27 +294,58 @@ function GroupRow({
 function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
   const { t } = useTranslation();
   const [renaming, setRenaming] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
   const renameSession = useStore((s) => s.renameSession);
   const deleteSession = useStore((s) => s.deleteSession);
+  const restoreSession = useStore((s) => s.restoreSession);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
   const setSessionNotificationsMuted = useStore((s) => s.setSessionNotificationsMuted);
+  const toast = useToast();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
     data: { type: 'session', groupId: session.groupId }
   });
+  const liRef = useRef<HTMLLIElement | null>(null);
+  // Compose dnd-kit's ref with our own so we can call scrollIntoView when the
+  // active session changes from off-screen → selected (J17).
+  const composedRef = (node: HTMLLIElement | null) => {
+    liRef.current = node;
+    setNodeRef(node);
+  };
+  // J17: when this row becomes the active selection (e.g. via palette,
+  // notification click, programmatic select), bring it into the sidebar
+  // viewport. `block: 'nearest'` avoids snapping when the row is already
+  // visible. Skip during drag so we don't fight the dnd transform.
+  useEffect(() => {
+    if (!selected || isDragging) return;
+    const el = liRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [selected, isDragging]);
   const style: React.CSSProperties = {
     transform: isDragging ? undefined : CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0 : 1
   };
+  // J4: session delete is a soft-delete with undo toast. We removed the
+  // ConfirmDialog gate — destructive intent is already obvious from the
+  // menu label, and the toast lets the user reverse a misclick within ~5s.
+  const performDelete = () => {
+    const snap = deleteSession(session.id);
+    if (snap) {
+      toast.push({
+        kind: 'info',
+        title: t('sidebar.sessionDeletedToast', { name: snap.session.name }),
+        action: { label: t('common.undo'), onClick: () => restoreSession(snap) }
+      });
+    }
+  };
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <li
-          ref={setNodeRef}
+          ref={composedRef}
           style={style}
           {...attributes}
           {...listeners}
@@ -306,6 +354,12 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           tabIndex={selected ? 0 : -1}
           data-session-id={session.id}
           onClick={onSelect}
+          onContextMenu={() => {
+            // J4b: right-click selects the row first, matching standard GUI
+            // behavior where the context menu acts on "this row" — and the
+            // user expects "this row" to be visually highlighted.
+            onSelect();
+          }}
           onKeyDown={(e) => {
             // Only handle keys when the <li> itself is the focused element.
             // Without this guard, typing a space in the inline-rename <input>
@@ -376,15 +430,6 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
               className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
             />
           )}
-          <ConfirmDialog
-            open={confirmDelete}
-            onOpenChange={setConfirmDelete}
-            title={t('sidebar.deleteSessionConfirmTitle', { name: session.name })}
-            description={t('sidebar.deleteSessionDescription')}
-            confirmLabel={t('common.delete')}
-            destructive
-            onConfirm={() => deleteSession(session.id)}
-          />
         </li>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -420,7 +465,7 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
-        <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
+        <ContextMenuItem danger onSelect={performDelete}>
           {t('common.delete')}
         </ContextMenuItem>
       </ContextMenuContent>
@@ -470,8 +515,28 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   const archived = groups.filter((g) => g.kind === 'archive');
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  // J2: track the most recently created group so its <GroupRow> mounts in
+  // inline-rename mode. Cleared after the next render cycle so toggling rename
+  // off (or remounting) doesn't accidentally re-trigger it.
+  const [justCreatedGroupId, setJustCreatedGroupId] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const draggingSession = draggingId ? sessions.find((s) => s.id === draggingId) ?? null : null;
+
+  function handleNewGroup() {
+    const id = createGroup();
+    setJustCreatedGroupId(id);
+    // Focus the new group so a subsequent "New session" lands inside it.
+    onFocusGroup(id);
+  }
+
+  // Clear the auto-rename flag once the GroupRow has had its mount effect.
+  useEffect(() => {
+    if (!justCreatedGroupId) return;
+    // Defer one frame so the row mounts in renaming=true; then clear so a
+    // re-render (caused by another store update) doesn't toggle it back on.
+    const h = window.setTimeout(() => setJustCreatedGroupId(null), 0);
+    return () => window.clearTimeout(h);
+  }, [justCreatedGroupId]);
 
   function handleDragStart(e: DragStartEvent) {
     setDraggingId(String(e.active.id));
@@ -485,6 +550,11 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
     const overId = String(over.id);
     const headerGroupId = parseHeaderDroppable(overId);
     if (headerGroupId) {
+      // J14: reject drops onto archived (or otherwise non-normal) group
+      // headers. The archive panel is a "viewer" surface — live sessions
+      // stay in their source group when the user accidentally hovers there.
+      const headerGroup = groups.find((g) => g.id === headerGroupId);
+      if (!headerGroup || headerGroup.kind !== 'normal') return;
       // Dropped on a group header → append to that group.
       onMoveSession(activeId, headerGroupId, null);
       return;
@@ -496,6 +566,11 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
     }
     // Dropped on an empty SortableContext keyed by group id.
     if (normal.some((g) => g.id === overId)) {
+      // Same archive guard: SortableContext for archived groups isn't
+      // rendered today, but defend anyway in case the archive list grows
+      // empty-drop targets later.
+      const target = groups.find((g) => g.id === overId);
+      if (!target || target.kind !== 'normal') return;
       onMoveSession(activeId, overId, null);
     }
   }
@@ -617,7 +692,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               tooltip={t('sidebar.newGroup')}
               tooltipSide="top"
               aria-label={t('sidebar.newGroup')}
-              onClick={() => createGroup()}
+              onClick={() => handleNewGroup()}
             >
               <Plus size={12} className="stroke-[1.75]" />
             </IconButton>
@@ -631,6 +706,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
                 activeSessionId={activeSessionId}
                 focused={focusedGroupId === g.id}
                 anyGroupFocused={focusedGroupId !== null}
+                autoRename={justCreatedGroupId === g.id}
                 onSelectSession={onSelectSession}
                 onFocus={() => onFocusGroup(g.id)}
               />
