@@ -7,3 +7,10 @@ dist/
 agentory-data.db
 agentory-data.db-journal
 scripts/spike-*
+release/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.blockmap
