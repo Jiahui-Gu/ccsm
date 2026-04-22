@@ -170,6 +170,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
       <button
         ref={triggerRef}
         type="button"
+        data-cwd-chip
         title={cwdMissing ? t('cwdPopover.cwdMissingTooltip', { cwd }) : cwd}
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="dialog"

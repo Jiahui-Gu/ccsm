@@ -3,15 +3,17 @@
 //
 // Strategy:
 //   1. Point electron at an empty, isolated user-data dir via CLI flag.
-//   2. Launch #1: create a session, send a user message, then DIRECTLY seed a
-//      fake assistant block + persist via db:saveMessages. We cannot rely on
-//      a real agent turn because the sandbox has no API key, but the bug is
-//      in the RESTORE path, not the save path — save is covered by unit
-//      tests. This probe's job is to prove the reload pulls rows back out of
-//      sqlite and renders them.
+//   2. Launch #1: seed app_state with a non-trivial sidebar tree (custom
+//      group, a session inside it, an unread draft on that session, an
+//      `activeId` pointing at it) and the matching message rows.
 //   3. Close the app.
-//   4. Launch #2 with the same user-data dir. Click the session. Assert the
-//      assistant text we seeded appears in the DOM.
+//   4. Launch #2 with the same user-data dir. Without clicking anything,
+//      assert:
+//        a. the custom group + its session render in the sidebar tree
+//        b. the session is the active selection (chat history visible)
+//        c. the previously-typed draft is back in the composer
+//      Then click the session and assert the seeded assistant marker
+//      reappears (the original bug).
 //
 // Run after `npm run build`.
 import { _electron as electron } from 'playwright';
@@ -32,8 +34,16 @@ function fail(msg) {
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-restore-'));
 console.log(`[probe-e2e-restore] userData = ${userDataDir}`);
 
-const commonEnv = { ...process.env, NODE_ENV: 'development' };
+const commonEnv = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
 const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
+
+const SESSION_ID = 's-probe-restore-1';
+const CUSTOM_GROUP_ID = 'g-custom-restore';
+const CUSTOM_GROUP_NAME = 'Probe Custom Group';
+const SESSION_NAME = 'Probe session';
+const DRAFT_TEXT = 'half-typed across restart — keep me alive';
+const ASSISTANT_MARKER = 'RESTORED ASSISTANT MARKER';
+const USER_MARKER = 'hello from probe';
 
 // ---------- Launch #1: seed the db via IPC from main ----------
 {
@@ -42,16 +52,16 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
   await win.waitForLoadState('domcontentloaded');
   await win.waitForTimeout(1500);
 
-  const SESSION_ID = 's-probe-restore-1';
   const sampleBlocks = [
-    { kind: 'user', id: 'u-1', text: 'hello from probe' },
-    { kind: 'assistant', id: 'a-1', text: 'RESTORED ASSISTANT MARKER' }
+    { kind: 'user', id: 'u-1', text: USER_MARKER },
+    { kind: 'assistant', id: 'a-1', text: ASSISTANT_MARKER }
   ];
 
-  // Write sessions list into app_state and messages table via real IPC, so
-  // the second launch hydrates the store as if this was a prior real session.
+  // Seed sidebar tree (custom group + default group + a session in the
+  // custom group), persist activeId pointing at it, and write a draft to
+  // the parallel `drafts` blob so the InputBar picks it up on next boot.
   const seeded = await win.evaluate(
-    async ({ sid, blocks }) => {
+    async ({ sid, gid, gname, sname, draft, blocks }) => {
       const api = window.agentory;
       if (!api) return { ok: false, err: 'no window.agentory' };
       const state = {
@@ -59,16 +69,19 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
         sessions: [
           {
             id: sid,
-            name: 'Probe session',
+            name: sname,
             state: 'idle',
             cwd: '~',
             model: 'claude-opus-4',
-            groupId: 'g-default',
+            groupId: gid,
             agentType: 'claude-code'
           }
         ],
-        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-        activeId: '',
+        groups: [
+          { id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' },
+          { id: gid, name: gname, collapsed: false, kind: 'normal' }
+        ],
+        activeId: sid,
         model: 'claude-opus-4',
         permission: 'auto',
         sidebarCollapsed: false,
@@ -78,11 +91,22 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
         tutorialSeen: true
       };
       await api.saveState('main', JSON.stringify(state));
+      await api.saveState(
+        'drafts',
+        JSON.stringify({ version: 1, drafts: { [sid]: draft } })
+      );
       await api.saveMessages(sid, blocks);
       const roundtrip = await api.loadMessages(sid);
       return { ok: true, roundtripLen: roundtrip.length };
     },
-    { sid: SESSION_ID, blocks: sampleBlocks }
+    {
+      sid: SESSION_ID,
+      gid: CUSTOM_GROUP_ID,
+      gname: CUSTOM_GROUP_NAME,
+      sname: SESSION_NAME,
+      draft: DRAFT_TEXT,
+      blocks: sampleBlocks
+    }
   );
 
   if (!seeded.ok) {
@@ -94,11 +118,11 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
     fail(`expected 2 roundtripped blocks, got ${seeded.roundtripLen}`);
   }
 
-  console.log('[probe-e2e-restore] launch #1: db seeded with 2 blocks');
+  console.log('[probe-e2e-restore] launch #1: seeded sidebar tree, draft, and 2 message blocks');
   await app.close();
 }
 
-// ---------- Launch #2: click the session, assert history renders ----------
+// ---------- Launch #2: assert restoration ----------
 {
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
   const win = await appWindow(app);
@@ -111,22 +135,28 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
   await win.waitForLoadState('domcontentloaded');
   await win.waitForTimeout(1500);
 
-  // The session should appear in the sidebar — it was persisted. Click it.
-  const sidebarItem = win.getByText('Probe session').first();
-  await sidebarItem.waitFor({ state: 'visible', timeout: 10_000 }).catch(async () => {
-    const body = await win.evaluate(() => document.body.innerText.slice(0, 800));
+  // === a) sidebar tree: custom group label visible ========================
+  const customGroupLabel = win.getByText(CUSTOM_GROUP_NAME).first();
+  await customGroupLabel.waitFor({ state: 'visible', timeout: 10_000 }).catch(async () => {
+    const body = await win.evaluate(() => document.body.innerText.slice(0, 1500));
     console.error('--- body text ---\n' + body);
     console.error('--- errors ---\n' + errors.slice(-10).join('\n'));
     await app.close();
-    fail('sidebar session "Probe session" not visible after restart');
+    fail(`custom group "${CUSTOM_GROUP_NAME}" not rendered in sidebar after restart`);
   });
-  await sidebarItem.click();
 
-  // Give selectSession's auto-load a moment to fetch + render.
-  const marker = win.getByText('RESTORED ASSISTANT MARKER').first();
-  try {
-    await marker.waitFor({ state: 'visible', timeout: 5_000 });
-  } catch {
+  // The session should appear in the sidebar — it was persisted under that
+  // custom group.
+  const sidebarItem = win.getByText(SESSION_NAME).first();
+  await sidebarItem.waitFor({ state: 'visible', timeout: 5_000 }).catch(async () => {
+    await app.close();
+    fail(`sidebar session "${SESSION_NAME}" not visible after restart`);
+  });
+
+  // === b) active session: history must already be on screen WITHOUT a click
+  //         (hydrateStore eagerly loadMessages(active) on boot).
+  const marker = win.getByText(ASSISTANT_MARKER).first();
+  await marker.waitFor({ state: 'visible', timeout: 5_000 }).catch(async () => {
     const dump = await win.evaluate(() => {
       const main = document.querySelector('main');
       return main ? main.innerText.slice(0, 1500) : '<no <main>>';
@@ -134,21 +164,43 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
     console.error('--- main innerText ---\n' + dump);
     console.error('--- errors ---\n' + errors.slice(-10).join('\n'));
     await app.close();
-    fail('restored assistant marker did not render — session history is still empty');
-  }
+    fail('active session history did not auto-render — activeId restoration regressed');
+  });
 
-  // Also verify user echo is present.
-  const userEcho = win.getByText('hello from probe').first();
-  const userVisible = await userEcho.isVisible().catch(() => false);
-  if (!userVisible) {
+  const userEcho = win.getByText(USER_MARKER).first();
+  if (!(await userEcho.isVisible().catch(() => false))) {
     await app.close();
     fail('user message from previous session not rendered on restore');
   }
 
+  // === c) draft: the half-typed text is back in the composer ==============
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  const draftAfterRestart = await textarea.inputValue();
+  if (draftAfterRestart !== DRAFT_TEXT) {
+    await app.close();
+    fail(
+      `draft did not survive app restart. ` +
+        `expected=${JSON.stringify(DRAFT_TEXT)} got=${JSON.stringify(draftAfterRestart)}`
+    );
+  }
+
+  // === Bonus: clicking the session is still safe (re-asserts marker) ======
+  await sidebarItem.click();
+  // Marker should still be on screen (we're just confirming the click path
+  // does not erase what hydrate already loaded — guards against future
+  // regressions where selectSession clears messagesBySession).
+  if (!(await marker.isVisible().catch(() => false))) {
+    await app.close();
+    fail('clicking the active session erased its rendered history');
+  }
+
   console.log('\n[probe-e2e-restore] OK');
-  console.log('  session appeared in sidebar after restart');
-  console.log('  assistant history rendered: "RESTORED ASSISTANT MARKER"');
-  console.log('  user echo rendered:         "hello from probe"');
+  console.log(`  sidebar tree restored: custom group "${CUSTOM_GROUP_NAME}" + session "${SESSION_NAME}"`);
+  console.log('  active session auto-loaded its history without a click');
+  console.log(`  composer draft restored: ${JSON.stringify(DRAFT_TEXT.slice(0, 40))}`);
+  console.log(`  assistant history rendered: "${ASSISTANT_MARKER}"`);
+  console.log(`  user echo rendered:         "${USER_MARKER}"`);
 
   await app.close();
 }
