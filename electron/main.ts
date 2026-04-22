@@ -347,6 +347,32 @@ app.whenReady().then(() => {
       saveMessages(sessionId, blocks)
   );
 
+  // i18n: renderer mirrors the resolved UI language to main so OS
+  // notifications use it. Renderer also asks main for the OS locale at
+  // boot to seed the "system" preference. Imports at the top of the file
+  // would create a circular ts-tree edge with electron/i18n.ts; doing the
+  // require here keeps the import graph linear.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const i18n = require('./i18n') as typeof import('./i18n');
+  ipcMain.handle('agentory:get-system-locale', () => {
+    try {
+      return app.getLocale();
+    } catch {
+      return undefined;
+    }
+  });
+  ipcMain.on('agentory:set-language', (_e, lang: unknown) => {
+    if (lang === 'en' || lang === 'zh') i18n.setMainLanguage(lang);
+  });
+  // Seed the active language from the OS at boot, before any window is
+  // created — first notification fires with the right copy even if the
+  // renderer hasn't dispatched yet.
+  try {
+    i18n.setMainLanguage(i18n.resolveSystemLanguage(app.getLocale()));
+  } catch {
+    /* ignore — falls through to the default 'en' */
+  }
+
   // Endpoints + models IPC
   ipcMain.handle('endpoints:list', () => endpoints.listEndpoints());
   ipcMain.handle(

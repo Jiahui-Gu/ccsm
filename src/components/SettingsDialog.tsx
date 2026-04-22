@@ -3,6 +3,8 @@ import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
+import { usePreferences } from '../store/preferences';
 import {
   PERMISSION_PRESETS,
   TOOL_CATALOG,
@@ -28,17 +30,19 @@ type LocalUpdateStatus =
 
 type Tab = 'appearance' | 'memory' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'account' | 'data' | 'shortcuts' | 'updates';
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'appearance', label: 'Appearance' },
-  { id: 'memory', label: 'Memory' },
-  { id: 'notifications', label: 'Notifications' },
-  { id: 'endpoints', label: 'Endpoints' },
-  { id: 'autopilot', label: 'Autopilot' },
-  { id: 'permissions', label: 'Permissions' },
-  { id: 'account', label: 'Account' },
-  { id: 'data', label: 'Data' },
-  { id: 'shortcuts', label: 'Shortcuts' },
-  { id: 'updates', label: 'Updates' }
+// Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
+// literal strings, so the nav re-renders when the user flips language.
+const TABS: { id: Tab; tabKey: string }[] = [
+  { id: 'appearance', tabKey: 'appearance' },
+  { id: 'memory', tabKey: 'memory' },
+  { id: 'notifications', tabKey: 'notifications' },
+  { id: 'endpoints', tabKey: 'endpoints' },
+  { id: 'autopilot', tabKey: 'autopilot' },
+  { id: 'permissions', tabKey: 'permissions' },
+  { id: 'account', tabKey: 'account' },
+  { id: 'data', tabKey: 'data' },
+  { id: 'shortcuts', tabKey: 'shortcuts' },
+  { id: 'updates', tabKey: 'updates' }
 ];
 
 // Shortcut catalog mirrors mvp-design.md §11. Keep in sync when adding keys.
@@ -70,26 +74,28 @@ export function SettingsDialog({
     if (open && initialTab) setTab(initialTab);
   }, [open, initialTab]);
 
+  const { t: tt } = useTranslation('settings');
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title="Settings" width="720px" hideClose={false}>
+      <DialogContent title={tt('title')} width="720px" hideClose={false}>
         <div className="flex min-h-[380px] border-t border-border-subtle">
           <nav className="w-[160px] shrink-0 border-r border-border-subtle py-2">
-            {TABS.map((t) => (
+            {TABS.map((tabEntry) => (
               <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
+                key={tabEntry.id}
+                onClick={() => setTab(tabEntry.id)}
                 className={cn(
                   'flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
                   'transition-[background-color,color] duration-150 ease-out',
                   'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
-                  tab === t.id
+                  tab === tabEntry.id
                     ? 'bg-bg-active text-fg-primary font-medium'
                     : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary'
                 )}
                 style={{ width: 'calc(100% - 0.5rem)' }}
               >
-                {t.label}
+                {tt(`tabs.${tabEntry.tabKey}`)}
               </button>
             ))}
           </nav>
@@ -157,11 +163,25 @@ function AppearancePane() {
   const setTheme = useStore((s) => s.setTheme);
   const setFontSizePx = useStore((s) => s.setFontSizePx);
   const setDensity = useStore((s) => s.setDensity);
+  const language = usePreferences((s) => s.language);
+  const setLanguage = usePreferences((s) => s.setLanguage);
+  const { t } = useTranslation('settings');
 
   const sizeStops: Array<12 | 13 | 14 | 15 | 16> = [12, 13, 14, 15, 16];
 
   return (
     <>
+      <Field label={t('language')} hint={t('languageHint')}>
+        <Segmented
+          value={language}
+          onChange={setLanguage}
+          options={[
+            { value: 'system', label: t('languageOptions.system') },
+            { value: 'en', label: t('languageOptions.en') },
+            { value: 'zh', label: t('languageOptions.zh') }
+          ]}
+        />
+      </Field>
       <Field label="Theme" hint="System follows your OS preference (and reacts live when it changes).">
         <Segmented
           value={theme}
