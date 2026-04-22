@@ -29,11 +29,8 @@ function loadCrashReportingOptOut(): boolean {
   }
 }
 
-// PLACEHOLDER_DSN intentionally — the real DSN is swapped in before the
-// first internal release. Until then events are sent to a non-existent
-// project (and rejected by the SDK at ingest, which is fine for dev).
 Sentry.init({
-  dsn: process.env.SENTRY_DSN ?? 'PLACEHOLDER_DSN',
+  dsn: process.env.SENTRY_DSN ?? 'https://5210c0c70b763acc29de580aab84f5dc@o4511264643481601.ingest.us.sentry.io/4511264646037504',
   release: app.getVersion(),
   environment: app.isPackaged ? 'prod' : 'dev',
   sendDefaultPii: false,
