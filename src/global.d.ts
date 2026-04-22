@@ -83,8 +83,20 @@ declare global {
     agentory?: {
       loadState: (key: string) => Promise<string | null>;
       saveState: (key: string, value: string) => Promise<void>;
+      // i18n bridge mirrors the API surface exposed in electron/preload.ts.
+      // `getSystemLocale` returns the OS locale so the renderer's
+      // preferences store can resolve a "system" preference; `setLanguage`
+      // pushes the resolved UI language back to main so OS notifications
+      // come out in the matching language.
+      i18n: {
+        getSystemLocale: () => Promise<string | undefined>;
+        setLanguage: (l: 'en' | 'zh') => void;
+      };
       loadMessages: (sessionId: string) => Promise<unknown[]>;
-      saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>) => Promise<void>;
+      saveMessages: (
+        sessionId: string,
+        blocks: Array<{ id: string; kind: string }>
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
       saveFile: (args: {
@@ -98,7 +110,10 @@ declare global {
       agentSend: (sessionId: string, text: string) => Promise<boolean>;
       agentSendContent: (sessionId: string, content: unknown[]) => Promise<boolean>;
       agentInterrupt: (sessionId: string) => Promise<boolean>;
-      agentSetPermissionMode: (sessionId: string, mode: PermissionMode) => Promise<boolean>;
+      agentSetPermissionMode: (
+        sessionId: string,
+        mode: PermissionMode
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;
       agentClose: (sessionId: string) => Promise<boolean>;
       agentResolvePermission: (
