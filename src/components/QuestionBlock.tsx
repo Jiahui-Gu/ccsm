@@ -243,9 +243,9 @@ function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, auto
               <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
             </RadioGroup.Item>
             <div className="min-w-0 flex-1">
-              <div className="text-sm text-fg-primary">{opt.label}</div>
+              <div className="text-sm text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
               {opt.description && (
-                <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
               )}
             </div>
           </motion.label>
@@ -292,9 +292,9 @@ function MultiSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoF
                 </Checkbox.Root>
               </RovingFocusGroup.Item>
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-fg-primary">{opt.label}</div>
+                <div className="text-sm text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
                 {opt.description && (
-                  <div className="text-xs text-fg-tertiary mt-0.5">{opt.description}</div>
+                  <div className="text-xs text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
                 )}
               </div>
             </motion.label>

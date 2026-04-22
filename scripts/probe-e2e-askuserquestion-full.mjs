@@ -516,6 +516,34 @@ async function journey5_longLabelDescription_noOverflow(win) {
     const cRect = container.getBoundingClientRect();
     const cScrollW = container.scrollWidth;
     const cClientW = container.clientWidth;
+    // Per-option <label> assertions: each option label's own scrollWidth
+    // must not exceed its clientWidth (i.e., its content wrapped).
+    const labels = Array.from(container.querySelectorAll('label'));
+    let labelOverflow = null;
+    for (const lbl of labels) {
+      if (lbl.scrollWidth > lbl.clientWidth + 1) {
+        labelOverflow = {
+          cls: lbl.className.slice(0, 60),
+          sw: lbl.scrollWidth,
+          cw: lbl.clientWidth,
+        };
+        break;
+      }
+    }
+    // Each label's clientWidth should equal the container's content width
+    // (i.e., labels span their parent — they are not horizontally scrolling
+    // tracks wider than the container).
+    let labelWidthMismatch = null;
+    for (const lbl of labels) {
+      if (lbl.clientWidth > cClientW + 1) {
+        labelWidthMismatch = {
+          cls: lbl.className.slice(0, 60),
+          labelCw: lbl.clientWidth,
+          containerCw: cClientW,
+        };
+        break;
+      }
+    }
     // Walk every row inside the container; flag the worst offender.
     const rows = Array.from(container.querySelectorAll('label, div'));
     let worst = null;
@@ -534,6 +562,9 @@ async function journey5_longLabelDescription_noOverflow(win) {
       containerW: cRect.width,
       containerScrollW: cScrollW,
       containerClientW: cClientW,
+      labelCount: labels.length,
+      labelOverflow,
+      labelWidthMismatch,
       worstRow: worst,
     };
   });
@@ -559,6 +590,22 @@ async function journey5_longLabelDescription_noOverflow(win) {
     );
     return;
   }
+  if (overflow.labelOverflow) {
+    record(
+      'J5',
+      false,
+      `option <label> overflows: ${JSON.stringify(overflow.labelOverflow)} (long URL/desc must wrap)`
+    );
+    return;
+  }
+  if (overflow.labelWidthMismatch) {
+    record(
+      'J5',
+      false,
+      `option <label> wider than container content: ${JSON.stringify(overflow.labelWidthMismatch)}`
+    );
+    return;
+  }
   if (overflow.worstRow) {
     record(
       'J5',
@@ -571,7 +618,7 @@ async function journey5_longLabelDescription_noOverflow(win) {
     window.__agentoryStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
-  record('J5', true, `no horizontal overflow (container ${overflow.containerW}px ≤ stream ${overflow.streamW}px; no offending rows)`);
+  record('J5', true, `no horizontal overflow (container ${overflow.containerW}px ≤ stream ${overflow.streamW}px; ${overflow.labelCount} labels fit within container ${overflow.containerClientW}px; no offending rows)`);
 }
 
 // ── J6 ────────────────────────────────────────────────────────────────────
