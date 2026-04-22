@@ -7,6 +7,15 @@
 // migrated. Missing one → the chat history disappears when the user
 // navigates away and back. The user sees an empty session.
 //
+// Phase 2 piles on three more invariants the user notices when bouncing
+// between sessions all day:
+//   • The composer's half-typed draft is restored when they come back
+//     (per-session draft cache in InputBar.tsx).
+//   • Focus lands back in the textarea, not on the sidebar item that was
+//     just clicked (selectSession bumps focusInputNonce → InputBar refocuses).
+//   • The chat surface auto-snaps to bottom on switch — chat-app norm
+//     (Slack/Discord) and what the current ChatStream useEffect does.
+//
 // Pure black-box: clicks + DOM reads only. Run after `npm run build`.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -24,7 +33,7 @@ function fail(msg) {
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development' }
+  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
 });
 
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -43,6 +52,7 @@ await win.waitForTimeout(2500);
 
 const PROMPT_A = 'reply with the single word: alpha';
 const PROMPT_B = 'reply with the single word: beta';
+const DRAFT_A = 'half-typed alpha follow-up — DO NOT SEND';
 
 async function clickNewSession() {
   const btn = win.getByRole('button', { name: /new session/i }).first();
@@ -52,7 +62,7 @@ async function clickNewSession() {
 }
 
 async function setCwdViaChip() {
-  const chip = win.locator('[title="~"]').first();
+  const chip = win.locator('[data-cwd-chip]').first();
   await chip.waitFor({ state: 'visible', timeout: 5000 });
   await chip.click();
   const browseItem = win.getByText('Browse folder…').first();
@@ -102,6 +112,17 @@ if (!snapshotA_before.includes(PROMPT_A)) {
   fail('chat snapshot of session A missing alpha prompt');
 }
 
+// Type a draft into A's composer but DO NOT send it. We expect this exact
+// string to come back when we switch A → B → A.
+const textarea = win.locator('textarea');
+await textarea.click();
+await textarea.fill(DRAFT_A);
+const draftBefore = await textarea.inputValue();
+if (draftBefore !== DRAFT_A) {
+  await app.close();
+  fail(`draft did not stick in textarea before switch: got ${JSON.stringify(draftBefore)}`);
+}
+
 // === Session B (this also forces sidebar to have ≥2 sessions to click
 //     between, AND triggers another temp→real id swap once B starts) ===
 await clickNewSession();
@@ -111,22 +132,18 @@ if (!aGoneFromMain) {
   await app.close();
   fail('after switching to session B, session A content still visible in <main>');
 }
+// Session B should have its OWN empty composer — not A's draft bleeding through.
+const draftInB = await textarea.inputValue();
+if (draftInB !== '') {
+  await app.close();
+  fail(`session B composer is not empty — A's draft leaked: ${JSON.stringify(draftInB)}`);
+}
 await setCwdViaChip();
 await sendPrompt(PROMPT_B);
 
 // === Switch BACK to session A by clicking it in the sidebar ===
-// Sidebar session items use the session name. Newly created sessions get
-// the name "New session", so we can't click by name (both are "New session").
-// Instead use the snapshot row that ISN'T currently active. The simplest
-// cross-platform way: query <aside> for elements containing "New session"
-// and click the one that's NOT inside the currently active row.
-//
-// active row has stronger styling but no semantic marker. We rely on
-// position: session A was created first → in newest-first sort order it's
-// the SECOND "New session" entry in the sidebar.
-// All session rows in the sidebar are <li> with class "group/sess".
-// createSession unshifts → newest is at index 0. Session A was created
-// before B, so A is at index 1.
+// All session rows in the sidebar are <li>. createSession unshifts → newest
+// is at index 0; A is at index 1.
 const sessionCount = await win.locator('aside li').count();
 if (sessionCount < 2) {
   await app.close();
@@ -156,7 +173,66 @@ if (!assistantStillThere) {
   fail('assistant block in session A missing after round-trip');
 }
 
+// === Phase 2: draft + focus + scroll restoration on switch-back ===========
+const draftAfter = await textarea.inputValue();
+if (draftAfter !== DRAFT_A) {
+  await app.close();
+  fail(
+    `composer draft for session A not restored on switch-back. ` +
+      `expected=${JSON.stringify(DRAFT_A)} got=${JSON.stringify(draftAfter)}`
+  );
+}
+
+// Focus must land in the textarea — selectSession bumps focusInputNonce, and
+// InputBar's effect refocuses the textarea unless a higher-priority surface
+// (dialog, rename input) owns focus. Sidebar <li> with role="option" doesn't
+// count.
+const focusInfo = await win.evaluate(() => {
+  const ae = document.activeElement;
+  if (!ae) return { tag: null, hasInputBarAttr: false };
+  return {
+    tag: ae.tagName,
+    hasInputBarAttr: ae.hasAttribute('data-input-bar')
+  };
+});
+if (!focusInfo.hasInputBarAttr) {
+  await app.close();
+  fail(
+    `focus did not return to composer after switching back to A. ` +
+      `activeElement=${JSON.stringify(focusInfo)}`
+  );
+}
+
+// Scroll: chat-app convention is to snap-to-bottom on session switch (matches
+// Slack/Discord/iMessage and the current `ChatStream` useEffect). Assert that.
+const scrollState = await win.evaluate(() => {
+  const el = document.querySelector('[data-chat-stream]');
+  if (!el) return { ok: false, reason: 'no [data-chat-stream]' };
+  const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+  return {
+    ok: true,
+    distanceFromBottom,
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight
+  };
+});
+if (!scrollState.ok) {
+  await app.close();
+  fail(`scroll probe failed: ${scrollState.reason}`);
+}
+// Allow a generous slop — even the ChatStream's own threshold is 32px.
+if (scrollState.distanceFromBottom > 64) {
+  await app.close();
+  fail(
+    `chat did not snap to bottom on switch-back. ` +
+      `distanceFromBottom=${scrollState.distanceFromBottom} (allowed ≤64)`
+  );
+}
+
 console.log('\n[probe-e2e-switch] OK');
 console.log('  session A retained alpha prompt + assistant reply across A→B→A');
+console.log(`  composer draft restored: ${JSON.stringify(DRAFT_A.slice(0, 40))}`);
+console.log('  focus returned to composer textarea');
+console.log(`  chat snapped to bottom (Δ=${scrollState.distanceFromBottom}px)`);
 
 await app.close();
