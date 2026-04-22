@@ -170,7 +170,7 @@ declare global {
       onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
       scanImportable: () => Promise<
-        Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
+        Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
       >;
 
       /**
@@ -180,6 +180,12 @@ declare global {
        * flight or no transcripts are present.
        */
       recentCwds: () => Promise<string[]>;
+
+      /**
+       * Most-frequently-used model across recent CLI transcripts. Seeds the
+       * new-session model default on fresh userData. Null if undeterminable.
+       */
+      topModel: () => Promise<string | null>;
 
       /**
        * Best-effort batched existence check. Returns a map keyed by the

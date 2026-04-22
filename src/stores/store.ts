@@ -153,6 +153,18 @@ type State = {
   sessions: Session[];
   groups: Group[];
   recentProjects: RecentProject[];
+  /**
+   * Recent cwds derived from CLI transcripts at boot — fallback for fresh
+   * userData where `recentProjects` is empty. Not persisted; rederived each
+   * boot from `~/.claude/projects` via `window.agentory.recentCwds()`.
+   */
+  historyRecentCwds: string[];
+  /**
+   * Most-used model across recent CLI transcripts. Same rationale as
+   * `historyRecentCwds` — seeds the new-session model picker on fresh
+   * userData. Null until the boot scan resolves or if undeterminable.
+   */
+  historyTopModel: string | null;
   activeId: string;
   focusedGroupId: string | null;
   model: ModelId;
@@ -366,6 +378,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   sessions: [],
   groups: defaultGroups,
   recentProjects: [],
+  historyRecentCwds: [],
+  historyTopModel: null,
   activeId: '',
   focusedGroupId: null,
   model: '',
@@ -429,6 +443,8 @@ export const useStore = create<State & Actions>((set, get) => ({
       activeId,
       model,
       recentProjects,
+      historyRecentCwds,
+      historyTopModel,
       defaultEndpointId,
       modelsByEndpoint,
       endpoints,
@@ -445,12 +461,12 @@ export const useStore = create<State & Actions>((set, get) => ({
       ? activeGroupId!
       : firstUsableGroupId(groups);
     const id = nextId('s');
-    const defaultCwd = recentProjects[0]?.path ?? '~';
+    const defaultCwd =
+      recentProjects[0]?.path ?? historyRecentCwds[0] ?? '~';
     const endpointId =
       defaultEndpointId ?? endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id;
-    // Pick a sensible initial model: global `model` if set, else the default
-    // endpoint's first discovered model, else empty (user picks on first send).
     let initialModel = model;
+    if (!initialModel) initialModel = historyTopModel ?? '';
     if (!initialModel && endpointId) {
       initialModel = modelsByEndpoint[endpointId]?.[0]?.modelId ?? '';
     }
@@ -1085,6 +1101,26 @@ export async function hydrateStore(): Promise<void> {
       ),
     }));
   })();
+
+  // Seed history-derived defaults from CLI transcripts. Fresh Electron
+  // userData starts with empty `recentProjects` and no `model`; without this
+  // the new-session picker falls back to `~` and the first endpoint's first
+  // model regardless of what the user actually uses in the CLI.
+  try {
+    const api = window.agentory;
+    if (api?.recentCwds && api?.topModel) {
+      const [recentCwds, topModel] = await Promise.all([
+        api.recentCwds(),
+        api.topModel(),
+      ]);
+      useStore.setState({
+        historyRecentCwds: Array.isArray(recentCwds) ? recentCwds : [],
+        historyTopModel: typeof topModel === 'string' ? topModel : null,
+      });
+    }
+  } catch {
+    /* IPC unavailable — boot continues with empty defaults */
+  }
 
   // Load endpoints + models from the main process. Keeps the IPC round-trip
   // off the critical path for reading persisted state, but still runs before

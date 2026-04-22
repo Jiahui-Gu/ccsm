@@ -18,6 +18,7 @@ import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
   deriveRecentCwds,
+  deriveTopModel,
   type ScannableSession,
 } from './import-scanner';
 import { showNotification, type ShowNotificationPayload } from './notifications';
@@ -47,6 +48,7 @@ const isDev = !app.isPackaged;
 // default cwd (via the renderer store) — same goal, no second IPC.
 let importableCache: ScannableSession[] = [];
 let recentCwdsCache: string[] = [];
+let topModelCache: string | null = null;
 let importablePending: Promise<ScannableSession[]> | null = null;
 
 function refreshImportableCache(): Promise<ScannableSession[]> {
@@ -55,6 +57,7 @@ function refreshImportableCache(): Promise<ScannableSession[]> {
     .then((rows) => {
       importableCache = rows;
       recentCwdsCache = deriveRecentCwds(rows);
+      topModelCache = deriveTopModel(rows);
       return rows;
     })
     .catch((err) => {
@@ -84,6 +87,14 @@ async function getRecentCwds(): Promise<string[]> {
   }
   await refreshImportableCache();
   return recentCwdsCache;
+}
+
+async function getTopModel(): Promise<string | null> {
+  if (topModelCache !== null || importableCache.length > 0) {
+    return topModelCache;
+  }
+  await refreshImportableCache();
+  return topModelCache;
 }
 
 // We don't want a visible File/Edit/View menu bar — Agentory is a single-
@@ -463,6 +474,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('import:scan', () => getImportableSessions());
   ipcMain.handle('import:recentCwds', () => getRecentCwds());
+  ipcMain.handle('import:topModel', () => getTopModel());
 
   // Batched best-effort existence probe for arbitrary filesystem paths.
   // The renderer uses this on hydration to flag sessions whose persisted

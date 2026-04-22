@@ -9,6 +9,7 @@ export type ScannableSession = {
   title: string;
   mtime: number;
   projectDir: string;
+  model: string | null;
 };
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
@@ -47,7 +48,8 @@ export async function scanImportableSessions(): Promise<ScannableSession[]> {
           cwd: head.cwd,
           title: head.title,
           mtime: stat.mtimeMs,
-          projectDir: dir
+          projectDir: dir,
+          model: head.model
         });
       } catch {
         // skip unreadable / malformed files
@@ -59,7 +61,7 @@ export async function scanImportableSessions(): Promise<ScannableSession[]> {
   return out;
 }
 
-type Head = { cwd: string; title: string };
+type Head = { cwd: string; title: string; model: string | null };
 
 function readHead(file: string): Promise<Head | null> {
   return new Promise((resolve) => {
@@ -68,16 +70,17 @@ function readHead(file: string): Promise<Head | null> {
     let cwd = '';
     let aiTitle = '';
     let firstUserText = '';
+    let model: string | null = null;
     let lines = 0;
     const finish = () => {
       rl.removeAllListeners();
       stream.destroy();
       const title = aiTitle || firstUserText || '(untitled session)';
-      if (!cwd && !aiTitle && !firstUserText) {
+      if (!cwd && !aiTitle && !firstUserText && !model) {
         resolve(null);
         return;
       }
-      resolve({ cwd: cwd || '~', title });
+      resolve({ cwd: cwd || '~', title, model });
     };
     rl.on('line', (line) => {
       lines++;
@@ -100,8 +103,11 @@ function readHead(file: string): Promise<Head | null> {
         const txt = extractUserText(d.message);
         if (txt) firstUserText = truncate(txt, 80);
       }
-      if (cwd && aiTitle) {
-        // We've got the best possible title; stop early.
+      if (!model) {
+        const m = extractModel(d);
+        if (m) model = m;
+      }
+      if (cwd && aiTitle && model) {
         finish();
       }
     });
@@ -166,6 +172,7 @@ export function parseHead(lines: string[]): Head | null {
   let cwd = '';
   let aiTitle = '';
   let firstUserText = '';
+  let model: string | null = null;
   for (let i = 0; i < lines.length && i < MAX_HEAD_LINES; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -181,9 +188,55 @@ export function parseHead(lines: string[]): Head | null {
       const txt = extractUserText(d.message);
       if (txt) firstUserText = truncate(txt, 80);
     }
-    if (cwd && aiTitle) break;
+    if (!model) {
+      const m = extractModel(d);
+      if (m) model = m;
+    }
+    if (cwd && aiTitle && model) break;
   }
-  if (!cwd && !aiTitle && !firstUserText) return null;
+  if (!cwd && !aiTitle && !firstUserText && !model) return null;
   const title = aiTitle || firstUserText || '(untitled session)';
-  return { cwd: cwd || '~', title };
+  return { cwd: cwd || '~', title, model };
+}
+
+// CLI transcripts carry the model on assistant frames as `message.model`.
+// Some older / synthetic frames may put it at the top level — accept both.
+function extractModel(d: any): string | null {
+  if (typeof d?.message?.model === 'string' && d.message.model) return d.message.model;
+  if (typeof d?.model === 'string' && d.model) return d.model;
+  return null;
+}
+
+/**
+ * Most-frequently-observed model across the (presumably mtime-sorted) recent
+ * `max` sessions. Ties broken by most-recent occurrence so a model the user
+ * just switched to wins over a stale historical favourite. Returns null on
+ * empty input or when no session carries a model.
+ */
+export function deriveTopModel(
+  sessions: ReadonlyArray<Pick<ScannableSession, 'model' | 'mtime'>>,
+  max = 50
+): string | null {
+  if (sessions.length === 0) return null;
+  const ordered = [...sessions].sort((a, b) => b.mtime - a.mtime).slice(0, max);
+  const counts = new Map<string, number>();
+  const lastSeen = new Map<string, number>();
+  for (const s of ordered) {
+    if (!s.model) continue;
+    counts.set(s.model, (counts.get(s.model) ?? 0) + 1);
+    if (!lastSeen.has(s.model)) lastSeen.set(s.model, s.mtime);
+  }
+  if (counts.size === 0) return null;
+  let best: string | null = null;
+  let bestCount = -1;
+  let bestSeen = -Infinity;
+  for (const [m, c] of counts) {
+    const seen = lastSeen.get(m) ?? 0;
+    if (c > bestCount || (c === bestCount && seen > bestSeen)) {
+      best = m;
+      bestCount = c;
+      bestSeen = seen;
+    }
+  }
+  return best;
 }
