@@ -237,7 +237,6 @@ describe('notification settings persistence', () => {
       fontSize: s.fontSize,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
-      watchdog: s.watchdog,
       notificationSettings: s.notificationSettings
     };
     const json = JSON.parse(JSON.stringify(snapshot));

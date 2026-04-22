@@ -18,7 +18,6 @@ type Harness = {
   store: typeof import('../src/stores/store').useStore;
   setBackgroundWaitingHandler: typeof import('../src/agent/lifecycle').setBackgroundWaitingHandler;
   notifyCalls: Array<{ sessionId: string; title: string; body?: string }>;
-  sendCalls: Array<{ sessionId: string; text: string }>;
 };
 
 async function freshHarness(): Promise<Harness> {
@@ -29,7 +28,6 @@ async function freshHarness(): Promise<Harness> {
   let eventHandler: ((e: AgentEvent) => void) | null = null;
   let exitHandler: ((e: AgentExit) => void) | null = null;
   const notifyCalls: Array<{ sessionId: string; title: string; body?: string }> = [];
-  const sendCalls: Array<{ sessionId: string; text: string }> = [];
   (globalThis as unknown as { window: { agentory: unknown } }).window = {
     agentory: {
       onAgentEvent: (h: (e: AgentEvent) => void) => {
@@ -47,10 +45,6 @@ async function freshHarness(): Promise<Harness> {
       notify: async (payload: { sessionId: string; title: string; body?: string }) => {
         notifyCalls.push(payload);
         return true;
-      },
-      agentSend: async (sessionId: string, text: string) => {
-        sendCalls.push({ sessionId, text });
-        return true;
       }
     }
   };
@@ -66,8 +60,7 @@ async function freshHarness(): Promise<Harness> {
     exitHandler,
     store: storeMod.useStore,
     setBackgroundWaitingHandler: lifecycle.setBackgroundWaitingHandler,
-    notifyCalls,
-    sendCalls
+    notifyCalls
   };
 }
 
@@ -282,118 +275,6 @@ describe('lifecycle: background waiting bridge', () => {
     if (orig && (globalThis as unknown as { document?: Document }).document) {
       (globalThis as unknown as { document: Document }).document.hasFocus = orig;
     }
-  });
-});
-
-describe('lifecycle: autopilot watchdog', () => {
-  function endTurn(h: Harness, sessionId: string) {
-    h.eventHandler({
-      sessionId,
-      message: { type: 'result', subtype: 'success', usage: {}, num_turns: 1, duration_ms: 100 } as never
-    });
-  }
-
-  it('does NOTHING when watchdog disabled', async () => {
-    const h = await freshHarness();
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [{ kind: 'assistant', id: 'a1', text: 'short reply' }]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toEqual([]);
-  });
-
-  it('does NOTHING when last assistant message contains the done token', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true, doneToken: 'DONE!' });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [{ kind: 'assistant', id: 'a1', text: 'all DONE! goodbye' }]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toEqual([]);
-  });
-
-  it('auto-replies with the configured prompt when token absent', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({
-      enabled: true,
-      doneToken: 'DONE!',
-      otherwisePostfix: 'KEEP GOING'
-    });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [{ kind: 'assistant', id: 'a1', text: 'should I continue?' }]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toHaveLength(1);
-    expect(h.sendCalls[0].sessionId).toBe(sid);
-    expect(h.sendCalls[0].text).toContain('DONE!');
-    expect(h.sendCalls[0].text).toContain('KEEP GOING');
-    // Counter incremented and a status block appended.
-    expect(h.store.getState().watchdogCountsBySession[sid]).toBe(1);
-    const blocks = h.store.getState().messagesBySession[sid];
-    expect(blocks.some((b) => b.kind === 'status' && b.title?.startsWith('Autopilot 1/'))).toBe(true);
-  });
-
-  it('skips when a permission request is pending', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [
-      { kind: 'assistant', id: 'a1', text: 'no token here' },
-      { kind: 'waiting', id: 'w1', prompt: 'Bash: ls', intent: 'permission', requestId: 'req-1' }
-    ]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toEqual([]);
-  });
-
-  it('stops after maxAutoReplies and posts a paused status', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true, doneToken: 'ZZZTOKEN', maxAutoReplies: 2 });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [{ kind: 'assistant', id: 'a1', text: 'no token in this reply' }]);
-    endTurn(h, sid);
-    endTurn(h, sid);
-    endTurn(h, sid); // third should be capped
-    expect(h.sendCalls).toHaveLength(2);
-    const blocks = h.store.getState().messagesBySession[sid];
-    expect(blocks.some((b) => b.kind === 'status' && b.title === 'Autopilot paused')).toBe(true);
-  });
-
-  it('treats maxAutoReplies <= 0 as unlimited', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true, doneToken: 'ZZZTOKEN', maxAutoReplies: 0 });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [{ kind: 'assistant', id: 'a1', text: 'no token' }]);
-    for (let i = 0; i < 5; i++) endTurn(h, sid);
-    expect(h.sendCalls).toHaveLength(5);
-  });
-
-  it('skips when the latest signal is an error block', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [
-      { kind: 'assistant', id: 'a1', text: 'no token' },
-      { kind: 'error', id: 'e1', text: 'rate limit' }
-    ]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toEqual([]);
-  });
-
-  it('skips when the latest signal is a warn status (e.g. api_retry)', async () => {
-    const h = await freshHarness();
-    h.store.getState().setWatchdog({ enabled: true });
-    h.store.getState().createSession('~/x');
-    const sid = h.store.getState().activeId;
-    h.store.getState().appendBlocks(sid, [
-      { kind: 'assistant', id: 'a1', text: 'no token' },
-      { kind: 'status', id: 's1', tone: 'warn', title: 'Rate limit hit' }
-    ]);
-    endTurn(h, sid);
-    expect(h.sendCalls).toEqual([]);
   });
 });
 
