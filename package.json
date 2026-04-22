@@ -1,6 +1,6 @@
 {
-  "name": "agentory-next",
-  "version": "0.0.1",
+  "name": "agentory",
+  "version": "0.1.0",
   "description": "Group-first manager for many Claude Code sessions",
   "productName": "Agentory",
   "license": "MIT",
