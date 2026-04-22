@@ -31,13 +31,20 @@ export function resolveLanguage(
   return 'en';
 }
 
-// Build the resources object once. Each catalog is split into namespaces
-// so consumers can scope their `useTranslation('chat')` etc.
+// Build the resources object once. Each catalog is exposed in two shapes:
+// 1. As individual namespaces (`common`, `chat`, …) so callers that want
+//    scoped lookups can do `useTranslation('settings')` + `t('language')`.
+// 2. As a flat `translation` namespace containing the WHOLE catalog so the
+//    common pattern `useTranslation()` + `t('terminal.noOutput')` resolves
+//    by walking `translation.terminal.noOutput`. Components that wired up
+//    in wave 2 use this dotted form; without the flat namespace those
+//    keys leak through as raw strings (e.g. "terminal.noOutput").
 function buildResources() {
   const namespaces = Object.keys(en) as Array<keyof typeof en>;
   const make = (catalog: typeof en) => {
     const out: Record<string, Record<string, unknown>> = {};
     for (const ns of namespaces) out[ns] = catalog[ns] as unknown as Record<string, unknown>;
+    out.translation = catalog as unknown as Record<string, unknown>;
     return out;
   };
   return {
@@ -51,13 +58,13 @@ let initialized = false;
 export function initI18n(initialLanguage: SupportedLanguage = 'en') {
   if (initialized) return i18next;
   initialized = true;
-  const namespaces = Object.keys(en);
+  const namespaces = [...Object.keys(en), 'translation'];
   void i18next.use(initReactI18next).init({
     resources: buildResources(),
     lng: initialLanguage,
     fallbackLng: 'en',
     ns: namespaces,
-    defaultNS: 'common',
+    defaultNS: 'translation',
     interpolation: {
       // React already escapes — double-escaping eats apostrophes etc.
       escapeValue: false
