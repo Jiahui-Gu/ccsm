@@ -31,7 +31,13 @@ initI18n(usePreferences.getState().resolvedLanguage);
 
 subscribeAgentEvents();
 
-if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+// Expose the zustand store on `window` so E2E probes can introspect /
+// drive state directly. We set this UNCONDITIONALLY (not gated on
+// NODE_ENV) because webpack production builds dead-strip the gated
+// branch — leaving probes that exercise a production-built renderer with
+// no way to seed state. The exposure is a debug affordance, not a
+// security boundary; same trade-off as `window.__agentoryI18n`.
+if (typeof window !== 'undefined') {
   (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
 }
 
