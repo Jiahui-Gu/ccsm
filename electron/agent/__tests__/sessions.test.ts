@@ -150,6 +150,27 @@ describe('SessionRunner.start', () => {
     }
   });
 
+  it("defaults configDir to the user's ~/.claude so login state is shared with the CLI", async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    // Make sure the env override is not set for this test.
+    const prev = process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+    delete process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const expected = path.join(os.homedir(), '.claude');
+
+    const runner = new SessionRunner('s2b', () => {}, () => {}, () => {});
+    try {
+      await runner.start({ cwd: '/w' });
+      expect(mockSpawnClaude.mock.calls[0][0].configDir).toBe(expected);
+    } finally {
+      if (prev !== undefined) process.env.AGENTORY_CLAUDE_CONFIG_DIR = prev;
+      runner.close();
+    }
+  });
+
   it('coerces SDK-only permission modes (dontAsk / auto) to default for the CLI', async () => {
     const proc = makeFakeProc();
     mockSpawnClaude.mockResolvedValue(proc);

@@ -214,7 +214,9 @@ export function buildSpawnEnv(opts: {
     if (envKeyAllowed(k)) env[k] = v;
   }
 
-  // Required: isolate config so we never pollute the user's ~/.claude.
+  // Required: point claude.exe at the configured CLAUDE_CONFIG_DIR. By default
+  // this is the user's real ~/.claude/ (see sessions.ts → resolveClaudeConfigDir)
+  // so Agentory shares login state with the user's existing CLI install.
   env.CLAUDE_CONFIG_DIR = opts.configDir;
 
   // Identifies us in server-side logs. We unconditionally overwrite the
@@ -431,7 +433,7 @@ class ClaudeProcessImpl implements ClaudeProcess {
 export async function spawnClaude(opts: SpawnOpts): Promise<ClaudeProcess> {
   if (!opts.configDir || opts.configDir.trim().length === 0) {
     throw new Error(
-      'spawnClaude: configDir is required (caller must pass an isolated CLAUDE_CONFIG_DIR path, e.g. <userData>/claude-cli-config)'
+      'spawnClaude: configDir is required (caller must pass a CLAUDE_CONFIG_DIR path; defaults to the user\'s ~/.claude via sessions.ts → resolveClaudeConfigDir)'
     );
   }
 
