@@ -76,6 +76,8 @@ const en = {
     stopBtn: 'Stop',
     stopAria: 'Stop',
     sendFailedToDeliver: 'Failed to deliver message to agent.',
+    cwdMissing:
+      'Working directory no longer exists: {{cwd}}. Pick a new folder using the cwd button in the status bar below, then send again.',
     diffAccept: 'Accept',
     diffReject: 'Reject',
     diffAccepted: 'accepted',
@@ -128,6 +130,8 @@ const en = {
     settingsTooltip: 'Settings  ⌘,',
     settingsAria: 'Settings',
     notificationsMutedAria: 'Notifications muted',
+    cwdMissingTooltip:
+      'Working directory no longer exists: {{cwd}}. Open this session and repick the folder via the cwd button in the status bar.',
     muteNotifications: 'Mute notifications',
     unmuteNotifications: 'Unmute notifications'
   },
@@ -322,19 +326,6 @@ const en = {
     importing: 'Importing…',
     importN: 'Import {{count}}',
     cancel: 'Cancel'
-  },
-  sessionCreate: {
-    title: 'New session',
-    description: 'Pick a working directory for the agent.',
-    name: 'Name',
-    nameHint: 'Optional — defaults to \u201cNew session\u201d.',
-    namePlaceholder: 'New session',
-    cwd: 'Working directory',
-    cwdHint: 'Where the agent should run.',
-    cwdPlaceholder: '/path/to/repo',
-    browseFolder: 'Browse folder',
-    cancel: 'Cancel',
-    create: 'Create session'
   },
   commandPalette: {
     title: 'Command palette',

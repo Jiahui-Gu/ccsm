@@ -76,6 +76,7 @@ const zh: EnCatalog = {
     stopBtn: '停止',
     stopAria: '停止',
     sendFailedToDeliver: '消息投递到 agent 失败。',
+    cwdMissing: '工作目录已不存在: {{cwd}}。请用下方状态栏的 cwd 按钮重新选择目录后再发送。',
     diffAccept: '接受',
     diffReject: '拒绝',
     diffAccepted: '已接受',
@@ -124,6 +125,7 @@ const zh: EnCatalog = {
     settingsTooltip: '设置  ⌘,',
     settingsAria: '设置',
     notificationsMutedAria: '通知已静音',
+    cwdMissingTooltip: '工作目录已不存在: {{cwd}}。打开此会话后，用状态栏的 cwd 按钮重新选择目录。',
     muteNotifications: '静音通知',
     unmuteNotifications: '取消静音'
   },
@@ -312,19 +314,6 @@ const zh: EnCatalog = {
     importing: '导入中…',
     importN: '导入 {{count}} 个',
     cancel: '取消'
-  },
-  sessionCreate: {
-    title: '新建会话',
-    description: '为 agent 选择一个工作目录。',
-    name: '名称',
-    nameHint: '可选 — 默认为"新会话"。',
-    namePlaceholder: '新会话',
-    cwd: '工作目录',
-    cwdHint: 'agent 在这个目录下运行。',
-    cwdPlaceholder: '/path/to/repo',
-    browseFolder: '选择文件夹',
-    cancel: '取消',
-    create: '创建会话'
   },
   commandPalette: {
     title: '命令面板',

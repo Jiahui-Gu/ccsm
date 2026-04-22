@@ -416,6 +416,21 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           useStore.getState().setCliMissing(res.searchedPaths ?? []);
           return;
         }
+        if (res.errorCode === 'CWD_MISSING') {
+          // The session's working directory was deleted between runs (often
+          // an old worktree path). Mark it on the session so the Sidebar can
+          // dim the row, then surface a chat-level hint pointing the user at
+          // the StatusBar cwd chip — that's how they repick.
+          useStore.getState().markSessionCwdMissing(sessionId, true);
+          appendBlocks(sessionId, [
+            {
+              kind: 'error',
+              id: `cwd-missing-${Date.now().toString(36)}`,
+              text: t('chat.cwdMissing', { cwd: session.cwd }),
+            },
+          ]);
+          return;
+        }
         appendBlocks(sessionId, [
           { kind: 'error', id: `start-${Date.now().toString(36)}`, text: res.error }
         ]);

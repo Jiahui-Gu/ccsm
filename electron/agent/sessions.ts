@@ -30,7 +30,7 @@ export type PermissionMode =
 // IPC payload mirrors the on-wire stream-json events from claude.exe stdout.
 export type AgentMessage = ClaudeStreamEvent;
 
-function resolveCwd(cwd: string): string {
+export function resolveCwd(cwd: string): string {
   if (cwd === '~') return os.homedir();
   if (cwd.startsWith('~/') || cwd.startsWith('~\\')) return path.join(os.homedir(), cwd.slice(2));
   return cwd;
