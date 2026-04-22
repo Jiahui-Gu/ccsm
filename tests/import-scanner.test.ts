@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseHead, deriveRecentCwds } from '../electron/import-scanner';
+import { parseHead, deriveRecentCwds, deriveTopModel } from '../electron/import-scanner';
 
 const j = (o: unknown) => JSON.stringify(o);
 
@@ -17,7 +17,7 @@ describe('parseHead', () => {
       j({ type: 'user', cwd: '/p', message: { content: [{ type: 'text', text: 'hello' }] } }),
       j({ type: 'ai-title', aiTitle: 'A nice title' })
     ]);
-    expect(head).toEqual({ cwd: '/p', title: 'A nice title' });
+    expect(head).toEqual({ cwd: '/p', title: 'A nice title', model: null });
   });
 
   it('falls back to first user text when no ai-title', () => {
@@ -25,7 +25,7 @@ describe('parseHead', () => {
       j({ type: 'queue-operation' }),
       j({ type: 'user', cwd: '/p', message: { content: [{ type: 'text', text: 'do the thing' }] } })
     ]);
-    expect(head).toEqual({ cwd: '/p', title: 'do the thing' });
+    expect(head).toEqual({ cwd: '/p', title: 'do the thing', model: null });
   });
 
   it('skips slash-command wrapped user text', () => {
@@ -61,12 +61,12 @@ describe('parseHead', () => {
 
   it('uses ~ as cwd when none seen', () => {
     const head = parseHead([j({ type: 'ai-title', aiTitle: 'X' })]);
-    expect(head).toEqual({ cwd: '~', title: 'X' });
+    expect(head).toEqual({ cwd: '~', title: 'X', model: null });
   });
 
   it('falls back to (untitled) only when ai-title and user-text are absent but cwd present', () => {
     const head = parseHead([j({ type: 'queue-operation', cwd: '/p' })]);
-    expect(head).toEqual({ cwd: '/p', title: '(untitled session)' });
+    expect(head).toEqual({ cwd: '/p', title: '(untitled session)', model: null });
   });
 
   it('ignores malformed json lines', () => {
@@ -136,5 +136,79 @@ describe('deriveRecentCwds', () => {
       mtime: 1000 - i,
     }));
     expect(deriveRecentCwds(sessions)).toHaveLength(10);
+  });
+});
+
+describe('parseHead model extraction', () => {
+  it('extracts model from message.model on assistant frames', () => {
+    const head = parseHead([
+      j({ type: 'user', cwd: '/p', message: { role: 'user', content: 'hello' } }),
+      j({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hi' }],
+          model: 'claude-haiku-4.5',
+        },
+      }),
+    ]);
+    expect(head?.model).toBe('claude-haiku-4.5');
+  });
+
+  it('also accepts top-level model field', () => {
+    const head = parseHead([
+      j({ type: 'user', cwd: '/p', message: { content: 'hi' } }),
+      j({ type: 'system', model: 'claude-sonnet-4.5' }),
+    ]);
+    expect(head?.model).toBe('claude-sonnet-4.5');
+  });
+});
+
+describe('deriveTopModel', () => {
+  it('returns null on empty input', () => {
+    expect(deriveTopModel([])).toBeNull();
+  });
+
+  it('returns null when no entry has a model', () => {
+    expect(
+      deriveTopModel([
+        { model: null, mtime: 1 },
+        { model: null, mtime: 2 },
+      ])
+    ).toBeNull();
+  });
+
+  it('returns the most-frequent model', () => {
+    expect(
+      deriveTopModel([
+        { model: 'claude-sonnet-4.5', mtime: 100 },
+        { model: 'claude-haiku-4.5', mtime: 90 },
+        { model: 'claude-haiku-4.5', mtime: 80 },
+        { model: 'claude-haiku-4.5', mtime: 70 },
+        { model: 'claude-sonnet-4.5', mtime: 60 },
+      ])
+    ).toBe('claude-haiku-4.5');
+  });
+
+  it('breaks ties by most-recent occurrence', () => {
+    expect(
+      deriveTopModel([
+        { model: 'claude-sonnet-4.5', mtime: 200 },
+        { model: 'claude-haiku-4.5', mtime: 100 },
+        { model: 'claude-sonnet-4.5', mtime: 50 },
+        { model: 'claude-haiku-4.5', mtime: 10 },
+      ])
+    ).toBe('claude-sonnet-4.5');
+  });
+
+  it('honours the max window — older entries past the cap are ignored', () => {
+    const sessions = [
+      { model: 'recent-model', mtime: 500 },
+      ...Array.from({ length: 60 }, (_, i) => ({
+        model: 'old-model',
+        mtime: 100 - i,
+      })),
+    ];
+    expect(deriveTopModel(sessions, 1)).toBe('recent-model');
   });
 });

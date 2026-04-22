@@ -168,7 +168,7 @@ const api = {
   },
 
   scanImportable: (): Promise<
-    Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
+    Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
   > => ipcRenderer.invoke('import:scan'),
 
   /**
@@ -179,6 +179,13 @@ const api = {
    * has nothing usable.
    */
   recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
+
+  /**
+   * Most-frequently-observed model across recent CLI transcripts. Seeds the
+   * new-session model picker on fresh installs / fresh userData where the
+   * persisted `model` field is empty. Null if no model could be derived.
+   */
+  topModel: (): Promise<string | null> => ipcRenderer.invoke('import:topModel'),
 
   /**
    * Best-effort batched existence check. Returns a map keyed by the input
