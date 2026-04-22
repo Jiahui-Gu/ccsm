@@ -6,6 +6,7 @@ import {
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX
 } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 /**
  * 4px wide draggable handle between Sidebar and main pane.
@@ -22,6 +23,7 @@ export function SidebarResizer() {
   const setSidebarWidth = useStore((s) => s.setSidebarWidth);
   const resetSidebarWidth = useStore((s) => s.resetSidebarWidth);
   const dragging = useRef(false);
+  const { t } = useTranslation('sidebar');
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -58,13 +60,13 @@ export function SidebarResizer() {
     <div
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize sidebar"
+      aria-label={t('resizerAriaLabel')}
       aria-valuemin={SIDEBAR_WIDTH_MIN}
       aria-valuemax={SIDEBAR_WIDTH_MAX}
       aria-valuenow={sidebarWidth}
       onPointerDown={onPointerDown}
       onDoubleClick={resetSidebarWidth}
-      title={`Drag to resize · double-click to reset (${SIDEBAR_WIDTH_DEFAULT}px)`}
+      title={t('resizerTooltip', { default: SIDEBAR_WIDTH_DEFAULT })}
       className="group/resizer relative w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-border-strong active:bg-accent transition-colors duration-150 select-none"
     />
   );

@@ -3,6 +3,7 @@ import { streamEventToTranslation, PartialAssistantStreamer } from './stream-to-
 import { parseQuestions } from './ask-user-question';
 import { dispatchNotification, handleNotificationFocus } from '../notifications/dispatch';
 import { buildUserContentBlocks } from '../lib/attachments';
+import { i18next } from '../i18n';
 import type { MessageBlock } from '../types';
 
 let installed = false;
@@ -227,9 +228,9 @@ export function subscribeAgentEvents(): void {
         const session = store.sessions.find((s) => s.id === e.sessionId);
         const sessionName = session?.name ?? 'Session';
         const title = errored
-          ? `${sessionName} finished with an error`
-          : `${sessionName} is done`;
-        const body = errored ? 'Turn ended in error - check the chat.' : undefined;
+          ? i18next.t('notifications.turnErrorTitle', { name: sessionName })
+          : i18next.t('notifications.turnDoneTitle', { name: sessionName });
+        const body = errored ? i18next.t('notifications.turnErrorBody') : undefined;
         void dispatchNotification({
           sessionId: e.sessionId,
           eventType: 'turn_done',
@@ -263,30 +264,33 @@ export function subscribeAgentEvents(): void {
       const session = store.sessions.find((s) => s.id === req.sessionId);
       let prompt = '';
       if (block.kind === 'question') {
-        prompt = block.questions[0]?.question ?? 'Question awaiting answer';
+        prompt = block.questions[0]?.question ?? i18next.t('questionBlock.title');
       } else if (block.kind === 'waiting') {
-        prompt = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
+        prompt = block.intent === 'plan' ? i18next.t('chat.planTitle') : block.prompt;
       }
-      const sessionName = session?.name ?? 'Background session';
+      const sessionName = session?.name ?? i18next.t('notifications.backgroundSessionFallback');
       backgroundWaitingHandler({ sessionId: req.sessionId, sessionName, prompt });
     }
     // OS-level notification dispatch is deduped/suppressed inside dispatch:
     // mute, focus, debounce, and per-event-type toggles all live there. We
     // just hand it the semantic event and let it decide whether to ping the OS.
     const session = store.sessions.find((s) => s.id === req.sessionId);
-    const sessionName = session?.name ?? 'Background session';
+    const sessionName = session?.name ?? i18next.t('notifications.backgroundSessionFallback');
     const eventType = block.kind === 'question' ? 'question' : 'permission';
-    const titleSuffix = block.kind === 'question' ? 'has a question' : 'needs your input';
+    const title =
+      block.kind === 'question'
+        ? i18next.t('notifications.questionTitle', { name: sessionName })
+        : i18next.t('notifications.inputNeededTitle', { name: sessionName });
     let body: string | undefined;
     if (block.kind === 'question') {
       body = block.questions[0]?.question;
     } else if (block.kind === 'waiting') {
-      body = block.intent === 'plan' ? 'Plan ready for review' : block.prompt;
+      body = block.intent === 'plan' ? i18next.t('chat.planTitle') : block.prompt;
     }
     void dispatchNotification({
       sessionId: req.sessionId,
       eventType,
-      title: `${sessionName} ${titleSuffix}`,
+      title,
       body
     });
   });

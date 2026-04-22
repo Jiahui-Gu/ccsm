@@ -156,18 +156,18 @@ function AppearancePane() {
           ]}
         />
       </Field>
-      <Field label="Theme" hint="System follows your OS preference (and reacts live when it changes).">
+      <Field label={t('theme')} hint={t('themeHint')}>
         <Segmented
           value={theme}
           onChange={setTheme}
           options={[
-            { value: 'dark', label: 'Dark' },
-            { value: 'light', label: 'Light' },
-            { value: 'system', label: 'System' },
+            { value: 'dark', label: t('themeOptions.dark') },
+            { value: 'light', label: t('themeOptions.light') },
+            { value: 'system', label: t('themeOptions.system') },
           ]}
         />
       </Field>
-      <Field label="Font size" hint="Applies to the whole app. Explicit small labels (meta, kbd) keep their intrinsic size.">
+      <Field label={t('fontSize')} hint={t('fontSizeHint')}>
         <div className="flex items-center gap-3">
           <input
             type="range"
@@ -182,19 +182,19 @@ function AppearancePane() {
               }
             }}
             className="w-48 accent-accent cursor-pointer"
-            aria-label="Font size in pixels"
+            aria-label={t('fontSizeAriaLabel')}
           />
           <span className="text-xs font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
         </div>
       </Field>
-      <Field label="Density" hint="Tightens or loosens row padding and spacing across the app.">
+      <Field label={t('density')} hint={t('densityHint')}>
         <Segmented
           value={density}
           onChange={setDensity}
           options={[
-            { value: 'compact', label: 'Compact' },
-            { value: 'normal', label: 'Normal' },
-            { value: 'comfortable', label: 'Comfortable' },
+            { value: 'compact', label: t('densityOptions.compact') },
+            { value: 'normal', label: t('densityOptions.normal') },
+            { value: 'comfortable', label: t('densityOptions.comfortable') },
           ]}
         />
       </Field>
@@ -249,6 +249,7 @@ function NotificationsPane() {
   const setNotificationSettings = useStore((s) => s.setNotificationSettings);
   const activeId = useStore((s) => s.activeId);
   const [testStatus, setTestStatus] = useState<string | null>(null);
+  const { t } = useTranslation('settings');
 
   const Toggle = ({
     checked,
@@ -272,25 +273,27 @@ function NotificationsPane() {
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 accent-accent"
       />
-      <span className="text-sm text-fg-secondary">{checked ? 'On' : 'Off'}</span>
+      <span className="text-sm text-fg-secondary">
+        {checked ? t('notifications.toggleOn') : t('notifications.toggleOff')}
+      </span>
     </label>
   );
 
   const onTest = async () => {
     const api = window.agentory;
     if (!api) {
-      setTestStatus('IPC unavailable.');
+      setTestStatus(t('notifications.testIpcUnavailable'));
       setTimeout(() => setTestStatus(null), 2000);
       return;
     }
     const ok = await api.notify({
       sessionId: activeId,
-      title: 'Agentory test notification',
-      body: 'If you can read this, OS notifications are working.',
+      title: t('notifications.testTitle'),
+      body: t('notifications.testBody'),
       eventType: 'test',
       silent: !settings.sound
     });
-    setTestStatus(ok ? 'Sent.' : 'Failed - OS notifications unavailable.');
+    setTestStatus(ok ? t('notifications.testSent') : t('notifications.testFailed'));
     setTimeout(() => setTestStatus(null), 2500);
   };
 
@@ -299,41 +302,36 @@ function NotificationsPane() {
   return (
     <>
       <div className="text-xs text-fg-tertiary mb-4">
-        OS-level toasts when a session needs your attention. Suppressed when
-        the window is focused on that same session, and debounced per session
-        per event type so a chatty agent cannot spam you.
+        {t('notifications.intro')}
       </div>
-      <Field label="Enable notifications">
+      <Field label={t('notifications.enable')}>
         <Toggle
           checked={settings.enabled}
           onChange={(v) => setNotificationSettings({ enabled: v })}
         />
       </Field>
-      <Field label="Permission prompts" hint="When a tool call is waiting on your approval.">
+      <Field label={t('notifications.permission')} hint={t('notifications.permissionHint')}>
         <Toggle
           checked={settings.permission}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ permission: v })}
         />
       </Field>
-      <Field label="Questions" hint="When the agent uses AskUserQuestion to ask you something.">
+      <Field label={t('notifications.question')} hint={t('notifications.questionHint')}>
         <Toggle
           checked={settings.question}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ question: v })}
         />
       </Field>
-      <Field
-        label="Turn done"
-        hint="Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped."
-      >
+      <Field label={t('notifications.turnDone')} hint={t('notifications.turnDoneHint')}>
         <Toggle
           checked={settings.turnDone}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ turnDone: v })}
         />
       </Field>
-      <Field label="Sound" hint="Play the OS default notification sound.">
+      <Field label={t('notifications.sound')} hint={t('notifications.soundHint')}>
         <Toggle
           checked={settings.sound}
           disabled={disableChildren}
@@ -342,7 +340,7 @@ function NotificationsPane() {
       </Field>
       <div className="flex items-center gap-3">
         <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
-          Test notification
+          {t('notifications.testButton')}
         </Button>
         {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
       </div>
@@ -426,6 +424,7 @@ function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
   const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
   const [autoCheck, setAutoCheck] = useState<boolean>(true);
+  const { t } = useTranslation('settings');
 
   useEffect(() => {
     window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
@@ -464,16 +463,13 @@ function UpdatesPane() {
 
   return (
     <>
-      <Field label="Version">
+      <Field label={t('updates.version')}>
         <span className="text-sm text-fg-secondary font-mono">{version}</span>
       </Field>
-      <Field label="Status">
-        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status)}</span>
+      <Field label={t('updates.status')}>
+        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status, t)}</span>
       </Field>
-      <Field
-        label="Automatic checks"
-        hint="When on, Agentory checks GitHub for updates on launch and every 4 hours."
-      >
+      <Field label={t('updates.automaticChecks')} hint={t('updates.automaticChecksHint')}>
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
           <input
             type="checkbox"
@@ -481,21 +477,21 @@ function UpdatesPane() {
             onChange={(e) => void onToggleAutoCheck(e.target.checked)}
             className="h-4 w-4 accent-accent"
           />
-          <span className="text-sm text-fg-secondary">Check for updates automatically</span>
+          <span className="text-sm text-fg-secondary">{t('updates.automaticChecksToggle')}</span>
         </label>
       </Field>
       <div className="flex gap-2">
         <Button variant="secondary" size="md" onClick={onCheck} disabled={!canCheck}>
-          {isChecking ? 'Checking…' : 'Check for updates'}
+          {isChecking ? t('updates.checking') : t('updates.checkButton')}
         </Button>
         {status.kind === 'available' && (
           <Button variant="primary" size="md" onClick={onDownload}>
-            Download {status.version}
+            {t('updates.downloadButton', { version: status.version })}
           </Button>
         )}
         {status.kind === 'downloaded' && (
           <Button variant="primary" size="md" onClick={onInstall}>
-            Restart & install
+            {t('updates.installButton')}
           </Button>
         )}
       </div>
@@ -503,22 +499,26 @@ function UpdatesPane() {
   );
 }
 
-function describeStatus(s: LocalUpdateStatus): string {
+function describeStatus(s: LocalUpdateStatus, t: (key: string, vars?: Record<string, unknown>) => string): string {
   switch (s.kind) {
     case 'idle':
-      return 'No update check performed yet.';
+      return t('updates.statusIdle');
     case 'checking':
-      return 'Checking for updates…';
+      return t('updates.statusChecking');
     case 'available':
-      return `Update available: ${s.version}`;
+      return t('updates.statusAvailable', { version: s.version });
     case 'not-available':
-      return 'You are on the latest version.';
+      return t('updates.statusNotAvailable');
     case 'downloading':
-      return `Downloading… ${s.percent.toFixed(1)}% (${formatBytes(s.transferred)} / ${formatBytes(s.total)})`;
+      return t('updates.statusDownloading', {
+        percent: s.percent.toFixed(1),
+        transferred: formatBytes(s.transferred),
+        total: formatBytes(s.total)
+      });
     case 'downloaded':
-      return `Update ${s.version} ready — restart to install.`;
+      return t('updates.statusDownloaded', { version: s.version });
     case 'error':
-      return `Update check failed: ${s.message}`;
+      return t('updates.statusError', { message: s.message });
   }
 }
 
@@ -536,6 +536,7 @@ function ConnectionPane() {
   const loadModels = useStore((s) => s.loadModels);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const { t } = useTranslation('settings');
 
   // Re-read on mount so the pane reflects edits the user made externally
   // (claude /config or hand-edit) since the last app boot.
@@ -563,49 +564,50 @@ function ConnectionPane() {
 
   return (
     <div data-connection-pane>
-      <div className="text-xs text-fg-tertiary mb-4 max-w-[520px]">
-        Agentory reads connection settings from{' '}
-        <code className="font-mono text-fg-secondary">~/.claude/settings.json</code>{' '}
-        plus your <code className="font-mono text-fg-secondary">ANTHROPIC_*</code>{' '}
-        environment variables. To change them, run{' '}
-        <code className="font-mono text-fg-secondary">claude /config</code> or edit
-        the file directly. Restart Agentory to pick up changes.
-      </div>
+      <div
+        className="text-xs text-fg-tertiary mb-4 max-w-[520px] [&_code]:font-mono [&_code]:text-fg-secondary"
+        dangerouslySetInnerHTML={{ __html: t('connection.intro') }}
+      />
 
-      <Field label="Base URL">
+      <Field label={t('connection.baseUrl')}>
         <code
           data-connection-base-url
           className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
         >
-          {baseUrl ?? 'https://api.anthropic.com (default)'}
+          {baseUrl ?? t('connection.baseUrlDefault')}
         </code>
       </Field>
 
-      <Field label="Default model">
+      <Field label={t('connection.defaultModel')}>
         <code
           data-connection-model
           className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
         >
-          {model ?? '(unset — the CLI will pick its own default)'}
+          {model ?? t('connection.modelUnset')}
         </code>
       </Field>
 
-      <Field label="Auth token">
+      <Field label={t('connection.authToken')}>
         <span className="text-sm text-fg-secondary">
-          {hasAuth ? 'Configured' : 'Not configured — run `claude /config` to sign in.'}
+          {hasAuth ? t('connection.authConfigured') : t('connection.authNotConfigured')}
         </span>
       </Field>
 
       <Field
-        label={`Discovered models (${modelsLoaded ? models.length : '…'})`}
-        hint="Merged from settings.json, env vars, and the CLI’s built-in picker list."
+        label={
+          modelsLoaded
+            ? t('connection.discoveredModels', { count: models.length })
+            : t('connection.discoveredModelsLoadingCount')
+        }
+        hint={t('connection.discoveredModelsHint')}
       >
         {!modelsLoaded ? (
-          <div className="text-sm text-fg-tertiary">Loading…</div>
+          <div className="text-sm text-fg-tertiary">{t('connection.modelsLoading')}</div>
         ) : models.length === 0 ? (
-          <div className="text-sm text-fg-tertiary">
-            No models discovered. Run <code className="font-mono text-fg-secondary">claude /config</code> to set one up.
-          </div>
+          <div
+            className="text-sm text-fg-tertiary [&_code]:font-mono [&_code]:text-fg-secondary"
+            dangerouslySetInnerHTML={{ __html: t('connection.modelsEmpty') }}
+          />
         ) : (
           <ul
             data-connection-models
@@ -634,7 +636,7 @@ function ConnectionPane() {
           disabled={opening}
           data-connection-open-file
         >
-          {opening ? 'Opening…' : 'Open settings.json'}
+          {opening ? t('connection.opening') : t('connection.openSettingsFile')}
         </Button>
         {openError && (
           <span className="text-xs text-state-error">{openError}</span>

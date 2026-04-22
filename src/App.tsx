@@ -20,6 +20,7 @@ import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
 import { initI18n } from './i18n';
+import { i18next } from './i18n';
 import { usePreferences } from './store/preferences';
 
 // Initialise i18next once, before any component renders. Subsequent
@@ -368,7 +369,7 @@ function BackgroundWaitingBridge() {
     setBackgroundWaitingHandler((info) => {
       push({
         kind: 'waiting',
-        title: `${info.sessionName} needs your input`,
+        title: i18next.t('notifications.backgroundWaitingToastTitle', { name: info.sessionName }),
         body: info.prompt
       });
       // The toast is fire-and-forget; we deliberately do NOT auto-jump on

@@ -3,6 +3,7 @@ import * as RD from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { IconButton } from './IconButton';
+import { useTranslation } from '../../i18n/useTranslation';
 
 export const Dialog = RD.Root;
 export const DialogTrigger = RD.Trigger;
@@ -41,6 +42,7 @@ export const DialogContent = forwardRef<
   { className, children, title, description, hideClose, width = '520px', ...rest },
   ref
 ) {
+  const { t } = useTranslation('common');
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -75,7 +77,7 @@ export const DialogContent = forwardRef<
             </div>
             {!hideClose && (
               <DialogClose asChild>
-                <IconButton size="sm" aria-label="Close">
+                <IconButton size="sm" aria-label={t('close')}>
                   <X size={13} className="stroke-[1.75]" />
                 </IconButton>
               </DialogClose>
