@@ -186,7 +186,11 @@ const en = {
       zh: '中文'
     },
     version: 'Version',
-    checkForUpdates: 'Check for updates'
+    checkForUpdates: 'Check for updates',
+    crashReporting: {
+      label: 'Send crash reports to developer',
+      description: 'Recommended. Helps fix bugs you hit. No personal data sent.'
+    }
   },
   permissions: {
     promptTitle: 'Permission requested',

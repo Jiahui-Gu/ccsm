@@ -1,3 +1,4 @@
+import * as Sentry from '@sentry/electron/main';
 import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -12,6 +13,40 @@ import {
   loadClaudeBinPath,
   saveClaudeBinPath,
 } from './db';
+
+// Reads the user's opt-out preference for crash reporting from app_state.
+// Returns false when the row is missing or the read errors — i.e. reporting
+// is opt-OUT, default ON. We swallow errors here because Sentry's beforeSend
+// is on the hot error path; failing closed (silently sending) is preferable
+// to dropping a crash because the DB happened to be locked.
+function loadCrashReportingOptOut(): boolean {
+  try {
+    const raw = loadState('crashReportingOptOut');
+    if (raw == null) return false;
+    return raw === 'true' || raw === '1';
+  } catch {
+    return false;
+  }
+}
+
+// PLACEHOLDER_DSN intentionally — the real DSN is swapped in before the
+// first internal release. Until then events are sent to a non-existent
+// project (and rejected by the SDK at ingest, which is fine for dev).
+Sentry.init({
+  dsn: process.env.SENTRY_DSN ?? 'PLACEHOLDER_DSN',
+  release: app.getVersion(),
+  environment: app.isPackaged ? 'prod' : 'dev',
+  sendDefaultPii: false,
+  beforeSend(event) {
+    try {
+      const optOut = loadCrashReportingOptOut();
+      if (optOut) return null;
+    } catch {
+      /* fall through, send anyway */
+    }
+    return event;
+  },
+});
 import { sessions } from './agent/manager';
 import { resolveCwd } from './agent/sessions';
 import { installUpdaterIpc } from './updater';

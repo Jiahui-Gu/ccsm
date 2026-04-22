@@ -180,7 +180,11 @@ const zh: EnCatalog = {
       zh: '中文'
     },
     version: '版本',
-    checkForUpdates: '检查更新'
+    checkForUpdates: '检查更新',
+    crashReporting: {
+      label: '发送崩溃报告给开发者',
+      description: '推荐开启。帮助修复你遇到的 bug。不发送个人数据。'
+    }
   },
   permissions: {
     promptTitle: '请求权限',
