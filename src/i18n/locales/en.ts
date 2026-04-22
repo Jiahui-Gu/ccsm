@@ -311,6 +311,7 @@ const en = {
     searchPlaceholder: 'Search sessions, groups, commands…',
     escKey: 'Esc',
     noMatches: 'No matches',
+    emptyHint: 'Type to search sessions, groups, commands…',
     groupHint: 'Group',
     cmdNewSession: 'New session',
     cmdNewGroup: 'New group',
