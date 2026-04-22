@@ -868,6 +868,14 @@ export const useStore = create<State & Actions>((set, get) => ({
     inFlightLoads.add(sessionId);
     try {
       const rows = await api.loadMessages(sessionId);
+      // Sanitize: a row persisted with streaming=true means the previous run
+      // crashed/quit mid-stream. On restore, the stream is no longer active,
+      // so clear the flag to prevent the UI from showing a perpetual pulse.
+      const sanitized = (rows as MessageBlock[]).map((r) =>
+        r.kind === 'assistant' && (r as { streaming?: boolean }).streaming
+          ? { ...r, streaming: false }
+          : r
+      );
       // Don't clobber blocks that arrived via streaming while we awaited the
       // db round-trip — if something is already there, keep it.
       set((s) => {
@@ -875,7 +883,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         return {
           messagesBySession: {
             ...s.messagesBySession,
-            [sessionId]: rows as MessageBlock[]
+            [sessionId]: sanitized
           }
         };
       });
