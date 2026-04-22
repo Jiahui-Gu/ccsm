@@ -10,7 +10,6 @@ export type SettingsTab =
   | 'appearance'
   | 'notifications'
   | 'endpoints'
-  | 'permissions'
   | 'updates';
 
 type Listener = (tab?: SettingsTab) => void;

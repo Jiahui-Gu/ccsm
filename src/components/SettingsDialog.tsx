@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
@@ -6,19 +6,6 @@ import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
-import {
-  PERMISSION_PRESETS,
-  TOOL_CATALOG,
-  deriveToolState,
-  parsePatternLines,
-  renderEffectiveFlags,
-  serializePatternLines,
-  setToolState,
-  validatePatterns,
-  type PresetId,
-  type ToolState
-} from '../agent/permission-presets';
-import { EMPTY_PERMISSION_RULES } from '../types';
 
 type LocalUpdateStatus =
   | { kind: 'idle' }
@@ -29,7 +16,7 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'appearance' | 'notifications' | 'endpoints' | 'permissions' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'endpoints' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
@@ -37,7 +24,6 @@ const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'notifications', tabKey: 'notifications' },
   { id: 'endpoints', tabKey: 'endpoints' },
-  { id: 'permissions', tabKey: 'permissions' },
   { id: 'updates', tabKey: 'updates' }
 ];
 
@@ -95,7 +81,6 @@ export function SettingsDialog({
             {tab === 'appearance' && <AppearancePane />}
             {tab === 'notifications' && <NotificationsPane />}
             {tab === 'endpoints' && <EndpointsPane />}
-            {tab === 'permissions' && <PermissionsPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
         </div>
@@ -362,297 +347,6 @@ function NotificationsPane() {
     </>
   );
 }
-
-function PermissionsPane() {
-  const permission = useStore((s) => s.permission);
-  const rules = useStore((s) => s.permissionRules);
-  const setPermissionRules = useStore((s) => s.setPermissionRules);
-  const resetPermissionRules = useStore((s) => s.resetPermissionRules);
-
-  const [showPatterns, setShowPatterns] = useState(false);
-  // Textareas are local-state-driven for responsive typing; we commit to the
-  // store on blur (or when validation passes on every keystroke — trivial).
-  const [allowText, setAllowText] = useState('');
-  const [denyText, setDenyText] = useState('');
-
-  // Sync local textarea state with store rules. Scoped patterns (Tool(...))
-  // live in the textareas; bare tool entries are driven by the table above.
-  useEffect(() => {
-    const scopedAllow = rules.allowedTools.filter((p) => p.includes('('));
-    const scopedDeny = rules.disallowedTools.filter((p) => p.includes('('));
-    setAllowText(serializePatternLines(scopedAllow));
-    setDenyText(serializePatternLines(scopedDeny));
-    if (scopedAllow.length > 0 || scopedDeny.length > 0) setShowPatterns(true);
-  }, [rules]);
-
-  // Detect which preset the current rules correspond to, for the radio's
-  // "checked" highlight. Falls through to `custom` whenever the exact sets
-  // don't match a known preset.
-  const activePresetId: PresetId = useMemo(() => {
-    for (const p of PERMISSION_PRESETS) {
-      if (p.id === 'custom') continue;
-      if (arraysEqualSet(p.rules.allowedTools, rules.allowedTools) &&
-          arraysEqualSet(p.rules.disallowedTools, rules.disallowedTools)) {
-        return p.id;
-      }
-    }
-    return 'custom';
-  }, [rules]);
-
-  const applyPreset = (id: PresetId) => {
-    if (id === 'custom') {
-      // Custom = leave rules as-is; it's the user's edit surface.
-      return;
-    }
-    const preset = PERMISSION_PRESETS.find((p) => p.id === id);
-    if (!preset) return;
-    setPermissionRules({
-      allowedTools: [...preset.rules.allowedTools],
-      disallowedTools: [...preset.rules.disallowedTools]
-    });
-  };
-
-  const onToolStateChange = (tool: string, state: ToolState) => {
-    const next = setToolState(rules, tool, state);
-    setPermissionRules(next);
-  };
-
-  const commitPatterns = () => {
-    const allowScoped = parsePatternLines(allowText);
-    const denyScoped = parsePatternLines(denyText);
-    const val = validatePatterns([...allowScoped, ...denyScoped]);
-    if (!val.ok) return; // keep the user's text; errors shown inline
-    // Keep bare-tool entries from the table; replace scoped entries.
-    const bareAllow = rules.allowedTools.filter((p) => !p.includes('('));
-    const bareDeny = rules.disallowedTools.filter((p) => !p.includes('('));
-    setPermissionRules({
-      allowedTools: [...bareAllow, ...allowScoped],
-      disallowedTools: [...bareDeny, ...denyScoped]
-    });
-  };
-
-  const validation = useMemo(
-    () => validatePatterns([...parsePatternLines(allowText), ...parsePatternLines(denyText)]),
-    [allowText, denyText]
-  );
-
-  const effective = useMemo(
-    () => renderEffectiveFlags(permission, rules),
-    [permission, rules]
-  );
-
-  return (
-    <div data-perm-pane>
-      <div className="text-xs text-fg-tertiary mb-4 max-w-[520px]">
-        Per-tool rules layer on top of the permission mode in the sidebar. They
-        map 1:1 to claude.exe&apos;s <code className="font-mono text-fg-secondary">--allowedTools</code> /{' '}
-        <code className="font-mono text-fg-secondary">--disallowedTools</code> flags
-        and apply to new sessions. Running sessions keep whatever rules they
-        were started with.
-      </div>
-
-      <Field label="Preset">
-        <div className="flex flex-wrap gap-2" data-perm-presets>
-          {PERMISSION_PRESETS.map((p) => {
-            const active = activePresetId === p.id;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                data-preset={p.id}
-                onClick={() => applyPreset(p.id)}
-                title={p.description}
-                className={cn(
-                  'h-7 px-3 rounded-sm text-xs border select-none',
-                  'transition-[background-color,border-color,color] duration-150 ease-out',
-                  'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
-                  active
-                    ? 'bg-accent/15 border-accent/50 text-accent font-medium'
-                    : 'bg-bg-elevated border-border-default text-fg-secondary hover:bg-bg-hover hover:text-fg-primary hover:border-border-strong active:bg-bg-active'
-                )}
-              >
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-      </Field>
-
-      <Field label="Per-tool rules" hint="Allow = auto-approve. Deny = always block. Ask = follow the permission mode.">
-        <div
-          className="rounded-sm border border-border-subtle bg-bg-elevated divide-y divide-border-subtle"
-          data-perm-table
-        >
-          {TOOL_CATALOG.map((tool) => {
-            const state = deriveToolState(rules, tool);
-            return (
-              <div key={tool} className="flex items-center justify-between h-8 px-3">
-                <span className="font-mono text-xs text-fg-primary">{tool}</span>
-                <ThreeStateRadio
-                  value={state}
-                  onChange={(v) => onToolStateChange(tool, v)}
-                  tool={tool}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </Field>
-
-      <details
-        open={showPatterns}
-        onToggle={(e) => setShowPatterns(e.currentTarget.open)}
-        className="mb-5"
-      >
-        <summary className="cursor-pointer select-none text-sm font-medium text-fg-primary py-1 outline-none focus-visible:ring-1 focus-visible:ring-border-strong rounded-sm">
-          Pattern overrides
-        </summary>
-        <div className="text-xs text-fg-tertiary mt-1 mb-2">
-          One pattern per line. Examples:{' '}
-          <code className="font-mono text-fg-secondary">Bash(git:*)</code>,{' '}
-          <code className="font-mono text-fg-secondary">Read(**/*.secret)</code>.
-          Patterns from the table above override these on conflict.
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="block">
-            <span className="block text-xs text-fg-tertiary mb-1">Allow patterns</span>
-            <textarea
-              value={allowText}
-              onChange={(e) => setAllowText(e.target.value)}
-              onBlur={commitPatterns}
-              rows={5}
-              spellCheck={false}
-              placeholder={'Bash(git:*)\nRead(**/*.md)'}
-              data-perm-allow-patterns
-              className={cn(
-                'w-full px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-default',
-                'text-xs font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-                'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
-                'resize-y leading-snug'
-              )}
-            />
-          </label>
-          <label className="block">
-            <span className="block text-xs text-fg-tertiary mb-1">Deny patterns</span>
-            <textarea
-              value={denyText}
-              onChange={(e) => setDenyText(e.target.value)}
-              onBlur={commitPatterns}
-              rows={5}
-              spellCheck={false}
-              placeholder={'Bash(rm:*)\nWrite(**/.env*)'}
-              data-perm-deny-patterns
-              className={cn(
-                'w-full px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-default',
-                'text-xs font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-                'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
-                'resize-y leading-snug'
-              )}
-            />
-          </label>
-        </div>
-        {!validation.ok && (
-          <ul className="mt-2 text-xs text-state-error list-disc list-inside">
-            {validation.errors.map((e, i) => (
-              <li key={i}>{e}</li>
-            ))}
-          </ul>
-        )}
-      </details>
-
-      <Field label="Effective CLI flags" hint="What Agentory will pass to claude.exe on the next spawn.">
-        <code
-          data-perm-effective
-          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-[11px] text-fg-secondary font-mono break-all whitespace-pre-wrap"
-        >
-          {effective}
-        </code>
-      </Field>
-
-      <div className="flex items-center gap-3">
-        <Button
-          variant="secondary"
-          size="md"
-          onClick={() => {
-            resetPermissionRules();
-            setAllowText('');
-            setDenyText('');
-          }}
-          disabled={
-            rules.allowedTools.length === 0 && rules.disallowedTools.length === 0
-          }
-          data-perm-reset
-        >
-          Reset to mode defaults
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ThreeStateRadio({
-  value,
-  onChange,
-  tool
-}: {
-  value: ToolState;
-  onChange: (v: ToolState) => void;
-  tool: string;
-}) {
-  const options: { value: ToolState; label: string }[] = [
-    { value: 'allow', label: 'Allow' },
-    { value: 'ask', label: 'Ask' },
-    { value: 'deny', label: 'Deny' }
-  ];
-  return (
-    <div
-      role="radiogroup"
-      aria-label={`${tool} permission`}
-      className="inline-flex rounded-sm border border-border-default bg-bg-elevated p-0.5"
-      data-perm-tool-row={tool}
-    >
-      {options.map((o) => {
-        const active = o.value === value;
-        return (
-          <button
-            key={o.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            data-perm-tool-state={o.value}
-            onClick={() => onChange(o.value)}
-            className={cn(
-              'h-6 px-2.5 rounded-sm text-[11px] font-medium select-none',
-              'transition-[background-color,color] duration-120 ease-out',
-              'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
-              active
-                ? o.value === 'allow'
-                  ? 'bg-state-success/20 text-state-success'
-                  : o.value === 'deny'
-                  ? 'bg-state-error/20 text-state-error'
-                  : 'bg-bg-active text-fg-primary'
-                : 'text-fg-tertiary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active'
-            )}
-          >
-            {o.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function arraysEqualSet(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const seen = new Set(a);
-  for (const x of b) if (!seen.has(x)) return false;
-  return true;
-}
-
-// Prevent "unused import" on EMPTY_PERMISSION_RULES — referenced indirectly by
-// resetPermissionRules() but kept visible so a future PR that wants to diff
-// against "known empty" doesn't have to hunt. Pure doc aid; no behavior.
-void EMPTY_PERMISSION_RULES;
 
 function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
