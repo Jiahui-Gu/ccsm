@@ -12,7 +12,9 @@ import {
   handleConfig,
   handleModel,
   handleHelp,
-  blocksToTranscript
+  handleInit,
+  blocksToTranscript,
+  CLAUDE_MD_TEMPLATE
 } from '../src/slash-commands/handlers';
 import { setOpenSettingsListener } from '../src/slash-commands/ui-bridge';
 
@@ -85,8 +87,8 @@ describe('dispatchSlashCommand', () => {
 });
 
 describe('registry shape', () => {
-  it('the five client commands declare passThrough: false with a handler', () => {
-    const clientNames = ['clear', 'cost', 'config', 'model', 'help'];
+  it('the client commands declare passThrough: false with a handler', () => {
+    const clientNames = ['clear', 'cost', 'config', 'model', 'help', 'init'];
     for (const n of clientNames) {
       const c = findSlashCommand(n);
       expect(c, `command ${n} not in registry`).toBeTruthy();
@@ -100,6 +102,8 @@ describe('registry shape', () => {
     expect(passNames).toContain('memory');
     expect(passNames).toContain('login');
     expect(passNames).toContain('compact');
+    // /init is now a client handler — make sure the regression sticks.
+    expect(passNames).not.toContain('init');
   });
 });
 
@@ -197,6 +201,123 @@ describe('blocksToTranscript', () => {
     expect(t).toContain('Assistant: hello');
     expect(t).toContain('Tool(Read): foo.ts');
     expect(t).toContain('(info) Done — ok');
+  });
+});
+
+describe('/init', () => {
+  // Per-test stub for window.agentory.memory. We intentionally don't share
+  // state across tests so failure modes (no api / exists / write error /
+  // success) are independently exercised.
+  type MemStub = {
+    projectPath: (cwd: string) => Promise<string | null>;
+    exists: (p: string) => Promise<boolean>;
+    write: (p: string, c: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  };
+  const originalAgentory = (globalThis as unknown as { window?: { agentory?: unknown } }).window
+    ?.agentory;
+
+  function installMemoryStub(stub: MemStub | null): void {
+    const w = (globalThis as unknown as { window: { agentory?: { memory?: MemStub } } }).window;
+    if (stub === null) {
+      w.agentory = { ...(w.agentory ?? {}) };
+      delete (w.agentory as { memory?: MemStub }).memory;
+      return;
+    }
+    w.agentory = { ...(w.agentory ?? {}), memory: stub };
+  }
+
+  afterEach(() => {
+    (globalThis as unknown as { window: { agentory?: unknown } }).window.agentory = originalAgentory;
+  });
+
+  it('warns when the session has no cwd', async () => {
+    useStore.getState().createSession(null);
+    const sid = useStore.getState().activeId;
+    // createSession may fall back to a defaultCwd from history; force null
+    // here so we exercise the no-cwd branch deterministically.
+    useStore.setState({
+      sessions: useStore.getState().sessions.map((s) =>
+        s.id === sid ? { ...s, cwd: null } : s
+      )
+    });
+    installMemoryStub({
+      projectPath: async () => '/tmp/CLAUDE.md',
+      exists: async () => false,
+      write: async () => ({ ok: true })
+    });
+    await handleInit({ sessionId: sid, args: '' });
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const s = blocks.find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.tone).toBe('warn');
+    expect(s && s.kind === 'status' && s.title).toBe('No working directory set');
+  });
+
+  it('warns and does NOT write when CLAUDE.md already exists', async () => {
+    useStore.getState().createSession('/repo');
+    const sid = useStore.getState().activeId;
+    let wrote = false;
+    installMemoryStub({
+      projectPath: async (cwd) => `${cwd}/CLAUDE.md`,
+      exists: async () => true,
+      write: async () => {
+        wrote = true;
+        return { ok: true };
+      }
+    });
+    await handleInit({ sessionId: sid, args: '' });
+    expect(wrote).toBe(false);
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const s = blocks.find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.tone).toBe('warn');
+    expect(s && s.kind === 'status' && s.title).toBe('CLAUDE.md already exists');
+    expect(s && s.kind === 'status' && s.detail).toContain('/repo/CLAUDE.md');
+  });
+
+  it('writes the template and reports success on the happy path', async () => {
+    useStore.getState().createSession('/repo');
+    const sid = useStore.getState().activeId;
+    let writtenPath = '';
+    let writtenBody = '';
+    installMemoryStub({
+      projectPath: async (cwd) => `${cwd}/CLAUDE.md`,
+      exists: async () => false,
+      write: async (p, c) => {
+        writtenPath = p;
+        writtenBody = c;
+        return { ok: true };
+      }
+    });
+    await handleInit({ sessionId: sid, args: '' });
+    expect(writtenPath).toBe('/repo/CLAUDE.md');
+    expect(writtenBody).toBe(CLAUDE_MD_TEMPLATE);
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const s = blocks.find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.tone).toBe('info');
+    expect(s && s.kind === 'status' && s.title).toBe('CLAUDE.md created');
+  });
+
+  it('surfaces an error block when the write fails', async () => {
+    useStore.getState().createSession('/repo');
+    const sid = useStore.getState().activeId;
+    installMemoryStub({
+      projectPath: async (cwd) => `${cwd}/CLAUDE.md`,
+      exists: async () => false,
+      write: async () => ({ ok: false, error: 'EACCES' })
+    });
+    await handleInit({ sessionId: sid, args: '' });
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const e = blocks.find((b) => b.kind === 'error');
+    expect(e && e.kind === 'error' && e.text).toContain('EACCES');
+  });
+
+  it('surfaces an error when the memory IPC bridge is missing', async () => {
+    useStore.getState().createSession('/repo');
+    const sid = useStore.getState().activeId;
+    installMemoryStub(null);
+    await handleInit({ sessionId: sid, args: '' });
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const e = blocks.find((b) => b.kind === 'error');
+    expect(e && e.kind === 'error' && e.text).toContain('memory IPC');
   });
 });
 

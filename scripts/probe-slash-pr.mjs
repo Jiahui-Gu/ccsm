@@ -219,9 +219,71 @@ if (errors.length > 0) {
   for (const e of errors) console.error(e);
 }
 
+// ---------------------------------------------------------------------
+// Error-path coverage: swap the preflight stub at runtime to return the
+// real-world failure modes (no-gh, dirty-tree, on-default-branch). The
+// dialog must NOT open and a status banner must surface for each error.
+// ---------------------------------------------------------------------
+async function setPreflight(stub) {
+  await page.evaluate((src) => {
+    const fn = new Function(`return (${src})`)();
+    window.agentory.pr.preflight = fn;
+  }, stub.toString());
+}
+
+async function expectError(label, stub, expectedTitle) {
+  await setPreflight(stub);
+  await textarea.click();
+  await textarea.fill('/pr');
+  await page.waitForTimeout(60);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(60);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  // The dialog must stay hidden.
+  const open = await dialog.isVisible().catch(() => false);
+  if (open) fail(`${label}: PrDialog should not open when preflight fails`);
+  const banner = page.locator('[role="status"]').filter({ hasText: expectedTitle });
+  await banner.first().waitFor({ state: 'visible', timeout: 3000 }).catch(() => {
+    fail(`${label}: expected status banner titled "${expectedTitle}"`);
+  });
+}
+
+await expectError(
+  'no-gh',
+  async () => ({
+    ok: false,
+    errors: [{ code: 'no-gh', detail: 'gh missing' }]
+  }),
+  'GitHub CLI missing'
+);
+
+await expectError(
+  'dirty-tree',
+  async () => ({
+    ok: false,
+    errors: [
+      { code: 'dirty-tree', detail: 'Uncommitted changes detected.' }
+    ]
+  }),
+  'Uncommitted changes'
+);
+
+await expectError(
+  'on-default-branch',
+  async () => ({
+    ok: false,
+    errors: [
+      { code: 'on-default-branch', branch: 'main', detail: 'You are on main.' }
+    ]
+  }),
+  'Refusing to PR from the default branch'
+);
+
 console.log('\n[probe-slash-pr] OK');
 console.log('  /pr + Enter opens dialog with seeded title/base');
 console.log('  Submit renders pr-status block with URL');
 console.log('  Poll aggregates checks → phase=done');
+console.log('  Error paths (no-gh / dirty-tree / on-default-branch) surface a status banner instead of opening the dialog');
 
 await browser.close();

@@ -77,7 +77,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'pr',      description: 'Create a GitHub PR for the current worktree',   icon: GitPullRequest,   category: 'client',   passThrough: false },
   { name: 'resume',  description: 'Resume a previous session',                     icon: History,          category: 'built-in', passThrough: true  },
   { name: 'memory',  description: 'Manage CLAUDE.md memory',                       icon: Brain,            category: 'built-in', passThrough: true  },
-  { name: 'init',    description: 'Initialize CLAUDE.md in current project',       icon: FolderPlus,       category: 'built-in', passThrough: true  },
+  { name: 'init',    description: 'Initialize CLAUDE.md in current project',       icon: FolderPlus,       category: 'client',   passThrough: false },
   { name: 'login',   description: 'Sign in to Claude',                             icon: LogIn,            category: 'built-in', passThrough: true  },
   { name: 'logout',  description: 'Sign out',                                      icon: LogOut,           category: 'built-in', passThrough: true  },
   { name: 'status',  description: 'Show auth and session status',                  icon: Activity,         category: 'built-in', passThrough: true  },

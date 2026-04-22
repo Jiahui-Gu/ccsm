@@ -176,6 +176,108 @@ export function handlePr(ctx: SlashCommandContext): void {
   }
 }
 
+// ---------- /init ----------
+// CLAUDE.md template seeded into the current session's cwd. The CLI's own
+// `/init` is interactive (asks the model to scan the repo and propose a
+// memory file); we can't replicate that in stream-json mode without
+// re-implementing the prompt loop, so the GUI version drops a sensible
+// starter template instead. Users can then either edit it manually or feed
+// it back to the agent with "fill this in based on the codebase".
+//
+// Behavior:
+//   - No cwd on the session   → warn (nothing we can write to)
+//   - CLAUDE.md already exists → warn with the path (don't overwrite)
+//   - Otherwise               → write template + info status with the path
+export const CLAUDE_MD_TEMPLATE = `# CLAUDE.md
+
+This file gives Claude Code project-specific guidance. Keep it short and
+factual — Claude reads the whole thing on every turn.
+
+## Project overview
+
+<!-- One paragraph: what this codebase is and who uses it. -->
+
+## Tech stack
+
+<!-- Languages, frameworks, package managers, runtimes. -->
+
+## Conventions
+
+<!-- House rules: naming, file layout, commit style, what NOT to touch. -->
+
+## Common commands
+
+<!-- The handful of commands you actually run (build, test, lint, dev). -->
+
+\`\`\`bash
+# example
+npm run dev
+npm test
+\`\`\`
+
+## Notes for Claude
+
+<!-- Anything the agent should always remember. Examples:
+     "Never edit files under generated/."
+     "Use pnpm, not npm."
+     "Prefer Radix primitives over hand-rolled components." -->
+`;
+
+export async function handleInit(ctx: SlashCommandContext): Promise<void> {
+  const sess = useStore.getState().sessions.find((s) => s.id === ctx.sessionId);
+  const cwd = sess?.cwd;
+  if (!cwd) {
+    appendStatus(
+      ctx.sessionId,
+      'No working directory set',
+      'This session has no cwd. Set one in the session header before running /init.',
+      'warn'
+    );
+    return;
+  }
+  const api = (typeof window !== 'undefined' ? window.agentory : undefined) as
+    | { memory?: {
+        projectPath: (cwd: string) => Promise<string | null>;
+        exists: (p: string) => Promise<boolean>;
+        write: (p: string, content: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+      } }
+    | undefined;
+  if (!api?.memory) {
+    appendError(ctx.sessionId, '/init is not available (memory IPC missing).');
+    return;
+  }
+  const target = await api.memory.projectPath(cwd);
+  if (!target) {
+    appendStatus(
+      ctx.sessionId,
+      'Invalid working directory',
+      `Could not resolve a CLAUDE.md path under "${cwd}".`,
+      'warn'
+    );
+    return;
+  }
+  const exists = await api.memory.exists(target);
+  if (exists) {
+    appendStatus(
+      ctx.sessionId,
+      'CLAUDE.md already exists',
+      `A memory file is already present at ${target}. Edit it directly or remove it before running /init again.`,
+      'warn'
+    );
+    return;
+  }
+  const res = await api.memory.write(target, CLAUDE_MD_TEMPLATE);
+  if (!res.ok) {
+    appendError(ctx.sessionId, `Failed to create CLAUDE.md: ${res.error}`);
+    return;
+  }
+  appendStatus(
+    ctx.sessionId,
+    'CLAUDE.md created',
+    `Template written to ${target}. Open it and fill in the sections — Claude will read it on every turn.`
+  );
+}
+
 // Attach handlers to registry entries. Module side-effect; imported once by
 // the app bootstrap (src/index.tsx or wherever we kick things off) and once
 // by the unit tests that exercise dispatch.
@@ -190,3 +292,4 @@ attach('config', handleConfig);
 attach('model', handleModel);
 attach('help', handleHelp);
 attach('pr', handlePr);
+attach('init', handleInit);
