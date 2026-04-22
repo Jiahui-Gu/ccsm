@@ -134,6 +134,31 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+/**
+ * Derive a deduped list of recently-used cwds from a (presumably mtime-sorted)
+ * scan result. Most-recent first, dropping the placeholder `~` entries the
+ * scanner emits when no `cwd` field was found in the transcript head — those
+ * would default the picker to the user's home dir, which is rarely useful.
+ * Caps at `max` entries so the dropdown stays a reasonable length.
+ */
+export function deriveRecentCwds(
+  sessions: ReadonlyArray<Pick<ScannableSession, 'cwd' | 'mtime'>>,
+  max = 10
+): string[] {
+  const ordered = [...sessions].sort((a, b) => b.mtime - a.mtime);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const s of ordered) {
+    const cwd = s.cwd;
+    if (!cwd || cwd === '~') continue;
+    if (seen.has(cwd)) continue;
+    seen.add(cwd);
+    out.push(cwd);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 // Pure head-parsing helper, exported for unit testing. Given an array of jsonl
 // lines (already parsed-back-to-strings or raw), return the same Head shape
 // the streaming reader produces.

@@ -186,6 +186,15 @@ const api = {
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string }>
   > => ipcRenderer.invoke('import:scan'),
 
+  /**
+   * Most-recently-used cwds derived from the eager scan that runs on app
+   * `ready`. Returns immediately from cache after the first scan completes;
+   * the call itself is cheap (no fs work in the renderer round-trip).
+   * Empty array means the scan is still in flight or `~/.claude/projects`
+   * has nothing usable.
+   */
+  recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
+
   memory: {
     read: (p: string): Promise<
       | { ok: true; content: string; exists: boolean }
