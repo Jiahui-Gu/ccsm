@@ -29,7 +29,7 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'appearance' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'endpoints' | 'permissions' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
@@ -37,7 +37,6 @@ const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'notifications', tabKey: 'notifications' },
   { id: 'endpoints', tabKey: 'endpoints' },
-  { id: 'autopilot', tabKey: 'autopilot' },
   { id: 'permissions', tabKey: 'permissions' },
   { id: 'updates', tabKey: 'updates' }
 ];
@@ -96,7 +95,6 @@ export function SettingsDialog({
             {tab === 'appearance' && <AppearancePane />}
             {tab === 'notifications' && <NotificationsPane />}
             {tab === 'endpoints' && <EndpointsPane />}
-            {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'permissions' && <PermissionsPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
@@ -361,73 +359,6 @@ function NotificationsPane() {
         </Button>
         {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
       </div>
-    </>
-  );
-}
-
-function AutopilotPane() {
-  const watchdog = useStore((s) => s.watchdog);
-  const setWatchdog = useStore((s) => s.setWatchdog);
-  const inputClass = cn(
-    'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
-    'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
-    'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]'
-  );
-  return (
-    <>
-      <div className="text-xs text-fg-tertiary mb-4">
-        When an agent finishes a turn without saying the done token, Agentory
-        will reply on your behalf so it doesn&apos;t sit idle. Capped per session
-        to keep runaway loops in check.
-      </div>
-      <Field label="Enable autopilot" hint="Auto-reply when the agent stops without the done token.">
-        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={watchdog.enabled}
-            onChange={(e) => setWatchdog({ enabled: e.target.checked })}
-            className="h-4 w-4 accent-accent"
-          />
-          <span className="text-sm text-fg-secondary">{watchdog.enabled ? 'On' : 'Off'}</span>
-        </label>
-      </Field>
-      <Field
-        label="Done token"
-        hint="If the agent's last message contains this exact string, autopilot stops for the turn."
-      >
-        <input
-          type="text"
-          value={watchdog.doneToken}
-          onChange={(e) => setWatchdog({ doneToken: e.target.value })}
-          className={inputClass}
-        />
-      </Field>
-      <Field
-        label="Otherwise…"
-        hint="Appended after the prompt asking the agent to reply with the done token (line break separates). Use to nudge it to keep going."
-      >
-        <textarea
-          value={watchdog.otherwisePostfix}
-          onChange={(e) => setWatchdog({ otherwisePostfix: e.target.value })}
-          rows={3}
-          className={cn(inputClass, 'h-auto py-2 resize-y leading-snug')}
-        />
-      </Field>
-      <Field
-        label="Max auto-replies per session"
-        hint="Resets when you send a real message. 0 = unlimited (use with care). Default 20."
-      >
-        <input
-          type="number"
-          min={0}
-          value={watchdog.maxAutoReplies}
-          onChange={(e) => {
-            const n = Number.parseInt(e.target.value, 10);
-            if (Number.isFinite(n) && n >= 0) setWatchdog({ maxAutoReplies: n });
-          }}
-          className={cn(inputClass, 'w-24')}
-        />
-      </Field>
     </>
   );
 }

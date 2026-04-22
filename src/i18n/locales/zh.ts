@@ -136,7 +136,6 @@ const zh: EnCatalog = {
       appearance: '外观',
       notifications: '通知',
       endpoints: '端点',
-      autopilot: '自动驾驶',
       permissions: '权限',
       updates: '更新'
     },
