@@ -149,7 +149,6 @@ declare global {
       saveState: (key: string, value: string) => Promise<void>;
       loadMessages: (sessionId: string) => Promise<unknown[]>;
       saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>) => Promise<void>;
-      getDataDir: () => Promise<string>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
 

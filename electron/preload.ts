@@ -124,7 +124,6 @@ const api = {
     ipcRenderer.invoke('db:loadMessages', sessionId),
   saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>): Promise<void> =>
     ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
-  getDataDir: (): Promise<string> => ipcRenderer.invoke('app:getDataDir'),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
 
