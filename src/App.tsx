@@ -22,6 +22,8 @@ import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
 import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
 import { initI18n } from './i18n';
+import { useTranslation } from './i18n/useTranslation';
+import { i18next } from './i18n';
 import { usePreferences } from './store/preferences';
 
 // Initialise i18next once, before any component renders. Subsequent
@@ -36,6 +38,7 @@ if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
   const activeId = useStore((s) => s.activeId);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
@@ -149,8 +152,8 @@ export default function App() {
   // from `recentProjects[0]?.path ?? '~'`; users repick later via the
   // StatusBar cwd chip in chat. See createSession() in stores/store.ts.
   const newSession = React.useCallback(() => {
-    createSession(null);
-  }, [createSession]);
+    createSession({ cwd: null, name: t('sidebar.newSessionDefaultName') });
+  }, [createSession, t]);
 
   // Bridge from the slash-command handlers (`/config`, `/model`) into the
   // local Settings open state.
@@ -183,7 +186,7 @@ export default function App() {
         setSettingsOpen(true);
       } else if (k === 'n' && e.shiftKey) {
         e.preventDefault();
-        const id = createGroup();
+        const id = createGroup(t('sidebar.newGroupDefaultName'));
         focusGroup(id);
       } else if (k === 'n') {
         e.preventDefault();
@@ -192,7 +195,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createGroup, focusGroup, toggleSidebar, newSession]);
+  }, [createGroup, focusGroup, toggleSidebar, newSession, t]);
 
   if (!active) {
     return (
@@ -232,7 +235,7 @@ export default function App() {
                         className="w-44 justify-center"
                       >
                         <Plus size={14} className="stroke-[2]" />
-                        <span>New Session</span>
+                        <span>{t('emptyState.newSession')}</span>
                       </Button>
                       <Button
                         variant="secondary"
@@ -241,7 +244,7 @@ export default function App() {
                         className="w-44 justify-center"
                       >
                         <Download size={14} className="stroke-[2]" />
-                        <span>Import Session</span>
+                        <span>{t('emptyState.importSession')}</span>
                       </Button>
                     </div>
                   ) : (
@@ -327,7 +330,7 @@ export default function App() {
               />
               <InputBar sessionId={active.id} />
               <div className="px-4 pb-2 font-mono text-xs text-fg-disabled select-none">
-                <span>Enter send · Shift+Enter newline</span>
+                <span>{t('chat.enterToSend')}</span>
               </div>
             </main>
           }
@@ -360,8 +363,8 @@ function PersistErrorBridge() {
       lastShown = now;
       push({
         kind: 'error',
-        title: 'Failed to save state',
-        body: 'Your recent changes may not survive restart. Check disk space.'
+        title: i18next.t('toasts.persistErrorTitle'),
+        body: i18next.t('toasts.persistErrorBody')
       });
     });
     return () => setPersistErrorHandler(() => {});
@@ -376,7 +379,7 @@ function BackgroundWaitingBridge() {
     setBackgroundWaitingHandler((info) => {
       push({
         kind: 'waiting',
-        title: `${info.sessionName} needs your input`,
+        title: i18next.t('toasts.backgroundWaitingTitle', { name: info.sessionName }),
         body: info.prompt
       });
       // The toast is fire-and-forget; we deliberately do NOT auto-jump on
@@ -414,11 +417,11 @@ function UpdateDownloadedBridge() {
       shown = true;
       push({
         kind: 'info',
-        title: 'Update downloaded — restart to apply',
-        body: `Version ${info.version} is ready.`,
+        title: i18next.t('toasts.updateDownloadedTitle'),
+        body: i18next.t('toasts.updateDownloadedBody', { version: info.version }),
         persistent: true,
         action: {
-          label: 'Restart',
+          label: i18next.t('toasts.restart'),
           onClick: () => {
             void window.agentory?.updatesInstall();
           }

@@ -388,7 +388,7 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             <ContextMenuSeparator />
             <ContextMenuItem
               onSelect={() => {
-                const id = createGroup();
+                const id = createGroup(t('sidebar.newGroupDefaultName'));
                 moveSession(session.id, id, null);
               }}
             >
@@ -597,7 +597,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               tooltip={t('sidebar.newGroup')}
               tooltipSide="top"
               aria-label={t('sidebar.newGroup')}
-              onClick={() => createGroup()}
+              onClick={() => createGroup(t('sidebar.newGroupDefaultName'))}
             >
               <Plus size={12} className="stroke-[1.75]" />
             </IconButton>

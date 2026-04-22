@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
+import { i18next } from '../i18n/useTranslation';
 
 export type ModelId = string;
 // Values match the CLI's `--permission-mode` flag 1:1 so we can pass the enum
@@ -444,7 +445,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
     const newSession: Session = {
       id,
-      name: opts.name?.trim() || 'New session',
+      name: opts.name?.trim() || i18next.t('sidebar.newSessionDefaultName'),
       state: 'idle',
       cwd: opts.cwd ?? defaultCwd,
       model: initialModel,
@@ -632,7 +633,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     const id = nextId('g');
     const newGroup: Group = {
       id,
-      name: name ?? 'New group',
+      name: name ?? i18next.t('sidebar.newGroupDefaultName'),
       collapsed: false,
       kind: 'normal'
     };

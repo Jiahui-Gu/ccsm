@@ -104,7 +104,7 @@ export function CommandPalette({
         icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
-          createGroup();
+          createGroup(t('sidebar.newGroupDefaultName'));
         }
       },
       {
