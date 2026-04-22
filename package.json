@@ -22,7 +22,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "probe:e2e": "npm run build && node scripts/probe-e2e-send.mjs && node scripts/probe-e2e-switch.mjs && node scripts/probe-e2e-default-cwd.mjs",
+    "probe:e2e": "npm run build && node scripts/run-all-e2e.mjs",
     "make": "npm run build && electron-builder --publish never",
     "make:win": "npm run build && electron-builder --win --publish never",
     "make:mac": "npm run build && electron-builder --mac --publish never",
