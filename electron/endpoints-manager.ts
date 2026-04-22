@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from './db';
-import { listModelsViaClaude } from './agent/list-models-via-claude';
+import {
+  listModelsFromSettings,
+  type ModelSource,
+} from './agent/list-models-from-settings';
 
 /**
- * Endpoint "kind" — the user's declared backend type. We keep `detectedKind`
- * as a sibling because the old probe pipeline could *detect* it post-refresh;
- * the new claude.exe-driven discovery doesn't sniff endpoint shape, so
- * `detectedKind` just mirrors `kind` after a successful refresh.
- *
- * Kept as an alias so callers / DB schema / IPC surface don't churn; the
- * only consumer of the `bedrock`/`vertex` arms is the renderer's status chip.
+ * Endpoint "kind" — the user's declared backend type. `detectedKind` mirrors
+ * `kind` after a successful refresh (the settings-based discovery does not
+ * sniff endpoint shape; the field is preserved so DB schema / IPC surface
+ * don't churn). The `bedrock`/`vertex` arms are only used by the renderer's
+ * status chip.
  */
 export type EndpointKind =
   | 'anthropic'
@@ -20,28 +21,25 @@ export type EndpointKind =
   | 'unknown';
 
 /**
- * Model row source — `'listed'` is what claude.exe reports back via its
- * init frame / initialize RPC; `'fallback'` is the hardcoded
- * `[sonnet, opus, haiku]` triple; `'manual'` is anything the user typed
- * into the "Manual model IDs" box on the endpoint page.
+ * Model row source — `'listed'` is anything discovered from
+ * `~/.claude/settings.json` or matching ANTHROPIC_* env vars (i.e. models the
+ * user has actually configured the CLI to know about); `'fallback'` is the
+ * hardcoded triple from {@link listModelsFromSettings}; `'manual'` is anything
+ * the user typed into the "Manual model IDs" box on the endpoint page.
  *
- * The historical `'probe'` source is gone with the probe pipeline. UI code
- * that switches on this value treats unknown variants as `'listed'`.
+ * Older rows may carry `'probe'` from before PR #95 — UI code treats unknown
+ * variants as `'listed'`.
  */
 export type DiscoverySource = 'listed' | 'fallback' | 'manual';
 
-/**
- * Last-resort model list when claude.exe couldn't tell us anything (e.g. the
- * relay refused the spawn, or it answered but with no models[]). Three Claude
- * 4.5-tier aliases that every Anthropic-compatible endpoint we've shipped to
- * understands. Kept short on purpose: the user can always type more into
- * `manualModelIds`.
- */
-export const DEFAULT_MODELS: readonly string[] = [
-  'claude-sonnet-4-5',
-  'claude-opus-4-5',
-  'claude-haiku-4-5',
-];
+/** Map the discovery module's source taxonomy onto our DB row taxonomy. */
+function mapSource(s: ModelSource): DiscoverySource {
+  if (s === 'manual') return 'manual';
+  if (s === 'fallback') return 'fallback';
+  // 'settings' and 'env' both mean "the CLI is configured to know about this
+  // model" — collapse onto 'listed' which is what the UI surfaces.
+  return 'listed';
+}
 
 export type EndpointStatus = 'ok' | 'error' | 'unchecked';
 
@@ -99,32 +97,24 @@ export interface KeyCrypto {
 type FetchLike = typeof fetch;
 
 /**
- * Pluggable model-list fetcher. Production wiring spawns claude.exe via
- * {@link listModelsViaClaude}; tests inject a stub so they never touch the
- * OS. Returning `ok:true` with an empty list is the signal for "endpoint is
- * reachable but had nothing to say" — the caller then merges DEFAULT_MODELS.
+ * Pluggable model-list fetcher. Production wiring reads
+ * `~/.claude/settings.json` + ANTHROPIC_* env vars via
+ * {@link listModelsFromSettings}; tests inject a stub. Always returns
+ * `ok:true` (the underlying module guarantees a non-empty fallback).
  */
 export type ListModelsFn = (args: {
-  baseUrl: string;
-  apiKey: string;
-  binPath?: string;
-}) => Promise<
-  | { ok: true; models: Array<{ id: string; displayName?: string }>; source: 'init' | 'initialize-rpc' | 'none' }
-  | { ok: false; error: string }
->;
+  manualModelIds?: string[];
+}) => Promise<{
+  ok: true;
+  models: Array<{ id: string; source: ModelSource }>;
+}>;
 
 export interface EndpointsManagerDeps {
   crypto: KeyCrypto;
   fetchImpl?: FetchLike;
   now?: () => number;
-  /** Override the model lister (tests). Defaults to {@link listModelsViaClaude}. */
+  /** Override the model lister (tests). Defaults to {@link listModelsFromSettings}. */
   listModels?: ListModelsFn;
-  /**
-   * Resolve the claude.exe binary path. Returning undefined lets the spawner
-   * resolve via PATH. Wired to `loadClaudeBinPath()` in main.ts so a user-set
-   * override flows through without dragging that dependency in here.
-   */
-  getBinaryPath?: () => string | undefined;
 }
 
 interface RawEndpoint {
@@ -158,14 +148,12 @@ export class EndpointsManager {
   private readonly fetchImpl: FetchLike;
   private readonly now: () => number;
   private readonly listModelsFn: ListModelsFn;
-  private readonly getBinaryPath: () => string | undefined;
 
   constructor(deps: EndpointsManagerDeps) {
     this.crypto = deps.crypto;
     this.fetchImpl = deps.fetchImpl ?? (globalThis.fetch as FetchLike);
     this.now = deps.now ?? (() => Date.now());
-    this.listModelsFn = deps.listModels ?? listModelsViaClaude;
-    this.getBinaryPath = deps.getBinaryPath ?? (() => undefined);
+    this.listModelsFn = deps.listModels ?? ((args) => listModelsFromSettings(args));
   }
 
   // ---------- CRUD ----------
@@ -324,10 +312,15 @@ export class EndpointsManager {
 
   /**
    * Lightweight connectivity probe. Tries GET /v1/models (cheap, what
-   * api.anthropic.com supports). On 404 we fall through to a claude.exe
-   * model-list spawn — if claude can talk to the endpoint at all, that's
-   * "connected" for our purposes. On 401/403 from the GET we surface
-   * structured auth failure without burning a second attempt.
+   * api.anthropic.com supports). On 401/403 we surface structured auth
+   * failure. On 404 (most relays — Claude-Code-Router, LiteLLM, simple
+   * gateways — don't expose `/v1/models`) we treat the endpoint as reachable:
+   * the server *answered*, just not with a model catalogue. On 5xx / network
+   * error we surface failure.
+   *
+   * Note: model discovery itself no longer goes through this path — it reads
+   * `~/.claude/settings.json` locally via {@link listModelsFromSettings}, so
+   * `testConnection` is purely a connectivity ping.
    */
   async testConnection(args: {
     baseUrl: string;
@@ -348,22 +341,17 @@ export class EndpointsManager {
           error: describeHttpError(res.status, body, { hasKey: args.apiKey.length > 0 }),
         };
       }
-      // /v1/models not supported (most relays) — fall through to spawn-based.
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-
-    try {
-      const result = await this.listModelsFn({
-        baseUrl: args.baseUrl,
-        apiKey: args.apiKey,
-        binPath: this.getBinaryPath(),
-      });
-      if (!result.ok) return { ok: false, error: result.error };
-      // Empty models[] still counts as "reachable" — claude.exe spawned and
-      // exchanged frames with the relay. The DEFAULT_MODELS fallback path in
-      // refreshModels covers what gets shown to the user.
-      return { ok: true };
+      if (res.status === 404) {
+        // Relay doesn't expose /v1/models — but it answered HTTP, so call
+        // it reachable. Models will come from settings.json on refresh.
+        return { ok: true };
+      }
+      const body = await safeReadText(res);
+      return {
+        ok: false,
+        status: res.status,
+        error: describeHttpError(res.status, body),
+      };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -430,20 +418,19 @@ export class EndpointsManager {
   }
 
   /**
-   * Discover the endpoint's model list by spawning claude.exe (the only
-   * thing that knows how to talk to relays + bedrock + vertex + canonical
-   * Anthropic without us re-implementing every backend), and merge in the
-   * user's manual ids. If claude.exe can't tell us anything, fall back to
-   * `DEFAULT_MODELS` so the model picker is never empty for a working
-   * endpoint.
+   * Discover the endpoint's model list by reading `~/.claude/settings.json`
+   * + ANTHROPIC_* env vars (via {@link listModelsFromSettings}), with the
+   * user's manual ids and a static fallback merged in. Always succeeds —
+   * the underlying lister guarantees a non-empty result.
    *
    * Source taxonomy after this runs:
-   *   - 'listed'   — claude.exe init frame OR initialize-rpc reported it.
-   *   - 'fallback' — DEFAULT_MODELS surfaced because claude.exe came back
-   *                  empty (relay reachable, just no catalogue).
-   *   - 'manual'   — user-typed id; flagged `existsConfirmed: false` unless
-   *                  it overlapped with a 'listed' result (in which case it
-   *                  rides on the listed entry).
+   *   - 'listed'   — discovered from settings.json or env (`settings`/`env`).
+   *   - 'manual'   — user-typed id from the Settings UI.
+   *   - 'fallback' — from the hardcoded `FALLBACK_MODELS` list.
+   *
+   * Note: this does NOT touch the network. The endpoint argument is used
+   * only to scope DB writes / `lastRefreshedAt`. Reachability is a separate
+   * concern — see {@link testConnection}.
    */
   async refreshModels(
     endpointId: string
@@ -453,42 +440,10 @@ export class EndpointsManager {
   > {
     const endpoint = this.getEndpoint(endpointId);
     if (!endpoint) return { ok: false, error: 'Endpoint not found' };
-    const apiKey = this.getPlainKey(endpointId) ?? '';
 
     const result = await this.listModelsFn({
-      baseUrl: endpoint.baseUrl,
-      apiKey,
-      binPath: this.getBinaryPath(),
+      manualModelIds: endpoint.manualModelIds,
     });
-
-    if (!result.ok) {
-      this.markEndpointStatus(endpointId, 'error', result.error);
-      return { ok: false, error: result.error };
-    }
-
-    // Merge: listed (from claude.exe) ∪ DEFAULT_MODELS (only if listed empty)
-    // ∪ manual (always, with existsConfirmed=false unless overlapping listed).
-    const merged = new Map<string, { id: string; displayName?: string; source: DiscoverySource; existsConfirmed: boolean }>();
-    for (const m of result.models) {
-      if (!m.id) continue;
-      merged.set(m.id, { id: m.id, displayName: m.displayName, source: 'listed', existsConfirmed: true });
-    }
-    if (merged.size === 0) {
-      for (const id of DEFAULT_MODELS) {
-        merged.set(id, { id, source: 'fallback', existsConfirmed: false });
-      }
-    }
-    for (const raw of endpoint.manualModelIds) {
-      const id = raw.trim();
-      if (!id) continue;
-      const prev = merged.get(id);
-      if (prev) {
-        // Tag as also-manual but keep the stronger source/confirmed flag.
-        prev.source = prev.source === 'listed' ? 'listed' : 'manual';
-      } else {
-        merged.set(id, { id, source: 'manual', existsConfirmed: false });
-      }
-    }
 
     const now = this.now();
     const db = getDb();
@@ -500,17 +455,22 @@ export class EndpointsManager {
         `INSERT INTO endpoint_models (id, endpoint_id, model_id, display_name, discovered_at, source, exists_confirmed)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
-      for (const m of merged.values()) {
+      for (const m of result.models) {
+        const source = mapSource(m.source);
+        // Confirm only entries that came from a real signal (settings/env).
+        // Manual + fallback stay unconfirmed so the UI can show "user-typed"
+        // / "guessed" hints if it wants to.
+        const confirmed = source === 'listed';
         insert.run(
           randomUUID(),
           endpointId,
           m.id,
-          m.displayName ?? null,
+          null,
           now,
-          m.source,
-          m.existsConfirmed ? 1 : 0
+          source,
+          confirmed ? 1 : 0,
         );
-        sourceStats[m.source]++;
+        sourceStats[source]++;
       }
       db.prepare(
         `UPDATE endpoints SET last_status = 'ok', last_error = NULL, last_refreshed_at = ?,
@@ -522,7 +482,7 @@ export class EndpointsManager {
 
     return {
       ok: true,
-      count: merged.size,
+      count: result.models.length,
       detectedKind,
       sourceStats,
     };
@@ -534,19 +494,6 @@ export class EndpointsManager {
     if (!plain) return null;
     if (!this.crypto.isAvailable()) return null;
     return this.crypto.encrypt(plain);
-  }
-
-  private markEndpointStatus(
-    endpointId: string,
-    status: EndpointStatus,
-    error: string | null
-  ): void {
-    const now = this.now();
-    getDb()
-      .prepare(
-        `UPDATE endpoints SET last_status = ?, last_error = ?, updated_at = ? WHERE id = ?`
-      )
-      .run(status, error, now, endpointId);
   }
 }
 

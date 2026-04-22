@@ -6,6 +6,7 @@ import {
   type ListModelsFn,
   __test__,
 } from '../electron/endpoints-manager';
+import type { ModelSource } from '../electron/agent/list-models-from-settings';
 import { __setDbForTests } from '../electron/db';
 
 // XOR "encryption" stand-in so tests don't need Electron's safeStorage. Round-
@@ -29,19 +30,20 @@ function freshDb(): Database.Database {
   return db;
 }
 
-function makeListModelsOk(
-  ids: Array<string | { id: string; displayName?: string }>,
-  source: 'init' | 'initialize-rpc' | 'none' = 'init',
+/**
+ * Build a stub `ListModelsFn`. Each entry is either a bare id (defaults to
+ * source='settings', which the manager maps onto 'listed') or a {id, source}
+ * tuple to exercise the source-mapping path explicitly.
+ */
+function makeListModels(
+  entries: Array<string | { id: string; source: ModelSource }>,
 ): ListModelsFn {
   return vi.fn(async () => ({
     ok: true,
-    source,
-    models: ids.map((x) => (typeof x === 'string' ? { id: x } : x)),
+    models: entries.map((x) =>
+      typeof x === 'string' ? { id: x, source: 'settings' as ModelSource } : x,
+    ),
   }));
-}
-
-function makeListModelsErr(error: string): ListModelsFn {
-  return vi.fn(async () => ({ ok: false, error }));
 }
 
 function fakeResponse(status: number, body: unknown): Response {
@@ -105,7 +107,7 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   it('removeEndpoint cascades to endpoint_models and promotes a new default', async () => {
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
-      listModels: makeListModelsOk(['m-1']),
+      listModels: makeListModels(['m-1']),
     });
     const a = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', isDefault: true });
     const b = mgr.addEndpoint({ name: 'B', baseUrl: 'https://b' });
@@ -137,37 +139,44 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   });
 });
 
-describe('EndpointsManager: refreshModels via claude.exe', () => {
+describe('EndpointsManager: refreshModels via settings discovery', () => {
   beforeEach(() => freshDb());
 
-  it('writes every model claude.exe reports, tagged listed', async () => {
+  it('persists every model the lister reports, with mapped sources', async () => {
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
-      listModels: makeListModelsOk(
-        [{ id: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' }, 'claude-opus-4-5'],
-        'init',
-      ),
+      listModels: makeListModels([
+        { id: 'claude-sonnet-4-6', source: 'settings' },
+        { id: 'claude-opus-4-7', source: 'env' },
+        { id: 'fallback-x', source: 'fallback' },
+      ]),
     });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
     const res = await mgr.refreshModels(row.id);
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.count).toBe(2);
-      expect(res.sourceStats.listed).toBe(2);
-      expect(res.sourceStats.fallback).toBe(0);
+      expect(res.count).toBe(3);
+      expect(res.sourceStats.listed).toBe(2); // settings + env collapse onto 'listed'
+      expect(res.sourceStats.fallback).toBe(1);
     }
     const ids = mgr.listModels(row.id).map((m) => m.modelId).sort();
-    expect(ids).toEqual(['claude-opus-4-5', 'claude-sonnet-4-5']);
-    const sonnet = mgr.listModels(row.id).find((m) => m.modelId === 'claude-sonnet-4-5');
-    expect(sonnet?.displayName).toBe('Sonnet 4.5');
+    expect(ids).toEqual(['claude-opus-4-7', 'claude-sonnet-4-6', 'fallback-x']);
+    const sonnet = mgr.listModels(row.id).find((m) => m.modelId === 'claude-sonnet-4-6');
     expect(sonnet?.source).toBe('listed');
     expect(sonnet?.existsConfirmed).toBe(true);
+    const fallback = mgr.listModels(row.id).find((m) => m.modelId === 'fallback-x');
+    expect(fallback?.source).toBe('fallback');
+    expect(fallback?.existsConfirmed).toBe(false);
   });
 
-  it('falls back to DEFAULT_MODELS when claude.exe answers with empty list', async () => {
+  it('persists fallback-only result when nothing else is configured', async () => {
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
-      listModels: makeListModelsOk([], 'none'),
+      listModels: makeListModels([
+        { id: 'claude-opus-4-7', source: 'fallback' },
+        { id: 'claude-sonnet-4-6', source: 'fallback' },
+        { id: 'claude-haiku-4-5', source: 'fallback' },
+      ]),
     });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
     const res = await mgr.refreshModels(row.id);
@@ -182,55 +191,21 @@ describe('EndpointsManager: refreshModels via claude.exe', () => {
     expect(rows.every((m) => m.existsConfirmed === false)).toBe(true);
   });
 
-  it('merges manualModelIds in alongside listed entries', async () => {
-    const mgr = new EndpointsManager({
-      crypto: makeCrypto(),
-      listModels: makeListModelsOk(['claude-sonnet-4-5'], 'init'),
-    });
+  it('passes manualModelIds from the endpoint into the lister', async () => {
+    const lister = makeListModels([
+      { id: 'custom-model-x', source: 'manual' },
+      { id: 'claude-sonnet-4-6', source: 'settings' },
+    ]);
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: lister });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
-    mgr.setManualModelIds(row.id, ['custom-model-x', 'claude-sonnet-4-5']);
-    const res = await mgr.refreshModels(row.id);
-    expect(res.ok).toBe(true);
-    const rows = mgr.listModels(row.id);
-    const ids = rows.map((m) => m.modelId).sort();
-    expect(ids).toContain('custom-model-x');
-    expect(ids).toContain('claude-sonnet-4-5');
-    const custom = rows.find((m) => m.modelId === 'custom-model-x');
-    expect(custom?.source).toBe('manual');
-    expect(custom?.existsConfirmed).toBe(false);
-    // Overlap: claude-sonnet-4-5 is both listed and manual; listed wins.
-    const sonnet = rows.find((m) => m.modelId === 'claude-sonnet-4-5');
-    expect(sonnet?.source).toBe('listed');
-    expect(sonnet?.existsConfirmed).toBe(true);
-  });
-
-  it('marks endpoint error when claude.exe spawn fails', async () => {
-    const mgr = new EndpointsManager({
-      crypto: makeCrypto(),
-      listModels: makeListModelsErr('spawn failed: ENOENT'),
-    });
-    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
-    const res = await mgr.refreshModels(row.id);
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toContain('spawn failed');
-    const after = mgr.getEndpoint(row.id);
-    expect(after?.lastStatus).toBe('error');
-  });
-
-  it('passes the binary path from getBinaryPath into the lister', async () => {
-    const lister = makeListModelsOk(['m-1']);
-    const mgr = new EndpointsManager({
-      crypto: makeCrypto(),
-      listModels: lister,
-      getBinaryPath: () => '/custom/claude.exe',
-    });
-    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
+    mgr.setManualModelIds(row.id, ['custom-model-x', 'claude-sonnet-4-6']);
     await mgr.refreshModels(row.id);
     expect(lister).toHaveBeenCalledWith({
-      baseUrl: 'https://a',
-      apiKey: 'sk',
-      binPath: '/custom/claude.exe',
+      manualModelIds: ['custom-model-x', 'claude-sonnet-4-6'],
     });
+    const custom = mgr.listModels(row.id).find((m) => m.modelId === 'custom-model-x');
+    expect(custom?.source).toBe('manual');
+    expect(custom?.existsConfirmed).toBe(false);
   });
 });
 
@@ -249,9 +224,9 @@ describe('EndpointsManager: testConnection', () => {
     expect(init.headers['anthropic-version']).toBeTruthy();
   });
 
-  it('surfaces HTTP 401 as structured error without spawning claude', async () => {
+  it('surfaces HTTP 401 as structured error', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(401, { error: 'nope' }));
-    const lister = makeListModelsOk(['x']);
+    const lister = makeListModels(['x']);
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
       fetchImpl: fetchMock,
@@ -266,9 +241,9 @@ describe('EndpointsManager: testConnection', () => {
     expect(lister).not.toHaveBeenCalled();
   });
 
-  it('falls through to claude.exe spawn when /v1/models 404s', async () => {
+  it('treats /v1/models 404 as reachable (most relays do not expose the catalogue)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(404, { error: 'no' }));
-    const lister = makeListModelsOk(['m-1']);
+    const lister = makeListModels(['m-1']);
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
       fetchImpl: fetchMock,
@@ -276,20 +251,19 @@ describe('EndpointsManager: testConnection', () => {
     });
     const res = await mgr.testConnection({ baseUrl: 'https://relay', apiKey: 'sk' });
     expect(res.ok).toBe(true);
-    expect(lister).toHaveBeenCalled();
+    // Discovery is purely local now — testConnection must not invoke it.
+    expect(lister).not.toHaveBeenCalled();
   });
 
-  it('reports failure if both /v1/models and claude.exe spawn fail', async () => {
+  it('reports failure on 5xx from /v1/models', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(500, { error: 'oops' }));
-    const lister = makeListModelsErr('spawn timeout');
     const mgr = new EndpointsManager({
       crypto: makeCrypto(),
       fetchImpl: fetchMock,
-      listModels: lister,
     });
     const res = await mgr.testConnection({ baseUrl: 'https://relay', apiKey: 'sk' });
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toContain('spawn timeout');
+    if (!res.ok) expect(res.status).toBe(500);
   });
 
   it('succeeds with an empty apiKey and omits the x-api-key header', async () => {
