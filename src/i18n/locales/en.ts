@@ -385,6 +385,14 @@ const en = {
     modeDefaultTooltip: 'Default \u2014 auto-approve reads; ask before edits and shell.',
     modeAcceptEditsTooltip: 'Accept Edits \u2014 auto-approve reads and file edits; ask before shell.',
     modeBypassTooltip: 'Bypass Permissions \u2014 every tool call runs without asking. Use with care.'
+  },
+  cwdPopover: {
+    placeholder: 'Type to filter or paste a path…',
+    recent: 'Recent',
+    empty: 'No matching recent directories',
+    browse: 'Browse folder…',
+    cwdMissingShort: 'missing',
+    cwdMissingTooltip: 'Working directory no longer exists: {{cwd}}. Pick a different folder before sending.'
   }
 } as const;
 
