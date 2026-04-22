@@ -385,11 +385,11 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
         <ContextMenuItem
-          disabled={!window.agentory?.openPath || !(session.worktreePath || session.cwd)}
+          disabled={!(session.worktreePath || session.cwd)}
           onSelect={() => {
             const path = session.worktreePath || session.cwd;
             if (!path) return;
-            void window.agentory?.openPath?.(path);
+            void window.agentory?.openPath(path);
           }}
         >
           <FolderOpen size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />

@@ -124,6 +124,10 @@ type CliSetBinaryResult =
   | { ok: true; version: string | null }
   | { ok: false; error: string };
 
+type OpenPathResult =
+  | { ok: true }
+  | { ok: false; error: 'invalid_path' | 'not_found' | 'open_failed'; detail?: string };
+
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
   saveState: (key: string, value: string): Promise<void> =>
@@ -214,6 +218,14 @@ const api = {
 
   openExternal: (url: string): Promise<boolean> =>
     ipcRenderer.invoke('shell:openExternal', url),
+
+  /**
+   * Reveal a path in the OS file manager (Explorer on Windows, Finder on
+   * macOS, the user's default file manager on Linux). Path must be
+   * absolute and exist on disk; otherwise resolves with a structured error.
+   */
+  openPath: (p: string): Promise<OpenPathResult> =>
+    ipcRenderer.invoke('shell:openPath', p),
 
   notify: (payload: {
     sessionId: string;
