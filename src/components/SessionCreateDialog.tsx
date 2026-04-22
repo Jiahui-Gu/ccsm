@@ -5,6 +5,7 @@ import { Button } from './ui/Button';
 import { IconButton } from './ui/IconButton';
 import { cn } from '../lib/cn';
 import { useStore, type CreateSessionOptions } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Props = {
   open: boolean;
@@ -48,6 +49,7 @@ function lastSegment(path: string): string {
  * Esc closes, focus lands on the name input on open.
  */
 export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
+  const { t } = useTranslation();
   const createSession = useStore((s) => s.createSession);
   const recentProjects = useStore((s) => s.recentProjects);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
@@ -207,27 +209,27 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
   const branchHint = (() => {
     switch (branchState.kind) {
       case 'idle':
-        return 'Pick a working directory to list branches.';
+        return t('sessionCreate.branchIdle');
       case 'loading':
-        return 'Reading branches…';
+        return t('sessionCreate.branchLoading');
       case 'non-repo':
-        return 'Not a git repository — worktrees disabled.';
+        return t('sessionCreate.branchNonRepo');
       case 'unavailable':
-        return 'Worktree support not loaded yet (data layer pending).';
+        return t('sessionCreate.branchUnavailable');
       case 'error':
-        return `Could not read branches: ${branchState.message}`;
+        return t('sessionCreate.branchError', { message: branchState.message });
       case 'loaded':
         return branchState.branches.length === 0
-          ? 'Repository has no branches yet.'
-          : `Repository: ${lastSegment(branchState.repoRoot)}`;
+          ? t('sessionCreate.branchEmpty')
+          : t('sessionCreate.branchRepository', { name: lastSegment(branchState.repoRoot) });
     }
   })();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        title="New session"
-        description="Pick a working directory; optionally isolate the agent on a fresh git worktree."
+        title={t('sessionCreate.title')}
+        description={t('sessionCreate.description')}
         width="520px"
       >
         <DialogBody>
@@ -238,23 +240,23 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
             }}
             className="flex flex-col gap-4"
           >
-            <FormField label="Name" hint="Optional — defaults to “New session”.">
+            <FormField label={t('sessionCreate.name')} hint={t('sessionCreate.nameHint')}>
               <TextInput
                 ref={nameRef}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="New session"
+                placeholder={t('sessionCreate.namePlaceholder')}
                 data-testid="session-create-name"
                 maxLength={80}
               />
             </FormField>
 
-            <FormField label="Working directory" hint="Where the agent should run.">
+            <FormField label={t('sessionCreate.cwd')} hint={t('sessionCreate.cwdHint')}>
               <div className="flex items-center gap-2">
                 <TextInput
                   value={cwd}
                   onChange={(e) => setCwd(e.target.value)}
-                  placeholder="/path/to/repo"
+                  placeholder={t('sessionCreate.cwdPlaceholder')}
                   className="flex-1"
                   data-testid="session-create-cwd"
                   list={recentCwds.length > 0 ? recentCwdsListId : undefined}
@@ -271,8 +273,8 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                 <IconButton
                   variant="raised"
                   size="md"
-                  aria-label="Browse folder"
-                  tooltip="Browse folder"
+                  aria-label={t('sessionCreate.browseFolder')}
+                  tooltip={t('sessionCreate.browseFolder')}
                   tooltipSide="top"
                   onClick={browse}
                   className="h-7 w-7"
@@ -282,7 +284,7 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
               </div>
             </FormField>
 
-            <FormField label="Base branch" hint={branchHint}>
+            <FormField label={t('sessionCreate.baseBranch')} hint={branchHint}>
               <div className="flex items-center gap-2">
                 <GitBranch
                   size={13}
@@ -295,7 +297,7 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                   value={sourceBranch}
                   onChange={(e) => setSourceBranch(e.target.value)}
                   disabled={!worktreeAllowed || branchOptions.length === 0}
-                  aria-label="Base branch"
+                  aria-label={t('sessionCreate.baseBranch')}
                   data-testid="session-create-branch"
                   className={cn(
                     'flex-1 h-7 px-2 pr-6 rounded-sm bg-bg-elevated border border-border-default',
@@ -305,9 +307,9 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                     'disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border-default'
                   )}
                 >
-                  {branchState.kind === 'loading' && <option value="">Loading…</option>}
+                  {branchState.kind === 'loading' && <option value="">{t('sessionCreate.branchOptionLoading')}</option>}
                   {branchState.kind === 'loaded' && branchOptions.length === 0 && (
-                    <option value="">(no branches)</option>
+                    <option value="">{t('sessionCreate.branchOptionNoBranches')}</option>
                   )}
                   {branchState.kind === 'loaded' && branchState.currentBranch && !branchOptions.includes(branchState.currentBranch) && (
                     <option value={branchState.currentBranch}>{branchState.currentBranch}</option>
@@ -318,7 +320,7 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                     </option>
                   ))}
                   {!worktreeAllowed && branchState.kind !== 'loading' && (
-                    <option value="">(unavailable)</option>
+                    <option value="">{t('sessionCreate.branchOptionUnavailable')}</option>
                   )}
                 </select>
                 {branchState.kind === 'loading' && (
@@ -346,19 +348,19 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                 className="accent-fg-primary"
                 data-testid="session-create-use-worktree"
               />
-              <span className="text-sm text-fg-primary">Use git worktree</span>
+              <span className="text-sm text-fg-primary">{t('sessionCreate.useWorktree')}</span>
               <span className="text-xs text-fg-tertiary">
-                — isolate this session on its own branch
+                {t('sessionCreate.useWorktreeHint')}
               </span>
             </label>
           </form>
         </DialogBody>
         <DialogFooter>
           <DialogClose asChild>
-            <Button variant="ghost">Cancel</Button>
+            <Button variant="ghost">{t('sessionCreate.cancel')}</Button>
           </DialogClose>
           <Button variant="primary" disabled={!canSubmit} onClick={submit}>
-            Create session
+            {t('sessionCreate.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

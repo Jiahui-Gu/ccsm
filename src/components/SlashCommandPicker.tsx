@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { cn } from '../lib/cn';
 import { SLASH_COMMANDS, filterSlashCommands, type SlashCommand } from '../slash-commands/registry';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Props = {
   open: boolean;
@@ -27,6 +28,7 @@ export function SlashCommandPicker({
   onSelect,
   onFilteredChange
 }: Props) {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -51,7 +53,7 @@ export function SlashCommandPicker({
   return (
     <div
       role="listbox"
-      aria-label="Slash commands"
+      aria-label={t('slashCommands.pickerTitle')}
       className={cn(
         'absolute left-0 right-0 bottom-full mb-1.5 z-30',
         'rounded-md border border-border-default bg-bg-elevated',
@@ -66,7 +68,7 @@ export function SlashCommandPicker({
       >
         {filtered.length === 0 ? (
           <div className="px-3 py-2 text-fg-tertiary text-[12px] leading-[16px]">
-            No matching commands — press Enter to send as a regular message.
+            {t('slashCommands.noneHint')}
           </div>
         ) : (
           filtered.map((cmd, i) => {
@@ -118,9 +120,9 @@ export function SlashCommandPicker({
                 {cmd.clientHandler ? (
                   <span
                     className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-accent/80 px-1.5 py-0.5 rounded-sm border border-accent/40"
-                    title="Runs locally — not forwarded to claude.exe"
+                    title={t('slashCommands.runsLocally')}
                   >
-                    client
+                    {t('slashCommands.clientTag')}
                   </span>
                 ) : cmd.category && cmd.category !== 'built-in' ? (
                   <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-fg-tertiary px-1.5 py-0.5 rounded-sm border border-border-subtle">
@@ -133,10 +135,10 @@ export function SlashCommandPicker({
         )}
       </div>
       <div className="px-3 py-1.5 border-t border-border-subtle text-[11px] text-fg-tertiary flex items-center gap-3 select-none bg-bg-panel/40">
-        <span><kbd className="font-mono">↑↓</kbd> navigate</span>
-        <span><kbd className="font-mono">Enter</kbd> select</span>
-        <span><kbd className="font-mono">Tab</kbd> complete</span>
-        <span><kbd className="font-mono">Esc</kbd> close</span>
+        <span><kbd className="font-mono">↑↓</kbd> {t('slashCommands.navigate')}</span>
+        <span><kbd className="font-mono">Enter</kbd> {t('slashCommands.select')}</span>
+        <span><kbd className="font-mono">Tab</kbd> {t('slashCommands.complete')}</span>
+        <span><kbd className="font-mono">Esc</kbd> {t('slashCommands.close')}</span>
       </div>
     </div>
   );

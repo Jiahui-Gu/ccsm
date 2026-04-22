@@ -24,6 +24,7 @@ import {
   SUPPORTED_IMAGE_TYPES,
   type AttachmentRejection
 } from '../lib/attachments';
+import { useTranslation } from '../i18n/useTranslation';
 
 // Per-session draft cache. Survives session switches within a process so
 // users don't lose half-typed prompts when they pop into another session.
@@ -46,6 +47,7 @@ function AttachmentChip({
   attachment: ImageAttachment;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const url = useMemo(() => attachmentToDataUrl(attachment), [attachment]);
   return (
     <motion.div
@@ -73,7 +75,7 @@ function AttachmentChip({
       <button
         type="button"
         onClick={onRemove}
-        aria-label={`Remove ${attachment.name}`}
+        aria-label={t('chat.removeAttachment', { name: attachment.name })}
         className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover active:scale-95 transition-all duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
       >
         <X size={12} className="stroke-[2.25]" />
@@ -83,6 +85,7 @@ function AttachmentChip({
 }
 
 function DropOverlay({ show }: { show: boolean }) {
+  const { t } = useTranslation();
   return (
     <AnimatePresence>
       {show && (
@@ -96,9 +99,9 @@ function DropOverlay({ show }: { show: boolean }) {
           aria-hidden
         >
           <ImagePlus size={28} className="text-accent" />
-          <span className="font-mono text-sm text-accent tracking-wide">Drop image to attach</span>
+          <span className="font-mono text-sm text-accent tracking-wide">{t('chat.dropImageHint')}</span>
           <span className="font-mono text-[10px] uppercase tracking-wider text-accent/70">
-            PNG · JPEG · GIF · WebP · up to {formatSize(MAX_IMAGE_BYTES)}
+            {t('chat.attachmentFormatsHint', { size: formatSize(MAX_IMAGE_BYTES) })}
           </span>
         </motion.div>
       )}
@@ -119,6 +122,7 @@ function hasDraggedFiles(e: DragEvent): boolean {
 }
 
 export function InputBar({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation();
   const [value, setValue] = useState(() => draftCache.get(sessionId) ?? '');
   const [attachments, setAttachments] = useState<ImageAttachment[]>(
     () => attachmentCache.get(sessionId) ?? []
@@ -430,7 +434,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (!ok) {
       setRunning(sessionId, false);
       appendBlocks(sessionId, [
-        { kind: 'error', id: `send-${Date.now().toString(36)}`, text: 'Failed to deliver message to agent.' }
+        { kind: 'error', id: `send-${Date.now().toString(36)}`, text: t('chat.sendFailedToDeliver') }
       ]);
     }
   }
@@ -537,7 +541,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
               <button
                 type="button"
                 onClick={() => setRejections([])}
-                aria-label="Dismiss"
+                aria-label={t('common.dismiss')}
                 className="shrink-0 text-state-error/70 hover:text-state-error transition-colors duration-150 ease-out"
               >
                 <X size={12} />
@@ -589,7 +593,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onSelect={syncCaret}
           onPaste={onPaste}
           rows={2}
-          placeholder={running ? 'Running… (input disabled)' : hasMessages ? 'Reply…' : 'Ask anything…'}
+          placeholder={running ? t('chat.runningPlaceholder') : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
           disabled={running}
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
@@ -612,11 +616,11 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={running || remainingSlots === 0}
-            aria-label="Attach image"
+            aria-label={t('chat.attachImage')}
             title={
               remainingSlots === 0
-                ? `Attachment cap reached (${MAX_IMAGES_PER_MESSAGE})`
-                : 'Attach image (also supports drag-drop & paste)'
+                ? t('chat.attachCapReached', { max: MAX_IMAGES_PER_MESSAGE })
+                : t('chat.attachImageTitle')
             }
             className={cn(
               'inline-flex h-6 w-6 items-center justify-center rounded-sm text-fg-tertiary',
@@ -638,22 +642,22 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             <Button
               variant="secondary"
               size="sm"
-              aria-label="Stop"
+              aria-label={t('chat.stopAria')}
               onClick={stop}
             >
               <Square size={10} className="stroke-[2.25]" />
-              <span>Stop</span>
+              <span>{t('chat.stopBtn')}</span>
             </Button>
           ) : (
             <Button
               variant="primary"
               size="sm"
-              aria-label="Send message"
+              aria-label={t('chat.sendMessage')}
               disabled={sendDisabled}
               onClick={send}
             >
               <ArrowUp size={10} className="stroke-[2.25]" />
-              <span>Send</span>
+              <span>{t('chat.sendButton')}</span>
             </Button>
           )}
         </div>

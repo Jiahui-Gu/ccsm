@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogBody, DialogFooter, DialogClose } from './
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { bucketize, type DateBucketKey } from '../utils/date-buckets';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Scannable = {
   sessionId: string;
@@ -21,6 +22,7 @@ type Props = {
 const IMPORT_GROUP_NAME = 'Imported';
 
 export function ImportDialog({ open, onOpenChange }: Props) {
+  const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
   const groups = useStore((s) => s.groups);
   const importSession = useStore((s) => s.importSession);
@@ -114,16 +116,16 @@ export function ImportDialog({ open, onOpenChange }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        title="Import sessions from Claude Code"
-        description="Pick existing CLI transcripts to surface in Agentory. They resume on open."
+        title={t('importDialog.title')}
+        description={t('importDialog.description')}
         width="640px"
       >
         <DialogBody>
           {loading ? (
-            <div className="font-mono text-xs text-fg-tertiary py-6 text-center">Scanning…</div>
+            <div className="font-mono text-xs text-fg-tertiary py-6 text-center">{t('importDialog.scanning')}</div>
           ) : items.length === 0 ? (
             <div className="font-mono text-xs text-fg-tertiary py-6 text-center">
-              No importable transcripts found in <span className="text-fg-secondary">~/.claude/projects/</span>.
+              {t('importDialog.noImportablePrefix')} <span className="text-fg-secondary">~/.claude/projects/</span>.
             </div>
           ) : (
             <>
@@ -133,9 +135,9 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                   onClick={toggleAll}
                   className="font-mono text-xs text-fg-tertiary hover:text-fg-secondary"
                 >
-                  {selected.size === items.length ? 'Deselect all' : 'Select all'} ({items.length})
+                  {selected.size === items.length ? t('importDialog.deselectAll') : t('importDialog.selectAll')} ({items.length})
                 </button>
-                <span className="font-mono text-xs text-fg-tertiary">{selected.size} selected</span>
+                <span className="font-mono text-xs text-fg-tertiary">{t('importDialog.selected', { count: selected.size })}</span>
               </div>
               <div className="max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle">
                 {buckets.map((bucket, bIdx) => {
@@ -153,7 +155,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                           type="button"
                           onClick={() => toggleCollapse(bucket.key)}
                           className="flex items-center justify-center w-4 h-4 text-fg-tertiary hover:text-fg-secondary"
-                          aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                          aria-label={isCollapsed ? t('importDialog.expand') : t('importDialog.collapse')}
                         >
                           {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                         </button>
@@ -165,7 +167,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                           onClick={() => toggleBucket(ids)}
                           className="font-mono text-xs text-fg-tertiary hover:text-fg-secondary"
                         >
-                          {allPicked ? 'Deselect group' : 'Select group'}
+                          {allPicked ? t('importDialog.deselectGroup') : t('importDialog.selectGroup')}
                           {pickedCount > 0 && !allPicked && ` (${pickedCount}/${ids.length})`}
                         </button>
                       </div>
@@ -206,14 +208,14 @@ export function ImportDialog({ open, onOpenChange }: Props) {
         </DialogBody>
         <DialogFooter>
           <DialogClose asChild>
-            <Button variant="ghost">Cancel</Button>
+            <Button variant="ghost">{t('importDialog.cancel')}</Button>
           </DialogClose>
           <Button
             variant="primary"
             disabled={selected.size === 0 || importing}
             onClick={doImport}
           >
-            {importing ? 'Importing…' : `Import ${selected.size}`}
+            {importing ? t('importDialog.importing') : t('importDialog.importN', { count: selected.size })}
           </Button>
         </DialogFooter>
       </DialogContent>

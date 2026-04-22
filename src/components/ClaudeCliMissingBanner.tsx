@@ -2,6 +2,7 @@ import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 /**
  * Amber banner shown at the top of the right pane whenever the user has
@@ -9,6 +10,7 @@ import { useStore } from '../stores/store';
  * wizard. Stays visible until the CLI is actually configured.
  */
 export function ClaudeCliMissingBanner() {
+  const { t } = useTranslation();
   const cliStatus = useStore((s) => s.cliStatus);
   const openDialog = useStore((s) => s.openCliDialog);
 
@@ -24,7 +26,7 @@ export function ClaudeCliMissingBanner() {
     >
       <AlertTriangle size={13} className="stroke-[2] shrink-0" />
       <span className="flex-1 min-w-0 truncate text-xs">
-        Claude CLI not configured — sessions won&apos;t start until you install or locate it.
+        {t('cli.bannerNotConfigured')}
       </span>
       <button
         type="button"
@@ -35,7 +37,7 @@ export function ClaudeCliMissingBanner() {
           'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.15)]'
         )}
       >
-        Set up
+        {t('cli.bannerSetUp')}
       </button>
     </div>
   );
