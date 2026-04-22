@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, Folder, FolderOpen, File } from 'lucide-react';
 import { buildFileTree, countNodes, parseFileToolResult, type FileTreeNode } from '../utils/file-tree';
+import { useTranslation } from '../i18n/useTranslation';
 
 interface FileTreeProps {
   /**
@@ -19,6 +20,7 @@ interface FileTreeProps {
 const SHALLOW_THRESHOLD = 20;
 
 export function FileTree({ source, defaultExpanded, onSelect }: FileTreeProps) {
+  const { t } = useTranslation();
   const tree = useMemo(() => {
     const paths = typeof source === 'string' ? parseFileToolResult(source) : source;
     return buildFileTree(paths);
@@ -32,7 +34,7 @@ export function FileTree({ source, defaultExpanded, onSelect }: FileTreeProps) {
   if (tree.length === 0) {
     return (
       <div className="mt-1 ml-6 pl-3 border-l border-border-subtle font-mono text-xs text-fg-tertiary">
-        (no files)
+        {t('fileTree.noFiles')}
       </div>
     );
   }
@@ -40,7 +42,7 @@ export function FileTree({ source, defaultExpanded, onSelect }: FileTreeProps) {
   return (
     <div
       role="tree"
-      aria-label="File tree"
+      aria-label={t('fileTree.ariaLabel')}
       className="mt-1 ml-6 pl-2 border-l border-border-subtle font-mono text-xs text-fg-secondary"
     >
       {tree.map((node) => (

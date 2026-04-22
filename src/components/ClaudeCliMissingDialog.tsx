@@ -6,6 +6,7 @@ import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { DialogOverlay } from './ui/Dialog';
 import { useStore, CLI_MIN_VERSION_SOFT, isVersionBelow } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 type Tab = 'install' | 'have-it';
 
@@ -39,6 +40,7 @@ type InstallRow = { id: string; label: string; command: string; hint?: string };
  *     check-mark for ~1.2s.
  */
 export function ClaudeCliMissingDialog() {
+  const { t } = useTranslation();
   const cliStatus = useStore((s) => s.cliStatus);
   const closeDialog = useStore((s) => s.closeCliDialog);
   const checkCli = useStore((s) => s.checkCli);
@@ -90,26 +92,26 @@ export function ClaudeCliMissingDialog() {
     if (c.native) {
       out.push({
         id: 'native',
-        label: hints.os === 'win32' ? 'PowerShell' : 'Shell',
+        label: hints.os === 'win32' ? t('cli.rowLabelPowerShell') : t('cli.rowLabelShell'),
         command: c.native,
-        hint: 'Recommended — installs the official native binary.',
+        hint: t('cli.rowHintNative'),
       });
     }
     if (c.packageManager) {
       out.push({
         id: 'pm',
-        label: hints.os === 'win32' ? 'winget' : hints.os === 'darwin' ? 'Homebrew' : 'Package manager',
+        label: hints.os === 'win32' ? t('cli.rowLabelWinget') : hints.os === 'darwin' ? t('cli.rowLabelHomebrew') : t('cli.rowLabelPackageManager'),
         command: c.packageManager,
       });
     }
     out.push({
       id: 'npm',
-      label: 'npm',
+      label: t('cli.rowLabelNpm'),
       command: c.npm,
-      hint: 'Works anywhere Node.js is installed.',
+      hint: t('cli.rowHintNpm'),
     });
     return out;
-  }, [hints]);
+  }, [hints, t]);
 
   async function handleRetry(): Promise<void> {
     setRetrying(true);
@@ -202,7 +204,7 @@ export function ClaudeCliMissingDialog() {
                     'focus-visible:text-fg-primary'
                   )}
                 >
-                  Minimize to banner
+                  {t('cli.minimizeBanner')}
                 </button>
                 <div className="flex items-center gap-2">
                   <Button
@@ -222,7 +224,7 @@ export function ClaudeCliMissingDialog() {
                     >
                       <RefreshCw size={13} className="stroke-[2]" />
                     </motion.span>
-                    <span>{retrying ? 'Detecting…' : 'Retry detect'}</span>
+                    <span>{retrying ? t('cli.detecting') : t('cli.retryDetect')}</span>
                   </Button>
                 </div>
               </div>
@@ -235,6 +237,7 @@ export function ClaudeCliMissingDialog() {
 }
 
 function Header({ searchedPaths }: { searchedPaths: string[] }) {
+  const { t } = useTranslation();
   return (
     <div className="px-5 pt-5 pb-3">
       <div className="flex items-start gap-3">
@@ -243,17 +246,17 @@ function Header({ searchedPaths }: { searchedPaths: string[] }) {
         </div>
         <div className="flex-1 min-w-0">
           <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
-            Claude CLI not found
+            {t('cli.dialogTitle')}
           </RD.Title>
           <RD.Description className="mt-1 text-sm text-fg-tertiary">
-            agentory-next wraps the Claude Code CLI. We couldn&apos;t find
+            {t('cli.dialogDescriptionPrefix')}
             {' '}<code className="font-mono text-[12px] text-fg-secondary">claude</code>{' '}
-            on your system.
+            {t('cli.dialogDescriptionSuffix')}
           </RD.Description>
           {searchedPaths.length > 0 && (
             <details className="mt-2 text-xs text-fg-disabled">
               <summary className="cursor-pointer hover:text-fg-tertiary select-none">
-                Where we looked
+                {t('cli.whereWeLooked')}
               </summary>
               <ul className="mt-1 space-y-0.5 font-mono">
                 {searchedPaths.map((p) => (
@@ -269,9 +272,10 @@ function Header({ searchedPaths }: { searchedPaths: string[] }) {
 }
 
 function Tabs({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
+  const { t } = useTranslation();
   const tabs: { id: Tab; label: string }[] = [
-    { id: 'install', label: 'Install' },
-    { id: 'have-it', label: 'I already have it' },
+    { id: 'install', label: t('cli.tabInstall') },
+    { id: 'have-it', label: t('cli.tabHaveIt') },
   ];
   return (
     <div role="tablist" className="flex items-center gap-1 px-5 border-b border-border-subtle">
@@ -309,15 +313,17 @@ function InstallPane({
   rows: InstallRow[];
   onOpenDocs: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       <p className="text-xs text-fg-tertiary">
-        Paste one of these into your terminal, then click{' '}
-        <span className="text-fg-secondary">Retry detect</span> below.
+        {t('cli.pasteHint')}{' '}
+        <span className="text-fg-secondary">{t('cli.retryDetectInline')}</span>{' '}
+        {t('cli.belowInline')}
       </p>
       <div className="space-y-2">
         {rows.length === 0 ? (
-          <div className="text-xs text-fg-disabled">Loading install commands…</div>
+          <div className="text-xs text-fg-disabled">{t('cli.loadingCommands')}</div>
         ) : (
           rows.map((row) => <CommandRow key={row.id} row={row} />)
         )}
@@ -332,13 +338,14 @@ function InstallPane({
         )}
       >
         <ExternalLink size={11} className="stroke-[2]" />
-        Open installation docs
+        {t('cli.openDocs')}
       </button>
     </div>
   );
 }
 
 function CommandRow({ row }: { row: InstallRow }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -381,7 +388,7 @@ function CommandRow({ row }: { row: InstallRow }) {
         <button
           type="button"
           onClick={copy}
-          aria-label={`Copy ${row.label} command`}
+          aria-label={t('cli.copyAria', { label: row.label })}
           className={cn(
             'shrink-0 h-7 w-7 mr-1 inline-flex items-center justify-center rounded',
             'text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover',
@@ -431,16 +438,17 @@ function HaveItPane({
   configuring: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3">
       <p className="text-xs text-fg-tertiary">
-        Already installed Claude Code but we can&apos;t find it? Point us at the{' '}
-        <code className="font-mono text-[12px] text-fg-secondary">claude</code> binary
-        and we&apos;ll remember it.
+        {t('cli.haveItHint')}{' '}
+        <code className="font-mono text-[12px] text-fg-secondary">claude</code> {t('cli.binaryLabel')}
+        {' '}{t('cli.rememberHint')}
       </p>
       <Button variant="secondary" size="md" onClick={onBrowse} disabled={configuring}>
         <FolderOpen size={13} className="stroke-[2]" />
-        <span>{configuring ? 'Verifying…' : 'Browse for binary…'}</span>
+        <span>{configuring ? t('cli.verifying') : t('cli.browseBinary')}</span>
       </Button>
       {error && (
         <div className="text-xs text-status-error-foreground">
@@ -448,8 +456,8 @@ function HaveItPane({
         </div>
       )}
       <div className="text-[11px] text-fg-disabled leading-relaxed">
-        We verify the pick by running{' '}
-        <code className="font-mono text-fg-tertiary">--version</code> before saving it.
+        {t('cli.verifyHint')}{' '}
+        <code className="font-mono text-fg-tertiary">{t('cli.versionFlag')}</code> {t('cli.verifyHintSuffix')}
       </div>
     </div>
   );
@@ -462,6 +470,7 @@ function SuccessPane({
   version: string | null;
   binaryPath: string | null;
 }) {
+  const { t } = useTranslation();
   const belowMin = isVersionBelow(version, CLI_MIN_VERSION_SOFT);
   return (
     <div className="px-5 py-6 flex items-start gap-3">
@@ -470,21 +479,21 @@ function SuccessPane({
       </div>
       <div className="flex-1 min-w-0">
         <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
-          Claude CLI detected
+          {t('cli.detected')}
         </RD.Title>
         <div className="mt-1 text-sm text-fg-tertiary">
           {version ? (
             <>
-              Found version <span className="text-fg-secondary font-mono">{version}</span>
+              {t('cli.foundVersion')} <span className="text-fg-secondary font-mono">{version}</span>
               {belowMin && (
                 <span className="ml-1 text-status-warning-foreground">
-                  (below recommended {CLI_MIN_VERSION_SOFT} — some features may misbehave)
+                  {t('cli.belowRecommended', { min: CLI_MIN_VERSION_SOFT })}
                 </span>
               )}
               .
             </>
           ) : (
-            <>Found the binary. Version unknown, but it responded to --version.</>
+            <>{t('cli.foundBinaryUnknown')}</>
           )}
         </div>
         {binaryPath && (

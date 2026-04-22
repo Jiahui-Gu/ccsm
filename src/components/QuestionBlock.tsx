@@ -7,6 +7,7 @@ import * as RovingFocusGroup from '@radix-ui/react-roving-focus';
 import type { QuestionSpec } from '../types';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
+import { useTranslation } from '../i18n/useTranslation';
 
 export interface QuestionBlockProps {
   questions: QuestionSpec[];
@@ -16,6 +17,7 @@ export interface QuestionBlockProps {
 }
 
 export function QuestionBlock({ questions, onSubmit, autoFocus = true }: QuestionBlockProps) {
+  const { t } = useTranslation();
   const [picks, setPicks] = useState<Array<Set<number>>>(() =>
     questions.map((q) => {
       // Single-select: pre-select the first option so Radix RadioGroup has a
@@ -115,7 +117,7 @@ export function QuestionBlock({ questions, onSubmit, autoFocus = true }: Questio
       <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md" />
       <div className="flex items-center gap-2 text-base text-fg-primary font-semibold">
         <StateGlyph state="waiting" size="sm" />
-        <span>Question awaiting answer</span>
+        <span>{t('questionBlock.title')}</span>
       </div>
       <div className="mt-3 space-y-4">
         {questions.map((q, qi) => (
@@ -138,7 +140,7 @@ export function QuestionBlock({ questions, onSubmit, autoFocus = true }: Questio
           disabled={!allAnswered || submitted}
           onClick={submit}
         >
-          {submitted ? 'Submitted' : 'Submit answer'}
+          {submitted ? t('questionBlock.submitted') : t('questionBlock.submit')}
         </Button>
       </div>
     </motion.div>

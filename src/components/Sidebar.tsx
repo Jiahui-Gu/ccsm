@@ -44,6 +44,7 @@ import {
 } from './ui/ContextMenu';
 import { InlineRename } from './ui/InlineRename';
 import { ConfirmDialog } from './ui/ConfirmDialog';
+import { useTranslation } from '../i18n/useTranslation';
 import type { Group, Session } from '../types';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
@@ -77,6 +78,7 @@ function GroupRow({
   onSelectSession: (id: string) => void;
   onFocus: () => void;
 }) {
+  const { t } = useTranslation();
   const sessionIds = sessions.map((s) => s.id);
   const hasWaiting = sessions.some((s) => s.state === 'waiting');
   const setGroupCollapsed = useStore((s) => s.setGroupCollapsed);
@@ -172,7 +174,7 @@ function GroupRow({
                   <span className="truncate text-sm font-semibold text-fg-secondary">{group.name}</span>
                   {hasWaiting && (
                     <span
-                      aria-label="Waiting for response"
+                      aria-label={t('sidebar.waitingForResponse')}
                       className="ml-1.5 shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-waiting"
                     />
                   )}
@@ -190,12 +192,12 @@ function GroupRow({
               group.kind === 'archive' ? unarchiveGroup(group.id) : archiveGroup(group.id)
             }
           >
-            {group.kind === 'archive' ? 'Unarchive group' : 'Archive group'}
+            {group.kind === 'archive' ? t('sidebar.unarchiveGroup') : t('sidebar.archiveGroup')}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
+          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
-            Delete group…
+            {t('sidebar.deleteGroupEllipsis')}
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -242,13 +244,13 @@ function GroupRow({
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title={`Delete "${group.name}"?`}
+        title={t('sidebar.deleteGroupConfirmTitle', { name: group.name })}
         description={
           sessions.length > 0
-            ? `This group contains ${sessions.length} session${sessions.length === 1 ? '' : 's'}. They will be deleted with the group.`
-            : 'This group is empty.'
+            ? t('sidebar.deleteGroupNonEmptyKept', { count: sessions.length })
+            : t('sidebar.deleteGroupEmpty')
         }
-        confirmLabel="Delete group"
+        confirmLabel={t('sidebar.deleteGroup')}
         destructive
         onConfirm={() => deleteGroup(group.id)}
       />
@@ -256,15 +258,18 @@ function GroupRow({
   );
 }
 
-function platformOpenLabel(): string {
+function usePlatformOpenLabel(): string {
+  const { t } = useTranslation();
   const platform =
     typeof window !== 'undefined' ? window.agentory?.window?.platform : undefined;
-  if (platform === 'darwin') return 'Reveal in Finder';
-  if (platform === 'win32') return 'Open in Explorer';
-  return 'Open folder';
+  if (platform === 'darwin') return t('sidebar.revealInFinder');
+  if (platform === 'win32') return t('sidebar.openInExplorer');
+  return t('sidebar.openFolder');
 }
 
 function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
+  const { t } = useTranslation();
+  const openLabel = usePlatformOpenLabel();
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
@@ -362,28 +367,28 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             <BellOff
               size={12}
               className="stroke-[1.5] text-fg-tertiary shrink-0"
-              aria-label="Notifications muted"
+              aria-label={t('sidebar.notificationsMutedAria')}
             />
           )}
           {active && (
             <span
-              aria-label="Open in chat"
+              aria-label={t('sidebar.openInChat')}
               className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
             />
           )}
           <ConfirmDialog
             open={confirmDelete}
             onOpenChange={setConfirmDelete}
-            title={`Delete "${session.name}"?`}
-            description="The session and its conversation history will be removed."
-            confirmLabel="Delete"
+            title={t('sidebar.deleteSessionConfirmTitle', { name: session.name })}
+            description={t('sidebar.deleteSessionDescription')}
+            confirmLabel={t('common.delete')}
             destructive
             onConfirm={() => deleteSession(session.id)}
           />
         </li>
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => setRenaming(true)}>Rename</ContextMenuItem>
+        <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
         <ContextMenuItem
           disabled={!(session.worktreePath || session.cwd)}
           onSelect={() => {
@@ -393,17 +398,17 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           }}
         >
           <FolderOpen size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
-          {platformOpenLabel()}
+          {openLabel}
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             setSessionNotificationsMuted(session.id, !session.notificationsMuted)
           }
         >
-          {session.notificationsMuted ? 'Unmute notifications' : 'Mute notifications'}
+          {session.notificationsMuted ? t('sidebar.unmuteNotifications') : t('sidebar.muteNotifications')}
         </ContextMenuItem>
         <ContextMenuSub>
-          <ContextMenuSubTrigger>Move to group</ContextMenuSubTrigger>
+          <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
           <ContextMenuSubContent>
             {groups.map((g) => (
               <ContextMenuItem
@@ -421,13 +426,13 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
                 moveSession(session.id, id, null);
               }}
             >
-              New group…
+              {t('sidebar.newGroupEllipsis')}
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
-          Delete
+          {t('common.delete')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -447,6 +452,7 @@ export type SidebarProps = {
 };
 
 function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string | null) => void }) {
+  const { t } = useTranslation();
   return (
     <Button
       variant="raised"
@@ -455,12 +461,13 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string 
       className="flex-1 h-8 text-xs gap-1.5"
     >
       <Plus size={14} className="stroke-[1.75]" />
-      <span>New Session</span>
+      <span>{t('sidebar.newSession')}</span>
     </Button>
   );
 }
 
 export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+  const { t } = useTranslation();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
   const collapsed = useStore((s) => s.sidebarCollapsed);
@@ -531,9 +538,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             variant="raised"
             size="md"
             onClick={toggleSidebar}
-            tooltip="Expand sidebar  ⌘B"
+            tooltip={t('sidebar.expandSidebarTooltip')}
             tooltipSide="right"
-            aria-label="Expand sidebar"
+            aria-label={t('sidebar.expandSidebarAria')}
             className="h-8 w-8"
           >
             <ChevronRight size={14} className="stroke-[1.5]" />
@@ -542,9 +549,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             variant="raised"
             size="md"
             onClick={() => onCreateSession?.(null)}
-            tooltip="New session"
+            tooltip={t('sidebar.newSessionTooltip')}
             tooltipSide="right"
-            aria-label="New session"
+            aria-label={t('sidebar.newSessionAria')}
             className="h-8 w-8"
           >
             <Plus size={14} className="stroke-[1.75]" />
@@ -553,9 +560,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             variant="raised"
             size="md"
             onClick={onOpenPalette}
-            tooltip="Search  ⌘K"
+            tooltip={t('sidebar.searchTooltip')}
             tooltipSide="right"
-            aria-label="Search"
+            aria-label={t('sidebar.searchAriaShort')}
             className="h-8 w-8"
           >
             <Search size={14} className="stroke-[1.5]" />
@@ -565,9 +572,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             variant="raised"
             size="md"
             onClick={onOpenSettings}
-            tooltip="Settings  ⌘,"
+            tooltip={t('sidebar.settingsTooltip')}
             tooltipSide="right"
-            aria-label="Settings"
+            aria-label={t('sidebar.settingsAria')}
             className="h-8 w-8"
           >
             <Settings size={13} className="stroke-[1.5]" />
@@ -588,7 +595,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
               variant="raised"
               size="md"
               onClick={onOpenPalette}
-              aria-label="Search"
+              aria-label={t('sidebar.searchAriaShort')}
               className="h-8 w-8 shrink-0"
             >
               <Search size={14} className="stroke-[1.5]" />
@@ -601,14 +608,14 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
           <div className="mt-2 border-t border-border-subtle" />
           <div className="px-3 pt-3 pb-1 flex items-center justify-between shrink-0">
             <span className="text-label-section">
-              Groups
+              {t('sidebar.groups')}
             </span>
             <IconButton
               size="xs"
               variant="ghost"
-              tooltip="New group"
+              tooltip={t('sidebar.newGroup')}
               tooltipSide="top"
-              aria-label="New group"
+              aria-label={t('sidebar.newGroup')}
               onClick={() => createGroup()}
             >
               <Plus size={12} className="stroke-[1.75]" />
@@ -650,7 +657,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             >
               <ChevronRight size={12} className="stroke-[1.75]" />
             </motion.span>
-            <span>Archived Groups</span>
+            <span>{t('sidebar.archivedGroups')}</span>
             <span className="ml-1 text-[11px] leading-[14px] font-normal text-[oklch(0.46_0_0)] tabular-nums">
               {archived.length}
             </span>
@@ -681,7 +688,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
               className="w-full h-8 text-xs gap-1.5"
             >
               <Settings size={13} className="stroke-[1.5]" />
-              <span>Settings</span>
+              <span>{t('common.settings')}</span>
             </Button>
           </div>
         </div>

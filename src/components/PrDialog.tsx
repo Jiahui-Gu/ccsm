@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogBody, DialogFooter } from './ui/Dialog';
 import { Button } from './ui/Button';
+import { useTranslation } from '../i18n/useTranslation';
 
 type PreflightOk = {
   ok: true;
@@ -29,6 +30,7 @@ type Props = {
 };
 
 export function PrDialog({ open, onOpenChange, preflight, submitting, submitError, onSubmit }: Props) {
+  const { t } = useTranslation();
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [base, setBase] = useState('');
@@ -58,11 +60,11 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        title="Create Pull Request"
+        title={t('prDialog.title')}
         description={
           preflight
-            ? `Push ${preflight.branch} → ${base || preflight.base} and open a PR on GitHub.`
-            : 'Running preflight checks…'
+            ? t('prDialog.descriptionPushing', { branch: preflight.branch, base: base || preflight.base })
+            : t('prDialog.descriptionPreflight')
         }
         width="560px"
         data-testid="pr-dialog"
@@ -70,7 +72,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
         <DialogBody>
           {preflight && (
             <div className="flex flex-col gap-3">
-              <Field label="Title">
+              <Field label={t('prDialog.fieldTitle')}>
                 <input
                   type="text"
                   data-testid="pr-title"
@@ -81,7 +83,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
                 />
               </Field>
 
-              <Field label="Base branch">
+              <Field label={t('prDialog.fieldBaseBranch')}>
                 <select
                   data-testid="pr-base"
                   value={base}
@@ -97,7 +99,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
                 </select>
               </Field>
 
-              <Field label="Body">
+              <Field label={t('prDialog.fieldBody')}>
                 <textarea
                   data-testid="pr-body"
                   value={body}
@@ -117,7 +119,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
                   disabled={submitting}
                   className="h-3.5 w-3.5 accent-accent"
                 />
-                Open as draft
+                {t('prDialog.openAsDraft')}
               </label>
 
               {submitError && (
@@ -133,7 +135,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
         </DialogBody>
         <DialogFooter>
           <Button variant="secondary" size="sm" onClick={() => onOpenChange(false)} disabled={submitting}>
-            Cancel
+            {t('prDialog.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -149,7 +151,7 @@ export function PrDialog({ open, onOpenChange, preflight, submitting, submitErro
             }
             disabled={!canSubmit}
           >
-            {submitting ? 'Opening…' : 'Open PR'}
+            {submitting ? t('prDialog.opening') : t('prDialog.openPR')}
           </Button>
         </DialogFooter>
       </DialogContent>

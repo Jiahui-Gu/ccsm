@@ -5,6 +5,7 @@ import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -36,6 +37,7 @@ export function CommandPalette({
   onSelectSession,
   onFocusGroup
 }: Props) {
+  const { t } = useTranslation();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -76,7 +78,7 @@ export function CommandPalette({
           id: `group:${g.id}`,
           kind: 'group',
           label: g.name,
-          hint: 'Group',
+          hint: t('commandPalette.groupHint'),
           icon: <Hash size={13} className="stroke-[1.75] text-fg-tertiary" />,
           onPick: () => {
             onOpenChange(false);
@@ -86,7 +88,7 @@ export function CommandPalette({
       {
         id: 'cmd:new-session',
         kind: 'command',
-        label: 'New session',
+        label: t('commandPalette.cmdNewSession'),
         hint: '⌘N',
         icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
@@ -97,7 +99,7 @@ export function CommandPalette({
       {
         id: 'cmd:new-group',
         kind: 'command',
-        label: 'New group',
+        label: t('commandPalette.cmdNewGroup'),
         hint: '⌘⇧N',
         icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
@@ -108,7 +110,7 @@ export function CommandPalette({
       {
         id: 'cmd:toggle-sidebar',
         kind: 'command',
-        label: 'Toggle sidebar',
+        label: t('commandPalette.cmdToggleSidebar'),
         hint: '⌘B',
         icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
@@ -119,7 +121,7 @@ export function CommandPalette({
       {
         id: 'cmd:import',
         kind: 'command',
-        label: 'Import from Claude Code…',
+        label: t('commandPalette.cmdImport'),
         icon: <DownloadCloud size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -129,7 +131,7 @@ export function CommandPalette({
       {
         id: 'cmd:open-settings',
         kind: 'command',
-        label: 'Open settings',
+        label: t('commandPalette.cmdOpenSettings'),
         hint: '⌘,',
         icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
@@ -140,7 +142,7 @@ export function CommandPalette({
       {
         id: 'cmd:switch-theme',
         kind: 'command',
-        label: `Switch theme → ${nextTheme}`,
+        label: t('commandPalette.cmdSwitchTheme', { next: nextTheme }),
         icon: <SunMoon size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -153,7 +155,7 @@ export function CommandPalette({
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
-  }, [q, sessions, groups, theme, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme]);
+  }, [q, sessions, groups, theme, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
 
   useEffect(() => {
     if (active >= results.length) setActive(0);
@@ -188,26 +190,26 @@ export function CommandPalette({
             'data-[state=closed]:opacity-0'
           )}
         >
-          <RD.Title className="sr-only">Command palette</RD.Title>
+          <RD.Title className="sr-only">{t('commandPalette.title')}</RD.Title>
           <div className="flex items-center gap-2 px-3 h-11 border-b border-border-subtle">
             <Search size={14} className="stroke-[1.5] text-fg-tertiary shrink-0" />
             <input
               ref={inputRef}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search sessions, groups, commands…"
+              placeholder={t('commandPalette.searchPlaceholder')}
               className={cn(
                 'flex-1 bg-transparent text-base text-fg-primary placeholder:text-fg-tertiary',
                 'outline-none'
               )}
             />
             <kbd className="font-mono text-xs px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
-              Esc
+              {t('commandPalette.escKey')}
             </kbd>
           </div>
           <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
             {results.length === 0 && (
-              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">No matches</li>
+              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.noMatches')}</li>
             )}
             {results.map((r, i) => (
               <li
