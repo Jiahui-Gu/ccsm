@@ -529,10 +529,10 @@ describe('SAFE_ENV whitelist', () => {
     expect(ci(env, 'CLAUDE_CODE_SKIP_AUTH_LOGIN')).toBe('true');
   });
 
-  it('always overwrites CLAUDE_CONFIG_DIR with the isolated path, even if parent sets one', () => {
+  it('always overwrites CLAUDE_CONFIG_DIR with the caller-provided path, even if parent sets one', () => {
     process.env.CLAUDE_CONFIG_DIR = '/home/user/.claude';
-    const env = buildSpawnEnv({ configDir: '/isolated/cfg' });
-    expect(ci(env, 'CLAUDE_CONFIG_DIR')).toBe('/isolated/cfg');
+    const env = buildSpawnEnv({ configDir: '/explicit/cfg' });
+    expect(ci(env, 'CLAUDE_CONFIG_DIR')).toBe('/explicit/cfg');
   });
 
   it('envOverrides still win over forwarded ANTHROPIC_* parent vars', () => {

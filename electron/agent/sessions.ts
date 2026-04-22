@@ -38,16 +38,20 @@ export function resolveCwd(cwd: string): string {
 
 /**
  * claude.exe refuses to run without `CLAUDE_CONFIG_DIR` (claude-spawner enforces
- * this). main.ts hasn't been migrated to pass an explicit configDir yet — that's
- * batch 3. For now we accept it via StartOptions, fall back to the env override,
- * and finally to a stable per-user dir under the home directory so the user's
- * own ~/.claude is never touched.
+ * this). Agentory deliberately points it at the user's real `~/.claude/` so we
+ * share state (login tokens, settings.json with relay-mode credentials, MCP
+ * config) with the user's existing CLI install. Boundary: "if `claude` works in
+ * your terminal, Agentory works." Sessions still register in Agentory's own DB —
+ * only the claude CLI config dir is shared.
+ *
+ * Callers may still pass an explicit `configDir` (e.g. tests) or override via
+ * the `AGENTORY_CLAUDE_CONFIG_DIR` env var for special-case isolation.
  */
-function resolveConfigDir(explicit: string | undefined): string {
+function resolveClaudeConfigDir(explicit: string | undefined): string {
   if (explicit && explicit.trim().length > 0) return explicit;
   const env = process.env.AGENTORY_CLAUDE_CONFIG_DIR;
   if (env && env.trim().length > 0) return env;
-  return path.join(os.homedir(), '.agentory', 'claude-cli-config');
+  return path.join(os.homedir(), '.claude');
 }
 
 /**
@@ -95,9 +99,9 @@ export type StartOptions = {
    */
   envOverrides?: Record<string, string>;
   /**
-   * Optional override for `CLAUDE_CONFIG_DIR`. main.ts currently doesn't pass
-   * one — see resolveConfigDir() for the fallback chain. Will become required
-   * once main.ts is migrated (batch 3, T9).
+   * Optional override for `CLAUDE_CONFIG_DIR`. When unset, Agentory uses the
+   * user's real `~/.claude/` so login state is shared with the CLI — see
+   * resolveClaudeConfigDir() for the full fallback chain.
    */
   configDir?: string;
   /**
@@ -160,7 +164,7 @@ export class SessionRunner {
 
     this.cp = await spawnClaude({
       cwd: resolveCwd(opts.cwd),
-      configDir: resolveConfigDir(opts.configDir),
+      configDir: resolveClaudeConfigDir(opts.configDir),
       permissionMode: toCliPermissionMode(this.permissionMode),
       model: opts.model,
       resumeId: opts.resumeSessionId,
