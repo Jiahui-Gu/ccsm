@@ -106,14 +106,6 @@ export type StartOptions = {
    * "Browse for binary..." pick in the first-run wizard).
    */
   binaryPath?: string;
-  /**
-   * Patterns forwarded to the CLI's `--allowedTools` flag. Already merged
-   * (global + per-session) upstream in main.ts; the runner is passive.
-   * Empty/undefined → flag omitted.
-   */
-  allowedTools?: readonly string[];
-  /** Patterns forwarded to `--disallowedTools`. Same semantics. */
-  disallowedTools?: readonly string[];
 };
 
 export type EventHandler = (msg: AgentMessage) => void;
@@ -174,8 +166,6 @@ export class SessionRunner {
       resumeId: opts.resumeSessionId,
       envOverrides,
       binaryPath: opts.binaryPath,
-      allowedTools: opts.allowedTools,
-      disallowedTools: opts.disallowedTools,
       signal: this.abort.signal,
     });
 

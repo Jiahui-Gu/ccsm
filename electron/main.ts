@@ -415,8 +415,6 @@ app.whenReady().then(() => {
         permissionMode?: PermissionMode;
         resumeSessionId?: string;
         endpointId?: string;
-        allowedTools?: readonly string[];
-        disallowedTools?: readonly string[];
       }
     ) => {
       // Guard against stale `cwd` paths that no longer exist on disk. Common
