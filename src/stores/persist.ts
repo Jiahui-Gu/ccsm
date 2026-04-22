@@ -58,6 +58,10 @@ let writeTimer: ReturnType<typeof setTimeout> | null = null;
 const WRITE_DEBOUNCE_MS = 250;
 
 let onPersistError: ((err: unknown) => void) | null = null;
+// Most-recent snapshot scheduled but not yet committed. `flushNow()` reads
+// this so a synchronous flush on app shutdown still writes the latest state
+// even if the debounce timer hasn't fired.
+let pendingSnapshot: PersistedState | null = null;
 
 export function setPersistErrorHandler(handler: (err: unknown) => void): void {
   onPersistError = handler;
@@ -65,11 +69,36 @@ export function setPersistErrorHandler(handler: (err: unknown) => void): void {
 
 export function schedulePersist(state: PersistedState): void {
   if (!window.agentory) return;
+  pendingSnapshot = state;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
-    window.agentory!.saveState(STATE_KEY, JSON.stringify(state)).catch((err) => {
+    const snap = pendingSnapshot;
+    pendingSnapshot = null;
+    if (!snap) return;
+    window.agentory!.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
       if (onPersistError) onPersistError(err);
     });
   }, WRITE_DEBOUNCE_MS);
+}
+
+/**
+ * Synchronously dispatch any pending debounced write. Call from `beforeunload`
+ * (renderer) so a quick quit doesn't lose the last 250 ms of changes. The
+ * actual saveState IPC is fire-and-forget — Electron lets the in-flight IPC
+ * complete during teardown, but we don't await it here because beforeunload
+ * handlers can't reliably hold the page open across async work.
+ */
+export function flushNow(): void {
+  if (!window.agentory) return;
+  if (writeTimer) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  const snap = pendingSnapshot;
+  pendingSnapshot = null;
+  if (!snap) return;
+  window.agentory.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
+    if (onPersistError) onPersistError(err);
+  });
 }
