@@ -106,21 +106,14 @@ export async function dispatchNotification(input: DispatchInput): Promise<Dispat
 }
 
 // Triggered by clicking a notification (main → renderer IPC). Selects the
-// session and tries to focus the input bar so the user can act immediately.
-// The input-focus path piggybacks on the same DOM affordance the sidebar
-// click uses; if the dedicated focusInputNonce pattern lands later from
-// fix/click-session-focus-input, swap to it then.
+// session, which bumps focusInputNonce so the InputBar pulls focus, and
+// scrolls the chat stream to the bottom so the latest activity is visible.
 export function handleNotificationFocus(sessionId: string): void {
   const state = useStore.getState();
   if (!state.sessions.some((s) => s.id === sessionId)) return;
   state.selectSession(sessionId);
-  // TODO: replace with focusInputNonce bump once fix/click-session-focus-input
-  // merges. Until then, find the textarea in the DOM and focus it directly so
-  // the user can type without an extra click.
   if (typeof window === 'undefined') return;
   window.requestAnimationFrame(() => {
-    const ta = document.querySelector<HTMLTextAreaElement>('textarea[data-input-bar]');
-    if (ta) ta.focus();
     const stream = document.querySelector<HTMLElement>('[data-chat-stream]');
     if (stream) stream.scrollTop = stream.scrollHeight;
   });

@@ -237,6 +237,11 @@ type Actions = {
   markInterrupted: (sessionId: string) => void;
   consumeInterrupted: (sessionId: string) => boolean;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
+  /** Increment `focusInputNonce` to ask the InputBar to take focus. Use after
+   *  any user-driven action in the chat stream that should return focus to the
+   *  composer (question submit, etc.). Permission/plan paths bump implicitly
+   *  via `resolvePermission`. */
+  bumpComposerFocus: () => void;
   addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
 
   setEndpoints: (list: Endpoint[]) => void;
@@ -854,10 +859,20 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = prev.filter((b) => b.id !== waitId);
       if (next.length === prev.length) return s;
       return {
-        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next },
+        // Centralized focus policy: after the user resolves any in-stream
+        // permission/plan prompt, focus returns to the composer so the next
+        // keystroke types into the chat. InputBar's effect guards against
+        // stealing focus from other text-entry surfaces (rename input,
+        // dialog field, IME composition).
+        focusInputNonce: s.focusInputNonce + 1
       };
     });
     void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
+  },
+
+  bumpComposerFocus: () => {
+    set((s) => ({ focusInputNonce: s.focusInputNonce + 1 }));
   },
 
   setEndpoints: (list) => set({ endpoints: list }),
