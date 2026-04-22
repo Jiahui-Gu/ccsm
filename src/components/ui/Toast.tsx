@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef, useStat
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '../../lib/cn';
 import { StateGlyph } from './StateGlyph';
+import { useTranslation } from '../../i18n/useTranslation';
 
 export type ToastKind = 'info' | 'waiting' | 'error';
 
@@ -31,6 +32,7 @@ const MAX = 3;
 const TTL_MS = 3000;
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useTranslation();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef(new Map<string, number>());
 
@@ -71,9 +73,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {children}
       <div className="pointer-events-none fixed bottom-3 right-3 z-[60] flex flex-col gap-2 w-[320px]">
         <AnimatePresence initial={false}>
-          {toasts.map((t) => (
+          {toasts.map((toast) => (
             <motion.div
-              key={t.id}
+              key={toast.id}
               layout
               initial={{ opacity: 0, y: 8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -82,9 +84,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               className={cn(
                 'pointer-events-auto relative rounded-md border pl-3 pr-3 py-2.5',
                 'bg-bg-elevated surface-highlight surface-elevated',
-                t.kind === 'error'
+                toast.kind === 'error'
                   ? 'border-state-error/40'
-                  : t.kind === 'waiting'
+                  : toast.kind === 'waiting'
                     ? 'border-state-waiting/40'
                     : 'border-border-default'
               )}
@@ -92,31 +94,31 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                 // Persistent toasts with an action shouldn't dismiss on a
                 // click anywhere — only the action button dismisses (so a
                 // stray click on the toast doesn't hide "Restart").
-                if (!(t.persistent && t.action)) dismiss(t.id);
+                if (!(toast.persistent && toast.action)) dismiss(toast.id);
               }}
               role="status"
             >
               <div className="flex items-start gap-2">
-                {t.kind === 'waiting' && (
+                {toast.kind === 'waiting' && (
                   <StateGlyph state="waiting" size="sm" className="mt-0.5 shrink-0" />
                 )}
-                {t.kind === 'error' && (
+                {toast.kind === 'error' && (
                   <StateGlyph state="waiting" size="sm" className="mt-0.5 shrink-0 text-state-error" />
                 )}
-                {t.kind === 'info' && (
+                {toast.kind === 'info' && (
                   <StateGlyph size="sm" className="mt-0.5 shrink-0 text-state-running" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-fg-primary leading-tight">{t.title}</div>
-                  {t.body && <div className="mt-0.5 text-xs text-fg-tertiary">{t.body}</div>}
-                  {t.action && (
+                  <div className="text-sm font-medium text-fg-primary leading-tight">{toast.title}</div>
+                  {toast.body && <div className="mt-0.5 text-xs text-fg-tertiary">{toast.body}</div>}
+                  {toast.action && (
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          t.action!.onClick();
-                          dismiss(t.id);
+                          toast.action!.onClick();
+                          dismiss(toast.id);
                         }}
                         className={cn(
                           'text-xs font-medium px-2 py-1 rounded-sm',
@@ -127,13 +129,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                           'transition-colors duration-150'
                         )}
                       >
-                        {t.action.label}
+                        {toast.action.label}
                       </button>
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          dismiss(t.id);
+                          dismiss(toast.id);
                         }}
                         className={cn(
                           'text-xs px-2 py-1 rounded-sm text-fg-tertiary',
@@ -142,7 +144,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                           'transition-colors duration-150'
                         )}
                       >
-                        Dismiss
+                        {t('toast.dismiss')}
                       </button>
                     </div>
                   )}

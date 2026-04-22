@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger
 } from './ui/DropdownMenu';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 
 // Permission mode values match claude.exe's `--permission-mode` flag 1:1.
 // We intentionally use the official CLI names (title-cased for display)
@@ -124,24 +125,6 @@ function ChipMenu<V extends string>({
 
 const BROWSE_FOLDER = '__browse__';
 
-// Labels describe what claude.exe actually does per mode, and the `primary`
-// string is the official CLI flag value title-cased. `default` prompts before
-// any tool use that isn't a read; reads are auto-approved. `acceptEdits` adds
-// file-edit auto-approval on top. `bypassPermissions` skips every check.
-const permissionOptions: ChipOption<PermissionMode>[] = [
-  { kind: 'item', value: 'plan', primary: 'Plan', secondary: 'Read-only analysis. No edits, no shell.' },
-  { kind: 'item', value: 'default', primary: 'Default', secondary: 'Auto-approve reads. Ask before edits and shell.' },
-  { kind: 'item', value: 'acceptEdits', primary: 'Accept Edits', secondary: 'Auto-approve reads and edits. Ask before shell.' },
-  { kind: 'item', value: 'bypassPermissions', primary: 'Bypass Permissions', secondary: 'Auto-approve everything. Use with care.' }
-];
-
-const permissionTooltips: Record<PermissionMode, string> = {
-  plan: 'Plan mode — read-only analysis; no file edits or shell until you approve.',
-  default: 'Default — auto-approve reads; ask before edits and shell.',
-  acceptEdits: 'Accept Edits — auto-approve reads and file edits; ask before shell.',
-  bypassPermissions: 'Bypass Permissions — every tool call runs without asking. Use with care.'
-};
-
 function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string {
   for (const o of options) {
     if (o.kind === 'item' && o.value === value) return o.primary;
@@ -170,10 +153,28 @@ export function StatusBar({
   onChangeModel,
   onChangePermission
 }: StatusBarProps) {
+  const { t } = useTranslation();
   const recentProjects = useStore((s) => s.recentProjects);
   const endpoints = useStore((s) => s.endpoints);
   const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
   const endpointsLoaded = useStore((s) => s.endpointsLoaded);
+
+  // Labels describe what claude.exe actually does per mode. The underlying
+  // VALUES (default / acceptEdits / plan / bypassPermissions) are CLI argv
+  // and remain in English everywhere — only labels/tooltips are localized.
+  const permissionOptions: ChipOption<PermissionMode>[] = [
+    { kind: 'item', value: 'plan', primary: t('statusBar.modePlanLabel'), secondary: t('statusBar.modePlanDesc') },
+    { kind: 'item', value: 'default', primary: t('statusBar.modeDefaultLabel'), secondary: t('statusBar.modeDefaultDesc') },
+    { kind: 'item', value: 'acceptEdits', primary: t('statusBar.modeAcceptEditsLabel'), secondary: t('statusBar.modeAcceptEditsDesc') },
+    { kind: 'item', value: 'bypassPermissions', primary: t('statusBar.modeBypassLabel'), secondary: t('statusBar.modeBypassDesc') }
+  ];
+
+  const permissionTooltips: Record<PermissionMode, string> = {
+    plan: t('statusBar.modePlanTooltip'),
+    default: t('statusBar.modeDefaultTooltip'),
+    acceptEdits: t('statusBar.modeAcceptEditsTooltip'),
+    bypassPermissions: t('statusBar.modeBypassTooltip')
+  };
 
   const cwdOptions: ChipOption<string>[] = [
     ...recentProjects.map(
@@ -186,7 +187,7 @@ export function StatusBar({
     {
       kind: 'item',
       value: BROWSE_FOLDER,
-      primary: 'Browse folder…',
+      primary: t('statusBar.browseFolder'),
       icon: <Folder size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
     }
   ];
@@ -195,21 +196,21 @@ export function StatusBar({
   // followed by that endpoint's discovered models, separated between groups.
   const modelOptions: ChipOption<string>[] = [];
   if (!endpointsLoaded) {
-    modelOptions.push({ kind: 'label', primary: 'Loading…' });
+    modelOptions.push({ kind: 'label', primary: t('statusBar.loading') });
   } else if (endpoints.length === 0) {
-    modelOptions.push({ kind: 'label', primary: 'No endpoints configured' });
+    modelOptions.push({ kind: 'label', primary: t('statusBar.noEndpoints') });
   } else {
     endpoints.forEach((e, idx) => {
       if (idx > 0) modelOptions.push({ kind: 'separator' });
       modelOptions.push({
         kind: 'label',
-        primary: `${e.name}${e.isDefault ? ' (default)' : ''}`
+        primary: `${e.name}${e.isDefault ? t('statusBar.defaultSuffix') : ''}`
       });
       const models = modelsByEndpoint[e.id] ?? [];
       if (models.length === 0) {
         modelOptions.push({
           kind: 'label',
-          primary: e.lastStatus === 'error' ? e.lastError ?? 'Error' : 'No models yet — click Refresh in Settings'
+          primary: e.lastStatus === 'error' ? e.lastError ?? t('common.unknown') : t('statusBar.noModelsHint')
         });
       } else {
         for (const m of models) {
@@ -226,7 +227,7 @@ export function StatusBar({
 
   // Render the trigger as the model's display name when known, else its id,
   // else a friendly placeholder.
-  let modelTriggerLabel = model || '(pick model)';
+  let modelTriggerLabel = model || t('statusBar.pickModel');
   for (const list of Object.values(modelsByEndpoint)) {
     const found = list.find((m) => m.modelId === model);
     if (found) {
@@ -240,7 +241,7 @@ export function StatusBar({
       ? [
           <span
             key="worktree"
-            title={`Worktree branch: ${worktreeName}`}
+            title={t('statusBar.worktreeBranchTitle', { name: worktreeName })}
             data-testid="statusbar-worktree-pill"
             className={cn(
               'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
@@ -255,7 +256,7 @@ export function StatusBar({
       : []),
     <ChipMenu
       key="cwd"
-      label="Working directory"
+      label={t('statusBar.workingDirectory')}
       triggerLabel={lastSegment(cwd)}
       triggerTitle={cwd}
       options={cwdOptions}
@@ -263,14 +264,14 @@ export function StatusBar({
     />,
     <ChipMenu
       key="model"
-      label="Model"
+      label={t('statusBar.model')}
       triggerLabel={modelTriggerLabel}
       options={modelOptions}
       onSelect={onChangeModel}
     />,
     <ChipMenu
       key="permission"
-      label="Permission mode"
+      label={t('statusBar.permissionMode')}
       triggerLabel={primaryOf(permissionOptions, permission)}
       triggerTitle={permissionTooltips[permission]}
       triggerAccent={permission === 'bypassPermissions' ? 'warn' : undefined}
