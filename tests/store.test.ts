@@ -710,8 +710,8 @@ describe('store: createSession auto-creates default group when none usable', () 
 
   it('synthesizes a normal group when every existing group is archived', () => {
     const archived = [
-      { id: 'g-arch-1', name: 'Old', collapsed: false, kind: 'archived' as const },
-      { id: 'g-arch-2', name: 'Older', collapsed: true, kind: 'archived' as const }
+      { id: 'g-arch-1', name: 'Old', collapsed: false, kind: 'archive' as const },
+      { id: 'g-arch-2', name: 'Older', collapsed: true, kind: 'archive' as const }
     ];
     useStore.setState({
       groups: archived,
@@ -723,7 +723,7 @@ describe('store: createSession auto-creates default group when none usable', () 
     const s = useStore.getState();
     // 1 new normal group + 2 untouched archived groups.
     expect(s.groups).toHaveLength(3);
-    const archivedAfter = s.groups.filter((g) => g.kind === 'archived');
+    const archivedAfter = s.groups.filter((g) => g.kind === 'archive');
     expect(archivedAfter).toHaveLength(2);
     expect(archivedAfter.map((g) => g.id).sort()).toEqual(['g-arch-1', 'g-arch-2']);
     const normal = s.groups.filter((g) => g.kind === 'normal');
