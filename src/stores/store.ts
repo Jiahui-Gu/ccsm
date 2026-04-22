@@ -3,6 +3,22 @@ import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
+import { i18next } from '../i18n';
+
+// Resolve the localized default-group name with a hard-coded English fallback
+// so non-renderer call paths (tests, eager hydration before initI18n runs)
+// still get a real string instead of the raw key. Keeping the fallback in
+// sync with `sidebar.defaultGroupName` in `src/i18n/locales/en.ts`.
+function defaultGroupName(): string {
+  const key = 'sidebar.defaultGroupName';
+  try {
+    const v = i18next.t(key);
+    if (typeof v === 'string' && v && v !== key) return v;
+  } catch {
+    // i18next not initialized — fall through to the hard-coded English.
+  }
+  return 'Sessions';
+}
 
 /**
  * One pending user turn waiting in the per-session FIFO queue. Created when
@@ -344,9 +360,9 @@ export function migratePermission(raw: unknown): PermissionMode {
   }
 }
 
-function firstUsableGroupId(groups: Group[]): string {
+function firstUsableGroupId(groups: Group[]): string | null {
   const g = groups.find((x) => x.kind === 'normal');
-  return g ? g.id : groups[0]?.id ?? 'g1';
+  return g ? g.id : null;
 }
 
 // ── Appearance helpers ──────────────────────────────────────────────────────
@@ -534,13 +550,28 @@ export const useStore = create<State & Actions>((set, get) => ({
       return !!g && g.kind === 'normal';
     };
     const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
-    const targetGroupId = isUsable(opts.groupId)
+    const resolvedGroupId = isUsable(opts.groupId)
       ? opts.groupId!
       : isUsable(focusedGroupId)
       ? focusedGroupId!
       : isUsable(activeGroupId)
       ? activeGroupId!
       : firstUsableGroupId(groups);
+    // Auto-create a default normal group when nothing usable exists. This is
+    // the safety net for first-run / all-archived states where the sidebar
+    // would otherwise insert an orphan session pointing at a non-existent
+    // groupId. Synthesized inline so the GroupRow + SessionRow appear in the
+    // same render tick.
+    let synthesizedGroup: Group | null = null;
+    const targetGroupId: string =
+      resolvedGroupId ??
+      ((synthesizedGroup = {
+        id: nextId('g'),
+        name: defaultGroupName(),
+        collapsed: false,
+        kind: 'normal'
+      }),
+      synthesizedGroup.id);
     const id = nextId('s');
     const defaultCwd =
       recentProjects[0]?.path ?? historyRecentCwds[0] ?? '~';
@@ -562,10 +593,11 @@ export const useStore = create<State & Actions>((set, get) => ({
     // Bumping focusInputNonce here mirrors selectSession — clicking
     // "New Session" should also land focus in the composer.
     const targetGroup = groups.find((g) => g.id === targetGroupId);
+    const baseGroups = synthesizedGroup ? [synthesizedGroup, ...groups] : groups;
     const nextGroups =
       targetGroup && targetGroup.collapsed
-        ? groups.map((g) => (g.id === targetGroupId ? { ...g, collapsed: false } : g))
-        : groups;
+        ? baseGroups.map((g) => (g.id === targetGroupId ? { ...g, collapsed: false } : g))
+        : baseGroups;
     set((s) => ({
       sessions: [newSession, ...sessions],
       activeId: id,
@@ -582,22 +614,47 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId }) => {
-    const { sessions, model, models, connection } = get();
+    const { sessions, groups, model, models, connection } = get();
     const id = nextId('s');
     let initialModel = model;
     if (!initialModel) initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';
+    // Safety net: if the caller passed a groupId that doesn't exist in the
+    // store (e.g. stale id from a stripped persisted blob), synthesize a
+    // default normal group inline rather than orphaning the imported row.
+    const targetExists = groups.some((g) => g.id === groupId);
+    let synthesizedGroup: Group | null = null;
+    let resolvedGroupId = groupId;
+    if (!targetExists) {
+      const fallback = firstUsableGroupId(groups);
+      if (fallback) {
+        resolvedGroupId = fallback;
+      } else {
+        synthesizedGroup = {
+          id: nextId('g'),
+          name: defaultGroupName(),
+          collapsed: false,
+          kind: 'normal'
+        };
+        resolvedGroupId = synthesizedGroup.id;
+      }
+    }
     const imported: Session = {
       id,
       name,
       state: 'idle',
       cwd,
       model: initialModel,
-      groupId,
+      groupId: resolvedGroupId,
       agentType: 'claude-code',
       resumeSessionId
     };
-    set({ sessions: [imported, ...sessions], activeId: id, focusedGroupId: null });
+    set({
+      sessions: [imported, ...sessions],
+      activeId: id,
+      focusedGroupId: null,
+      groups: synthesizedGroup ? [synthesizedGroup, ...groups] : groups
+    });
     return id;
   },
 
