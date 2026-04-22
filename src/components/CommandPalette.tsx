@@ -151,11 +151,13 @@ export function CommandPalette({
       }
     ];
     const needle = q.trim().toLowerCase();
-    if (!needle) return all;
+    if (!needle) return [];
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
   }, [q, sessions, groups, theme, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
+
+  const hasQuery = q.trim().length > 0;
 
   useEffect(() => {
     if (active >= results.length) setActive(0);
@@ -208,33 +210,37 @@ export function CommandPalette({
             </kbd>
           </div>
           <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
-            {results.length === 0 && (
+            {!hasQuery && (
+              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
+            )}
+            {hasQuery && results.length === 0 && (
               <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.noMatches')}</li>
             )}
-            {results.map((r, i) => (
-              <li
-                key={r.id}
-                role="option"
-                aria-selected={i === active}
-                onMouseEnter={() => setActive(i)}
-                onClick={() => r.onPick()}
-                className={cn(
-                  'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
-                  'text-sm',
-                  i === active
-                    ? 'bg-bg-hover text-fg-primary surface-highlight'
-                    : 'text-fg-secondary'
-                )}
-              >
-                <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
-                <span className="flex-1 min-w-0 truncate">{r.label}</span>
-                {r.hint && (
-                  <span className="text-xs text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
-                    {r.hint}
-                  </span>
-                )}
-              </li>
-            ))}
+            {hasQuery &&
+              results.map((r, i) => (
+                <li
+                  key={r.id}
+                  role="option"
+                  aria-selected={i === active}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => r.onPick()}
+                  className={cn(
+                    'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
+                    'text-sm',
+                    i === active
+                      ? 'bg-bg-hover text-fg-primary surface-highlight'
+                      : 'text-fg-secondary'
+                  )}
+                >
+                  <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
+                  <span className="flex-1 min-w-0 truncate">{r.label}</span>
+                  {r.hint && (
+                    <span className="text-xs text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
+                      {r.hint}
+                    </span>
+                  )}
+                </li>
+              ))}
           </ul>
         </RD.Content>
       </DialogPortal>
