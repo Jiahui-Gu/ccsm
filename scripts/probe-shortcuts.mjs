@@ -39,6 +39,31 @@ const result = await page.evaluate(async () => {
     out.checks.newGroupCreated = afterShiftN.groups.length === groupsBefore + 1;
     out.steps.push(`after Cmd+Shift+N: ${afterShiftN.groups.length} groups`);
 
+    // Cmd+K -> open command palette. The palette mounts a search input with
+    // the placeholder text from i18n; we use that as a reliable visibility
+    // probe (Radix Dialog adds it as a portal under <body>, not <main>).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 150));
+    const paletteInput = document.querySelector('input[placeholder*="Search"]');
+    out.checks.paletteOpenedByCmdK = !!paletteInput;
+    out.steps.push(`after Cmd+K: palette input ${paletteInput ? 'visible' : 'MISSING'}`);
+
+    // Cmd+K again should toggle the palette closed.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    out.checks.paletteToggleClosed = !document.querySelector('input[placeholder*="Search"]');
+    out.steps.push(`after second Cmd+K: palette ${out.checks.paletteToggleClosed ? 'closed' : 'still open'}`);
+
+    // Cmd+, -> open Settings dialog. Radix portals the dialog under <body>;
+    // we look for the dialog title "Settings" rendered inside role=dialog.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: ',', code: 'Comma', ctrlKey: true, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    const settingsDialog = Array.from(document.querySelectorAll('[role="dialog"]')).find((el) =>
+      /Settings/i.test(el.textContent ?? '')
+    );
+    out.checks.settingsOpenedByCmdComma = !!settingsDialog;
+    out.steps.push(`after Cmd+,: settings dialog ${settingsDialog ? 'visible' : 'MISSING'}`);
+
     // Background waiting bridge: install a fake permission request via the
     // store directly. Since there's no live SDK in dev:web, we simulate by
     // appending a waiting block on a NON-active session and confirm the
@@ -86,3 +111,20 @@ console.log('\n=== CONSOLE / PAGE ERRORS ===');
 for (const l of logs) console.log(l);
 
 await browser.close();
+
+// Hard-fail the script if any required check is false. The toast-root checks
+// are best-effort (see comment in evaluate block above) and intentionally
+// excluded from the gate.
+const required = [
+  'newSessionCreated',
+  'newGroupCreated',
+  'paletteOpenedByCmdK',
+  'paletteToggleClosed',
+  'settingsOpenedByCmdComma'
+];
+const failed = required.filter((k) => result.checks[k] !== true);
+if (result.errors.length || failed.length) {
+  console.error(`\n[probe-shortcuts] FAIL: ${failed.length ? 'failed checks=' + failed.join(',') : 'errors during evaluate'}`);
+  process.exit(1);
+}
+console.log('\n[probe-shortcuts] OK');
