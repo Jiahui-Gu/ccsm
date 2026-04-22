@@ -306,13 +306,16 @@ export default function App() {
               <ChatStream />
               <StatusBar
                 cwd={active.cwd}
+                cwdMissing={active.cwdMissing}
                 model={active.model || model}
                 permission={permission}
-                onChangeCwd={async (p) => {
-                  let next = p;
-                  if (next === null) {
-                    next = (await window.agentory?.pickDirectory()) ?? null;
-                  }
+                onChangeCwdToPath={(p) => {
+                  if (!p) return;
+                  changeCwd(p);
+                  pushRecentProject(p);
+                }}
+                onBrowseForCwd={async () => {
+                  const next = (await window.agentory?.pickDirectory()) ?? null;
                   if (!next) return;
                   changeCwd(next);
                   pushRecentProject(next);
