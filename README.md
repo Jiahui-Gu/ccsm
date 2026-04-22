@@ -58,6 +58,12 @@ Local SQLite database (groups, sessions, user-defined order, sidebar state, them
 
 Conversation history is **not** duplicated — Agentory reads it directly from the Claude CLI's `~/.claude/projects/` jsonl files. Anthropic credentials are stored by the CLI itself; Agentory never touches them.
 
+## Crash reports
+
+Agentory automatically sends crash reports and unhandled errors to the project's Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
+
+To disable: open Settings → Notifications and uncheck "Send crash reports to developer".
+
 ## Development
 
 Requires Node 20+ and `npm`. The native module `better-sqlite3` is rebuilt for Electron's ABI on `npm install` via `electron-builder install-app-deps`.
