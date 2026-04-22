@@ -84,4 +84,16 @@ export type MessageBlock =
     }
   | { kind: 'question'; id: string; requestId?: string; toolUseId?: string; questions: QuestionSpec[] }
   | { kind: 'status'; id: string; tone: 'info' | 'warn'; title: string; detail?: string }
+  | {
+      kind: 'system';
+      id: string;
+      // Discriminator for future system block variants. Today: only the
+      // post-resolution permission trace replaces a withdrawn waiting block,
+      // so the chat retains a scrollable record of what was allowed/denied.
+      subkind: 'permission-resolved';
+      toolName: string;
+      toolInputSummary: string;
+      decision: 'allowed' | 'denied';
+      timestamp: number;
+    }
   | { kind: 'error'; id: string; text: string };

@@ -25,22 +25,39 @@ function formatToolInputSummary(
   if (!input) return [];
   const out: Array<{ key: string; value: string }> = [];
   // Show a curated subset first for predictable ordering, then any remaining
-  // string/number keys. Skip giant blobs so the prompt stays one screen.
+  // keys. Skip giant blobs so the prompt stays one screen — the existing
+  // 400-char ellipsis at render time handles overflow.
   const seen = new Set<string>();
+  const stringify = (v: unknown): string | null => {
+    if (v == null) return String(v);
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      return String(v);
+    }
+    if (typeof v === 'object') {
+      // JSON.stringify never coerces nested values to "[object Object]". Pretty
+      // print so the eventual <dd whitespace-pre-wrap> renders the structure
+      // legibly. Fallback to bracket notation if the object contains cycles.
+      try {
+        return JSON.stringify(v, null, 2);
+      } catch {
+        return Array.isArray(v) ? '[…]' : '{…}';
+      }
+    }
+    return null;
+  };
   for (const key of PREVIEW_KEYS) {
     if (key in input) {
-      const v = input[key];
-      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-        out.push({ key, value: String(v) });
+      const s = stringify(input[key]);
+      if (s !== null) {
+        out.push({ key, value: s });
         seen.add(key);
       }
     }
   }
   for (const [key, v] of Object.entries(input)) {
     if (seen.has(key)) continue;
-    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-      out.push({ key, value: String(v) });
-    }
+    const s = stringify(v);
+    if (s !== null) out.push({ key, value: s });
   }
   return out;
 }
@@ -58,25 +75,50 @@ export function PermissionPromptBlock({
   const allowRef = useRef<HTMLButtonElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
 
-  // Focus Reject on mount — safer default. Never steal focus away from an
-  // input the user is already typing in.
+  // Focus Reject on mount — safer default. Never steal focus away from any
+  // text-entry surface the user is currently in (input / textarea /
+  // contenteditable / combobox / textbox role).
+  //
+  // EXCEPTIONS:
+  // 1. Sequential prompts are handled at the source: store.resolvePermission
+  //    skips bumping focusInputNonce when another wait block is still
+  //    pending, so the composer never steals focus between prompt #1 resolve
+  //    and prompt #2 mount.
+  // 2. The chat composer textarea (marked [data-input-bar]) is part of the
+  //    same chat surface as this prompt. When the prompt arrives and the
+  //    composer is focused but EMPTY (e.g. session-select bumped focus to a
+  //    fresh composer before the wait block landed), we steal focus to
+  //    Reject — the user hasn't started typing, so there's nothing to
+  //    interrupt. If the composer has typed content, we leave focus alone
+  //    (the user is mid-message; the prompt is still rendered, they'll act
+  //    on it after they finish typing).
+  // External text entries (rename input, dialog field, IME composition,
+  // settings textarea) are always respected.
   useEffect(() => {
     if (!autoFocus) return;
-    const id = requestAnimationFrame(() => {
+    const raf = requestAnimationFrame(() => {
       const active = document.activeElement;
-      const isInteractiveElsewhere =
-        active instanceof HTMLElement &&
-        active !== document.body &&
-        !rootRef.current?.contains(active) &&
-        (active.tagName === 'INPUT' ||
+      if (active instanceof HTMLElement && active !== document.body && !rootRef.current?.contains(active)) {
+        const isTextEntry =
+          active.tagName === 'INPUT' ||
           active.tagName === 'TEXTAREA' ||
           active.isContentEditable ||
           active.getAttribute('role') === 'combobox' ||
-          active.getAttribute('role') === 'textbox');
-      if (isInteractiveElsewhere) return;
+          active.getAttribute('role') === 'textbox';
+        if (isTextEntry) {
+          const isComposer = active.hasAttribute('data-input-bar');
+          if (!isComposer) return;
+          // Composer-specific: only steal when it's empty.
+          const value =
+            active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+              ? active.value
+              : active.textContent ?? '';
+          if (value.trim().length > 0) return;
+        }
+      }
       rejectRef.current?.focus({ preventScroll: true });
     });
-    return () => cancelAnimationFrame(id);
+    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
