@@ -22,6 +22,13 @@ import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
 import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
+import { initI18n } from './i18n';
+import { usePreferences } from './store/preferences';
+
+// Initialise i18next once, before any component renders. Subsequent
+// language changes flow through `applyLanguage` (called by the store
+// setter in src/store/preferences.ts).
+initI18n(usePreferences.getState().resolvedLanguage);
 
 subscribeAgentEvents();
 
@@ -96,6 +103,42 @@ export default function App() {
     root.classList.remove('density-compact', 'density-normal', 'density-comfortable');
     root.classList.add(`density-${density}`);
   }, [density]);
+
+  // Locale: ask main for the OS locale, feed it into the preferences store
+  // so a "system" preference resolves correctly. Falls back to navigator.
+  // Then mirror the resolved language to main so OS notifications match.
+  const hydrateSystemLocale = usePreferences((s) => s.hydrateSystemLocale);
+  const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
+  useEffect(() => {
+    let cancelled = false;
+    type Bridge = {
+      i18n?: {
+        getSystemLocale: () => Promise<string | undefined>;
+        setLanguage: (l: 'en' | 'zh') => void;
+      };
+    };
+    const bridge = (window as unknown as { agentory?: Bridge }).agentory;
+    void (async () => {
+      let locale: string | undefined;
+      try {
+        locale = await bridge?.i18n?.getSystemLocale();
+      } catch {
+        locale = undefined;
+      }
+      if (cancelled) return;
+      hydrateSystemLocale(
+        locale ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrateSystemLocale]);
+  useEffect(() => {
+    type Bridge = { i18n?: { setLanguage: (l: 'en' | 'zh') => void } };
+    const bridge = (window as unknown as { agentory?: Bridge }).agentory;
+    bridge?.i18n?.setLanguage(resolvedLanguage);
+  }, [resolvedLanguage]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);

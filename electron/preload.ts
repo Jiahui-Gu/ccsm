@@ -132,6 +132,17 @@ const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
   saveState: (key: string, value: string): Promise<void> =>
     ipcRenderer.invoke('db:save', key, value),
+  // i18n: renderer reads OS locale to seed its "system" preference, and
+  // pushes the resolved UI language to main so OS notifications match.
+  // Lives under `i18n` to keep the bridge surface organised; renderer
+  // accesses via `window.agentory.i18n.*`.
+  i18n: {
+    getSystemLocale: (): Promise<string | undefined> =>
+      ipcRenderer.invoke('agentory:get-system-locale'),
+    setLanguage: (lang: 'en' | 'zh'): void => {
+      ipcRenderer.send('agentory:set-language', lang);
+    }
+  },
   loadMessages: (sessionId: string): Promise<unknown[]> =>
     ipcRenderer.invoke('db:loadMessages', sessionId),
   saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>): Promise<void> =>
