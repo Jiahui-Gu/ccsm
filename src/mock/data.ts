@@ -48,7 +48,7 @@ export const activeSessionId = 's2';
 export type RecentProject = { id: string; name: string; path: string };
 
 export const mockRecentProjects: RecentProject[] = [
-  { id: 'p1', name: 'agentory-next', path: '~/projects/agentory-next' },
+  { id: 'p1', name: 'agentory', path: '~/projects/agentory' },
   { id: 'p2', name: 'payments-api', path: '~/projects/payments-api' },
   { id: 'p3', name: 'inference-svc', path: '~/projects/inference-svc' },
   { id: 'p4', name: 'identity-svc', path: '~/projects/identity-svc' },

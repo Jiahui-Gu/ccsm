@@ -249,7 +249,7 @@ const zh: EnCatalog = {
     tutorialNextLabel: '下一步',
     tutorialDoneLabel: '我准备好了',
     dialogTitle: '未找到 Claude CLI',
-    dialogDescriptionPrefix: 'agentory-next 包装了 Claude Code CLI。我们没在系统中找到',
+    dialogDescriptionPrefix: 'Agentory 包装了 Claude Code CLI。我们没在系统中找到',
     dialogDescriptionSuffix: '。',
     whereWeLooked: '查找过的位置',
     tabInstall: '安装',

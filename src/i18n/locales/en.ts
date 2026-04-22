@@ -260,7 +260,7 @@ const en = {
     tutorialNextLabel: 'Next',
     tutorialDoneLabel: "I'm ready",
     dialogTitle: 'Claude CLI not found',
-    dialogDescriptionPrefix: 'agentory-next wraps the Claude Code CLI. We couldn\u2019t find',
+    dialogDescriptionPrefix: 'Agentory wraps the Claude Code CLI. We couldn\u2019t find',
     dialogDescriptionSuffix: 'on your system.',
     whereWeLooked: 'Where we looked',
     tabInstall: 'Install',
