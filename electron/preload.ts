@@ -87,7 +87,10 @@ const api = {
   },
   loadMessages: (sessionId: string): Promise<unknown[]> =>
     ipcRenderer.invoke('db:loadMessages', sessionId),
-  saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>): Promise<void> =>
+  saveMessages: (
+    sessionId: string,
+    blocks: Array<{ id: string; kind: string }>
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
@@ -109,7 +112,10 @@ const api = {
     ipcRenderer.invoke('agent:sendContent', sessionId, content),
   agentInterrupt: (sessionId: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:interrupt', sessionId),
-  agentSetPermissionMode: (sessionId: string, mode: PermissionMode): Promise<boolean> =>
+  agentSetPermissionMode: (
+    sessionId: string,
+    mode: PermissionMode
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke('agent:setPermissionMode', sessionId, mode),
   agentSetModel: (sessionId: string, model?: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:setModel', sessionId, model),
