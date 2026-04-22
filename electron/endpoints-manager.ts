@@ -233,6 +233,11 @@ export class EndpointsManager {
 
     const row = this.getEndpoint(id);
     if (!row) throw new Error('addEndpoint: insert succeeded but row missing');
+    // Fire-and-forget: the UI calls this synchronously through IPC and
+    // expects the new row back immediately; model discovery (local-only —
+    // settings.json + env) runs in the background and writes sqlite for
+    // the next `models:listByEndpoint` read.
+    this.kickOffRefresh(id);
     return row;
   }
 
@@ -267,6 +272,10 @@ export class EndpointsManager {
       }
     });
     run();
+    // Fire-and-forget refresh: any of name/baseUrl/apiKey could affect what
+    // the discovery sees (e.g. a newly-added key may unlock a relay that
+    // gates model listings). Background it so the IPC call returns instantly.
+    this.kickOffRefresh(id);
     return this.getEndpoint(id);
   }
 
@@ -302,6 +311,9 @@ export class EndpointsManager {
     getDb()
       .prepare('UPDATE endpoints SET manual_model_ids = ?, updated_at = ? WHERE id = ?')
       .run(encoded, this.now(), id);
+    // Fire-and-forget refresh: manual ids feed directly into the discovery
+    // merge, so the persisted model set must be re-derived immediately.
+    this.kickOffRefresh(id);
     return this.getEndpoint(id);
   }
 
@@ -514,6 +526,20 @@ export class EndpointsManager {
   }
 
   // ---------- Helpers ----------
+
+  /**
+   * Schedule a background `refreshModels(id)`. Used by `addEndpoint`,
+   * `updateEndpoint`, and `setManualModelIds` so the persisted model set
+   * stays current without forcing IPC handlers to await network/local-IO
+   * work. Errors are logged and swallowed — the original mutation already
+   * succeeded; a failed refresh is non-fatal (the row will be re-tried on
+   * next boot or via the manual "Refresh models" button).
+   */
+  private kickOffRefresh(endpointId: string): void {
+    void this.refreshModels(endpointId).catch((err) => {
+      console.warn(`[endpoints] background refresh failed for ${endpointId}:`, err);
+    });
+  }
 
   private encryptKey(plain: string | undefined | null): Buffer | null {
     if (!plain) return null;

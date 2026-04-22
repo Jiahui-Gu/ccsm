@@ -60,9 +60,16 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     freshDb();
   });
 
+  // CRUD-focused tests don't care about discovery; addEndpoint / updateEndpoint
+  // / setManualModelIds now schedule a background refresh, so we inject a
+  // no-op lister to keep the in-flight promise from racing against the next
+  // test's fresh db. The auto-refresh behaviour itself is exercised in its
+  // own describe block below.
+  const NOOP_LISTER: ListModelsFn = makeListModels([]);
+
   it('adds an endpoint and stores the key encrypted', () => {
     const crypto = makeCrypto();
-    const mgr = new EndpointsManager({ crypto });
+    const mgr = new EndpointsManager({ crypto, listModels: NOOP_LISTER });
     const row = mgr.addEndpoint({
       name: 'Anthropic',
       baseUrl: 'https://api.anthropic.com',
@@ -78,7 +85,7 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   });
 
   it('lists endpoints with defaults first', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: NOOP_LISTER });
     mgr.addEndpoint({ name: 'A', baseUrl: 'https://a' });
     mgr.addEndpoint({ name: 'B', baseUrl: 'https://b', isDefault: true });
     const list = mgr.listEndpoints();
@@ -88,7 +95,7 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   });
 
   it('setting a new default unsets the previous one', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: NOOP_LISTER });
     const a = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', isDefault: true });
     const b = mgr.addEndpoint({ name: 'B', baseUrl: 'https://b', isDefault: true });
     const after = mgr.listEndpoints();
@@ -97,7 +104,7 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   });
 
   it('updateEndpoint with apiKey=null clears the key', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: NOOP_LISTER });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk-1' });
     expect(mgr.getPlainKey(row.id)).toBe('sk-1');
     mgr.updateEndpoint(row.id, { apiKey: null });
@@ -120,13 +127,13 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
   });
 
   it('does not persist a key when encryption is unavailable', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto(false) });
+    const mgr = new EndpointsManager({ crypto: makeCrypto(false), listModels: NOOP_LISTER });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk-1' });
     expect(mgr.getPlainKey(row.id)).toBeNull();
   });
 
   it('adds an endpoint with empty apiKey and persists without a stored key', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: NOOP_LISTER });
     const row = mgr.addEndpoint({
       name: 'Local relay',
       baseUrl: 'http://127.0.0.1:8080',
@@ -136,6 +143,44 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     expect(mgr.getPlainKey(row.id)).toBeNull();
     const list = mgr.listEndpoints();
     expect(list.find((e) => e.id === row.id)?.name).toBe('Local relay');
+  });
+});
+
+describe('EndpointsManager: auto-refresh on mutation', () => {
+  beforeEach(() => freshDb());
+
+  it('addEndpoint triggers a background refreshModels', async () => {
+    const lister = makeListModels(['m-1']);
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: lister });
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a' });
+    expect(row.id).toBeTruthy();
+    // The refresh fires microtask-asynchronously; wait until the lister
+    // observes the call before asserting.
+    await vi.waitFor(() => expect(lister).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(mgr.listModels(row.id).map((m) => m.modelId)).toContain('m-1'),
+    );
+  });
+
+  it('updateEndpoint triggers a background refreshModels', async () => {
+    const lister = makeListModels(['m-1']);
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: lister });
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a' });
+    await vi.waitFor(() => expect(lister).toHaveBeenCalledTimes(1));
+    mgr.updateEndpoint(row.id, { name: 'A2' });
+    await vi.waitFor(() => expect(lister).toHaveBeenCalledTimes(2));
+  });
+
+  it('setManualModelIds triggers a background refreshModels with the new ids', async () => {
+    const lister = makeListModels([
+      { id: 'custom-x', source: 'manual' },
+    ]);
+    const mgr = new EndpointsManager({ crypto: makeCrypto(), listModels: lister });
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a' });
+    await vi.waitFor(() => expect(lister).toHaveBeenCalledTimes(1));
+    mgr.setManualModelIds(row.id, ['custom-x']);
+    await vi.waitFor(() => expect(lister).toHaveBeenCalledTimes(2));
+    expect(lister).toHaveBeenLastCalledWith({ manualModelIds: ['custom-x'] });
   });
 });
 

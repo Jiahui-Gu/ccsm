@@ -820,6 +820,27 @@ app.whenReady().then(() => {
   // data the moment the user opens them. Fire-and-forget; refreshImportableCache
   // logs its own errors and stores [] on failure so getRecentCwds still resolves.
   void refreshImportableCache();
+
+  // Boot-time model discovery: kick off `refreshModels` for every persisted
+  // endpoint so the UI sees model lists without the user having to click
+  // "Refresh models" first. Run sequentially (one endpoint at a time) — the
+  // discovery is local-only (settings.json + env), but serialising avoids any
+  // pathological file-read contention if a relay sets up many endpoints.
+  // setImmediate so we don't add to the synchronous boot path; everything
+  // here is fire-and-forget — results land in sqlite, IPC `models:listByEndpoint`
+  // picks them up on next read.
+  setImmediate(() => {
+    void (async () => {
+      const allEndpoints = endpoints.listEndpoints();
+      for (const ep of allEndpoints) {
+        try {
+          await endpoints.refreshModels(ep.id);
+        } catch (err) {
+          console.warn(`[boot-discover] refresh failed for ${ep.id}:`, err);
+        }
+      }
+    })();
+  });
 });
 
 app.on('before-quit', () => {

@@ -1327,7 +1327,7 @@ function EndpointsPane() {
                     onClick={() => onRefresh(e.id)}
                     disabled={refreshingId === e.id}
                   >
-                    {refreshingId === e.id ? 'Discovering…' : 'Discover models'}
+                    {refreshingId === e.id ? 'Refreshing…' : 'Refresh models'}
                   </Button>
                   <Button
                     variant="secondary"
