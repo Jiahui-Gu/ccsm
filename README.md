@@ -28,7 +28,7 @@ Agentory does **not** make any HTTP calls to Anthropic itself. All API traffic g
 
 ## Install
 
-1. Download the latest `.exe` (Windows) / `.dmg` (macOS) / `.AppImage` / `.deb` / `.rpm` (Linux) from [Releases](https://github.com/Jiahui-Gu/Agentory-next/releases).
+1. Download the latest `.exe` (Windows) / `.dmg` (macOS) / `.AppImage` / `.deb` / `.rpm` (Linux) from [Releases](https://github.com/Jiahui-Gu/agentory/releases).
 2. Run the installer.
 3. Launch Agentory. If the Claude CLI isn't found, you'll see an actionable error showing every path Agentory searched.
 
