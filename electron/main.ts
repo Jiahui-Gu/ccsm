@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, safeStorage, dialog, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -23,7 +23,7 @@ import {
 } from './import-scanner';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import type { PermissionMode } from './agent/sessions';
-import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
+import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 import {
@@ -263,21 +263,6 @@ app.whenReady().then(() => {
   }
   initDb();
 
-  const cryptoAdapter: KeyCrypto = {
-    isAvailable: () => safeStorage.isEncryptionAvailable(),
-    encrypt: (plain) => safeStorage.encryptString(plain),
-    decrypt: (cipher) => safeStorage.decryptString(cipher),
-  };
-  const endpoints = new EndpointsManager({
-    crypto: cryptoAdapter,
-  });
-
-  // First-run migration: if the parent env has ANTHROPIC_BASE_URL set and no
-  // endpoints exist yet, seed a "Default" endpoint with the env key so the
-  // self-host user flow Just Works on first launch. If neither is set, stay
-  // empty — the user will add endpoints via Settings.
-  void seedDefaultEndpointFromEnv(endpoints);
-
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
   ipcMain.handle('db:loadMessages', (_e, sessionId: string) => loadMessages(sessionId));
@@ -313,68 +298,56 @@ app.whenReady().then(() => {
     /* ignore — falls through to the default 'en' */
   }
 
-  // Endpoints + models IPC
-  ipcMain.handle('endpoints:list', () => endpoints.listEndpoints());
-  ipcMain.handle(
-    'endpoints:add',
-    (_e, input: { name: string; baseUrl: string; kind?: import('./endpoints-manager').EndpointKind; apiKey?: string; isDefault?: boolean }) =>
-      endpoints.addEndpoint(input)
-  );
-  ipcMain.handle(
-    'endpoints:update',
-    (
-      _e,
-      id: string,
-      patch: { name?: string; baseUrl?: string; apiKey?: string | null; isDefault?: boolean }
-    ) => endpoints.updateEndpoint(id, patch)
-  );
-  ipcMain.handle('endpoints:remove', (_e, id: string) => endpoints.removeEndpoint(id));
-  ipcMain.handle(
-    'endpoints:testConnection',
-    (_e, args: { baseUrl: string; apiKey: string }) => endpoints.testConnection(args)
-  );
-  ipcMain.handle('endpoints:refreshModels', (_e, id: string) => endpoints.refreshModels(id));
-  ipcMain.handle(
-    'endpoints:setManualModels',
-    (_e, id: string, ids: string[]) => endpoints.setManualModelIds(id, Array.isArray(ids) ? ids : [])
-  );
-  ipcMain.handle(
-    'endpoints:createMessage',
-    (
-      _e,
-      args: {
-        endpointId: string;
-        model: string;
-        maxTokens?: number;
-        messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-        system?: string;
+  // Connection + models IPC. Single source of truth = ~/.claude/settings.json
+  // (+ ANTHROPIC_* env vars). Users edit via `claude /config` or by hand;
+  // Agentory does not let them edit the connection here.
+  ipcMain.handle('connection:read', () => {
+    const env = process.env;
+    let settingsModel: string | null = null;
+    let settingsBaseUrl: string | null = null;
+    let settingsAuthToken = false;
+    try {
+      const file = path.join(os.homedir(), '.claude', 'settings.json');
+      const raw = fs.readFileSync(file, 'utf8');
+      const parsed = JSON.parse(raw) as { model?: unknown; env?: Record<string, unknown> };
+      if (typeof parsed.model === 'string') settingsModel = parsed.model;
+      const sEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : null;
+      if (sEnv) {
+        if (typeof sEnv.ANTHROPIC_BASE_URL === 'string') settingsBaseUrl = sEnv.ANTHROPIC_BASE_URL;
+        if (typeof sEnv.ANTHROPIC_AUTH_TOKEN === 'string' || typeof sEnv.ANTHROPIC_API_KEY === 'string') {
+          settingsAuthToken = true;
+        }
       }
-    ) => endpoints.createMessage(args)
-  );
-  ipcMain.handle('models:listByEndpoint', (_e, id: string) => endpoints.listModels(id));
-  ipcMain.handle('models:listAll', () => endpoints.listModelsAll());
-
-  // Main-process helper: resolve a session's endpoint env (base URL + plain
-  // key) so the spawner can inject them per-session without the renderer ever
-  // touching the plaintext key. Returns null if endpointId is unknown.
-  function resolveSessionEndpointEnv(
-    endpointId: string | undefined
-  ): Record<string, string> | undefined {
-    if (!endpointId) return undefined;
-    const ep = endpoints.getEndpoint(endpointId);
-    if (!ep) return undefined;
-    const overrides: Record<string, string> = {};
-    overrides.ANTHROPIC_BASE_URL = ep.baseUrl;
-    const key = endpoints.getPlainKey(endpointId);
-    if (key) {
-      overrides.ANTHROPIC_API_KEY = key;
-      overrides.ANTHROPIC_AUTH_TOKEN = key;
+    } catch {
+      // Missing / malformed — fall through to env-only view.
     }
-    return overrides;
-  }
-  // Expose for agent:start below.
-  (global as unknown as { __agentoryEndpointEnv?: typeof resolveSessionEndpointEnv }).__agentoryEndpointEnv =
-    resolveSessionEndpointEnv;
+    const baseUrl = settingsBaseUrl ?? env.ANTHROPIC_BASE_URL ?? null;
+    const model = settingsModel ?? env.ANTHROPIC_MODEL ?? null;
+    const hasAuthToken =
+      settingsAuthToken ||
+      !!env.ANTHROPIC_AUTH_TOKEN?.trim() ||
+      !!env.ANTHROPIC_API_KEY?.trim();
+    return { baseUrl, model, hasAuthToken };
+  });
+  ipcMain.handle('connection:openSettingsFile', async () => {
+    const file = path.join(os.homedir(), '.claude', 'settings.json');
+    // shell.openPath returns '' on success, error string on failure. If the
+    // file does not exist, create an empty stub so the editor opens cleanly.
+    if (!fs.existsSync(file)) {
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '{}\n', 'utf8');
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    const result = await shell.openPath(file);
+    return result === '' ? { ok: true } : { ok: false, error: result };
+  });
+  ipcMain.handle('models:list', async () => {
+    const res = await listModelsFromSettings();
+    return res.models;
+  });
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
   ipcMain.handle('dialog:pickDirectory', async () => {
@@ -414,7 +387,6 @@ app.whenReady().then(() => {
         model?: string;
         permissionMode?: PermissionMode;
         resumeSessionId?: string;
-        endpointId?: string;
       }
     ) => {
       // Guard against stale `cwd` paths that no longer exist on disk. Common
@@ -432,12 +404,10 @@ app.whenReady().then(() => {
         };
       }
 
-      const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
       const binaryPath = loadClaudeBinPath() ?? undefined;
 
       const result = await sessions.start(sessionId, {
         ...opts,
-        envOverrides,
         binaryPath,
       });
 
@@ -705,27 +675,6 @@ app.whenReady().then(() => {
   // refreshImportableCache logs its own errors and stores [] on failure so
   // getRecentCwds still resolves.
   void refreshImportableCache();
-
-  // Boot-time model discovery: kick off `refreshModels` for every persisted
-  // endpoint so the UI sees model lists without the user having to click
-  // "Refresh models" first. Run sequentially (one endpoint at a time) — the
-  // discovery is local-only (settings.json + env), but serialising avoids any
-  // pathological file-read contention if a relay sets up many endpoints.
-  // setImmediate so we don't add to the synchronous boot path; everything
-  // here is fire-and-forget — results land in sqlite, IPC `models:listByEndpoint`
-  // picks them up on next read.
-  setImmediate(() => {
-    void (async () => {
-      const allEndpoints = endpoints.listEndpoints();
-      for (const ep of allEndpoints) {
-        try {
-          await endpoints.refreshModels(ep.id);
-        } catch (err) {
-          console.warn(`[boot-discover] refresh failed for ${ep.id}:`, err);
-        }
-      }
-    })();
-  });
 });
 
 app.on('before-quit', () => {
@@ -748,28 +697,3 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
-
-async function seedDefaultEndpointFromEnv(mgr: EndpointsManager): Promise<void> {
-  try {
-    const existing = mgr.listEndpoints();
-    if (existing.length > 0) return;
-    const baseUrl = process.env.ANTHROPIC_BASE_URL?.trim();
-    if (!baseUrl) return;
-    const envKey =
-      process.env.ANTHROPIC_API_KEY?.trim() ||
-      process.env.ANTHROPIC_AUTH_TOKEN?.trim() ||
-      '';
-    const row = mgr.addEndpoint({
-      name: 'Default',
-      baseUrl,
-      kind: 'anthropic',
-      apiKey: envKey || undefined,
-      isDefault: true,
-    });
-    // Best-effort initial refresh. Failures are surfaced via the row's
-    // last_status — we don't block startup on this.
-    void mgr.refreshModels(row.id).catch(() => {});
-  } catch (err) {
-    console.warn('[main] seedDefaultEndpointFromEnv failed', err);
-  }
-}

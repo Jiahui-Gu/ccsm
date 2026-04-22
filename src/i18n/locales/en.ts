@@ -147,7 +147,7 @@ const en = {
       general: 'General',
       appearance: 'Appearance',
       notifications: 'Notifications',
-      endpoints: 'Endpoints',
+      connection: 'Connection',
       updates: 'Updates'
     },
     theme: 'Theme',
@@ -170,10 +170,6 @@ const en = {
       en: 'English',
       zh: '中文'
     },
-    apiKey: 'Anthropic API key',
-    apiKeyHint: 'Stored in OS keychain. Required for Claude Code sessions.',
-    apiKeyPlaceholder: 'sk-ant-…',
-    testConnection: 'Test connection',
     version: 'Version',
     checkForUpdates: 'Check for updates'
   },
@@ -354,8 +350,7 @@ const en = {
     permissionMode: 'Permission mode',
     browseFolder: 'Browse folder…',
     loading: 'Loading…',
-    noEndpoints: 'No endpoints configured',
-    noModelsHint: 'No models yet — click Refresh in Settings',
+    noModelsHint: 'No models — run `claude /config` or edit ~/.claude/settings.json',
     pickModel: '(pick model)',
     defaultSuffix: ' (default)',
     modePlanLabel: 'Plan',

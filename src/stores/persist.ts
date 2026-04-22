@@ -38,11 +38,6 @@ export interface PersistedState {
   density?: Density;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
-  /**
-   * Default endpoint id for new sessions. Persisted so the user's pick survives
-   * restarts. Falls back to the endpoint with is_default=1 if missing.
-   */
-  defaultEndpointId?: string | null;
   notificationSettings?: NotificationSettings;
 }
 

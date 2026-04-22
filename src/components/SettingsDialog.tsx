@@ -16,14 +16,14 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'appearance' | 'notifications' | 'endpoints' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'connection' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
 const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'notifications', tabKey: 'notifications' },
-  { id: 'endpoints', tabKey: 'endpoints' },
+  { id: 'connection', tabKey: 'connection' },
   { id: 'updates', tabKey: 'updates' }
 ];
 
@@ -39,7 +39,7 @@ export function SettingsDialog({
   const [tab, setTab] = useState<Tab>(initialTab ?? 'appearance');
 
   // Sync the tab when the dialog is reopened with a fresh initialTab (e.g.,
-  // `/config` vs `/model` — the latter wants the endpoints tab).
+  // `/config` vs `/model` — the latter wants the connection tab).
   useEffect(() => {
     if (open && initialTab) setTab(initialTab);
   }, [open, initialTab]);
@@ -80,7 +80,7 @@ export function SettingsDialog({
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
             {tab === 'appearance' && <AppearancePane />}
             {tab === 'notifications' && <NotificationsPane />}
-            {tab === 'endpoints' && <EndpointsPane />}
+            {tab === 'connection' && <ConnectionPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
         </div>
@@ -454,451 +454,118 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function relativeTime(ts: number | null): string {
-  if (!ts) return 'never';
-  const delta = Date.now() - ts;
-  if (delta < 60_000) return 'just now';
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
-  return `${Math.floor(delta / 86_400_000)}d ago`;
-}
+function ConnectionPane() {
+  const connection = useStore((s) => s.connection);
+  const models = useStore((s) => s.models);
+  const modelsLoaded = useStore((s) => s.modelsLoaded);
+  const loadConnection = useStore((s) => s.loadConnection);
+  const loadModels = useStore((s) => s.loadModels);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
 
-type EditingEndpoint = {
-  id?: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  isDefault: boolean;
-  hasExistingKey?: boolean;
-  manualModelIds?: string[];
-};
+  // Re-read on mount so the pane reflects edits the user made externally
+  // (claude /config or hand-edit) since the last app boot.
+  useEffect(() => {
+    void loadConnection();
+    void loadModels();
+  }, [loadConnection, loadModels]);
 
-// Labels for the detected endpoint kind. `unknown` is a real outcome (most
-// 中转 relays that only forward /v1/messages), not an error — show it plainly.
-const KIND_LABEL: Record<string, string> = {
-  anthropic: 'Anthropic',
-  'openai-compat': 'OpenAI-compat',
-  ollama: 'Ollama',
-  bedrock: 'Bedrock',
-  vertex: 'Vertex',
-  unknown: 'Unknown',
-};
-
-function KindBadge({ kind }: { kind: string | null }) {
-  if (!kind) return null;
-  const label = KIND_LABEL[kind] ?? kind;
-  return (
-    <span
-      className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-bg-hover text-fg-secondary"
-      title={`Detected endpoint kind: ${label}`}
-    >
-      {label}
-    </span>
-  );
-}
-
-function SourceBreakdown({
-  counts,
-  total,
-}: {
-  counts: {
-    fallback: number;
-    listed: number;
-    manual: number;
-    cliPicker: number;
-    envOverride: number;
-  };
-  total: number;
-}) {
-  const parts: string[] = [];
-  if (counts.listed) parts.push(`${counts.listed} listed`);
-  if (counts.cliPicker) parts.push(`${counts.cliPicker} CLI picker`);
-  if (counts.envOverride) parts.push(`${counts.envOverride} env override`);
-  if (counts.fallback) parts.push(`${counts.fallback} fallback`);
-  if (counts.manual) parts.push(`${counts.manual} manual`);
-  const tooltip = parts.length ? parts.join(' \u00B7 ') : 'no discovery data yet';
-  return (
-    <span title={tooltip} className="cursor-help">
-      {total} model{total === 1 ? '' : 's'}
-    </span>
-  );
-}
-
-function EndpointsPane() {
-  const endpoints = useStore((s) => s.endpoints);
-  const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
-  const endpointsLoaded = useStore((s) => s.endpointsLoaded);
-  const reloadEndpoints = useStore((s) => s.reloadEndpoints);
-  const refreshEndpointModels = useStore((s) => s.refreshEndpointModels);
-
-  const [editor, setEditor] = useState<EditingEndpoint | null>(null);
-  const [refreshingId, setRefreshingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onRefresh(id: string) {
-    setRefreshingId(id);
-    setError(null);
-    const res = await refreshEndpointModels(id);
-    setRefreshingId(null);
-    if (!res.ok) setError(res.error ?? 'Refresh failed');
-  }
-
-  async function onRemove(id: string) {
+  async function onOpenSettings() {
     const api = window.agentory;
-    if (!api) return;
-    await api.endpoints.remove(id);
-    await reloadEndpoints();
-  }
-
-  return (
-    <>
-      <div className="flex items-center justify-between mb-4">
-        <div className="text-xs text-fg-tertiary max-w-[440px]">
-          Agentory talks to any server that speaks the Anthropic REST API:
-          anthropic.com, a self-hosted gateway, or a LiteLLM / Kimi / DeepSeek
-          shim. Add one here and Agentory will discover its models via
-          <code className="font-mono text-fg-secondary mx-1">GET /v1/models</code>.
-        </div>
-        <Button variant="primary" size="md" onClick={() => setEditor(emptyEditor())}>
-          Add endpoint
-        </Button>
-      </div>
-
-      {error && (
-        <div className="mb-3 px-3 py-2 rounded-sm border border-state-error/40 bg-state-error/10 text-xs text-state-error">
-          {error}
-        </div>
-      )}
-
-      {!endpointsLoaded ? (
-        <div className="text-sm text-fg-tertiary">Loading endpoints…</div>
-      ) : endpoints.length === 0 ? (
-        <div className="text-sm text-fg-tertiary">
-          No endpoints yet. Click &quot;Add endpoint&quot; to point Agentory at Anthropic
-          or your own gateway.
-        </div>
-      ) : (
-        <ul className="divide-y divide-border-subtle rounded-sm border border-border-subtle bg-bg-elevated">
-          {endpoints.map((e) => {
-            const models = modelsByEndpoint[e.id] ?? [];
-            const counts = {
-              fallback: models.filter((m) => m.source === 'fallback').length,
-              listed: models.filter((m) => m.source === 'listed').length,
-              manual: models.filter((m) => m.source === 'manual').length,
-              cliPicker: models.filter((m) => m.source === 'cli-picker').length,
-              envOverride: models.filter((m) => m.source === 'env-override').length,
-            };
-            const is401 = e.lastStatus === 'error' && (e.lastError ?? '').toLowerCase().includes('auth');
-            const noneFound = e.lastStatus === 'ok' && models.length === 0;
-            return (
-              <li key={e.id} className="flex items-start gap-3 px-3 py-2.5">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-fg-primary truncate">{e.name}</span>
-                    {e.isDefault && (
-                      <span className="text-[10px] uppercase tracking-wide px-1 rounded-sm bg-accent/15 text-accent">
-                        default
-                      </span>
-                    )}
-                    <StatusBadge status={e.lastStatus} />
-                    <KindBadge kind={e.detectedKind ?? e.kind} />
-                  </div>
-                  <div className="text-[11px] font-mono text-fg-tertiary truncate" title={e.baseUrl}>
-                    {e.baseUrl}
-                  </div>
-                  <div className="text-[11px] text-fg-tertiary mt-0.5">
-                    <SourceBreakdown counts={counts} total={models.length} /> · refreshed{' '}
-                    {relativeTime(e.lastRefreshedAt)}
-                    {e.lastRefreshedAt ? ' (cached)' : ''}
-                  </div>
-                  {is401 && (
-                    <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-error/40 bg-state-error/10 text-[11px] text-state-error">
-                      Auth failed — check your API key for this endpoint.
-                    </div>
-                  )}
-                  {noneFound && (
-                    <div className="mt-1.5 px-2 py-1 rounded-sm border border-state-warning/40 bg-state-warning/10 text-[11px] text-fg-secondary">
-                      Could not auto-discover any models. Edit this endpoint and add manual model IDs below.
-                    </div>
-                  )}
-                  {e.lastStatus === 'error' && !is401 && e.lastError ? (
-                    <div className="mt-1.5 text-[11px] text-state-error truncate" title={e.lastError}>
-                      {e.lastError}
-                    </div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => onRefresh(e.id)}
-                    disabled={refreshingId === e.id}
-                  >
-                    {refreshingId === e.id ? 'Refreshing…' : 'Refresh models'}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() =>
-                      setEditor({
-                        id: e.id,
-                        name: e.name,
-                        baseUrl: e.baseUrl,
-                        apiKey: '',
-                        isDefault: e.isDefault,
-                        hasExistingKey: true,
-                        manualModelIds: e.manualModelIds,
-                      })
-                    }
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={() => {
-                      if (window.confirm(`Remove endpoint "${e.name}"?`)) void onRemove(e.id);
-                    }}
-                  >
-                    Remove
-                  </Button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {editor && (
-        <EndpointEditorDialog
-          value={editor}
-          onClose={() => setEditor(null)}
-          onSaved={async () => {
-            setEditor(null);
-            await reloadEndpoints();
-          }}
-        />
-      )}
-    </>
-  );
-}
-
-function emptyEditor(): EditingEndpoint {
-  return { name: '', baseUrl: 'https://api.anthropic.com', apiKey: '', isDefault: false };
-}
-
-function StatusBadge({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
-  const cls =
-    status === 'ok'
-      ? 'bg-state-success/15 text-state-success'
-      : status === 'error'
-      ? 'bg-state-error/15 text-state-error'
-      : 'bg-bg-hover text-fg-tertiary';
-  const label = status === 'ok' ? 'connected' : status === 'error' ? 'error' : 'unchecked';
-  return (
-    <span className={cn('text-[10px] uppercase tracking-wide px-1 rounded-sm', cls)}>{label}</span>
-  );
-}
-
-function EndpointEditorDialog({
-  value,
-  onClose,
-  onSaved,
-}: {
-  value: EditingEndpoint;
-  onClose: () => void;
-  onSaved: () => void | Promise<void>;
-}) {
-  const [name, setName] = useState(value.name);
-  const [baseUrl, setBaseUrl] = useState(value.baseUrl);
-  const [apiKey, setApiKey] = useState('');
-  const [isDefault, setIsDefault] = useState(value.isDefault);
-  const [revealKey, setRevealKey] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [manualIdsRaw, setManualIdsRaw] = useState<string>(
-    (value.manualModelIds ?? []).join('\n')
-  );
-  const isEdit = !!value.id;
-  // API key is optional — local relays and some self-hosted endpoints do not
-  // require auth. See endpoints-manager: empty key omits the x-api-key header.
-  const canTest = baseUrl.trim().length > 0;
-
-  async function onTest() {
-    if (!window.agentory) return;
-    setTesting(true);
-    setTestResult(null);
-    const res = await window.agentory.endpoints.testConnection({
-      baseUrl: baseUrl.trim(),
-      apiKey: apiKey || '',
-    });
-    setTesting(false);
-    setTestResult(res.ok ? 'ok' : res.error);
-  }
-
-  async function onSave() {
-    if (!window.agentory) return;
-    if (!name.trim() || !baseUrl.trim()) return;
-    setSaving(true);
+    if (!api?.connection?.openSettingsFile) return;
+    setOpening(true);
+    setOpenError(null);
     try {
-      const manualIds = parseManualIds(manualIdsRaw);
-      let endpointId: string | undefined;
-      if (isEdit && value.id) {
-        await window.agentory.endpoints.update(value.id, {
-          name: name.trim(),
-          baseUrl: baseUrl.trim(),
-          apiKey: apiKey ? apiKey : undefined,
-          isDefault,
-        });
-        endpointId = value.id;
-      } else {
-        const row = await window.agentory.endpoints.add({
-          name: name.trim(),
-          baseUrl: baseUrl.trim(),
-          kind: 'anthropic',
-          apiKey: apiKey || undefined,
-          isDefault,
-        });
-        endpointId = row.id;
-      }
-      if (endpointId) {
-        await window.agentory.endpoints.setManualModels(endpointId, manualIds);
-        // Kick discovery so the manual IDs are probe-validated right away.
-        await window.agentory.endpoints.refreshModels(endpointId);
-      }
-      await onSaved();
+      const res = await api.connection.openSettingsFile();
+      if (!res.ok) setOpenError(res.error);
     } finally {
-      setSaving(false);
+      setOpening(false);
     }
   }
 
-  const inputClass = cn(
-    'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
-    'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
-    'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]'
-  );
+  const baseUrl = connection?.baseUrl ?? null;
+  const model = connection?.model ?? null;
+  const hasAuth = !!connection?.hasAuthToken;
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent title={isEdit ? 'Edit endpoint' : 'Add endpoint'} width="520px">
-        <div className="px-5 pb-4">
-          <Field label="Name">
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Anthropic, My LiteLLM"
-              className={inputClass}
-              autoFocus
-            />
-          </Field>
-          <Field label="Protocol">
-            <span className="text-sm text-fg-secondary">Anthropic-compatible (REST)</span>
-          </Field>
-          <Field label="Base URL" hint="Paste the API root, e.g. https://api.anthropic.com — Agentory uses it as-is for /v1/messages and probes /v1/models for discovery.">
-            <input
-              type="text"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.anthropic.com"
-              className={cn(inputClass, 'font-mono')}
-            />
-          </Field>
-          <Field
-            label="API key (optional)"
-            hint={
-              value.hasExistingKey
-                ? 'Leave blank to keep the existing key.'
-                : 'Optional \u2014 leave blank if your endpoint does not require authentication.'
-            }
-          >
-            <div className="flex items-center gap-2">
-              <input
-                type={revealKey ? 'text' : 'password'}
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={value.hasExistingKey ? '••••••• (unchanged)' : 'sk-ant-…'}
-                className={cn(inputClass, 'font-mono')}
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setRevealKey((r) => !r)}
-                aria-label={revealKey ? 'Hide key' : 'Reveal key'}
-              >
-                {revealKey ? 'Hide' : 'Show'}
-              </Button>
-            </div>
-          </Field>
-          <Field label="Default endpoint" hint="Used for new sessions that don't pick one.">
-            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={isDefault}
-                onChange={(e) => setIsDefault(e.target.checked)}
-                className="h-4 w-4 accent-accent"
-              />
-              <span className="text-sm text-fg-secondary">Make default</span>
-            </label>
-          </Field>
-          <Field
-            label="Manual model IDs"
-            hint="Optional. One ID per line (or comma-separated). Used as additional model picks alongside whatever claude.exe reports — IDs that aren't in claude's catalogue are still kept in the picker, marked unverified."
-          >
-            <textarea
-              value={manualIdsRaw}
-              onChange={(e) => setManualIdsRaw(e.target.value)}
-              rows={3}
-              placeholder={'claude-opus-4-5\nclaude-sonnet-4-5'}
-              className={cn(
-                inputClass,
-                'h-auto py-2 resize-y leading-snug font-mono text-xs'
-              )}
-            />
-          </Field>
-          <div className="flex items-center gap-3 mt-4">
-            <Button variant="secondary" size="md" onClick={onTest} disabled={!canTest || testing}>
-              {testing ? 'Testing…' : 'Test connection'}
-            </Button>
-            {testResult === 'ok' && (
-              <span className="text-xs text-state-success">Connected.</span>
-            )}
-            {testResult && testResult !== 'ok' && (
-              <span className="text-xs text-state-error">{testResult}</span>
-            )}
+    <div data-connection-pane>
+      <div className="text-xs text-fg-tertiary mb-4 max-w-[520px]">
+        Agentory reads connection settings from{' '}
+        <code className="font-mono text-fg-secondary">~/.claude/settings.json</code>{' '}
+        plus your <code className="font-mono text-fg-secondary">ANTHROPIC_*</code>{' '}
+        environment variables. To change them, run{' '}
+        <code className="font-mono text-fg-secondary">claude /config</code> or edit
+        the file directly. Restart Agentory to pick up changes.
+      </div>
+
+      <Field label="Base URL">
+        <code
+          data-connection-base-url
+          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
+        >
+          {baseUrl ?? 'https://api.anthropic.com (default)'}
+        </code>
+      </Field>
+
+      <Field label="Default model">
+        <code
+          data-connection-model
+          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
+        >
+          {model ?? '(unset — the CLI will pick its own default)'}
+        </code>
+      </Field>
+
+      <Field label="Auth token">
+        <span className="text-sm text-fg-secondary">
+          {hasAuth ? 'Configured' : 'Not configured — run `claude /config` to sign in.'}
+        </span>
+      </Field>
+
+      <Field
+        label={`Discovered models (${modelsLoaded ? models.length : '…'})`}
+        hint="Merged from settings.json, env vars, and the CLI’s built-in picker list."
+      >
+        {!modelsLoaded ? (
+          <div className="text-sm text-fg-tertiary">Loading…</div>
+        ) : models.length === 0 ? (
+          <div className="text-sm text-fg-tertiary">
+            No models discovered. Run <code className="font-mono text-fg-secondary">claude /config</code> to set one up.
           </div>
-        </div>
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border-subtle">
-          <Button variant="ghost" size="md" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="md"
-            onClick={onSave}
-            disabled={
-              !name.trim() || !baseUrl.trim() || saving
-            }
+        ) : (
+          <ul
+            data-connection-models
+            className="max-h-40 overflow-auto rounded-sm border border-border-subtle bg-bg-elevated divide-y divide-border-subtle"
           >
-            {saving ? 'Saving…' : isEdit ? 'Save' : 'Add'}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
+            {models.map((m) => (
+              <li
+                key={m.id}
+                className="flex items-center justify-between px-3 py-1.5 text-xs"
+              >
+                <span className="font-mono text-fg-primary truncate">{m.id}</span>
+                <span className="text-[10px] uppercase tracking-wide text-fg-tertiary ml-2 shrink-0">
+                  {m.source}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Field>
 
-
-function parseManualIds(raw: string): string[] {
-  // Split on newlines or commas; normalise whitespace so a pasted list like
-  // "a,b ,\n c" yields ["a","b","c"].
-  return Array.from(
-    new Set(
-      raw
-        .split(/[\n,]+/)
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-    )
+      <div className="flex items-center gap-3">
+        <Button
+          variant="secondary"
+          size="md"
+          onClick={onOpenSettings}
+          disabled={opening}
+          data-connection-open-file
+        >
+          {opening ? 'Opening…' : 'Open settings.json'}
+        </Button>
+        {openError && (
+          <span className="text-xs text-state-error">{openError}</span>
+        )}
+      </div>
+    </div>
   );
 }

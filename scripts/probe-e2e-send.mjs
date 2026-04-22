@@ -5,7 +5,8 @@
 // DOM contains assistant text. If the assistant block doesn't appear in the
 // chat stream, this exits non-zero.
 //
-// Requires: ANTHROPIC API key already in keychain (manual login once).
+// Requires: ~/.claude/settings.json with a working ANTHROPIC_AUTH_TOKEN +
+// ANTHROPIC_BASE_URL (run `claude /config` once).
 // Run: `node scripts/probe-e2e-send.mjs`
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
