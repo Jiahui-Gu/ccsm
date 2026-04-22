@@ -742,6 +742,7 @@ function renderBlock(
   b: MessageBlock,
   activeId: string,
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
+  bumpComposerFocus: () => void,
   opts: { permissionAutoFocus?: boolean } = {}
 ) {
   switch (b.kind) {
@@ -791,6 +792,9 @@ function renderBlock(
               void api.agentResolvePermission(activeId, b.requestId, 'deny');
             }
             void api.agentSend(activeId, answersText);
+            // Return focus to the composer so the user's next keystroke types
+            // into chat instead of being eaten by the now-disabled options.
+            bumpComposerFocus();
           }}
         />
       );
@@ -824,6 +828,7 @@ export function ChatStream() {
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
   const resolvePermission = useStore((s) => s.resolvePermission);
+  const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
   const loadMessages = useStore((s) => s.loadMessages);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -894,7 +899,7 @@ export function ChatStream() {
               }
               return blocks.map((m, i) => (
                 <div key={m.id}>
-                  {renderBlock(m, activeId, resolvePermission, {
+                  {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, {
                     permissionAutoFocus: i === lastPermIdx
                   })}
                 </div>

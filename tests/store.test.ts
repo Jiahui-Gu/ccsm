@@ -539,3 +539,36 @@ describe('store: checkCli / CLI missing flow', () => {
     expect(s.state).toBe('found');
   });
 });
+
+describe('store: composer focus orchestration', () => {
+  it('bumpComposerFocus increments focusInputNonce', () => {
+    const start = useStore.getState().focusInputNonce;
+    useStore.getState().bumpComposerFocus();
+    expect(useStore.getState().focusInputNonce).toBe(start + 1);
+    useStore.getState().bumpComposerFocus();
+    expect(useStore.getState().focusInputNonce).toBe(start + 2);
+  });
+
+  it('resolvePermission bumps focusInputNonce when a matching block is removed', () => {
+    const ipc = vi.fn().mockResolvedValue(true);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { agentResolvePermission: ipc }
+    };
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    useStore.getState().appendBlocks(sid, [
+      { kind: 'waiting', id: 'wait-req1', prompt: 'OK?', intent: 'permission', requestId: 'req1' }
+    ]);
+    const before = useStore.getState().focusInputNonce;
+    useStore.getState().resolvePermission(sid, 'req1', 'allow');
+    expect(useStore.getState().focusInputNonce).toBe(before + 1);
+  });
+
+  it('resolvePermission does NOT bump when no matching block exists (no-op fast path)', () => {
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    const before = useStore.getState().focusInputNonce;
+    useStore.getState().resolvePermission(sid, 'no-such', 'deny');
+    expect(useStore.getState().focusInputNonce).toBe(before);
+  });
+});
