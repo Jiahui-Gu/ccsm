@@ -13,7 +13,12 @@ type StartOpts = {
 
 type StartResult =
   | { ok: true }
-  | { ok: false; error: string; errorCode?: 'CLAUDE_NOT_FOUND'; searchedPaths?: string[] };
+  | {
+      ok: false;
+      error: string;
+      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
+      searchedPaths?: string[];
+    };
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
@@ -177,6 +182,15 @@ const api = {
    * has nothing usable.
    */
   recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
+
+  /**
+   * Best-effort batched existence check. Returns a map keyed by the input
+   * path; permission errors and ENOENT both map to `false`. Used by the
+   * renderer's hydration migration to flag sessions whose persisted `cwd`
+   * was deleted between runs.
+   */
+  pathsExist: (paths: string[]): Promise<Record<string, boolean>> =>
+    ipcRenderer.invoke('paths:exist', paths),
 
   memory: {
     read: (p: string): Promise<

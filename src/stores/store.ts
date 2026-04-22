@@ -214,6 +214,10 @@ type Actions = {
   deleteSession: (id: string) => void;
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
   changeCwd: (cwd: string) => void;
+  /** Tag/untag a session whose `cwd` has been detected as missing on disk.
+   *  Set true by `agent:start` when the spawn would fail with ENOENT, and
+   *  cleared automatically by `changeCwd` when the user repicks. */
+  markSessionCwdMissing: (sessionId: string, missing: boolean) => void;
   pushRecentProject: (path: string) => void;
   setModel: (model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
@@ -556,7 +560,17 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   changeCwd: (cwd) => {
     set((s) => ({
-      sessions: s.sessions.map((x) => (x.id === s.activeId ? { ...x, cwd } : x))
+      sessions: s.sessions.map((x) =>
+        x.id === s.activeId ? { ...x, cwd, cwdMissing: false } : x
+      )
+    }));
+  },
+
+  markSessionCwdMissing: (sessionId, missing) => {
+    set((s) => ({
+      sessions: s.sessions.map((x) =>
+        x.id === sessionId ? { ...x, cwdMissing: missing } : x
+      )
     }));
   },
 
@@ -1040,6 +1054,37 @@ export async function hydrateStore(): Promise<void> {
   // history immediately on boot, not on the next click.
   const active = useStore.getState().activeId;
   if (active) void useStore.getState().loadMessages(active);
+
+  // One-shot best-effort migration: probe every persisted session's `cwd`
+  // and tag rows whose directory has vanished between runs. We only
+  // SET the flag — we never CLEAR an unset one — and the work is fully
+  // async so a slow/missing IPC never blocks hydration. The Sidebar dims
+  // tagged rows; `agent:start` would also catch this on the spawn path,
+  // but tagging up front means the user sees the bad state immediately
+  // instead of after their first send. Once the user repicks via the
+  // StatusBar cwd chip, `changeCwd` clears the flag.
+  void (async () => {
+    const sessions = useStore.getState().sessions;
+    const uniquePaths = Array.from(new Set(sessions.map((s) => s.cwd).filter(Boolean)));
+    if (uniquePaths.length === 0) return;
+    const api = window.agentory;
+    if (!api?.pathsExist) return;
+    let existence: Record<string, boolean>;
+    try {
+      existence = await api.pathsExist(uniquePaths);
+    } catch {
+      return;
+    }
+    const missing = new Set(
+      uniquePaths.filter((p) => existence[p] === false)
+    );
+    if (missing.size === 0) return;
+    useStore.setState((s) => ({
+      sessions: s.sessions.map((x) =>
+        missing.has(x.cwd) ? { ...x, cwdMissing: true } : x
+      ),
+    }));
+  })();
 
   // Load endpoints + models from the main process. Keeps the IPC round-trip
   // off the critical path for reading persisted state, but still runs before

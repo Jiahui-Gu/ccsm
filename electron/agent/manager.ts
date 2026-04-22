@@ -6,7 +6,12 @@ type Sender = (channel: string, payload: unknown) => void;
 
 export type StartResult =
   | { ok: true }
-  | { ok: false; error: string; errorCode?: 'CLAUDE_NOT_FOUND'; searchedPaths?: string[] };
+  | {
+      ok: false;
+      error: string;
+      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
+      searchedPaths?: string[];
+    };
 
 class SessionsManager {
   private runners = new Map<string, SessionRunner>();
