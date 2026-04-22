@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import {
   EndpointsManager,
   type KeyCrypto,
+  type ListModelsFn,
   __test__,
 } from '../electron/endpoints-manager';
 import { __setDbForTests } from '../electron/db';
@@ -28,46 +29,28 @@ function freshDb(): Database.Database {
   return db;
 }
 
-/**
- * The discovery pipeline fans out across /v1/models GET + /v1/messages POST
- * probes in parallel. Tests want to exercise `refreshModels` without babysitting
- * every URL, so we provide a router that dispatches by URL+method and routes
- * everything else to a safe default (503 / network-fail).
- */
-interface RouteMap {
-  models?: (url: string) => Response | Promise<Response>;
-  messages?: (url: string, body: unknown) => Response | Promise<Response>;
-  ollama?: (url: string) => Response | Promise<Response>;
-  fallback?: (url: string) => Response | Promise<Response>;
+function makeListModelsOk(
+  ids: Array<string | { id: string; displayName?: string }>,
+  source: 'init' | 'initialize-rpc' | 'none' = 'init',
+): ListModelsFn {
+  return vi.fn(async () => ({
+    ok: true,
+    source,
+    models: ids.map((x) => (typeof x === 'string' ? { id: x } : x)),
+  }));
 }
 
-function routerFetch(routes: RouteMap): ReturnType<typeof vi.fn> {
-  return vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-    const method = init?.method ?? 'GET';
-    if (method === 'POST' && /\/v1\/messages$/.test(url)) {
-      if (routes.messages) {
-        let parsed: unknown = undefined;
-        try {
-          parsed = init?.body ? JSON.parse(init.body) : undefined;
-        } catch {
-          /* ignore */
-        }
-        return routes.messages(url, parsed);
-      }
-      // Default: tell probes the model doesn't exist so they don't bloat results.
-      return fakeResponse(404, { error: { type: 'not_found_error', message: 'model not found' } });
-    }
-    if (method === 'GET' && /\/v1\/models/.test(url)) {
-      if (routes.models) return routes.models(url);
-      return fakeResponse(503, { error: 'no route' });
-    }
-    if (method === 'GET' && /\/api\/tags$/.test(url)) {
-      if (routes.ollama) return routes.ollama(url);
-      return fakeResponse(503, { error: 'no route' });
-    }
-    if (routes.fallback) return routes.fallback(url);
-    return fakeResponse(503, { error: 'no route' });
-  });
+function makeListModelsErr(error: string): ListModelsFn {
+  return vi.fn(async () => ({ ok: false, error }));
+}
+
+function fakeResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as Response;
 }
 
 describe('EndpointsManager: CRUD + encryption roundtrip', () => {
@@ -88,7 +71,6 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     expect(row.isDefault).toBe(true);
     expect(row.lastStatus).toBe('unchecked');
 
-    // Round-trip the key via the manager (no plaintext columns read from DB).
     const plain = mgr.getPlainKey(row.id);
     expect(plain).toBe('sk-ant-abc');
   });
@@ -120,25 +102,19 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     expect(mgr.getPlainKey(row.id)).toBeNull();
   });
 
-  it('removeEndpoint cascades to endpoint_models and promotes a new default', () => {
-    const mgr = new EndpointsManager({ crypto: makeCrypto() });
+  it('removeEndpoint cascades to endpoint_models and promotes a new default', async () => {
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: makeListModelsOk(['m-1']),
+    });
     const a = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', isDefault: true });
     const b = mgr.addEndpoint({ name: 'B', baseUrl: 'https://b' });
-    // Single-page /v1/models response so the discovery pipeline writes a row.
-    const fetchMock = routerFetch({
-      models: () => fakeResponse(200, anthropicPage(['m-1'])),
-    });
-    const mgr2 = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
-    // reuse the existing DB — mgr and mgr2 share the in-memory DB
-    return (async () => {
-      await mgr2.refreshModels(a.id);
-      expect(mgr.listModels(a.id).length).toBeGreaterThanOrEqual(1);
-      mgr.removeEndpoint(a.id);
-      expect(mgr.getEndpoint(a.id)).toBeNull();
-      expect(mgr.listModels(a.id).length).toBe(0);
-      // b should now be default
-      expect(mgr.getEndpoint(b.id)?.isDefault).toBe(true);
-    })();
+    await mgr.refreshModels(a.id);
+    expect(mgr.listModels(a.id).length).toBeGreaterThanOrEqual(1);
+    mgr.removeEndpoint(a.id);
+    expect(mgr.getEndpoint(a.id)).toBeNull();
+    expect(mgr.listModels(a.id).length).toBe(0);
+    expect(mgr.getEndpoint(b.id)?.isDefault).toBe(true);
   });
 
   it('does not persist a key when encryption is unavailable', () => {
@@ -156,106 +132,113 @@ describe('EndpointsManager: CRUD + encryption roundtrip', () => {
     });
     expect(row.id).toBeTruthy();
     expect(mgr.getPlainKey(row.id)).toBeNull();
-    // Row must round-trip via listEndpoints.
     const list = mgr.listEndpoints();
     expect(list.find((e) => e.id === row.id)?.name).toBe('Local relay');
   });
 });
 
-function anthropicPage(ids: string[], has_more = false, last_id?: string) {
-  return {
-    data: ids.map((id) => ({ id, display_name: id.toUpperCase(), type: 'model' })),
-    has_more,
-    last_id: last_id ?? ids[ids.length - 1] ?? null,
-  };
-}
-
-function fakeResponse(status: number, body: unknown): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-    text: async () => JSON.stringify(body),
-  } as Response;
-}
-
-describe('EndpointsManager: refreshModels with pagination', () => {
+describe('EndpointsManager: refreshModels via claude.exe', () => {
   beforeEach(() => freshDb());
 
-  it('paginates through has_more and writes every model', async () => {
-    let call = 0;
-    const fetchMock = routerFetch({
-      models: () => {
-        call++;
-        if (call === 1) return fakeResponse(200, anthropicPage(['m-1', 'm-2'], true, 'm-2'));
-        return fakeResponse(200, anthropicPage(['m-3'], false, 'm-3'));
-      },
+  it('writes every model claude.exe reports, tagged listed', async () => {
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: makeListModelsOk(
+        [{ id: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' }, 'claude-opus-4-5'],
+        'init',
+      ),
     });
-    const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
     const res = await mgr.refreshModels(row.id);
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.count).toBeGreaterThanOrEqual(3);
-    const models = mgr.listModels(row.id).map((m) => m.modelId);
-    expect(models).toContain('m-1');
-    expect(models).toContain('m-2');
-    expect(models).toContain('m-3');
-    // Confirm the /v1/models branch paginated (second call uses after_id=m-2).
-    const modelsCalls = fetchMock.mock.calls
-      .map((c) => c[0] as string)
-      .filter((u) => /\/v1\/models/.test(u));
-    expect(modelsCalls.some((u) => u.includes('after_id=m-2'))).toBe(true);
+    if (res.ok) {
+      expect(res.count).toBe(2);
+      expect(res.sourceStats.listed).toBe(2);
+      expect(res.sourceStats.fallback).toBe(0);
+    }
+    const ids = mgr.listModels(row.id).map((m) => m.modelId).sort();
+    expect(ids).toEqual(['claude-opus-4-5', 'claude-sonnet-4-5']);
+    const sonnet = mgr.listModels(row.id).find((m) => m.modelId === 'claude-sonnet-4-5');
+    expect(sonnet?.displayName).toBe('Sonnet 4.5');
+    expect(sonnet?.source).toBe('listed');
+    expect(sonnet?.existsConfirmed).toBe(true);
   });
 
-  it('marks endpoint error on 401 and keeps cached models', async () => {
-    const goodFetch = routerFetch({
-      models: () => fakeResponse(200, anthropicPage(['m-1'])),
+  it('falls back to DEFAULT_MODELS when claude.exe answers with empty list', async () => {
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: makeListModelsOk([], 'none'),
     });
-    const mgrGood = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: goodFetch });
-    const row = mgrGood.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
-    await mgrGood.refreshModels(row.id);
-    expect(mgrGood.listModels(row.id).length).toBeGreaterThanOrEqual(1);
-
-    // Every branch 401s — discovery should abort with an auth error and not
-    // touch the cached models.
-    const badFetch = routerFetch({
-      models: () => fakeResponse(401, { error: 'bad key' }),
-      messages: () => fakeResponse(401, { error: { type: 'authentication_error' } }),
-    });
-    const mgrBad = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: badFetch });
-    const res = await mgrBad.refreshModels(row.id);
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error.toLowerCase()).toContain('auth');
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
+    const res = await mgr.refreshModels(row.id);
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.count).toBe(3);
+      expect(res.sourceStats.fallback).toBe(3);
+      expect(res.sourceStats.listed).toBe(0);
     }
-    // Cached models preserved.
-    expect(mgrGood.listModels(row.id).length).toBeGreaterThanOrEqual(1);
-    const after = mgrGood.getEndpoint(row.id);
+    const rows = mgr.listModels(row.id);
+    expect(rows.every((m) => m.source === 'fallback')).toBe(true);
+    expect(rows.every((m) => m.existsConfirmed === false)).toBe(true);
+  });
+
+  it('merges manualModelIds in alongside listed entries', async () => {
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: makeListModelsOk(['claude-sonnet-4-5'], 'init'),
+    });
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
+    mgr.setManualModelIds(row.id, ['custom-model-x', 'claude-sonnet-4-5']);
+    const res = await mgr.refreshModels(row.id);
+    expect(res.ok).toBe(true);
+    const rows = mgr.listModels(row.id);
+    const ids = rows.map((m) => m.modelId).sort();
+    expect(ids).toContain('custom-model-x');
+    expect(ids).toContain('claude-sonnet-4-5');
+    const custom = rows.find((m) => m.modelId === 'custom-model-x');
+    expect(custom?.source).toBe('manual');
+    expect(custom?.existsConfirmed).toBe(false);
+    // Overlap: claude-sonnet-4-5 is both listed and manual; listed wins.
+    const sonnet = rows.find((m) => m.modelId === 'claude-sonnet-4-5');
+    expect(sonnet?.source).toBe('listed');
+    expect(sonnet?.existsConfirmed).toBe(true);
+  });
+
+  it('marks endpoint error when claude.exe spawn fails', async () => {
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: makeListModelsErr('spawn failed: ENOENT'),
+    });
+    const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
+    const res = await mgr.refreshModels(row.id);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('spawn failed');
+    const after = mgr.getEndpoint(row.id);
     expect(after?.lastStatus).toBe('error');
   });
 
-  it('handles network errors without throwing', async () => {
-    // Every branch rejects — pipeline should surface "no models" / empty rather
-    // than bubble the exception.
-    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
-    const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
+  it('passes the binary path from getBinaryPath into the lister', async () => {
+    const lister = makeListModelsOk(['m-1']);
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      listModels: lister,
+      getBinaryPath: () => '/custom/claude.exe',
+    });
     const row = mgr.addEndpoint({ name: 'A', baseUrl: 'https://a', apiKey: 'sk' });
-    const res = await mgr.refreshModels(row.id);
-    // ok=true with zero models is acceptable (relay down but not an auth error).
-    expect(res).toBeDefined();
-    if (res.ok) {
-      expect(res.count).toBe(0);
-    } else {
-      expect(res.error).toBeTruthy();
-    }
+    await mgr.refreshModels(row.id);
+    expect(lister).toHaveBeenCalledWith({
+      baseUrl: 'https://a',
+      apiKey: 'sk',
+      binPath: '/custom/claude.exe',
+    });
   });
 });
 
 describe('EndpointsManager: testConnection', () => {
   beforeEach(() => freshDb());
 
-  it('returns ok on 200', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, anthropicPage([])));
+  it('returns ok on 200 from /v1/models', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { data: [] }));
     const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
     const res = await mgr.testConnection({ baseUrl: 'https://a', apiKey: 'sk' });
     expect(res.ok).toBe(true);
@@ -266,19 +249,51 @@ describe('EndpointsManager: testConnection', () => {
     expect(init.headers['anthropic-version']).toBeTruthy();
   });
 
-  it('surfaces HTTP 401 as structured error without writing DB', async () => {
+  it('surfaces HTTP 401 as structured error without spawning claude', async () => {
     const fetchMock = vi.fn().mockResolvedValue(fakeResponse(401, { error: 'nope' }));
-    const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
+    const lister = makeListModelsOk(['x']);
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      fetchImpl: fetchMock,
+      listModels: lister,
+    });
     const res = await mgr.testConnection({ baseUrl: 'https://a', apiKey: 'wrong' });
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.status).toBe(401);
       expect(res.error).toContain('Authentication failed');
     }
+    expect(lister).not.toHaveBeenCalled();
+  });
+
+  it('falls through to claude.exe spawn when /v1/models 404s', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(404, { error: 'no' }));
+    const lister = makeListModelsOk(['m-1']);
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      fetchImpl: fetchMock,
+      listModels: lister,
+    });
+    const res = await mgr.testConnection({ baseUrl: 'https://relay', apiKey: 'sk' });
+    expect(res.ok).toBe(true);
+    expect(lister).toHaveBeenCalled();
+  });
+
+  it('reports failure if both /v1/models and claude.exe spawn fail', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(500, { error: 'oops' }));
+    const lister = makeListModelsErr('spawn timeout');
+    const mgr = new EndpointsManager({
+      crypto: makeCrypto(),
+      fetchImpl: fetchMock,
+      listModels: lister,
+    });
+    const res = await mgr.testConnection({ baseUrl: 'https://relay', apiKey: 'sk' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('spawn timeout');
   });
 
   it('succeeds with an empty apiKey and omits the x-api-key header', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, anthropicPage([])));
+    const fetchMock = vi.fn().mockResolvedValue(fakeResponse(200, { data: [] }));
     const mgr = new EndpointsManager({ crypto: makeCrypto(), fetchImpl: fetchMock });
     const res = await mgr.testConnection({ baseUrl: 'https://relay.local', apiKey: '' });
     expect(res.ok).toBe(true);

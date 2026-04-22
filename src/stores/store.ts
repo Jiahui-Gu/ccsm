@@ -34,7 +34,7 @@ export type EndpointKind =
   | 'vertex'
   | 'unknown';
 export type EndpointStatus = 'ok' | 'error' | 'unchecked';
-export type DiscoverySource = 'probe' | 'listed' | 'manual';
+export type DiscoverySource = 'listed' | 'fallback' | 'manual';
 
 // Cumulative cost / token / turn counters for a single session. Aggregated
 // from `result` frames as they arrive (see agent/lifecycle). Used by the
