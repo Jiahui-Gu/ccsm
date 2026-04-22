@@ -90,6 +90,11 @@ const api = {
     ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
+  saveFile: (
+    args: { defaultName?: string; content: string }
+  ): Promise<
+    { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
+  > => ipcRenderer.invoke('dialog:saveFile', args),
 
   agentStart: (sessionId: string, opts: StartOpts): Promise<StartResult> =>
     ipcRenderer.invoke('agent:start', sessionId, opts),

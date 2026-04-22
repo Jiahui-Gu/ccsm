@@ -22,13 +22,18 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from './probe-utils.mjs';
+import { appWindow, startBundleServer } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-tool-journey-'));
 console.log(`[probe-e2e-tool-journey-render] userData = ${userDataDir}`);
+
+// Serve OUR worktree's freshly-built dist/renderer so we never read a stale
+// dev server bound elsewhere. `npm run build` (or at least `webpack --mode
+// production`) must have run first; we surface a friendly error if not.
+const { port: PORT, close: closeServer } = await startBundleServer(root);
 
 const results = [];
 
@@ -44,7 +49,7 @@ function record(name, expected, observed, pass, note = '') {
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development' },
+  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) },
 });
 
 let exitCode = 0;
@@ -218,42 +223,199 @@ try {
   }
 
   // ── Journey 4: long-output truncation + Show more ──────────────────────
+  // Uses a non-shell tool ('Read') so the LongOutputView path is exercised.
+  // Bash output is owned by xterm/Terminal (its own capping rules); this
+  // journey targets the raw-text tool branch (Read/Grep/etc.).
   {
-    // 5MB-ish: 50_000 lines × ~100 chars.
-    const big = Array.from({ length: 50_000 }, (_, i) =>
+    // 50_000 lines of ~100 chars ≈ 5MB total (under MAX_INLINE_BYTES=10MB).
+    const LINES = 50_000;
+    const big = Array.from({ length: LINES }, (_, i) =>
       `line_${i.toString().padStart(6, '0')}_${'x'.repeat(80)}`).join('\n');
     await seed([
-      { kind: 'tool', id: 't4', toolUseId: 'tu_4', name: 'Bash',
-        brief: 'cat huge', expanded: true, result: big, isError: false },
+      { kind: 'tool', id: 't4', toolUseId: 'tu_4', name: 'Read',
+        brief: 'huge.log', expanded: true, result: big, isError: false },
+    ]);
+    await win.evaluate(() => {
+      document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
+    });
+    await win.waitForTimeout(400);
+
+    // ── 4a: collapsed default — head + separator + tail ────────────────
+    const collapsedProbe = await win.evaluate(({ HEAD, TAIL, LINES }) => {
+      const head = document.querySelector('[data-testid="tool-output-collapsed-head"]');
+      const tail = document.querySelector('[data-testid="tool-output-collapsed-tail"]');
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      const copyBtn = document.querySelector('[data-testid="tool-output-copy"]');
+      const saveBtn = document.querySelector('[data-testid="tool-output-save"]');
+      const expandBtn = document.querySelector('[data-testid="tool-output-expand"]');
+      // Count line tokens visible.
+      const all = document.querySelectorAll('.flex-1.overflow-y-auto');
+      const stream = all[all.length - 1];
+      const matches = stream ? stream.innerText.match(/line_(\d{6})/g) ?? [] : [];
+      const indices = matches.map((m) => parseInt(m.slice(5), 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      const expectedHidden = LINES - HEAD - TAIL;
+      const sepText = sep ? sep.textContent ?? '' : '';
+      const sepHasCount = sepText.includes(String(expectedHidden));
+      return {
+        hasHead: !!head,
+        hasTail: !!tail,
+        hasSeparator: !!sep,
+        sepText: sepText.slice(0, 120),
+        sepHasCount,
+        hasCopyBtn: !!copyBtn,
+        hasSaveBtn: !!saveBtn,
+        hasExpandBtn: !!expandBtn,
+        firstLineSeen: min,
+        lastLineSeen: max,
+        visibleLineCount: indices.length,
+        streamInnerLen: stream ? stream.innerText.length : 0,
+      };
+    }, { HEAD: 50, TAIL: 50, LINES });
+
+    const collapsedPass =
+      collapsedProbe.hasHead &&
+      collapsedProbe.hasTail &&
+      collapsedProbe.hasSeparator &&
+      collapsedProbe.sepHasCount &&
+      collapsedProbe.hasCopyBtn &&
+      collapsedProbe.hasSaveBtn &&
+      collapsedProbe.hasExpandBtn &&
+      collapsedProbe.firstLineSeen === 0 &&
+      collapsedProbe.lastLineSeen === LINES - 1 &&
+      // ~50 + ~50 lines, plus a few elsewhere — should be < 200.
+      collapsedProbe.visibleLineCount <= 120 &&
+      collapsedProbe.streamInnerLen < 50_000;
+    record('J4a long output collapsed (head + separator + tail + toolbar)',
+      `head[0..49] AND tail[${LINES - 50}..${LINES - 1}] visible AND separator with hidden count (${LINES - 100}) AND Copy/Save/Expand buttons present AND total visible lines <= ~100`,
+      JSON.stringify(collapsedProbe),
+      collapsedPass);
+
+    // ── 4b: click expand → virtualized window mounts only a slice ──────
+    await win.evaluate(() => {
+      document.querySelector('[data-testid="tool-output-expand"]')?.click();
+    });
+    await win.waitForTimeout(300);
+    const expandedProbe = await win.evaluate(() => {
+      const viewport = document.querySelector('[data-testid="tool-output-viewport"]');
+      const spacer = document.querySelector('[data-testid="tool-output-spacer"]');
+      if (!viewport || !spacer) return { error: 'no viewport/spacer' };
+      const lineEls = spacer.querySelectorAll('[data-line-index]');
+      const indices = Array.from(lineEls)
+        .map((el) => parseInt(el.getAttribute('data-line-index') ?? '-1', 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      const spacerH = spacer.getBoundingClientRect().height;
+      return {
+        mountedLineCount: indices.length,
+        firstMountedIdx: min,
+        lastMountedIdx: max,
+        spacerHeightPx: spacerH,
+        viewportInnerLen: viewport.innerText.length,
+      };
+    });
+    const expandedPass =
+      typeof expandedProbe.mountedLineCount === 'number' &&
+      expandedProbe.mountedLineCount > 0 &&
+      expandedProbe.mountedLineCount < 1000 &&
+      expandedProbe.firstMountedIdx === 0 &&
+      expandedProbe.lastMountedIdx < 1000 &&
+      typeof expandedProbe.spacerHeightPx === 'number' &&
+      expandedProbe.spacerHeightPx > 100_000;
+    record('J4b expanded virtualizes (mounts < 1000 lines, spacer covers full height)',
+      'mounted between 1 and 1000 line elements; first=0; spacer height > 100_000px (proves not all 50k DOM nodes)',
+      JSON.stringify(expandedProbe),
+      expandedPass);
+
+    // ── 4c: scroll to bottom → far-end lines mount, top unmounts ────────
+    await win.evaluate(() => {
+      const v = document.querySelector('[data-testid="tool-output-viewport"]');
+      if (v) v.scrollTop = v.scrollHeight;
+    });
+    await win.waitForTimeout(250);
+    const scrolledProbe = await win.evaluate(({ LINES }) => {
+      const spacer = document.querySelector('[data-testid="tool-output-spacer"]');
+      if (!spacer) return { error: 'no spacer' };
+      const indices = Array.from(spacer.querySelectorAll('[data-line-index]'))
+        .map((el) => parseInt(el.getAttribute('data-line-index') ?? '-1', 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      return {
+        mountedLineCount: indices.length,
+        firstMountedIdx: min,
+        lastMountedIdx: max,
+        sawLastLine: max === LINES - 1,
+      };
+    }, { LINES });
+    const scrolledPass =
+      typeof scrolledProbe.mountedLineCount === 'number' &&
+      scrolledProbe.mountedLineCount < 1000 &&
+      scrolledProbe.sawLastLine === true &&
+      scrolledProbe.firstMountedIdx > LINES - 1000;
+    record('J4c expanded scroll-to-end mounts tail, drops head',
+      `after scroll-to-bottom: last mounted = ${LINES - 1} AND first mounted > ${LINES - 1000} AND mounted count < 1000`,
+      JSON.stringify(scrolledProbe),
+      scrolledPass);
+
+    // ── 4d: collapse round-trips back to head/tail view ─────────────────
+    await win.evaluate(() => {
+      document.querySelector('[data-testid="tool-output-expand"]')?.click();
+    });
+    await win.waitForTimeout(200);
+    const reCollapsed = await win.evaluate(() => ({
+      hasHead: !!document.querySelector('[data-testid="tool-output-collapsed-head"]'),
+      hasViewport: !!document.querySelector('[data-testid="tool-output-viewport"]'),
+    }));
+    record('J4d collapse round-trips back to head/tail view',
+      'hasHead=true, hasViewport=false',
+      JSON.stringify(reCollapsed),
+      reCollapsed.hasHead && !reCollapsed.hasViewport);
+  }
+
+  // ── Journey 4-extreme: >10MB forces user to Save as .log ───────────────
+  {
+    const HUGE_LINES = 110_000;
+    const huge = Array.from({ length: HUGE_LINES }, (_, i) =>
+      `xline_${i.toString().padStart(6, '0')}_${'x'.repeat(100)}`).join('\n');
+    await seed([
+      { kind: 'tool', id: 't4x', toolUseId: 'tu_4x', name: 'Read',
+        brief: 'mega.log', expanded: true, result: huge, isError: false },
     ]);
     await win.evaluate(() => {
       document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
     });
     await win.waitForTimeout(500);
-    const probe = await win.evaluate(() => {
-      // Measure rendered text length inside the chat stream container.
-      const all = document.querySelectorAll('.flex-1.overflow-y-auto');
-      const stream = all[all.length - 1];
-      if (!stream) return { error: 'no stream container' };
-      const innerLen = stream.innerText.length;
-      const html = stream.innerHTML;
-      // Look for affordances.
-      const text = stream.innerText.toLowerCase();
-      const hasShowMore = /show more|more lines|show all|expand|truncated|\.\.\./i.test(text);
-      // Last line index visible (proves whether full content is in DOM).
-      const lastLineMatch = stream.innerText.match(/line_(\d{6})/g);
-      const lastIdx = lastLineMatch ? lastLineMatch[lastLineMatch.length - 1] : null;
-      return { innerLen, htmlLen: html.length, hasShowMore, lastLineSeen: lastIdx };
+    const xprobe = await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-expand"]');
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      const save = document.querySelector('[data-testid="tool-output-save"]');
+      return {
+        expandDisabled: btn ? btn.hasAttribute('disabled') : null,
+        sepDisabled: sep ? sep.hasAttribute('disabled') : null,
+        hasSave: !!save,
+        expandTitle: btn ? btn.getAttribute('title') ?? '' : '',
+      };
     });
-    // Expect: rendered text bounded (< 200KB say), AND a Show more affordance exists.
-    const bounded = typeof probe.innerLen === 'number' && probe.innerLen < 500_000;
-    const pass = bounded && probe.hasShowMore;
-    record('J4 long output truncated with Show more',
-      'stream innerText < 500_000 chars AND truncation affordance ("show more"/"…"/"truncated"/"expand") present',
-      `innerLen=${probe.innerLen}, htmlLen=${probe.htmlLen}, hasShowMore=${probe.hasShowMore}, lastLineSeen=${probe.lastLineSeen}`,
+    await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-expand"]');
+      if (btn && !btn.hasAttribute('disabled')) btn.click();
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      if (sep && !sep.hasAttribute('disabled')) sep.click();
+    });
+    await win.waitForTimeout(200);
+    const stillNoViewport = await win.evaluate(() =>
+      !document.querySelector('[data-testid="tool-output-viewport"]'));
+    const pass =
+      xprobe.expandDisabled === true &&
+      xprobe.sepDisabled === true &&
+      xprobe.hasSave === true &&
+      stillNoViewport === true;
+    record('J4-extreme >10MB blocks inline expand, Save still available',
+      'Expand button disabled, separator disabled, Save button still present, clicking either does NOT mount viewport',
+      `${JSON.stringify(xprobe)}, stillNoViewport=${stillNoViewport}`,
       pass,
-      !bounded ? 'full 5MB output rendered to DOM — no truncation' :
-        !probe.hasShowMore ? 'output may be silently cut without affordance' : '');
+      !pass ? 'oversized output can still be force-expanded → renderer at risk' : '');
   }
 
   // ── Journey 5: tool error visual distinction ───────────────────────────
@@ -365,6 +527,7 @@ try {
   exitCode = 1;
 } finally {
   await app.close().catch(() => {});
+  closeServer();
   fs.rmSync(userDataDir, { recursive: true, force: true });
 }
 process.exit(exitCode);
