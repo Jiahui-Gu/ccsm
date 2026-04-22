@@ -307,6 +307,12 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
           data-session-id={session.id}
           onClick={onSelect}
           onKeyDown={(e) => {
+            // Only handle keys when the <li> itself is the focused element.
+            // Without this guard, typing a space in the inline-rename <input>
+            // bubbles up here and gets preventDefault()-ed → spaces silently
+            // disappear from the new name. Same risk for Enter, which we want
+            // the input to commit on.
+            if (e.target !== e.currentTarget) return;
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
               onSelect();
