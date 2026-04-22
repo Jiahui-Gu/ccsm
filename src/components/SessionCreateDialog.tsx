@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Folder, GitBranch, Loader2 } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Folder } from 'lucide-react';
 import { Dialog, DialogContent, DialogBody, DialogFooter, DialogClose } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { IconButton } from './ui/IconButton';
@@ -14,25 +14,6 @@ type Props = {
   initialCwd?: string | null;
 };
 
-type BranchLoadState =
-  | { kind: 'idle' }
-  | { kind: 'loading' }
-  | { kind: 'non-repo' }
-  | {
-      kind: 'loaded';
-      branches: string[];
-      currentBranch: string | null;
-      repoRoot: string;
-    }
-  | { kind: 'error'; message: string }
-  | { kind: 'unavailable' };
-
-function lastSegment(path: string): string {
-  const trimmed = path.replace(/[\\/]+$/, '');
-  const segs = trimmed.split(/[\\/]/).filter(Boolean);
-  return segs[segs.length - 1] ?? path;
-}
-
 /**
  * SessionCreateDialog — Radix Dialog that collects the minimum set of fields
  * for a new session. MVP contract:
@@ -40,10 +21,6 @@ function lastSegment(path: string): string {
  *  - `name` is optional; empty falls back to the store's "New session" default.
  *  - `cwd` is required; defaults to the caller-provided seed or the top of
  *    `recentProjects`. Browse opens an OS picker via `window.agentory.pickDirectory`.
- *  - `sourceBranch` dropdown is populated via `window.agentory.worktree.listBranches`
- *    if that IPC is available; otherwise the dropdown hides (dev on this UI
- *    is unblocked while `feat/worktree-core` is in-flight).
- *  - `useWorktree` can only be toggled when the cwd is a git repo.
  *
  * Interaction: Enter submits (unless focus is already on the Create button),
  * Esc closes, focus lands on the name input on open.
@@ -66,14 +43,7 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
     initialCwd ?? recentProjects[0]?.path ?? recentCwds[0] ?? '';
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState(defaultCwd);
-  const [useWorktree, setUseWorktree] = useState(false);
-  const [sourceBranch, setSourceBranch] = useState<string>('');
-  const [branchState, setBranchState] = useState<BranchLoadState>({ kind: 'idle' });
   const nameRef = useRef<HTMLInputElement>(null);
-  // Track in-flight listBranches calls so we drop stale responses after the
-  // user switches cwd (or closes the dialog) before a slow `git` shell-out
-  // resolves.
-  const branchFetchIdRef = useRef(0);
 
   // Reset on open so reopening gets a clean form (browse-folder side effects
   // between opens shouldn't leak).
@@ -81,9 +51,6 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
     if (!open) return;
     setName('');
     setCwd(initialCwd ?? recentProjects[0]?.path ?? recentCwds[0] ?? '');
-    setUseWorktree(false);
-    setSourceBranch('');
-    setBranchState({ kind: 'idle' });
     // Delay focus so the Radix animation doesn't fight the focus move.
     const id = window.setTimeout(() => nameRef.current?.focus(), 40);
     return () => window.clearTimeout(id);
@@ -124,67 +91,6 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Load branches whenever cwd changes. Empty cwd = idle (nothing to probe).
-  useEffect(() => {
-    if (!open) return;
-    const trimmed = cwd.trim();
-    if (!trimmed) {
-      setBranchState({ kind: 'idle' });
-      return;
-    }
-    const api = window.agentory;
-    if (!api?.worktree?.listBranches) {
-      // Data layer not wired yet — don't crash, just gray out the dropdown.
-      setBranchState({ kind: 'unavailable' });
-      return;
-    }
-    const fetchId = ++branchFetchIdRef.current;
-    setBranchState({ kind: 'loading' });
-    // The backend (feat/worktree-core) returns a flat `string[]` of branch
-    // names and throws on non-git cwds. We surface "not a git repo" as a
-    // distinct state by catching that error. `currentBranch` / `repoRoot`
-    // are not exposed by the current IPC — leave them unset and let the UI
-    // degrade gracefully (first branch wins as the default selection).
-    api.worktree
-      .listBranches(trimmed)
-      .then((branches) => {
-        if (fetchId !== branchFetchIdRef.current) return;
-        setBranchState({
-          kind: 'loaded',
-          branches,
-          currentBranch: null,
-          repoRoot: trimmed
-        });
-        setSourceBranch((prev) => {
-          if (prev && branches.includes(prev)) return prev;
-          return branches[0] ?? '';
-        });
-      })
-      .catch((err) => {
-        if (fetchId !== branchFetchIdRef.current) return;
-        const message = err instanceof Error ? err.message : String(err);
-        // Heuristic: git complains about "not a git repository" on non-repo
-        // cwds. Bucket those into the dedicated non-repo state so the hint
-        // reads correctly and the worktree checkbox is disabled.
-        if (/not a git repository/i.test(message)) {
-          setBranchState({ kind: 'non-repo' });
-          return;
-        }
-        setBranchState({ kind: 'error', message });
-      });
-  }, [cwd, open]);
-
-  // Worktrees require a git repo. If the cwd isn't one, force the checkbox
-  // off so the user can't submit an invalid combination.
-  const worktreeAllowed = branchState.kind === 'loaded';
-  useEffect(() => {
-    if (!worktreeAllowed && useWorktree) setUseWorktree(false);
-  }, [worktreeAllowed, useWorktree]);
-
-  const branchOptions = useMemo(() => {
-    return branchState.kind === 'loaded' ? branchState.branches : [];
-  }, [branchState]);
-
   const browse = useCallback(async () => {
     const picked = await window.agentory?.pickDirectory();
     if (picked) setCwd(picked);
@@ -198,32 +104,11 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
     const opts: CreateSessionOptions = {
       cwd: trimmedCwd,
       name: name.trim() || undefined,
-      useWorktree: useWorktree && worktreeAllowed,
-      sourceBranch: useWorktree && worktreeAllowed ? sourceBranch || undefined : undefined
     };
     createSession(opts);
     pushRecentProject(trimmedCwd);
     onOpenChange(false);
-  }, [cwd, name, useWorktree, worktreeAllowed, sourceBranch, createSession, pushRecentProject, onOpenChange]);
-
-  const branchHint = (() => {
-    switch (branchState.kind) {
-      case 'idle':
-        return t('sessionCreate.branchIdle');
-      case 'loading':
-        return t('sessionCreate.branchLoading');
-      case 'non-repo':
-        return t('sessionCreate.branchNonRepo');
-      case 'unavailable':
-        return t('sessionCreate.branchUnavailable');
-      case 'error':
-        return t('sessionCreate.branchError', { message: branchState.message });
-      case 'loaded':
-        return branchState.branches.length === 0
-          ? t('sessionCreate.branchEmpty')
-          : t('sessionCreate.branchRepository', { name: lastSegment(branchState.repoRoot) });
-    }
-  })();
+  }, [cwd, name, createSession, pushRecentProject, onOpenChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -283,76 +168,6 @@ export function SessionCreateDialog({ open, onOpenChange, initialCwd }: Props) {
                 </IconButton>
               </div>
             </FormField>
-
-            <FormField label={t('sessionCreate.baseBranch')} hint={branchHint}>
-              <div className="flex items-center gap-2">
-                <GitBranch
-                  size={13}
-                  className={cn(
-                    'stroke-[1.75] shrink-0',
-                    worktreeAllowed ? 'text-fg-tertiary' : 'text-fg-disabled'
-                  )}
-                />
-                <select
-                  value={sourceBranch}
-                  onChange={(e) => setSourceBranch(e.target.value)}
-                  disabled={!worktreeAllowed || branchOptions.length === 0}
-                  aria-label={t('sessionCreate.baseBranch')}
-                  data-testid="session-create-branch"
-                  className={cn(
-                    'flex-1 h-7 px-2 pr-6 rounded-sm bg-bg-elevated border border-border-default',
-                    'text-sm text-fg-primary outline-none cursor-pointer',
-                    'hover:border-border-strong',
-                    'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
-                    'disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border-default'
-                  )}
-                >
-                  {branchState.kind === 'loading' && <option value="">{t('sessionCreate.branchOptionLoading')}</option>}
-                  {branchState.kind === 'loaded' && branchOptions.length === 0 && (
-                    <option value="">{t('sessionCreate.branchOptionNoBranches')}</option>
-                  )}
-                  {branchState.kind === 'loaded' && branchState.currentBranch && !branchOptions.includes(branchState.currentBranch) && (
-                    <option value={branchState.currentBranch}>{branchState.currentBranch}</option>
-                  )}
-                  {branchOptions.map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                  {!worktreeAllowed && branchState.kind !== 'loading' && (
-                    <option value="">{t('sessionCreate.branchOptionUnavailable')}</option>
-                  )}
-                </select>
-                {branchState.kind === 'loading' && (
-                  <Loader2
-                    size={13}
-                    className="stroke-[1.75] shrink-0 text-fg-tertiary animate-spin"
-                    aria-hidden
-                  />
-                )}
-              </div>
-            </FormField>
-
-            <label
-              className={cn(
-                'inline-flex items-center gap-2 select-none',
-                worktreeAllowed ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
-              )}
-              data-testid="session-create-use-worktree-label"
-            >
-              <input
-                type="checkbox"
-                checked={useWorktree}
-                disabled={!worktreeAllowed}
-                onChange={(e) => setUseWorktree(e.target.checked)}
-                className="accent-fg-primary"
-                data-testid="session-create-use-worktree"
-              />
-              <span className="text-sm text-fg-primary">{t('sessionCreate.useWorktree')}</span>
-              <span className="text-xs text-fg-tertiary">
-                {t('sessionCreate.useWorktreeHint')}
-              </span>
-            </label>
           </form>
         </DialogBody>
         <DialogFooter>

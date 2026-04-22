@@ -242,15 +242,6 @@ const en = {
     apiKeyMissing: 'Anthropic API key is missing.',
     cliMissing: 'Claude Code CLI is not installed.'
   },
-  worktree: {
-    title: 'Worktrees',
-    createWorktree: 'Create worktree',
-    deleteWorktree: 'Delete worktree',
-    branchLabel: 'Branch',
-    pathLabel: 'Path',
-    statusClean: 'Clean',
-    statusDirty: 'Uncommitted changes'
-  },
   cli: {
     missingTitle: 'Claude Code CLI not found',
     missingBody:
@@ -334,7 +325,7 @@ const en = {
   },
   sessionCreate: {
     title: 'New session',
-    description: 'Pick a working directory; optionally isolate the agent on a fresh git worktree.',
+    description: 'Pick a working directory for the agent.',
     name: 'Name',
     nameHint: 'Optional — defaults to \u201cNew session\u201d.',
     namePlaceholder: 'New session',
@@ -342,21 +333,8 @@ const en = {
     cwdHint: 'Where the agent should run.',
     cwdPlaceholder: '/path/to/repo',
     browseFolder: 'Browse folder',
-    baseBranch: 'Base branch',
-    useWorktree: 'Use git worktree',
-    useWorktreeHint: '— isolate this session on its own branch',
     cancel: 'Cancel',
-    create: 'Create session',
-    branchIdle: 'Pick a working directory to list branches.',
-    branchLoading: 'Reading branches…',
-    branchNonRepo: 'Not a git repository — worktrees disabled.',
-    branchUnavailable: 'Worktree support not loaded yet (data layer pending).',
-    branchError: 'Could not read branches: {{message}}',
-    branchEmpty: 'Repository has no branches yet.',
-    branchRepository: 'Repository: {{name}}',
-    branchOptionLoading: 'Loading…',
-    branchOptionNoBranches: '(no branches)',
-    branchOptionUnavailable: '(unavailable)'
+    create: 'Create session'
   },
   commandPalette: {
     title: 'Command palette',
@@ -404,7 +382,6 @@ const en = {
     noModelsHint: 'No models yet — click Refresh in Settings',
     pickModel: '(pick model)',
     defaultSuffix: ' (default)',
-    worktreeBranchTitle: 'Worktree branch: {{name}}',
     modePlanLabel: 'Plan',
     modeDefaultLabel: 'Default',
     modeAcceptEditsLabel: 'Accept Edits',

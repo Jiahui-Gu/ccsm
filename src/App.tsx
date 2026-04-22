@@ -319,7 +319,6 @@ export default function App() {
                 cwd={active.cwd}
                 model={active.model || model}
                 permission={permission}
-                worktreeName={active.worktreeName}
                 onChangeCwd={async (p) => {
                   let next = p;
                   if (next === null) {
