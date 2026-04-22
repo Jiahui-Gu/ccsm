@@ -207,6 +207,7 @@ export default function App() {
                 onCreateSession={newSession}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onOpenPalette={() => setPaletteOpen(true)}
+                onOpenImport={() => setImportOpen(true)}
                 activeSessionId={activeId}
                 focusedGroupId={focusedGroupId}
                 onSelectSession={selectSession}
@@ -289,6 +290,7 @@ export default function App() {
               onCreateSession={newSession}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenPalette={() => setPaletteOpen(true)}
+              onOpenImport={() => setImportOpen(true)}
               activeSessionId={activeId}
               focusedGroupId={focusedGroupId}
               onSelectSession={selectSession}
