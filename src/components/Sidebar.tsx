@@ -294,6 +294,11 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
               onSelect();
             }
           }}
+          title={
+            session.cwdMissing
+              ? t('sidebar.cwdMissingTooltip', { cwd: session.cwd })
+              : undefined
+          }
           className={cn(
             'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-base h-9',
             'transition-[background-color,color,box-shadow] duration-150',
@@ -302,7 +307,8 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
             selected
               ? 'bg-bg-active text-fg-primary'
               : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
-            active && 'font-medium text-fg-primary'
+            active && 'font-medium text-fg-primary',
+            session.cwdMissing && 'opacity-55'
           )}
         >
           {selected && (
@@ -399,7 +405,10 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
 }
 
 export type SidebarProps = {
-  onCreateSession?: (cwd: string | null) => void;
+  /** Create a new session in-place. The store seeds `cwd` from
+   *  `recentProjects[0]?.path ?? '~'`; the user repicks via the StatusBar
+   *  cwd chip. No modal involved — see App.tsx::newSession. */
+  onCreateSession?: () => void;
   onOpenSettings?: () => void;
   onOpenPalette?: () => void;
   activeSessionId: string;
@@ -410,13 +419,13 @@ export type SidebarProps = {
   onMoveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
 };
 
-function NewSessionButton({ onCreateSession }: { onCreateSession?: (cwd: string | null) => void }) {
+function NewSessionButton({ onCreateSession }: { onCreateSession?: () => void }) {
   const { t } = useTranslation();
   return (
     <Button
       variant="raised"
       size="md"
-      onClick={() => onCreateSession?.(null)}
+      onClick={() => onCreateSession?.()}
       className="flex-1 h-8 text-xs gap-1.5"
     >
       <Plus size={14} className="stroke-[1.75]" />
@@ -507,7 +516,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
           <IconButton
             variant="raised"
             size="md"
-            onClick={() => onCreateSession?.(null)}
+            onClick={() => onCreateSession?.()}
             tooltip={t('sidebar.newSessionTooltip')}
             tooltipSide="right"
             aria-label={t('sidebar.newSessionAria')}

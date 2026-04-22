@@ -29,6 +29,14 @@ export interface Session {
   // passed to claude.exe via `--allowedTools` / `--disallowedTools`.
   // Omit to fall back to global rules untouched.
   permissionRules?: PermissionRules;
+  // Marks a session whose persisted `cwd` no longer exists on disk (e.g.
+  // a directory that was deleted between app runs — common after the
+  // worktree feature was reverted). Set by `hydrateStore` via a best-effort
+  // existence probe and cleared the next time the user repicks a cwd.
+  // Surfaced in the Sidebar (dim row + tooltip) and in `agent:start`
+  // (returns `errorCode: 'CWD_MISSING'` so InputBar can prompt the user
+  // to repick via the StatusBar cwd chip).
+  cwdMissing?: boolean;
 }
 
 // Fine-grained per-tool permission rules layered on top of `PermissionMode`.

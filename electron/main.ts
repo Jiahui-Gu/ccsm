@@ -13,6 +13,7 @@ import {
   saveClaudeBinPath,
 } from './db';
 import { sessions } from './agent/manager';
+import { resolveCwd } from './agent/sessions';
 import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
@@ -76,8 +77,8 @@ const isDev = !app.isPackaged;
 // results to renderers, refreshing in the background on each request so
 // newly-recorded sessions show up without a manual reload.
 //
-// `recentCwds` is derived from the same scan and powers the
-// SessionCreateDialog's default cwd / dropdown — same goal, no second IPC.
+// `recentCwds` is derived from the same scan and seeds the new-session
+// default cwd (via the renderer store) — same goal, no second IPC.
 let importableCache: ScannableSession[] = [];
 let recentCwdsCache: string[] = [];
 let importablePending: Promise<ScannableSession[]> | null = null;
@@ -445,6 +446,21 @@ app.whenReady().then(() => {
         disallowedTools?: readonly string[];
       }
     ) => {
+      // Guard against stale `cwd` paths that no longer exist on disk. Common
+      // failure mode: a session was created inside a now-deleted worktree
+      // (the Sept worktree feature was reverted in #104), so its persisted
+      // `cwd` points at `.claude/worktrees/agent-xxx`. Spawning would crash
+      // with ENOENT inside SessionRunner; catching here gives the renderer a
+      // clean error code it can surface as "repick your folder".
+      const resolvedCwd = resolveCwd(opts.cwd);
+      if (!fs.existsSync(resolvedCwd)) {
+        return {
+          ok: false,
+          error: `Working directory no longer exists: ${opts.cwd}`,
+          errorCode: 'CWD_MISSING' as const,
+        };
+      }
+
       const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
       // Fall back to the global keychain key only when no endpoint was chosen
       // or the endpoint has no stored key (user is still relying on parent
@@ -489,6 +505,27 @@ app.whenReady().then(() => {
 
   ipcMain.handle('import:scan', () => getImportableSessions());
   ipcMain.handle('import:recentCwds', () => getRecentCwds());
+
+  // Batched best-effort existence probe for arbitrary filesystem paths.
+  // The renderer uses this on hydration to flag sessions whose persisted
+  // `cwd` was deleted between runs (typical worktree-cleanup victim — see
+  // PR #104). Returned map is keyed by the input path; missing paths and
+  // permission errors both map to `false` (we don't surface the distinction
+  // — for the migration's purpose they're equivalent: don't auto-spawn).
+  ipcMain.handle('paths:exist', (_e, inputPaths: unknown) => {
+    const list = Array.isArray(inputPaths)
+      ? inputPaths.filter((p): p is string => typeof p === 'string')
+      : [];
+    const out: Record<string, boolean> = {};
+    for (const p of list) {
+      try {
+        out[p] = fs.existsSync(resolveCwd(p));
+      } catch {
+        out[p] = false;
+      }
+    }
+    return out;
+  });
 
   // ───────────────────────────── /pr flow ──────────────────────────────────
   //
@@ -696,9 +733,10 @@ app.whenReady().then(() => {
   createWindow();
   ensureTray();
 
-  // Eager-load CLI transcripts so ImportDialog and SessionCreateDialog have
-  // data the moment the user opens them. Fire-and-forget; refreshImportableCache
-  // logs its own errors and stores [] on failure so getRecentCwds still resolves.
+  // Eager-load CLI transcripts so ImportDialog and the new-session cwd
+  // default have data the moment the user opens them. Fire-and-forget;
+  // refreshImportableCache logs its own errors and stores [] on failure so
+  // getRecentCwds still resolves.
   void refreshImportableCache();
 
   // Boot-time model discovery: kick off `refreshModels` for every persisted

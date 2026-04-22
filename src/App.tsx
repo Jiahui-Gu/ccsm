@@ -12,7 +12,6 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { PrFlowProvider } from './components/PrFlowProvider';
-import { SessionCreateDialog } from './components/SessionCreateDialog';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
@@ -47,6 +46,7 @@ export default function App() {
   const focusGroup = useStore((s) => s.focusGroup);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
+  const createSession = useStore((s) => s.createSession);
   const changeCwd = useStore((s) => s.changeCwd);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
   const setModel = useStore((s) => s.setModel);
@@ -144,16 +144,13 @@ export default function App() {
   const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
-  const [createOpen, setCreateOpen] = React.useState(false);
-  // Seed cwd passed into SessionCreateDialog on the next open. Reset back to
-  // undefined whenever the dialog closes so the next open doesn't stick to a
-  // stale folder pick.
-  const [createSeedCwd, setCreateSeedCwd] = React.useState<string | null | undefined>(undefined);
 
-  const openCreateDialog = React.useCallback((cwd: string | null) => {
-    setCreateSeedCwd(cwd);
-    setCreateOpen(true);
-  }, []);
+  // New sessions are created in-place — no modal. The store seeds `cwd`
+  // from `recentProjects[0]?.path ?? '~'`; users repick later via the
+  // StatusBar cwd chip in chat. See createSession() in stores/store.ts.
+  const newSession = React.useCallback(() => {
+    createSession(null);
+  }, [createSession]);
 
   // Bridge from the slash-command handlers (`/config`, `/model`) into the
   // local Settings open state.
@@ -190,12 +187,12 @@ export default function App() {
         focusGroup(id);
       } else if (k === 'n') {
         e.preventDefault();
-        openCreateDialog(null);
+        newSession();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createGroup, focusGroup, toggleSidebar, openCreateDialog]);
+  }, [createGroup, focusGroup, toggleSidebar, newSession]);
 
   if (!active) {
     return (
@@ -207,7 +204,7 @@ export default function App() {
           <AppShell
             sidebar={
               <Sidebar
-                onCreateSession={(cwd) => openCreateDialog(cwd)}
+                onCreateSession={newSession}
                 onOpenSettings={() => setSettingsOpen(true)}
                 onOpenPalette={() => setPaletteOpen(true)}
                 activeSessionId={activeId}
@@ -230,7 +227,7 @@ export default function App() {
                       <Button
                         variant="secondary"
                         size="md"
-                        onClick={() => openCreateDialog(null)}
+                        onClick={newSession}
                         className="w-44 justify-center"
                       >
                         <Plus size={14} className="stroke-[2]" />
@@ -250,7 +247,7 @@ export default function App() {
                     <Tutorial
                       onNewSession={() => {
                         markTutorialSeen();
-                        openCreateDialog(null);
+                        newSession();
                       }}
                       onImport={() => {
                         markTutorialSeen();
@@ -265,20 +262,12 @@ export default function App() {
           />
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-          <SessionCreateDialog
-            open={createOpen}
-            onOpenChange={(o) => {
-              setCreateOpen(o);
-              if (!o) setCreateSeedCwd(undefined);
-            }}
-            initialCwd={createSeedCwd}
-          />
           <ClaudeCliMissingDialog />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
             onOpenSettings={() => setSettingsOpen(true)}
-            onNewSession={() => openCreateDialog(null)}
+            onNewSession={newSession}
             onOpenImport={() => setImportOpen(true)}
             onSelectSession={selectSession}
             onFocusGroup={focusGroup}
@@ -297,7 +286,7 @@ export default function App() {
         <AppShell
           sidebar={
             <Sidebar
-              onCreateSession={(cwd) => openCreateDialog(cwd)}
+              onCreateSession={newSession}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenPalette={() => setPaletteOpen(true)}
               activeSessionId={activeId}
@@ -340,21 +329,13 @@ export default function App() {
         />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-        <SessionCreateDialog
-          open={createOpen}
-          onOpenChange={(o) => {
-            setCreateOpen(o);
-            if (!o) setCreateSeedCwd(undefined);
-          }}
-          initialCwd={createSeedCwd}
-        />
         <ClaudeCliMissingDialog />
         <PrFlowProvider />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onOpenSettings={() => setSettingsOpen(true)}
-          onNewSession={() => openCreateDialog(null)}
+          onNewSession={newSession}
           onOpenImport={() => setImportOpen(true)}
           onSelectSession={selectSession}
           onFocusGroup={focusGroup}
