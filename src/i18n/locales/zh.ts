@@ -122,6 +122,8 @@ const zh: EnCatalog = {
     newSessionAria: '新会话',
     searchTooltip: '搜索  ⌘K',
     searchAriaShort: '搜索',
+    importTooltip: '导入会话',
+    importAriaShort: '导入会话',
     settingsTooltip: '设置  ⌘,',
     settingsAria: '设置',
     notificationsMutedAria: '通知已静音',

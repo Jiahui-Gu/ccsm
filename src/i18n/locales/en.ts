@@ -127,6 +127,8 @@ const en = {
     newSessionAria: 'New session',
     searchTooltip: 'Search  ⌘K',
     searchAriaShort: 'Search',
+    importTooltip: 'Import session',
+    importAriaShort: 'Import session',
     settingsTooltip: 'Settings  ⌘,',
     settingsAria: 'Settings',
     notificationsMutedAria: 'Notifications muted',

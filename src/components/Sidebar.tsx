@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   ChevronRight,
+  Download,
   Plus,
   Search,
   Settings,
@@ -411,6 +412,7 @@ export type SidebarProps = {
   onCreateSession?: () => void;
   onOpenSettings?: () => void;
   onOpenPalette?: () => void;
+  onOpenImport?: () => void;
   activeSessionId: string;
   focusedGroupId: string | null;
   onSelectSession: (id: string) => void;
@@ -434,7 +436,7 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: () => void })
   );
 }
 
-export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpenImport, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
   const { t } = useTranslation();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
@@ -536,6 +538,17 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             <Search size={14} className="stroke-[1.5]" />
           </IconButton>
           <div className="flex-1" />
+          <IconButton
+            variant="raised"
+            size="md"
+            onClick={onOpenImport}
+            tooltip={t('sidebar.importTooltip')}
+            tooltipSide="right"
+            aria-label={t('sidebar.importAriaShort')}
+            className="h-8 w-8"
+          >
+            <Download size={13} className="stroke-[1.5]" />
+          </IconButton>
           <IconButton
             variant="raised"
             size="md"
@@ -647,17 +660,30 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, active
             </nav>
           )}
 
-          {/* Settings — its own zone at the bottom. */}
-          <div className="px-3 pt-2 pb-3 border-t border-border-subtle">
+          {/* Settings — its own zone at the bottom. Mirrors the top zone's
+              two-button rhythm (flex-1 text Button + fixed-width IconButton)
+              so the sidebar's top and bottom action rows feel symmetrical. */}
+          <div className="px-3 pt-2 pb-3 border-t border-border-subtle flex items-center gap-2">
             <Button
               variant="raised"
               size="md"
               onClick={onOpenSettings}
-              className="w-full h-8 text-xs gap-1.5"
+              className="flex-1 h-8 text-xs gap-1.5"
             >
               <Settings size={13} className="stroke-[1.5]" />
               <span>{t('common.settings')}</span>
             </Button>
+            <IconButton
+              variant="raised"
+              size="md"
+              onClick={onOpenImport}
+              tooltip={t('sidebar.importTooltip')}
+              tooltipSide="top"
+              aria-label={t('sidebar.importAriaShort')}
+              className="h-8 w-8 shrink-0"
+            >
+              <Download size={13} className="stroke-[1.5]" />
+            </IconButton>
           </div>
         </div>
       )}
