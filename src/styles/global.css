@@ -54,6 +54,10 @@
      makes a flat surface read as 3D without a real shadow. */
   --surface-highlight: oklch(1 0 0 / 0.04);
   --surface-shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 4px 16px oklch(0 0 0 / 0.2);
+  /* 2px focus halo. Token-driven so light mode can pull saturation/lightness
+     down — the dark cyan stays vibrant on dark surfaces, but reads as a
+     glaring teal smear on near-white. Each mode picks its own oklch(). */
+  --color-focus-ring: oklch(0.72 0.14 215 / 0.30);
 
   /* Apple's spring curve — used for hover / active / focus transitions. */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -214,6 +218,7 @@ html.theme-light {
   --surface-shadow:
     0 1px 2px oklch(0 0 0 / 0.06),
     0 4px 16px oklch(0.6 0.02 60 / 0.08);
+  --color-focus-ring: oklch(0.55 0.15 215 / 0.30);
 
   --color-bg-app-foreground: var(--color-fg-primary);
   --color-bg-panel-foreground: var(--color-fg-primary);

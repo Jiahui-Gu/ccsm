@@ -50,7 +50,7 @@ export const DialogContent = forwardRef<
           'fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2',
           'rounded-lg border border-border-default bg-bg-panel',
           'surface-highlight',
-          'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_8px_32px_oklch(0_0_0_/_0.45),0_2px_8px_oklch(0_0_0_/_0.25)]',
+          'shadow-[var(--surface-shadow)]',
           'text-fg-primary outline-none',
           'data-[state=open]:animate-[dialogIn_200ms_cubic-bezier(0.32,0.72,0,1)]',
           'data-[state=closed]:opacity-0',
