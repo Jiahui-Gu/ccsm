@@ -184,36 +184,25 @@ export async function getCurrentBranch(repoRoot: string): Promise<string | null>
   return name;
 }
 
-/**
- * List local + origin remote branches (short names). Deduplicated, sorted.
- * Remote HEAD pointers (`origin/HEAD`) are filtered out.
- */
-export async function listBranches(repoRoot: string): Promise<string[]> {
-  const { stdout } = await runGit(
-    ['branch', '--all', '--format=%(refname:short)'],
-    { cwd: repoRoot }
-  );
-  const names = stdout
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .filter((s) => !s.endsWith('/HEAD'));
-  return Array.from(new Set(names)).sort();
-}
-
 export interface CreateWorktreeArgs {
   repoRoot: string;
   worktreePath: string;
   /** New branch name to create at the worktree. */
   branch: string;
-  /** Upstream branch to fork from — `origin/<sourceBranch>` is passed to git. */
+  /**
+   * Local start point — typically the source repo's current HEAD (branch
+   * name returned by `getCurrentBranch`, or `HEAD` for detached state).
+   * Passed verbatim to `git worktree add` as the start ref so worktrees
+   * always branch off whatever the user currently has checked out, with
+   * no dependency on `origin/` being reachable.
+   */
   sourceBranch: string;
 }
 
 /**
- * `git worktree add -b <branch> <path> origin/<sourceBranch>`, with our
- * standard longpath + LFS-skip overrides. Both paths are resolved to absolute
- * form before being passed to git so relative-path ambiguity can't bite us.
+ * `git worktree add -b <branch> <path> <sourceBranch>`, with our standard
+ * longpath + LFS-skip overrides. Both paths are resolved to absolute form
+ * before being passed to git so relative-path ambiguity can't bite us.
  */
 export async function createWorktree(args: CreateWorktreeArgs): Promise<void> {
   const absRoot = path.resolve(args.repoRoot);
@@ -227,7 +216,7 @@ export async function createWorktree(args: CreateWorktreeArgs): Promise<void> {
       '-b',
       args.branch,
       absPath,
-      `origin/${args.sourceBranch}`,
+      args.sourceBranch,
     ],
     { cwd: absRoot, timeoutMs: 300_000 }
   );

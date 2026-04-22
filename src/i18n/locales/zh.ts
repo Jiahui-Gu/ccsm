@@ -327,7 +327,7 @@ const zh: EnCatalog = {
   },
   sessionCreate: {
     title: '新建会话',
-    description: '选择一个工作目录；可选地用新的 git worktree 隔离 agent。',
+    description: '选择一个工作目录；如果是 git 仓库会自动在新的 worktree 中运行。',
     name: '名称',
     nameHint: '可选 — 默认为"新会话"。',
     namePlaceholder: '新会话',
@@ -335,21 +335,8 @@ const zh: EnCatalog = {
     cwdHint: 'agent 在这个目录下运行。',
     cwdPlaceholder: '/path/to/repo',
     browseFolder: '选择文件夹',
-    baseBranch: '基础分支',
-    useWorktree: '使用 git worktree',
-    useWorktreeHint: '— 在独立分支上隔离这个会话',
     cancel: '取消',
-    create: '创建会话',
-    branchIdle: '先选一个工作目录，再列出分支。',
-    branchLoading: '读取分支…',
-    branchNonRepo: '不是 git 仓库 — worktree 不可用。',
-    branchUnavailable: 'Worktree 支持尚未加载（数据层未就绪）。',
-    branchError: '无法读取分支：{{message}}',
-    branchEmpty: '仓库还没有分支。',
-    branchRepository: '仓库：{{name}}',
-    branchOptionLoading: '加载中…',
-    branchOptionNoBranches: '（无分支）',
-    branchOptionUnavailable: '（不可用）'
+    create: '创建会话'
   },
   commandPalette: {
     title: '命令面板',

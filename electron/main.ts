@@ -42,11 +42,7 @@ import {
   type WorktreeStorage,
   type WorktreeRecord,
 } from './agent/worktree-manager';
-import {
-  resolveRepoRoot,
-  isGitRepo,
-  listBranches as gitListBranches,
-} from './agent/git-helpers';
+import { isGitRepo, resolveRepoRoot } from './agent/git-helpers';
 
 const KEYCHAIN_FILE = 'anthropic-key.bin';
 
@@ -480,13 +476,6 @@ app.whenReady().then(() => {
         endpointId?: string;
         allowedTools?: readonly string[];
         disallowedTools?: readonly string[];
-        // Worktree opt-in. When true, the spawner creates (or reuses) a
-        // disposable git worktree under the resolved repo root and runs
-        // claude.exe inside it. The renderer is informed of the resolved
-        // path via the `agent:worktreeReady` event so it can update its
-        // local Session record.
-        useWorktree?: boolean;
-        sourceBranch?: string;
       }
     ) => {
       const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
@@ -496,23 +485,19 @@ app.whenReady().then(() => {
       const apiKey = envOverrides?.ANTHROPIC_API_KEY ? undefined : readApiKey();
       const binaryPath = loadClaudeBinPath() ?? undefined;
 
-      // ── Worktree binding ─────────────────────────────────────────────
-      // If the session opted into a worktree, swap `cwd` for the worktree
-      // path BEFORE spawning. We surface a structured failure to the
-      // renderer instead of starting in the wrong dir; the user is told
-      // exactly which git step blew up.
+      // ── Auto worktree binding ────────────────────────────────────────
+      // If the cwd is inside a git repo, transparently provision a
+      // disposable worktree branched off the current HEAD and run claude
+      // inside it. Non-git cwds run in place. Failure to create the
+      // worktree is surfaced as a structured error so the user knows which
+      // git step blew up — we do NOT silently fall back to running on the
+      // main checkout, which could mix unrelated changes into their tree.
       let effectiveCwd = opts.cwd;
       let worktreeInfo: { path: string; name: string; branch: string; sourceBranch: string | null } | null = null;
-      if (opts.useWorktree) {
+      if (await isGitRepo(opts.cwd)) {
         try {
-          const repoRoot = await resolveRepoRoot(opts.cwd);
-          if (!repoRoot) {
-            return {
-              ok: false as const,
-              error: `Cannot create worktree: ${opts.cwd} is not inside a git repository.`,
-            };
-          }
-          const rec = await worktreeManager.create(sessionId, repoRoot, opts.sourceBranch);
+          const repoRoot = (await resolveRepoRoot(opts.cwd)) ?? opts.cwd;
+          const rec = await worktreeManager.create(sessionId, repoRoot);
           effectiveCwd = rec.path;
           worktreeInfo = {
             path: rec.path,
@@ -537,9 +522,9 @@ app.whenReady().then(() => {
       });
 
       // Inform the renderer of the resolved worktree so it can persist the
-      // path/name/branch onto the Session. Only emitted on success — failure
-      // flows return early above and the renderer learns via the rejected
-      // start result.
+      // path/name/branch onto the Session for sidebar / status bar display.
+      // Only emitted on success — failure flows return early above and the
+      // renderer learns via the rejected start result.
       if (result.ok && worktreeInfo) {
         const win = BrowserWindow.fromWebContents(_e.sender);
         if (win && !win.webContents.isDestroyed()) {
@@ -578,19 +563,9 @@ app.whenReady().then(() => {
 
   // ── Worktree IPC (read-only surface) ─────────────────────────────────
   // create / remove are NOT exposed: they're driven by the session lifecycle
-  // (agent:start with useWorktree, agent:close). The renderer only needs
-  // to read branches for the new-session dialog and look up a session's
-  // current binding for status / display.
-  ipcMain.handle('worktree:listBranches', async (_e, repoRoot: string) => {
-    if (typeof repoRoot !== 'string' || repoRoot.length === 0) return [];
-    try {
-      if (!(await isGitRepo(repoRoot))) return [];
-      return await gitListBranches(repoRoot);
-    } catch (err) {
-      console.warn('[main] worktree:listBranches failed', err);
-      return [];
-    }
-  });
+  // (auto-provisioned in agent:start when cwd is a git repo, torn down in
+  // agent:close). The renderer only needs to look up a session's current
+  // binding for status / display.
   ipcMain.handle('worktree:getForSession', (_e, sessionId: string) => {
     if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
     return worktreeManager.getBySession(sessionId);

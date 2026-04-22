@@ -145,11 +145,11 @@ describe('WorktreeManager.create', () => {
     expect(callArg.sourceBranch).toBe('feature-x');
   });
 
-  it('falls back to "main" when HEAD is detached and caller omits sourceBranch', async () => {
+  it('falls back to "HEAD" when the branch is detached and caller omits sourceBranch', async () => {
     git.getCurrentBranch.mockResolvedValue(null);
     await mgr.create('sess-1', '/tmp/repo');
     const callArg = git.createWorktree.mock.calls[0][0] as CreateWorktreeArgs;
-    expect(callArg.sourceBranch).toBe('main');
+    expect(callArg.sourceBranch).toBe('HEAD');
   });
 
   it('is idempotent — second call returns the first record and does not touch git', async () => {

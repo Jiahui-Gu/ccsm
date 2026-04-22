@@ -12,8 +12,6 @@ type StartOpts = {
   endpointId?: string;
   allowedTools?: readonly string[];
   disallowedTools?: readonly string[];
-  useWorktree?: boolean;
-  sourceBranch?: string;
 };
 
 type WorktreeReadyDecl = {
@@ -308,7 +306,6 @@ declare global {
       };
 
       worktree: {
-        listBranches: (repoRoot: string) => Promise<string[]>;
         getForSession: (sessionId: string) => Promise<WorktreeRecordDecl | null>;
         onReady: (handler: (e: WorktreeReadyDecl) => void) => () => void;
       };

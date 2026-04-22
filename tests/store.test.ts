@@ -76,25 +76,26 @@ describe('store: createSession', () => {
     expect(useStore.getState().sessions[0].cwd).toBe('C:/other/path');
   });
 
-  it('accepts an options object with name + worktree fields', () => {
+  it('accepts an options object with a name override', () => {
     useStore.getState().createSession({
       cwd: '/tmp/repo',
-      name: '  Worktree spike  ',
-      useWorktree: true,
-      sourceBranch: 'main'
+      name: '  Worktree spike  '
     });
     const s = useStore.getState().sessions[0];
     expect(s.cwd).toBe('/tmp/repo');
     expect(s.name).toBe('Worktree spike');
-    expect(s.useWorktree).toBe(true);
-    expect(s.sourceBranch).toBe('main');
+    // Worktree fields are populated by the backend after spawn, never by
+    // createSession itself — verify they stay untouched here.
+    expect(s.worktreePath).toBeUndefined();
+    expect(s.worktreeName).toBeUndefined();
+    expect(s.sourceBranch).toBeUndefined();
   });
 
-  it('options object without useWorktree leaves the flag unset', () => {
+  it('options object without a name falls back to "New session"', () => {
     useStore.getState().createSession({ cwd: '/tmp/x' });
     const s = useStore.getState().sessions[0];
-    expect(s.useWorktree).toBeUndefined();
-    expect(s.sourceBranch).toBeUndefined();
+    expect(s.name).toBe('New session');
+    expect(s.worktreePath).toBeUndefined();
   });
 });
 
@@ -282,36 +283,44 @@ describe('store: setRunning', () => {
   });
 });
 
-describe('store: cc worktree settings', () => {
-  it('exposes default values out of the box', () => {
-    const s = useStore.getState();
-    expect(s.ccBranchPrefix).toBe('claude');
-    expect(s.ccWorktreeParentDir).toEqual({ mode: 'default' });
-    expect(s.ccAutoArchiveOnPrClose).toBe(false);
-  });
-
-  it('setCcBranchPrefix trims and falls back to the default on empty input', () => {
-    useStore.getState().setCcBranchPrefix('  feature  ');
-    expect(useStore.getState().ccBranchPrefix).toBe('feature');
-    useStore.getState().setCcBranchPrefix('   ');
-    expect(useStore.getState().ccBranchPrefix).toBe('claude');
-  });
-
-  it('setCcWorktreeParentDir flips between default and custom modes', () => {
-    useStore.getState().setCcWorktreeParentDir({ mode: 'custom', path: '/work/wt' });
-    expect(useStore.getState().ccWorktreeParentDir).toEqual({
-      mode: 'custom',
-      path: '/work/wt'
+describe('store: applyWorktreeReady', () => {
+  it('mirrors backend worktree info onto the matching Session', () => {
+    useStore.getState().createSession('/tmp/repo');
+    const sid = useStore.getState().activeId;
+    useStore.getState().applyWorktreeReady(sid, {
+      path: '/tmp/repo/.claude/worktrees/brisk-falcon-abc123',
+      name: 'brisk-falcon-abc123',
+      branch: 'worktree-brisk-falcon-abc123',
+      sourceBranch: 'working'
     });
-    useStore.getState().setCcWorktreeParentDir({ mode: 'default' });
-    expect(useStore.getState().ccWorktreeParentDir).toEqual({ mode: 'default' });
+    const s = useStore.getState().sessions.find((x) => x.id === sid)!;
+    expect(s.worktreePath).toBe('/tmp/repo/.claude/worktrees/brisk-falcon-abc123');
+    expect(s.worktreeName).toBe('brisk-falcon-abc123');
+    expect(s.sourceBranch).toBe('working');
   });
 
-  it('setCcAutoArchiveOnPrClose toggles the boolean', () => {
-    useStore.getState().setCcAutoArchiveOnPrClose(true);
-    expect(useStore.getState().ccAutoArchiveOnPrClose).toBe(true);
-    useStore.getState().setCcAutoArchiveOnPrClose(false);
-    expect(useStore.getState().ccAutoArchiveOnPrClose).toBe(false);
+  it('coerces a null sourceBranch (detached HEAD) to undefined', () => {
+    useStore.getState().createSession('/tmp/repo');
+    const sid = useStore.getState().activeId;
+    useStore.getState().applyWorktreeReady(sid, {
+      path: '/tmp/repo/.claude/worktrees/n',
+      name: 'n',
+      branch: 'worktree-n',
+      sourceBranch: null
+    });
+    const s = useStore.getState().sessions.find((x) => x.id === sid)!;
+    expect(s.sourceBranch).toBeUndefined();
+  });
+
+  it('is a no-op for an unknown sessionId', () => {
+    const before = useStore.getState().sessions;
+    useStore.getState().applyWorktreeReady('does-not-exist', {
+      path: '/x',
+      name: 'x',
+      branch: 'worktree-x',
+      sourceBranch: 'main'
+    });
+    expect(useStore.getState().sessions).toBe(before);
   });
 });
 

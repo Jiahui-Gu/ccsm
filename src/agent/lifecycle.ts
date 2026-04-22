@@ -254,6 +254,19 @@ export function subscribeAgentEvents(): void {
     ]);
   });
 
+  // Auto-worktree completion: main fires `agent:worktreeReady` once the
+  // disposable worktree is provisioned (and the underlying claude.exe
+  // process spawned). Mirror the metadata onto the Session so the sidebar
+  // pill / status bar can show the branch + path immediately.
+  api.worktree?.onReady((info) => {
+    useStore.getState().applyWorktreeReady(info.sessionId, {
+      path: info.path,
+      name: info.name,
+      branch: info.branch,
+      sourceBranch: info.sourceBranch,
+    });
+  });
+
   api.onAgentPermissionRequest((req) => {
     const store = useStore.getState();
     const block = permissionRequestToWaitingBlock(req);

@@ -203,7 +203,7 @@ export class WorktreeManager {
     const resolvedSource =
       sourceBranch?.trim() ||
       (await this.git.getCurrentBranch(absRepo)) ||
-      'main';
+      'HEAD';
 
     const name = this.generateUniqueName();
     const worktreePath = resolveWorktreePath(absRepo, name);

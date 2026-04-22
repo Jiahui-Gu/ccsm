@@ -30,12 +30,11 @@ export interface Session {
   // Omit to fall back to global rules untouched.
   permissionRules?: PermissionRules;
   // ── Optional git-worktree binding ───────────────────────────────────────
-  // When `useWorktree` is true, the spawner asks WorktreeManager to create a
-  // disposable worktree for this session on first start, and tears it down
-  // on session close. The remaining fields are populated by the backend
-  // after creation; the renderer only sets `useWorktree` (and optionally
-  // `sourceBranch`) up front.
-  useWorktree?: boolean;
+  // When the session's cwd is inside a git repo, the main process
+  // auto-provisions a disposable worktree on first start (branched off the
+  // current HEAD) and tears it down on session close. The fields below are
+  // populated by the backend after creation via the `agent:worktreeReady`
+  // IPC; they remain undefined for sessions whose cwd was not a git repo.
   /**
    * Absolute filesystem path of the provisioned worktree. Populated by the
    * main process after the worktree is created; remains undefined for
@@ -43,14 +42,14 @@ export interface Session {
    */
   worktreePath?: string;
   /**
-   * Friendly/branch name of the worktree (e.g. `claude/brave-turing-a1b2c3`).
+   * Friendly/branch name of the worktree (e.g. `worktree-brisk-falcon-a1b2c3`).
    * Drives the branch pill shown in the sidebar row and status bar.
    */
   worktreeName?: string;
   /**
-   * The branch the worktree was branched off from (user-selected at create
-   * time). Purely informational — used in tooltips and future "merge back"
-   * flows.
+   * The branch the worktree was branched off from (the current HEAD at
+   * session-start time). Purely informational — used in tooltips and future
+   * "merge back" flows.
    */
   sourceBranch?: string;
 }
