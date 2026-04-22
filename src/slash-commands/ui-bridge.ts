@@ -8,13 +8,10 @@
 
 export type SettingsTab =
   | 'appearance'
-  | 'memory'
   | 'notifications'
   | 'endpoints'
   | 'autopilot'
   | 'permissions'
-  | 'data'
-  | 'shortcuts'
   | 'updates';
 
 type Listener = (tab?: SettingsTab) => void;

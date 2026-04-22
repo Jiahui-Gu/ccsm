@@ -29,32 +29,17 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'appearance' | 'memory' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
 const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
-  { id: 'memory', tabKey: 'memory' },
   { id: 'notifications', tabKey: 'notifications' },
   { id: 'endpoints', tabKey: 'endpoints' },
   { id: 'autopilot', tabKey: 'autopilot' },
   { id: 'permissions', tabKey: 'permissions' },
-  { id: 'data', tabKey: 'data' },
-  { id: 'shortcuts', tabKey: 'shortcuts' },
   { id: 'updates', tabKey: 'updates' }
-];
-
-// Shortcut catalog mirrors mvp-design.md §11. Keep in sync when adding keys.
-const SHORTCUTS: { keys: string; desc: string }[] = [
-  { keys: '⌘K', desc: 'Search / Command Palette' },
-  { keys: '⌘,', desc: 'Settings' },
-  { keys: '⌘N', desc: 'New session' },
-  { keys: '⌘⇧N', desc: 'New group' },
-  { keys: '⌘B', desc: 'Toggle sidebar' },
-  { keys: 'Enter', desc: 'Send message' },
-  { keys: '⇧Enter', desc: 'Newline in input' },
-  { keys: 'Esc', desc: 'Close dialog / cancel rename' }
 ];
 
 export function SettingsDialog({
@@ -109,13 +94,10 @@ export function SettingsDialog({
           </nav>
           <div className="flex-1 min-w-0 p-5 overflow-y-auto">
             {tab === 'appearance' && <AppearancePane />}
-            {tab === 'memory' && <MemoryPane />}
             {tab === 'notifications' && <NotificationsPane />}
             {tab === 'endpoints' && <EndpointsPane />}
             {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'permissions' && <PermissionsPane />}
-            {tab === 'data' && <DataPane />}
-            {tab === 'shortcuts' && <ShortcutsPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
         </div>
@@ -276,211 +258,6 @@ function Segmented<T extends string>({
   );
 }
 
-function MemoryPane() {
-  const sessions = useStore((s) => s.sessions);
-  const activeId = useStore((s) => s.activeId);
-  const active = sessions.find((s) => s.id === activeId);
-  const cwd = active?.cwd ?? '';
-  const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [userPath, setUserPath] = useState<string>('');
-
-  useEffect(() => {
-    const api = window.agentory;
-    if (!api) return;
-    api.memory.userPath().then(setUserPath).catch(() => setUserPath(''));
-  }, []);
-
-  useEffect(() => {
-    const api = window.agentory;
-    if (!api) return;
-    api.memory.projectPath(cwd).then(setProjectPath).catch(() => setProjectPath(null));
-  }, [cwd]);
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="text-xs text-fg-tertiary">
-        CLAUDE.md files bias what the agent remembers between turns. Project
-        memory travels with the repo; user memory is global to your machine.
-        Writes here save directly to disk — no reload needed.
-      </div>
-      {projectPath ? (
-        <MemoryEditor
-          title="Project memory"
-          hint="Committed with the repo. Visible to anyone with access to the codebase."
-          path={projectPath}
-        />
-      ) : (
-        <div className="rounded-sm border border-border-subtle bg-bg-elevated px-3 py-4 text-xs text-fg-tertiary opacity-70">
-          <div className="font-medium text-fg-secondary mb-1">Project memory</div>
-          Open a session to edit project memory.
-        </div>
-      )}
-      {userPath && (
-        <MemoryEditor
-          title="User memory"
-          hint="Applies to every session on this machine, regardless of repo."
-          path={userPath}
-        />
-      )}
-    </div>
-  );
-}
-
-function MemoryEditor({
-  title,
-  hint,
-  path,
-}: {
-  title: string;
-  hint: string;
-  path: string;
-}) {
-  const [content, setContent] = useState<string>('');
-  const [exists, setExists] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [dirty, setDirty] = useState<boolean>(false);
-  const [saving, setSaving] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savedTick, setSavedTick] = useState<number>(0);
-
-  const reload = React.useCallback(async () => {
-    const api = window.agentory;
-    if (!api) return;
-    setLoading(true);
-    setError(null);
-    const res = await api.memory.read(path);
-    setLoading(false);
-    if (!res.ok) {
-      setError(res.error);
-      return;
-    }
-    setContent(res.content);
-    setExists(res.exists);
-    setDirty(false);
-  }, [path]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const save = React.useCallback(async () => {
-    const api = window.agentory;
-    if (!api) return;
-    if (!dirty || saving) return;
-    setSaving(true);
-    setError(null);
-    const res = await api.memory.write(path, content);
-    setSaving(false);
-    if (!res.ok) {
-      setError(res.error);
-      return;
-    }
-    setExists(true);
-    setDirty(false);
-    setSavedTick(Date.now());
-  }, [dirty, saving, path, content]);
-
-  // Rough token estimate. For MVP we use the common length/4 heuristic —
-  // the real count varies by tokenizer but is close enough for a "this
-  // file is getting long" cue. If the user cares, they'll feel it.
-  const estTokens = Math.ceil(content.length / 4);
-
-  return (
-    <div className="rounded-sm border border-border-subtle bg-bg-elevated">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-fg-primary">{title}</div>
-          <div
-            className="text-[11px] font-mono text-fg-tertiary truncate"
-            title={path}
-          >
-            {path}
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span
-            className={cn(
-              'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-sm font-mono',
-              estTokens > 8000
-                ? 'bg-status-warning-muted text-status-warning-foreground'
-                : 'bg-bg-hover text-fg-tertiary'
-            )}
-            title="Rough estimate (chars / 4). Not a real tokenizer."
-          >
-            ~{estTokens.toLocaleString()} tok
-          </span>
-          {!exists && !loading && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={async () => {
-                const api = window.agentory;
-                if (!api) return;
-                const res = await api.memory.write(path, content || '');
-                if (!res.ok) setError(res.error);
-                else {
-                  setExists(true);
-                  setDirty(false);
-                }
-              }}
-            >
-              Create
-            </Button>
-          )}
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={save}
-            disabled={!dirty || saving}
-            title={dirty ? 'Save' : 'No changes'}
-          >
-            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-          </Button>
-        </div>
-      </div>
-      <div className="px-3 pt-2 pb-3">
-        <div className="text-[11px] text-fg-tertiary mb-1.5">{hint}</div>
-        <textarea
-          value={content}
-          onChange={(e) => {
-            setContent(e.target.value);
-            setDirty(true);
-          }}
-          onBlur={() => void save()}
-          disabled={loading}
-          spellCheck={false}
-          rows={10}
-          placeholder={exists ? '' : 'This file will be created on save.'}
-          className={cn(
-            'w-full px-2.5 py-2 rounded-sm bg-bg-panel border border-border-default',
-            'text-xs font-mono leading-relaxed text-fg-primary placeholder:text-fg-disabled',
-            'outline-none resize-y',
-            'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
-            'disabled:opacity-60 disabled:cursor-progress'
-          )}
-        />
-        <div className="flex items-center justify-between mt-1.5 h-4">
-          <span className="text-[11px] text-fg-tertiary">
-            {loading
-              ? 'Loading…'
-              : error
-              ? <span className="text-status-error-foreground">{error}</span>
-              : !exists
-              ? 'Not yet created on disk.'
-              : dirty
-              ? 'Unsaved changes.'
-              : savedTick > 0
-              ? 'Saved.'
-              : ''}
-          </span>
-          <span className="text-[11px] text-fg-tertiary tabular-nums">
-            {content.length.toLocaleString()} chars
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function NotificationsPane() {
   const settings = useStore((s) => s.notificationSettings);
@@ -627,7 +404,7 @@ function AutopilotPane() {
       </Field>
       <Field
         label="Otherwise…"
-        hint="Appended after '如果你真的做完了，请回复我：<token>。\\n\\n否则：' in the auto-reply."
+        hint="Appended after the prompt asking the agent to reply with the done token (line break separates). Use to nudge it to keep going."
       >
         <textarea
           value={watchdog.otherwisePostfix}
@@ -945,47 +722,6 @@ function arraysEqualSet(a: readonly string[], b: readonly string[]): boolean {
 // resetPermissionRules() but kept visible so a future PR that wants to diff
 // against "known empty" doesn't have to hunt. Pure doc aid; no behavior.
 void EMPTY_PERMISSION_RULES;
-
-function DataPane() {
-  const [dataDir, setDataDir] = useState<string>('Loading…');
-  useEffect(() => {
-    window.agentory?.getDataDir().then(setDataDir).catch(() => setDataDir('(unavailable)'));
-  }, []);
-  return (
-    <>
-      <Field label="Data directory" hint="Where Agentory stores groups, sessions, and preferences.">
-        <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all">
-          {dataDir}
-        </code>
-      </Field>
-      <Field label="Claude sessions directory" hint="Read-only. Managed by Claude Code SDK.">
-        <code className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono">
-          {'~/.claude/projects/'}
-        </code>
-      </Field>
-    </>
-  );
-}
-
-function ShortcutsPane() {
-  return (
-    <div>
-      <div className="text-xs text-fg-tertiary mb-3">
-        Keybindings are fixed in MVP — remapping adds maintenance burden without clear user value.
-      </div>
-      <ul className="divide-y divide-border-subtle">
-        {SHORTCUTS.map((s) => (
-          <li key={s.keys} className="flex items-center justify-between h-8 text-sm">
-            <span className="text-fg-secondary">{s.desc}</span>
-            <kbd className="font-mono text-xs px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
-              {s.keys}
-            </kbd>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
 
 function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
@@ -1432,7 +1168,10 @@ function EndpointEditorDialog({
               autoFocus
             />
           </Field>
-          <Field label="Base URL" hint="Agentory appends /v1/models. Paste the root or include /v1.">
+          <Field label="Protocol">
+            <span className="text-sm text-fg-secondary">Anthropic-compatible (REST)</span>
+          </Field>
+          <Field label="Base URL" hint="Paste the API root, e.g. https://api.anthropic.com — Agentory uses it as-is for /v1/messages and probes /v1/models for discovery.">
             <input
               type="text"
               value={baseUrl}
@@ -1440,28 +1179,6 @@ function EndpointEditorDialog({
               placeholder="https://api.anthropic.com"
               className={cn(inputClass, 'font-mono')}
             />
-          </Field>
-          <Field label="Protocol">
-            <div className="flex items-center gap-3 text-sm">
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" checked readOnly className="accent-accent" />
-                <span className="text-fg-primary">Anthropic</span>
-              </label>
-              <label
-                title="Phase 2 — not yet supported"
-                className="inline-flex items-center gap-1.5 opacity-50 cursor-not-allowed"
-              >
-                <input type="radio" disabled className="accent-accent" />
-                <span>OpenAI-compatible</span>
-              </label>
-              <label
-                title="Phase 2 — not yet supported"
-                className="inline-flex items-center gap-1.5 opacity-50 cursor-not-allowed"
-              >
-                <input type="radio" disabled className="accent-accent" />
-                <span>Ollama</span>
-              </label>
-            </div>
           </Field>
           <Field
             label="API key (optional)"

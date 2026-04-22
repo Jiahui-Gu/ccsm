@@ -134,13 +134,10 @@ const zh: EnCatalog = {
     tabs: {
       general: '通用',
       appearance: '外观',
-      memory: '记忆',
       notifications: '通知',
       endpoints: '端点',
       autopilot: '自动驾驶',
       permissions: '权限',
-      data: '数据',
-      shortcuts: '快捷键',
       updates: '更新'
     },
     theme: '主题',
@@ -167,23 +164,8 @@ const zh: EnCatalog = {
     apiKeyHint: '保存在系统钥匙串中。运行 Claude Code 会话所必需。',
     apiKeyPlaceholder: 'sk-ant-…',
     testConnection: '测试连接',
-    dataDirectory: '数据目录',
-    dataDirectoryHint: 'Agentory 存放分组、会话和偏好的位置。',
-    claudeSessionsDirectory: 'Claude 会话目录',
-    claudeSessionsDirectoryHint: '只读。由 Claude Code SDK 管理。',
-    shortcutsHint: 'MVP 阶段快捷键固定 — 自定义带来的维护成本不抵价值。',
     version: '版本',
-    checkForUpdates: '检查更新',
-    shortcutDescriptions: {
-      palette: '搜索 / 命令面板',
-      settings: '设置',
-      newSession: '新会话',
-      newGroup: '新建分组',
-      toggleSidebar: '切换侧边栏',
-      send: '发送消息',
-      newline: '在输入框换行',
-      escape: '关闭对话框 / 取消重命名'
-    }
+    checkForUpdates: '检查更新'
   },
   permissions: {
     promptTitle: '请求权限',
