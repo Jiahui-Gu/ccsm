@@ -85,6 +85,8 @@ const zh: EnCatalog = {
     diffReject: '拒绝',
     diffAccepted: '已接受',
     diffRejected: '已拒绝',
+    permResolvedAllowed: '已允许',
+    permResolvedDenied: '已拒绝',
     inputBytes: '输入',
     expandStringChars: '+{{count}} 字符',
     collapseString: '收起',

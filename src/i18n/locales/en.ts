@@ -86,6 +86,8 @@ const en = {
     diffReject: 'Reject',
     diffAccepted: 'accepted',
     diffRejected: 'rejected',
+    permResolvedAllowed: 'Allowed',
+    permResolvedDenied: 'Denied',
     inputBytes: 'input',
     expandStringChars: '+{{count}} chars',
     collapseString: 'collapse',
