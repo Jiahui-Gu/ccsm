@@ -481,11 +481,22 @@ export const useStore = create<State & Actions>((set, get) => ({
       agentType: 'claude-code',
       endpointId,
     };
-    set({
+    // If the target group is currently collapsed, expand it in the same
+    // atomic update so the new row is visible the moment activeId flips.
+    // Bumping focusInputNonce here mirrors selectSession — clicking
+    // "New Session" should also land focus in the composer.
+    const targetGroup = groups.find((g) => g.id === targetGroupId);
+    const nextGroups =
+      targetGroup && targetGroup.collapsed
+        ? groups.map((g) => (g.id === targetGroupId ? { ...g, collapsed: false } : g))
+        : groups;
+    set((s) => ({
       sessions: [newSession, ...sessions],
       activeId: id,
-      focusedGroupId: null
-    });
+      focusedGroupId: null,
+      groups: nextGroups,
+      focusInputNonce: s.focusInputNonce + 1
+    }));
   },
 
   renameSession: (id, name) => {
