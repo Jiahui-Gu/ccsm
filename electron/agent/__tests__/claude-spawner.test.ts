@@ -69,6 +69,15 @@ describe('buildSpawnArgs', () => {
     ]);
   });
 
+  it('always includes --permission-prompt-tool stdio so claude.exe delegates can_use_tool over the IPC bridge', () => {
+    const args = buildSpawnArgs({});
+    expect(args.join(' ')).toContain('--permission-prompt-tool stdio');
+    // And the value is the literal "stdio" — that's the magic token the CLI
+    // recognises (any other string would be treated as an MCP tool name and
+    // make spawn fail at first use). Don't accidentally i18n / format this.
+    expect(args[args.indexOf('--permission-prompt-tool') + 1]).toBe('stdio');
+  });
+
   it('appends --resume <id> when resumeId is set', () => {
     const args = buildSpawnArgs({ resumeId: 'sess_abc' });
     expect(args).toContain('--resume');
@@ -175,6 +184,7 @@ describe('spawnClaude', () => {
     expect(argvJoined).toContain('--output-format stream-json');
     expect(argvJoined).toContain('--verbose');
     expect(argvJoined).toContain('--input-format stream-json');
+    expect(argvJoined).toContain('--permission-prompt-tool stdio');
     expect(argvJoined).toContain('--resume sess_xyz');
     expect(argvJoined).toContain('--permission-mode plan');
     expect(argvJoined).toContain('--model sonnet');
