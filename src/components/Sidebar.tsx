@@ -6,8 +6,7 @@ import {
   Search,
   Settings,
   BellOff,
-  GitBranch,
-  FolderOpen
+  GitBranch
 } from 'lucide-react';
 import {
   DndContext,
@@ -258,18 +257,8 @@ function GroupRow({
   );
 }
 
-function usePlatformOpenLabel(): string {
-  const { t } = useTranslation();
-  const platform =
-    typeof window !== 'undefined' ? window.agentory?.window?.platform : undefined;
-  if (platform === 'darwin') return t('sidebar.revealInFinder');
-  if (platform === 'win32') return t('sidebar.openInExplorer');
-  return t('sidebar.openFolder');
-}
-
 function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
   const { t } = useTranslation();
-  const openLabel = usePlatformOpenLabel();
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
@@ -389,17 +378,6 @@ function SessionRow({ session, active, selected, onSelect }: { session: Session;
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
-        <ContextMenuItem
-          disabled={!(session.worktreePath || session.cwd)}
-          onSelect={() => {
-            const path = session.worktreePath || session.cwd;
-            if (!path) return;
-            void window.agentory?.openPath(path);
-          }}
-        >
-          <FolderOpen size={12} className="stroke-[1.75] mr-2 text-fg-tertiary" />
-          {openLabel}
-        </ContextMenuItem>
         <ContextMenuItem
           onSelect={() =>
             setSessionNotificationsMuted(session.id, !session.notificationsMuted)

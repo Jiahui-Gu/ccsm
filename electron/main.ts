@@ -29,7 +29,6 @@ import type { PermissionMode } from './agent/sessions';
 import { EndpointsManager, type KeyCrypto } from './endpoints-manager';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
-import { openPathSafe } from './shell-open';
 import {
   runPreflight,
   createPr,
@@ -628,12 +627,6 @@ app.whenReady().then(() => {
       return false;
     }
   });
-  // Reveal a directory (or file) in the OS file manager — Explorer on
-  // Windows, Finder on macOS, the user's default file manager on Linux.
-  // Backs the Sidebar context menu's "Reveal in Finder / Open in Explorer".
-  // Validation lives in `openPathSafe` so it can be unit-tested without
-  // pulling Electron in.
-  ipcMain.handle('shell:openPath', (_e, p: unknown) => openPathSafe(p, shell));
   // ──────────────────────────── end /pr flow ───────────────────────────────
 
   // ───────────────────────────── CLI wizard ────────────────────────────────
