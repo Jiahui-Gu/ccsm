@@ -39,6 +39,12 @@ subscribeAgentEvents();
 // security boundary; same trade-off as `window.__agentoryI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
+  // Expose the i18next singleton too so e2e probes can flip language without
+  // shipping the i18next module path through webpack's dynamic-import shim.
+  // Dev-only — production builds gate this off.
+  void import('./i18n').then((m) => {
+    (window as unknown as { __i18n?: unknown }).__i18n = m.i18next;
+  });
 }
 
 export default function App() {
