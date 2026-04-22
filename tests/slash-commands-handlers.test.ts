@@ -1,24 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../src/stores/store';
 import {
-  SLASH_COMMANDS,
+  BUILT_IN_COMMANDS,
   dispatchSlashCommand,
   parseSlashInvocation,
-  findSlashCommand
+  findSlashCommand,
 } from '../src/slash-commands/registry';
-import {
-  handleClear,
-  handleCost,
-  handleConfig,
-  handleModel,
-  handleHelp,
-  blocksToTranscript
-} from '../src/slash-commands/handlers';
-import { setOpenSettingsListener } from '../src/slash-commands/ui-bridge';
+import { handleClear, blocksToTranscript } from '../src/slash-commands/handlers';
 
-// Snapshot of the pristine store so we can reset between tests. The store
-// module auto-attaches handlers via its own side-effects; handlers.ts also
-// does so on import. Both are idempotent.
 const initial = useStore.getState();
 
 function resetStore() {
@@ -37,7 +26,7 @@ function resetStore() {
       models: [],
       modelsLoaded: false,
       connection: null,
-      focusInputNonce: 0
+      focusInputNonce: 0,
     },
     true
   );
@@ -49,57 +38,84 @@ beforeEach(() => {
 
 describe('parseSlashInvocation', () => {
   it('parses a bare command', () => {
-    expect(parseSlashInvocation('/help')).toEqual({ name: 'help', args: '' });
+    expect(parseSlashInvocation('/clear')).toEqual({ name: 'clear', args: '' });
   });
   it('parses a command with args', () => {
-    expect(parseSlashInvocation('/model claude-sonnet')).toEqual({
-      name: 'model',
-      args: 'claude-sonnet'
+    expect(parseSlashInvocation('/foo bar baz')).toEqual({ name: 'foo', args: 'bar baz' });
+  });
+  it('parses a plugin-namespaced command', () => {
+    expect(parseSlashInvocation('/superpowers:brainstorm idea')).toEqual({
+      name: 'superpowers:brainstorm',
+      args: 'idea',
     });
   });
   it('rejects non-slash input', () => {
     expect(parseSlashInvocation('hello')).toBeNull();
   });
-  it('rejects multi-line messages even if first char is /', () => {
-    expect(parseSlashInvocation('/help\nmore')).toBeNull();
+  it('rejects multi-line messages', () => {
+    expect(parseSlashInvocation('/clear\nmore')).toBeNull();
   });
-  it('rejects malformed command names', () => {
+  it('rejects malformed names', () => {
     expect(parseSlashInvocation('/123')).toBeNull();
     expect(parseSlashInvocation('/')).toBeNull();
   });
 });
 
 describe('dispatchSlashCommand', () => {
-  it('prefers clientHandler over pass-through', async () => {
-    const outcome = await dispatchSlashCommand('/help', { sessionId: 's1', args: '' });
+  it('routes /clear to its client handler', async () => {
+    const outcome = await dispatchSlashCommand(
+      '/clear',
+      BUILT_IN_COMMANDS,
+      { sessionId: 's1', args: '' }
+    );
     expect(outcome).toBe('handled');
   });
-  it('returns pass-through for commands with no handler', async () => {
-    const outcome = await dispatchSlashCommand('/doctor', { sessionId: 's1', args: '' });
+  it('routes /compact as pass-through', async () => {
+    const outcome = await dispatchSlashCommand(
+      '/compact',
+      BUILT_IN_COMMANDS,
+      { sessionId: 's1', args: '' }
+    );
     expect(outcome).toBe('pass-through');
   });
   it('returns unknown for unrecognised names', async () => {
-    const outcome = await dispatchSlashCommand('/nope-nope', { sessionId: 's1', args: '' });
+    const outcome = await dispatchSlashCommand(
+      '/nope-nope',
+      BUILT_IN_COMMANDS,
+      { sessionId: 's1', args: '' }
+    );
     expect(outcome).toBe('unknown');
+  });
+  it('respects a dynamic command in the merged list (pass-through)', async () => {
+    const merged = [
+      ...BUILT_IN_COMMANDS,
+      {
+        name: 'run-worker',
+        description: 'something',
+        source: 'user' as const,
+        passThrough: true,
+      },
+    ];
+    const outcome = await dispatchSlashCommand(
+      '/run-worker arg',
+      merged,
+      { sessionId: 's1', args: '' }
+    );
+    expect(outcome).toBe('pass-through');
   });
 });
 
 describe('registry shape', () => {
-  it('the five client commands declare passThrough: false with a handler', () => {
-    const clientNames = ['clear', 'cost', 'config', 'model', 'help'];
-    for (const n of clientNames) {
-      const c = findSlashCommand(n);
-      expect(c, `command ${n} not in registry`).toBeTruthy();
-      expect(c!.passThrough).toBe(false);
-      expect(typeof c!.clientHandler).toBe('function');
-    }
+  it('exposes exactly /clear and /compact as built-ins', () => {
+    expect(BUILT_IN_COMMANDS.map((c) => c.name)).toEqual(['clear', 'compact']);
   });
-  it('other commands are pass-through without a handler', () => {
-    const passNames = SLASH_COMMANDS.filter((c) => !c.clientHandler).map((c) => c.name);
-    expect(passNames).toContain('doctor');
-    expect(passNames).toContain('memory');
-    expect(passNames).toContain('login');
-    expect(passNames).toContain('compact');
+  it('/clear has a client handler, /compact does not', () => {
+    const clear = findSlashCommand(BUILT_IN_COMMANDS, 'clear');
+    const compact = findSlashCommand(BUILT_IN_COMMANDS, 'compact');
+    expect(clear?.passThrough).toBe(false);
+    expect(typeof clear?.clientHandler).toBe('function');
+    expect(compact?.passThrough).toBe(true);
+    expect(compact?.clientHandler).toBeUndefined();
   });
 });
 
@@ -107,102 +123,33 @@ describe('/clear', () => {
   it('wipes the current session context without changing session count or activeId', () => {
     useStore.getState().createSession('/tmp/old');
     const oldId = useStore.getState().activeId;
-    // Seed transcript + state that /clear must wipe.
     useStore.getState().appendBlocks(oldId, [
       { kind: 'user', id: 'u1', text: 'hi' },
-      { kind: 'assistant', id: 'a1', text: 'hello' }
+      { kind: 'assistant', id: 'a1', text: 'hello' },
     ]);
     useStore.getState().markStarted(oldId);
-    useStore.getState().addSessionStats(oldId, { turns: 1, inputTokens: 100, outputTokens: 50, costUsd: 0.001 });
+    useStore
+      .getState()
+      .addSessionStats(oldId, { turns: 1, inputTokens: 100, outputTokens: 50, costUsd: 0.001 });
     useStore.setState((s) => ({
-      sessions: s.sessions.map((x) => (x.id === oldId ? { ...x, resumeSessionId: 'cc-abc' } : x))
+      sessions: s.sessions.map((x) => (x.id === oldId ? { ...x, resumeSessionId: 'cc-abc' } : x)),
     }));
     const sessionCountBefore = useStore.getState().sessions.length;
 
     handleClear({ sessionId: oldId, args: '' });
 
     const s = useStore.getState();
-    expect(s.sessions.length).toBe(sessionCountBefore); // no new session
-    expect(s.activeId).toBe(oldId); // active session unchanged
+    expect(s.sessions.length).toBe(sessionCountBefore);
+    expect(s.activeId).toBe(oldId);
     const session = s.sessions.find((x) => x.id === oldId)!;
-    expect(session.resumeSessionId).toBeUndefined(); // resume id dropped
+    expect(session.resumeSessionId).toBeUndefined();
     expect(s.startedSessions[oldId]).toBeUndefined();
     expect(s.statsBySession[oldId]).toBeUndefined();
-    // Transcript only contains the new "Context cleared" breadcrumb.
     const blocks = s.messagesBySession[oldId] ?? [];
     expect(blocks.length).toBe(1);
     expect(blocks[0].kind).toBe('status');
     if (blocks[0].kind === 'status') {
       expect(blocks[0].title).toBe('Context cleared');
-    }
-  });
-});
-
-describe('/cost', () => {
-  it('renders an info banner with formatted tokens + cost', () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    useStore.getState().addSessionStats(sid, {
-      turns: 2,
-      inputTokens: 12345,
-      outputTokens: 678,
-      costUsd: 0.0234
-    });
-    handleCost({ sessionId: sid, args: '' });
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    const status = blocks.find((b) => b.kind === 'status');
-    expect(status).toBeTruthy();
-    if (status && status.kind === 'status') {
-      expect(status.title).toBe('Session cost');
-      expect(status.detail).toContain('2 turns');
-      expect(status.detail).toContain('12k in');
-      expect(status.detail).toContain('678 out');
-      expect(status.detail).toContain('$0.023');
-    }
-  });
-  it('renders a placeholder when no data yet', () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    handleCost({ sessionId: sid, args: '' });
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    const s = blocks.find((b) => b.kind === 'status');
-    expect(s && s.kind === 'status' && s.title).toBe('No cost data yet');
-  });
-});
-
-describe('/config and /model', () => {
-  afterEach(() => setOpenSettingsListener(null));
-
-  it('/config opens settings (appearance tab)', () => {
-    const calls: Array<string | undefined> = [];
-    setOpenSettingsListener((tab) => calls.push(tab));
-    handleConfig({ sessionId: 's', args: '' });
-    expect(calls).toEqual(['appearance']);
-  });
-  it('/model opens settings on connection tab', () => {
-    const calls: Array<string | undefined> = [];
-    setOpenSettingsListener((tab) => calls.push(tab));
-    handleModel({ sessionId: 's', args: '' });
-    expect(calls).toEqual(['connection']);
-  });
-});
-
-describe('/help', () => {
-  it('lists all registered commands and labels client vs passthru', () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    handleHelp({ sessionId: sid, args: '' });
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    const s = blocks.find((b) => b.kind === 'status');
-    expect(s && s.kind === 'status').toBe(true);
-    if (s && s.kind === 'status') {
-      expect(s.title).toBe('Slash commands');
-      expect(s.detail).toContain('/help');
-      expect(s.detail).toContain('/clear');
-      expect(s.detail).toContain('(client)');
-      expect(s.detail).toContain('(passthru)');
-      expect(s.detail).toContain('⚠');
-      expect(s.detail).toContain('Commands starting with ⚠');
     }
   });
 });
@@ -213,7 +160,7 @@ describe('blocksToTranscript', () => {
       { kind: 'user', id: 'u', text: 'hi' },
       { kind: 'assistant', id: 'a', text: 'hello' },
       { kind: 'tool', id: 't', name: 'Read', brief: 'foo.ts', expanded: false, result: 'file contents' },
-      { kind: 'status', id: 's', tone: 'info', title: 'Done', detail: 'ok' }
+      { kind: 'status', id: 's', tone: 'info', title: 'Done', detail: 'ok' },
     ]);
     expect(t).toContain('User: hi');
     expect(t).toContain('Assistant: hello');
@@ -221,4 +168,3 @@ describe('blocksToTranscript', () => {
     expect(t).toContain('(info) Done — ok');
   });
 });
-

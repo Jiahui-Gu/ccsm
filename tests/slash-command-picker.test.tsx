@@ -2,6 +2,23 @@ import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SlashCommandPicker } from '../src/components/SlashCommandPicker';
+import { BUILT_IN_COMMANDS, type SlashCommand } from '../src/slash-commands/registry';
+
+const userCmd: SlashCommand = {
+  name: 'run-worker',
+  description: 'Run the worker against a PR',
+  source: 'user',
+  passThrough: true,
+};
+const pluginCmd: SlashCommand = {
+  name: 'superpowers:brainstorm',
+  description: 'Brainstorm a feature',
+  source: 'plugin',
+  pluginId: 'superpowers',
+  passThrough: true,
+};
+
+const ALL = [...BUILT_IN_COMMANDS, userCmd, pluginCmd];
 
 describe('<SlashCommandPicker />', () => {
   it('renders nothing when closed', () => {
@@ -9,6 +26,7 @@ describe('<SlashCommandPicker />', () => {
       <SlashCommandPicker
         open={false}
         query=""
+        commands={ALL}
         activeIndex={0}
         onActiveIndexChange={() => {}}
         onSelect={() => {}}
@@ -17,26 +35,45 @@ describe('<SlashCommandPicker />', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders filtered commands by query', () => {
+  it('renders filtered built-in by query', () => {
     render(
       <SlashCommandPicker
         open
         query="cl"
+        commands={ALL}
         activeIndex={0}
         onActiveIndexChange={() => {}}
         onSelect={() => {}}
       />
     );
     expect(screen.getByText('/clear')).toBeInTheDocument();
-    // 'cl' must not match /compact
     expect(screen.queryByText('/compact')).not.toBeInTheDocument();
   });
 
-  it('marks the active row as aria-selected', () => {
+  it('renders source-grouped headings when open with no query', () => {
     render(
       <SlashCommandPicker
         open
         query=""
+        commands={ALL}
+        activeIndex={0}
+        onActiveIndexChange={() => {}}
+        onSelect={() => {}}
+      />
+    );
+    // Headings come from i18n; tests/setup.ts initialises en.
+    expect(screen.getByText(/Built-in/i)).toBeInTheDocument();
+    expect(screen.getByText(/User commands/i)).toBeInTheDocument();
+    expect(screen.getByText(/Plugin commands/i)).toBeInTheDocument();
+    expect(screen.getByText('/superpowers:brainstorm')).toBeInTheDocument();
+  });
+
+  it('marks the active row as aria-selected (flat index across groups)', () => {
+    render(
+      <SlashCommandPicker
+        open
+        query=""
+        commands={ALL}
         activeIndex={2}
         onActiveIndexChange={() => {}}
         onSelect={() => {}}
@@ -52,6 +89,7 @@ describe('<SlashCommandPicker />', () => {
       <SlashCommandPicker
         open
         query="xxxxxnope"
+        commands={ALL}
         activeIndex={0}
         onActiveIndexChange={() => {}}
         onSelect={() => {}}
@@ -65,14 +103,15 @@ describe('<SlashCommandPicker />', () => {
     render(
       <SlashCommandPicker
         open
-        query="help"
+        query="clear"
+        commands={ALL}
         activeIndex={0}
         onActiveIndexChange={() => {}}
         onSelect={onSelect}
       />
     );
-    fireEvent.mouseDown(screen.getByText('/help'));
+    fireEvent.mouseDown(screen.getByText('/clear'));
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect.mock.calls[0][0].name).toBe('help');
+    expect(onSelect.mock.calls[0][0].name).toBe('clear');
   });
 });

@@ -11,7 +11,6 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
-import { PrFlowProvider } from './components/PrFlowProvider';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
@@ -20,7 +19,6 @@ import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
-import { setOpenSettingsListener, type SettingsTab } from './slash-commands/ui-bridge';
 import { initI18n } from './i18n';
 import { usePreferences } from './store/preferences';
 
@@ -147,7 +145,6 @@ export default function App() {
   }, [resolvedLanguage]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [settingsTab, setSettingsTab] = React.useState<SettingsTab | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
 
@@ -157,16 +154,6 @@ export default function App() {
   const newSession = React.useCallback(() => {
     createSession(null);
   }, [createSession]);
-
-  // Bridge from the slash-command handlers (`/config`, `/model`) into the
-  // local Settings open state.
-  useEffect(() => {
-    setOpenSettingsListener((tab) => {
-      setSettingsTab(tab);
-      setSettingsOpen(true);
-    });
-    return () => setOpenSettingsListener(null);
-  }, []);
 
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
@@ -267,7 +254,7 @@ export default function App() {
               </main>
             }
           />
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
+          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
           <ClaudeCliMissingDialog />
           <CommandPalette
@@ -338,10 +325,9 @@ export default function App() {
             </main>
           }
         />
-        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} initialTab={settingsTab} />
+        <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <ClaudeCliMissingDialog />
-        <PrFlowProvider />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
