@@ -117,6 +117,7 @@ const en = {
     newGroup: 'New group',
     newGroupEllipsis: 'New group…',
     groups: 'Groups',
+    defaultGroupName: 'Sessions',
     archivedGroups: 'Archived Groups',
     archiveGroup: 'Archive group',
     unarchiveGroup: 'Unarchive group',

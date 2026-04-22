@@ -694,3 +694,41 @@ describe('store: messageQueues (CLI-style enqueue while running)', () => {
     expect(head?.attachments).toEqual([att]);
   });
 });
+
+describe('store: createSession auto-creates default group when none usable', () => {
+  it('synthesizes a normal group when groups[] is empty', () => {
+    useStore.setState({ groups: [], sessions: [], activeId: '', focusedGroupId: null });
+    useStore.getState().createSession('~/foo');
+    const s = useStore.getState();
+    expect(s.groups).toHaveLength(1);
+    expect(s.groups[0].kind).toBe('normal');
+    expect(s.sessions).toHaveLength(1);
+    expect(s.sessions[0].groupId).toBe(s.groups[0].id);
+    // Explicitly assert the orphan-pointer regression is gone.
+    expect(s.sessions[0].groupId).not.toBe('g1');
+  });
+
+  it('synthesizes a normal group when every existing group is archived', () => {
+    const archived = [
+      { id: 'g-arch-1', name: 'Old', collapsed: false, kind: 'archive' as const },
+      { id: 'g-arch-2', name: 'Older', collapsed: true, kind: 'archive' as const }
+    ];
+    useStore.setState({
+      groups: archived,
+      sessions: [],
+      activeId: '',
+      focusedGroupId: null
+    });
+    useStore.getState().createSession('~/bar');
+    const s = useStore.getState();
+    // 1 new normal group + 2 untouched archived groups.
+    expect(s.groups).toHaveLength(3);
+    const archivedAfter = s.groups.filter((g) => g.kind === 'archive');
+    expect(archivedAfter).toHaveLength(2);
+    expect(archivedAfter.map((g) => g.id).sort()).toEqual(['g-arch-1', 'g-arch-2']);
+    const normal = s.groups.filter((g) => g.kind === 'normal');
+    expect(normal).toHaveLength(1);
+    expect(s.sessions).toHaveLength(1);
+    expect(s.sessions[0].groupId).toBe(normal[0].id);
+  });
+});

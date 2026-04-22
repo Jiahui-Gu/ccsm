@@ -116,6 +116,7 @@ const zh: EnCatalog = {
     newGroup: '新建分组',
     newGroupEllipsis: '新建分组…',
     groups: '分组',
+    defaultGroupName: '会话',
     archivedGroups: '已归档分组',
     archiveGroup: '归档分组',
     unarchiveGroup: '取消归档',
