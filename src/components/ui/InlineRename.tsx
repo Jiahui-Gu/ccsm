@@ -24,6 +24,8 @@ export function InlineRename({
 }: InlineRenameProps) {
   const [draft, setDraft] = useState(value);
   const ref = useRef<HTMLInputElement>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     const el = ref.current;
@@ -33,13 +35,29 @@ export function InlineRename({
   }, []);
 
   function commit() {
-    const next = draft.trim();
+    const next = draftRef.current.trim();
     if (!next || next === value) {
       onCancel();
       return;
     }
     onCommit(next);
   }
+
+  // dnd-kit's pointer listeners on ancestor list rows preventDefault on
+  // mousedown, which can swallow the input's blur — so the rename input
+  // stays focused after the user clicks elsewhere. Watch the document
+  // ourselves and commit/cancel when a click lands outside.
+  useEffect(() => {
+    function onPointerDown(e: MouseEvent) {
+      const el = ref.current;
+      if (!el) return;
+      if (e.target instanceof Node && el.contains(e.target)) return;
+      commit();
+    }
+    document.addEventListener('mousedown', onPointerDown, true);
+    return () => document.removeEventListener('mousedown', onPointerDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <input
