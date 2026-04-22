@@ -271,7 +271,10 @@ app.whenReady().then(() => {
     encrypt: (plain) => safeStorage.encryptString(plain),
     decrypt: (cipher) => safeStorage.decryptString(cipher),
   };
-  const endpoints = new EndpointsManager({ crypto: cryptoAdapter });
+  const endpoints = new EndpointsManager({
+    crypto: cryptoAdapter,
+    getBinaryPath: () => loadClaudeBinPath() ?? undefined,
+  });
 
   // First-run migration: if the parent env has ANTHROPIC_BASE_URL set and no
   // endpoints exist yet, seed a "Default" endpoint with the env key so the

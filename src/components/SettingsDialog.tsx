@@ -1174,12 +1174,12 @@ function SourceBreakdown({
   counts,
   total,
 }: {
-  counts: { probe: number; listed: number; manual: number };
+  counts: { fallback: number; listed: number; manual: number };
   total: number;
 }) {
   const parts: string[] = [];
   if (counts.listed) parts.push(`${counts.listed} listed`);
-  if (counts.probe) parts.push(`${counts.probe} probed`);
+  if (counts.fallback) parts.push(`${counts.fallback} fallback`);
   if (counts.manual) parts.push(`${counts.manual} manual`);
   const tooltip = parts.length ? parts.join(' · ') : 'no discovery data yet';
   return (
@@ -1247,7 +1247,7 @@ function EndpointsPane() {
           {endpoints.map((e) => {
             const models = modelsByEndpoint[e.id] ?? [];
             const counts = {
-              probe: models.filter((m) => m.source === 'probe').length,
+              fallback: models.filter((m) => m.source === 'fallback').length,
               listed: models.filter((m) => m.source === 'listed').length,
               manual: models.filter((m) => m.source === 'manual').length,
             };
@@ -1526,7 +1526,7 @@ function EndpointEditorDialog({
           </Field>
           <Field
             label="Manual model IDs"
-            hint="Optional. One ID per line (or comma-separated). Used as probe hints when auto-discovery comes up empty — IDs that don't respond to a probe are still kept in the picker, marked unverified."
+            hint="Optional. One ID per line (or comma-separated). Used as additional model picks alongside whatever claude.exe reports — IDs that aren't in claude's catalogue are still kept in the picker, marked unverified."
           >
             <textarea
               value={manualIdsRaw}
