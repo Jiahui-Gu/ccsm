@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { motion } from 'framer-motion';
 import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
@@ -86,15 +87,23 @@ export function SettingsDialog({
                 key={tabEntry.id}
                 onClick={() => setTab(tabEntry.id)}
                 className={cn(
-                  'flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
+                  'relative flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
                   'transition-[background-color,color] duration-150 ease-out',
                   'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
                   tab === tabEntry.id
-                    ? 'bg-bg-active text-fg-primary font-medium'
+                    ? 'bg-bg-hover text-fg-primary font-medium'
                     : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary'
                 )}
                 style={{ width: 'calc(100% - 0.5rem)' }}
               >
+                {tab === tabEntry.id && (
+                  <motion.span
+                    aria-hidden
+                    layoutId="settings-tab-indicator"
+                    transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+                    className="absolute left-0 top-1 bottom-1 w-[3px] bg-accent rounded-r-sm"
+                  />
+                )}
                 {tt(`tabs.${tabEntry.tabKey}`)}
               </button>
             ))}
@@ -144,7 +153,7 @@ function _Select<T extends string>({
         'h-7 px-2 pr-6 rounded-sm bg-bg-elevated border border-border-default',
         'text-sm text-fg-primary outline-none cursor-pointer',
         'hover:border-border-strong',
-        'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+        'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_var(--color-focus-ring)]'
       )}
     >
       {options.map((o) => (
@@ -448,7 +457,7 @@ function MemoryEditor({
             'w-full px-2.5 py-2 rounded-sm bg-bg-panel border border-border-default',
             'text-xs font-mono leading-relaxed text-fg-primary placeholder:text-fg-disabled',
             'outline-none resize-y',
-            'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+            'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
             'disabled:opacity-60 disabled:cursor-progress'
           )}
         />
@@ -587,7 +596,7 @@ function AutopilotPane() {
   const inputClass = cn(
     'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
     'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
-    'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+    'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]'
   );
   return (
     <>
@@ -812,7 +821,7 @@ function PermissionsPane() {
               className={cn(
                 'w-full px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-default',
                 'text-xs font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-                'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+                'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
                 'resize-y leading-snug'
               )}
             />
@@ -830,7 +839,7 @@ function PermissionsPane() {
               className={cn(
                 'w-full px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-default',
                 'text-xs font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-                'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+                'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
                 'resize-y leading-snug'
               )}
             />
@@ -985,7 +994,7 @@ function AccountPane() {
           className={cn(
             'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
             'text-sm font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-            'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+            'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
             'disabled:opacity-60 disabled:cursor-not-allowed'
           )}
         />
@@ -1469,7 +1478,7 @@ function EndpointEditorDialog({
   const inputClass = cn(
     'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
     'text-sm text-fg-primary placeholder:text-fg-disabled outline-none',
-    'focus:border-border-strong focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]'
+    'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]'
   );
 
   return (

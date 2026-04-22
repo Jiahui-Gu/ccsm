@@ -64,7 +64,7 @@ export function InlineRename({
       className={cn(
         'w-full bg-bg-elevated border border-border-strong rounded-sm',
         'px-1.5 -mx-1.5 outline-none',
-        'focus:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+        'focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
         inputClassName,
         className
       )}

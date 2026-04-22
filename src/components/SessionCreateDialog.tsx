@@ -213,7 +213,7 @@ const TextInput = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<H
           'text-sm text-fg-primary placeholder:text-fg-tertiary outline-none',
           'transition-[border-color,box-shadow] duration-150',
           'hover:border-border-strong',
-          'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_oklch(0.72_0.14_215_/_0.30)]',
+          'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_var(--color-focus-ring)]',
           'disabled:cursor-not-allowed disabled:opacity-60',
           className
         )}
