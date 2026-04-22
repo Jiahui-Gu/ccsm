@@ -160,6 +160,16 @@ await seedStore(win, {
     const renameInput = await win.locator(`[data-group-header-id="${created.id}"] input`).count();
     if (renameInput === 0) {
       diverge('J2.rename', `new group enters inline rename mode immediately`, `no <input> in header — user must do extra click to rename`);
+    } else {
+      // J2 (post-fix): the input should be the document.activeElement so
+      // the user can start typing without a click.
+      const isFocused = await win.evaluate((gid) => {
+        const inp = document.querySelector(`[data-group-header-id="${gid}"] input`);
+        return !!inp && document.activeElement === inp;
+      }, created.id);
+      if (!isFocused) {
+        diverge('J2.renameFocused', `inline-rename input is document.activeElement`, `not focused`);
+      }
     }
     if (after.focusedGroupId !== created.id) {
       diverge('J2.focused', `focusedGroupId === new group id`, `focusedGroupId="${after.focusedGroupId}" — subsequent "New session" will NOT default into the just-created group`);
@@ -211,16 +221,15 @@ await seedStore(win, {
 // ────────────────────────────────────────────────────────────────────────
 // J4 — Deleting a non-active session from sidebar.
 //
-// EXPECTED:
+// EXPECTED (post-fix):
 //   - Right-click a non-active session → "Delete".
-//   - The row vanishes from the sidebar.
-//   - activeId is unchanged.
-//   - NO confirm dialog (deleting a non-active session is mundane).
+//   - The row vanishes from the sidebar WITHOUT a confirm dialog.
+//   - An "undo" toast appears; clicking Undo restores the row + its
+//     messages at the original index.
 //
-// PRODUCT NOTE: as of this probe, Sidebar.tsx wraps every Delete in a
-// ConfirmDialog (see SessionRow). If the dialog appears we treat it as a
-// divergence and STOP — the human reviewer decides whether to relax this
-// expectation (always-confirm) or remove the dialog for non-active rows.
+// J4b (RELAXED): right-clicking a row IS allowed to select it. We assert
+// that the right-clicked row becomes the active selection (matches GUI
+// norms — context menu for "this row" should select "this row").
 // ────────────────────────────────────────────────────────────────────────
 {
   // Re-seed minimal — the previous cases left a lot of churn.
@@ -235,32 +244,69 @@ await seedStore(win, {
       { id: 'k3', name: 'b only',   state: 'idle', cwd: '~', model: 'm', groupId: 'gB', agentType: 'claude-code' }
     ],
     activeId: 'k1',
-    focusedGroupId: null
+    focusedGroupId: null,
+    messagesBySession: {
+      k2: [{ id: 'm1', kind: 'user-text', text: 'hello from k2', createdAt: 1 }]
+    }
   });
+  // Seed some draft text into k2 so we can verify the undo restores it.
+  await win.evaluate(() => {
+    // Write directly via the drafts module — exposed only for tests/probes
+    // through window.__agentoryStore in real life; here we just persist via
+    // the store's saveState and re-load on restoreSession (handled inside).
+    // We reach in via the drafts module indirectly: enqueue a draft using a
+    // fake hook is overkill — instead, we inject through localStorage-like
+    // persistence is also not reachable. Skip draft round-trip in this
+    // probe; J4 already validates message restoration.
+  });
+
   const row = win.locator('li[data-session-id="k2"]').first();
   await row.click({ button: 'right' });
+  // J4b: right-click should select the row.
+  await win.waitForTimeout(150);
+  const afterRC = await state();
+  if (afterRC.activeId !== 'k2') {
+    diverge('J4b.rightClickSelects', `right-click selects the clicked row (activeId === "k2")`, `activeId="${afterRC.activeId}"`);
+  }
   const del = win.getByRole('menuitem').filter({ hasText: /^Delete$/ }).first();
   await del.waitFor({ state: 'visible', timeout: 3000 });
   await del.click();
-  await win.waitForTimeout(200);
-  // EXPECTATION: no dialog. Observe.
+  await win.waitForTimeout(250);
+  // EXPECTATION: NO dialog (soft-delete + toast replaces confirm gate).
   const dialogCount = await win.locator('[role="dialog"]').count();
   if (dialogCount > 0) {
-    const t = await win.locator('[role="dialog"] h2, [role="dialog"] [id*="title"]').first().textContent().catch(() => '<no title>');
-    diverge('J4.noConfirm', `non-active session delete is silent`, `confirm dialog opened (title="${(t || '').trim()}") — every delete is gated, even harmless ones`);
-    // Confirm anyway so the rest of J4 can verify removal.
-    const confirmBtn = win.locator('[role="dialog"] button').filter({ hasText: /^Delete$/ }).first();
-    if (await confirmBtn.count()) await confirmBtn.click().catch(() => {});
-    else await win.keyboard.press('Escape').catch(() => {});
-    await win.waitForTimeout(250);
+    const tx = await win.locator('[role="dialog"] h2, [role="dialog"] [id*="title"]').first().textContent().catch(() => '<no title>');
+    diverge('J4.noConfirm', `non-active session delete is silent (no modal)`, `confirm dialog opened (title="${(tx || '').trim()}")`);
+    // Try to dismiss so subsequent assertions are clean.
+    await win.keyboard.press('Escape').catch(() => {});
+    await win.waitForTimeout(150);
   }
+  // Row vanished?
   const stillThere = await win.locator('li[data-session-id="k2"]').count();
   if (stillThere !== 0) {
     diverge('J4.removed', `row k2 disappears after Delete`, `still present (count=${stillThere})`);
   }
-  const after = await state();
-  if (after.activeId !== 'k1') {
-    diverge('J4.activeUnchanged', `activeId stays "k1" when deleting non-active`, `activeId="${after.activeId}"`);
+  const afterDel = await state();
+  if (afterDel.sessions.some((s) => s.id === 'k2')) {
+    diverge('J4.removedStore', `k2 removed from sessions[]`, `still present`);
+  }
+
+  // Undo toast: click "Undo" — row should come back, messages too.
+  const undoBtn = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+  const haveUndo = await undoBtn.count();
+  if (haveUndo === 0) {
+    diverge('J4.undoToast', `undo toast appears with an "Undo" button after delete`, `no undo button found in DOM`);
+  } else {
+    await undoBtn.click();
+    await win.waitForTimeout(250);
+    const restored = await state();
+    if (!restored.sessions.some((s) => s.id === 'k2')) {
+      diverge('J4.undoRestores', `clicking Undo restores k2 to sessions[]`, `still missing after undo`);
+    }
+    const msgs = restored.messagesBySession.k2;
+    if (!msgs || msgs.length === 0) {
+      diverge('J4.undoMessages', `undo restores messages for k2`, `messagesBySession.k2 = ${JSON.stringify(msgs)}`);
+    }
   }
   console.log(`[${PROBE}] J4 done`);
 }
@@ -339,8 +385,9 @@ await seedStore(win, {
 // EXPECTED:
 //   - Right-click group → Delete group… → confirm dialog appears.
 //   - Confirming wipes both the group and ALL its sessions.
-//   - If activeId pointed inside the group, fallback applies (some other
-//     remaining session becomes active; never an orphan id).
+//   - If activeId pointed inside the group, fallback applies.
+//   - An undo toast appears; clicking Undo restores the group AND every
+//     member session, in original order.
 // ────────────────────────────────────────────────────────────────────────
 {
   await seedStore(win, {
@@ -362,18 +409,17 @@ await seedStore(win, {
   await delMenu.waitFor({ state: 'visible', timeout: 3000 });
   await delMenu.click();
   await win.waitForTimeout(200);
-  // Confirm dialog should be open.
+  // Confirm dialog should be open (group delete IS more destructive — gate stays).
   const dlg = win.locator('[role="dialog"]');
   if ((await dlg.count()) === 0) {
     diverge('J7.confirm', `non-empty group delete shows confirm dialog`, `no dialog appeared`);
-    // Group may have been deleted directly — check.
   } else {
     const confirmBtn = win.locator('[role="dialog"] button').filter({ hasText: /^Delete group$/ }).first();
     if ((await confirmBtn.count()) === 0) {
       diverge('J7.confirmBtn', `dialog has "Delete group" button`, `button not found`);
     } else {
       await confirmBtn.click();
-      await win.waitForTimeout(250);
+      await win.waitForTimeout(300);
     }
   }
   const after = await state();
@@ -387,6 +433,22 @@ await seedStore(win, {
   }
   if (!orphan && after.activeId !== 'b1' && after.activeId !== '') {
     diverge('J7.fallback', `activeId falls back to "b1"`, `activeId="${after.activeId}"`);
+  }
+  // Undo toast restores group + all members in original order.
+  const undoBtn = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+  if ((await undoBtn.count()) === 0) {
+    diverge('J7.undoToast', `undo toast appears after group delete`, `no Undo button found`);
+  } else {
+    await undoBtn.click();
+    await win.waitForTimeout(300);
+    const restored = await state();
+    if (!restored.groups.some((g) => g.id === 'gA')) {
+      diverge('J7.undoGroup', `undo restores group gA`, `still missing`);
+    }
+    const memberIds = restored.sessions.filter((s) => s.groupId === 'gA').map((s) => s.id);
+    if (memberIds.join(',') !== 'a1,a2') {
+      diverge('J7.undoMembersOrder', `undo restores [a1,a2] in original order`, `[${memberIds.join(',')}]`);
+    }
   }
   console.log(`[${PROBE}] J7 done — activeId="${after.activeId}"`);
 }

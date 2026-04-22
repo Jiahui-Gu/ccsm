@@ -53,6 +53,19 @@ export function clearDraft(sessionId: string): void {
   schedulePersist();
 }
 
+/** Snapshot the draft for one session so it can be restored after a soft
+ *  delete + undo. Returns empty string when no draft exists. */
+export function snapshotDraft(sessionId: string): string {
+  return cache.get(sessionId) ?? '';
+}
+
+/** Restore a draft captured by `snapshotDraft`. Empty strings are no-ops. */
+export function restoreDraft(sessionId: string, text: string): void {
+  if (!text) return;
+  cache.set(sessionId, text);
+  schedulePersist();
+}
+
 export function deleteDrafts(sessionIds: string[]): void {
   let changed = false;
   for (const id of sessionIds) {

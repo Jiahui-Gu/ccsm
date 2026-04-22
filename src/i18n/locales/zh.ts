@@ -37,7 +37,8 @@ const zh: EnCatalog = {
     archive: '归档',
     unarchive: '取消归档',
     unknown: '未知',
-    dismiss: '关闭'
+    dismiss: '关闭',
+    undo: '撤销'
   },
   chat: {
     permissionRequested: '请求权限',
@@ -116,6 +117,8 @@ const zh: EnCatalog = {
     deleteGroupEmpty: '该分组为空。',
     deleteSessionConfirmTitle: '确认删除"{{name}}"？',
     deleteSessionDescription: '会话及其对话历史将被移除。',
+    sessionDeletedToast: '已删除"{{name}}"',
+    groupDeletedToast: '已删除分组"{{name}}"',
     moveToGroup: '移动到分组',
     waitingForResponse: '等待响应',
     openInChat: '在聊天中打开',

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
-import { hydrateDrafts, deleteDrafts } from './drafts';
+import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 
 /**
  * One pending user turn waiting in the per-session FIFO queue. Created when
@@ -207,13 +207,46 @@ export interface CreateSessionOptions {
   groupId?: string;
 }
 
+/** Snapshot returned by `deleteSession` so callers can restore the row via
+ *  `restoreSession` (undo toast). Captures everything needed to put the
+ *  session back exactly where it was — DOM index inside its group, message
+ *  history, draft text, and any in-flight runtime flags. */
+export interface SessionSnapshot {
+  session: Session;
+  /** Index of the session inside `sessions[]` BEFORE deletion. We re-insert
+   *  at this index so the visual order in the sidebar is preserved. */
+  index: number;
+  messages: MessageBlock[] | undefined;
+  draft: string;
+  started: boolean;
+  running: boolean;
+  interrupted: boolean;
+  queue: QueuedMessage[] | undefined;
+  stats: SessionStats | undefined;
+  prevActiveId: string;
+}
+
+/** Snapshot returned by `deleteGroup` for undo. Carries the group plus every
+ *  session that cascaded with it (each as a `SessionSnapshot`) so a single
+ *  `restoreGroup` call rebuilds the full subtree in original order. */
+export interface GroupSnapshot {
+  group: Group;
+  groupIndex: number;
+  sessions: SessionSnapshot[];
+  prevActiveId: string;
+  prevFocusedGroupId: string | null;
+}
+
 type Actions = {
   selectSession: (id: string) => void;
   focusGroup: (id: string | null) => void;
   createSession: (cwd: string | null | CreateSessionOptions) => void;
   importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string }) => string;
   renameSession: (id: string, name: string) => void;
-  deleteSession: (id: string) => void;
+  deleteSession: (id: string) => SessionSnapshot | null;
+  /** Re-insert a session previously removed by `deleteSession`. Restores the
+   *  row at its original index, plus messages, draft, and runtime flags. */
+  restoreSession: (snapshot: SessionSnapshot) => void;
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
   changeCwd: (cwd: string) => void;
   /** Tag/untag a session whose `cwd` has been detected as missing on disk.
@@ -237,7 +270,9 @@ type Actions = {
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
-  deleteGroup: (id: string) => void;
+  deleteGroup: (id: string) => GroupSnapshot | null;
+  /** Re-insert a group + all its sessions captured by `deleteGroup`. */
+  restoreGroup: (snapshot: GroupSnapshot) => void;
   archiveGroup: (id: string) => void;
   unarchiveGroup: (id: string) => void;
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
@@ -541,10 +576,55 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   deleteSession: (id) => {
+    const prev = get();
+    const idx = prev.sessions.findIndex((x) => x.id === id);
+    if (idx === -1) return null;
+    const target = prev.sessions[idx];
+    const snapshot: SessionSnapshot = {
+      session: target,
+      index: idx,
+      messages: prev.messagesBySession[id],
+      draft: snapshotDraft(id),
+      started: !!prev.startedSessions[id],
+      running: !!prev.runningSessions[id],
+      interrupted: !!prev.interruptedSessions[id],
+      queue: prev.messageQueues[id],
+      stats: prev.statsBySession[id],
+      prevActiveId: prev.activeId
+    };
     set((s) => {
       const remaining = s.sessions.filter((x) => x.id !== id);
-      const nextActive =
-        s.activeId === id ? remaining[0]?.id ?? '' : s.activeId;
+      // Same-group sibling fallback (J5): when the active row is being
+      // deleted, prefer the next session that lives in the same group as
+      // the deleted one (next index, then prev index). Only fall back to
+      // `remaining[0]` when the source group becomes empty — this keeps
+      // the user's contextual focus inside the group they were working in.
+      let nextActive = s.activeId;
+      if (s.activeId === id) {
+        const sourceGroupId = target.groupId;
+        const sameGroup = remaining.filter((x) => x.groupId === sourceGroupId);
+        if (sameGroup.length > 0) {
+          // Find the original sibling closest to `idx` in the source group.
+          // Iterate over remaining preserving order and pick the first sibling
+          // whose original index was >= idx (= "next sibling"); fall back to
+          // the last sibling whose original index was < idx (= "prev sibling").
+          const beforeIdxOrig = s.sessions
+            .map((x, i) => ({ x, i }))
+            .filter(({ x, i }) => x.groupId === sourceGroupId && i < idx);
+          const afterIdxOrig = s.sessions
+            .map((x, i) => ({ x, i }))
+            .filter(({ x, i }) => x.groupId === sourceGroupId && i > idx);
+          if (afterIdxOrig.length > 0) {
+            nextActive = afterIdxOrig[0].x.id;
+          } else if (beforeIdxOrig.length > 0) {
+            nextActive = beforeIdxOrig[beforeIdxOrig.length - 1].x.id;
+          } else {
+            nextActive = remaining[0]?.id ?? '';
+          }
+        } else {
+          nextActive = remaining[0]?.id ?? '';
+        }
+      }
       const nextMessages = { ...s.messagesBySession };
       delete nextMessages[id];
       const nextStarted = { ...s.startedSessions };
@@ -570,6 +650,58 @@ export const useStore = create<State & Actions>((set, get) => ({
     void window.agentory?.saveMessages(id, []);
     // Also drop any persisted draft for this session.
     deleteDrafts([id]);
+    return snapshot;
+  },
+
+  restoreSession: (snapshot) => {
+    set((s) => {
+      // Skip if the id is somehow already back (double-undo guard).
+      if (s.sessions.some((x) => x.id === snapshot.session.id)) return s;
+      const insertAt = Math.min(Math.max(snapshot.index, 0), s.sessions.length);
+      const sessions = [
+        ...s.sessions.slice(0, insertAt),
+        snapshot.session,
+        ...s.sessions.slice(insertAt)
+      ];
+      const messagesBySession =
+        snapshot.messages !== undefined
+          ? { ...s.messagesBySession, [snapshot.session.id]: snapshot.messages }
+          : s.messagesBySession;
+      const startedSessions = snapshot.started
+        ? { ...s.startedSessions, [snapshot.session.id]: true as const }
+        : s.startedSessions;
+      const runningSessions = snapshot.running
+        ? { ...s.runningSessions, [snapshot.session.id]: true as const }
+        : s.runningSessions;
+      const interruptedSessions = snapshot.interrupted
+        ? { ...s.interruptedSessions, [snapshot.session.id]: true as const }
+        : s.interruptedSessions;
+      const messageQueues =
+        snapshot.queue !== undefined
+          ? { ...s.messageQueues, [snapshot.session.id]: snapshot.queue }
+          : s.messageQueues;
+      const statsBySession =
+        snapshot.stats !== undefined
+          ? { ...s.statsBySession, [snapshot.session.id]: snapshot.stats }
+          : s.statsBySession;
+      return {
+        sessions,
+        activeId: snapshot.prevActiveId || s.activeId,
+        messagesBySession,
+        startedSessions,
+        runningSessions,
+        interruptedSessions,
+        messageQueues,
+        statsBySession
+      };
+    });
+    // Restore persisted history so a restart after undo retains the
+    // conversation. Empty arrays are skipped — saveMessages([]) is the
+    // wipe path used by deleteSession.
+    if (snapshot.messages && snapshot.messages.length > 0) {
+      void window.agentory?.saveMessages(snapshot.session.id, snapshot.messages);
+    }
+    restoreDraft(snapshot.session.id, snapshot.draft);
   },
 
   moveSession: (sessionId, targetGroupId, beforeSessionId) => {
@@ -692,6 +824,34 @@ export const useStore = create<State & Actions>((set, get) => ({
   // Per design principle "don't constrain the user": deleting a group also
   // deletes its sessions. No soft-delete state in MVP — that's what archive is for.
   deleteGroup: (id) => {
+    const prev = get();
+    const groupIndex = prev.groups.findIndex((g) => g.id === id);
+    if (groupIndex === -1) return null;
+    const group = prev.groups[groupIndex];
+    // Snapshot every member session as a SessionSnapshot so restoreGroup
+    // can lean on the same per-session restore plumbing.
+    const memberSnapshots: SessionSnapshot[] = prev.sessions
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.groupId === id)
+      .map(({ s, i }) => ({
+        session: s,
+        index: i,
+        messages: prev.messagesBySession[s.id],
+        draft: snapshotDraft(s.id),
+        started: !!prev.startedSessions[s.id],
+        running: !!prev.runningSessions[s.id],
+        interrupted: !!prev.interruptedSessions[s.id],
+        queue: prev.messageQueues[s.id],
+        stats: prev.statsBySession[s.id],
+        prevActiveId: prev.activeId
+      }));
+    const snapshot: GroupSnapshot = {
+      group,
+      groupIndex,
+      sessions: memberSnapshots,
+      prevActiveId: prev.activeId,
+      prevFocusedGroupId: prev.focusedGroupId
+    };
     set((s) => {
       const remainingSessions = s.sessions.filter((x) => x.groupId !== id);
       const droppedIds = s.sessions.filter((x) => x.groupId === id).map((x) => x.id);
@@ -700,13 +860,92 @@ export const useStore = create<State & Actions>((set, get) => ({
         : remainingSessions[0]?.id ?? '';
       // Drop drafts for every session that vanished with the group.
       if (droppedIds.length > 0) deleteDrafts(droppedIds);
+      const nextMessages = { ...s.messagesBySession };
+      const nextStarted = { ...s.startedSessions };
+      const nextRunning = { ...s.runningSessions };
+      const nextInterrupted = { ...s.interruptedSessions };
+      const nextQueues = { ...s.messageQueues };
+      for (const did of droppedIds) {
+        delete nextMessages[did];
+        delete nextStarted[did];
+        delete nextRunning[did];
+        delete nextInterrupted[did];
+        delete nextQueues[did];
+        void window.agentory?.saveMessages(did, []);
+      }
       return {
         groups: s.groups.filter((g) => g.id !== id),
         sessions: remainingSessions,
         activeId: nextActive,
-        focusedGroupId: s.focusedGroupId === id ? null : s.focusedGroupId
+        focusedGroupId: s.focusedGroupId === id ? null : s.focusedGroupId,
+        messagesBySession: nextMessages,
+        startedSessions: nextStarted,
+        runningSessions: nextRunning,
+        interruptedSessions: nextInterrupted,
+        messageQueues: nextQueues
       };
     });
+    return snapshot;
+  },
+
+  restoreGroup: (snapshot) => {
+    set((s) => {
+      // Skip if the group already exists (double-undo guard).
+      if (s.groups.some((g) => g.id === snapshot.group.id)) return s;
+      const insertAt = Math.min(Math.max(snapshot.groupIndex, 0), s.groups.length);
+      const groups = [
+        ...s.groups.slice(0, insertAt),
+        snapshot.group,
+        ...s.groups.slice(insertAt)
+      ];
+      // Re-insert sessions one at a time, in their original index order, so
+      // each placement uses the live `sessions` array (later snapshots may
+      // have indices that depend on earlier ones being back).
+      let sessions = s.sessions.slice();
+      const messagesBySession = { ...s.messagesBySession };
+      const startedSessions = { ...s.startedSessions };
+      const runningSessions = { ...s.runningSessions };
+      const interruptedSessions = { ...s.interruptedSessions };
+      const messageQueues = { ...s.messageQueues };
+      const statsBySession = { ...s.statsBySession };
+      const ordered = snapshot.sessions
+        .slice()
+        .sort((a, b) => a.index - b.index);
+      for (const snap of ordered) {
+        if (sessions.some((x) => x.id === snap.session.id)) continue;
+        const insertSesAt = Math.min(Math.max(snap.index, 0), sessions.length);
+        sessions = [
+          ...sessions.slice(0, insertSesAt),
+          snap.session,
+          ...sessions.slice(insertSesAt)
+        ];
+        if (snap.messages !== undefined) messagesBySession[snap.session.id] = snap.messages;
+        if (snap.started) startedSessions[snap.session.id] = true;
+        if (snap.running) runningSessions[snap.session.id] = true;
+        if (snap.interrupted) interruptedSessions[snap.session.id] = true;
+        if (snap.queue !== undefined) messageQueues[snap.session.id] = snap.queue;
+        if (snap.stats !== undefined) statsBySession[snap.session.id] = snap.stats;
+      }
+      return {
+        groups,
+        sessions,
+        activeId: snapshot.prevActiveId || s.activeId,
+        focusedGroupId: snapshot.prevFocusedGroupId,
+        messagesBySession,
+        startedSessions,
+        runningSessions,
+        interruptedSessions,
+        messageQueues,
+        statsBySession
+      };
+    });
+    // Re-persist messages + drafts for each restored session.
+    for (const snap of snapshot.sessions) {
+      if (snap.messages && snap.messages.length > 0) {
+        void window.agentory?.saveMessages(snap.session.id, snap.messages);
+      }
+      restoreDraft(snap.session.id, snap.draft);
+    }
   },
 
   archiveGroup: (id) => {

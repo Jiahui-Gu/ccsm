@@ -37,7 +37,8 @@ const en = {
     archive: 'Archive',
     unarchive: 'Unarchive',
     unknown: 'Unknown',
-    dismiss: 'Dismiss'
+    dismiss: 'Dismiss',
+    undo: 'Undo'
   },
   chat: {
     permissionRequested: 'Permission requested',
@@ -121,6 +122,8 @@ const en = {
     deleteGroupEmpty: 'This group is empty.',
     deleteSessionConfirmTitle: 'Delete "{{name}}"?',
     deleteSessionDescription: 'The session and its conversation history will be removed.',
+    sessionDeletedToast: 'Deleted "{{name}}"',
+    groupDeletedToast: 'Deleted group "{{name}}"',
     moveToGroup: 'Move to group',
     waitingForResponse: 'Waiting for response',
     openInChat: 'Open in chat',

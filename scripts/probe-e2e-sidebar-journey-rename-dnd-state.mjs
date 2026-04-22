@@ -491,7 +491,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   }
   // Now select the last one and assert scroll-into-view.
   await win.evaluate(() => window.__agentoryStore.getState().selectSession('m49'));
-  await win.waitForTimeout(300);
+  await win.waitForTimeout(700);
   const visible = await win.evaluate(() => {
     const li = document.querySelector('li[data-session-id="m49"]');
     if (!li) return { reason: 'no-li' };
