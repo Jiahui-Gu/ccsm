@@ -23,15 +23,6 @@ export interface SpawnOpts {
   /** `--model <id>`. */
   model?: string;
   /**
-   * Patterns passed to `--allowedTools`. Each array entry becomes its own
-   * argv token; claude.exe accepts space- or comma-separated lists, and
-   * separate tokens dodge Windows quoting pitfalls entirely. Omit or pass
-   * an empty array to skip the flag.
-   */
-  allowedTools?: readonly string[];
-  /** Patterns for `--disallowedTools`. Same shape as `allowedTools`. */
-  disallowedTools?: readonly string[];
-  /**
    * Extra environment variables to merge (after the safe-env baseline).
    * Use this for `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` /
    * `CLAUDE_CODE_SKIP_AUTH_LOGIN` etc.
@@ -257,8 +248,6 @@ export function buildSpawnArgs(opts: {
   resumeId?: string;
   permissionMode?: PermissionMode;
   model?: string;
-  allowedTools?: readonly string[];
-  disallowedTools?: readonly string[];
 }): string[] {
   const args: string[] = [
     '--output-format',
@@ -275,16 +264,6 @@ export function buildSpawnArgs(opts: {
   }
   if (opts.resumeId) {
     args.push('--resume', opts.resumeId);
-  }
-  // Per-tool rules: emit each pattern as its own argv token. claude.exe's
-  // `--allowedTools <tools...>` variadic accepts this form directly (see
-  // `claude --help`: "Comma or space-separated list ... e.g. 'Bash(git:*) Edit'").
-  // Empty arrays skip the flag entirely so legacy callers are unaffected.
-  if (opts.allowedTools && opts.allowedTools.length > 0) {
-    args.push('--allowedTools', ...opts.allowedTools);
-  }
-  if (opts.disallowedTools && opts.disallowedTools.length > 0) {
-    args.push('--disallowedTools', ...opts.disallowedTools);
   }
   return args;
 }
@@ -457,8 +436,6 @@ export async function spawnClaude(opts: SpawnOpts): Promise<ClaudeProcess> {
     resumeId: opts.resumeId,
     permissionMode: opts.permissionMode,
     model: opts.model,
-    allowedTools: opts.allowedTools,
-    disallowedTools: opts.disallowedTools,
   });
   const env = buildSpawnEnv({
     configDir: opts.configDir,

@@ -4,7 +4,6 @@ import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
-import { mergeRules } from '../agent/permission-presets';
 import { SlashCommandPicker } from './SlashCommandPicker';
 import {
   SLASH_COMMANDS,
@@ -134,7 +133,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const running = useStore((s) => !!s.runningSessions[sessionId]);
   const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
   const permission = useStore((s) => s.permission);
-  const permissionRules = useStore((s) => s.permissionRules);
   const defaultEndpointId = useStore((s) => s.defaultEndpointId);
   const appendBlocks = useStore((s) => s.appendBlocks);
   const markStarted = useStore((s) => s.markStarted);
@@ -390,19 +388,12 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
     if (!started) {
       const endpointId = session.endpointId ?? defaultEndpointId ?? undefined;
-      // Merge global rules with any per-session override; pass empty arrays
-      // as undefined so the spawner omits the flag entirely.
-      const mergedRules = mergeRules(permissionRules, session.permissionRules);
       const res = await api.agentStart(sessionId, {
         cwd: session.cwd,
         model: session.model || undefined,
         permissionMode: permission,
         resumeSessionId: session.resumeSessionId,
-        endpointId,
-        allowedTools:
-          mergedRules.allowedTools.length > 0 ? mergedRules.allowedTools : undefined,
-        disallowedTools:
-          mergedRules.disallowedTools.length > 0 ? mergedRules.disallowedTools : undefined
+        endpointId
       });
       if (!res.ok) {
         setRunning(sessionId, false);

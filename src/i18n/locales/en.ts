@@ -142,7 +142,6 @@ const en = {
       appearance: 'Appearance',
       notifications: 'Notifications',
       endpoints: 'Endpoints',
-      permissions: 'Permissions',
       updates: 'Updates'
     },
     theme: 'Theme',
