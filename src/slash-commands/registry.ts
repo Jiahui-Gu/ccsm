@@ -70,7 +70,7 @@ export type SlashCommand = {
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'help',    description: 'List available commands',                       icon: HelpCircle,       category: 'built-in', passThrough: false },
   { name: 'clear',   description: 'Start a new conversation and clear context',    icon: Eraser,           category: 'built-in', passThrough: false },
-  { name: 'compact', description: 'Summarize conversation to free context',        icon: Minimize2,        category: 'built-in', passThrough: false },
+  { name: 'compact', description: 'Summarize conversation to free context',        icon: Minimize2,        category: 'built-in', passThrough: true  },
   { name: 'model',   description: 'Switch model for this session',                 icon: Cpu,              category: 'built-in', passThrough: false },
   { name: 'config',  description: 'Open settings',                                 icon: Settings,         category: 'built-in', passThrough: false },
   { name: 'cost',    description: 'Show session cost and token usage',             icon: CircleDollarSign, category: 'built-in', passThrough: false },

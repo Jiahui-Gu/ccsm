@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { useStore } from '../src/stores/store';
 import {
   SLASH_COMMANDS,
@@ -12,7 +12,6 @@ import {
   handleConfig,
   handleModel,
   handleHelp,
-  handleCompact,
   blocksToTranscript
 } from '../src/slash-commands/handlers';
 import { setOpenSettingsListener } from '../src/slash-commands/ui-bridge';
@@ -35,9 +34,9 @@ function resetStore() {
       statsBySession: {},
       startedSessions: {},
       runningSessions: {},
-      endpoints: [],
-      modelsByEndpoint: {},
-      defaultEndpointId: null,
+      models: [],
+      modelsLoaded: false,
+      connection: null,
       focusInputNonce: 0
     },
     true
@@ -86,8 +85,8 @@ describe('dispatchSlashCommand', () => {
 });
 
 describe('registry shape', () => {
-  it('the six client commands declare passThrough: false with a handler', () => {
-    const clientNames = ['clear', 'cost', 'config', 'model', 'help', 'compact'];
+  it('the five client commands declare passThrough: false with a handler', () => {
+    const clientNames = ['clear', 'cost', 'config', 'model', 'help'];
     for (const n of clientNames) {
       const c = findSlashCommand(n);
       expect(c, `command ${n} not in registry`).toBeTruthy();
@@ -100,6 +99,7 @@ describe('registry shape', () => {
     expect(passNames).toContain('doctor');
     expect(passNames).toContain('memory');
     expect(passNames).toContain('login');
+    expect(passNames).toContain('compact');
   });
 });
 
@@ -157,11 +157,11 @@ describe('/config and /model', () => {
     handleConfig({ sessionId: 's', args: '' });
     expect(calls).toEqual(['appearance']);
   });
-  it('/model opens settings on endpoints tab', () => {
+  it('/model opens settings on connection tab', () => {
     const calls: Array<string | undefined> = [];
     setOpenSettingsListener((tab) => calls.push(tab));
     handleModel({ sessionId: 's', args: '' });
-    expect(calls).toEqual(['endpoints']);
+    expect(calls).toEqual(['connection']);
   });
 });
 
@@ -200,113 +200,3 @@ describe('blocksToTranscript', () => {
   });
 });
 
-describe('/compact', () => {
-  function stubAgentory(
-    createMessage: (args: unknown) => Promise<unknown>,
-    saveMessages: (sid: string, blocks: unknown[]) => Promise<void> = async () => {}
-  ) {
-    (globalThis as { window: { agentory: unknown } }).window = {
-      agentory: {
-        saveMessages,
-        endpoints: { createMessage }
-      }
-    };
-  }
-
-  afterEach(() => {
-    // Leave `window` alone; other tests don't rely on it in this file.
-  });
-
-  it('wipes messages and inserts a summary on success', async () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    useStore.setState((s) => ({
-      sessions: s.sessions.map((x) =>
-        x.id === sid ? { ...x, endpointId: 'ep-1', model: 'claude-test' } : x
-      ),
-      messagesBySession: {
-        ...s.messagesBySession,
-        [sid]: [
-          { kind: 'user', id: 'u1', text: 'refactor foo' },
-          { kind: 'assistant', id: 'a1', text: 'did it' }
-        ]
-      }
-    }));
-
-    const captured: Array<Record<string, unknown>> = [];
-    const savedCalls: Array<[string, unknown[]]> = [];
-    stubAgentory(
-      async (args) => {
-        captured.push(args as Record<string, unknown>);
-        return { ok: true, text: '- Refactored foo\n- Open: none' };
-      },
-      async (s, b) => {
-        savedCalls.push([s, b]);
-      }
-    );
-
-    await handleCompact({ sessionId: sid, args: '' });
-
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].kind).toBe('status');
-    if (blocks[0].kind === 'status') {
-      expect(blocks[0].title).toBe('Conversation compacted');
-      expect(blocks[0].detail).toContain('Refactored foo');
-    }
-    expect(captured).toHaveLength(1);
-    expect(captured[0].model).toBe('claude-test');
-    expect(captured[0].endpointId).toBe('ep-1');
-    expect(savedCalls.length).toBe(1);
-    expect(savedCalls[0][0]).toBe(sid);
-  });
-
-  it('leaves messages untouched on fetch error', async () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    useStore.setState((s) => ({
-      sessions: s.sessions.map((x) =>
-        x.id === sid ? { ...x, endpointId: 'ep-1', model: 'claude-test' } : x
-      ),
-      messagesBySession: {
-        ...s.messagesBySession,
-        [sid]: [
-          { kind: 'user', id: 'u1', text: 'hello' },
-          { kind: 'assistant', id: 'a1', text: 'hi' }
-        ]
-      }
-    }));
-
-    stubAgentory(async () => ({ ok: false, error: 'boom' }));
-    await handleCompact({ sessionId: sid, args: '' });
-
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    // original 2 + compacting-notice + error  (order: notice comes first, error last)
-    expect(blocks.some((b) => b.kind === 'user' && b.id === 'u1')).toBe(true);
-    expect(blocks.some((b) => b.kind === 'assistant' && b.id === 'a1')).toBe(true);
-    expect(blocks.some((b) => b.kind === 'error' && b.text.includes('boom'))).toBe(true);
-  });
-
-  it('errors when no endpoint is configured', async () => {
-    useStore.getState().createSession('/tmp');
-    const sid = useStore.getState().activeId;
-    // Ensure session has no endpoint and store has no default.
-    useStore.setState((s) => ({
-      sessions: s.sessions.map((x) => (x.id === sid ? { ...x, endpointId: undefined } : x)),
-      defaultEndpointId: null,
-      messagesBySession: {
-        ...s.messagesBySession,
-        [sid]: [{ kind: 'user', id: 'u1', text: 'hi' }]
-      }
-    }));
-    const seen: unknown[] = [];
-    stubAgentory(async () => {
-      seen.push('called');
-      return { ok: true, text: 'x' };
-    });
-    await handleCompact({ sessionId: sid, args: '' });
-    expect(seen).toEqual([]);
-    const blocks = useStore.getState().messagesBySession[sid] ?? [];
-    expect(blocks.some((b) => b.kind === 'error' && b.text.includes('no endpoint'))).toBe(true);
-  });
-});

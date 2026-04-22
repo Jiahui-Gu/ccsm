@@ -6,7 +6,6 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
-  endpointId?: string;
 };
 
 type StartResult =
@@ -27,53 +26,20 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
-type EndpointKind =
-  | 'anthropic'
-  | 'openai-compat'
-  | 'ollama'
-  | 'bedrock'
-  | 'vertex'
-  | 'unknown';
-type EndpointStatus = 'ok' | 'error' | 'unchecked';
-type DiscoverySource = 'probe' | 'listed' | 'manual';
-type EndpointRow = {
-  id: string;
-  name: string;
-  baseUrl: string;
-  kind: EndpointKind;
-  isDefault: boolean;
-  lastStatus: EndpointStatus;
-  lastError: string | null;
-  lastRefreshedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-  detectedKind: EndpointKind | null;
-  manualModelIds: string[];
+type ModelSourceDecl =
+  | 'settings'
+  | 'env'
+  | 'manual'
+  | 'cli-picker'
+  | 'env-override'
+  | 'fallback';
+type DiscoveredModelDecl = { id: string; source: ModelSourceDecl };
+type ConnectionInfo = {
+  baseUrl: string | null;
+  model: string | null;
+  hasAuthToken: boolean;
 };
-type ModelRow = {
-  id: string;
-  endpointId: string;
-  modelId: string;
-  displayName: string | null;
-  discoveredAt: number;
-  source: DiscoverySource;
-  existsConfirmed: boolean;
-};
-type EndpointWithModels = EndpointRow & { models: ModelRow[] };
-type TestConnectionResult =
-  | { ok: true }
-  | { ok: false; status?: number; error: string };
-type RefreshResult =
-  | {
-      ok: true;
-      count: number;
-      detectedKind: EndpointKind;
-      sourceStats: Record<DiscoverySource, number>;
-    }
-  | { ok: false; error: string; status?: number };
-type CreateMessageResult =
-  | { ok: true; text: string }
-  | { ok: false; status?: number; error: string };
+type OpenSettingsResult = { ok: true } | { ok: false; error: string };
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -285,46 +251,14 @@ const api = {
     platform: process.platform
   },
 
-  endpoints: {
-    list: (): Promise<EndpointRow[]> => ipcRenderer.invoke('endpoints:list'),
-    add: (input: {
-      name: string;
-      baseUrl: string;
-      kind?: EndpointKind;
-      apiKey?: string;
-      isDefault?: boolean;
-    }): Promise<EndpointRow> => ipcRenderer.invoke('endpoints:add', input),
-    update: (
-      id: string,
-      patch: {
-        name?: string;
-        baseUrl?: string;
-        apiKey?: string | null;
-        isDefault?: boolean;
-        kind?: EndpointKind;
-      }
-    ): Promise<EndpointRow | null> => ipcRenderer.invoke('endpoints:update', id, patch),
-    remove: (id: string): Promise<boolean> => ipcRenderer.invoke('endpoints:remove', id),
-    testConnection: (args: { baseUrl: string; apiKey: string }): Promise<TestConnectionResult> =>
-      ipcRenderer.invoke('endpoints:testConnection', args),
-    refreshModels: (id: string): Promise<RefreshResult> =>
-      ipcRenderer.invoke('endpoints:refreshModels', id),
-    setManualModels: (id: string, ids: string[]): Promise<EndpointRow | null> =>
-      ipcRenderer.invoke('endpoints:setManualModels', id, ids),
-    createMessage: (args: {
-      endpointId: string;
-      model: string;
-      maxTokens?: number;
-      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-      system?: string;
-    }): Promise<CreateMessageResult> =>
-      ipcRenderer.invoke('endpoints:createMessage', args),
+  connection: {
+    read: (): Promise<ConnectionInfo> => ipcRenderer.invoke('connection:read'),
+    openSettingsFile: (): Promise<OpenSettingsResult> =>
+      ipcRenderer.invoke('connection:openSettingsFile'),
   },
 
   models: {
-    listByEndpoint: (id: string): Promise<ModelRow[]> =>
-      ipcRenderer.invoke('models:listByEndpoint', id),
-    listAll: (): Promise<EndpointWithModels[]> => ipcRenderer.invoke('models:listAll'),
+    list: (): Promise<DiscoveredModelDecl[]> => ipcRenderer.invoke('models:list'),
   },
 
   cli: {

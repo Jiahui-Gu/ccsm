@@ -134,7 +134,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const queueLength = useStore((s) => s.messageQueues[sessionId]?.length ?? 0);
   const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
   const permission = useStore((s) => s.permission);
-  const defaultEndpointId = useStore((s) => s.defaultEndpointId);
   const appendBlocks = useStore((s) => s.appendBlocks);
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
@@ -432,13 +431,11 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setRunning(sessionId, true);
 
     if (!started) {
-      const endpointId = session.endpointId ?? defaultEndpointId ?? undefined;
       const res = await api.agentStart(sessionId, {
         cwd: session.cwd,
         model: session.model || undefined,
         permissionMode: permission,
-        resumeSessionId: session.resumeSessionId,
-        endpointId
+        resumeSessionId: session.resumeSessionId
       });
       if (!res.ok) {
         setRunning(sessionId, false);

@@ -141,7 +141,7 @@ const zh: EnCatalog = {
       general: '通用',
       appearance: '外观',
       notifications: '通知',
-      endpoints: '端点',
+      connection: '连接',
       updates: '更新'
     },
     theme: '主题',
@@ -164,10 +164,6 @@ const zh: EnCatalog = {
       en: 'English',
       zh: '中文'
     },
-    apiKey: 'Anthropic API Key',
-    apiKeyHint: '保存在系统钥匙串中。运行 Claude Code 会话所必需。',
-    apiKeyPlaceholder: 'sk-ant-…',
-    testConnection: '测试连接',
     version: '版本',
     checkForUpdates: '检查更新'
   },
@@ -343,8 +339,7 @@ const zh: EnCatalog = {
     permissionMode: '权限模式',
     browseFolder: '选择文件夹…',
     loading: '加载中…',
-    noEndpoints: '未配置端点',
-    noModelsHint: '尚无模型 — 在设置里点刷新',
+    noModelsHint: '没有模型 — 运行 `claude /config` 或编辑 ~/.claude/settings.json',
     pickModel: '(选择模型)',
     defaultSuffix: '（默认）',
     modePlanLabel: '规划',

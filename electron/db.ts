@@ -27,55 +27,16 @@ export function initDb(): Database.Database {
       createdAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId);
-
-    CREATE TABLE IF NOT EXISTS endpoints (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      base_url TEXT NOT NULL,
-      kind TEXT NOT NULL DEFAULT 'anthropic',
-      api_key_encrypted BLOB,
-      is_default INTEGER NOT NULL DEFAULT 0,
-      last_status TEXT,
-      last_error TEXT,
-      last_refreshed_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      detected_kind TEXT,
-      manual_model_ids TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS endpoint_models (
-      id TEXT PRIMARY KEY,
-      endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
-      model_id TEXT NOT NULL,
-      display_name TEXT,
-      discovered_at INTEGER NOT NULL,
-      source TEXT NOT NULL DEFAULT 'listed',
-      exists_confirmed INTEGER NOT NULL DEFAULT 1,
-      UNIQUE(endpoint_id, model_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
-      ON endpoint_models(endpoint_id);
   `);
-  migrateEndpointDiscoveryColumns(db);
+  // Drop legacy endpoints tables if they exist from a pre-refactor install.
+  // The app no longer reads them — connection config now comes from
+  // ~/.claude/settings.json. Cheap to issue at every boot; SQLite ignores
+  // missing tables.
+  db.exec(`
+    DROP TABLE IF EXISTS endpoint_models;
+    DROP TABLE IF EXISTS endpoints;
+  `);
   return db;
-}
-
-/**
- * Idempotent column additions for pre-existing databases that predate the
- * tiered discovery pipeline. `ALTER TABLE ADD COLUMN` in SQLite is cheap and
- * additive, so we can run this on every boot without a version counter.
- */
-function migrateEndpointDiscoveryColumns(db: Database.Database): void {
-  const addIfMissing = (table: string, column: string, ddl: string): void => {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    if (cols.some((c) => c.name === column)) return;
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-  };
-  addIfMissing('endpoints', 'detected_kind', 'detected_kind TEXT');
-  addIfMissing('endpoints', 'manual_model_ids', 'manual_model_ids TEXT');
-  addIfMissing('endpoint_models', 'source', "source TEXT NOT NULL DEFAULT 'listed'");
-  addIfMissing('endpoint_models', 'exists_confirmed', 'exists_confirmed INTEGER NOT NULL DEFAULT 1');
 }
 
 export function loadMessages(sessionId: string): unknown[] {
@@ -121,35 +82,7 @@ export function __setDbForTests(instance: Database.Database | null): void {
         createdAt INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId);
-      CREATE TABLE IF NOT EXISTS endpoints (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        base_url TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'anthropic',
-        api_key_encrypted BLOB,
-        is_default INTEGER NOT NULL DEFAULT 0,
-        last_status TEXT,
-        last_error TEXT,
-        last_refreshed_at INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        detected_kind TEXT,
-        manual_model_ids TEXT
-      );
-      CREATE TABLE IF NOT EXISTS endpoint_models (
-        id TEXT PRIMARY KEY,
-        endpoint_id TEXT NOT NULL REFERENCES endpoints(id) ON DELETE CASCADE,
-        model_id TEXT NOT NULL,
-        display_name TEXT,
-        discovered_at INTEGER NOT NULL,
-        source TEXT NOT NULL DEFAULT 'listed',
-        exists_confirmed INTEGER NOT NULL DEFAULT 1,
-        UNIQUE(endpoint_id, model_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_endpoint_models_endpoint
-        ON endpoint_models(endpoint_id);
     `);
-    migrateEndpointDiscoveryColumns(instance);
   }
 }
 

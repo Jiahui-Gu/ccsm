@@ -127,18 +127,12 @@ await page.addInitScript(() => {
       onMaximizedChanged: () => () => {},
       platform: 'win32'
     },
-    endpoints: {
-      list: async () => [],
-      add: async () => ({}),
-      update: async () => null,
-      remove: async () => true,
-      testConnection: async () => ({ ok: true }),
-      refreshModels: async () => ({ ok: true, count: 0, detectedKind: 'unknown', sourceStats: {} }),
-      setManualModels: async () => null
+    connection: {
+      read: async () => ({ baseUrl: null, model: null, hasAuthToken: false }),
+      openSettingsFile: async () => ({ ok: true })
     },
     models: {
-      listByEndpoint: async () => [],
-      listAll: async () => []
+      list: async () => []
     },
     pr,
     openExternal: async () => true

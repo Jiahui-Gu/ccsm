@@ -84,10 +84,10 @@ export function handleConfig(_ctx: SlashCommandContext): void {
 }
 
 // ---------- /model ----------
-// No in-chat model dropdown exposed yet; route to the Endpoints tab where
-// models and defaults are managed. Cheap and complete for MVP.
+// No in-chat model dropdown exposed yet; route to the Connection tab where
+// the model defaults live.
 export function handleModel(_ctx: SlashCommandContext): void {
-  openSettings('endpoints');
+  openSettings('connection');
 }
 
 // ---------- /help ----------
@@ -121,76 +121,12 @@ export function handleHelp(ctx: SlashCommandContext): void {
 }
 
 // ---------- /compact ----------
-// Fire a one-off summarisation call against the session's endpoint + model.
-// On success, wipe the in-memory messages and replace with a single info
-// block containing the summary. On failure, show an error block and leave
-// messages untouched.
-export async function handleCompact(ctx: SlashCommandContext): Promise<void> {
-  const store = useStore.getState();
-  const session = store.sessions.find((s) => s.id === ctx.sessionId);
-  if (!session) {
-    appendError(ctx.sessionId, 'Compact failed: session not found.');
-    return;
-  }
-  const endpointId = session.endpointId ?? store.defaultEndpointId ?? undefined;
-  if (!endpointId) {
-    appendError(ctx.sessionId, 'Compact failed: no endpoint configured. Add one in Settings → Endpoints.');
-    return;
-  }
-  const model =
-    session.model ||
-    store.modelsByEndpoint[endpointId]?.[0]?.modelId ||
-    '';
-  if (!model) {
-    appendError(ctx.sessionId, 'Compact failed: no model selected for this session.');
-    return;
-  }
-  const api = window.agentory;
-  if (!api || !api.endpoints.createMessage) {
-    appendError(ctx.sessionId, 'Compact failed: runtime unavailable.');
-    return;
-  }
-
-  const blocks = store.messagesBySession[ctx.sessionId] ?? [];
-  const transcript = blocksToTranscript(blocks);
-  if (!transcript.trim()) {
-    appendStatus(ctx.sessionId, 'Nothing to compact', 'This session has no message history yet.');
-    return;
-  }
-
-  appendStatus(ctx.sessionId, 'Compacting conversation…', 'Summarising with the session model; this may take a few seconds.');
-
-  const prompt =
-    'Summarize the following conversation into a concise memory block, ' +
-    'preserving decisions and open items. Use bullet points.\n\n<transcript>\n' +
-    transcript +
-    '\n</transcript>';
-
-  const res = await api.endpoints.createMessage({
-    endpointId,
-    model,
-    maxTokens: 4000,
-    messages: [{ role: 'user', content: prompt }]
-  });
-
-  if (!res.ok) {
-    appendError(ctx.sessionId, `Compact failed: ${res.error}`);
-    return;
-  }
-
-  const summaryBlock: MessageBlock = {
-    kind: 'status',
-    id: nextId('compact'),
-    tone: 'info',
-    title: 'Conversation compacted',
-    detail: res.text
-  };
-  store.replaceMessages(ctx.sessionId, [summaryBlock]);
-  // Persist so a reload doesn't bring back the old transcript.
-  if (typeof api.saveMessages === 'function') {
-    void api.saveMessages(ctx.sessionId, [summaryBlock]);
-  }
-}
+// Pass-through to claude.exe — Agentory no longer owns a one-off summarise
+// path now that endpoints/keys live in ~/.claude/settings.json (the renderer
+// has no API key to call /v1/messages with). The CLI's own /compact handles
+// it natively.
+//
+// `blocksToTranscript` is still exported below for tests and future reuse.
 
 // Exported for tests; also used by /compact. Flattens the visible message
 // blocks into a plain-text transcript the model can chew on.
@@ -253,5 +189,4 @@ attach('cost', handleCost);
 attach('config', handleConfig);
 attach('model', handleModel);
 attach('help', handleHelp);
-attach('compact', handleCompact);
 attach('pr', handlePr);
