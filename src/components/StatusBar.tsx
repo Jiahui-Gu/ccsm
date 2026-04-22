@@ -147,9 +147,8 @@ export function StatusBar({
   onChangePermission
 }: StatusBarProps) {
   const { t } = useTranslation();
-  const endpoints = useStore((s) => s.endpoints);
-  const modelsByEndpoint = useStore((s) => s.modelsByEndpoint);
-  const endpointsLoaded = useStore((s) => s.endpointsLoaded);
+  const models = useStore((s) => s.models);
+  const modelsLoaded = useStore((s) => s.modelsLoaded);
 
   // Labels describe what claude.exe actually does per mode. The underlying
   // VALUES (default / acceptEdits / plan / bypassPermissions) are CLI argv
@@ -178,49 +177,21 @@ export function StatusBar({
     />
   );
 
-  // Build the grouped model option list: one `label` row per endpoint,
-  // followed by that endpoint's discovered models, separated between groups.
+  // Flat model list discovered from ~/.claude/settings.json (+ env). No
+  // grouping — there is exactly one connection.
   const modelOptions: ChipOption<string>[] = [];
-  if (!endpointsLoaded) {
+  if (!modelsLoaded) {
     modelOptions.push({ kind: 'label', primary: t('statusBar.loading') });
-  } else if (endpoints.length === 0) {
-    modelOptions.push({ kind: 'label', primary: t('statusBar.noEndpoints') });
+  } else if (models.length === 0) {
+    modelOptions.push({ kind: 'label', primary: t('statusBar.noModelsHint') });
   } else {
-    endpoints.forEach((e, idx) => {
-      if (idx > 0) modelOptions.push({ kind: 'separator' });
-      modelOptions.push({
-        kind: 'label',
-        primary: `${e.name}${e.isDefault ? t('statusBar.defaultSuffix') : ''}`
-      });
-      const models = modelsByEndpoint[e.id] ?? [];
-      if (models.length === 0) {
-        modelOptions.push({
-          kind: 'label',
-          primary: e.lastStatus === 'error' ? e.lastError ?? t('common.unknown') : t('statusBar.noModelsHint')
-        });
-      } else {
-        for (const m of models) {
-          modelOptions.push({
-            kind: 'item',
-            value: m.modelId,
-            primary: m.displayName ?? m.modelId,
-            secondary: m.displayName ? m.modelId : undefined
-          });
-        }
-      }
-    });
-  }
-
-  // Render the trigger as the model's display name when known, else its id,
-  // else a friendly placeholder.
-  let modelTriggerLabel = model || t('statusBar.pickModel');
-  for (const list of Object.values(modelsByEndpoint)) {
-    const found = list.find((m) => m.modelId === model);
-    if (found) {
-      modelTriggerLabel = found.displayName ?? found.modelId;
-      break;
+    for (const m of models) {
+      modelOptions.push({ kind: 'item', value: m.id, primary: m.id });
     }
   }
+
+  // Render the trigger as the model id, else a friendly placeholder.
+  const modelTriggerLabel = model || t('statusBar.pickModel');
 
   const chips: React.ReactNode[] = [
     cwdChip,

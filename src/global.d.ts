@@ -9,7 +9,6 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
-  endpointId?: string;
 };
 
 type StartResult =
@@ -38,53 +37,20 @@ type UpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type EndpointKindDecl =
-  | 'anthropic'
-  | 'openai-compat'
-  | 'ollama'
-  | 'bedrock'
-  | 'vertex'
-  | 'unknown';
-type EndpointStatusDecl = 'ok' | 'error' | 'unchecked';
-type DiscoverySourceDecl = 'listed' | 'cli-picker' | 'env-override' | 'fallback' | 'manual';
-type EndpointRowDecl = {
-  id: string;
-  name: string;
-  baseUrl: string;
-  kind: EndpointKindDecl;
-  isDefault: boolean;
-  lastStatus: EndpointStatusDecl;
-  lastError: string | null;
-  lastRefreshedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-  detectedKind: EndpointKindDecl | null;
-  manualModelIds: string[];
+type ModelSourceDecl =
+  | 'settings'
+  | 'env'
+  | 'manual'
+  | 'cli-picker'
+  | 'env-override'
+  | 'fallback';
+type DiscoveredModelDecl = { id: string; source: ModelSourceDecl };
+type ConnectionInfoDecl = {
+  baseUrl: string | null;
+  model: string | null;
+  hasAuthToken: boolean;
 };
-type ModelRowDecl = {
-  id: string;
-  endpointId: string;
-  modelId: string;
-  displayName: string | null;
-  discoveredAt: number;
-  source: DiscoverySourceDecl;
-  existsConfirmed: boolean;
-};
-type EndpointWithModelsDecl = EndpointRowDecl & { models: ModelRowDecl[] };
-type TestConnectionResultDecl =
-  | { ok: true }
-  | { ok: false; status?: number; error: string };
-type RefreshResultDecl =
-  | {
-      ok: true;
-      count: number;
-      detectedKind: EndpointKindDecl;
-      sourceStats: Record<DiscoverySourceDecl, number>;
-    }
-  | { ok: false; error: string; status?: number };
-type CreateMessageResultDecl =
-  | { ok: true; text: string }
-  | { ok: false; status?: number; error: string };
+type OpenSettingsResultDecl = { ok: true } | { ok: false; error: string };
 
 type CliInstallHintsDecl = {
   os: string;
@@ -251,41 +217,13 @@ declare global {
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
       };
 
-      endpoints: {
-        list: () => Promise<EndpointRowDecl[]>;
-        add: (input: {
-          name: string;
-          baseUrl: string;
-          kind?: EndpointKindDecl;
-          apiKey?: string;
-          isDefault?: boolean;
-        }) => Promise<EndpointRowDecl>;
-        update: (
-          id: string,
-          patch: {
-            name?: string;
-            baseUrl?: string;
-            apiKey?: string | null;
-            isDefault?: boolean;
-            kind?: EndpointKindDecl;
-          }
-        ) => Promise<EndpointRowDecl | null>;
-        remove: (id: string) => Promise<boolean>;
-        testConnection: (args: { baseUrl: string; apiKey: string }) => Promise<TestConnectionResultDecl>;
-        refreshModels: (id: string) => Promise<RefreshResultDecl>;
-        setManualModels: (id: string, ids: string[]) => Promise<EndpointRowDecl | null>;
-        createMessage: (args: {
-          endpointId: string;
-          model: string;
-          maxTokens?: number;
-          messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-          system?: string;
-        }) => Promise<CreateMessageResultDecl>;
+      connection: {
+        read: () => Promise<ConnectionInfoDecl>;
+        openSettingsFile: () => Promise<OpenSettingsResultDecl>;
       };
 
       models: {
-        listByEndpoint: (id: string) => Promise<ModelRowDecl[]>;
-        listAll: () => Promise<EndpointWithModelsDecl[]>;
+        list: () => Promise<DiscoveredModelDecl[]>;
       };
 
       cli: {

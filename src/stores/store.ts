@@ -44,8 +44,13 @@ export type EndpointKind =
   | 'bedrock'
   | 'vertex'
   | 'unknown';
-export type EndpointStatus = 'ok' | 'error' | 'unchecked';
-export type DiscoverySource = 'listed' | 'cli-picker' | 'env-override' | 'fallback' | 'manual';
+export type ModelSource =
+  | 'settings'
+  | 'env'
+  | 'manual'
+  | 'cli-picker'
+  | 'env-override'
+  | 'fallback';
 
 // Cumulative cost / token / turn counters for a single session. Aggregated
 // from `result` frames as they arrive (see agent/lifecycle). Used by the
@@ -64,29 +69,15 @@ export const EMPTY_SESSION_STATS: SessionStats = {
   costUsd: 0
 };
 
-export interface Endpoint {
+export interface DiscoveredModel {
   id: string;
-  name: string;
-  baseUrl: string;
-  kind: EndpointKind;
-  isDefault: boolean;
-  lastStatus: EndpointStatus;
-  lastError: string | null;
-  lastRefreshedAt: number | null;
-  createdAt: number;
-  updatedAt: number;
-  detectedKind: EndpointKind | null;
-  manualModelIds: string[];
+  source: ModelSource;
 }
 
-export interface ModelInfo {
-  id: string;
-  endpointId: string;
-  modelId: string;
-  displayName: string | null;
-  discoveredAt: number;
-  source: DiscoverySource;
-  existsConfirmed: boolean;
+export interface ConnectionInfo {
+  baseUrl: string | null;
+  model: string | null;
+  hasAuthToken: boolean;
 }
 
 // OS-level notification preferences. Persisted as a single JSON blob alongside
@@ -193,10 +184,9 @@ type State = {
    * affordance, not durable state.
    */
   messageQueues: Record<string, QueuedMessage[]>;
-  endpoints: Endpoint[];
-  modelsByEndpoint: Record<string, ModelInfo[]>;
-  defaultEndpointId: string | null;
-  endpointsLoaded: boolean;
+  models: DiscoveredModel[];
+  modelsLoaded: boolean;
+  connection: ConnectionInfo | null;
   // Monotonic counter bumped whenever a user-driven action requests that the
   // InputBar textarea take focus (e.g. clicking a session in the sidebar,
   // matching Claude Desktop's behavior). InputBar `useEffect`s on this and
@@ -273,12 +263,8 @@ type Actions = {
   bumpComposerFocus: () => void;
   addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
 
-  setEndpoints: (list: Endpoint[]) => void;
-  setModelsForEndpoint: (endpointId: string, models: ModelInfo[]) => void;
-  setDefaultEndpointId: (id: string | null) => void;
-  refreshAllEndpointModels: () => Promise<void>;
-  refreshEndpointModels: (endpointId: string) => Promise<{ ok: boolean; error?: string }>;
-  reloadEndpoints: () => Promise<void>;
+  loadModels: () => Promise<void>;
+  loadConnection: () => Promise<void>;
 
   checkCli: () => Promise<void>;
   setCliMissing: (searchedPaths: string[]) => void;
@@ -426,10 +412,9 @@ export const useStore = create<State & Actions>((set, get) => ({
   statsBySession: {},
   interruptedSessions: {},
   messageQueues: {},
-  endpoints: [],
-  modelsByEndpoint: {},
-  defaultEndpointId: null,
-  endpointsLoaded: false,
+  models: [],
+  modelsLoaded: false,
+  connection: null,
   focusInputNonce: 0,
   cliStatus: DEFAULT_CLI_STATUS,
 
@@ -471,9 +456,8 @@ export const useStore = create<State & Actions>((set, get) => ({
       recentProjects,
       historyRecentCwds,
       historyTopModel,
-      defaultEndpointId,
-      modelsByEndpoint,
-      endpoints,
+      models,
+      connection,
     } = get();
     const isUsable = (gid: string | null | undefined) => {
       if (!gid) return false;
@@ -491,13 +475,10 @@ export const useStore = create<State & Actions>((set, get) => ({
     const id = nextId('s');
     const defaultCwd =
       recentProjects[0]?.path ?? historyRecentCwds[0] ?? '~';
-    const endpointId =
-      defaultEndpointId ?? endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id;
     let initialModel = model;
     if (!initialModel) initialModel = historyTopModel ?? '';
-    if (!initialModel && endpointId) {
-      initialModel = modelsByEndpoint[endpointId]?.[0]?.modelId ?? '';
-    }
+    if (!initialModel) initialModel = connection?.model ?? '';
+    if (!initialModel) initialModel = models[0]?.id ?? '';
     const newSession: Session = {
       id,
       name: opts.name?.trim() || 'New session',
@@ -506,7 +487,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       model: initialModel,
       groupId: targetGroupId,
       agentType: 'claude-code',
-      endpointId,
     };
     // If the target group is currently collapsed, expand it in the same
     // atomic update so the new row is visible the moment activeId flips.
@@ -533,14 +513,11 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId }) => {
-    const { sessions, model, defaultEndpointId, endpoints, modelsByEndpoint } = get();
+    const { sessions, model, models, connection } = get();
     const id = nextId('s');
-    const endpointId =
-      defaultEndpointId ?? endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id;
     let initialModel = model;
-    if (!initialModel && endpointId) {
-      initialModel = modelsByEndpoint[endpointId]?.[0]?.modelId ?? '';
-    }
+    if (!initialModel) initialModel = connection?.model ?? '';
+    if (!initialModel) initialModel = models[0]?.id ?? '';
     const imported: Session = {
       id,
       name,
@@ -549,7 +526,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       model: initialModel,
       groupId,
       agentType: 'claude-code',
-      endpointId,
       resumeSessionId
     };
     set({ sessions: [imported, ...sessions], activeId: id, focusedGroupId: null });
@@ -970,67 +946,29 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({ focusInputNonce: s.focusInputNonce + 1 }));
   },
 
-  setEndpoints: (list) => set({ endpoints: list }),
-  setModelsForEndpoint: (endpointId, models) =>
-    set((s) => ({ modelsByEndpoint: { ...s.modelsByEndpoint, [endpointId]: models } })),
-  setDefaultEndpointId: (id) => set({ defaultEndpointId: id }),
-
-  reloadEndpoints: async () => {
+  loadModels: async () => {
     const api = window.agentory;
-    if (!api) return;
-    const all = await api.models.listAll();
-    const endpoints: Endpoint[] = all.map((e) => ({
-      id: e.id,
-      name: e.name,
-      baseUrl: e.baseUrl,
-      kind: e.kind,
-      isDefault: e.isDefault,
-      lastStatus: e.lastStatus,
-      lastError: e.lastError,
-      lastRefreshedAt: e.lastRefreshedAt,
-      createdAt: e.createdAt,
-      updatedAt: e.updatedAt,
-      detectedKind: e.detectedKind,
-      manualModelIds: e.manualModelIds
-    }));
-    const modelsByEndpoint: Record<string, ModelInfo[]> = {};
-    for (const e of all) modelsByEndpoint[e.id] = e.models;
-    set((s) => {
-      const currentDefault = s.defaultEndpointId;
-      const stillExists = currentDefault && endpoints.some((e) => e.id === currentDefault);
-      const nextDefault = stillExists
-        ? currentDefault
-        : endpoints.find((e) => e.isDefault)?.id ?? endpoints[0]?.id ?? null;
-      return {
-        endpoints,
-        modelsByEndpoint,
-        defaultEndpointId: nextDefault,
-        endpointsLoaded: true
-      };
-    });
-  },
-
-  refreshEndpointModels: async (endpointId) => {
-    const api = window.agentory;
-    if (!api) return { ok: false, error: 'IPC unavailable' };
-    const res = await api.endpoints.refreshModels(endpointId);
-    // Re-read from DB regardless of outcome so last_status / last_error land.
-    await get().reloadEndpoints();
-    return res.ok ? { ok: true } : { ok: false, error: res.error };
-  },
-
-  refreshAllEndpointModels: async () => {
-    const api = window.agentory;
-    if (!api) return;
-    const list = get().endpoints;
-    for (const e of list) {
-      // Don't thrash: refresh only if never refreshed OR older than 24h.
-      const stale =
-        !e.lastRefreshedAt || Date.now() - e.lastRefreshedAt > 24 * 60 * 60 * 1000;
-      if (!stale) continue;
-      await api.endpoints.refreshModels(e.id);
+    if (!api?.models?.list) {
+      set({ modelsLoaded: true });
+      return;
     }
-    await get().reloadEndpoints();
+    try {
+      const list = await api.models.list();
+      set({ models: list, modelsLoaded: true });
+    } catch {
+      set({ modelsLoaded: true });
+    }
+  },
+
+  loadConnection: async () => {
+    const api = window.agentory;
+    if (!api?.connection?.read) return;
+    try {
+      const info = await api.connection.read();
+      set({ connection: info });
+    } catch {
+      /* IPC failed — leave connection as null */
+    }
   },
 
   checkCli: async () => {
@@ -1120,7 +1058,6 @@ export async function hydrateStore(): Promise<void> {
       density: sanitizeDensity(persisted.density),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
-      defaultEndpointId: persisted.defaultEndpointId ?? null,
       notificationSettings: {
         ...DEFAULT_NOTIFICATION_SETTINGS,
         ...(persisted.notificationSettings ?? {})
@@ -1184,13 +1121,13 @@ export async function hydrateStore(): Promise<void> {
     /* IPC unavailable — boot continues with empty defaults */
   }
 
-  // Load endpoints + models from the main process. Keeps the IPC round-trip
-  // off the critical path for reading persisted state, but still runs before
-  // the first createSession / send.
-  await useStore.getState().reloadEndpoints();
-  // Auto-refresh stale endpoints opportunistically. Don't block hydration on
-  // network — fire-and-forget.
-  void useStore.getState().refreshAllEndpointModels();
+  // Load connection info + discovered models from settings.json. Both come
+  // from main; failures leave the empty defaults in place so the UI can still
+  // render with placeholder copy.
+  await Promise.all([
+    useStore.getState().loadConnection(),
+    useStore.getState().loadModels(),
+  ]);
 
   // After (potential) hydration, subscribe to write-through.
   useStore.subscribe((s) => {
@@ -1209,7 +1146,6 @@ export async function hydrateStore(): Promise<void> {
       density: s.density,
       recentProjects: s.recentProjects,
       tutorialSeen: s.tutorialSeen,
-      defaultEndpointId: s.defaultEndpointId,
       notificationSettings: s.notificationSettings
     };
     schedulePersist(snapshot);
