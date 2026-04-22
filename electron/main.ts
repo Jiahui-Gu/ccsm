@@ -32,40 +32,6 @@ import {
   type CreatePrArgs
 } from './pr';
 
-const KEYCHAIN_FILE = 'anthropic-key.bin';
-
-function keychainPath(): string {
-  return path.join(app.getPath('userData'), KEYCHAIN_FILE);
-}
-
-function readApiKey(): string {
-  try {
-    if (!safeStorage.isEncryptionAvailable()) return '';
-    const p = keychainPath();
-    if (!fs.existsSync(p)) return '';
-    const buf = fs.readFileSync(p);
-    return safeStorage.decryptString(buf);
-  } catch {
-    return '';
-  }
-}
-
-function writeApiKey(value: string): boolean {
-  try {
-    if (!safeStorage.isEncryptionAvailable()) return false;
-    const p = keychainPath();
-    if (!value) {
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-      return true;
-    }
-    const enc = safeStorage.encryptString(value);
-    fs.writeFileSync(p, enc, { mode: 0o600 });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 const isDev = !app.isPackaged;
 
 // ───────────────────── importable-sessions cache ─────────────────────────
@@ -400,9 +366,6 @@ app.whenReady().then(() => {
     resolveSessionEndpointEnv;
   ipcMain.handle('app:getDataDir', () => app.getPath('userData'));
   ipcMain.handle('app:getVersion', () => app.getVersion());
-  ipcMain.handle('keychain:getApiKey', () => readApiKey());
-  ipcMain.handle('keychain:setApiKey', (_e, value: string) => writeApiKey(value));
-  ipcMain.handle('keychain:hasEncryption', () => safeStorage.isEncryptionAvailable());
 
   ipcMain.handle('dialog:pickDirectory', async () => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -462,15 +425,10 @@ app.whenReady().then(() => {
       }
 
       const envOverrides = resolveSessionEndpointEnv(opts.endpointId);
-      // Fall back to the global keychain key only when no endpoint was chosen
-      // or the endpoint has no stored key (user is still relying on parent
-      // env). Per-endpoint keys always win.
-      const apiKey = envOverrides?.ANTHROPIC_API_KEY ? undefined : readApiKey();
       const binaryPath = loadClaudeBinPath() ?? undefined;
 
       const result = await sessions.start(sessionId, {
         ...opts,
-        apiKey,
         envOverrides,
         binaryPath,
       });

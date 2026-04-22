@@ -78,7 +78,6 @@ This file is the reconciliation table for what's actually implemented in agentor
 |---|---|---|
 | Modal scaffolding + grouped tabs | ✅ | Tabs switch correctly. |
 | Theme toggle | ✅ | `theme: system|light|dark` persisted; App.tsx watches `prefers-color-scheme` and toggles `<html>.dark`. |
-| Anthropic API key (safeStorage) | ✅ | `keychain:get/setApiKey` IPC + Electron `safeStorage`; encrypted file in userData; input disabled when encryption is unavailable. |
 | Data dir display | ✅ | `app:getDataDir` IPC returns real `app.getPath('userData')`. |
 | Shortcuts read-only list | ✅ | Static catalog; matches "MVP does not allow remap". |
 | Updates "Check for updates" | ✅ | PR #25: electron-updater wired with main-process IPC (`updates:check/download/install/status`) + preload bridge + Settings UI showing version, status (idle/checking/available/downloading/downloaded/error), Check button, Download button (when an update is available), Restart-and-install button (when downloaded). In dev mode the check returns synthetic "not-available" since there is no `app-update.yml` feed. Real feed activates once electron-builder publish lands. |

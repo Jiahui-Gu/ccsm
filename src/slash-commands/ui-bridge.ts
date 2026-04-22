@@ -13,7 +13,6 @@ export type SettingsTab =
   | 'endpoints'
   | 'autopilot'
   | 'permissions'
-  | 'account'
   | 'data'
   | 'shortcuts'
   | 'updates';

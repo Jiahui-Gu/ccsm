@@ -151,9 +151,6 @@ declare global {
       saveMessages: (sessionId: string, blocks: Array<{ id: string; kind: string }>) => Promise<void>;
       getDataDir: () => Promise<string>;
       getVersion: () => Promise<string>;
-      getApiKey: () => Promise<string>;
-      setApiKey: (value: string) => Promise<boolean>;
-      hasEncryption: () => Promise<boolean>;
       pickDirectory: () => Promise<string | null>;
 
       agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;

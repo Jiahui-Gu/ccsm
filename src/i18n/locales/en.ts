@@ -145,7 +145,6 @@ const en = {
       endpoints: 'Endpoints',
       autopilot: 'Autopilot',
       permissions: 'Permissions',
-      account: 'Account',
       data: 'Data',
       shortcuts: 'Shortcuts',
       updates: 'Updates'
