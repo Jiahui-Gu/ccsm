@@ -78,13 +78,19 @@ await costBanner.first().waitFor({ state: 'visible', timeout: 3000 }).catch(() =
 });
 
 // --- 3. /clear --------------------------------------------------------
+// /clear must wipe transcript in-place: same session, same id, no new
+// sidebar entry. Detailed assertions live in scripts/probe-slash-clear.mjs.
 const sidebarItems = page.locator('[role="option"]');
 const beforeCount = await sidebarItems.count();
 await sendSlash('/clear');
 await page.waitForTimeout(200);
 const afterCount = await sidebarItems.count();
-if (afterCount !== beforeCount + 1) {
-  fail(`/clear should add a session (had ${beforeCount}, now ${afterCount})`);
+if (afterCount !== beforeCount) {
+  fail(`/clear must NOT add a session (had ${beforeCount}, now ${afterCount})`);
+}
+const clearBanner = page.locator('[role="status"]').filter({ hasText: 'Context cleared' });
+if (!(await clearBanner.isVisible().catch(() => false))) {
+  fail('/clear did not render a "Context cleared" status block');
 }
 // Confirm textarea is empty (send cleared the draft).
 const postClearValue = await textarea.inputValue();
@@ -108,7 +114,7 @@ if (errors.length > 0) {
 console.log('\n[probe-slash-exec] OK');
 console.log('  /help → banner lists registry with client/passthru tags');
 console.log('  /cost → banner rendered (no data yet path)');
-console.log('  /clear → new session created and active');
+console.log('  /clear → context wiped in place, sidebar count unchanged');
 console.log('  /config → Settings dialog opened');
 
 await browser.close();

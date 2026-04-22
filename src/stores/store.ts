@@ -245,6 +245,13 @@ type Actions = {
   streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
   setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
+  /** Wipe everything that pins a session to a specific claude.exe conversation
+   *  (transcript, queue, started/running/interrupted flags, stats, resume id)
+   *  WITHOUT removing the session row itself. After this runs the next user
+   *  message triggers a fresh `agentStart` with no `--resume` — exactly what
+   *  the CLI's `/clear` does. The Session entity (id, name, group, cwd) is
+   *  preserved so the sidebar count is unchanged. */
+  resetSessionContext: (sessionId: string) => void;
   replaceMessages: (sessionId: string, blocks: MessageBlock[]) => void;
   loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
@@ -790,6 +797,43 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete next[sessionId];
       return { messagesBySession: next };
     });
+  },
+
+  resetSessionContext: (sessionId) => {
+    set((s) => {
+      // Bail early if the session vanished (race against deleteSession).
+      if (!s.sessions.some((x) => x.id === sessionId)) return s;
+      const nextMessages = { ...s.messagesBySession };
+      delete nextMessages[sessionId];
+      const nextStarted = { ...s.startedSessions };
+      delete nextStarted[sessionId];
+      const nextRunning = { ...s.runningSessions };
+      delete nextRunning[sessionId];
+      const nextInterrupted = { ...s.interruptedSessions };
+      delete nextInterrupted[sessionId];
+      const nextQueues = { ...s.messageQueues };
+      delete nextQueues[sessionId];
+      const nextStats = { ...s.statsBySession };
+      delete nextStats[sessionId];
+      // Drop resumeSessionId so the next agentStart spawns a fresh
+      // claude.exe conversation rather than continuing the old one.
+      const nextSessions = s.sessions.map((x) => {
+        if (x.id !== sessionId || x.resumeSessionId === undefined) return x;
+        const { resumeSessionId: _drop, ...rest } = x;
+        return rest as typeof x;
+      });
+      return {
+        sessions: nextSessions,
+        messagesBySession: nextMessages,
+        startedSessions: nextStarted,
+        runningSessions: nextRunning,
+        interruptedSessions: nextInterrupted,
+        messageQueues: nextQueues,
+        statsBySession: nextStats
+      };
+    });
+    // Wipe persisted transcript so a reload doesn't resurrect history.
+    void window.agentory?.saveMessages(sessionId, []);
   },
 
   replaceMessages: (sessionId, blocks) => {
