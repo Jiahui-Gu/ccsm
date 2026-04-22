@@ -1,7 +1,19 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
-import type { Group, Session, MessageBlock } from '../types';
+import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
+
+/**
+ * One pending user turn waiting in the per-session FIFO queue. Created when
+ * the user hits Send while the agent is mid-turn (CLI-style queueing). Drained
+ * by lifecycle.ts when the running flag flips back to false. Slash commands
+ * are NOT queued — see InputBar.send() for the rationale.
+ */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  attachments: ImageAttachment[];
+}
 
 export type ModelId = string;
 // Values match the CLI's `--permission-mode` flag 1:1 so we can pass the enum
@@ -172,6 +184,14 @@ type State = {
   // `result { error_during_execution }` frame arrives so we can render a
   // neutral "Interrupted" banner instead of an error block.
   interruptedSessions: Record<string, true>;
+  /**
+   * Per-session FIFO of user messages enqueued while the agent was running.
+   * Drained one-at-a-time when `runningSessions[id]` flips false (see
+   * `agent/lifecycle.ts`). Cleared on Stop, on session delete, and after
+   * each successful drain. Not persisted — queues are an in-memory UX
+   * affordance, not durable state.
+   */
+  messageQueues: Record<string, QueuedMessage[]>;
   endpoints: Endpoint[];
   modelsByEndpoint: Record<string, ModelInfo[]>;
   defaultEndpointId: string | null;
@@ -236,6 +256,9 @@ type Actions = {
   setSessionState: (sessionId: string, state: Session['state']) => void;
   markInterrupted: (sessionId: string) => void;
   consumeInterrupted: (sessionId: string) => boolean;
+  enqueueMessage: (sessionId: string, msg: Omit<QueuedMessage, 'id'>) => void;
+  dequeueMessage: (sessionId: string) => QueuedMessage | undefined;
+  clearQueue: (sessionId: string) => void;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
   /** Increment `focusInputNonce` to ask the InputBar to take focus. Use after
    *  any user-driven action in the chat stream that should return focus to the
@@ -372,6 +395,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   runningSessions: {},
   statsBySession: {},
   interruptedSessions: {},
+  messageQueues: {},
   endpoints: [],
   modelsByEndpoint: {},
   defaultEndpointId: null,
@@ -513,13 +537,16 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete nextRunning[id];
       const nextInterrupted = { ...s.interruptedSessions };
       delete nextInterrupted[id];
+      const nextQueues = { ...s.messageQueues };
+      delete nextQueues[id];
       return {
         sessions: remaining,
         activeId: nextActive,
         messagesBySession: nextMessages,
         startedSessions: nextStarted,
         runningSessions: nextRunning,
-        interruptedSessions: nextInterrupted
+        interruptedSessions: nextInterrupted,
+        messageQueues: nextQueues
       };
     });
     // Wipe the persisted rows so a deleted session can't resurrect its
@@ -849,6 +876,44 @@ export const useStore = create<State & Actions>((set, get) => ({
       return { interruptedSessions: next };
     });
     return true;
+  },
+
+  enqueueMessage: (sessionId, msg) => {
+    const id = `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    set((s) => {
+      const prev = s.messageQueues[sessionId] ?? [];
+      return {
+        messageQueues: {
+          ...s.messageQueues,
+          [sessionId]: [...prev, { id, ...msg }]
+        }
+      };
+    });
+  },
+
+  dequeueMessage: (sessionId) => {
+    const queue = get().messageQueues[sessionId];
+    if (!queue || queue.length === 0) return undefined;
+    const head = queue[0];
+    set((s) => {
+      const cur = s.messageQueues[sessionId];
+      if (!cur || cur.length === 0) return s;
+      const rest = cur.slice(1);
+      const next = { ...s.messageQueues };
+      if (rest.length === 0) delete next[sessionId];
+      else next[sessionId] = rest;
+      return { messageQueues: next };
+    });
+    return head;
+  },
+
+  clearQueue: (sessionId) => {
+    set((s) => {
+      if (!s.messageQueues[sessionId]) return s;
+      const next = { ...s.messageQueues };
+      delete next[sessionId];
+      return { messageQueues: next };
+    });
   },
 
   resolvePermission: (sessionId, requestId, decision) => {

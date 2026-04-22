@@ -65,7 +65,7 @@ const en = {
     toolFailedAria: 'tool failed',
     toolFailedTag: 'failed',
     runningEllipsis: '(running…)',
-    runningPlaceholder: 'Running… (input disabled)',
+    runningPlaceholder: 'Running… (Esc to interrupt, Enter to queue)',
     askPlaceholder: 'Ask anything…',
     attachImage: 'Attach image',
     attachImageTitle: 'Attach image (also supports drag-drop & paste)',
@@ -75,6 +75,9 @@ const en = {
     attachmentFormatsHint: 'PNG · JPEG · GIF · WebP · up to {{size}}',
     stopBtn: 'Stop',
     stopAria: 'Stop',
+    queueChip: '+{{count}} queued',
+    queueButton: 'Queue',
+    queueAria: 'Queue message',
     sendFailedToDeliver: 'Failed to deliver message to agent.',
     cwdMissing:
       'Working directory no longer exists: {{cwd}}. Pick a new folder using the cwd button in the status bar below, then send again.',

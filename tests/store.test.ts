@@ -19,6 +19,7 @@ beforeEach(() => {
       messagesBySession: {},
       startedSessions: {},
       runningSessions: {},
+      messageQueues: {},
       focusInputNonce: 0
     },
     true
@@ -570,5 +571,75 @@ describe('store: composer focus orchestration', () => {
     const before = useStore.getState().focusInputNonce;
     useStore.getState().resolvePermission(sid, 'no-such', 'deny');
     expect(useStore.getState().focusInputNonce).toBe(before);
+  });
+});
+
+describe('store: messageQueues (CLI-style enqueue while running)', () => {
+  it('enqueueMessage appends to a per-session FIFO and assigns ids', () => {
+    useStore.getState().enqueueMessage('s1', { text: 'first', attachments: [] });
+    useStore.getState().enqueueMessage('s1', { text: 'second', attachments: [] });
+    const q = useStore.getState().messageQueues['s1'];
+    expect(q).toHaveLength(2);
+    expect(q[0].text).toBe('first');
+    expect(q[1].text).toBe('second');
+    expect(q[0].id).not.toBe(q[1].id);
+  });
+
+  it('dequeueMessage returns and removes the head', () => {
+    useStore.getState().enqueueMessage('s1', { text: 'a', attachments: [] });
+    useStore.getState().enqueueMessage('s1', { text: 'b', attachments: [] });
+    const head = useStore.getState().dequeueMessage('s1');
+    expect(head?.text).toBe('a');
+    expect(useStore.getState().messageQueues['s1']).toHaveLength(1);
+    expect(useStore.getState().messageQueues['s1'][0].text).toBe('b');
+  });
+
+  it('dequeueMessage returns undefined when queue is empty', () => {
+    expect(useStore.getState().dequeueMessage('nope')).toBeUndefined();
+  });
+
+  it('dequeueMessage drops the key entirely when the last message leaves', () => {
+    useStore.getState().enqueueMessage('s1', { text: 'only', attachments: [] });
+    useStore.getState().dequeueMessage('s1');
+    expect(useStore.getState().messageQueues['s1']).toBeUndefined();
+  });
+
+  it('clearQueue wipes a single session without touching others', () => {
+    useStore.getState().enqueueMessage('s1', { text: 'a', attachments: [] });
+    useStore.getState().enqueueMessage('s2', { text: 'b', attachments: [] });
+    useStore.getState().clearQueue('s1');
+    expect(useStore.getState().messageQueues['s1']).toBeUndefined();
+    expect(useStore.getState().messageQueues['s2']).toHaveLength(1);
+  });
+
+  it('clearQueue is a no-op when there is no queue for the session', () => {
+    const before = useStore.getState().messageQueues;
+    useStore.getState().clearQueue('ghost');
+    expect(useStore.getState().messageQueues).toBe(before);
+  });
+
+  it('deleteSession also wipes the queue for that session', () => {
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+    };
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    useStore.getState().enqueueMessage(sid, { text: 'hello', attachments: [] });
+    expect(useStore.getState().messageQueues[sid]).toHaveLength(1);
+    useStore.getState().deleteSession(sid);
+    expect(useStore.getState().messageQueues[sid]).toBeUndefined();
+  });
+
+  it('preserves attachments through enqueue/dequeue', () => {
+    const att = {
+      id: 'att-1',
+      name: 'a.png',
+      mediaType: 'image/png' as const,
+      data: 'AAAA',
+      size: 4
+    };
+    useStore.getState().enqueueMessage('s1', { text: 'with img', attachments: [att] });
+    const head = useStore.getState().dequeueMessage('s1');
+    expect(head?.attachments).toEqual([att]);
   });
 });
