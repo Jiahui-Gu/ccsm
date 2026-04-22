@@ -134,7 +134,7 @@ const zh: EnCatalog = {
     unmuteNotifications: '取消静音'
   },
   settings: {
-    title: '设置',
+    title: 'Settings',
     tabs: {
       general: '通用',
       appearance: '外观',
@@ -256,7 +256,7 @@ const zh: EnCatalog = {
       fieldProtocol: '协议',
       fieldProtocolValue: 'Anthropic 兼容 (REST)',
       fieldBaseUrl: 'Base URL',
-      fieldBaseUrlHint: '粘贴 API 根地址，例如 https://api.anthropic.com — Agentory 会原样用作 /v1/messages，并探测 /v1/models 以发现模型。',
+      fieldBaseUrlHint: '粘贴 API 根地址，例如 https://api.anthropic.com — Agentory 会原样用作 /v1/messages，并探测 /v1/models 以发现 Model。',
       fieldBaseUrlPlaceholder: 'https://api.anthropic.com',
       fieldApiKey: 'API Key（可选）',
       fieldApiKeyHintExisting: '留空即保留原有 Key。',
@@ -419,7 +419,7 @@ const zh: EnCatalog = {
     cmdNewGroup: '新建 Group',
     cmdToggleSidebar: '切换 Sidebar',
     cmdImport: '从 Claude Code 导入…',
-    cmdOpenSettings: '打开设置',
+    cmdOpenSettings: '打开 Settings',
     cmdSwitchTheme: '切换主题 \u2192 {{next}}'
   },
   prDialog: {
@@ -452,7 +452,7 @@ const zh: EnCatalog = {
     browseFolder: '选择文件夹…',
     loading: '加载中…',
     noEndpoints: '未配置 Endpoint',
-    noModelsHint: '尚无 Model — 在设置里点刷新',
+    noModelsHint: '尚无 Model — 在 Settings 里点刷新',
     pickModel: '(选择 Model)',
     defaultSuffix: '（默认）',
     modePlanLabel: '规划',
