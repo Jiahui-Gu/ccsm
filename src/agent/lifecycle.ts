@@ -2,6 +2,7 @@ import { useStore } from '../stores/store';
 import { streamEventToTranslation, PartialAssistantStreamer } from './stream-to-blocks';
 import { parseQuestions } from './ask-user-question';
 import { dispatchNotification, handleNotificationFocus } from '../notifications/dispatch';
+import { buildUserContentBlocks } from '../lib/attachments';
 import type { MessageBlock } from '../types';
 
 let installed = false;
@@ -27,6 +28,63 @@ let backgroundWaitingHandler: BackgroundWaitingHandler = () => {};
 
 export function setBackgroundWaitingHandler(h: BackgroundWaitingHandler): void {
   backgroundWaitingHandler = h;
+}
+
+function localQueuedEchoId(): string {
+  return `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/**
+ * Drain the next queued message for `sessionId` and dispatch it through the
+ * same IPC path InputBar.send() uses. Mirrors the local-echo + setRunning
+ * sequence so the queued turn looks identical to one the user pressed Send
+ * on. Tolerant of races: if the queue is empty, the agent isn't started, or
+ * the IPC bridge is missing, this is a no-op.
+ *
+ * Why here instead of InputBar: InputBar only mounts for the active session.
+ * The queue must drain even if the user has switched away mid-turn, so the
+ * trigger lives next to the canonical `setRunning(false)` call.
+ */
+async function drainNextQueued(sessionId: string): Promise<void> {
+  const store = useStore.getState();
+  const queue = store.messageQueues[sessionId];
+  if (!queue || queue.length === 0) return;
+  const api = window.agentory;
+  if (!api) return;
+  const session = store.sessions.find((s) => s.id === sessionId);
+  if (!session) return;
+  // Don't drain into a session that never started — without a live agent
+  // process the IPC will fail. The next user-driven send will start it
+  // and at that point the queue can drain naturally.
+  if (!store.startedSessions[sessionId]) return;
+  const head = store.dequeueMessage(sessionId);
+  if (!head) return;
+  store.appendBlocks(sessionId, [
+    {
+      kind: 'user',
+      id: localQueuedEchoId(),
+      text: head.text,
+      ...(head.attachments.length > 0 ? { images: head.attachments } : {})
+    }
+  ]);
+  store.setRunning(sessionId, true);
+  let ok: boolean;
+  if (head.attachments.length > 0) {
+    const content = buildUserContentBlocks(head.text, head.attachments);
+    ok = await api.agentSendContent(sessionId, content);
+  } else {
+    ok = await api.agentSend(sessionId, head.text);
+  }
+  if (!ok) {
+    store.setRunning(sessionId, false);
+    store.appendBlocks(sessionId, [
+      {
+        kind: 'error',
+        id: `send-${Date.now().toString(36)}`,
+        text: 'Failed to deliver queued message to agent.'
+      }
+    ]);
+  }
 }
 
 function describePermission(toolName: string, input: Record<string, unknown>): string {
@@ -111,6 +169,9 @@ export function subscribeAgentEvents(): void {
     }
     if (e.message.type === 'result') {
       store.setRunning(e.sessionId, false);
+      // Kick off any user messages enqueued during the just-finished turn.
+      // Fire-and-forget; the drain helper is itself idempotent on empty queues.
+      void drainNextQueued(e.sessionId);
       // Aggregate per-session cost / token counters for `/cost` and any
       // future footer widgets. We accumulate every result frame (success or
       // error subtypes still carry usage).

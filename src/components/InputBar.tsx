@@ -131,6 +131,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId));
   const started = useStore((s) => !!s.startedSessions[sessionId]);
   const running = useStore((s) => !!s.runningSessions[sessionId]);
+  const queueLength = useStore((s) => s.messageQueues[sessionId]?.length ?? 0);
   const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
   const permission = useStore((s) => s.permission);
   const defaultEndpointId = useStore((s) => s.defaultEndpointId);
@@ -138,6 +139,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const markStarted = useStore((s) => s.markStarted);
   const setRunning = useStore((s) => s.setRunning);
   const markInterrupted = useStore((s) => s.markInterrupted);
+  const enqueueMessage = useStore((s) => s.enqueueMessage);
+  const clearQueue = useStore((s) => s.clearQueue);
   const focusInputNonce = useStore((s) => s.focusInputNonce);
   // True iff there's a pending permission/plan/question prompt for this
   // session — those blocks auto-focus their own primary control (see the
@@ -170,7 +173,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     () => (trigger.active ? filterSlashCommands(SLASH_COMMANDS, trigger.query) : []),
     [trigger]
   );
-  const pickerOpen = trigger.active && !pickerDismissed && !running;
+  const pickerOpen = trigger.active && !pickerDismissed;
   // Clamp activeIndex whenever the filtered list shrinks.
   useEffect(() => {
     if (!pickerOpen) return;
@@ -315,6 +318,32 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     };
   }, [intake]);
 
+  // Global Esc → stop running turn. Intentionally listens at the document
+  // level so the shortcut works regardless of which surface has focus
+  // (composer, chat scroll area, sidebar). Yields to:
+  //   - Open Radix dialogs (settings, command palette, CLI-missing) — they
+  //     manage their own Esc-to-close inside `[role="dialog"]`.
+  //   - The slash-command picker when it's open and the textarea has focus —
+  //     the inline Esc handler in `onKeyDown` dismisses the picker first.
+  useEffect(() => {
+    function onDocKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      if (!running) return;
+      // Some other modal owns Escape right now.
+      if (document.querySelector('[role="dialog"]')) return;
+      const ae = document.activeElement as HTMLElement | null;
+      // Defer to the picker's own dismissal when it's the active surface.
+      if (ae === textareaRef.current && pickerOpen) return;
+      e.preventDefault();
+      void stop();
+    }
+    document.addEventListener('keydown', onDocKeyDown);
+    return () => document.removeEventListener('keydown', onDocKeyDown);
+    // `stop` closes over running + sessionId; both are dependencies via
+    // `running` and the implicit re-render when sessionId changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, pickerOpen, sessionId]);
+
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
     if (!items || items.length === 0) return;
@@ -348,7 +377,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   async function send() {
     const text = value.trim();
     const imgs = attachments;
-    if (running) return;
     // Valid turns: text with or without images, OR images with no text. Empty
     // text + no images is a no-op (same as before).
     if (!text && imgs.length === 0) return;
@@ -359,6 +387,12 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // in a browser-only probe harness where no Electron preload exists.
     // Only trigger when there are no image attachments — a slash command with
     // pasted images is almost certainly prose, not a bare invocation.
+    //
+    // Slash commands are intentionally NOT queued. Client handlers are
+    // immediate side-effects (`/clear` wipes context, `/config` opens
+    // settings) — deferring them until the next turn ends would be confusing.
+    // Pass-through slashes also bypass the queue so they reach claude.exe in
+    // the order the user typed them, not interleaved with queued prose.
     if (text.startsWith('/') && imgs.length === 0) {
       const outcome = await dispatchSlashCommand(text, { sessionId, args: '' });
       if (outcome === 'handled') {
@@ -366,6 +400,17 @@ export function InputBar({ sessionId }: { sessionId: string }) {
         return;
       }
       // 'pass-through' and 'unknown' fall through to the normal send path.
+    }
+
+    // Queue non-slash messages while a turn is in flight. The drain happens
+    // in agent/lifecycle.ts when `result` arrives. Clear the composer so the
+    // user can keep typing the next thought immediately.
+    if (running) {
+      enqueueMessage(sessionId, { text, attachments: imgs });
+      update('');
+      setAttachmentsAndCache([]);
+      setRejections([]);
+      return;
     }
 
     const api = window.agentory;
@@ -450,6 +495,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // `result { error_during_execution }` frame is rendered as a neutral
     // "Interrupted" banner instead of an error block.
     markInterrupted(sessionId);
+    // Match CLI Ctrl+C behavior: interrupting also drops everything the user
+    // queued during this turn. Otherwise the next turn would auto-send work
+    // the user just decided to abandon.
+    clearQueue(sessionId);
     await api.agentInterrupt(sessionId);
     // running flag is cleared when the SDK emits its result message.
   }
@@ -597,12 +646,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onPaste={onPaste}
           rows={2}
           placeholder={running ? t('chat.runningPlaceholder') : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
-          disabled={running}
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
             'bg-transparent text-fg-primary placeholder:text-fg-tertiary',
-            'transition-colors duration-150 ease-out',
-            running && 'cursor-not-allowed opacity-60'
+            'transition-colors duration-150 ease-out'
           )}
           style={{ minHeight: 64, maxHeight: 240 }}
         />
@@ -618,7 +665,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={running || remainingSlots === 0}
+            disabled={remainingSlots === 0}
             aria-label={t('chat.attachImage')}
             title={
               remainingSlots === 0
@@ -640,17 +687,38 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             </span>
           )}
         </div>
-        <div className="absolute right-3 bottom-1.5">
-          {running ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              aria-label={t('chat.stopAria')}
-              onClick={stop}
+        <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
+          {queueLength > 0 && (
+            <span
+              className="font-mono text-[10px] uppercase tracking-wider text-fg-tertiary"
+              title={t('chat.queueChip', { count: queueLength })}
             >
-              <Square size={10} className="stroke-[2.25]" />
-              <span>{t('chat.stopBtn')}</span>
-            </Button>
+              {t('chat.queueChip', { count: queueLength })}
+            </span>
+          )}
+          {running ? (
+            <>
+              {!sendDisabled && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  aria-label={t('chat.queueAria')}
+                  onClick={send}
+                >
+                  <ArrowUp size={10} className="stroke-[2.25]" />
+                  <span>{t('chat.queueButton')}</span>
+                </Button>
+              )}
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label={t('chat.stopAria')}
+                onClick={stop}
+              >
+                <Square size={10} className="stroke-[2.25]" />
+                <span>{t('chat.stopBtn')}</span>
+              </Button>
+            </>
           ) : (
             <Button
               variant="primary"
