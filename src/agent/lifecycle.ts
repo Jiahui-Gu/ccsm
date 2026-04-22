@@ -226,6 +226,12 @@ export function subscribeAgentEvents(): void {
       const isActive = store.activeId === e.sessionId;
       const windowFocused = typeof document !== 'undefined' && document.hasFocus();
       const sessionFocused = isActive && windowFocused;
+      // Pulse the sidebar icon when the user isn't actively watching this
+      // session's chat. Cleared by selectSession on click. Same focus rule as
+      // the OS notification below — if the user has eyes on it, no pulse.
+      if (!sessionFocused) {
+        store.setSessionState(e.sessionId, 'waiting');
+      }
       if (errored || durationMs >= TURN_DONE_THRESHOLD_MS || !sessionFocused) {
         const session = store.sessions.find((s) => s.id === e.sessionId);
         const sessionName = session?.name ?? 'Session';
@@ -260,6 +266,10 @@ export function subscribeAgentEvents(): void {
     store.appendBlocks(req.sessionId, [block]);
     const isBackground = req.sessionId !== store.activeId;
     if (isBackground) {
+      // Pulse the sidebar icon — same signal as turn_done, but raised
+      // immediately because a permission request is the highest-priority
+      // "agent needs you" event.
+      store.setSessionState(req.sessionId, 'waiting');
       const session = store.sessions.find((s) => s.id === req.sessionId);
       let prompt = '';
       if (block.kind === 'question') {

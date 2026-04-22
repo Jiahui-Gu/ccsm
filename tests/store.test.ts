@@ -271,6 +271,20 @@ describe('store: setRunning', () => {
   });
 });
 
+describe('store: setSessionState', () => {
+  it("flips a session's state and is a no-op when value matches", () => {
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    expect(useStore.getState().sessions.find((x) => x.id === sid)?.state).toBe('idle');
+    useStore.getState().setSessionState(sid, 'waiting');
+    const before = useStore.getState().sessions;
+    expect(before.find((x) => x.id === sid)?.state).toBe('waiting');
+    useStore.getState().setSessionState(sid, 'waiting');
+    // Same value → array reference must not change (downstream selectors rely on this).
+    expect(useStore.getState().sessions).toBe(before);
+  });
+});
+
 describe('store: streamAssistantText + appendBlocks coalesce', () => {
   it('streamAssistantText creates a streaming assistant block on first delta', () => {
     useStore.getState().streamAssistantText('s1', 'msg-1:c0', 'Hel', false);

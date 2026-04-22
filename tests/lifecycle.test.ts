@@ -396,3 +396,59 @@ describe('lifecycle: autopilot watchdog', () => {
     expect(h.sendCalls).toEqual([]);
   });
 });
+
+describe('lifecycle: sidebar pulse on agent waiting for input', () => {
+  function endTurn(h: Harness, sessionId: string) {
+    h.eventHandler({
+      sessionId,
+      message: { type: 'result', subtype: 'success', usage: {}, num_turns: 1, duration_ms: 100 } as never
+    });
+  }
+
+  it("flips a background session's state to 'waiting' when its turn ends", async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/active');
+    const activeId = h.store.getState().activeId;
+    h.store.getState().createSession('~/bg');
+    const bgId = h.store.getState().sessions[0].id;
+    h.store.getState().selectSession(activeId);
+
+    endTurn(h, bgId);
+
+    const bg = h.store.getState().sessions.find((s) => s.id === bgId);
+    expect(bg?.state).toBe('waiting');
+  });
+
+  it("does not flip the focused session's state when its turn ends", async () => {
+    const h = await freshHarness();
+    if ((globalThis as unknown as { document?: Document }).document) {
+      (globalThis as unknown as { document: Document }).document.hasFocus = () => true;
+    }
+    h.store.getState().createSession('~/only');
+    const sid = h.store.getState().activeId;
+
+    endTurn(h, sid);
+
+    const s = h.store.getState().sessions.find((x) => x.id === sid);
+    expect(s?.state).toBe('idle');
+  });
+
+  it("flips state to 'waiting' on a background permission request", async () => {
+    const h = await freshHarness();
+    h.store.getState().createSession('~/active');
+    const activeId = h.store.getState().activeId;
+    h.store.getState().createSession('~/bg');
+    const bgId = h.store.getState().sessions[0].id;
+    h.store.getState().selectSession(activeId);
+
+    h.permHandler({
+      sessionId: bgId,
+      requestId: 'req-pulse',
+      toolName: 'Bash',
+      input: { command: 'ls' }
+    });
+
+    const bg = h.store.getState().sessions.find((s) => s.id === bgId);
+    expect(bg?.state).toBe('waiting');
+  });
+});
