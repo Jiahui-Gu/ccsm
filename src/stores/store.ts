@@ -121,8 +121,7 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
 export type CliStatus =
   | { state: 'checking' }
   | { state: 'found'; binaryPath: string; version: string | null }
-  | { state: 'missing'; searchedPaths: string[]; dialogOpen: boolean }
-  | { state: 'configuring'; binaryPath?: string; version?: string | null };
+  | { state: 'missing'; searchedPaths: string[]; dialogOpen: boolean };
 
 const DEFAULT_CLI_STATUS: CliStatus = { state: 'checking' };
 
@@ -270,7 +269,15 @@ type Actions = {
    *  cleared automatically by `changeCwd` when the user repicks. */
   markSessionCwdMissing: (sessionId: string, missing: boolean) => void;
   pushRecentProject: (path: string) => void;
-  setModel: (model: ModelId) => void;
+  /** Update the global default model. Does NOT touch any per-session model;
+   *  callers that mean "change the active session" should use
+   *  `setSessionModel`. Splitting these prevents the StatusBar dropdown
+   *  silently rewriting other sessions' pinned model on a global change. */
+  setGlobalModel: (model: ModelId) => void;
+  /** Update a specific session's model. Pushes the change to the live
+   *  agent if the session has been started. Does NOT touch the global
+   *  default. */
+  setSessionModel: (sessionId: string, model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
@@ -332,6 +339,15 @@ type Actions = {
 };
 
 function nextId(prefix: string): string {
+  // Prefer crypto.randomUUID (available in Electron renderer + Node ≥ 14.17)
+  // — collision-resistant across rapid in-tick creation, unlike the prior
+  // `Date.now() + Math.random().slice(2,6)` combo. Keep the `prefix-` shape
+  // so existing logs / DOM ids stay parseable.
+  const g: { crypto?: { randomUUID?: () => string } } =
+    (typeof globalThis !== 'undefined' ? (globalThis as unknown as { crypto?: { randomUUID?: () => string } }) : {}) ?? {};
+  if (g.crypto && typeof g.crypto.randomUUID === 'function') {
+    return `${prefix}-${g.crypto.randomUUID()}`;
+  }
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
@@ -363,6 +379,41 @@ export function migratePermission(raw: unknown): PermissionMode {
 function firstUsableGroupId(groups: Group[]): string | null {
   const g = groups.find((x) => x.kind === 'normal');
   return g ? g.id : null;
+}
+
+/**
+ * Resolve "where should the next session go?" — return either an existing
+ * usable (`kind === 'normal'`) group, or synthesize a fresh one with the
+ * current language's default name. When a group is synthesized, callers MUST
+ * use the returned `groups` array (it includes the new row) so the GroupRow
+ * and SessionRow render in the same tick. The synthesized group carries
+ * `nameKey` so a later language switch re-localizes the label instead of
+ * leaving it frozen to whatever locale was active at creation time.
+ *
+ * `preferredId` is honoured iff it points at an existing normal group.
+ */
+function ensureUsableGroup(
+  groups: Group[],
+  preferredId?: string | null
+): { groups: Group[]; groupId: string } {
+  const isUsable = (gid: string | null | undefined): boolean => {
+    if (!gid) return false;
+    const g = groups.find((x) => x.id === gid);
+    return !!g && g.kind === 'normal';
+  };
+  if (preferredId && isUsable(preferredId)) {
+    return { groups, groupId: preferredId };
+  }
+  const fallback = firstUsableGroupId(groups);
+  if (fallback) return { groups, groupId: fallback };
+  const synth: Group = {
+    id: nextId('g'),
+    name: defaultGroupName(),
+    nameKey: 'sidebar.defaultGroupName',
+    collapsed: false,
+    kind: 'normal'
+  };
+  return { groups: [synth, ...groups], groupId: synth.id };
 }
 
 // ── Appearance helpers ──────────────────────────────────────────────────────
@@ -470,7 +521,10 @@ function summarizeInputForTrace(input: Record<string, unknown> | undefined): str
 }
 
 const defaultGroups: Group[] = [
-  { id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }
+  // The bootstrap "Sessions" group also carries `nameKey` so a language
+  // switch re-localizes its label (the user never explicitly named this
+  // row — it's a default surface, not user input).
+  { id: 'g-default', name: 'Sessions', nameKey: 'sidebar.defaultGroupName', collapsed: false, kind: 'normal' }
 ];
 
 export const useStore = create<State & Actions>((set, get) => ({
@@ -550,28 +604,19 @@ export const useStore = create<State & Actions>((set, get) => ({
       return !!g && g.kind === 'normal';
     };
     const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
-    const resolvedGroupId = isUsable(opts.groupId)
+    // Resolve preference order without touching synthesis: caller-provided →
+    // focused → active session's group → ensureUsableGroup will pick first
+    // normal group or synthesize one (with nameKey).
+    const preferred = isUsable(opts.groupId)
       ? opts.groupId!
       : isUsable(focusedGroupId)
       ? focusedGroupId!
       : isUsable(activeGroupId)
       ? activeGroupId!
-      : firstUsableGroupId(groups);
-    // Auto-create a default normal group when nothing usable exists. This is
-    // the safety net for first-run / all-archived states where the sidebar
-    // would otherwise insert an orphan session pointing at a non-existent
-    // groupId. Synthesized inline so the GroupRow + SessionRow appear in the
-    // same render tick.
-    let synthesizedGroup: Group | null = null;
-    const targetGroupId: string =
-      resolvedGroupId ??
-      ((synthesizedGroup = {
-        id: nextId('g'),
-        name: defaultGroupName(),
-        collapsed: false,
-        kind: 'normal'
-      }),
-      synthesizedGroup.id);
+      : null;
+    const ensured = ensureUsableGroup(groups, preferred);
+    const targetGroupId = ensured.groupId;
+    const baseGroups = ensured.groups;
     const id = nextId('s');
     const defaultCwd =
       recentProjects[0]?.path ?? historyRecentCwds[0] ?? '~';
@@ -592,8 +637,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     // atomic update so the new row is visible the moment activeId flips.
     // Bumping focusInputNonce here mirrors selectSession — clicking
     // "New Session" should also land focus in the composer.
-    const targetGroup = groups.find((g) => g.id === targetGroupId);
-    const baseGroups = synthesizedGroup ? [synthesizedGroup, ...groups] : groups;
+    const targetGroup = baseGroups.find((g) => g.id === targetGroupId);
     const nextGroups =
       targetGroup && targetGroup.collapsed
         ? baseGroups.map((g) => (g.id === targetGroupId ? { ...g, collapsed: false } : g))
@@ -620,32 +664,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (!initialModel) initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';
     // Safety net: if the caller passed a groupId that doesn't exist in the
-    // store (e.g. stale id from a stripped persisted blob), synthesize a
-    // default normal group inline rather than orphaning the imported row.
-    const targetExists = groups.some((g) => g.id === groupId);
-    let synthesizedGroup: Group | null = null;
-    let resolvedGroupId = groupId;
-    if (!targetExists) {
-      const fallback = firstUsableGroupId(groups);
-      if (fallback) {
-        resolvedGroupId = fallback;
-      } else {
-        synthesizedGroup = {
-          id: nextId('g'),
-          name: defaultGroupName(),
-          collapsed: false,
-          kind: 'normal'
-        };
-        resolvedGroupId = synthesizedGroup.id;
-      }
-    }
+    // store (e.g. stale id from a stripped persisted blob), ensureUsableGroup
+    // either falls back to the first normal group or synthesizes a fresh
+    // default-named one rather than orphaning the imported row.
+    const ensured = ensureUsableGroup(groups, groupId);
     const imported: Session = {
       id,
       name,
       state: 'idle',
       cwd,
       model: initialModel,
-      groupId: resolvedGroupId,
+      groupId: ensured.groupId,
       agentType: 'claude-code',
       resumeSessionId
     };
@@ -653,7 +682,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       sessions: [imported, ...sessions],
       activeId: id,
       focusedGroupId: null,
-      groups: synthesizedGroup ? [synthesizedGroup, ...groups] : groups
+      groups: ensured.groups
     });
     return id;
   },
@@ -753,12 +782,12 @@ export const useStore = create<State & Actions>((set, get) => ({
       const startedSessions = snapshot.started
         ? { ...s.startedSessions, [snapshot.session.id]: true as const }
         : s.startedSessions;
-      const runningSessions = snapshot.running
-        ? { ...s.runningSessions, [snapshot.session.id]: true as const }
-        : s.runningSessions;
-      const interruptedSessions = snapshot.interrupted
-        ? { ...s.interruptedSessions, [snapshot.session.id]: true as const }
-        : s.interruptedSessions;
+      // Intentionally DO NOT restore runningSessions / interruptedSessions:
+      // the child claude.exe process tied to the deleted session was killed,
+      // so resurrecting either flag leaves the UI permanently stuck (running
+      // = perpetual spinner, no result frame will ever arrive; interrupted =
+      // banner waiting for a `result.error_during_execution` that's gone with
+      // the process). The session restarts from a clean post-turn state.
       const messageQueues =
         snapshot.queue !== undefined
           ? { ...s.messageQueues, [snapshot.session.id]: snapshot.queue }
@@ -772,8 +801,6 @@ export const useStore = create<State & Actions>((set, get) => ({
         activeId: snapshot.prevActiveId || s.activeId,
         messagesBySession,
         startedSessions,
-        runningSessions,
-        interruptedSessions,
         messageQueues,
         statsBySession
       };
@@ -793,6 +820,11 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (!moving) return s;
       const targetGroup = s.groups.find((g) => g.id === targetGroupId);
       if (!targetGroup) return s;
+      // Reject drops onto archived (or any non-normal) groups: archive is a
+      // read-only bucket — stuffing a live session in there would surface as
+      // an "invisible" row (sidebar collapses archived by default) and the
+      // user would lose track of it.
+      if (targetGroup.kind !== 'normal') return s;
       const without = s.sessions.filter((x) => x.id !== sessionId);
       const updated: Session = { ...moving, groupId: targetGroupId };
       const anchorValid =
@@ -846,16 +878,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
   },
 
-  setModel: (model) => {
+  setGlobalModel: (model) => {
+    set({ model });
+  },
+  setSessionModel: (sessionId, model) => {
     set((s) => ({
-      model,
-      sessions: s.sessions.map((x) => (x.id === s.activeId ? { ...x, model } : x))
+      sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x))
     }));
     const api = window.agentory;
     if (!api) return;
-    const activeId = get().activeId;
-    if (activeId && get().startedSessions[activeId]) {
-      void api.agentSetModel(activeId, model);
+    if (get().startedSessions[sessionId]) {
+      void api.agentSetModel(sessionId, model);
     }
   },
   setPermission: (permission) => {
@@ -987,8 +1020,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       let sessions = s.sessions.slice();
       const messagesBySession = { ...s.messagesBySession };
       const startedSessions = { ...s.startedSessions };
-      const runningSessions = { ...s.runningSessions };
-      const interruptedSessions = { ...s.interruptedSessions };
       const messageQueues = { ...s.messageQueues };
       const statsBySession = { ...s.statsBySession };
       const ordered = snapshot.sessions
@@ -1004,8 +1035,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         ];
         if (snap.messages !== undefined) messagesBySession[snap.session.id] = snap.messages;
         if (snap.started) startedSessions[snap.session.id] = true;
-        if (snap.running) runningSessions[snap.session.id] = true;
-        if (snap.interrupted) interruptedSessions[snap.session.id] = true;
+        // Same rationale as restoreSession: do NOT restore running /
+        // interrupted flags — the child process is dead, the flags would
+        // strand the UI in a permanent transitional state.
         if (snap.queue !== undefined) messageQueues[snap.session.id] = snap.queue;
         if (snap.stats !== undefined) statsBySession[snap.session.id] = snap.stats;
       }
@@ -1016,8 +1048,6 @@ export const useStore = create<State & Actions>((set, get) => ({
         focusedGroupId: snapshot.prevFocusedGroupId,
         messagesBySession,
         startedSessions,
-        runningSessions,
-        interruptedSessions,
         messageQueues,
         statsBySession
       };
@@ -1144,11 +1174,17 @@ export const useStore = create<State & Actions>((set, get) => ({
       const nextStats = { ...s.statsBySession };
       delete nextStats[sessionId];
       // Drop resumeSessionId so the next agentStart spawns a fresh
-      // claude.exe conversation rather than continuing the old one.
+      // claude.exe conversation rather than continuing the old one. Also
+      // reset state to 'idle' — clearing the context while the row is
+      // still flagged 'waiting' would leave the sidebar dot lit forever
+      // (no result frame is coming for the conversation we just dropped).
       const nextSessions = s.sessions.map((x) => {
-        if (x.id !== sessionId || x.resumeSessionId === undefined) return x;
-        const { resumeSessionId: _drop, ...rest } = x;
-        return rest as typeof x;
+        if (x.id !== sessionId) return x;
+        const cleaned = x.resumeSessionId === undefined ? x : (() => {
+          const { resumeSessionId: _drop, ...rest } = x;
+          return rest as typeof x;
+        })();
+        return cleaned.state === 'idle' ? cleaned : { ...cleaned, state: 'idle' as const };
       });
       return {
         sessions: nextSessions,
@@ -1173,11 +1209,16 @@ export const useStore = create<State & Actions>((set, get) => ({
   addSessionStats: (sessionId, delta) => {
     set((s) => {
       const prev = s.statsBySession[sessionId] ?? EMPTY_SESSION_STATS;
+      // Guard against NaN / Infinity / non-number deltas: a single bad
+      // `result` frame (missing field, JSON quirk) would otherwise poison
+      // the running totals forever — once a number becomes NaN, every
+      // future addition stays NaN. Coerce non-finite to 0 silently.
+      const safe = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
       const next: SessionStats = {
-        turns: prev.turns + (delta.turns ?? 0),
-        inputTokens: prev.inputTokens + (delta.inputTokens ?? 0),
-        outputTokens: prev.outputTokens + (delta.outputTokens ?? 0),
-        costUsd: prev.costUsd + (delta.costUsd ?? 0)
+        turns: prev.turns + safe(delta.turns),
+        inputTokens: prev.inputTokens + safe(delta.inputTokens),
+        outputTokens: prev.outputTokens + safe(delta.outputTokens),
+        costUsd: prev.costUsd + safe(delta.costUsd)
       };
       return { statsBySession: { ...s.statsBySession, [sessionId]: next } };
     });
@@ -1189,23 +1230,54 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (inFlightLoads.has(sessionId)) return;
     inFlightLoads.add(sessionId);
     try {
-      const rows = await api.loadMessages(sessionId);
+      let rows: MessageBlock[] = [];
+      try {
+        rows = (await api.loadMessages(sessionId)) as MessageBlock[];
+      } catch (err) {
+        // IPC failure (db locked, disk full, schema mismatch). Without a
+        // sentinel write, every subsequent selectSession would re-trigger
+        // the load — an infinite retry loop on a permanent failure. Seed
+        // an empty array so the key is "known" and we leave a breadcrumb
+        // for the user / Sentry instead of failing silently.
+        console.warn(`[store] loadMessages(${sessionId}) failed:`, err);
+        set((s) =>
+          sessionId in s.messagesBySession
+            ? s
+            : { messagesBySession: { ...s.messagesBySession, [sessionId]: [] } }
+        );
+        return;
+      }
       // Sanitize: a row persisted with streaming=true means the previous run
       // crashed/quit mid-stream. On restore, the stream is no longer active,
       // so clear the flag to prevent the UI from showing a perpetual pulse.
-      const sanitized = (rows as MessageBlock[]).map((r) =>
+      const sanitized: MessageBlock[] = rows.map((r) =>
         r.kind === 'assistant' && (r as { streaming?: boolean }).streaming
           ? { ...r, streaming: false }
           : r
       );
-      // Don't clobber blocks that arrived via streaming while we awaited the
-      // db round-trip — if something is already there, keep it.
       set((s) => {
-        if (s.messagesBySession[sessionId]) return s;
+        const existing = s.messagesBySession[sessionId];
+        if (!existing) {
+          // First-load fast path.
+          return {
+            messagesBySession: {
+              ...s.messagesBySession,
+              [sessionId]: sanitized
+            }
+          };
+        }
+        // Merge path: streaming may have appended blocks while we awaited
+        // the db round-trip. The previous "skip if already set" guard
+        // dropped the persisted history entirely in that race. Instead,
+        // prepend the persisted blocks whose ids aren't already present —
+        // every MessageBlock variant carries an id, so de-duping is exact.
+        const existingIds = new Set(existing.map((b) => b.id));
+        const additions = sanitized.filter((b) => !existingIds.has(b.id));
+        if (additions.length === 0) return s;
         return {
           messagesBySession: {
             ...s.messagesBySession,
-            [sessionId]: sanitized
+            [sessionId]: [...additions, ...existing]
           }
         };
       });

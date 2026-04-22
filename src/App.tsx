@@ -53,7 +53,7 @@ export default function App() {
   const createSession = useStore((s) => s.createSession);
   const changeCwd = useStore((s) => s.changeCwd);
   const pushRecentProject = useStore((s) => s.pushRecentProject);
-  const setModel = useStore((s) => s.setModel);
+  const setSessionModel = useStore((s) => s.setSessionModel);
   const setPermission = useStore((s) => s.setPermission);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
@@ -315,7 +315,7 @@ export default function App() {
                   changeCwd(next);
                   pushRecentProject(next);
                 }}
-                onChangeModel={setModel}
+                onChangeModel={(m) => setSessionModel(active.id, m)}
                 onChangePermission={setPermission}
               />
               <InputBar sessionId={active.id} />
