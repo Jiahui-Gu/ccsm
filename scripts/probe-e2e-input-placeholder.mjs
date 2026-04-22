@@ -92,16 +92,17 @@ if (backToReply !== 'Reply…') {
 }
 
 // --- Robustness #2: switch language to zh, placeholder must localize ---
-// App.tsx exposes the i18next singleton on window.__i18n in dev builds so
-// probes can flip language without going through the React hook tree.
+// src/i18n/index.ts exposes the i18next singleton on window.__agentoryI18n
+// (unconditional, not gated on NODE_ENV) so probes can flip language without
+// going through the React hook tree.
 const switched = await win.evaluate(async () => {
-  // Wait briefly for the dev-only side-effect to land if it hasn't yet.
-  for (let i = 0; i < 20 && !window.__i18n; i++) {
+  // Wait briefly for the singleton to appear (i18n init runs at module load).
+  for (let i = 0; i < 20 && !window.__agentoryI18n; i++) {
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!window.__i18n) return { ok: false, err: 'window.__i18n missing' };
-  await window.__i18n.changeLanguage('zh');
-  return { ok: true, lang: window.__i18n.language };
+  if (!window.__agentoryI18n) return { ok: false, err: 'window.__agentoryI18n missing' };
+  await window.__agentoryI18n.changeLanguage('zh');
+  return { ok: true, lang: window.__agentoryI18n.language };
 });
 if (!switched.ok) {
   console.log(`  [skip] could not switch language dynamically: ${switched.err}`);
@@ -127,7 +128,7 @@ if (!switched.ok) {
   // the app instance closes immediately after, but if anyone composes
   // probes this prevents bleed-through).
   await win.evaluate(async () => {
-    if (window.__i18n) await window.__i18n.changeLanguage('en');
+    if (window.__agentoryI18n) await window.__agentoryI18n.changeLanguage('en');
   });
 }
 
