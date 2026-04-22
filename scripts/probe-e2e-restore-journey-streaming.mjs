@@ -7,14 +7,12 @@
 // Strategy:
 //   #1: seed an `assistant` block with `streaming: true` + partial text.
 //   #2: relaunch. Assertions:
-//       a. Partial text is visible.
+//       a. Partial text is visible (we do NOT discard the user's content).
 //       b. The streaming caret element (matched via its dedicated style:
 //          inline-block w-[7px] h-[14px] animate-pulse) is NOT present.
-//       OR
-//       c. An "interrupted" status banner / equivalent indicator IS present.
 //
-// Either form of graceful handling is acceptable; the bug is when neither
-// holds and the caret pulses forever.
+// The minimal fix sanitizes the persisted streaming flag on load so the
+// caret cannot pulse forever on a stream that will never resume.
 //
 // Run after `npm run build`.
 import { _electron as electron } from 'playwright';
@@ -148,14 +146,13 @@ const PRELUDE = [
     };
   });
 
-  // (3) Look for an interrupted-by-restart indicator as an acceptable
-  // alternative.
+  // (3) Look for an interrupted-by-restart indicator (informational only).
   const interruptedSeen = await win.evaluate(() => {
     const t = document.body.innerText.toLowerCase();
     return /interrupt|restart|resumed|stopped/.test(t);
   });
 
-  if (caretInfo.count > 0 && !interruptedSeen) {
+  if (caretInfo.count > 0) {
     const dump = await win.evaluate(() => {
       const main = document.querySelector('main');
       return main ? main.innerText.slice(0, 1500) : '<no main>';
@@ -165,9 +162,8 @@ const PRELUDE = [
     await app.close();
     fail(
       `streaming caret is still pulsing after restart on a stream that will never resume. ` +
-        `Either the streaming flag must be cleared on hydrate, or the block must be marked as ` +
-        `"interrupted by restart". Found ${caretInfo.count} streaming-caret span(s) and no ` +
-        `interrupt indicator.`
+        `The persisted streaming flag must be cleared on load (loadMessages sanitization). ` +
+        `Found ${caretInfo.count} streaming-caret span(s).`
     );
   }
 
