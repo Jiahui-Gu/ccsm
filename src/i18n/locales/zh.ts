@@ -125,10 +125,7 @@ const zh: EnCatalog = {
     settingsAria: '设置',
     notificationsMutedAria: '通知已静音',
     muteNotifications: '静音通知',
-    unmuteNotifications: '取消静音',
-    revealInFinder: '在 Finder 中显示',
-    openInExplorer: '在资源管理器中打开',
-    openFolder: '打开文件夹'
+    unmuteNotifications: '取消静音'
   },
   settings: {
     title: '设置',

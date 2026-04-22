@@ -129,10 +129,7 @@ const en = {
     settingsAria: 'Settings',
     notificationsMutedAria: 'Notifications muted',
     muteNotifications: 'Mute notifications',
-    unmuteNotifications: 'Unmute notifications',
-    revealInFinder: 'Reveal in Finder',
-    openInExplorer: 'Open in Explorer',
-    openFolder: 'Open folder'
+    unmuteNotifications: 'Unmute notifications'
   },
   settings: {
     title: 'Settings',
