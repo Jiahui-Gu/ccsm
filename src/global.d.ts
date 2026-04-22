@@ -63,7 +63,7 @@ type EndpointKindDecl =
   | 'vertex'
   | 'unknown';
 type EndpointStatusDecl = 'ok' | 'error' | 'unchecked';
-type DiscoverySourceDecl = 'listed' | 'fallback' | 'manual';
+type DiscoverySourceDecl = 'listed' | 'cli-picker' | 'env-override' | 'fallback' | 'manual';
 type EndpointRowDecl = {
   id: string;
   name: string;
