@@ -168,7 +168,14 @@ declare global {
         >;
         exists: (p: string) => Promise<boolean>;
         userPath: () => Promise<string>;
+        openUserFile: () => Promise<{ ok: true } | { ok: false; error: string }>;
         projectPath: (cwd: string) => Promise<string | null>;
+      };
+
+      doctor: {
+        run: () => Promise<{
+          checks: Array<{ name: string; ok: boolean; detail: string }>;
+        }>;
       };
 
       pr: {

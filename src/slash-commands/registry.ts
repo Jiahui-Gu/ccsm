@@ -12,18 +12,11 @@ import {
   Cpu,
   Settings,
   CircleDollarSign,
-  History,
   Brain,
   FolderPlus,
-  LogIn,
-  LogOut,
   Activity,
   Stethoscope,
   Bug,
-  Plug,
-  Webhook,
-  Users,
-  FileSearch,
   GitPullRequest,
   type LucideIcon
 } from 'lucide-react';
@@ -63,10 +56,21 @@ export type SlashCommand = {
 //
 // `passThrough: false` = we handle locally (see src/slash-commands/handlers.ts).
 // `passThrough: true`  = forwarded to claude.exe via the normal message path.
-//   Note: claude.exe in --input-format stream-json mode silently drops most
-//   slash commands. We still forward them because (a) the list may grow or
-//   be fixed upstream, and (b) silently eating the `/foo` text is less bad
-//   than pretending it isn't a command.
+//   Reality check: claude.exe in --input-format stream-json mode silently
+//   drops most slash commands, so we are aggressive about either (a) wiring
+//   a client handler that does something useful in the GUI, or (b) removing
+//   the entry entirely so users do not press a button that does nothing.
+//
+//   Audit history (run scripts/probe-slash-audit.mjs to refresh):
+//     • Removed: /resume (GUI sidebar already lists sessions)
+//                /login, /logout (Agentory does not own auth — auth lives in
+//                  ~/.claude/settings.json; surfaced via Settings → Connection
+//                  which `/config` already opens)
+//                /mcp, /hooks, /agents, /review (silently dropped by stream-
+//                  json mode; no GUI surface yet — would mislead users)
+//     • Promoted to client handlers: /status, /doctor, /bug, /memory
+//     • Kept as pass-through: /compact (CLI handles natively in interactive
+//                  mode), /init (writes a CLAUDE.md — useful even if quiet)
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'help',    description: 'List available commands',                       icon: HelpCircle,       category: 'built-in', passThrough: false },
   { name: 'clear',   description: 'Start a new conversation and clear context',    icon: Eraser,           category: 'built-in', passThrough: false },
@@ -75,18 +79,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'config',  description: 'Open settings',                                 icon: Settings,         category: 'built-in', passThrough: false },
   { name: 'cost',    description: 'Show session cost and token usage',             icon: CircleDollarSign, category: 'built-in', passThrough: false },
   { name: 'pr',      description: 'Create a GitHub PR for the current worktree',   icon: GitPullRequest,   category: 'client',   passThrough: false },
-  { name: 'resume',  description: 'Resume a previous session',                     icon: History,          category: 'built-in', passThrough: true  },
-  { name: 'memory',  description: 'Manage CLAUDE.md memory',                       icon: Brain,            category: 'built-in', passThrough: true  },
-  { name: 'init',    description: 'Initialize CLAUDE.md in current project',       icon: FolderPlus,       category: 'built-in', passThrough: true  },
-  { name: 'login',   description: 'Sign in to Claude',                             icon: LogIn,            category: 'built-in', passThrough: true  },
-  { name: 'logout',  description: 'Sign out',                                      icon: LogOut,           category: 'built-in', passThrough: true  },
-  { name: 'status',  description: 'Show auth and session status',                  icon: Activity,         category: 'built-in', passThrough: true  },
-  { name: 'doctor',  description: 'Check installation health',                     icon: Stethoscope,      category: 'built-in', passThrough: true  },
-  { name: 'bug',     description: 'Report a bug',                                  icon: Bug,              category: 'built-in', passThrough: true  },
-  { name: 'mcp',     description: 'Manage MCP servers',                            icon: Plug,             category: 'built-in', passThrough: true  },
-  { name: 'hooks',   description: 'Manage hooks',                                  icon: Webhook,          category: 'built-in', passThrough: true  },
-  { name: 'agents',  description: 'Manage custom agents',                          icon: Users,            category: 'built-in', passThrough: true  },
-  { name: 'review',  description: 'Review a pull request',                         icon: FileSearch,       category: 'built-in', passThrough: true  }
+  { name: 'status',  description: 'Show connection, model, and session status',    icon: Activity,         category: 'client',   passThrough: false },
+  { name: 'doctor',  description: 'Run local installation health checks',          icon: Stethoscope,      category: 'client',   passThrough: false },
+  { name: 'memory',  description: 'Open user CLAUDE.md memory file',               icon: Brain,            category: 'client',   passThrough: false },
+  { name: 'bug',     description: 'Report a bug on GitHub',                        icon: Bug,              category: 'client',   passThrough: false },
+  { name: 'init',    description: 'Initialize CLAUDE.md in current project',       icon: FolderPlus,       category: 'built-in', passThrough: true  }
 ];
 
 // Parse a raw input line into a slash command + args. Returns null when the

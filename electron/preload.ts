@@ -169,9 +169,25 @@ const api = {
     exists: (p: string): Promise<boolean> => ipcRenderer.invoke('memory:exists', p),
     /** Returns the absolute path to ~/.claude/CLAUDE.md (resolved in main). */
     userPath: (): Promise<string> => ipcRenderer.invoke('memory:userPath'),
+    /**
+     * Open ~/.claude/CLAUDE.md in the OS-default editor. Creates the file
+     * (with a `# Memory` stub) if it does not exist. Used by `/memory`.
+     */
+    openUserFile: (): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('memory:openUserFile'),
     /** Returns <cwd>/CLAUDE.md, or null if cwd is empty / not absolute. */
     projectPath: (cwd: string): Promise<string | null> =>
       ipcRenderer.invoke('memory:projectPath', cwd),
+  },
+
+  /**
+   * Local health checks for `/doctor` — verifies settings.json,
+   * claude binary discoverability, and data dir writability. Pure local
+   * probes; no network.
+   */
+  doctor: {
+    run: (): Promise<{ checks: Array<{ name: string; ok: boolean; detail: string }> }> =>
+      ipcRenderer.invoke('doctor:run')
   },
 
   pr: {

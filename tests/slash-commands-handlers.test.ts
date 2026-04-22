@@ -12,6 +12,10 @@ import {
   handleConfig,
   handleModel,
   handleHelp,
+  handleStatus,
+  handleDoctor,
+  handleMemory,
+  handleBug,
   blocksToTranscript
 } from '../src/slash-commands/handlers';
 import { setOpenSettingsListener } from '../src/slash-commands/ui-bridge';
@@ -75,18 +79,26 @@ describe('dispatchSlashCommand', () => {
     expect(outcome).toBe('handled');
   });
   it('returns pass-through for commands with no handler', async () => {
-    const outcome = await dispatchSlashCommand('/doctor', { sessionId: 's1', args: '' });
+    // /compact + /init are the only remaining pass-through entries.
+    const outcome = await dispatchSlashCommand('/compact', { sessionId: 's1', args: '' });
     expect(outcome).toBe('pass-through');
   });
   it('returns unknown for unrecognised names', async () => {
     const outcome = await dispatchSlashCommand('/nope-nope', { sessionId: 's1', args: '' });
     expect(outcome).toBe('unknown');
   });
+  it('treats removed commands (login/logout/resume/mcp/etc) as unknown', async () => {
+    for (const removed of ['login', 'logout', 'resume', 'mcp', 'hooks', 'agents', 'review']) {
+      // eslint-disable-next-line no-await-in-loop
+      const out = await dispatchSlashCommand(`/${removed}`, { sessionId: 's', args: '' });
+      expect(out, `expected /${removed} to be unknown after pruning`).toBe('unknown');
+    }
+  });
 });
 
 describe('registry shape', () => {
-  it('the five client commands declare passThrough: false with a handler', () => {
-    const clientNames = ['clear', 'cost', 'config', 'model', 'help'];
+  it('the nine client commands declare passThrough: false with a handler', () => {
+    const clientNames = ['clear', 'cost', 'config', 'model', 'help', 'status', 'doctor', 'memory', 'bug'];
     for (const n of clientNames) {
       const c = findSlashCommand(n);
       expect(c, `command ${n} not in registry`).toBeTruthy();
@@ -94,12 +106,14 @@ describe('registry shape', () => {
       expect(typeof c!.clientHandler).toBe('function');
     }
   });
-  it('other commands are pass-through without a handler', () => {
+  it('only /compact and /init remain as pass-through', () => {
     const passNames = SLASH_COMMANDS.filter((c) => !c.clientHandler).map((c) => c.name);
-    expect(passNames).toContain('doctor');
-    expect(passNames).toContain('memory');
-    expect(passNames).toContain('login');
-    expect(passNames).toContain('compact');
+    expect(passNames.sort()).toEqual(['compact', 'init']);
+  });
+  it('removed commands are gone from the registry', () => {
+    for (const removed of ['login', 'logout', 'resume', 'mcp', 'hooks', 'agents', 'review']) {
+      expect(findSlashCommand(removed), `expected /${removed} to be removed`).toBeUndefined();
+    }
   });
 });
 
@@ -197,6 +211,162 @@ describe('blocksToTranscript', () => {
     expect(t).toContain('Assistant: hello');
     expect(t).toContain('Tool(Read): foo.ts');
     expect(t).toContain('(info) Done — ok');
+  });
+});
+
+// ───── shared window.agentory stub for /status, /doctor, /memory, /bug ─────
+//
+// Mocks the IPC surface tightly enough that the handlers can render a status
+// or error block; per test the doctor/memory/openExternal stubs can be
+// overridden via the `__overrides` field below.
+type StubOverrides = {
+  doctorRun?: () => Promise<{ checks: Array<{ name: string; ok: boolean; detail: string }> }>;
+  memoryOpen?: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  openExternal?: (url: string) => Promise<boolean>;
+  getVersion?: () => Promise<string>;
+};
+
+let stubOverrides: StubOverrides = {};
+
+function installAgentoryStub(): void {
+  // jsdom doesn't define `window.agentory`; we add a minimal mock that the
+  // handlers can call without exploding. Each test resets stubOverrides in
+  // beforeEach.
+  Object.defineProperty(window, 'agentory', {
+    value: {
+      getVersion: () => stubOverrides.getVersion?.() ?? Promise.resolve('0.0.0-test'),
+      doctor: { run: () => stubOverrides.doctorRun?.() ?? Promise.resolve({ checks: [] }) },
+      memory: { openUserFile: () => stubOverrides.memoryOpen?.() ?? Promise.resolve({ ok: true as const }) },
+      openExternal: (url: string) =>
+        stubOverrides.openExternal?.(url) ?? Promise.resolve(true),
+      window: { platform: 'test' }
+    },
+    writable: true,
+    configurable: true
+  });
+}
+
+installAgentoryStub();
+
+describe('/status', () => {
+  it('renders connection / model / cwd / usage in a status banner', () => {
+    useStore.getState().createSession('/tmp/work');
+    const sid = useStore.getState().activeId;
+    useStore.setState({
+      connection: { baseUrl: 'https://api.example.com', model: 'sonnet', hasAuthToken: true }
+    });
+    useStore.getState().addSessionStats(sid, {
+      turns: 1,
+      inputTokens: 500,
+      outputTokens: 50,
+      costUsd: 0.0012
+    });
+    handleStatus({ sessionId: sid, args: '' });
+    const blocks = useStore.getState().messagesBySession[sid] ?? [];
+    const s = blocks.find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.title).toBe('Session status');
+    if (s && s.kind === 'status') {
+      expect(s.detail).toContain('/tmp/work');
+      expect(s.detail).toContain('https://api.example.com');
+      expect(s.detail).toContain('token present');
+      expect(s.detail).toContain('1 turn');
+    }
+  });
+  it('shows "no turns yet" when stats are empty', () => {
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    handleStatus({ sessionId: sid, args: '' });
+    const s = (useStore.getState().messagesBySession[sid] ?? []).find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.detail).toContain('no turns yet');
+  });
+});
+
+describe('/doctor', () => {
+  beforeEach(() => {
+    stubOverrides = {};
+  });
+  it('renders "all checks passed" when every probe is ok', async () => {
+    stubOverrides.doctorRun = async () => ({
+      checks: [
+        { name: 'settings.json', ok: true, detail: '/x' },
+        { name: 'claude binary', ok: true, detail: '/bin/claude (v2.1.0)' },
+        { name: 'data dir writable', ok: true, detail: '/data' }
+      ]
+    });
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    await handleDoctor({ sessionId: sid, args: '' });
+    const s = (useStore.getState().messagesBySession[sid] ?? []).find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.title).toBe('Doctor: all checks passed');
+    if (s && s.kind === 'status') {
+      expect(s.tone).toBe('info');
+      expect(s.detail).toContain('[ok]');
+      expect(s.detail).toContain('settings.json');
+    }
+  });
+  it('warns when any check fails', async () => {
+    stubOverrides.doctorRun = async () => ({
+      checks: [
+        { name: 'settings.json', ok: false, detail: 'not found' },
+        { name: 'claude binary', ok: true, detail: '/bin/claude' }
+      ]
+    });
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    await handleDoctor({ sessionId: sid, args: '' });
+    const s = (useStore.getState().messagesBySession[sid] ?? []).find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.title).toBe('Doctor: issues found');
+    if (s && s.kind === 'status') {
+      expect(s.tone).toBe('warn');
+      expect(s.detail).toContain('[fail]');
+      expect(s.detail).toContain('settings.json');
+      expect(s.detail).toContain('not found');
+    }
+  });
+});
+
+describe('/memory', () => {
+  beforeEach(() => {
+    stubOverrides = {};
+  });
+  it('renders confirmation when openUserFile succeeds', async () => {
+    stubOverrides.memoryOpen = async () => ({ ok: true });
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    await handleMemory({ sessionId: sid, args: '' });
+    const s = (useStore.getState().messagesBySession[sid] ?? []).find((b) => b.kind === 'status');
+    expect(s && s.kind === 'status' && s.title).toBe('Opened user memory');
+  });
+  it('renders error when openUserFile fails', async () => {
+    stubOverrides.memoryOpen = async () => ({ ok: false, error: 'EACCES' });
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    await handleMemory({ sessionId: sid, args: '' });
+    const e = (useStore.getState().messagesBySession[sid] ?? []).find((b) => b.kind === 'error');
+    expect(e && e.kind === 'error' && e.text).toContain('EACCES');
+  });
+});
+
+describe('/bug', () => {
+  beforeEach(() => {
+    stubOverrides = {};
+  });
+  it('opens a GitHub URL with prefilled environment metadata', async () => {
+    let captured: string | null = null;
+    stubOverrides.openExternal = async (url) => {
+      captured = url;
+      return true;
+    };
+    stubOverrides.getVersion = async () => '1.2.3';
+    useStore.getState().createSession('/tmp');
+    const sid = useStore.getState().activeId;
+    await handleBug({ sessionId: sid, args: '' });
+    expect(captured).toBeTruthy();
+    expect(captured!).toContain('github.com/Jiahui-Gu/Agentory-next/issues/new');
+    // Body is URL-encoded; decoding once should reveal the version line.
+    const decoded = decodeURIComponent(captured!);
+    expect(decoded).toContain('Agentory: 1.2.3');
+    expect(decoded).toContain('Platform: test');
   });
 });
 

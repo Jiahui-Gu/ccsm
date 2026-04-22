@@ -176,6 +176,152 @@ export function handlePr(ctx: SlashCommandContext): void {
   }
 }
 
+// ---------- /status ----------
+// Render a snapshot of the current session's runtime state: connection (from
+// settings.json), active model, cwd, lifetime token usage. No network calls
+// — everything comes from store + the connection info loaded at boot.
+export function handleStatus(ctx: SlashCommandContext): void {
+  const state = useStore.getState();
+  const session = state.sessions.find((s) => s.id === ctx.sessionId);
+  const conn = state.connection;
+  const stats = state.statsBySession[ctx.sessionId];
+  const running = !!state.runningSessions[ctx.sessionId];
+  const started = !!state.startedSessions[ctx.sessionId];
+
+  const lines: string[] = [];
+  lines.push(`Session    ${session?.name ?? ctx.sessionId} (${ctx.sessionId})`);
+  lines.push(`State      ${running ? 'running' : started ? 'idle' : 'not started'}`);
+  lines.push(`Cwd        ${session?.cwd ?? '(unset)'}`);
+  lines.push(`Model      ${session?.model || state.model || '(default)'}`);
+  lines.push(`Permission ${state.permission}`);
+  lines.push(
+    `Endpoint   ${conn?.baseUrl ?? '(default Anthropic)'}` +
+      ` · token ${conn?.hasAuthToken ? 'present' : 'missing'}`
+  );
+  if (stats && (stats.turns > 0 || stats.inputTokens > 0)) {
+    lines.push(
+      `Usage      ${stats.turns} turn${stats.turns === 1 ? '' : 's'} · ` +
+        `${formatTokens(stats.inputTokens)} in / ${formatTokens(stats.outputTokens)} out · ` +
+        formatCost(stats.costUsd)
+    );
+  } else {
+    lines.push(`Usage      no turns yet`);
+  }
+  appendStatus(ctx.sessionId, 'Session status', lines.join('\n'));
+}
+
+// ---------- /doctor ----------
+// Run a small bundle of local health checks via the main process. Renders a
+// status block per check; uses 'warn' tone if any check failed so the row
+// stands out.
+export async function handleDoctor(ctx: SlashCommandContext): Promise<void> {
+  const api = window.agentory;
+  if (!api?.doctor?.run) {
+    appendError(ctx.sessionId, '/doctor is not available (renderer not connected to main).');
+    return;
+  }
+  let result: { checks: Array<{ name: string; ok: boolean; detail: string }> };
+  try {
+    result = await api.doctor.run();
+  } catch (err) {
+    appendError(
+      ctx.sessionId,
+      `/doctor failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  const checks = result.checks ?? [];
+  const lines = checks.map((c) => `${c.ok ? '[ok]  ' : '[fail]'} ${c.name.padEnd(20)} ${c.detail}`);
+  const anyFailed = checks.some((c) => !c.ok);
+  useStore.getState().appendBlocks(ctx.sessionId, [
+    {
+      kind: 'status',
+      id: nextId('local'),
+      tone: anyFailed ? 'warn' : 'info',
+      title: anyFailed ? 'Doctor: issues found' : 'Doctor: all checks passed',
+      detail: lines.join('\n')
+    }
+  ]);
+}
+
+// ---------- /memory ----------
+// Open ~/.claude/CLAUDE.md in the OS-default editor (Notepad / TextEdit /
+// xdg-open's pick). Creating the file if missing happens in main.
+export async function handleMemory(ctx: SlashCommandContext): Promise<void> {
+  const api = window.agentory;
+  if (!api?.memory?.openUserFile) {
+    appendError(ctx.sessionId, '/memory is not available (renderer not connected to main).');
+    return;
+  }
+  const res = await api.memory.openUserFile();
+  if (res.ok) {
+    appendStatus(
+      ctx.sessionId,
+      'Opened user memory',
+      'Editing ~/.claude/CLAUDE.md in your default editor.'
+    );
+  } else {
+    appendError(ctx.sessionId, `Could not open CLAUDE.md: ${res.error}`);
+  }
+}
+
+// ---------- /bug ----------
+// Open a prefilled GitHub issue. We pre-populate Agentory version, OS, and
+// active model so the user does not have to copy-paste their own metadata.
+// All redaction stays in the user's hands — they choose what to send.
+export async function handleBug(ctx: SlashCommandContext): Promise<void> {
+  const api = window.agentory;
+  if (!api?.openExternal || !api?.getVersion) {
+    appendError(ctx.sessionId, '/bug is not available (renderer not connected to main).');
+    return;
+  }
+  const state = useStore.getState();
+  const session = state.sessions.find((s) => s.id === ctx.sessionId);
+  let appVersion = 'unknown';
+  try {
+    appVersion = await api.getVersion();
+  } catch {
+    /* ignore — we'll send 'unknown' */
+  }
+  const platform = api.window?.platform ?? 'unknown';
+  const cliState = state.cliStatus.state;
+  const cliDetail =
+    state.cliStatus.state === 'found'
+      ? `${state.cliStatus.binaryPath} (v${state.cliStatus.version ?? '?'})`
+      : state.cliStatus.state;
+  const body = [
+    '### Environment',
+    '',
+    `- Agentory: ${appVersion}`,
+    `- Platform: ${platform}`,
+    `- CLI: ${cliState} — ${cliDetail}`,
+    `- Model: ${session?.model || state.model || '(default)'}`,
+    '',
+    '### What happened',
+    '',
+    '<!-- describe the bug -->',
+    '',
+    '### Steps to reproduce',
+    '',
+    '1. ',
+    '2. ',
+    '3. ',
+    '',
+    '### Expected vs actual',
+    '',
+    ''
+  ].join('\n');
+  const url =
+    'https://github.com/Jiahui-Gu/Agentory-next/issues/new?' +
+    `title=${encodeURIComponent('[bug] ')}&body=${encodeURIComponent(body)}`;
+  const ok = await api.openExternal(url);
+  if (ok) {
+    appendStatus(ctx.sessionId, 'Bug report', 'Opened GitHub issue form in your browser.');
+  } else {
+    appendError(ctx.sessionId, 'Could not open external URL.');
+  }
+}
+
 // Attach handlers to registry entries. Module side-effect; imported once by
 // the app bootstrap (src/index.tsx or wherever we kick things off) and once
 // by the unit tests that exercise dispatch.
@@ -190,3 +336,7 @@ attach('config', handleConfig);
 attach('model', handleModel);
 attach('help', handleHelp);
 attach('pr', handlePr);
+attach('status', handleStatus);
+attach('doctor', handleDoctor);
+attach('memory', handleMemory);
+attach('bug', handleBug);

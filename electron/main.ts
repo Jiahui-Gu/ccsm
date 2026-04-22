@@ -648,6 +648,92 @@ app.whenReady().then(() => {
     // about homedir semantics (different on Windows vs Unix).
     return path.join(os.homedir(), '.claude', 'CLAUDE.md');
   });
+  // Open ~/.claude/CLAUDE.md in the OS-default editor. Creates an empty
+  // stub if the file does not yet exist so first-time users land in a
+  // ready-to-edit document instead of a "file not found" toast. Used by
+  // the `/memory` client handler — no claude.exe round-trip needed.
+  ipcMain.handle('memory:openUserFile', async () => {
+    const file = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    if (!fs.existsSync(file)) {
+      try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '# Memory\n\n', 'utf8');
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    const result = await shell.openPath(file);
+    return result === '' ? { ok: true } : { ok: false, error: result };
+  });
+
+  // Local health checks for `/doctor`. Cheap probes only — no network, no
+  // spawn. Each probe returns `{ ok, detail }`; the renderer renders the
+  // bundle as a single status block.
+  ipcMain.handle('doctor:run', async () => {
+    const checks: Array<{ name: string; ok: boolean; detail: string }> = [];
+
+    // 1. ~/.claude/settings.json present and parseable
+    try {
+      const file = path.join(os.homedir(), '.claude', 'settings.json');
+      if (!fs.existsSync(file)) {
+        checks.push({ name: 'settings.json', ok: false, detail: `not found at ${file}` });
+      } else {
+        const raw = fs.readFileSync(file, 'utf8');
+        JSON.parse(raw);
+        checks.push({ name: 'settings.json', ok: true, detail: file });
+      }
+    } catch (err) {
+      checks.push({
+        name: 'settings.json',
+        ok: false,
+        detail: `parse error: ${err instanceof Error ? err.message : String(err)}`
+      });
+    }
+
+    // 2. claude binary discoverable (persisted path or PATH)
+    try {
+      const persisted = loadClaudeBinPath();
+      if (persisted && fs.existsSync(persisted)) {
+        const v = await detectClaudeVersion(persisted);
+        checks.push({
+          name: 'claude binary',
+          ok: v !== null,
+          detail: v ? `${persisted} (v${v})` : `${persisted} (version probe failed)`
+        });
+      } else {
+        const p = await resolveClaudeBinary();
+        const v = await detectClaudeVersion(p);
+        checks.push({
+          name: 'claude binary',
+          ok: v !== null,
+          detail: v ? `${p} (v${v})` : `${p} (version probe failed)`
+        });
+      }
+    } catch (err) {
+      checks.push({
+        name: 'claude binary',
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err)
+      });
+    }
+
+    // 3. data directory writable (sqlite lives in app.getPath('userData'))
+    try {
+      const dir = app.getPath('userData');
+      const probe = path.join(dir, '.doctor-probe');
+      fs.writeFileSync(probe, 'ok', 'utf8');
+      fs.unlinkSync(probe);
+      checks.push({ name: 'data dir writable', ok: true, detail: dir });
+    } catch (err) {
+      checks.push({
+        name: 'data dir writable',
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err)
+      });
+    }
+
+    return { checks };
+  });
   ipcMain.handle('memory:projectPath', (_e, cwd: string) => {
     // We still force CLAUDE.md basename in the *write* path, but we compose
     // the full path here so the renderer doesn't have to remember the
