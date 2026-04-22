@@ -63,10 +63,13 @@ export type SlashCommand = {
 //
 // `passThrough: false` = we handle locally (see src/slash-commands/handlers.ts).
 // `passThrough: true`  = forwarded to claude.exe via the normal message path.
-//   Note: claude.exe in --input-format stream-json mode silently drops most
-//   slash commands. We still forward them because (a) the list may grow or
-//   be fixed upstream, and (b) silently eating the `/foo` text is less bad
-//   than pretending it isn't a command.
+//   Per the Agent SDK slash-commands docs, the SDK *does* dispatch slash
+//   commands sent as the prompt body in stream-json mode — `/compact`,
+//   `/context`, etc. are all honoured. The `init` system frame's
+//   `slash_commands` field lists what the current session supports. Anything
+//   we forward that the SDK doesn't recognise lands as a no-op user message
+//   (visible in the local echo but not actioned), which is preferable to
+//   silently swallowing the `/foo` text on our side.
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'help',    description: 'List available commands',                       icon: HelpCircle,       category: 'built-in', passThrough: false },
   { name: 'clear',   description: 'Start a new conversation and clear context',    icon: Eraser,           category: 'built-in', passThrough: false },

@@ -121,10 +121,13 @@ export function handleHelp(ctx: SlashCommandContext): void {
 }
 
 // ---------- /compact ----------
-// Pass-through to claude.exe — Agentory no longer owns a one-off summarise
-// path now that endpoints/keys live in ~/.claude/settings.json (the renderer
-// has no API key to call /v1/messages with). The CLI's own /compact handles
-// it natively.
+// Pass-through to claude.exe. The Agent SDK natively handles `/compact` when
+// sent as a prompt in stream-json mode — see
+// https://code.claude.com/docs/en/agent-sdk/slash-commands. The CLI emits a
+// `system { subtype: 'compact_boundary', compact_metadata }` frame which our
+// systemBlocks() translator already renders as a status banner ("Conversation
+// compacted (manual) — Compacted N → M tokens in T ms"). No client-side work
+// needed; we just trust the SDK and let the existing translator surface it.
 //
 // `blocksToTranscript` is still exported below for tests and future reuse.
 
