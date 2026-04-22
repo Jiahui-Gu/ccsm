@@ -29,7 +29,7 @@ type LocalUpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-type Tab = 'appearance' | 'memory' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'account' | 'data' | 'shortcuts' | 'updates';
+type Tab = 'appearance' | 'memory' | 'notifications' | 'endpoints' | 'autopilot' | 'permissions' | 'data' | 'shortcuts' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
@@ -40,7 +40,6 @@ const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'endpoints', tabKey: 'endpoints' },
   { id: 'autopilot', tabKey: 'autopilot' },
   { id: 'permissions', tabKey: 'permissions' },
-  { id: 'account', tabKey: 'account' },
   { id: 'data', tabKey: 'data' },
   { id: 'shortcuts', tabKey: 'shortcuts' },
   { id: 'updates', tabKey: 'updates' }
@@ -115,7 +114,6 @@ export function SettingsDialog({
             {tab === 'endpoints' && <EndpointsPane />}
             {tab === 'autopilot' && <AutopilotPane />}
             {tab === 'permissions' && <PermissionsPane />}
-            {tab === 'account' && <AccountPane />}
             {tab === 'data' && <DataPane />}
             {tab === 'shortcuts' && <ShortcutsPane />}
             {tab === 'updates' && <UpdatesPane />}
@@ -947,67 +945,6 @@ function arraysEqualSet(a: readonly string[], b: readonly string[]): boolean {
 // resetPermissionRules() but kept visible so a future PR that wants to diff
 // against "known empty" doesn't have to hunt. Pure doc aid; no behavior.
 void EMPTY_PERMISSION_RULES;
-
-function AccountPane() {
-  const [key, setKey] = useState('');
-  const [loaded, setLoaded] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [encAvailable, setEncAvailable] = useState(true);
-
-  useEffect(() => {
-    const api = window.agentory;
-    if (!api) {
-      setLoaded(true);
-      return;
-    }
-    Promise.all([api.getApiKey(), api.hasEncryption()]).then(([k, enc]) => {
-      setKey(k);
-      setEncAvailable(enc);
-      setLoaded(true);
-    });
-  }, []);
-
-  const save = async () => {
-    const api = window.agentory;
-    if (!api) return;
-    const ok = await api.setApiKey(key.trim());
-    setStatus(ok ? 'Saved.' : 'Failed to save (encryption unavailable).');
-    setTimeout(() => setStatus(null), 2000);
-  };
-
-  return (
-    <>
-      <Field
-        label="Anthropic API key"
-        hint={
-          encAvailable
-            ? 'Stored in OS keychain. Required for Claude Code sessions.'
-            : 'OS encryption unavailable — key cannot be saved on this system.'
-        }
-      >
-        <input
-          type="password"
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          placeholder={loaded ? 'sk-ant-…' : 'Loading…'}
-          disabled={!loaded || !encAvailable}
-          className={cn(
-            'w-full h-8 px-2 rounded-sm bg-bg-elevated border border-border-default',
-            'text-sm font-mono text-fg-primary placeholder:text-fg-disabled outline-none',
-            'focus:border-border-strong focus:shadow-[0_0_0_2px_var(--color-focus-ring)]',
-            'disabled:opacity-60 disabled:cursor-not-allowed'
-          )}
-        />
-      </Field>
-      <div className="flex items-center gap-3">
-        <Button variant="primary" size="md" onClick={save} disabled={!loaded || !encAvailable}>
-          Save
-        </Button>
-        {status && <span className="text-xs text-fg-secondary">{status}</span>}
-      </div>
-    </>
-  );
-}
 
 function DataPane() {
   const [dataDir, setDataDir] = useState<string>('Loading…');

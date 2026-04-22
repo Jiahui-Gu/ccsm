@@ -86,13 +86,12 @@ export type StartOptions = {
   cwd: string;
   model?: string;
   permissionMode?: PermissionMode;
-  apiKey?: string;
   resumeSessionId?: string;
   /**
-   * Per-session env overrides layered onto the spawner's SAFE_ENV baseline
-   * BEFORE `apiKey` is applied. Used to pipe an endpoint's ANTHROPIC_BASE_URL
-   * + ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN into the child so each session
-   * can target a different endpoint.
+   * Per-session env overrides layered onto the spawner's SAFE_ENV baseline.
+   * Used to pipe an endpoint's ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY /
+   * ANTHROPIC_AUTH_TOKEN into the child so each session can target a
+   * different endpoint.
    */
   envOverrides?: Record<string, string>;
   /**
@@ -166,7 +165,6 @@ export class SessionRunner {
     this.abort = new AbortController();
 
     const envOverrides: Record<string, string> = { ...(opts.envOverrides ?? {}) };
-    if (opts.apiKey) envOverrides.ANTHROPIC_API_KEY = opts.apiKey;
 
     this.cp = await spawnClaude({
       cwd: resolveCwd(opts.cwd),

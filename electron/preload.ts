@@ -126,9 +126,6 @@ const api = {
     ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
   getDataDir: (): Promise<string> => ipcRenderer.invoke('app:getDataDir'),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-  getApiKey: (): Promise<string> => ipcRenderer.invoke('keychain:getApiKey'),
-  setApiKey: (value: string): Promise<boolean> => ipcRenderer.invoke('keychain:setApiKey', value),
-  hasEncryption: (): Promise<boolean> => ipcRenderer.invoke('keychain:hasEncryption'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
 
   agentStart: (sessionId: string, opts: StartOpts): Promise<StartResult> =>

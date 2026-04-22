@@ -139,7 +139,6 @@ const zh: EnCatalog = {
       endpoints: '端点',
       autopilot: '自动驾驶',
       permissions: '权限',
-      account: '账户',
       data: '数据',
       shortcuts: '快捷键',
       updates: '更新'

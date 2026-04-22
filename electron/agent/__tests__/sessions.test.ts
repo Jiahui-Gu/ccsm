@@ -86,7 +86,7 @@ describe('SessionRunner.start', () => {
     const events: unknown[] = [];
     const runner = new SessionRunner('s1', (m) => events.push(m), () => {}, () => {});
 
-    await runner.start({ ...baseOpts, model: 'sonnet', apiKey: 'sk-test' });
+    await runner.start({ ...baseOpts, model: 'sonnet', envOverrides: { ANTHROPIC_API_KEY: 'sk-test' } });
 
     expect(mockSpawnClaude).toHaveBeenCalledTimes(1);
     const passed = mockSpawnClaude.mock.calls[0][0];
