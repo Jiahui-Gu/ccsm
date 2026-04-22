@@ -424,7 +424,7 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
     expect(useStore.getState().messagesBySession['s-ghost']).toEqual(persisted);
   });
 
-  it('loadMessages does not clobber blocks that arrived mid-flight', async () => {
+  it('loadMessages merges persisted blocks (by id) with mid-flight streaming', async () => {
     let resolve!: (v: unknown[]) => void;
     const load = vi.fn(
       () => new Promise<unknown[]>((r) => { resolve = r; })
@@ -438,12 +438,38 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
     useStore.getState().appendBlocks('s-race', [
       { kind: 'assistant', id: 'live-1', text: 'streaming' }
     ]);
-    resolve([{ kind: 'user', id: 'stale', text: 'old' }]);
+    // Persisted history has a block with a different id (real history) — it
+    // should be prepended. The previous "skip entirely" guard dropped this
+    // valid history; the new merge keeps both.
+    resolve([{ kind: 'user', id: 'persisted-1', text: 'older turn' }]);
     await promise;
 
     const blocks = useStore.getState().messagesBySession['s-race'];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ id: 'persisted-1' });
+    expect(blocks[1]).toMatchObject({ id: 'live-1' });
+  });
+
+  it('loadMessages dedupes persisted blocks whose id already streamed in', async () => {
+    let resolve!: (v: unknown[]) => void;
+    const load = vi.fn(
+      () => new Promise<unknown[]>((r) => { resolve = r; })
+    );
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load }
+    };
+
+    const promise = useStore.getState().loadMessages('s-dup');
+    useStore.getState().appendBlocks('s-dup', [
+      { kind: 'assistant', id: 'dup-1', text: 'fresh' }
+    ]);
+    resolve([{ kind: 'assistant', id: 'dup-1', text: 'stale' }]);
+    await promise;
+
+    const blocks = useStore.getState().messagesBySession['s-dup'];
     expect(blocks).toHaveLength(1);
-    expect(blocks[0]).toMatchObject({ id: 'live-1' });
+    // The streaming version wins (stays put at the end of the array).
+    expect(blocks[0]).toMatchObject({ id: 'dup-1', text: 'fresh' });
   });
 
   it('selectSession triggers loadMessages when history is missing', () => {
@@ -730,5 +756,326 @@ describe('store: createSession auto-creates default group when none usable', () 
     expect(normal).toHaveLength(1);
     expect(s.sessions).toHaveLength(1);
     expect(s.sessions[0].groupId).toBe(normal[0].id);
+  });
+});
+
+// ─── New robustness coverage (worker B) ────────────────────────────────────
+
+describe('store: restoreSession round-trip', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+    };
+  });
+
+  it('restores per-session maps but drops running/interrupted (process is dead)', () => {
+    useStore.getState().createSession('~/work');
+    const sid = useStore.getState().activeId;
+    // Hydrate every per-session map a delete would snapshot.
+    useStore.getState().appendBlocks(sid, [
+      { kind: 'user', id: 'u1', text: 'hello' },
+      { kind: 'assistant', id: 'a1', text: 'hi' }
+    ]);
+    useStore.getState().enqueueMessage(sid, { text: 'queued', attachments: [] });
+    useStore.getState().addSessionStats(sid, { turns: 2, costUsd: 0.5, inputTokens: 10, outputTokens: 20 });
+    useStore.getState().markStarted(sid);
+    useStore.getState().setRunning(sid, true);
+    useStore.getState().markInterrupted(sid);
+
+    // Spawn a sibling so prevActiveId resolution has a fallback target.
+    useStore.getState().createSession('~/other');
+    const sibling = useStore.getState().activeId;
+    useStore.getState().selectSession(sid);
+
+    const snap = useStore.getState().deleteSession(sid);
+    expect(snap).not.toBeNull();
+    expect(useStore.getState().sessions.find((x) => x.id === sid)).toBeUndefined();
+    expect(useStore.getState().activeId).toBe(sibling);
+
+    useStore.getState().restoreSession(snap!);
+    const after = useStore.getState();
+    const restored = after.sessions.find((x) => x.id === sid);
+    expect(restored).toBeDefined();
+    expect(after.messagesBySession[sid]).toHaveLength(2);
+    expect(after.messageQueues[sid]).toHaveLength(1);
+    expect(after.statsBySession[sid]).toMatchObject({ turns: 2, costUsd: 0.5 });
+    expect(after.startedSessions[sid]).toBe(true);
+    // Critically: running/interrupted must NOT be restored — the spawned
+    // claude.exe is gone, so resurrecting either flag would strand the UI.
+    expect(after.runningSessions[sid]).toBeUndefined();
+    expect(after.interruptedSessions[sid]).toBeUndefined();
+    // prevActiveId path: we were focused on `sid` before delete, so undo
+    // returns focus there.
+    expect(after.activeId).toBe(sid);
+  });
+});
+
+describe('store: restoreGroup round-trip', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+    };
+  });
+
+  it('restores group + all member sessions in original positions, drops running/interrupted', () => {
+    const gid = useStore.getState().createGroup('Workgroup');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('~/a');
+    const a = useStore.getState().activeId;
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('~/b');
+    const b = useStore.getState().activeId;
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('~/c');
+    const c = useStore.getState().activeId;
+
+    // Different runtime state on each.
+    useStore.getState().appendBlocks(a, [{ kind: 'user', id: 'u-a', text: 'A' }]);
+    useStore.getState().setRunning(b, true);
+    useStore.getState().markInterrupted(c);
+    useStore.getState().markStarted(c);
+
+    const orderBefore = useStore
+      .getState()
+      .sessions.filter((s) => s.groupId === gid)
+      .map((s) => s.id);
+    expect(orderBefore).toEqual([c, b, a]);
+
+    const snap = useStore.getState().deleteGroup(gid);
+    expect(snap).not.toBeNull();
+    expect(useStore.getState().groups.find((g) => g.id === gid)).toBeUndefined();
+    expect(useStore.getState().sessions.filter((s) => s.groupId === gid)).toHaveLength(0);
+
+    useStore.getState().restoreGroup(snap!);
+    const after = useStore.getState();
+    expect(after.groups.find((g) => g.id === gid)).toBeDefined();
+    const orderAfter = after.sessions.filter((s) => s.groupId === gid).map((s) => s.id);
+    expect(orderAfter).toEqual(orderBefore);
+    expect(after.messagesBySession[a]).toHaveLength(1);
+    expect(after.startedSessions[c]).toBe(true);
+    // Running / interrupted intentionally dropped on restore.
+    expect(after.runningSessions[b]).toBeUndefined();
+    expect(after.interruptedSessions[c]).toBeUndefined();
+  });
+});
+
+describe('store: moveSession edge cases', () => {
+  it('same-group reorder positions before the anchor', () => {
+    const gid = 'g-default';
+    useStore.setState({
+      groups: [{ id: gid, name: 'Sessions', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 's1', name: '1', state: 'idle', cwd: '~', model: '', groupId: gid, agentType: 'claude-code' },
+        { id: 's2', name: '2', state: 'idle', cwd: '~', model: '', groupId: gid, agentType: 'claude-code' },
+        { id: 's3', name: '3', state: 'idle', cwd: '~', model: '', groupId: gid, agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().moveSession('s3', gid, 's1');
+    expect(useStore.getState().sessions.map((s) => s.id)).toEqual(['s3', 's1', 's2']);
+  });
+
+  it('cross-group with valid anchor places before the anchor', () => {
+    useStore.setState({
+      groups: [
+        { id: 'gA', name: 'A', collapsed: false, kind: 'normal' },
+        { id: 'gB', name: 'B', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'b1', name: 'b1', state: 'idle', cwd: '~', model: '', groupId: 'gB', agentType: 'claude-code' },
+        { id: 'b2', name: 'b2', state: 'idle', cwd: '~', model: '', groupId: 'gB', agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().moveSession('a1', 'gB', 'b2');
+    const s = useStore.getState().sessions;
+    expect(s.find((x) => x.id === 'a1')!.groupId).toBe('gB');
+    expect(s.map((x) => x.id)).toEqual(['b1', 'a1', 'b2']);
+  });
+
+  it('cross-group with anchor in wrong group appends at end of target', () => {
+    useStore.setState({
+      groups: [
+        { id: 'gA', name: 'A', collapsed: false, kind: 'normal' },
+        { id: 'gB', name: 'B', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'a2', name: 'a2', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'b1', name: 'b1', state: 'idle', cwd: '~', model: '', groupId: 'gB', agentType: 'claude-code' }
+      ]
+    });
+    // Anchor 'a2' lives in gA, target is gB → anchor invalid, append.
+    useStore.getState().moveSession('a1', 'gB', 'a2');
+    const s = useStore.getState().sessions;
+    expect(s.find((x) => x.id === 'a1')!.groupId).toBe('gB');
+    expect(s.map((x) => x.id)).toEqual(['a2', 'b1', 'a1']);
+  });
+
+  it('drop on empty group (no anchor) appends', () => {
+    useStore.setState({
+      groups: [
+        { id: 'gA', name: 'A', collapsed: false, kind: 'normal' },
+        { id: 'gEmpty', name: 'Empty', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().moveSession('a1', 'gEmpty', null);
+    expect(useStore.getState().sessions.find((x) => x.id === 'a1')!.groupId).toBe('gEmpty');
+  });
+
+  it('invalid sessionId is a no-op', () => {
+    useStore.setState({
+      groups: [{ id: 'gA', name: 'A', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' }
+      ]
+    });
+    const before = useStore.getState().sessions;
+    useStore.getState().moveSession('does-not-exist', 'gA', null);
+    expect(useStore.getState().sessions).toBe(before);
+  });
+
+  it('drop on archived group is a no-op', () => {
+    useStore.setState({
+      groups: [
+        { id: 'gA', name: 'A', collapsed: false, kind: 'normal' },
+        { id: 'gArch', name: 'Old', collapsed: false, kind: 'archive' }
+      ],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: '', groupId: 'gA', agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().moveSession('a1', 'gArch', null);
+    expect(useStore.getState().sessions.find((x) => x.id === 'a1')!.groupId).toBe('gA');
+  });
+});
+
+describe('store: importSession synthesis path', () => {
+  it('synthesizes a default normal group when groups[] is empty AND groupId is stale', () => {
+    useStore.setState({ groups: [], sessions: [], activeId: '' });
+    const id = useStore.getState().importSession({
+      name: 'Imported',
+      cwd: '/tmp/imp',
+      groupId: 'g-stale-12345',
+      resumeSessionId: 'resume-abc'
+    });
+    const s = useStore.getState();
+    expect(s.groups).toHaveLength(1);
+    expect(s.groups[0].kind).toBe('normal');
+    expect(s.groups[0].nameKey).toBe('sidebar.defaultGroupName');
+    const session = s.sessions.find((x) => x.id === id);
+    expect(session).toBeDefined();
+    expect(session!.groupId).toBe(s.groups[0].id);
+    expect(session!.resumeSessionId).toBe('resume-abc');
+  });
+});
+
+describe('store: addSessionStats NaN guard', () => {
+  it('coerces NaN / Infinity / non-number deltas to 0 so totals never poison', () => {
+    useStore.getState().addSessionStats('s-x', { turns: 1, costUsd: 0.1 });
+    useStore.getState().addSessionStats('s-x', {
+      turns: NaN,
+      costUsd: Infinity,
+      // @ts-expect-error — exercising the runtime guard against bad payloads
+      inputTokens: 'huh',
+      outputTokens: undefined
+    });
+    const stats = useStore.getState().statsBySession['s-x'];
+    expect(Number.isFinite(stats.turns)).toBe(true);
+    expect(Number.isFinite(stats.costUsd)).toBe(true);
+    expect(stats.turns).toBe(1);
+    expect(stats.costUsd).toBeCloseTo(0.1);
+    expect(stats.inputTokens).toBe(0);
+    expect(stats.outputTokens).toBe(0);
+  });
+});
+
+describe('store: defaultGroupName via nameKey sentinel', () => {
+  it('synthesized groups carry nameKey, not a frozen string', () => {
+    useStore.setState({ groups: [], sessions: [], activeId: '' });
+    useStore.getState().createSession('~/x');
+    const synth = useStore.getState().groups[0];
+    expect(synth.nameKey).toBe('sidebar.defaultGroupName');
+  });
+});
+
+describe('store: setGlobalModel / setSessionModel split', () => {
+  beforeEach(() => {
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = { agentory: undefined };
+  });
+
+  it('setGlobalModel changes the global default but does NOT touch sessions', () => {
+    useStore.getState().createSession('~/x');
+    const sid = useStore.getState().activeId;
+    const origModel = useStore.getState().sessions.find((s) => s.id === sid)!.model;
+    useStore.getState().setGlobalModel('claude-opus-4-9');
+    expect(useStore.getState().model).toBe('claude-opus-4-9');
+    expect(useStore.getState().sessions.find((s) => s.id === sid)!.model).toBe(origModel);
+  });
+
+  it('setSessionModel changes one session and leaves the global default alone', () => {
+    useStore.getState().createSession('~/a');
+    const sa = useStore.getState().activeId;
+    useStore.getState().createSession('~/b');
+    const sb = useStore.getState().activeId;
+    useStore.setState({ model: 'global-default' });
+    useStore.getState().setSessionModel(sa, 'pinned-on-a');
+    expect(useStore.getState().sessions.find((s) => s.id === sa)!.model).toBe('pinned-on-a');
+    expect(useStore.getState().sessions.find((s) => s.id === sb)!.model).not.toBe('pinned-on-a');
+    expect(useStore.getState().model).toBe('global-default');
+  });
+});
+
+describe('store: loadMessages failure seeds [] and clears in-flight', () => {
+  it('IPC reject leaves an empty array and the next selectSession does not retry', async () => {
+    const load = vi.fn().mockRejectedValue(new Error('db locked'));
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { loadMessages: load, saveMessages: vi.fn() }
+    };
+    // Suppress the expected console.warn in test output.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    useStore.setState({
+      sessions: [
+        { id: 's-fail', name: '?', state: 'idle', cwd: '~', model: '', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+
+    useStore.getState().selectSession('s-fail');
+    // First selectSession kicks off loadMessages — wait for the rejection
+    // microtask + the in-finally cleanup.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().messagesBySession['s-fail']).toEqual([]);
+
+    // Second selectSession must NOT issue another IPC — the empty sentinel
+    // marks the session as "known".
+    useStore.getState().selectSession('s-fail');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(load).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+describe('store: resetSessionContext resets state', () => {
+  it("flips state back to 'idle' alongside clearing context", () => {
+    useStore.setState({
+      sessions: [
+        { id: 's-reset', name: '?', state: 'waiting', cwd: '~', model: '', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+    useStore.getState().markStarted('s-reset');
+    useStore.getState().setRunning('s-reset', true);
+    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
+      agentory: { saveMessages: vi.fn() }
+    };
+
+    useStore.getState().resetSessionContext('s-reset');
+    const s = useStore.getState().sessions.find((x) => x.id === 's-reset')!;
+    expect(s.state).toBe('idle');
+    expect(useStore.getState().runningSessions['s-reset']).toBeUndefined();
+    expect(useStore.getState().startedSessions['s-reset']).toBeUndefined();
   });
 });
