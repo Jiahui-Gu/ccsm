@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
+import { hydrateDrafts, deleteDrafts } from './drafts';
 
 /**
  * One pending user turn waiting in the per-session FIFO queue. Created when
@@ -560,6 +561,8 @@ export const useStore = create<State & Actions>((set, get) => ({
     // Wipe the persisted rows so a deleted session can't resurrect its
     // history if a new session happens to reuse the id.
     void window.agentory?.saveMessages(id, []);
+    // Also drop any persisted draft for this session.
+    deleteDrafts([id]);
   },
 
   moveSession: (sessionId, targetGroupId, beforeSessionId) => {
@@ -684,9 +687,12 @@ export const useStore = create<State & Actions>((set, get) => ({
   deleteGroup: (id) => {
     set((s) => {
       const remainingSessions = s.sessions.filter((x) => x.groupId !== id);
+      const droppedIds = s.sessions.filter((x) => x.groupId === id).map((x) => x.id);
       const nextActive = remainingSessions.some((x) => x.id === s.activeId)
         ? s.activeId
         : remainingSessions[0]?.id ?? '';
+      // Drop drafts for every session that vanished with the group.
+      if (droppedIds.length > 0) deleteDrafts(droppedIds);
       return {
         groups: s.groups.filter((g) => g.id !== id),
         sessions: remainingSessions,
@@ -1039,6 +1045,10 @@ let hydrated = false;
 
 export async function hydrateStore(): Promise<void> {
   if (hydrated) return;
+  // Drafts live alongside the main snapshot but in their own key — load both
+  // before render so the InputBar's initial value is the persisted draft, not
+  // an empty string that flashes for one tick.
+  await hydrateDrafts();
   const persisted = await loadPersisted();
   if (persisted) {
     const stillActive = persisted.sessions.some((s) => s.id === persisted.activeId);

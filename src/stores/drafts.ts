@@ -1,0 +1,85 @@
+// Per-session composer drafts persisted across app restarts.
+//
+// Drafts live in the same `app_state` table as the main store snapshot but
+// under their own key (`drafts`) so they evolve independently and don't bloat
+// the main snapshot's debounced write path. Stored shape is just a flat
+// Record<sessionId, string>.
+//
+// Lifecycle:
+//   - hydrateDrafts() on app boot, before the InputBar mounts.
+//   - setDraft(sessionId, text) on every keystroke.
+//   - clearDraft(sessionId) on send / slash-command commit.
+//   - getDraft(sessionId) for InputBar's initial value.
+//
+// Writes are debounced so per-keystroke disk traffic stays cheap.
+
+const STATE_KEY = 'drafts';
+const WRITE_DEBOUNCE_MS = 250;
+
+const cache = new Map<string, string>();
+let hydrated = false;
+let writeTimer: ReturnType<typeof setTimeout> | null = null;
+
+export async function hydrateDrafts(): Promise<void> {
+  if (hydrated) return;
+  hydrated = true;
+  if (!window.agentory) return;
+  try {
+    const raw = await window.agentory.loadState(STATE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as { version: 1; drafts: Record<string, string> };
+    if (parsed.version !== 1 || !parsed.drafts) return;
+    for (const [k, v] of Object.entries(parsed.drafts)) {
+      if (typeof v === 'string' && v.length > 0) cache.set(k, v);
+    }
+  } catch {
+    /* corrupt blob — start clean */
+  }
+}
+
+export function getDraft(sessionId: string): string {
+  return cache.get(sessionId) ?? '';
+}
+
+export function setDraft(sessionId: string, text: string): void {
+  if (text) cache.set(sessionId, text);
+  else cache.delete(sessionId);
+  schedulePersist();
+}
+
+export function clearDraft(sessionId: string): void {
+  if (!cache.has(sessionId)) return;
+  cache.delete(sessionId);
+  schedulePersist();
+}
+
+export function deleteDrafts(sessionIds: string[]): void {
+  let changed = false;
+  for (const id of sessionIds) {
+    if (cache.delete(id)) changed = true;
+  }
+  if (changed) schedulePersist();
+}
+
+function schedulePersist(): void {
+  if (!window.agentory) return;
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = setTimeout(() => {
+    writeTimer = null;
+    const drafts: Record<string, string> = {};
+    for (const [k, v] of cache.entries()) drafts[k] = v;
+    void window.agentory!.saveState(STATE_KEY, JSON.stringify({ version: 1, drafts })).catch(
+      () => {
+        /* persist failures are non-fatal; we'll retry on the next edit */
+      }
+    );
+  }, WRITE_DEBOUNCE_MS);
+}
+
+// Test-only — not exported through any barrel; reach in via the module path.
+export function _resetForTests(): void {
+  cache.clear();
+  hydrated = false;
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = null;
+}

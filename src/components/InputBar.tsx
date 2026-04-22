@@ -25,10 +25,10 @@ import {
 } from '../lib/attachments';
 import { useTranslation } from '../i18n/useTranslation';
 
-// Per-session draft cache. Survives session switches within a process so
-// users don't lose half-typed prompts when they pop into another session.
-// Cleared on send. Not persisted to disk by design — drafts are ephemeral.
-const draftCache = new Map<string, string>();
+// Per-session text drafts persist across session switches AND across app
+// restarts (see ../stores/drafts). Cleared on send. Image attachments stay
+// in-memory only — they're large and re-droppable.
+import { getDraft, setDraft, clearDraft } from '../stores/drafts';
 
 // Per-session attachment cache. Same rationale as the text draft: stays in
 // memory across session switches, cleared on send. Data URLs are ephemeral
@@ -122,7 +122,7 @@ function hasDraggedFiles(e: DragEvent): boolean {
 
 export function InputBar({ sessionId }: { sessionId: string }) {
   const { t } = useTranslation();
-  const [value, setValue] = useState(() => draftCache.get(sessionId) ?? '');
+  const [value, setValue] = useState(() => getDraft(sessionId));
   const [attachments, setAttachments] = useState<ImageAttachment[]>(
     () => attachmentCache.get(sessionId) ?? []
   );
@@ -180,7 +180,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   }, [pickerOpen, filtered.length, activeIndex]);
 
   useEffect(() => {
-    setValue(draftCache.get(sessionId) ?? '');
+    setValue(getDraft(sessionId));
     setAttachments(attachmentCache.get(sessionId) ?? []);
     setRejections([]);
   }, [sessionId]);
@@ -217,8 +217,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     const el = textareaRef.current;
     if (el) setCaret(el.selectionStart ?? next.length);
     else setCaret(next.length);
-    if (next) draftCache.set(sessionId, next);
-    else draftCache.delete(sessionId);
+    if (next) setDraft(sessionId, next);
+    else clearDraft(sessionId);
   }
 
   function commitSlashCommand(cmd: SlashCommand) {
@@ -230,7 +230,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (cmd.clientHandler) {
       void dispatchSlashCommand(`/${cmd.name}`, { sessionId, args: '' });
       setValue('');
-      draftCache.delete(sessionId);
+      clearDraft(sessionId);
       setCaret(0);
       setPickerDismissed(true);
       setActiveIndex(0);
@@ -238,7 +238,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     }
     const next = `/${cmd.name} `;
     setValue(next);
-    draftCache.set(sessionId, next);
+    setDraft(sessionId, next);
     setCaret(next.length);
     setPickerDismissed(true);
     setActiveIndex(0);
@@ -525,7 +525,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           // browsing. Insert `/<name>` without trailing space.
           const next = `/${cmd.name}`;
           setValue(next);
-          draftCache.set(sessionId, next);
+          setDraft(sessionId, next);
           setCaret(next.length);
           requestAnimationFrame(() => {
             const el = textareaRef.current;
