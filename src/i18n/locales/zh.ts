@@ -96,6 +96,7 @@ const zh: EnCatalog = {
   },
   sidebar: {
     newSession: '新会话',
+    newSessionInThisGroup: '在此 Group 新建 Session',
     newGroup: '新建分组',
     newGroupEllipsis: '新建分组…',
     groups: '分组',

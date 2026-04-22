@@ -85,6 +85,7 @@ function GroupRow({
   const deleteGroup = useStore((s) => s.deleteGroup);
   const archiveGroup = useStore((s) => s.archiveGroup);
   const unarchiveGroup = useStore((s) => s.unarchiveGroup);
+  const createSession = useStore((s) => s.createSession);
   const collapsed = group.collapsed;
   const [renaming, setRenaming] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -183,9 +184,27 @@ function GroupRow({
                 </>
               )}
             </button>
+            {group.kind === 'normal' && !renaming && (
+              <IconButton
+                size="xs"
+                variant="ghost"
+                aria-label={t('sidebar.newSessionInThisGroup')}
+                tooltip={t('sidebar.newSessionInThisGroup')}
+                tooltipSide="top"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  createSession({ groupId: group.id });
+                }}
+                className="ml-1 shrink-0 h-5 w-5"
+              >
+                <Plus size={12} className="stroke-[1.75]" />
+              </IconButton>
+            )}
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
+          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
+          <ContextMenuSeparator />
           <ContextMenuItem
             onSelect={() =>
               group.kind === 'archive' ? unarchiveGroup(group.id) : archiveGroup(group.id)
@@ -193,8 +212,6 @@ function GroupRow({
           >
             {group.kind === 'archive' ? t('sidebar.unarchiveGroup') : t('sidebar.archiveGroup')}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
-          <ContextMenuSeparator />
           <ContextMenuItem danger onSelect={() => setConfirmDelete(true)}>
             {t('sidebar.deleteGroupEllipsis')}
           </ContextMenuItem>
