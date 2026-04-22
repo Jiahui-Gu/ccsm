@@ -26,12 +26,7 @@ import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
-import {
-  runPreflight,
-  createPr,
-  fetchPrChecks,
-  type CreatePrArgs
-} from './pr';
+import { loadCommands } from './commands-loader';
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `AGENTORY_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -468,20 +463,16 @@ app.whenReady().then(() => {
     return out;
   });
 
-  // ───────────────────────────── /pr flow ──────────────────────────────────
+  // ─────────────────────── disk-based slash commands ──────────────────────
   //
-  // Renderer → main IPC for preflight checks, PR creation, and CI polling.
-  // All spawn() happens in main; the renderer never touches git / gh /
-  // process.env.PATH directly. See electron/pr.ts for the helpers.
-  ipcMain.handle('pr:preflight', (_e, cwd: string | null | undefined) => runPreflight(cwd));
-  ipcMain.handle(
-    'pr:create',
-    (_e, args: CreatePrArgs) => createPr(args)
+  // Picker discovery for user / project / plugin command markdown files.
+  // Renderer calls this on focus / cwd change. Execution stays pass-through:
+  // selecting one inserts `/<name>` into the textarea, which the existing
+  // send path forwards to claude.exe. We never parse the body.
+  ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) =>
+    loadCommands({ cwd: cwd ?? null })
   );
-  ipcMain.handle(
-    'pr:checks',
-    (_e, cwd: string, number: number) => fetchPrChecks(cwd, number)
-  );
+
   ipcMain.handle('shell:openExternal', async (_e, url: string) => {
     // Only http(s). Everything else is a potential shell hijack.
     if (!/^https?:\/\//i.test(url)) return false;
@@ -492,7 +483,7 @@ app.whenReady().then(() => {
       return false;
     }
   });
-  // ──────────────────────────── end /pr flow ───────────────────────────────
+  // ──────────────────────── end commands + shell ───────────────────────────
 
   // ───────────────────────────── CLI wizard ────────────────────────────────
   //

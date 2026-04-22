@@ -199,7 +199,11 @@ const zh: EnCatalog = {
     complete: '补全',
     close: '关闭',
     runsLocally: '本地运行 — 不会转发给 claude.exe',
-    clientTag: '本地'
+    clientTag: '本地',
+    groupBuiltIn: '内置',
+    groupUser: 'User commands',
+    groupProject: 'Project commands',
+    groupPlugin: 'Plugin commands'
   },
   notifications: {
     sessionWaitingTitle: '会话等待中',

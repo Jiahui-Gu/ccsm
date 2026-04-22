@@ -174,19 +174,19 @@ const api = {
       ipcRenderer.invoke('memory:projectPath', cwd),
   },
 
-  pr: {
-    preflight: (cwd: string | null | undefined): Promise<unknown> =>
-      ipcRenderer.invoke('pr:preflight', cwd),
-    create: (args: {
-      cwd: string;
-      branch: string;
-      base: string;
-      title: string;
-      body: string;
-      draft: boolean;
-    }): Promise<unknown> => ipcRenderer.invoke('pr:create', args),
-    checks: (cwd: string, number: number): Promise<unknown> =>
-      ipcRenderer.invoke('pr:checks', cwd, number)
+  commands: {
+    /**
+     * Discover slash commands from disk (user / project / plugin markdown).
+     * Pass the active session's cwd so project-level `.claude/commands/`
+     * can layer on top of user-level definitions.
+     */
+    list: (cwd: string | null | undefined): Promise<Array<{
+      name: string;
+      description?: string;
+      argumentHint?: string;
+      source: 'user' | 'project' | 'plugin';
+      pluginId?: string;
+    }>> => ipcRenderer.invoke('commands:list', cwd),
   },
 
   openExternal: (url: string): Promise<boolean> =>

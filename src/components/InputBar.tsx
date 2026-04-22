@@ -6,10 +6,11 @@ import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { SlashCommandPicker } from './SlashCommandPicker';
 import {
-  SLASH_COMMANDS,
+  BUILT_IN_COMMANDS,
   detectSlashTrigger,
   dispatchSlashCommand,
   filterSlashCommands,
+  loadDynamicCommands,
   type SlashCommand
 } from '../slash-commands/registry';
 import type { ImageAttachment } from '../types';
@@ -167,10 +168,29 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const [pickerDismissed, setPickerDismissed] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
 
+  // Disk-discovered commands (user / project / plugin). Reload whenever
+  // the session or its cwd changes so project-level commands track the
+  // active workspace, and again on textarea focus so a user dropping a new
+  // .md file in mid-session sees it without reloading the app.
+  const cwd = session?.cwd ?? null;
+  const [dynamicCommands, setDynamicCommands] = useState<SlashCommand[]>([]);
+  const refreshDynamic = useCallback(async () => {
+    const next = await loadDynamicCommands(cwd);
+    setDynamicCommands(next);
+  }, [cwd]);
+  useEffect(() => {
+    void refreshDynamic();
+  }, [refreshDynamic]);
+
+  const allCommands = useMemo<SlashCommand[]>(
+    () => [...BUILT_IN_COMMANDS, ...dynamicCommands],
+    [dynamicCommands]
+  );
+
   const trigger = useMemo(() => detectSlashTrigger(value, caret), [value, caret]);
   const filtered = useMemo<SlashCommand[]>(
-    () => (trigger.active ? filterSlashCommands(SLASH_COMMANDS, trigger.query) : []),
-    [trigger]
+    () => (trigger.active ? filterSlashCommands(allCommands, trigger.query) : []),
+    [trigger, allCommands]
   );
   const pickerOpen = trigger.active && !pickerDismissed;
   // Clamp activeIndex whenever the filtered list shrinks.
@@ -222,13 +242,25 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   }
 
   function commitSlashCommand(cmd: SlashCommand) {
-    // Client-handled commands that take no arguments (all current ones —
-    // /pr, /clear, /cost, /config, /model, /help, /compact) should run
-    // immediately on commit rather than leaving `/name<space>` parked in
-    // the textarea waiting for another Enter press. Dispatch handles the
-    // per-command logic (openSettings, triggerPrFlow, etc.).
+    // Built-in client-handled commands (currently just /clear) run
+    // immediately on commit rather than parking `/name<space>` in the
+    // textarea waiting for another Enter press. Dynamic / pass-through
+    // commands ALSO run immediately when they have no `argument-hint` —
+    // they're meant to be one-shots. When an argument hint exists we
+    // insert `/name ` and let the user type the args before sending.
     if (cmd.clientHandler) {
-      void dispatchSlashCommand(`/${cmd.name}`, { sessionId, args: '' });
+      void dispatchSlashCommand(`/${cmd.name}`, allCommands, { sessionId, args: '' });
+      setValue('');
+      clearDraft(sessionId);
+      setCaret(0);
+      setPickerDismissed(true);
+      setActiveIndex(0);
+      return;
+    }
+    if (!cmd.argumentHint) {
+      // Pass-through one-shot: forward `/name` as a real send so the CLI
+      // sees it. Mirror the normal send path's draft cleanup.
+      void send(`/${cmd.name}`);
       setValue('');
       clearDraft(sessionId);
       setCaret(0);
@@ -242,7 +274,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setCaret(next.length);
     setPickerDismissed(true);
     setActiveIndex(0);
-    // Restore caret to end after React re-renders the textarea.
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (!el) return;
@@ -373,9 +404,9 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setAttachmentsAndCache(next);
   }
 
-  async function send() {
-    const text = value.trim();
-    const imgs = attachments;
+  async function send(override?: string) {
+    const text = (override ?? value).trim();
+    const imgs = override !== undefined ? [] : attachments;
     // Valid turns: text with or without images, OR images with no text. Empty
     // text + no images is a no-op (same as before).
     if (!text && imgs.length === 0) return;
@@ -393,7 +424,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // Pass-through slashes also bypass the queue so they reach claude.exe in
     // the order the user typed them, not interleaved with queued prose.
     if (text.startsWith('/') && imgs.length === 0) {
-      const outcome = await dispatchSlashCommand(text, { sessionId, args: '' });
+      const outcome = await dispatchSlashCommand(text, allCommands, { sessionId, args: '' });
       if (outcome === 'handled') {
         update('');
         return;
@@ -614,6 +645,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
         <SlashCommandPicker
           open={pickerOpen}
           query={trigger.active ? trigger.query : ''}
+          commands={allCommands}
           activeIndex={activeIndex}
           onActiveIndexChange={setActiveIndex}
           onSelect={commitSlashCommand}
@@ -640,6 +672,11 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onKeyUp={syncCaret}
           onClick={syncCaret}
           onSelect={syncCaret}
+          onFocus={() => {
+            // Re-scan disk commands on focus so newly-dropped .md files
+            // surface in the picker without reloading the app.
+            void refreshDynamic();
+          }}
           onPaste={onPaste}
           rows={2}
           placeholder={running ? t('chat.runningPlaceholder') : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
@@ -700,7 +737,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
                   variant="secondary"
                   size="sm"
                   aria-label={t('chat.queueAria')}
-                  onClick={send}
+                  onClick={() => void send()}
                 >
                   <ArrowUp size={10} className="stroke-[2.25]" />
                   <span>{t('chat.queueButton')}</span>
@@ -722,7 +759,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
               size="sm"
               aria-label={t('chat.sendMessage')}
               disabled={sendDisabled}
-              onClick={send}
+              onClick={() => void send()}
             >
               <ArrowUp size={10} className="stroke-[2.25]" />
               <span>{t('chat.sendButton')}</span>
