@@ -142,6 +142,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const enqueueMessage = useStore((s) => s.enqueueMessage);
   const clearQueue = useStore((s) => s.clearQueue);
   const focusInputNonce = useStore((s) => s.focusInputNonce);
+  const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
   // True iff there's a pending permission/plan/question prompt for this
   // session — those blocks auto-focus their own primary control (see the
   // setTimeout(..., 150) in WaitingBlock/PlanBlock/QuestionBlock). We let
@@ -528,6 +529,11 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // the user just decided to abandon.
     clearQueue(sessionId);
     await api.agentInterrupt(sessionId);
+    // Return focus to the composer so the user can type immediately
+    // (matches CLI Ctrl+C behavior). The InputBar focus useEffect picks
+    // this up via the bumped nonce and applies the standard focus guards
+    // (skips if user is mid-typing in another text surface).
+    bumpComposerFocus();
     // running flag is cleared when the SDK emits its result message.
   }
 
