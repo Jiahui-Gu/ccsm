@@ -120,6 +120,10 @@ type CliSetBinaryResultDecl =
   | { ok: true; version: string | null }
   | { ok: false; error: string };
 
+type OpenPathResultDecl =
+  | { ok: true }
+  | { ok: false; error: 'invalid_path' | 'not_found' | 'open_failed'; detail?: string };
+
 type PrPreflightErrorDecl = {
   code: 'no-cwd' | 'not-git' | 'no-gh' | 'on-default-branch' | 'dirty-tree' | 'no-commits';
   detail: string;
@@ -302,11 +306,12 @@ declare global {
       };
 
       /**
-       * Reveal a filesystem path in the OS file manager (Explorer / Finder /
-       * Nautilus). Optional — main process has not wired this handler yet;
-       * tracked as a follow-up to feat/worktree-core. Callers MUST null-check.
+       * Reveal a filesystem path in the OS file manager (Explorer on Windows,
+       * Finder on macOS, the user's default file manager on Linux). Path must
+       * be absolute and exist on disk; otherwise resolves with a structured
+       * error. Backed by `shell:openPath` IPC in the main process.
        */
-      openPath?: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+      openPath: (path: string) => Promise<OpenPathResultDecl>;
     };
   }
 }
