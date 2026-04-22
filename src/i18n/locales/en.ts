@@ -155,7 +155,9 @@ const en = {
     cwdMissingTooltip:
       'Working directory no longer exists: {{cwd}}. Open this session and repick the folder via the cwd button in the status bar.',
     muteNotifications: 'Mute notifications',
-    unmuteNotifications: 'Unmute notifications'
+    unmuteNotifications: 'Unmute notifications',
+    resizerAriaLabel: 'Resize sidebar',
+    resizerTooltip: 'Drag to resize · double-click to reset ({{default}}px)'
   },
   settings: {
     title: 'Settings',
@@ -167,17 +169,26 @@ const en = {
       updates: 'Updates'
     },
     theme: 'Theme',
+    themeHint: 'System follows your OS preference (and reacts live when it changes).',
     themeOptions: {
       system: 'System',
       light: 'Light',
       dark: 'Dark'
     },
     fontSize: 'Font size',
-    fontSizeHint: 'Affects chat stream and sidebar',
+    fontSizeHint: 'Applies to the whole app. Explicit small labels (meta, kbd) keep their intrinsic size.',
+    fontSizeAriaLabel: 'Font size in pixels',
     fontSizeOptions: {
       sm: 'Small (12px)',
       md: 'Medium (13px, default)',
       lg: 'Large (14px)'
+    },
+    density: 'Density',
+    densityHint: 'Tightens or loosens row padding and spacing across the app.',
+    densityOptions: {
+      compact: 'Compact',
+      normal: 'Normal',
+      comfortable: 'Comfortable'
     },
     language: 'Language',
     languageHint: 'Choose the interface language. Changes apply immediately.',
@@ -191,6 +202,66 @@ const en = {
     crashReporting: {
       label: 'Send crash reports to developer',
       description: 'Recommended. Helps fix bugs you hit. No personal data sent.'
+    },
+    notifications: {
+      intro:
+        'OS-level toasts when a session needs your attention. Suppressed when the window is focused on that same session, and debounced per session per event type so a chatty agent cannot spam you.',
+      enable: 'Enable notifications',
+      permission: 'Permission prompts',
+      permissionHint: 'When a tool call is waiting on your approval.',
+      question: 'Questions',
+      questionHint: 'When the agent uses AskUserQuestion to ask you something.',
+      turnDone: 'Turn done',
+      turnDoneHint:
+        'Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped.',
+      sound: 'Sound',
+      soundHint: 'Play the OS default notification sound.',
+      toggleOn: 'On',
+      toggleOff: 'Off',
+      testButton: 'Test notification',
+      testTitle: 'Agentory test notification',
+      testBody: 'If you can read this, OS notifications are working.',
+      testIpcUnavailable: 'IPC unavailable.',
+      testSent: 'Sent.',
+      testFailed: 'Failed - OS notifications unavailable.'
+    },
+    connection: {
+      intro:
+        'Agentory reads connection settings from <code>~/.claude/settings.json</code> plus your <code>ANTHROPIC_*</code> environment variables. To change them, run <code>claude /config</code> or edit the file directly. Restart Agentory to pick up changes.',
+      baseUrl: 'Base URL',
+      baseUrlDefault: 'https://api.anthropic.com (default)',
+      defaultModel: 'Default model',
+      modelUnset: '(unset — the CLI will pick its own default)',
+      authToken: 'Auth token',
+      authConfigured: 'Configured',
+      authNotConfigured: 'Not configured — run `claude /config` to sign in.',
+      discoveredModels: 'Discovered models ({{count}})',
+      discoveredModelsLoadingCount: 'Discovered models (…)',
+      discoveredModelsHint:
+        'Merged from settings.json, env vars, and the CLI’s built-in picker list.',
+      modelsLoading: 'Loading…',
+      modelsEmpty: 'No models discovered. Run <code>claude /config</code> to set one up.',
+      openSettingsFile: 'Open settings.json',
+      opening: 'Opening…'
+    },
+    updates: {
+      version: 'Version',
+      status: 'Status',
+      automaticChecks: 'Automatic checks',
+      automaticChecksHint:
+        'When on, Agentory checks GitHub for updates on launch and every 4 hours.',
+      automaticChecksToggle: 'Check for updates automatically',
+      checking: 'Checking…',
+      checkButton: 'Check for updates',
+      downloadButton: 'Download {{version}}',
+      installButton: 'Restart & install',
+      statusIdle: 'No update check performed yet.',
+      statusChecking: 'Checking for updates…',
+      statusAvailable: 'Update available: {{version}}',
+      statusNotAvailable: 'You are on the latest version.',
+      statusDownloading: 'Downloading… {{percent}}% ({{transferred}} / {{total}})',
+      statusDownloaded: 'Update {{version}} ready — restart to install.',
+      statusError: 'Update check failed: {{message}}'
     }
   },
   permissions: {
@@ -241,7 +312,14 @@ const en = {
     sessionDoneTitle: 'Session finished',
     sessionDoneBody: '{{name}} completed its task',
     permissionRequestTitle: 'Permission requested',
-    permissionRequestBody: '{{name}} is asking to {{action}}'
+    permissionRequestBody: '{{name}} is asking to {{action}}',
+    turnDoneTitle: '{{name}} is done',
+    turnErrorTitle: '{{name}} finished with an error',
+    turnErrorBody: 'Turn ended in error - check the chat.',
+    questionTitle: '{{name}} has a question',
+    inputNeededTitle: '{{name}} needs your input',
+    backgroundSessionFallback: 'Background session',
+    backgroundWaitingToastTitle: '{{name}} needs your input'
   },
   errors: {
     generic: 'Something went wrong.',
@@ -397,6 +475,12 @@ const en = {
     browse: 'Browse folder…',
     cwdMissingShort: 'missing',
     cwdMissingTooltip: 'Working directory no longer exists: {{cwd}}. Pick a different folder before sending.'
+  },
+  window: {
+    minimize: 'Minimize',
+    maximize: 'Maximize',
+    restore: 'Restore',
+    close: 'Close'
   }
 } as const;
 

@@ -149,7 +149,9 @@ const zh: EnCatalog = {
     notificationsMutedAria: '通知已静音',
     cwdMissingTooltip: '工作目录已不存在: {{cwd}}。打开此会话后，用状态栏的 cwd 按钮重新选择目录。',
     muteNotifications: '静音通知',
-    unmuteNotifications: '取消静音'
+    unmuteNotifications: '取消静音',
+    resizerAriaLabel: '调整侧边栏宽度',
+    resizerTooltip: '拖动调整宽度 · 双击重置（{{default}}px）'
   },
   settings: {
     title: '设置',
@@ -161,17 +163,26 @@ const zh: EnCatalog = {
       updates: '更新'
     },
     theme: '主题',
+    themeHint: '"跟随系统"会随操作系统主题实时切换。',
     themeOptions: {
       system: '跟随系统',
       light: '浅色',
       dark: '深色'
     },
     fontSize: '字号',
-    fontSizeHint: '影响聊天流和侧边栏',
+    fontSizeHint: '影响整个应用。少量内嵌的小号文本（meta、kbd）保持原始大小。',
+    fontSizeAriaLabel: '字号（像素）',
     fontSizeOptions: {
       sm: '小 (12px)',
       md: '中 (13px，默认)',
       lg: '大 (14px)'
+    },
+    density: '密度',
+    densityHint: '调整全局行间距与内边距的紧凑程度。',
+    densityOptions: {
+      compact: '紧凑',
+      normal: '常规',
+      comfortable: '宽松'
     },
     language: '语言',
     languageHint: '选择界面语言。修改立即生效。',
@@ -185,6 +196,64 @@ const zh: EnCatalog = {
     crashReporting: {
       label: '发送崩溃报告给开发者',
       description: '推荐开启。帮助修复你遇到的 bug。不发送个人数据。'
+    },
+    notifications: {
+      intro:
+        '当某个会话需要你处理时，弹出系统级通知。如果窗口正聚焦在该会话上会自动抑制；同一事件类型按会话做了去抖，避免话痨 agent 刷屏。',
+      enable: '启用通知',
+      permission: '权限请求',
+      permissionHint: '当某个工具调用在等待你的批准时。',
+      question: '提问',
+      questionHint: 'agent 通过 AskUserQuestion 提问时。',
+      turnDone: '本轮完成',
+      turnDoneHint: '只在长时间（>15s）、出错或非聚焦的轮次触发，常规快速轮次会被跳过。',
+      sound: '声音',
+      soundHint: '播放系统默认通知声。',
+      toggleOn: '开',
+      toggleOff: '关',
+      testButton: '发送测试通知',
+      testTitle: 'Agentory 测试通知',
+      testBody: '能看到这条消息说明系统通知正常工作。',
+      testIpcUnavailable: 'IPC 不可用。',
+      testSent: '已发送。',
+      testFailed: '失败 — 系统通知不可用。'
+    },
+    connection: {
+      intro:
+        'Agentory 从 <code>~/.claude/settings.json</code> 以及 <code>ANTHROPIC_*</code> 环境变量读取连接配置。要修改请运行 <code>claude /config</code> 或直接编辑文件，然后重启 Agentory 生效。',
+      baseUrl: 'Base URL',
+      baseUrlDefault: 'https://api.anthropic.com（默认）',
+      defaultModel: '默认模型',
+      modelUnset: '（未设置 — CLI 会用自身默认值）',
+      authToken: 'Auth Token',
+      authConfigured: '已配置',
+      authNotConfigured: '未配置 — 运行 `claude /config` 完成登录。',
+      discoveredModels: '可用模型（{{count}}）',
+      discoveredModelsLoadingCount: '可用模型（…）',
+      discoveredModelsHint:
+        '合并自 settings.json、环境变量和 CLI 内置选择列表。',
+      modelsLoading: '加载中…',
+      modelsEmpty: '没有发现可用模型。运行 <code>claude /config</code> 配置一个。',
+      openSettingsFile: '打开 settings.json',
+      opening: '打开中…'
+    },
+    updates: {
+      version: '版本',
+      status: '状态',
+      automaticChecks: '自动检查',
+      automaticChecksHint: '开启后，Agentory 会在启动时以及每 4 小时去 GitHub 检查更新。',
+      automaticChecksToggle: '自动检查更新',
+      checking: '检查中…',
+      checkButton: '检查更新',
+      downloadButton: '下载 {{version}}',
+      installButton: '重启并安装',
+      statusIdle: '尚未检查更新。',
+      statusChecking: '正在检查更新…',
+      statusAvailable: '有新版本可用：{{version}}',
+      statusNotAvailable: '已经是最新版本。',
+      statusDownloading: '下载中… {{percent}}%（{{transferred}} / {{total}}）',
+      statusDownloaded: '更新 {{version}} 已就绪 — 重启即可安装。',
+      statusError: '检查更新失败：{{message}}'
     }
   },
   permissions: {
@@ -231,7 +300,14 @@ const zh: EnCatalog = {
     sessionDoneTitle: '会话已完成',
     sessionDoneBody: '{{name}} 完成了任务',
     permissionRequestTitle: '请求权限',
-    permissionRequestBody: '{{name}} 想要 {{action}}'
+    permissionRequestBody: '{{name}} 想要 {{action}}',
+    turnDoneTitle: '{{name}} 已完成',
+    turnErrorTitle: '{{name}} 执行出错',
+    turnErrorBody: '本轮以错误结束，请查看聊天。',
+    questionTitle: '{{name}} 提了一个问题',
+    inputNeededTitle: '{{name}} 需要你的输入',
+    backgroundSessionFallback: '后台会话',
+    backgroundWaitingToastTitle: '{{name}} 需要你的输入'
   },
   errors: {
     generic: '出错了。',
@@ -386,6 +462,12 @@ const zh: EnCatalog = {
     browse: '选择文件夹…',
     cwdMissingShort: '已不存在',
     cwdMissingTooltip: '工作目录已不存在: {{cwd}}。请选择另一个目录后再发送。'
+  },
+  window: {
+    minimize: '最小化',
+    maximize: '最大化',
+    restore: '还原',
+    close: '关闭'
   }
 };
 
