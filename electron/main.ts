@@ -359,6 +359,33 @@ app.whenReady().then(() => {
     return res.filePaths[0];
   });
 
+  // Save tool output to a file the user picks. Used by the long-output
+  // viewer's `Save as .log` action — for >10MB outputs this is the ONLY
+  // way the user can see the full content.
+  ipcMain.handle(
+    'dialog:saveFile',
+    async (
+      _e,
+      args: { defaultName?: string; content: string }
+    ): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> => {
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      try {
+        const res = await dialog.showSaveDialog(win, {
+          defaultPath: args.defaultName ?? 'tool-output.log',
+          filters: [
+            { name: 'Log', extensions: ['log', 'txt'] },
+            { name: 'All Files', extensions: ['*'] }
+          ]
+        });
+        if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+        fs.writeFileSync(res.filePath, args.content, 'utf8');
+        return { ok: true, path: res.filePath };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  );
+
   ipcMain.handle('window:minimize', (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
   });
