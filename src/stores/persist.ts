@@ -22,7 +22,13 @@ export interface PersistedState {
   // read. Writes always use the current `PermissionMode`.
   permission: PermissionMode | string;
   sidebarCollapsed: boolean;
-  /** Sidebar width as a fraction of window width. See State.sidebarWidthPct. */
+  /** Sidebar width in pixels. See State.sidebarWidth. */
+  sidebarWidth?: number;
+  /**
+   * Legacy: sidebar width as a fraction of window width. Migrated to px
+   * (`sidebarWidth`) on hydrate via `resolvePersistedSidebarWidth`. Read-only
+   * — new writes always populate `sidebarWidth`.
+   */
   sidebarWidthPct?: number;
   theme?: Theme;
   fontSize?: FontSize;

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { useStore } from '../src/stores/store';
+import {
+  useStore,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MIN,
+  SIDEBAR_WIDTH_MAX
+} from '../src/stores/store';
 
 describe('appearance setters', () => {
   it('setFontSizePx updates both px and legacy enum', () => {
@@ -26,12 +31,18 @@ describe('appearance setters', () => {
     expect(useStore.getState().theme).toBe('light');
   });
 
-  it('setSidebarWidthPct clamps to [0.12, 0.5]', () => {
-    useStore.getState().setSidebarWidthPct(0.3);
-    expect(useStore.getState().sidebarWidthPct).toBeCloseTo(0.3);
-    useStore.getState().setSidebarWidthPct(0.01);
-    expect(useStore.getState().sidebarWidthPct).toBe(0.12);
-    useStore.getState().setSidebarWidthPct(0.9);
-    expect(useStore.getState().sidebarWidthPct).toBe(0.5);
+  it('setSidebarWidth clamps to [200, 480] px', () => {
+    useStore.getState().setSidebarWidth(312);
+    expect(useStore.getState().sidebarWidth).toBe(312);
+    useStore.getState().setSidebarWidth(50);
+    expect(useStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MIN);
+    useStore.getState().setSidebarWidth(9999);
+    expect(useStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MAX);
+  });
+
+  it('resetSidebarWidth restores the default', () => {
+    useStore.getState().setSidebarWidth(400);
+    useStore.getState().resetSidebarWidth();
+    expect(useStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);
   });
 });

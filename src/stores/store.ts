@@ -152,12 +152,13 @@ type State = {
   permission: PermissionMode;
   sidebarCollapsed: boolean;
   /**
-   * Sidebar width as a percentage of the window width (0–1). Persisted as a
-   * fraction rather than px so the layout adapts gracefully across different
-   * window sizes / monitors. The resizable panel enforces min/max in px at
-   * render time; this is just the *desired* ratio.
+   * Sidebar width in pixels. Persisted as px (not %) — for a fixed-content
+   * sidebar this is the unit users actually have intuition for, and avoids
+   * the "sidebar mysteriously grew/shrank when I docked the window" trap of
+   * percentage-based persistence. Clamped at runtime to [SIDEBAR_WIDTH_MIN,
+   * SIDEBAR_WIDTH_MAX] in `setSidebarWidth`.
    */
-  sidebarWidthPct: number;
+  sidebarWidth: number;
   theme: Theme;
   fontSize: FontSize;
   fontSizePx: FontSizePx;
@@ -213,7 +214,8 @@ type Actions = {
   setFontSize: (size: FontSize) => void;
   setFontSizePx: (px: FontSizePx) => void;
   setDensity: (density: Density) => void;
-  setSidebarWidthPct: (pct: number) => void;
+  setSidebarWidth: (px: number) => void;
+  resetSidebarWidth: () => void;
   markTutorialSeen: () => void;
   setNotificationSettings: (patch: Partial<NotificationSettings>) => void;
   setSessionNotificationsMuted: (sessionId: string, muted: boolean) => void;
@@ -319,9 +321,33 @@ export function sanitizeDensity(raw: unknown): Density {
   return 'normal';
 }
 
-export function sanitizeSidebarWidthPct(raw: unknown): number {
-  const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : 0.22;
-  return Math.max(0.12, Math.min(0.5, n));
+export const SIDEBAR_WIDTH_DEFAULT = 260;
+export const SIDEBAR_WIDTH_MIN = 200;
+export const SIDEBAR_WIDTH_MAX = 480;
+
+export function sanitizeSidebarWidth(raw: unknown): number {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? raw : SIDEBAR_WIDTH_DEFAULT;
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(n)));
+}
+
+// Older builds persisted sidebar width as a fraction of window width
+// (`sidebarWidthPct`). Convert any leftover value to px on first hydration
+// after upgrade so the user's prior layout choice survives the unit change.
+export function resolvePersistedSidebarWidth(persisted: {
+  sidebarWidth?: number;
+  sidebarWidthPct?: number;
+}): number {
+  if (typeof persisted.sidebarWidth === 'number') {
+    return sanitizeSidebarWidth(persisted.sidebarWidth);
+  }
+  if (typeof persisted.sidebarWidthPct === 'number') {
+    const winWidth =
+      typeof window !== 'undefined' && Number.isFinite(window.innerWidth)
+        ? window.innerWidth
+        : 1440;
+    return sanitizeSidebarWidth(persisted.sidebarWidthPct * winWidth);
+  }
+  return SIDEBAR_WIDTH_DEFAULT;
 }
 
 /** Resolve `theme` + OS signal to the actual rendered theme. Exported so
@@ -355,7 +381,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   model: '',
   permission: 'default',
   sidebarCollapsed: false,
-  sidebarWidthPct: 0.22,
+  sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   theme: 'system',
   fontSize: 'md',
   fontSizePx: 14,
@@ -607,10 +633,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   setFontSize: (fontSize) => set({ fontSize, fontSizePx: legacyFontSizeToPx(fontSize) }),
   setFontSizePx: (fontSizePx) => set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
   setDensity: (density) => set({ density }),
-  setSidebarWidthPct: (pct) => {
-    const clamped = Math.max(0.12, Math.min(0.5, pct));
-    set({ sidebarWidthPct: clamped });
-  },
+  setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
+  resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
   markTutorialSeen: () => set({ tutorialSeen: true }),
 
   setNotificationSettings: (patch) =>
@@ -1001,7 +1025,7 @@ export async function hydrateStore(): Promise<void> {
       model: persisted.model,
       permission: migratePermission(persisted.permission),
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
-      sidebarWidthPct: sanitizeSidebarWidthPct(persisted.sidebarWidthPct),
+      sidebarWidth: resolvePersistedSidebarWidth(persisted),
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
       fontSizePx: persisted.fontSizePx !== undefined
@@ -1092,7 +1116,7 @@ export async function hydrateStore(): Promise<void> {
       model: s.model,
       permission: s.permission,
       sidebarCollapsed: s.sidebarCollapsed,
-      sidebarWidthPct: s.sidebarWidthPct,
+      sidebarWidth: s.sidebarWidth,
       theme: s.theme,
       fontSize: s.fontSize,
       fontSizePx: s.fontSizePx,
