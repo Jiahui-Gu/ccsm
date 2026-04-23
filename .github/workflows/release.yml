@@ -58,6 +58,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Guard against a mismatch between the git tag and package.json version —
+      # e.g. someone tags v0.2.0 but forgot to bump version. Skipped on
+      # workflow_dispatch so dry-runs (v0.0.0-dryrun tag input) don't fail.
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG mismatches package.json version $PKG"
+            exit 1
+          fi
+          echo "tag v$TAG matches package.json $PKG"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -120,6 +135,12 @@ jobs:
           # Skip notarization if Apple creds missing — electron-builder
           # reads these env vars and falls back to unsigned when empty.
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.secrets.outputs.signed == 'true' && 'true' || 'false' }}
+
+      - name: Warn on unsigned Windows build
+        if: matrix.platform == 'win' && steps.secrets.outputs.signed != 'true'
+        shell: bash
+        run: |
+          echo "::warning title=Unsigned Windows build::CSC_LINK / CSC_KEY_PASSWORD not set. The produced installer is unsigned — users will see a SmartScreen warning on first launch."
 
       - name: Package (Windows)
         if: matrix.platform == 'win'

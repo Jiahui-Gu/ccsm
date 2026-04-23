@@ -1,6 +1,15 @@
 import '@sentry/electron/preload';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { PermissionMode, AgentMessage } from './agent/sessions';
+import type {
+  ConnectionInfo,
+  OpenSettingsResult,
+  DiscoveredModel,
+  CliInstallHints,
+  CliRetryResult,
+  CliSetBinaryResult,
+  LoadedCommand,
+} from '../src/shared/ipc-types';
 
 type StartOpts = {
   cwd: string;
@@ -27,21 +36,6 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
-type ModelSourceDecl =
-  | 'settings'
-  | 'env'
-  | 'manual'
-  | 'cli-picker'
-  | 'env-override'
-  | 'fallback';
-type DiscoveredModelDecl = { id: string; source: ModelSourceDecl };
-type ConnectionInfo = {
-  baseUrl: string | null;
-  model: string | null;
-  hasAuthToken: boolean;
-};
-type OpenSettingsResult = { ok: true } | { ok: false; error: string };
-
 type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
@@ -50,25 +44,6 @@ type UpdateStatus =
   | { kind: 'downloading'; percent: number; transferred: number; total: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
-
-type CliInstallHints = {
-  os: string;
-  arch: string;
-  commands: {
-    native?: string;
-    packageManager?: string;
-    npm: string;
-  };
-  docsUrl: string;
-};
-
-type CliRetryResult =
-  | { found: true; path: string; version: string | null }
-  | { found: false; searchedPaths: string[] };
-
-type CliSetBinaryResult =
-  | { ok: true; version: string | null }
-  | { ok: false; error: string };
 
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
@@ -192,13 +167,8 @@ const api = {
      * Pass the active session's cwd so project-level `.claude/commands/`
      * can layer on top of user-level definitions.
      */
-    list: (cwd: string | null | undefined): Promise<Array<{
-      name: string;
-      description?: string;
-      argumentHint?: string;
-      source: 'user' | 'project' | 'plugin';
-      pluginId?: string;
-    }>> => ipcRenderer.invoke('commands:list', cwd),
+    list: (cwd: string | null | undefined): Promise<LoadedCommand[]> =>
+      ipcRenderer.invoke('commands:list', cwd),
   },
 
   openExternal: (url: string): Promise<boolean> =>
@@ -270,7 +240,7 @@ const api = {
   },
 
   models: {
-    list: (): Promise<DiscoveredModelDecl[]> => ipcRenderer.invoke('models:list'),
+    list: (): Promise<DiscoveredModel[]> => ipcRenderer.invoke('models:list'),
   },
 
   cli: {

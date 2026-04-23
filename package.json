@@ -83,7 +83,7 @@
     "concurrently": "^9.1.0",
     "css-loader": "^7.1.2",
     "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "25.1.8",
     "eslint": "^9.17.0",
     "eslint-plugin-react": "^7.37.2",
     "eslint-plugin-react-hooks": "^5.1.0",
@@ -139,6 +139,7 @@
           ]
         }
       ],
+      "icon": "build/icon.png",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
@@ -168,6 +169,7 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "dmg": {
@@ -197,6 +199,7 @@
       "category": "Development",
       "maintainer": "Jiahui Gu <noreply@agentory.dev>",
       "synopsis": "Group-first manager for many Claude Code sessions",
+      "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }

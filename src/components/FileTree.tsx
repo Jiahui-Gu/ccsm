@@ -128,11 +128,8 @@ function TreeRow({ node, depth, initiallyOpen, onSelect }: TreeRowProps) {
         type="button"
         onClick={() => {
           if (onSelect) onSelect(node.path);
-          else {
-            // Follow-up: wire through IPC ("reveal in editor"). For v0.1
-            // keep the dispatch site here so wiring is one-line later.
-            console.log('[FileTree] reveal:', node.path);
-          }
+          // Follow-up: wire through IPC ("reveal in editor"). For v0.1
+          // keep the no-op branch so wiring is one-line later.
         }}
         className="group flex items-center gap-1 w-full text-left px-1 py-[1px] rounded-sm text-fg-tertiary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active transition-colors duration-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
         style={{ paddingLeft: depth * 10 + 4 + 12 }}
