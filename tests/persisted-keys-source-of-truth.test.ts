@@ -49,6 +49,44 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
     vi.resetModules();
   });
 
+  // Drift guard: any time a key is added/removed/reordered in PERSISTED_KEYS
+  // this snapshot flips, which surfaces the change as a visible diff in the
+  // PR touching PERSISTED_KEYS. Without this the only drift signal was a
+  // behavioral test failing with "comparator early-bailed on persisted key
+  // X" — correct but less obvious at review time. Update the snapshot in
+  // the same commit that changes PERSISTED_KEYS; reviewers should verify
+  // the new key is genuinely meant to be persisted.
+  it('PERSISTED_KEYS shape matches snapshot (update together with source)', () => {
+    expect(PERSISTED_KEYS).toMatchInlineSnapshot(`
+      [
+        "sessions",
+        "groups",
+        "activeId",
+        "model",
+        "permission",
+        "sidebarCollapsed",
+        "sidebarWidth",
+        "theme",
+        "fontSize",
+        "fontSizePx",
+        "density",
+        "recentProjects",
+        "tutorialSeen",
+        "notificationSettings",
+      ]
+    `);
+    // Structural invariants that any future key must satisfy. Catches a
+    // mechanically-broken entry even if the snapshot is updated carelessly.
+    expect(PERSISTED_KEYS.length).toBeGreaterThan(0);
+    for (const k of PERSISTED_KEYS) {
+      expect(typeof k, `PERSISTED_KEYS entry must be a string, got ${String(k)}`).toBe('string');
+      expect(k.length, 'PERSISTED_KEYS entry must be non-empty').toBeGreaterThan(0);
+    }
+    expect(new Set(PERSISTED_KEYS).size, 'PERSISTED_KEYS must be duplicate-free').toBe(
+      PERSISTED_KEYS.length
+    );
+  });
+
   it('every key in PERSISTED_KEYS lands in the serialized snapshot', async () => {
     const saveState = vi.fn().mockResolvedValue(undefined);
     const { storeMod } = await freshStore(saveState);
