@@ -4,6 +4,7 @@ import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { DURATION, EASING } from '../lib/motion';
 import { useShallow } from 'zustand/react/shallow';
 import { SlashCommandPicker } from './SlashCommandPicker';
 import {
@@ -57,7 +58,7 @@ function AttachmentChip({
       initial={{ opacity: 0, y: 4, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: -2, scale: 0.96 }}
-      transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+      transition={{ duration: DURATION.standard, ease: EASING.standard }}
       className="group relative flex items-center gap-2 rounded-md border border-border-subtle bg-bg-elevated/80 pl-1 pr-2 py-1 hover:border-border-strong transition-colors duration-150 ease-out"
     >
       <img
@@ -96,7 +97,7 @@ function DropOverlay({ show }: { show: boolean }) {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.14, ease: [0, 0, 0.2, 1] }}
+          transition={{ duration: DURATION.fast, ease: EASING.enter }}
           className="pointer-events-none absolute inset-2 z-10 rounded-lg border-2 border-dashed border-accent bg-accent/[0.08] backdrop-blur-[1px] flex flex-col items-center justify-center gap-2"
           aria-hidden
         >
@@ -609,7 +610,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -2 }}
-            transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+            transition={{ duration: DURATION.standard, ease: EASING.standard }}
             role="alert"
             className="mb-2 rounded-md border border-state-error/40 bg-state-error-soft/60 px-3 py-2 text-xs text-state-error-fg"
           >

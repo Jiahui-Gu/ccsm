@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { startSessionAndReconcile } from '../agent/startSession';
+import { DURATION_RAW, EASING } from '../lib/motion';
 
 /**
  * Banner shown at the top of the right pane when `agent:start` failed for the
@@ -59,7 +60,7 @@ export function AgentInitFailedBanner({
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          transition={{ duration: DURATION_RAW.ms150, ease: EASING.enter }}
           className="overflow-hidden"
           data-agent-init-failed-banner
         >

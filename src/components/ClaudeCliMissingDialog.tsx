@@ -7,6 +7,7 @@ import { Button } from './ui/Button';
 import { DialogOverlay } from './ui/Dialog';
 import { useStore, CLI_MIN_VERSION_SOFT, isVersionBelow } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
+import { DURATION, DURATION_RAW, EASING } from '../lib/motion';
 
 type Tab = 'install' | 'have-it';
 
@@ -417,7 +418,7 @@ function CommandRow({ row }: { row: InstallRow }) {
                 initial={{ scale: 0.7, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.7, opacity: 0 }}
-                transition={{ duration: 0.14 }}
+                transition={{ duration: DURATION.fast }}
                 className="text-status-success-foreground"
               >
                 <Check size={13} className="stroke-[2.25]" />
@@ -428,7 +429,7 @@ function CommandRow({ row }: { row: InstallRow }) {
                 initial={{ scale: 0.7, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.7, opacity: 0 }}
-                transition={{ duration: 0.14 }}
+                transition={{ duration: DURATION.fast }}
               >
                 <Copy size={13} className="stroke-[2]" />
               </motion.span>
@@ -490,13 +491,13 @@ function SuccessPane({
     <motion.div
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="px-5 py-6 flex items-start gap-3"
     >
       <motion.div
         initial={{ scale: 0.6, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        transition={{ delay: 0.08, duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
+        transition={{ delay: 0.08, duration: DURATION.slow, ease: EASING.standard }}
         className="mt-0.5 text-status-success-foreground"
       >
         <Check size={18} className="stroke-[2]" />

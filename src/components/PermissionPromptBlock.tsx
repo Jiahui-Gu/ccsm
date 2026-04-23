@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { ShieldAlert } from 'lucide-react';
 import { Button } from './ui/Button';
 import { useTranslation } from '../i18n/useTranslation';
+import { DURATION_RAW, EASING } from '../lib/motion';
 
 export interface PermissionPromptBlockProps {
   /** Short human description, e.g. "Bash: ls -la". Used as the fallback summary. */
@@ -161,7 +162,7 @@ export function PermissionPromptBlock({
       aria-describedby="perm-desc"
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative my-2 rounded-md border border-accent/50 bg-accent/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
     >
       <span
