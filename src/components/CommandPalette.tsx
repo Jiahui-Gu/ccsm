@@ -6,6 +6,7 @@ import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
+import { useFocusRestore } from '../lib/useFocusRestore';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -57,6 +58,13 @@ export function CommandPalette({
       return () => window.clearTimeout(t);
     }
   }, [open]);
+
+  // a11y: palette is opened via Cmd+K (no Radix Trigger), so restore focus
+  // to whatever had it before the palette intercepted. Falls back to the
+  // active session row in the sidebar.
+  useFocusRestore(open, {
+    fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
+  });
 
   const results: Result[] = useMemo(() => {
     const nextTheme = theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark';
