@@ -229,11 +229,14 @@ describe('ControlRpc — outbound control commands', () => {
     expect((frame.request as { subtype: string }).subtype).toBe('interrupt');
     expect(typeof frame.request_id).toBe('string');
 
-    // Simulate ack.
+    // Simulate ack. The CLI nests request_id and subtype inside `response`.
     rpc.handleIncoming({
       type: 'control_response',
-      request_id: frame.request_id as string,
-      response: { ok: true },
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: { ok: true },
+      },
     });
     await expect(p).resolves.toBeUndefined();
   });
@@ -247,8 +250,11 @@ describe('ControlRpc — outbound control commands', () => {
     expect(frame.request).toEqual({ subtype: 'set_permission_mode', mode: 'acceptEdits' });
     rpc.handleIncoming({
       type: 'control_response',
-      request_id: frame.request_id as string,
-      response: {},
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: {},
+      },
     });
     await expect(p).resolves.toBeUndefined();
   });
@@ -261,8 +267,11 @@ describe('ControlRpc — outbound control commands', () => {
     expect(frame.request).toEqual({ subtype: 'set_model', model: 'sonnet' });
     rpc.handleIncoming({
       type: 'control_response',
-      request_id: frame.request_id as string,
-      response: {},
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: {},
+      },
     });
     await expect(p).resolves.toBeUndefined();
   });
@@ -275,8 +284,11 @@ describe('ControlRpc — outbound control commands', () => {
     expect(frame.request).toEqual({ subtype: 'set_max_thinking_tokens', tokens: 16000 });
     rpc.handleIncoming({
       type: 'control_response',
-      request_id: frame.request_id as string,
-      response: {},
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: {},
+      },
     });
     await expect(p).resolves.toBeUndefined();
   });
@@ -300,8 +312,14 @@ describe('ControlRpc — outbound control commands', () => {
     const idA = out[0].request_id as string;
     const idB = out[1].request_id as string;
     // Respond to B first, then A — order shouldn't matter.
-    rpc.handleIncoming({ type: 'control_response', request_id: idB, response: {} });
-    rpc.handleIncoming({ type: 'control_response', request_id: idA, response: {} });
+    rpc.handleIncoming({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: idB, response: {} },
+    });
+    rpc.handleIncoming({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: idA, response: {} },
+    });
     await expect(pA).resolves.toBeUndefined();
     await expect(pB).resolves.toBeUndefined();
   });
@@ -320,11 +338,60 @@ describe('ControlRpc — outbound control commands', () => {
     // Late response arrives — should be treated as orphan, not throw.
     rpc.handleIncoming({
       type: 'control_response',
-      request_id: frame.request_id as string,
-      response: { ok: true },
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: { ok: true },
+      },
     });
     expect(warn).toHaveBeenCalled();
     expect(warn.mock.calls.some((c) => /orphan control_response/.test(String(c[0])))).toBe(true);
+  });
+
+  // Bug K / Task #142: regression guard. The CLI nests request_id INSIDE
+  // `response`, not at the top level. Earlier code tried to read
+  // `frame.request_id` and silently ignored every response, so every outbound
+  // control_request 5s-timed-out. This test FAILS against the pre-fix shape.
+  it('resolves outbound control_request with CLI nested wire shape (Bug K)', async () => {
+    const m = makeStdin();
+    const warn = vi.fn();
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: allowAll,
+      outboundResponseTimeoutMs: 50,
+      logger: { warn },
+    });
+    const p = rpc.sendControlRequest({ subtype: 'set_permission_mode', mode: 'default' });
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    rpc.handleIncoming({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: frame.request_id as string,
+        response: { mode: 'default' },
+      },
+    });
+    await expect(p).resolves.toEqual({ mode: 'default' });
+    // No "orphan" or "timed out" warnings should have fired.
+    expect(warn.mock.calls.some((c) => /orphan|timed out/i.test(String(c[0])))).toBe(false);
+  });
+
+  it('rejects outbound on subtype:error wire shape (Bug K)', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, {
+      onCanUseTool: allowAll,
+      outboundResponseTimeoutMs: 50,
+    });
+    const p = rpc.sendControlRequest({ subtype: 'set_model', model: 'bogus' });
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    rpc.handleIncoming({
+      type: 'control_response',
+      response: {
+        subtype: 'error',
+        request_id: frame.request_id as string,
+        error: 'Unsupported model: bogus',
+      },
+    });
+    await expect(p).rejects.toThrow(/Unsupported model: bogus/);
   });
 });
 
