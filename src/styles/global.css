@@ -167,6 +167,37 @@ html.density-normal      { --density-scale: 1; }
 html.density-comfortable { --density-scale: 1.15; }
 
 /*
+  Sidebar right-rail X axis. The 5 right-anchored affordances (search button,
+  new-group +, in-group new-session +, selected-session blue dot, import
+  button) all share a single vertical line so the eye reads them as one
+  column, not five drift values.
+
+  Width uses `2rem` (matches Tailwind's `w-8` on the action IconButtons) so
+  the cell scales with `--app-font-size` exactly the way the rest of the
+  sidebar does. Using a literal `32px` would desynchronise the cell from
+  the IconButton it mirrors when the user changes the appearance scale.
+
+  The `.sidebar-rail-cell--nested` modifier compensates for the extra right
+  inset that nested rows (group-list `nav.px-1.5` + row `px-2`) carry
+  compared with the top/bottom action rows (`px-3`). The 0.125rem (≈1.75px
+  at 14px root) negative right margin pulls the cell back onto the rail-x
+  line. Kept as a modifier (not a magic number per call site) so future
+  rail-X consumers in dense rows opt in by class, not by re-deriving the
+  offset. See docs/design/sidebar-alignment-plan.md.
+*/
+:root {
+  --sidebar-rail-x: 1.75rem;
+}
+.sidebar-rail-cell {
+  width: 2rem;
+  display: grid;
+  place-items: center;
+}
+.sidebar-rail-cell--nested {
+  margin-right: -0.125rem;
+}
+
+/*
   LIGHT palette.
 
   This is NOT a mechanical inversion — a naive `1 - L` recipe produces a
