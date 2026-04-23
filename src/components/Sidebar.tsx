@@ -718,6 +718,11 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             </span>
           </div>
           <nav className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1">
+            {normal.length === 0 ? (
+              <div className="px-2 py-1.5 text-xs text-fg-tertiary">
+                {t('sidebar.groupsEmptyHint')}
+              </div>
+            ) : null}
             {normal.map((g) => (
               <GroupRow
                 key={g.id}
