@@ -38,14 +38,26 @@
   --color-accent-fg: oklch(0.18 0 0);
   --color-accent-soft: oklch(0.45 0.10 215 / 0.18);
 
-  /* State scale — error gets soft/default/strong/fg facets so danger weighting
-     is a token choice, not a magic number. */
+  /* State scale — the single source of truth for "what is this process/thing
+     doing right now" coloring. Suffix convention:
+       (bare)   = the signal color itself (glyphs, dot indicators)
+       -text    = AA-contrast text color on a neutral bg (colored label)
+       -soft    = translucent fill for row/pill backgrounds
+       -strong  = denser variant for heavy-weight affordances
+       -fg      = high-contrast foreground designed to sit ON the bare color
+                  (e.g. white text on a red button)
+     `error` carries the full scale because destructive weighting needs it;
+     other states add facets only when a consumer needs them. */
   --color-state-running: oklch(0.78 0.13 155);
   --color-state-waiting: oklch(0.78 0.10 75);
   --color-state-parked: var(--color-fg-tertiary);
   --color-state-success: oklch(0.72 0.14 155);
+  --color-state-success-text: oklch(0.78 0.14 155);
   --color-state-warning: oklch(0.78 0.16 75);
+  --color-state-warning-text: oklch(0.82 0.16 75);
+  --color-state-warning-soft: oklch(0.78 0.16 75 / 0.12);
   --color-state-error: oklch(0.65 0.20 25);
+  --color-state-error-text: oklch(0.72 0.20 25);
   --color-state-error-soft: oklch(0.65 0.20 25 / 0.14);
   --color-state-error-strong: oklch(0.60 0.22 25);
   --color-state-error-fg: oklch(0.97 0 0);
@@ -99,29 +111,6 @@
   --color-card: var(--color-bg-panel);
   --color-card-foreground: var(--color-fg-primary);
   --color-card-border: var(--color-border-subtle);
-
-  /* ── Status × facet matrix. Each status gets {base, foreground, muted,
-     border} so `bg-status-error-muted text-status-error border-status-error-border`
-     composes without inventing new shades inline. ── */
-  --color-status-success: oklch(0.72 0.14 155);
-  --color-status-success-foreground: oklch(0.78 0.14 155);
-  --color-status-success-muted: oklch(0.72 0.14 155 / 0.12);
-  --color-status-success-border: oklch(0.72 0.14 155 / 0.30);
-
-  --color-status-warning: oklch(0.78 0.16 75);
-  --color-status-warning-foreground: oklch(0.82 0.16 75);
-  --color-status-warning-muted: oklch(0.78 0.16 75 / 0.12);
-  --color-status-warning-border: oklch(0.78 0.16 75 / 0.30);
-
-  --color-status-error: oklch(0.65 0.20 25);
-  --color-status-error-foreground: oklch(0.72 0.20 25);
-  --color-status-error-muted: oklch(0.65 0.20 25 / 0.14);
-  --color-status-error-border: oklch(0.65 0.20 25 / 0.32);
-
-  --color-status-info: oklch(0.74 0.13 215);
-  --color-status-info-foreground: oklch(0.80 0.13 215);
-  --color-status-info-muted: oklch(0.74 0.13 215 / 0.12);
-  --color-status-info-border: oklch(0.74 0.13 215 / 0.30);
 
   /* ── Terminal palette. Bash/shell tool output renders into this surface;
      keeping it as its own token set means we can re-theme terminals
@@ -237,8 +226,12 @@ html.theme-light {
   --color-state-waiting: oklch(0.58 0.12 75);
   --color-state-parked: var(--color-fg-tertiary);
   --color-state-success: oklch(0.55 0.14 155);
+  --color-state-success-text: oklch(0.48 0.14 155);
   --color-state-warning: oklch(0.62 0.15 75);
+  --color-state-warning-text: oklch(0.52 0.15 75);
+  --color-state-warning-soft: oklch(0.62 0.15 75 / 0.10);
   --color-state-error: oklch(0.52 0.21 25);
+  --color-state-error-text: oklch(0.48 0.21 25);
   --color-state-error-soft: oklch(0.52 0.21 25 / 0.10);
   --color-state-error-strong: oklch(0.46 0.22 25);
   --color-state-error-fg: oklch(0.99 0 0);
@@ -263,26 +256,6 @@ html.theme-light {
   --color-card: var(--color-bg-panel);
   --color-card-foreground: var(--color-fg-primary);
   --color-card-border: var(--color-border-subtle);
-
-  --color-status-success: oklch(0.55 0.14 155);
-  --color-status-success-foreground: oklch(0.48 0.14 155);
-  --color-status-success-muted: oklch(0.55 0.14 155 / 0.10);
-  --color-status-success-border: oklch(0.55 0.14 155 / 0.28);
-
-  --color-status-warning: oklch(0.62 0.15 75);
-  --color-status-warning-foreground: oklch(0.52 0.15 75);
-  --color-status-warning-muted: oklch(0.62 0.15 75 / 0.10);
-  --color-status-warning-border: oklch(0.62 0.15 75 / 0.28);
-
-  --color-status-error: oklch(0.52 0.21 25);
-  --color-status-error-foreground: oklch(0.48 0.21 25);
-  --color-status-error-muted: oklch(0.52 0.21 25 / 0.10);
-  --color-status-error-border: oklch(0.52 0.21 25 / 0.30);
-
-  --color-status-info: oklch(0.58 0.14 225);
-  --color-status-info-foreground: oklch(0.50 0.14 225);
-  --color-status-info-muted: oklch(0.58 0.14 225 / 0.10);
-  --color-status-info-border: oklch(0.58 0.14 225 / 0.28);
 
   /* Terminal stays dark even in light mode — shell output is easier to
      parse on dark, and every major terminal emulator ships dark by default.
