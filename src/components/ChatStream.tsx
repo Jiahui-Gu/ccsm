@@ -998,9 +998,28 @@ export function ChatStream() {
   const { t } = useTranslation();
   const activeId = useStore((s) => s.activeId);
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
+  const running = useStore((s) => !!s.runningSessions[activeId]);
   const resolvePermission = useStore((s) => s.resolvePermission);
   const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
   const loadMessages = useStore((s) => s.loadMessages);
+
+  // In-progress dots: show when the agent has accepted the turn but has not
+  // yet emitted its first assistant token (i.e. last block is the user's
+  // message, or there are no blocks yet for this session). Suppressed once
+  // the assistant block starts streaming, and suppressed while a permission
+  // prompt is awaiting user input (different intent — "waiting for you",
+  // not "waiting for tokens"). Visual: monospace center-dots with a slow
+  // opacity pulse, anchored at the bottom of the message list at the same
+  // left padding as assistant blocks so the first token visually "lands"
+  // in the same column.
+  const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+  const hasPendingPermission = blocks.some(
+    (b) => b.kind === 'waiting' && b.intent === 'permission'
+  );
+  const showThinkingDots =
+    running &&
+    !hasPendingPermission &&
+    (lastBlock === null || lastBlock.kind === 'user');
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
@@ -1030,7 +1049,7 @@ export function ChatStream() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [blocks]);
+  }, [blocks, showThinkingDots]);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -1071,7 +1090,7 @@ export function ChatStream() {
         role="log"
         className="flex-1 overflow-y-auto min-w-0"
       >
-        {blocks.length === 0 ? (
+        {blocks.length === 0 && !showThinkingDots ? (
           <EmptyState />
         ) : (
           <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
@@ -1095,6 +1114,18 @@ export function ChatStream() {
                 </div>
               ));
             })()}
+            {showThinkingDots && (
+              <motion.div
+                key="thinking-dots"
+                data-testid="chat-thinking-dots"
+                aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
+                className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+              >
+                {'\u00B7 \u00B7 \u00B7'}
+              </motion.div>
+            )}
           </div>
         )}
       </div>
