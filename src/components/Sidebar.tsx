@@ -98,7 +98,10 @@ function GroupRow({
   const [renaming, setRenaming] = useState(!!autoRename);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isSpecial = group.kind !== 'normal';
-  const menuDisabled = group.kind === 'deleted';
+  // Previously gated against a `kind: 'deleted'` enum value that no code path
+  // ever produced. Now that the enum is normal | archive only, no group is
+  // ever menu-disabled (archived groups still allow rename / unarchive).
+  const menuDisabled = false;
   const { isOver, setNodeRef: setHeaderDropRef } = useDroppable({
     id: headerDroppableId(group.id),
     data: { type: 'group-header', groupId: group.id }
@@ -179,7 +182,7 @@ function GroupRow({
                 />
               ) : (
                 <>
-                  <span className="truncate text-sm font-semibold text-fg-secondary">{group.name}</span>
+                  <span className="truncate text-sm font-semibold text-fg-secondary">{group.nameKey ? t(group.nameKey) : group.name}</span>
                   {hasWaiting && (
                     <span
                       aria-label={t('sidebar.waitingForResponse')}
