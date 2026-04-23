@@ -180,7 +180,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
         className={cn(
           'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
           cwdMissing
-            ? 'text-state-warning hover:text-status-warning-foreground hover:bg-status-warning-muted'
+            ? 'text-state-warning hover:text-state-warning-text hover:bg-state-warning-soft'
             : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
           'outline-none focus-ring',
           'transition-colors duration-120 ease-out'
