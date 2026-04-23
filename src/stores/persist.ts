@@ -11,6 +11,9 @@ import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
 
+// runningSessions, interruptedSessions, messageQueues are intentionally NOT
+// persisted — they're runtime flags tied to the current agent process.
+// Restoring them would block recovery on next launch. See PR #156.
 export interface PersistedState {
   version: 1;
   sessions: Session[];
