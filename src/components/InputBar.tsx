@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
@@ -577,6 +577,27 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   const sendDisabled = !value.trim() && attachments.length === 0;
   const remainingSlots = Math.max(0, MAX_IMAGES_PER_MESSAGE - attachments.length);
 
+  // Auto-resize the textarea: grow from ~2 lines up to ~10 lines, then scroll.
+  // useLayoutEffect so the height is corrected before the browser paints,
+  // avoiding a one-frame flicker on every keystroke. Matches the line-height
+  // declared on the <textarea> (22px) and the composer's vertical padding
+  // (pt-2 = 8px, pb-7 = 28px) so min/max map cleanly to "N lines of text".
+  const MIN_LINES = 2;
+  const MAX_LINES = 10;
+  const LINE_HEIGHT = 22;
+  const VPAD = 8 + 28; // pt-2 + pb-7
+  const MIN_HEIGHT = MIN_LINES * LINE_HEIGHT + VPAD; // 80
+  const MAX_HEIGHT = MAX_LINES * LINE_HEIGHT + VPAD; // 256
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    // Reset first so shrinking (after deleting lines) actually takes effect —
+    // scrollHeight is always >= current height.
+    el.style.height = 'auto';
+    const next = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, el.scrollHeight));
+    el.style.height = `${next}px`;
+  }, [value, attachments.length, MIN_HEIGHT, MAX_HEIGHT]);
+
   return (
     <div className="relative px-3 pt-2 pb-3">
       <DropOverlay show={isDragging} />
@@ -666,9 +687,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
             'bg-transparent text-fg-primary placeholder:text-fg-tertiary',
-            'transition-colors duration-150 ease-out'
+            'transition-colors duration-150 ease-out',
+            'overflow-y-auto'
           )}
-          style={{ minHeight: 64, maxHeight: 240 }}
+          style={{ minHeight: MIN_HEIGHT, maxHeight: MAX_HEIGHT }}
         />
         <div className="absolute left-2 bottom-1.5 flex items-center gap-1">
           <input
@@ -727,7 +749,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
                 </Button>
               )}
               <Button
-                variant="secondary"
+                variant="danger"
                 size="sm"
                 aria-label={t('chat.stopAria')}
                 onClick={stop}
@@ -749,6 +771,16 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             </Button>
           )}
         </div>
+      </div>
+
+      {/* Shortcut hints — one terse muted line below the composer. Swaps to
+          "Esc to stop" while a turn is running so the user always sees the
+          most relevant shortcut for the current state. */}
+      <div
+        className="mt-1 px-1 font-mono text-mono-xs text-fg-disabled select-none"
+        aria-hidden
+      >
+        {running ? t('chat.escToStop') : t('chat.enterToSend')}
       </div>
     </div>
   );

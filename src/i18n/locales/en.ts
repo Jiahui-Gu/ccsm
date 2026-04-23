@@ -52,6 +52,7 @@ const en = {
     sendButton: 'Send',
     inputPlaceholder: 'Reply…',
     enterToSend: 'Enter send · Shift+Enter newline',
+    escToStop: 'Esc to stop · Enter to queue',
     tokenUsage: '{{used}}k / {{total}}k tokens · {{percent}}% used',
     emptyTitle: 'No messages yet',
     emptySubtitle: 'Start typing to begin a conversation.',

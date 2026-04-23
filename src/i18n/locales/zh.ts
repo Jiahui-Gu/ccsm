@@ -52,6 +52,7 @@ const zh: EnCatalog = {
     sendButton: '发送',
     inputPlaceholder: '回复…',
     enterToSend: 'Enter 发送 · Shift+Enter 换行',
+    escToStop: 'Esc 中断 · Enter 排队',
     tokenUsage: '{{used}}k / {{total}}k tokens · 已用 {{percent}}%',
     emptyTitle: '暂无消息',
     emptySubtitle: '开始输入即可发起对话。',
