@@ -225,6 +225,16 @@ async function caseStreaming({ win, log }) {
   if (streamingBlocks[0].text !== 'Hello, world!') throw new Error(`expected 'Hello, world!', got '${streamingBlocks[0].text}'`);
   if (streamingBlocks[0].streaming !== true) throw new Error('streaming flag not set');
 
+  // ChatStream's AnimatePresence keyed on `blocks:${activeId}` runs a
+  // ~180ms exit+enter transition (MOTION_SESSION_SWITCH_DURATION =
+  // DURATION.standard = 0.18s) when entering a session — on the FIRST
+  // case entry the empty-state pane exits while the blocks pane enters,
+  // so for ~180ms no block children are mounted. A blind 150ms sleep
+  // races that transition and the caret count transiently reads 0. Wait
+  // for the caret to attach instead.
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch { /* fall through to richer assertion message below */ }
   const caretCount = await win.locator('span.animate-pulse').count();
   if (caretCount < 1) throw new Error('streaming caret not rendered in DOM');
 
@@ -271,6 +281,11 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   }, [SID1, BID1]);
   await win.waitForTimeout(150);
 
+  // Same AnimatePresence session-switch race as caseStreaming above — wait
+  // for the caret to attach rather than relying on a fixed 150ms sleep.
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch { /* fall through */ }
   const caretDuring = await win.locator('span.animate-pulse').count();
   if (caretDuring < 1) throw new Error('Part 1: expected caret during stream, found 0');
 
@@ -315,6 +330,19 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   }, [SID2, BID2]);
   await win.waitForTimeout(150);
 
+  // Part 3 started by switching activeId from SID1 → SID2; ChatStream's
+  // AnimatePresence keyed on `blocks:${activeId}` runs a ~180ms exit+enter
+  // transition (MOTION_SESSION_SWITCH_DURATION = DURATION.standard = 0.18s)
+  // during which the new session's blocks are not yet mounted. A fixed
+  // 150ms sleep races that transition — at 150ms the old pane is still
+  // exiting and the new pane hasn't mounted, so caret count is 0 even
+  // though the store has streaming:true on the block. Wait for the caret
+  // to actually appear in the DOM instead of a blind sleep.
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch {
+    // fall through so the assertion below produces the richer error message
+  }
   const caretMid = await win.locator('span.animate-pulse').count();
   if (caretMid < 1) throw new Error('Part 3: caret should be visible mid-stream before interrupt');
 
