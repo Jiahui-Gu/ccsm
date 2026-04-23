@@ -25,7 +25,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 | better-sqlite3 persistence | 🟡 | `electron/db.ts` opens with WAL, single `app_state(key,value)` table; `db:load`/`db:save` IPC + preload bridge; renderer hydrates on boot, debounced 250ms write-back. Schema is a single JSON blob; structured schema is post-MVP. |
 | Claude Agent SDK integration | ✅ | Main process: `electron/agent/sessions.ts` (`SessionRunner` with streaming-input AsyncIterable) + `electron/agent/manager.ts` (singleton registry); IPC: `agent:start/send/interrupt/setPermissionMode/setModel/close/resolvePermission` + push events `agent:event` / `agent:exit` / `agent:permissionRequest`; preload + global.d.ts extended; API key injected into the SDK env in main process (never crosses renderer); ChatStream + InputBar consume real events; canUseTool round-trips through WaitingBlock. |
 | `~/.claude/projects/` import | ⬜ | |
-| Global shortcut registration | ✅ | `App.tsx` registers Cmd+K / Cmd+, / Cmd+B / Cmd+N (new session) / Cmd+Shift+N (new group). |
+| Global shortcut registration | ✅ | `App.tsx` registers Cmd+F / Cmd+, / Cmd+B / Cmd+N (new session) / Cmd+Shift+N (new group). |
 
 ## 2. Sidebar (`src/components/Sidebar.tsx`)
 
@@ -86,7 +86,7 @@ This file is the reconciliation table for what's actually implemented in agentor
 
 | Item | Status | Notes |
 |---|---|---|
-| Cmd+K to open | ✅ | App.tsx global keydown. |
+| Cmd+F to open | ✅ | App.tsx global keydown. |
 | Sessions / Groups / Commands tri-search | ✅ | Data from store; commands fully wired: New session / New group / Toggle sidebar / Open settings / Switch theme (cycles system→dark→light). |
 
 ## 8. Toast (`src/components/ui/Toast.tsx`)

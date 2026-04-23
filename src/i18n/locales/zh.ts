@@ -140,7 +140,7 @@ const zh: EnCatalog = {
     expandSidebarAria: '展开侧边栏',
     newSessionTooltip: '新会话',
     newSessionAria: '新会话',
-    searchTooltip: '搜索  ⌘K',
+    searchTooltip: '搜索  ⌘F',
     searchAriaShort: '搜索',
     importTooltip: '导入会话',
     importAriaShort: '导入会话',
