@@ -66,6 +66,8 @@ const en = {
     toolFailedAria: 'tool failed',
     toolFailedTag: 'failed',
     runningEllipsis: '(running…)',
+    toolNoResult: '(no result)',
+    toolTakingLonger: '(taking longer than usual…)',
     runningPlaceholder: 'Running… (Esc to interrupt, Enter to queue)',
     askPlaceholder: 'Ask anything…',
     attachImage: 'Attach image',
