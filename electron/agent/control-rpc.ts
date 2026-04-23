@@ -85,8 +85,21 @@ export interface McpMessageRequest {
 
 export interface ControlResponseFrame {
   type: 'control_response';
-  request_id: string;
-  response: unknown;
+  // The Claude CLI nests `request_id` and `subtype` INSIDE `response`, not at
+  // the top level. The previous shape (`request_id` at top level) was based on
+  // an early reverse-engineering doc; captured wire frames look like:
+  //   success: { type: "control_response",
+  //              response: { subtype: "success", request_id, response: {...} } }
+  //   error:   { type: "control_response",
+  //              response: { subtype: "error",   request_id, error: "..." } }
+  // See ControlResponseEventSchema and Bug K / Task #142.
+  response: {
+    subtype: string;
+    request_id: string;
+    response?: unknown;
+    error?: string;
+    [k: string]: unknown;
+  };
 }
 
 export interface ControlCancelRequestFrame {
@@ -371,19 +384,39 @@ export class ControlRpc {
   }
 
   private handleControlResponse(frame: ControlResponseFrame): void {
-    const pending = this.outbound.get(frame.request_id);
+    // The CLI nests both request_id and subtype inside `response` — see the
+    // ControlResponseFrame type comment for the wire shape.
+    const envelope = frame.response;
+    const requestId = envelope?.request_id;
+    if (!requestId) {
+      this.logger.warn('[control-rpc] control_response missing nested request_id', {
+        keys: envelope && typeof envelope === 'object' ? Object.keys(envelope) : null,
+      });
+      return;
+    }
+    const pending = this.outbound.get(requestId);
     if (!pending) {
       // Either an orphan from claude.exe (unlikely), or a late response that
       // arrived after we already timed out / rejected and cleared the entry.
       // Either way, nothing to settle — log and move on.
       this.logger.warn('[control-rpc] orphan control_response (no pending or already settled)', {
-        request_id: frame.request_id,
+        request_id: requestId,
       });
       return;
     }
-    this.outbound.delete(frame.request_id);
+    this.outbound.delete(requestId);
     clearTimeout(pending.timer);
-    pending.resolve(frame.response);
+    if (envelope.subtype === 'error') {
+      pending.reject(
+        new Error(
+          `ControlRpc: claude.exe returned error for control_request: ${envelope.error ?? 'unknown error'}`,
+        ),
+      );
+      return;
+    }
+    // success path: hand back the inner payload (or the whole envelope as a
+    // fallback if `response` was omitted).
+    pending.resolve(envelope.response ?? envelope);
   }
 
   private handleControlCancel(frame: ControlCancelRequestFrame): void {
