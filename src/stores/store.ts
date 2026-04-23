@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
 import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
-import { loadPersisted, schedulePersist, type PersistedState } from './persist';
+import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, type PersistedKey } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
@@ -1574,6 +1574,18 @@ export const useStore = create<State & Actions>((set, get) => ({
 
 let hydrated = false;
 
+// Compile-time guard: every key in PERSISTED_KEYS must exist on State (so the
+// subscriber's `s[k]` read is well-typed) AND on PersistedState (so the
+// snapshot we hand to schedulePersist is structurally valid). If a key is
+// added to PERSISTED_KEYS that doesn't exist on either, this assertion fails
+// at typecheck — keeping the source-of-truth array honest.
+type _AssertPersistedKeysOnState = PersistedKey extends keyof State ? true : never;
+type _AssertPersistedKeysOnPersisted = PersistedKey extends keyof PersistedState ? true : never;
+const _persistedKeysOnState: _AssertPersistedKeysOnState = true;
+const _persistedKeysOnPersisted: _AssertPersistedKeysOnPersisted = true;
+void _persistedKeysOnState;
+void _persistedKeysOnPersisted;
+
 export async function hydrateStore(): Promise<void> {
   if (hydrated) return;
   // Drafts live alongside the main snapshot but in their own key — load both
@@ -1678,45 +1690,31 @@ export async function hydrateStore(): Promise<void> {
   // mutations that wouldn't change disk state anyway. Fields are checked by
   // reference — every persisted field is either a primitive or an immutable
   // array we replace on update, so reference equality is correct.
+  //
+  // Both the comparator and the snapshot iterate `PERSISTED_KEYS` (defined
+  // in persist.ts) so adding a new persisted field only requires editing
+  // that one array.
   let prevSnap: State | null = null;
   useStore.subscribe((s) => {
-    if (
-      prevSnap !== null &&
-      prevSnap.sessions === s.sessions &&
-      prevSnap.groups === s.groups &&
-      prevSnap.activeId === s.activeId &&
-      prevSnap.model === s.model &&
-      prevSnap.permission === s.permission &&
-      prevSnap.sidebarCollapsed === s.sidebarCollapsed &&
-      prevSnap.sidebarWidth === s.sidebarWidth &&
-      prevSnap.theme === s.theme &&
-      prevSnap.fontSize === s.fontSize &&
-      prevSnap.fontSizePx === s.fontSizePx &&
-      prevSnap.density === s.density &&
-      prevSnap.recentProjects === s.recentProjects &&
-      prevSnap.tutorialSeen === s.tutorialSeen &&
-      prevSnap.notificationSettings === s.notificationSettings
-    ) {
-      return;
+    if (prevSnap !== null) {
+      let changed = false;
+      for (const k of PERSISTED_KEYS) {
+        if (prevSnap[k] !== s[k]) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) return;
     }
     prevSnap = s;
-    const snapshot: PersistedState = {
-      version: 1,
-      sessions: s.sessions,
-      groups: s.groups,
-      activeId: s.activeId,
-      model: s.model,
-      permission: s.permission,
-      sidebarCollapsed: s.sidebarCollapsed,
-      sidebarWidth: s.sidebarWidth,
-      theme: s.theme,
-      fontSize: s.fontSize,
-      fontSizePx: s.fontSizePx,
-      density: s.density,
-      recentProjects: s.recentProjects,
-      tutorialSeen: s.tutorialSeen,
-      notificationSettings: s.notificationSettings
-    };
+    const snapshot = { version: 1 as const } as PersistedState;
+    for (const k of PERSISTED_KEYS) {
+      // The PERSISTED_KEYS list is statically derived from State and matches
+      // PersistedState 1:1 (modulo `version`, which is a literal stamped
+      // above). The cast keeps the per-key assignment narrow without forcing
+      // every call site to spell out the union.
+      (snapshot as unknown as Record<string, unknown>)[k] = s[k];
+    }
     schedulePersist(snapshot);
   });
 }
