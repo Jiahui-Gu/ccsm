@@ -200,20 +200,22 @@ function GroupRow({
               )}
             </button>
             {group.kind === 'normal' && !renaming && (
-              <IconButton
-                size="xs"
-                variant="ghost"
-                aria-label={t('sidebar.newSessionInThisGroup')}
-                tooltip={t('sidebar.newSessionInThisGroup')}
-                tooltipSide="top"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  createSession({ groupId: group.id });
-                }}
-                className="ml-1 shrink-0 h-5 w-5"
-              >
-                <Plus size={12} className="stroke-[1.75]" />
-              </IconButton>
+              <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
+                <IconButton
+                  size="xs"
+                  variant="ghost"
+                  aria-label={t('sidebar.newSessionInThisGroup')}
+                  tooltip={t('sidebar.newSessionInThisGroup')}
+                  tooltipSide="top"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    createSession({ groupId: group.id });
+                  }}
+                  className="shrink-0 h-5 w-5"
+                >
+                  <Plus size={12} className="stroke-[1.75]" />
+                </IconButton>
+              </span>
             )}
           </div>
         </ContextMenuTrigger>
@@ -435,10 +437,12 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
             />
           )}
           {active && (
-            <span
-              aria-label={t('sidebar.openInChat')}
-              className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
-            />
+            <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
+              <span
+                aria-label={t('sidebar.openInChat')}
+                className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
+              />
+            </span>
           )}
         </li>
       </ContextMenuTrigger>
@@ -700,16 +704,18 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             <span className="text-label-section">
               {t('sidebar.groups')}
             </span>
-            <IconButton
-              size="xs"
-              variant="ghost"
-              tooltip={t('sidebar.newGroup')}
-              tooltipSide="top"
-              aria-label={t('sidebar.newGroup')}
-              onClick={() => handleNewGroup()}
-            >
-              <Plus size={12} className="stroke-[1.75]" />
-            </IconButton>
+            <span className="sidebar-rail-cell shrink-0">
+              <IconButton
+                size="xs"
+                variant="ghost"
+                tooltip={t('sidebar.newGroup')}
+                tooltipSide="top"
+                aria-label={t('sidebar.newGroup')}
+                onClick={() => handleNewGroup()}
+              >
+                <Plus size={12} className="stroke-[1.75]" />
+              </IconButton>
+            </span>
           </div>
           <nav className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1">
             {normal.map((g) => (
