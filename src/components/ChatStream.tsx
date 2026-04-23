@@ -238,7 +238,7 @@ function ToolBlock({
       <button
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-secondary transition-colors duration-150 ease-out outline-none rounded-sm focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+        className="group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-secondary transition-colors duration-150 ease-out outline-none rounded-sm focus-ring"
       >
         <span className="w-3 shrink-0 flex items-center">
           <motion.span
@@ -454,7 +454,7 @@ function LongOutputView({
         title={t('chat.longOutputCopy')}
         aria-label={t('chat.longOutputCopy')}
         data-testid="tool-output-copy"
-        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring"
       >
         {copied === 'ok' ? <Check size={10} /> : <Copy size={10} />}
         {copied === 'ok' ? t('chat.longOutputCopied') : t('chat.longOutputCopy')}
@@ -465,7 +465,7 @@ function LongOutputView({
         title={t('chat.longOutputSave')}
         aria-label={t('chat.longOutputSave')}
         data-testid="tool-output-save"
-        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring"
       >
         <Download size={10} />
         {saved === 'ok'
@@ -482,7 +482,7 @@ function LongOutputView({
           aria-pressed={expanded}
           data-testid="tool-output-expand"
           title={!expanded && tooLarge ? t('chat.longOutputTooLargeExpand') : undefined}
-          className="inline-flex items-center px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong disabled:opacity-50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:text-fg-tertiary disabled:hover:border-border-subtle"
+          className="inline-flex items-center px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring disabled:opacity-50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:text-fg-tertiary disabled:hover:border-border-subtle"
         >
           {expanded ? t('chat.longOutputCollapse') : t('chat.longOutputExpand')}
         </button>
@@ -523,7 +523,7 @@ function LongOutputView({
             onClick={() => !tooLarge && setExpanded(true)}
             disabled={tooLarge}
             data-testid="tool-output-separator"
-            className="block w-full text-left my-1 py-0.5 text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong rounded-sm disabled:hover:text-fg-tertiary disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            className="block w-full text-left my-1 py-0.5 text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring rounded-sm disabled:hover:text-fg-tertiary disabled:hover:bg-transparent disabled:cursor-not-allowed"
             title={tooLarge ? t('chat.longOutputTooLargeExpand') : undefined}
           >
             {t('chat.longOutputHidden', { count: hidden })}
@@ -618,7 +618,7 @@ function PrettyInput({ input }: { input: unknown }) {
             key={`${path}:btn`}
             type="button"
             onClick={() => toggle(path)}
-            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring"
             aria-expanded={false}
           >
             {t('chat.expandStringChars', { count: value.length - LONG_STRING_THRESHOLD })}
@@ -635,7 +635,7 @@ function PrettyInput({ input }: { input: unknown }) {
             key={`${path}:btn`}
             type="button"
             onClick={() => toggle(path)}
-            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring"
             aria-expanded={true}
           >
             {t('chat.collapseString')}
@@ -791,7 +791,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                       <button
                         type="button"
                         onClick={() => decide(i, 'rejected')}
-                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring-destructive"
                       >
                         {t('chat.diffReject')}
                       </button>
@@ -1007,7 +1007,7 @@ function LoadHistoryErrorBlock({
           type="button"
           onClick={onRetry}
           data-testid="chat-load-history-retry"
-          className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-sm border border-state-error/50 text-mono-xs font-mono text-state-error-fg hover:bg-state-error/10 active:bg-state-error/15 transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
+          className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-sm border border-state-error/50 text-mono-xs font-mono text-state-error-fg hover:bg-state-error/10 active:bg-state-error/15 transition-colors duration-150 ease-out outline-none focus-ring-destructive"
         >
           {t('chat.retry')}
         </button>

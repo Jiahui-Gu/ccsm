@@ -437,6 +437,54 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+/*
+  Focus-ring token kit (#211).
+
+  Before this utility, `focus-visible:ring-*` was sprinkled inline across ~20
+  components with at least three distinct rings (accent 1px inset, border-strong
+  1px inset, state-error 1px outset). Users saw a different cyan/gray ring
+  depending on which pane their Tab key landed in — classic inconsistency
+  surfaced by the UI-review.
+
+  We consolidate to ONE canonical ring for interactive chrome + selectable
+  rows, matching the session-row / group-header treatment established in
+  Sidebar.tsx (#183): 1px INSET accent. Inset keeps the ring from growing
+  the element's bounding box — critical inside tight sidebar rows and inline
+  chat action chips where a 2px outset would collide with neighbors.
+
+  `.focus-ring-destructive` uses the error token at the same geometry for
+  Reject / Delete / Interrupt buttons so the ring itself conveys "dangerous
+  action" without re-coloring the whole button. We intentionally keep it as
+  an outset ring on the destructive chips (they sit in dense rows with
+  borders of their own, so an outset ring reads cleanest).
+
+  Buttons that build their OWN custom focus ring (Button, IconButton,
+  WindowControls red variant) keep their bespoke box-shadow halos —
+  those are tuned against specific background stacks and replacing them
+  would change the visual. This kit targets ring-utility consumers only.
+*/
+@layer utilities {
+  /*
+    Use `outline` (not box-shadow) so the ring composes cleanly with
+    existing shadow stacks — selected sidebar rows, mono chip buttons with
+    inset borders, etc. all already ride on box-shadow, and stacking a
+    second shadow would either overwrite those or require per-site
+    composition. `outline` is its own layer, drawn after paint, and it
+    honors border-radius on every modern engine we ship to.
+      - .focus-ring           : inset 1px accent (default selectable / chrome)
+      - .focus-ring-destructive: outset 1px state-error at 0.6 alpha
+        (destructive chips — Reject / Delete / Interrupt)
+  */
+  .focus-ring:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: -1px;
+  }
+  .focus-ring-destructive:focus-visible {
+    outline: 1px solid oklch(from var(--color-state-error) l c h / 0.6);
+    outline-offset: 0;
+  }
+}
+
 /* Material craft utilities. */
 @layer utilities {
   /* Typography scale — 4 semantic tiers. Components must pick one of these

@@ -169,7 +169,7 @@ function GroupRow({
                 onFocus();
                 if (!renaming) setGroupCollapsed(group.id, !collapsed);
               }}
-              className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
+              className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-ring"
               aria-expanded={!collapsed}
             >
               <motion.span
@@ -403,7 +403,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
             // src/lib/motion.ts (MOTION_SESSION_SWITCH_DURATION / EASING).
             'transition-[background-color,color,box-shadow] duration-[180ms]',
             '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
-            'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent',
+            'outline-none focus-ring',
             selected
               ? 'bg-bg-active text-fg-primary'
               : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
