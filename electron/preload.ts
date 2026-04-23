@@ -29,6 +29,12 @@ type StartResult =
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
+type AgentDiagnostic = {
+  sessionId: string;
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+};
 type AgentPermissionRequest = {
   sessionId: string;
   requestId: string;
@@ -123,6 +129,11 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: AgentExit) => handler(payload);
     ipcRenderer.on('agent:exit', wrap);
     return () => ipcRenderer.removeListener('agent:exit', wrap);
+  },
+  onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: AgentDiagnostic) => handler(payload);
+    ipcRenderer.on('agent:diagnostic', wrap);
+    return () => ipcRenderer.removeListener('agent:diagnostic', wrap);
   },
   onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: AgentPermissionRequest) => handler(payload);

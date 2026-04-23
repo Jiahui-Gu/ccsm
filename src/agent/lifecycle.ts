@@ -262,6 +262,21 @@ export function subscribeAgentEvents(): void {
     ]);
   });
 
+  // Wire agent-layer diagnostics (F1). The electron main process emits these
+  // on `agent:diagnostic` for init-handshake failures, control_request
+  // timeouts, etc. — transient signals that aren't hard session-ending errors.
+  // Land them in the store so AgentDiagnosticBanner can surface the latest one
+  // non-intrusively above ChatStream.
+  api.onAgentDiagnostic?.((e) => {
+    useStore.getState().pushDiagnostic({
+      sessionId: e.sessionId,
+      level: e.level,
+      code: e.code,
+      message: e.message,
+      timestamp: Date.now(),
+    });
+  });
+
   api.onAgentPermissionRequest((req) => {
     const store = useStore.getState();
     const block = permissionRequestToWaitingBlock(req);

@@ -126,6 +126,41 @@ export type CliStatus =
 
 const DEFAULT_CLI_STATUS: CliStatus = { state: 'checking' };
 
+/**
+ * Transient diagnostic surfaced from the agent subsystem (initialize handshake
+ * failed, control_request timed out, etc). Originates in
+ * `electron/agent/sessions.ts` → `manager.ts` emits `agent:diagnostic` on the
+ * WebContents → `src/agent/lifecycle.ts` pushes into the store slice below.
+ * The UI shows the most-recent, not-yet-dismissed entry as a banner above
+ * ChatStream.
+ */
+export interface DiagnosticEntry {
+  id: string;
+  sessionId: string;
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+  timestamp: number;
+  dismissed?: boolean;
+}
+
+/**
+ * Per-session init-failure flag. Populated by InputBar when `agent:start`
+ * returns `!ok` with an error code other than the ones with bespoke UX
+ * (CLAUDE_NOT_FOUND → CLI wizard; CWD_MISSING → inline error block + StatusBar
+ * hint). Cleared on successful retry or when the user repicks the cwd/model.
+ *
+ * The UI surfaces this as an actionable banner ("Agent failed to start — Retry
+ * / Reconfigure") so a stuck session isn't left silently spinning on
+ * `setRunning(true)` with no explanation.
+ */
+export interface SessionInitFailure {
+  error: string;
+  errorCode?: string;
+  searchedPaths?: string[];
+  timestamp: number;
+}
+
 // Soft minimum — we log a console warning below this and surface it in the
 // wizard, but we do NOT block the user. Tested locally with claude 2.0.x
 // through 2.1.x; anything older than this should still spawn fine but has
@@ -212,6 +247,13 @@ type State = {
   // on app mount. Don't bump from background/system events; only user clicks.
   focusInputNonce: number;
   cliStatus: CliStatus;
+  /** Recent agent diagnostics (newest last). Capped at 20 in-memory; the
+   *  renderer only surfaces the latest non-dismissed one. Not persisted —
+   *  these are ephemeral run-time signals. */
+  diagnostics: DiagnosticEntry[];
+  /** Per-session init-failure state. See `SessionInitFailure` for semantics.
+   *  Cleared on successful retry via `clearSessionInitFailure`. */
+  sessionInitFailures: Record<string, SessionInitFailure>;
 };
 
 export interface CreateSessionOptions {
@@ -337,6 +379,19 @@ type Actions = {
   setCliMissing: (searchedPaths: string[]) => void;
   openCliDialog: () => void;
   closeCliDialog: () => void;
+
+  /** Push an agent-layer diagnostic (emitted by electron `agent:diagnostic`
+   *  IPC). Caps at 20 entries; oldest trimmed. */
+  pushDiagnostic: (entry: Omit<DiagnosticEntry, 'id' | 'dismissed'>) => void;
+  /** Soft-dismiss a single diagnostic so the banner hides it. Kept in the
+   *  array (not spliced) so a future "view recent diagnostics" surface could
+   *  still read it without duplicating state. */
+  dismissDiagnostic: (id: string) => void;
+  /** Record that `agent:start` failed for this session with a non-bespoke
+   *  error code. The UI surfaces an actionable banner. */
+  setSessionInitFailure: (sessionId: string, fail: Omit<SessionInitFailure, 'timestamp'>) => void;
+  /** Clear the init-failure flag after a successful retry or cwd/model repick. */
+  clearSessionInitFailure: (sessionId: string) => void;
 };
 
 function nextId(prefix: string): string {
@@ -557,6 +612,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   connection: null,
   focusInputNonce: 0,
   cliStatus: DEFAULT_CLI_STATUS,
+  diagnostics: [],
+  sessionInitFailures: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -1568,6 +1625,46 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => {
       if (s.cliStatus.state !== 'missing') return s;
       return { cliStatus: { ...s.cliStatus, dialogOpen: false } };
+    });
+  },
+
+  pushDiagnostic: (entry) => {
+    set((s) => {
+      const id = nextId('diag');
+      const next: DiagnosticEntry = { id, dismissed: false, ...entry };
+      // Cap at 20 — diagnostics are ephemeral and the UI only renders the
+      // latest one anyway. Trim from the front so the newest stays at index
+      // length-1 (cheap lookup when picking what to render).
+      const combined = [...s.diagnostics, next];
+      const trimmed = combined.length > 20 ? combined.slice(combined.length - 20) : combined;
+      return { diagnostics: trimmed };
+    });
+  },
+  dismissDiagnostic: (id) => {
+    set((s) => {
+      let changed = false;
+      const next = s.diagnostics.map((d) => {
+        if (d.id !== id || d.dismissed) return d;
+        changed = true;
+        return { ...d, dismissed: true };
+      });
+      return changed ? { diagnostics: next } : s;
+    });
+  },
+  setSessionInitFailure: (sessionId, fail) => {
+    set((s) => ({
+      sessionInitFailures: {
+        ...s.sessionInitFailures,
+        [sessionId]: { ...fail, timestamp: Date.now() },
+      },
+    }));
+  },
+  clearSessionInitFailure: (sessionId) => {
+    set((s) => {
+      if (!(sessionId in s.sessionInitFailures)) return s;
+      const next = { ...s.sessionInitFailures };
+      delete next[sessionId];
+      return { sessionInitFailures: next };
     });
   },
 }));
