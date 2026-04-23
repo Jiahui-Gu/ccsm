@@ -5,6 +5,7 @@ import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
+import { disposeStreamer } from '../agent/lifecycle';
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -704,6 +705,22 @@ export const useStore = create<State & Actions>((set, get) => ({
       stats: prev.statsBySession[id],
       prevActiveId: prev.activeId
     };
+    // Kill the spawned claude.exe BEFORE we clear store state. Without this,
+    // deleting an actively-streaming session leaves a zombie child that
+    // keeps burning tokens and whose stream events land on a removed id
+    // (noisy warns + memory growth until the user quits the app). The IPC
+    // is fire-and-forget because the cleanup in main.ts is synchronous from
+    // our POV — it returns before the child fully exits, but the abort
+    // signal has already fired by then. Guarded on `started || running` to
+    // avoid a no-op round-trip for never-spawned sessions (restored ones).
+    if (prev.startedSessions[id] || prev.runningSessions[id]) {
+      void window.agentory?.agentClose(id);
+    }
+    // Drop the renderer-side streamer accumulator. Without this, a deleted
+    // session's PartialAssistantStreamer lingers in the lifecycle module map
+    // — a tiny leak per delete, but adds up on long-running users who churn
+    // sessions. Idempotent on never-streamed ids.
+    disposeStreamer(id);
     set((s) => {
       const remaining = s.sessions.filter((x) => x.id !== id);
       // Same-group sibling fallback (J5): when the active row is being

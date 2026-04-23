@@ -305,6 +305,18 @@ function createWindow() {
   installContextMenu(win);
   sessions.bindSender(win.webContents);
 
+  // If a prior window was hidden then had its WebContents destroyed (can
+  // happen under aggressive GC on minimize-to-tray), subsequent `wc.send`
+  // calls from the sessions manager no-op silently. Rebinding on `show` and
+  // on the fresh window's `did-finish-load` picks up any still-live sessions
+  // and routes their events at the live renderer.
+  win.on('show', () => {
+    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
+  });
+  win.webContents.on('did-finish-load', () => {
+    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
+  });
+
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
   win.on('maximize', emitMax);
   win.on('unmaximize', emitMax);
@@ -958,6 +970,18 @@ app.whenReady().then(() => {
 
   installUpdaterIpc();
 
+  // Dev-only debug backdoor for E2E probes. Probes call this via
+  // `app.evaluate(() => globalThis.__agentoryDebug.activeSessionPids())` on
+  // the Electron main process (NOT the renderer — we intentionally don't
+  // widen preload.ts's surface for a test-only affordance). Guarded behind
+  // `!app.isPackaged` so prod bundles never expose it.
+  if (!app.isPackaged) {
+    (globalThis as unknown as Record<string, unknown>).__agentoryDebug = {
+      activeSessionPids: () => sessions.activeRunnerPids(),
+      activeSessionCount: () => sessions.activeSessionCount(),
+    };
+  }
+
   createWindow();
   ensureTray();
 
@@ -970,6 +994,17 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  // Kill any live claude.exe children before the event loop is torn down.
+  // `window-all-closed` already runs closeAll() on Windows/Linux, but on
+  // macOS (and on the tray→Quit path that invokes app.quit() directly while
+  // windows are hidden-not-closed) before-quit is our only guaranteed hook.
+  // closeAll() is idempotent and synchronous (abort signals fire SIGTERM via
+  // the spawner); a duplicate call from window-all-closed is a no-op.
+  try {
+    sessions.closeAll();
+  } catch {
+    /* ignore — best-effort cleanup on quit */
+  }
 });
 
 app.on('window-all-closed', () => {

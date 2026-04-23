@@ -124,6 +124,18 @@ export type PermissionRequestHandler = (req: {
   toolName: string;
   input: Record<string, unknown>;
 }) => void;
+/**
+ * Transient diagnostics surfaced from the agent layer — things the user may
+ * want to see as a toast (init handshake failed, outbound control_request
+ * timed out) but which aren't hard session-ending errors. Kept deliberately
+ * minimal: `code` is a stable machine-readable key (e.g. `init_failed`,
+ * `control_timeout`), `message` is a one-liner suitable for toast copy.
+ */
+export type DiagnosticHandler = (d: {
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+}) => void;
 
 /**
  * Single shared callback id for the `PreToolUse` hook we register at
@@ -167,8 +179,14 @@ export class SessionRunner {
     public readonly id: string,
     private readonly onEvent: EventHandler,
     private readonly onExit: ExitHandler,
-    private readonly onPermissionRequest: PermissionRequestHandler
+    private readonly onPermissionRequest: PermissionRequestHandler,
+    private readonly onDiagnostic: DiagnosticHandler = () => {}
   ) {}
+
+  /** Test-only backdoor: expose the child pid for dev probes. */
+  getPid(): number | undefined {
+    return this.cp?.pid;
+  }
 
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean {
     const resolve = this.pendingPerms.get(requestId);
@@ -217,6 +235,12 @@ export class SessionRunner {
     // `can_use_tool`. The callback id is opaque to the CLI; we use a single
     // shared id so the handler in handleHookCallback is unambiguous. Fire-and-
     // forget — the response carries a `commands` list we don't consume.
+    //
+    // Failure surfacing: a lost handshake means the CLI falls through to its
+    // local rule engine, which is security-relevant (the user may expect
+    // prompts that never arrive for edits/writes). We emit `init_failed` as
+    // a diagnostic so the renderer can toast — the user should at least know
+    // their permission UX is degraded.
     void this.rpc
       .sendControlRequest({
         subtype: 'initialize',
@@ -231,7 +255,13 @@ export class SessionRunner {
         // initialize round-trip in tests / fast-cancel flows. Only log
         // when we genuinely lost the handshake on a live session.
         if (this.disposed) return;
+        const msg = err instanceof Error ? err.message : String(err);
         console.warn('[sessions] initialize handshake failed', err);
+        this.onDiagnostic({
+          level: 'error',
+          code: 'init_failed',
+          message: `Agent initialize handshake failed — permission prompts may be degraded: ${msg}`,
+        });
       });
 
     const stdout = this.cp.stdout;
@@ -437,8 +467,18 @@ export class SessionRunner {
     if (!this.rpc) return;
     try {
       await this.rpc.interrupt();
-    } catch {
-      /* timeout / channel broken — let close() handle hard kill */
+    } catch (err) {
+      // Timeout / channel broken. close() will escalate via SIGTERM/SIGKILL
+      // through the abort signal; the user still deserves a heads-up that
+      // the soft interrupt didn't land so a "Stop" click that appears to do
+      // nothing gets explained.
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'interrupt_timeout',
+        message: `Agent didn't acknowledge interrupt (${
+          err instanceof Error ? err.message : String(err)
+        }). Force-killing.`,
+      });
     }
   }
 
@@ -455,8 +495,14 @@ export class SessionRunner {
     if (!cliMode) return;
     try {
       await this.rpc.setPermissionMode(cliMode);
-    } catch {
-      /* ignore — claude.exe may not honour mid-session changes for every mode */
+    } catch (err) {
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'set_permission_mode_timeout',
+        message: `Agent unresponsive to permission-mode change (${
+          err instanceof Error ? err.message : String(err)
+        }).`,
+      });
     }
   }
 
@@ -464,8 +510,14 @@ export class SessionRunner {
     if (!this.rpc || !model) return;
     try {
       await this.rpc.setModel(model);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'set_model_timeout',
+        message: `Agent unresponsive to model change (${
+          err instanceof Error ? err.message : String(err)
+        }).`,
+      });
     }
   }
 
@@ -494,6 +546,37 @@ export class SessionRunner {
     this.pendingPerms.clear();
     this.rpc?.close();
     this.rpc = null;
+    // Stream listeners attached by the splitter + stderr ring buffer in
+    // claude-spawner can outlive the exit (the child's `exit` event fires
+    // before its stdio pipes emit `close`). Left dangling they either (a)
+    // pin the Readable's internal buffer in memory per-session forever, or
+    // (b) fire a late `data` event that races our disposed guard. Explicit
+    // teardown: drop listeners first, THEN destroy the streams so any
+    // in-flight `data`/`error` from the destroy path doesn't re-invoke a
+    // consumer we already nulled out.
+    const cp = this.cp;
+    if (cp) {
+      try {
+        cp.stdout.removeAllListeners();
+        cp.stdout.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        cp.stderr.removeAllListeners();
+        cp.stderr.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        cp.stdin.removeAllListeners();
+        // stdin was end()'d in close(); destroy() is a cheap idempotent
+        // double-check for the abnormal-exit path (consumer loop threw).
+        cp.stdin.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
     this.cp = null;
   }
 }
