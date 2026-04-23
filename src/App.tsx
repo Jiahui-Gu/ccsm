@@ -11,6 +11,7 @@ import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
+import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
@@ -40,6 +41,27 @@ subscribeAgentEvents();
 // security boundary; same trade-off as `window.__agentoryI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
+}
+
+/**
+ * True when the event target is a text-editable surface where printable
+ * keys (like "?") should remain composition input rather than trigger a
+ * global shortcut. Checked by the document-level `keydown` listener in
+ * `App` to gate the modifier-free "?" shortcut-overlay binding.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  if (tag === 'TEXTAREA') return true;
+  if (tag === 'INPUT') {
+    const type = (target as HTMLInputElement).type;
+    // checkbox/radio/button-like inputs don't capture printable keys;
+    // treat them as non-editable so "?" still opens the overlay there.
+    const nonText = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file']);
+    return !nonText.has(type);
+  }
+  return false;
 }
 
 export default function App() {
@@ -142,6 +164,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   // New sessions are created in-place — no modal. The store seeds `cwd`
   // from `recentProjects[0]?.path ?? '~'`; users repick later via the
@@ -158,7 +181,27 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      // Cmd/Ctrl+/ opens the shortcuts overlay. We handle it BEFORE the
+      // `if (!mod) return` guard below so it sits alongside the other
+      // modified-key bindings, even though the `?` alternative handled
+      // further down is modifier-free.
+      if (mod && e.key === '/' && !e.shiftKey) {
+        e.preventDefault();
+        setShortcutsOpen((p) => !p);
+        return;
+      }
+      if (!mod) {
+        // Modifier-free bindings: the "?" shortcut for the shortcuts
+        // overlay. We deliberately DO NOT fire when the user is typing
+        // into a text field — "?" is a printable glyph and must not be
+        // stolen mid-composition. Activating only when focus is on body
+        // or a non-editable element matches macOS/GitHub conventions.
+        if (e.key === '?' && !isEditableTarget(e.target)) {
+          e.preventDefault();
+          setShortcutsOpen((p) => !p);
+        }
+        return;
+      }
       const k = e.key.toLowerCase();
       if (k === 'f' && !e.shiftKey) {
         // Cmd/Ctrl+F opens the global Search / Command Palette. We
@@ -264,6 +307,7 @@ export default function App() {
             onSelectSession={selectSession}
             onFocusGroup={focusGroup}
           />
+          <ShortcutOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         </ToastProvider>
       </TooltipProvider>
     );
@@ -334,6 +378,7 @@ export default function App() {
           onSelectSession={selectSession}
           onFocusGroup={focusGroup}
         />
+        <ShortcutOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </ToastProvider>
     </TooltipProvider>
   );
