@@ -30,6 +30,12 @@ type StartResult =
     };
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };
+type AgentDiagnostic = {
+  sessionId: string;
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+};
 type AgentPermissionRequest = {
   sessionId: string;
   requestId: string;
@@ -91,6 +97,7 @@ declare global {
       ) => Promise<boolean>;
       onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
+      onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void) => () => void;
       onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
       scanImportable: () => Promise<
