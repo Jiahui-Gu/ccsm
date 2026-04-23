@@ -78,6 +78,11 @@ describe('buildSpawnArgs', () => {
     expect(args[args.indexOf('--permission-prompt-tool') + 1]).toBe('stdio');
   });
 
+  it('always includes --include-partial-messages so claude.exe emits per-token stream_event frames (PartialAssistantStreamer feeds on these; without it long replies arrive as one big block at turn end)', () => {
+    const args = buildSpawnArgs({});
+    expect(args).toContain('--include-partial-messages');
+  });
+
   it('appends --resume <id> when resumeId is set', () => {
     const args = buildSpawnArgs({ resumeId: 'sess_abc' });
     expect(args).toContain('--resume');

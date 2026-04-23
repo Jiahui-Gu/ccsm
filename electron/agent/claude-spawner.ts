@@ -269,6 +269,14 @@ export function buildSpawnArgs(opts: {
     // sent by SessionRunner once the child is up.
     '--permission-prompt-tool',
     'stdio',
+    // Enable per-token streaming. Without this flag claude.exe buffers each
+    // turn's assistant content and only emits a single `assistant` frame at
+    // turn end, which makes long replies feel frozen for 5-15s. With it,
+    // claude.exe emits `stream_event` frames (message_start /
+    // content_block_delta(text_delta) / message_stop) that our renderer's
+    // PartialAssistantStreamer already consumes. See
+    // docs/design/streaming-ux-investigation.md §3 for the full root-cause.
+    '--include-partial-messages',
   ];
   if (opts.permissionMode) {
     args.push('--permission-mode', opts.permissionMode);
