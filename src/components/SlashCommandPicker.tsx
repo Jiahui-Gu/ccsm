@@ -90,13 +90,13 @@ export function SlashCommandPicker({
     >
       <div ref={listRef} className="max-h-[320px] overflow-y-auto py-1">
         {filtered.length === 0 ? (
-          <div className="px-3 py-2 text-fg-tertiary text-[12px] leading-[16px]">
+          <div className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
             {t('slashCommands.noneHint')}
           </div>
         ) : (
           groups.map((group) => (
             <div key={group.source} className="py-0.5">
-              <div className="px-3 pt-1.5 pb-1 font-mono text-[10px] uppercase tracking-wider text-fg-tertiary select-none">
+              <div className="px-3 pt-1.5 pb-1 font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary select-none">
                 {t(GROUP_LABEL_KEY[group.source])}
               </div>
               {group.commands.map((cmd) => {
@@ -139,17 +139,17 @@ export function SlashCommandPicker({
                     ) : (
                       <span className="w-[14px] shrink-0" />
                     )}
-                    <span className="font-mono text-[12.5px] text-fg-primary shrink-0">
+                    <span className="font-mono text-mono-md text-fg-primary shrink-0">
                       /{cmd.name}
                     </span>
                     {cmd.description ? (
-                      <span className="text-fg-tertiary text-[12px] leading-[16px] truncate">
+                      <span className="text-fg-tertiary text-mono-md leading-[16px] truncate">
                         {cmd.description}
                       </span>
                     ) : null}
                     {cmd.argumentHint ? (
                       <span
-                        className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-fg-tertiary px-1.5 py-0.5 rounded-sm border border-border-subtle font-mono"
+                        className="ml-auto shrink-0 text-mono-xs uppercase tracking-wider text-fg-tertiary px-1.5 py-0.5 rounded-sm border border-border-subtle font-mono"
                         title={cmd.argumentHint}
                       >
                         {cmd.argumentHint}
@@ -162,7 +162,7 @@ export function SlashCommandPicker({
           ))
         )}
       </div>
-      <div className="px-3 py-1.5 border-t border-border-subtle text-[11px] text-fg-tertiary flex items-center gap-3 select-none bg-bg-panel/40">
+      <div className="px-3 py-1.5 border-t border-border-subtle text-mono-sm text-fg-tertiary flex items-center gap-3 select-none bg-bg-panel/40">
         <span>
           <kbd className="font-mono">↑↓</kbd> {t('slashCommands.navigate')}
         </span>

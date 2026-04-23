@@ -100,7 +100,7 @@ function ChipMenu<V extends string>({
                 className="flex-col items-start gap-0 h-auto py-1.5"
               >
                 <span className="truncate w-full text-fg-primary">{o.primary}</span>
-                <span className="truncate w-full text-[11px] font-mono text-fg-tertiary leading-tight">
+                <span className="truncate w-full text-mono-sm font-mono text-fg-tertiary leading-tight">
                   {o.secondary}
                 </span>
               </DropdownMenuItem>

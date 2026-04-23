@@ -341,7 +341,7 @@ function LongOutputView({
   // Toolbar (always rendered).
   const toolbar = (
     <div className="flex items-center justify-end gap-1.5 mb-1 ml-6">
-      <span className="text-fg-tertiary text-[10px] mr-auto font-mono">
+      <span className="text-fg-tertiary text-mono-xs mr-auto font-mono">
         {t('chat.longOutputTooLargeBadge', { size: formatBytes(byteLen), lines: total })}
       </span>
       <button
@@ -350,7 +350,7 @@ function LongOutputView({
         title={t('chat.longOutputCopy')}
         aria-label={t('chat.longOutputCopy')}
         data-testid="tool-output-copy"
-        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
       >
         {copied === 'ok' ? <Check size={10} /> : <Copy size={10} />}
         {copied === 'ok' ? t('chat.longOutputCopied') : t('chat.longOutputCopy')}
@@ -361,7 +361,7 @@ function LongOutputView({
         title={t('chat.longOutputSave')}
         aria-label={t('chat.longOutputSave')}
         data-testid="tool-output-save"
-        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+        className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
       >
         <Download size={10} />
         {saved === 'ok'
@@ -378,7 +378,7 @@ function LongOutputView({
           aria-pressed={expanded}
           data-testid="tool-output-expand"
           title={!expanded && tooLarge ? t('chat.longOutputTooLargeExpand') : undefined}
-          className="inline-flex items-center px-1.5 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:text-fg-tertiary disabled:hover:border-border-subtle"
+          className="inline-flex items-center px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong disabled:opacity-50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:hover:text-fg-tertiary disabled:hover:border-border-subtle"
         >
           {expanded ? t('chat.longOutputCollapse') : t('chat.longOutputExpand')}
         </button>
@@ -419,7 +419,7 @@ function LongOutputView({
             onClick={() => !tooLarge && setExpanded(true)}
             disabled={tooLarge}
             data-testid="tool-output-separator"
-            className="block w-full text-left my-1 py-0.5 text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong rounded-sm disabled:hover:text-fg-tertiary disabled:hover:bg-transparent disabled:cursor-not-allowed"
+            className="block w-full text-left my-1 py-0.5 text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong rounded-sm disabled:hover:text-fg-tertiary disabled:hover:bg-transparent disabled:cursor-not-allowed"
             title={tooLarge ? t('chat.longOutputTooLargeExpand') : undefined}
           >
             {t('chat.longOutputHidden', { count: hidden })}
@@ -514,7 +514,7 @@ function PrettyInput({ input }: { input: unknown }) {
             key={`${path}:btn`}
             type="button"
             onClick={() => toggle(path)}
-            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
             aria-expanded={false}
           >
             {t('chat.expandStringChars', { count: value.length - LONG_STRING_THRESHOLD })}
@@ -531,7 +531,7 @@ function PrettyInput({ input }: { input: unknown }) {
             key={`${path}:btn`}
             type="button"
             onClick={() => toggle(path)}
-            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-[10px] text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+            className="ml-1.5 px-1 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
             aria-expanded={true}
           >
             {t('chat.collapseString')}
@@ -581,7 +581,7 @@ function PrettyInput({ input }: { input: unknown }) {
         transition={{ duration: 0.15, ease: [0, 0, 0.2, 1] }}
         className="mt-1 ml-6 pl-3 border-l border-border-subtle text-xs font-mono text-fg-secondary whitespace-pre-wrap mb-1"
       >
-        <span className="text-fg-tertiary text-[10px] uppercase tracking-wider mr-2">{t('chat.inputBytes')}</span>
+        <span className="text-fg-tertiary text-mono-xs uppercase tracking-wider mr-2">{t('chat.inputBytes')}</span>
         {render(input, 0, 'root')}
       </motion.pre>
     </AnimatePresence>
@@ -608,7 +608,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
   const lang = languageFromPath(diff.filePath);
   return (
     <div className="mt-1 ml-6 rounded-sm border border-border-subtle overflow-hidden">
-      <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-[11px] text-fg-tertiary">
+      <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-mono-sm text-fg-tertiary">
         {diff.filePath}
       </div>
       <div className="font-mono text-xs">
@@ -667,7 +667,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                       exit={{ opacity: 0, y: -4 }}
                       transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
                       className={
-                        'font-mono text-[10px] uppercase tracking-wider ' +
+                        'font-mono text-mono-xs uppercase tracking-wider ' +
                         (decision === 'accepted'
                           ? 'text-state-running'
                           : 'text-state-error')
@@ -687,14 +687,14 @@ function DiffView({ diff }: { diff: DiffSpec }) {
                       <button
                         type="button"
                         onClick={() => decide(i, 'rejected')}
-                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-error hover:border-state-error/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
                       >
                         {t('chat.diffReject')}
                       </button>
                       <button
                         type="button"
                         onClick={() => decide(i, 'accepted')}
-                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-[10px] font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-running/60"
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-running/60"
                       >
                         {t('chat.diffAccept')}
                       </button>
@@ -760,8 +760,8 @@ function TodoBlock({ todos }: { todos: import('../types').TodoItem[] }) {
   return (
     <div className="my-1.5 rounded-md border border-border-subtle bg-bg-elevated/40 px-3 py-2">
       <div className="flex items-center justify-between mb-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{t('chat.todoLabel')}</span>
-        <span className="font-mono text-[11px] text-fg-tertiary">
+        <span className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">{t('chat.todoLabel')}</span>
+        <span className="font-mono text-mono-sm text-fg-tertiary">
           {done}/{total}
         </span>
       </div>
@@ -835,7 +835,7 @@ function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; title: s
         }
       />
       <div className="flex items-baseline gap-2">
-        <span className={'font-mono uppercase tracking-wider text-[10px] ' + (isWarn ? 'text-state-waiting' : 'text-fg-tertiary')}>
+        <span className={'font-mono uppercase tracking-wider text-mono-xs ' + (isWarn ? 'text-state-waiting' : 'text-fg-tertiary')}>
           {isWarn ? t('chat.warnLabel') : t('chat.infoLabel')}
         </span>
         <span className={isWarn ? 'text-fg-primary' : 'text-fg-secondary'}>{title}</span>

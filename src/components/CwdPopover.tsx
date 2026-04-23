@@ -229,18 +229,18 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
               onKeyDown={onListKeyDown}
               className={cn(
                 'w-full h-7 px-2 rounded-sm bg-bg-panel border border-border-subtle',
-                'font-mono text-[12.5px] text-fg-primary placeholder:text-fg-tertiary',
+                'font-mono text-mono-md text-fg-primary placeholder:text-fg-tertiary',
                 'outline-none focus:border-border-strong'
               )}
             />
           </div>
 
-          <div className="px-3 pt-1.5 pb-1 text-[11px] uppercase tracking-wider text-fg-tertiary">
+          <div className="px-3 pt-1.5 pb-1 text-mono-sm uppercase tracking-wider text-fg-tertiary">
             {t('cwdPopover.recent')}
           </div>
           <ul className="max-h-[260px] overflow-y-auto pb-1" role="listbox">
             {filtered.length === 0 ? (
-              <li className="px-3 py-2 text-fg-tertiary text-[12px] leading-[16px]">
+              <li className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
                 {t('cwdPopover.empty')}
               </li>
             ) : (
@@ -266,7 +266,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
                         : 'text-fg-secondary hover:bg-bg-hover/60'
                     )}
                   >
-                    <span className="font-mono text-[12px] truncate">
+                    <span className="font-mono text-mono-md truncate">
                       {truncateMiddle(path)}
                     </span>
                   </li>
@@ -287,7 +287,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
                 'w-full flex items-center gap-2 h-7 px-2 mx-0 rounded-sm',
                 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
                 'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
-                'transition-colors duration-120 ease-out text-left text-[12.5px]'
+                'transition-colors duration-120 ease-out text-left text-mono-md'
               )}
             >
               <Folder size={12} className="stroke-[1.75] text-fg-tertiary" />

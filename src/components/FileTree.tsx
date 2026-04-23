@@ -74,7 +74,7 @@ function TreeRow({ node, depth, initiallyOpen, onSelect }: TreeRowProps) {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="group flex items-center gap-1 w-full text-left px-1 py-[1px] rounded-sm text-fg-secondary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active transition-colors duration-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+          className="group flex items-center gap-1 w-full text-left px-1 py-px rounded-sm text-fg-secondary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active transition-colors duration-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
           style={{ paddingLeft: depth * 10 + 4 }}
         >
           <motion.span
@@ -92,7 +92,7 @@ function TreeRow({ node, depth, initiallyOpen, onSelect }: TreeRowProps) {
             <Folder size={12} className="shrink-0 text-fg-tertiary group-hover:text-fg-secondary" aria-hidden />
           )}
           <span className="truncate">{node.name}/</span>
-          <span className="ml-1 text-fg-tertiary text-[10px]">
+          <span className="ml-1 text-fg-tertiary text-mono-xs">
             {node.children.length}
           </span>
         </button>
@@ -131,7 +131,7 @@ function TreeRow({ node, depth, initiallyOpen, onSelect }: TreeRowProps) {
           // Follow-up: wire through IPC ("reveal in editor"). For v0.1
           // keep the no-op branch so wiring is one-line later.
         }}
-        className="group flex items-center gap-1 w-full text-left px-1 py-[1px] rounded-sm text-fg-tertiary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active transition-colors duration-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+        className="group flex items-center gap-1 w-full text-left px-1 py-px rounded-sm text-fg-tertiary hover:bg-bg-hover hover:text-fg-primary active:bg-bg-active transition-colors duration-100 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
         style={{ paddingLeft: depth * 10 + 4 + 12 }}
         title={node.path}
       >
