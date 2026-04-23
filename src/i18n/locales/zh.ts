@@ -66,6 +66,8 @@ const zh: EnCatalog = {
     toolFailedAria: '工具执行失败',
     toolFailedTag: '失败',
     runningEllipsis: '（执行中…）',
+    toolNoResult: '（无结果）',
+    toolTakingLonger: '（耗时较长…）',
     runningPlaceholder: '执行中…（Esc 中断，Enter 排队）',
     askPlaceholder: '问点什么…',
     attachImage: '附加图片',

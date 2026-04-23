@@ -342,6 +342,108 @@ async function caseInputPlaceholder({ win, log, registerDispose }) {
   log('en+zh placeholder transitions verified');
 }
 
+// ---------- tool-block-ux ----------
+// Covers the rendered side of three related tool-block UX signals
+// (A2-NEW-5 / A2-NEW-6 / A2-NEW-7). We seed a tool block directly into
+// the store (same pattern as other cases in this harness) rather than
+// spinning up a real claude.exe — the render path is what's under test,
+// not the IPC. Component-level vitest in tests/chatstream-tool-block-ux.tsx
+// covers the stall-hint branch that needs fake timers.
+async function caseToolBlockUx({ win, log }) {
+  const sid = 's-tool-ux';
+  await win.evaluate((s) => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: s, name: 'tool-ux', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: s,
+      runningSessions: { [s]: true },
+      messagesBySession: {
+        [s]: [
+          { kind: 'user', id: 'u1', text: 'run something slow' },
+          {
+            kind: 'tool',
+            id: 't-run',
+            name: 'Bash',
+            brief: 'sleep 5',
+            expanded: false,
+            toolUseId: 'tu-run'
+            // No `result` -> in-flight; elapsed counter should be ticking.
+          },
+          {
+            kind: 'tool',
+            id: 't-dropped',
+            name: 'Read',
+            brief: 'src/foo.ts',
+            expanded: false,
+            toolUseId: 'tu-drop',
+            result: '' // explicit empty result -> A2-NEW-6 "(no result)"
+          },
+          {
+            kind: 'tool',
+            id: 't-done',
+            name: 'Read',
+            brief: 'src/bar.ts',
+            expanded: false,
+            toolUseId: 'tu-done',
+            result: 'hello\nworld\n'
+          }
+        ]
+      }
+    });
+  }, sid);
+  await win.waitForTimeout(250);
+
+  // A2-NEW-5: elapsed counter renders on the in-flight block and matches
+  // the documented `\d+\.\ds` format. Poll for one tick so a second-fraction
+  // digit definitely lands.
+  await win.waitForTimeout(200);
+  const elapsedText = await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="tool-elapsed"]');
+    return el ? el.textContent : null;
+  });
+  if (!elapsedText) throw new Error('A2-NEW-5: elapsed counter not rendered on in-flight tool block');
+  if (!/^\d+\.\ds$/.test(elapsedText.trim())) {
+    throw new Error(`A2-NEW-5: elapsed text "${elapsedText}" does not match /^\\d+\\.\\ds$/`);
+  }
+
+  // Must ONLY render on in-flight blocks — not on the completed one.
+  const elapsedCount = await win.locator('[data-testid="tool-elapsed"]').count();
+  if (elapsedCount !== 1) {
+    throw new Error(`A2-NEW-5: expected 1 elapsed counter (in-flight only), got ${elapsedCount}`);
+  }
+
+  // A2-NEW-6: "(no result)" marker on the dropped block.
+  const noResultCount = await win.locator('[data-testid="tool-no-result"]').count();
+  if (noResultCount < 1) throw new Error('A2-NEW-6: "(no result)" marker missing on dropped tool block');
+  const noResultText = await win.locator('[data-testid="tool-no-result"]').first().textContent();
+  if (!noResultText || !noResultText.toLowerCase().includes('no result')) {
+    throw new Error(`A2-NEW-6: marker text "${noResultText}" does not include "no result"`);
+  }
+
+  // Completed-healthy block should NOT carry the marker.
+  if (noResultCount > 1) {
+    throw new Error(`A2-NEW-6: marker leaked to healthy block (got ${noResultCount} markers, want 1)`);
+  }
+
+  // Transition: result lands on the in-flight block -> counter disappears.
+  await win.evaluate((s) => {
+    const st = window.__agentoryStore.getState();
+    const prev = st.messagesBySession[s] ?? [];
+    const next = prev.map((b) =>
+      b.id === 't-run' ? { ...b, result: 'done\n' } : b
+    );
+    window.__agentoryStore.setState({ messagesBySession: { ...st.messagesBySession, [s]: next } });
+  }, sid);
+  await win.waitForTimeout(250);
+
+  const elapsedAfter = await win.locator('[data-testid="tool-elapsed"]').count();
+  if (elapsedAfter !== 0) {
+    throw new Error(`A2-NEW-5: elapsed counter should clear after result lands, got ${elapsedAfter}`);
+  }
+
+  log('A2-NEW-5 counter ticking + clears on result; A2-NEW-6 "(no result)" renders on dropped only');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'agent',
@@ -360,6 +462,7 @@ await runHarness({
     { id: 'streaming-caret-lifecycle', run: caseStreamingCaretLifecycle },
     { id: 'inputbar-visible', run: caseInputbarVisible },
     { id: 'chat-copy', run: caseChatCopy },
-    { id: 'input-placeholder', run: caseInputPlaceholder }
+    { id: 'input-placeholder', run: caseInputPlaceholder },
+    { id: 'tool-block-ux', run: caseToolBlockUx }
   ]
 });

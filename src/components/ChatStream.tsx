@@ -137,22 +137,84 @@ function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean
   );
 }
 
+// Threshold (ms) after which a still-running tool block shows a gentle
+// "taking longer than usual…" hint next to the elapsed counter. We don't yet
+// wire a cancel affordance here — that needs a per-tool-use IPC that we
+// don't have today. Stop button in StatusBar already interrupts the whole
+// turn, so the hint semantically routes users there. See A2-NEW-7.
+const STALL_HINT_AFTER_MS = 30_000;
+
+// Format `(now - startedAt)` as a short monospace string. <100s → "12.3s",
+// <100min → "2:34" (mm:ss), ≥100min → "1h23m" so the counter never grows
+// wider than ~5 chars and doesn't shove the collapse chevron around.
+function formatElapsed(ms: number): string {
+  if (ms < 0) ms = 0;
+  const s = ms / 1000;
+  if (s < 100) return `${s.toFixed(1)}s`;
+  const totalSec = Math.floor(s);
+  if (totalSec < 100 * 60) {
+    const m = Math.floor(totalSec / 60);
+    const r = totalSec % 60;
+    return `${m}:${String(r).padStart(2, '0')}`;
+  }
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  return `${h}h${String(m).padStart(2, '0')}m`;
+}
+
 function ToolBlock({
   name,
   brief,
   result,
   isError,
-  input
+  input,
+  now
 }: {
   name: string;
   brief: string;
   result?: string;
   isError?: boolean;
   input?: unknown;
+  // Ticking wall-clock from ChatStream. A single interval at the parent
+  // drives elapsed/stall display for every tool block so we don't spawn N
+  // timers on busy sessions. `undefined` (or stale) = block renders as-is
+  // without a counter; safe fallback for tests and non-running blocks.
+  now?: number;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const hasResult = typeof result === 'string';
+  // Dropped-tool surface (A2-NEW-6). When the tool_result was recorded as
+  // an explicit empty string (Bug L historically; possible future drops)
+  // OR when `brief` is missing/empty, render a muted "(no result)" marker
+  // so the block isn't silent empty space. We only treat this as "dropped"
+  // when a result did arrive — a still-in-flight block (no result yet) is
+  // not dropped, it's just waiting.
+  const emptyResult = hasResult && result === '';
+  const emptyBrief = !brief || brief.length === 0;
+  const isDropped = (emptyResult || (hasResult && emptyBrief)) && !isError;
+  // Elapsed-time tracking (A2-NEW-5). We capture startedAt on the first
+  // render where `result` is still undefined, and freeze endedAt when
+  // result first lands. Refs keep the value stable across re-renders
+  // without triggering re-render cycles of their own.
+  const startedAtRef = useRef<number | null>(hasResult ? null : Date.now());
+  const endedAtRef = useRef<number | null>(hasResult ? Date.now() : null);
+  if (!hasResult && startedAtRef.current === null) {
+    startedAtRef.current = Date.now();
+    endedAtRef.current = null;
+  }
+  if (hasResult && endedAtRef.current === null) {
+    endedAtRef.current = Date.now();
+  }
+  const running = !hasResult && !isError;
+  const elapsedMs =
+    running && startedAtRef.current !== null
+      ? Math.max(0, (now ?? Date.now()) - startedAtRef.current)
+      : null;
+  // Stall hint (A2-NEW-7). Cancel-in-block would need new IPC so we show
+  // text only today; the Stop button in StatusBar still works. Flagged as
+  // follow-up in the PR body.
+  const stalled = elapsedMs !== null && elapsedMs >= STALL_HINT_AFTER_MS;
   const diff = diffFromToolInput(name, input);
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
@@ -206,8 +268,40 @@ function ToolBlock({
           </span>
           <span className={isError ? 'text-state-error/80 text-xs' : 'text-fg-tertiary text-xs'}>({brief})</span>
           {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">{t('chat.toolFailedTag')}</span>}
+          {isDropped && (
+            <span
+              data-testid="tool-no-result"
+              className="text-fg-tertiary/80 text-xs italic ml-1"
+            >
+              {t('chat.toolNoResult')}
+            </span>
+          )}
           {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
         </span>
+        {/* Right-aligned cluster: elapsed counter (A2-NEW-5) + stall hint
+            (A2-NEW-7). Lives outside the truncating name+brief span so it
+            stays visible even when the brief is long. Only renders for
+            still-running blocks; freezes/clears once result lands. */}
+        {elapsedMs !== null && (
+          <span
+            data-testid="tool-elapsed"
+            className="ml-auto pl-3 font-mono text-mono-xs text-state-running/90 tabular-nums shrink-0"
+            aria-label={`elapsed ${formatElapsed(elapsedMs)}`}
+          >
+            {formatElapsed(elapsedMs)}
+          </span>
+        )}
+        {stalled && (
+          <span
+            data-testid="tool-stalled"
+            className={
+              'font-mono text-mono-xs text-state-waiting/90 italic shrink-0 ' +
+              (elapsedMs !== null ? 'ml-2' : 'ml-auto pl-3')
+            }
+          >
+            {t('chat.toolTakingLonger')}
+          </span>
+        )}
       </button>
       <AnimatePresence initial={false}>
         {open && (
@@ -914,7 +1008,7 @@ function renderBlock(
   activeId: string,
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
   bumpComposerFocus: () => void,
-  opts: { permissionAutoFocus?: boolean } = {}
+  opts: { permissionAutoFocus?: boolean; now?: number } = {}
 ) {
   switch (b.kind) {
     case 'user':
@@ -922,7 +1016,7 @@ function renderBlock(
     case 'assistant':
       return <AssistantBlock text={b.text} streaming={b.streaming} />;
     case 'tool':
-      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} />;
+      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} />;
     case 'todo':
       return <TodoBlock todos={b.todos} />;
     case 'waiting':
@@ -1021,6 +1115,22 @@ export function ChatStream() {
     !hasPendingPermission &&
     (lastBlock === null || lastBlock.kind === 'user');
 
+  // Single wall-clock tick for all in-flight tool blocks. We bump `now`
+  // every 100ms only while at least one tool block is still waiting for
+  // its result (or a completed one is within the stall-hint window so the
+  // hint can appear retroactively). When no tool is in-flight the interval
+  // shuts down, so idle sessions don't pay any CPU cost. Per block cost
+  // is a single prop read — no per-block setInterval.
+  const hasInflightTool = blocks.some(
+    (b) => b.kind === 'tool' && typeof b.result !== 'string' && !b.isError
+  );
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasInflightTool) return;
+    const id = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [hasInflightTool]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -1109,7 +1219,8 @@ export function ChatStream() {
               return blocks.map((m, i) => (
                 <div key={m.id}>
                   {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, {
-                    permissionAutoFocus: i === lastPermIdx
+                    permissionAutoFocus: i === lastPermIdx,
+                    now
                   })}
                 </div>
               ));
