@@ -145,40 +145,106 @@ async function snapDiag(label) {
 }
 const filePath = path.join(PROJ, 'hello.txt');
 
-// Wait up to 90s for the Allow button to appear.
+// Allow-click loop. Earlier probe revision clicked Allow exactly once and
+// assumed the first permission prompt belonged to Write. But the user's
+// `~/.claude` can inject `Skill` (using-superpowers / slash-command adapter)
+// or other preamble tools (Bash for mkdir, etc) as the FIRST tool the model
+// runs, which means the first permission prompt can be for something other
+// than Write/Edit/MultiEdit. Probabilistic injection caused ~20% flake
+// (see dogfood-logs/BUG-186-REPRO.md).
+//
+// Fix: loop — click Allow on any permission prompt that appears, track
+// which tool_use_id got resolved, and keep going until either the
+// Write/Edit/MultiEdit tool_result lands in the store OR a 90s timeout
+// elapses. For each non-Write/Edit/MultiEdit prompt, log a warning so
+// future flake classes are diagnosable.
 const allowSel = '[data-perm-action="allow"]';
-const waitDl = Date.now() + 90_000;
-let allowClicked = false;
-while (Date.now() < waitDl) {
-  await win.waitForTimeout(1000);
-  const visible = await win
-    .locator(allowSel)
-    .first()
-    .isVisible({ timeout: 200 })
-    .catch(() => false);
-  if (visible) {
-    await snapDiag('pre-allow');
-    await win.locator(allowSel).first().click();
-    allowClicked = true;
-    log('clicked Allow (Y)');
-    await snapDiag('post-allow');
-    break;
-  }
-}
-if (!allowClicked) fail('never saw Allow button within 90s', app);
-
-// 60s observation window for the three signals.
-const obsStart = Date.now();
+const WRITE_LIKE = new Set(['Write', 'Edit', 'MultiEdit']);
+const resolvedIds = new Set();
+const overallDl = Date.now() + 90_000;
+let firstAllowAt = null;
 let fsHit = null;
 let domHit = null;
 let storeHit = null;
 let snappedShort = false;
-while (Date.now() - obsStart < 60_000) {
-  await win.waitForTimeout(1500);
-  if (!snappedShort && Date.now() - obsStart >= 500) {
+
+async function getWaitingPrompt() {
+  // Return { toolName, toolUseId } of the currently-waiting permission
+  // block, if any. Best-effort — shape matches what snapDiag reads.
+  return await win
+    .evaluate(() => {
+      const st = window.__agentoryStore?.getState?.();
+      const sid = st?.activeId;
+      const blocks = st?.messagesBySession?.[sid] || [];
+      // Waiting permission blocks surface as kind 'tool' with a
+      // permissionState === 'waiting' marker, OR the renderer creates
+      // a dedicated wait-perm block. Walk in reverse for the most recent.
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        const ps = b.permissionState || b.permission || null;
+        if (ps === 'waiting' || (b.kind === 'tool' && ps === 'waiting')) {
+          return {
+            toolName: b.toolName || b.name || null,
+            toolUseId: b.toolUseId || b.id || null,
+          };
+        }
+      }
+      // Fallback: last tool block with no result (likely the one the
+      // prompt belongs to).
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind === 'tool' && !(typeof b.result === 'string' && b.result.length > 0)) {
+          return {
+            toolName: b.toolName || b.name || null,
+            toolUseId: b.toolUseId || b.id || null,
+          };
+        }
+      }
+      return null;
+    })
+    .catch(() => null);
+}
+
+while (Date.now() < overallDl) {
+  await win.waitForTimeout(1000);
+  if (firstAllowAt && !snappedShort && Date.now() - firstAllowAt >= 500) {
     await snapDiag('post-allow+500ms');
     snappedShort = true;
   }
+  // Check for a visible Allow button and click it (loop, not single-shot).
+  const allowVisible = await win
+    .locator(allowSel)
+    .first()
+    .isVisible({ timeout: 200 })
+    .catch(() => false);
+  if (allowVisible) {
+    const waiting = await getWaitingPrompt();
+    const toolName = waiting?.toolName || '(unknown)';
+    const toolUseId = waiting?.toolUseId || null;
+    // Dedup only when we have a real id; without one, click anyway — the
+    // button's visibility is the source of truth.
+    if (!toolUseId || !resolvedIds.has(toolUseId)) {
+      if (!firstAllowAt) {
+        await snapDiag('pre-allow');
+        firstAllowAt = Date.now();
+      }
+      await win.locator(allowSel).first().click().catch(() => {});
+      if (toolUseId) resolvedIds.add(toolUseId);
+      if (WRITE_LIKE.has(toolName)) {
+        log(`[probe] clicked Allow for Write-like tool: ${toolName} (id=${toolUseId || 'n/a'})`);
+      } else {
+        // Preamble tool (Skill / Bash / etc). Warn so env-injection flake
+        // classes are visible to anyone running the probe.
+        console.warn(`[probe] clicked Allow for preamble tool: ${toolName} (id=${toolUseId || 'n/a'})`);
+        log(`[probe] preamble tool prompt answered: ${toolName}`);
+      }
+      if (!snappedShort) await snapDiag('post-allow');
+      // Give the renderer a beat to clear the button before next iteration
+      // so we don't double-click the same prompt.
+      await win.waitForTimeout(500);
+    }
+  }
+  // Signal checks, each loop iteration.
   if (!fsHit && fs.existsSync(filePath)) {
     fsHit = { content: fs.readFileSync(filePath, 'utf8') };
     log(`FS HIT: ${JSON.stringify(fsHit)}`);
@@ -186,7 +252,10 @@ while (Date.now() - obsStart < 60_000) {
   const domFound = await win
     .evaluate(() => {
       const text = document.body?.innerText || '';
-      return /File created successfully|File written|hello\.txt/.test(text);
+      // Tightened: the old regex (`hello\.txt` alone) matched the probe's
+      // own user prompt text, producing a false positive even when Write
+      // never ran. Anchor on the success sentence the model emits.
+      return /File created successfully at[^\n]*hello\.txt/.test(text);
     })
     .catch(() => false);
   if (!domHit && domFound) {
@@ -198,10 +267,6 @@ while (Date.now() - obsStart < 60_000) {
       const st = window.__agentoryStore?.getState?.();
       const sid = st?.activeId;
       const blocks = st?.messagesBySession?.[sid] || [];
-      // Accept any file-mutating tool — the prompt anchors on Write but if
-      // the model picks Edit/MultiEdit they exercise the SAME Bug L
-      // permission round-trip path, so the test is still valid. The fs
-      // assertion below independently verifies the file content.
       const writeLike = new Set(['Write', 'Edit', 'MultiEdit']);
       const w = blocks.find((b) => {
         const tn = b.toolName || b.name;
@@ -218,6 +283,7 @@ while (Date.now() - obsStart < 60_000) {
   }
   if (fsHit && storeHit) break;
 }
+if (!firstAllowAt) fail('never saw Allow button within 90s', app);
 
 const projFiles = (() => {
   try {
