@@ -134,7 +134,13 @@ describe('streamEventToTranslation', () => {
     });
   });
 
-  it('AskUserQuestion tool_use becomes a question block with parsed options', () => {
+  it('AskUserQuestion tool_use is suppressed (the can_use_tool path renders the question)', () => {
+    // Bug A+B fix (2026-04-23): every tool — including AskUserQuestion — is
+    // intercepted by the can_use_tool control RPC, which drives the
+    // permission/question render via lifecycle.permissionRequestToWaitingBlock.
+    // If we ALSO emitted a question block from the assistant tool_use, two
+    // cards would render for one logical question and the second card's
+    // submit would bypass agentResolvePermission, hanging claude.exe.
     const out = streamEventToTranslation(
       asEvent({
         type: 'assistant',
@@ -166,18 +172,7 @@ describe('streamEventToTranslation', () => {
         }
       })
     );
-    expect(out.append).toHaveLength(1);
-    const b = out.append[0] as {
-      kind: string;
-      toolUseId?: string;
-      questions?: Array<{ question: string; multiSelect?: boolean; options: Array<{ label: string }> }>;
-    };
-    expect(b.kind).toBe('question');
-    expect(b.toolUseId).toBe('tu-q1');
-    expect(b.questions).toHaveLength(1);
-    expect(b.questions![0].question).toBe('Pick a stack');
-    expect(b.questions![0].multiSelect).toBe(false);
-    expect(b.questions![0].options.map((o) => o.label)).toEqual(['TypeScript', 'Rust']);
+    expect(out.append).toHaveLength(0);
   });
 
   it('AskUserQuestion with malformed input falls back to a generic tool block', () => {

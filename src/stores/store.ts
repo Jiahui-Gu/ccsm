@@ -1086,16 +1086,53 @@ export const useStore = create<State & Actions>((set, get) => ({
       // Coalesce by id: if a block with the same id already exists (e.g. an
       // assistant text block built up by streaming deltas), replace it in
       // place with the finalized version rather than duplicating it.
+      //
+      // Defense-in-depth dedupe for AskUserQuestion: claude.exe surfaces the
+      // SAME logical question twice — once via `can_use_tool` (becomes a
+      // `question` block keyed by `q-${requestId}` carrying `requestId`) and
+      // once via the assistant `tool_use` event (would key by
+      // `${msgId}:tu${idx}` carrying `toolUseId`). Different ids, identical
+      // intent. The id-based merge above can't catch this because the keys
+      // differ. We additionally collapse a new `question` whose `toolUseId`
+      // matches one already present, OR whose `requestId` matches. The
+      // primary fix is to suppress the assistant-tool_use emission entirely
+      // (see `assistantBlocks` in `stream-to-blocks.ts`); this guard is
+      // belt-and-suspenders so a future regression — or a CLI version that
+      // bypasses can_use_tool for AskUserQuestion — never causes two cards
+      // to render and split the user's submit between two routing paths
+      // (one of which leaves claude.exe blocked on a permission promise
+      // that never settles, exits with code 1, and strands the UI in a
+      // perpetual "running" state).
       let next = prev;
       const toAppend: MessageBlock[] = [];
       for (const b of blocks) {
         const idx = next.findIndex((x) => x.id === b.id);
-        if (idx === -1) {
-          toAppend.push(b);
-        } else {
+        if (idx !== -1) {
           if (next === prev) next = prev.slice();
           next[idx] = b;
+          continue;
         }
+        if (b.kind === 'question') {
+          const dupIdx = next.findIndex((x) => {
+            if (x.kind !== 'question') return false;
+            const xTu = (x as { toolUseId?: string }).toolUseId;
+            const xReq = (x as { requestId?: string }).requestId;
+            const bTu = (b as { toolUseId?: string }).toolUseId;
+            const bReq = (b as { requestId?: string }).requestId;
+            if (xTu && bTu && xTu === bTu) return true;
+            if (xReq && bReq && xReq === bReq) return true;
+            return false;
+          });
+          if (dupIdx !== -1) {
+            // Keep the EXISTING block (it already carries any user state /
+            // requestId wiring) — drop the new one. Don't replace, because
+            // the can_use_tool path's block has the requestId we need for
+            // routing, and we want to preserve that even if the assistant-
+            // event block arrives later.
+            continue;
+          }
+        }
+        toAppend.push(b);
       }
       if (toAppend.length === 0 && next === prev) return s;
       const finalNext = toAppend.length > 0 ? [...next, ...toAppend] : next;
