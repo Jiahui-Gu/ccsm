@@ -517,8 +517,11 @@ describe('SessionRunner outbound control', () => {
     expect((req.request as Record<string, unknown>).subtype).toBe('interrupt');
     emitFrame(proc.stdout, {
       type: 'control_response',
-      request_id: req.request_id,
-      response: {},
+      response: {
+        subtype: 'success',
+        request_id: req.request_id,
+        response: {},
+      },
     });
     await expect(p).resolves.toBeUndefined();
     runner.close();
@@ -538,7 +541,14 @@ describe('SessionRunner outbound control', () => {
         (l.request as Record<string, unknown>).subtype === 'set_model'
     ) as Record<string, unknown>;
     expect((req.request as Record<string, unknown>).model).toBe('opus');
-    emitFrame(proc.stdout, { type: 'control_response', request_id: req.request_id, response: {} });
+    emitFrame(proc.stdout, {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: req.request_id,
+        response: {},
+      },
+    });
     await expect(p).resolves.toBeUndefined();
     runner.close();
   });

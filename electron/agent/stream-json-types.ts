@@ -347,8 +347,28 @@ export type ControlRequestEvent = z.infer<typeof ControlRequestEventSchema>;
 export const ControlResponseEventSchema = z
   .object({
     type: z.literal('control_response'),
-    request_id: z.string(),
-    response: z.unknown()
+    // The Claude CLI nests `request_id` AND `subtype` INSIDE the `response`
+    // envelope, NOT at the top level. Earlier reverse-engineering docs showed
+    // `{ type, request_id, response }` which turned out to be wrong — captured
+    // wire frames look like:
+    //   success: { type: "control_response",
+    //              response: { subtype: "success", request_id, response: {...} } }
+    //   error:   { type: "control_response",
+    //              response: { subtype: "error",   request_id, error: "..." } }
+    // The pre-fix schema accepted the frame (top-level passthrough swallowed
+    // the unknown nesting and `request_id` was missing) but the value of
+    // `request_id` on the parsed frame was `undefined`, so every outbound
+    // control_request silently 5s-timed-out. See Bug K / Task #142.
+    response: z
+      .object({
+        subtype: z.string(),
+        request_id: z.string(),
+        // success path: arbitrary inner payload
+        response: z.unknown().optional(),
+        // error path
+        error: z.string().optional(),
+      })
+      .passthrough(),
   })
   .passthrough();
 export type ControlResponseEvent = z.infer<typeof ControlResponseEventSchema>;

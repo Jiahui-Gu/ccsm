@@ -96,6 +96,16 @@ real samples and update the schemas.
   top-level `type` literal is the same string but the discriminator that
   matters is `request.subtype`. Don't try to merge them — direction is the
   context, not a wire field.
+- **Inbound `control_response` (CLI → us) is NESTED, not flat.** Bug K /
+  Task #142: pre-fix the schema expected `{ type, request_id, response }` but
+  captured wire frames look like:
+    success: `{ type: "control_response", response: { subtype: "success", request_id, response: {...payload} } }`
+    error:   `{ type: "control_response", response: { subtype: "error",   request_id, error: "..." } }`
+  This is the OPPOSITE direction from outbound `control_response` (us → CLI),
+  which uses the FLAT `{ type, request_id, response }` shape — confirmed by
+  the fact that `can_use_tool` / `hook_callback` ack flows have always
+  worked. Don't unify the two: outbound stays flat, inbound is nested.
+  Discriminate on `response.subtype` to distinguish success vs error.
 - **`ControlRequestPayloadSchema` is `z.union`, not `discriminatedUnion`.**
   `discriminatedUnion('subtype')` would reject any unknown subtype and force
   the parser into the `'unknown'` bucket — meaning control-rpc would never
