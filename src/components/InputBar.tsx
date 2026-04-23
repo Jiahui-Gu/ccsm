@@ -68,7 +68,7 @@ function AttachmentChip({
         <span className="text-xs text-fg-primary truncate max-w-[180px]" title={attachment.name}>
           {attachment.name}
         </span>
-        <span className="text-[10px] text-fg-tertiary font-mono uppercase tracking-wider">
+        <span className="text-mono-xs text-fg-tertiary font-mono uppercase tracking-wider">
           {attachment.mediaType.replace('image/', '')} · {formatSize(attachment.size)}
         </span>
       </div>
@@ -100,7 +100,7 @@ function DropOverlay({ show }: { show: boolean }) {
         >
           <ImagePlus size={28} className="text-accent" />
           <span className="font-mono text-sm text-accent tracking-wide">{t('chat.dropImageHint')}</span>
-          <span className="font-mono text-[10px] uppercase tracking-wider text-accent/70">
+          <span className="font-mono text-mono-xs uppercase tracking-wider text-accent/70">
             {t('chat.attachmentFormatsHint', { size: formatSize(MAX_IMAGE_BYTES) })}
           </span>
         </motion.div>
@@ -722,7 +722,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             <ImagePlus size={14} className="stroke-[2.25]" />
           </button>
           {attachments.length > 0 && (
-            <span className="font-mono text-[10px] uppercase tracking-wider text-fg-tertiary">
+            <span className="font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary">
               {attachments.length}/{MAX_IMAGES_PER_MESSAGE}
             </span>
           )}
@@ -730,7 +730,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
         <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
           {queueLength > 0 && (
             <span
-              className="font-mono text-[10px] uppercase tracking-wider text-fg-tertiary"
+              className="font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary"
               title={t('chat.queueChip', { count: queueLength })}
             >
               {t('chat.queueChip', { count: queueLength })}

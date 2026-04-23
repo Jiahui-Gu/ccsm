@@ -183,7 +183,7 @@ export function CommandPalette({
         <RD.Content
           onKeyDown={onKeyDown}
           className={cn(
-            'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[600px] max-w-[90vw]',
+            'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[calc(100vw-2rem)] max-w-xl',
             'rounded-lg border border-border-default bg-bg-panel',
             'surface-highlight',
             'shadow-[var(--surface-shadow)]',

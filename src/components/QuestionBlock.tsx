@@ -167,7 +167,7 @@ function QuestionRow({ q, qi, picks, submitted, onToggle, isFirstQuestion }: Que
   return (
     <div className="space-y-2">
       {q.header && (
-        <div className="font-mono text-[11px] uppercase tracking-wider text-fg-tertiary">{q.header}</div>
+        <div className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">{q.header}</div>
       )}
       <div className="text-sm text-fg-primary">{q.question}</div>
       {q.multiSelect ? (
