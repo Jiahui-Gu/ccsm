@@ -4,6 +4,7 @@ import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
+import { useShallow } from 'zustand/react/shallow';
 import { SlashCommandPicker } from './SlashCommandPicker';
 import {
   BUILT_IN_COMMANDS,
@@ -129,27 +130,29 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   );
   const [rejections, setRejections] = useState<AttachmentRejection[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const session = useStore((s) => s.sessions.find((x) => x.id === sessionId));
-  const started = useStore((s) => !!s.startedSessions[sessionId]);
-  const running = useStore((s) => !!s.runningSessions[sessionId]);
-  const queueLength = useStore((s) => s.messageQueues[sessionId]?.length ?? 0);
-  const hasMessages = useStore((s) => (s.messagesBySession[sessionId]?.length ?? 0) > 0);
-  const permission = useStore((s) => s.permission);
-  const appendBlocks = useStore((s) => s.appendBlocks);
-  const markStarted = useStore((s) => s.markStarted);
-  const setRunning = useStore((s) => s.setRunning);
-  const markInterrupted = useStore((s) => s.markInterrupted);
-  const enqueueMessage = useStore((s) => s.enqueueMessage);
-  const clearQueue = useStore((s) => s.clearQueue);
-  const focusInputNonce = useStore((s) => s.focusInputNonce);
-  const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
-  // True iff there's a pending permission/plan/question prompt for this
-  // session — those blocks auto-focus their own primary control (see the
-  // setTimeout(..., 150) in WaitingBlock/PlanBlock/QuestionBlock). We let
-  // them win and skip stealing focus into the textarea.
-  const hasPendingWaiting = useStore((s) =>
-    (s.messagesBySession[sessionId] ?? []).some((b) => b.kind === 'waiting')
+  // Perf: subscribe to all reactive per-session signals via useShallow so this
+  // component only re-renders when one of these specific values changes
+  // (instead of once per any store mutation, like an appendBlocks chunk).
+  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce } = useStore(
+    useShallow((s) => ({
+      session: s.sessions.find((x) => x.id === sessionId),
+      started: !!s.startedSessions[sessionId],
+      running: !!s.runningSessions[sessionId],
+      queueLength: s.messageQueues[sessionId]?.length ?? 0,
+      hasMessages: (s.messagesBySession[sessionId]?.length ?? 0) > 0,
+      // True iff there's a pending permission/plan/question prompt for this
+      // session — those blocks auto-focus their own primary control (see the
+      // setTimeout(..., 150) in WaitingBlock/PlanBlock/QuestionBlock). We let
+      // them win and skip stealing focus into the textarea.
+      hasPendingWaiting: (s.messagesBySession[sessionId] ?? []).some((b) => b.kind === 'waiting'),
+      permission: s.permission,
+      focusInputNonce: s.focusInputNonce,
+    }))
   );
+  // Action references are stable across renders in Zustand v5, so reading them
+  // via getState() avoids registering listeners that would never fire anyway.
+  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus } =
+    useStore.getState();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Skip the very first observation of focusInputNonce so app mount doesn't
