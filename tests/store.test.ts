@@ -219,6 +219,67 @@ describe('store: messages + tool result wiring (PR G regression guard)', () => {
     useStore.getState().setToolResult('does-not-exist', 'toolu_001', 'x', false);
     expect(useStore.getState().messagesBySession['does-not-exist']).toBeUndefined();
   });
+
+  it('appendBlocks dedupes a second `question` block with the same toolUseId', () => {
+    // Bug A+B fix (2026-04-23): defense in depth. The PRIMARY fix is in
+    // stream-to-blocks.ts (suppress the assistant tool_use AskUserQuestion
+    // emission), but if anything ever lets two question blocks slip through
+    // for one logical question we must collapse them so submit only fires
+    // ONE round-trip — otherwise claude.exe is left blocked on a
+    // can_use_tool promise that never settles, exits with code 1, and the
+    // UI is stranded "running" forever.
+    useStore.getState().createSession('~/q');
+    const sid = useStore.getState().activeId;
+    useStore.getState().appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-1',
+        toolUseId: 'tu-q-1',
+        questions: [{ question: 'Pick a stack', options: [{ label: 'TS' }, { label: 'Rust' }] }]
+      }
+    ]);
+    // Same logical question, different block id, same toolUseId — the
+    // assistant tool_use path used to emit this duplicate.
+    useStore.getState().appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-2-different-id-same-toolUseId',
+        toolUseId: 'tu-q-1',
+        questions: [{ question: 'Pick a stack', options: [{ label: 'TS' }, { label: 'Rust' }] }]
+      }
+    ]);
+    const qBlocks = useStore
+      .getState()
+      .messagesBySession[sid].filter((b) => b.kind === 'question');
+    expect(qBlocks).toHaveLength(1);
+    expect(qBlocks[0].id).toBe('q-1');
+  });
+
+  it('appendBlocks dedupes a second `question` block with the same requestId', () => {
+    useStore.getState().createSession('~/q');
+    const sid = useStore.getState().activeId;
+    useStore.getState().appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-perm-A',
+        requestId: 'perm-A',
+        questions: [{ question: 'Pick', options: [{ label: 'X' }] }]
+      }
+    ]);
+    useStore.getState().appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-perm-A-dup',
+        requestId: 'perm-A',
+        questions: [{ question: 'Pick', options: [{ label: 'X' }] }]
+      }
+    ]);
+    const qBlocks = useStore
+      .getState()
+      .messagesBySession[sid].filter((b) => b.kind === 'question');
+    expect(qBlocks).toHaveLength(1);
+    expect(qBlocks[0].id).toBe('q-perm-A');
+  });
 });
 
 describe('store: resolvePermission', () => {
