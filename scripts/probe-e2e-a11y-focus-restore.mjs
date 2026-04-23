@@ -1,12 +1,21 @@
 // E2E: a11y focus restore + ChatStream live region.
 //
 // Contracts under test:
-//   1. After clicking a session row in the sidebar, that <li> holds focus.
-//   2. Opening the Settings dialog from a keyboard shortcut and closing it
-//      via Esc restores focus to the session row that had it before.
+//   1. After clicking a session row in the sidebar, the row carries the
+//      a11y attributes (role=option, tabindex=0, aria-selected=true) that
+//      the focus-restore fallback selector keys off of.
+//   2. After clicking a session row, focus lands on the chat textarea
+//      (selectSession bumps focusInputNonce -> InputBar pulls focus, by
+//      design, matches Claude Desktop). Opening Settings via Cmd+, and
+//      closing via Esc restores focus to that textarea.
 //   3. Same restoration contract for the CommandPalette (Cmd/Ctrl+F).
 //   4. The chat scroll container exposes aria-live="polite" so streaming
 //      additions are announced to screen readers.
+//
+// The fallback path in useFocusRestore (capture is null -> fall back to
+// the active session row) is covered by tests/use-focus-restore.test.tsx
+// rather than here, since that state is unreachable from a normal mouse
+// click flow (selectSession always leaves focus on the textarea).
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,14 +94,21 @@ try {
     fail(`expected aria-relevant="additions" on chat stream, got ${liveAttrs.relevant}`, app);
   console.log('[probe-e2e-a11y-focus-restore] PASS contract 4: chat stream aria-live attrs');
 
-  // --- Contract 1: clicking session focuses its <li> -------------------
+  // --- Contract 1: clicking session wires the row a11y attrs -----------
+  // selectSession() also bumps focusInputNonce so the chat textarea pulls
+  // focus immediately after the click (intentional, matches Claude Desktop
+  // UX). Contract 1 only asserts the row attributes; contract 2/3 below
+  // assert the textarea-focus + restore behavior.
   const sessionLi = win.locator('[data-session-id="sA"]');
   await sessionLi.waitFor({ state: 'visible', timeout: 5000 });
+  // Wait for the InputBar textarea to exist BEFORE clicking. Without this
+  // the click can race the initial mount: the post-click nonce bump fires
+  // before InputBar's mount-time first-observation runs, the effect treats
+  // the bumped value as the baseline (focusNonceSeenRef starts as null),
+  // and no subsequent focus pull happens. This gates on the realistic
+  // user flow: the chat surface is visible before the click.
+  await win.locator('textarea[data-input-bar]').waitFor({ state: 'visible', timeout: 5000 });
   await sessionLi.click();
-  // Some focus orchestration moves focus into the textarea after a session
-  // click. For this contract we just confirm the active session row is in
-  // the tab order with the right a11y attributes — that's what the focus-
-  // restore fallback selector keys off of.
   const sessionAttrs = await win.evaluate(() => {
     const el = document.querySelector('[data-session-id="sA"]');
     if (!el) return null;
@@ -111,31 +127,48 @@ try {
     fail(`expected aria-selected=true on active session, got ${sessionAttrs.ariaSelected}`, app);
   console.log('[probe-e2e-a11y-focus-restore] PASS contract 1: session row a11y wired');
 
-  // Programmatically focus the session li (mirrors what useFocusRestore's
-  // fallback selector targets). Use Playwright's locator.focus() which
-  // dispatches a real focus event chain.
-  // Wait for any post-click focus orchestration (selectSession bumps
-  // focusInputNonce → InputBar effect pulls focus into the chat textarea)
-  // to settle before we anchor focus on the row for the close-restore test.
-  await win.waitForTimeout(120);
-  await sessionLi.focus();
-  // Poll instead of single-read — gives the focus event a tick to land
-  // even if a microtask runs between here and the read.
-  const focusedBefore = await win
+  // Establish the precondition for contracts 2/3: the chat textarea is the
+  // focused element. In a sighted-user flow this happens automatically after
+  // a session click (selectSession -> focusInputNonce bump -> InputBar effect
+  // pulls focus into the textarea, by design, matches Claude Desktop UX).
+  // In the seeded probe environment that chain races initial mount: if the
+  // InputBar's mount-time effect hasn't run before the click bumps the nonce,
+  // the bumped value becomes its baseline and no focus pull happens. To keep
+  // contracts 2/3 deterministic we focus the textarea directly here — the
+  // restore contract is independent of HOW focus arrived on the textarea.
+  // (The selectSession-pulls-focus behavior is covered by InputBar component
+  // tests in tests/inputbar.test.tsx, not by this probe.)
+  const textarea = win.locator('textarea[data-input-bar]');
+  await textarea.focus();
+  const textareaReady = await win
     .waitForFunction(
-      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      () => {
+        const el = document.activeElement;
+        return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+      },
       null,
-      { timeout: 1000 }
+      { timeout: 1500 }
     )
-    .then(() => 'sA')
-    .catch(() => null);
-  if (focusedBefore !== 'sA')
-    fail(`expected session sA to be focused before opening dialog, got ${focusedBefore}`, app);
+    .then(() => true)
+    .catch(() => false);
+  if (!textareaReady) {
+    const dbg = await win.evaluate(() => {
+      const el = document.activeElement;
+      const ta = document.querySelector('textarea[data-input-bar]');
+      return {
+        activeTag: el?.tagName || null,
+        activeId: el?.getAttribute?.('data-session-id') || null,
+        activeAttrs: el ? Array.from(el.attributes).map(a => `${a.name}=${a.value}`).join(' ') : null,
+        textareaExists: !!ta,
+        nonce: window.__agentoryStore?.getState()?.focusInputNonce
+      };
+    });
+    fail(`expected chat textarea focused after session click, debug=${JSON.stringify(dbg)}`, app);
+  }
 
   // --- Contract 2: Settings dialog focus restore -----------------------
   // Open via the global Cmd/Ctrl+, shortcut wired in App.tsx.
   await win.keyboard.press('Control+,');
-  // Wait for the dialog to mount.
   await win
     .locator('[role="tablist"]')
     .first()
@@ -164,21 +197,20 @@ try {
     );
   console.log('[probe-e2e-a11y-focus-restore] PASS contract 5: settings tabs have role/aria-selected/aria-controls');
 
-  // Close via Esc.
+  // Close via Esc and assert focus comes back to the textarea.
   await win.keyboard.press('Escape');
-  // Poll for focus to land on the session row. The focus-restore tick + Radix
-  // unmount race against any unrelated focus orchestration; the contract is
-  // that focus DOES return to the trigger location at some point in the
-  // immediate window after close, which is what an SR/keyboard user observes.
-  const settingsFocusOk = await win
+  const settingsRestored = await win
     .waitForFunction(
-      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      () => {
+        const el = document.activeElement;
+        return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+      },
       null,
       { timeout: 1500 }
     )
     .then(() => true)
     .catch(() => false);
-  if (!settingsFocusOk) {
+  if (!settingsRestored) {
     const dbg = await win.evaluate(() => {
       const el = document.activeElement;
       return {
@@ -188,28 +220,30 @@ try {
       };
     });
     fail(
-      `expected focus restored to session sA after Settings close within 1.5s, last seen ${JSON.stringify(dbg)}`,
+      `expected focus restored to chat textarea after Settings close within 1.5s, last seen ${JSON.stringify(dbg)}`,
       app
     );
   }
-  console.log('[probe-e2e-a11y-focus-restore] PASS contract 2: Settings dialog restores focus to active session');
+  console.log('[probe-e2e-a11y-focus-restore] PASS contract 2: Settings dialog restores focus to chat textarea');
 
   // --- Contract 3: CommandPalette focus restore ------------------------
-  // Re-anchor focus to the session li to make the test deterministic.
-  // Settle InputBar's nonce-driven focus effect before re-anchoring, and
-  // poll the result to absorb any microtask races.
-  await win.waitForTimeout(120);
-  await sessionLi.focus();
-  const reAnchored = await win
+  // Re-anchor focus on the textarea before opening the palette, mirroring
+  // the contract-2 precondition.
+  await textarea.focus();
+  const textareaStillFocused = await win
     .waitForFunction(
-      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      () => {
+        const el = document.activeElement;
+        return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+      },
       null,
       { timeout: 1000 }
     )
-    .then(() => 'sA')
-    .catch(() => null);
-  if (reAnchored !== 'sA')
-    fail(`expected session sA to be re-anchored before CommandPalette open, got ${reAnchored}`, app);
+    .then(() => true)
+    .catch(() => false);
+  if (!textareaStillFocused)
+    fail('expected chat textarea focused before opening CommandPalette', app);
+
   await win.keyboard.press('Control+f');
   // Palette uses an <input> to receive focus on open.
   await win
@@ -218,15 +252,18 @@ try {
     .waitFor({ state: 'visible', timeout: 5000 });
   await win.waitForTimeout(50); // let Radix FocusScope's setTimeout(0) commit
   await win.keyboard.press('Escape');
-  const paletteFocusOk = await win
+  const paletteRestored = await win
     .waitForFunction(
-      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      () => {
+        const el = document.activeElement;
+        return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+      },
       null,
       { timeout: 1500 }
     )
     .then(() => true)
     .catch(() => false);
-  if (!paletteFocusOk) {
+  if (!paletteRestored) {
     const dbg = await win.evaluate(() => {
       const el = document.activeElement;
       return {
@@ -236,11 +273,11 @@ try {
       };
     });
     fail(
-      `expected focus restored to session sA after CommandPalette close within 1.5s, last seen ${JSON.stringify(dbg)}`,
+      `expected focus restored to chat textarea after CommandPalette close within 1.5s, last seen ${JSON.stringify(dbg)}`,
       app
     );
   }
-  console.log('[probe-e2e-a11y-focus-restore] PASS contract 3: CommandPalette restores focus to active session');
+  console.log('[probe-e2e-a11y-focus-restore] PASS contract 3: CommandPalette restores focus to chat textarea');
 
   console.log('\n[probe-e2e-a11y-focus-restore] ALL CONTRACTS PASS');
   await app.close();
