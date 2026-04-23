@@ -11,9 +11,46 @@ import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
 
-// runningSessions, interruptedSessions, messageQueues are intentionally NOT
-// persisted — they're runtime flags tied to the current agent process.
-// Restoring them would block recovery on next launch. See PR #156.
+/**
+ * Single source of truth for the set of store fields that flow into the
+ * persisted JSON snapshot. Both the write path (subscriber in
+ * `hydrateStore`) and the reference-equality early-bail comparator
+ * (perf optimisation from PR #166) iterate this list, so adding a new
+ * persisted field only requires editing this array (plus `PersistedState`
+ * for the on-disk type).
+ *
+ * `version` is intentionally NOT included — it's a fixed literal stamped
+ * onto every snapshot, not a store field.
+ *
+ * `sidebarWidthPct` is also NOT included — it's a legacy on-disk-only
+ * field consumed by `resolvePersistedSidebarWidth` during hydration. New
+ * writes always populate `sidebarWidth` (px) instead.
+ *
+ * runningSessions, interruptedSessions, messageQueues, messagesBySession,
+ * statsBySession, focusInputNonce, models, connection, cliStatus etc. are
+ * intentionally NOT persisted — they're runtime state tied to the current
+ * agent process / IPC layer. Restoring them would block recovery on next
+ * launch. See PR #156.
+ */
+export const PERSISTED_KEYS = [
+  'sessions',
+  'groups',
+  'activeId',
+  'model',
+  'permission',
+  'sidebarCollapsed',
+  'sidebarWidth',
+  'theme',
+  'fontSize',
+  'fontSizePx',
+  'density',
+  'recentProjects',
+  'tutorialSeen',
+  'notificationSettings'
+] as const;
+
+export type PersistedKey = typeof PERSISTED_KEYS[number];
+
 export interface PersistedState {
   version: 1;
   sessions: Session[];
