@@ -111,7 +111,9 @@ const en = {
     prCheckRunning: 'running',
     prCheckPassed: 'passed',
     prCheckFailed: 'failed',
-    prOpenDetailsAria: 'Open details for {{name}}'
+    prOpenDetailsAria: 'Open details for {{name}}',
+    loadHistoryFailed: 'Failed to load history',
+    retry: 'Retry'
   },
   sidebar: {
     newSession: 'New Session',
