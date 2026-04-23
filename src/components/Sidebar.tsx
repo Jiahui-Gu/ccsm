@@ -45,7 +45,12 @@ import { InlineRename } from './ui/InlineRename';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { useToast } from './ui/Toast';
 import { useTranslation } from '../i18n/useTranslation';
-import { DURATION_RAW, EASING } from '../lib/motion';
+import {
+  DURATION_RAW,
+  EASING,
+  MOTION_SESSION_SWITCH_DURATION,
+  MOTION_STANDARD_EASING,
+} from '../lib/motion';
 import type { Group, Session } from '../types';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
@@ -392,7 +397,11 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
           }
           className={cn(
             'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-base h-9',
-            'transition-[background-color,color,box-shadow] duration-150',
+            // Keep duration/easing in sync with the selection ring below and
+            // with the right-pane content crossfade in ChatStream so clicking
+            // a session reads as ONE coordinated motion across panes. See
+            // src/lib/motion.ts (MOTION_SESSION_SWITCH_DURATION / EASING).
+            'transition-[background-color,color,box-shadow] duration-[180ms]',
             '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
             'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent',
             selected
@@ -407,7 +416,10 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               aria-hidden
               initial={{ scaleY: 0, opacity: 0, x: -2 }}
               animate={{ scaleY: 1, opacity: 1, x: 0 }}
-              transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
+              transition={{
+                duration: MOTION_SESSION_SWITCH_DURATION,
+                ease: MOTION_STANDARD_EASING
+              }}
               style={{ originY: 0.5 }}
               className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent rounded-r-sm"
             />
