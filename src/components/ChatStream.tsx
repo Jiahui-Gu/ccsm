@@ -249,7 +249,10 @@ function ToolBlock({
             />
           </motion.span>
         </span>
-        <span className="min-w-0 truncate flex items-baseline gap-1.5">
+        <span
+          className="min-w-0 truncate flex items-baseline gap-1.5"
+          title={brief ? `${name} (${brief})` : name}
+        >
           {isError && (
             <AlertCircle
               size={12}
@@ -391,6 +394,9 @@ function LongOutputView({
   const byteLen = text.length; // approximation; chars≈bytes for ASCII tool output
   const tooLarge = byteLen > MAX_INLINE_BYTES;
   const small = total <= COLLAPSED_HEAD + COLLAPSED_TAIL;
+  // Toolbar is visual noise on tiny outputs (≤10 lines). Hide it — users can
+  // still copy via native text selection; Save/Expand are meaningless here.
+  const toolbarHidden = total <= 10;
 
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState<null | 'ok' | 'err'>(null);
@@ -432,8 +438,8 @@ function LongOutputView({
 
   const colorCls = isError ? 'border-state-error/40 text-state-error-fg' : 'border-border-subtle text-fg-tertiary';
 
-  // Toolbar (always rendered).
-  const toolbar = (
+  // Toolbar (rendered unless the output is tiny — see `toolbarHidden`).
+  const toolbar = toolbarHidden ? null : (
     <div className="flex items-center justify-end gap-1.5 mb-1 ml-6">
       <span className="text-fg-tertiary text-mono-xs mr-auto font-mono">
         {t('chat.longOutputTooLargeBadge', { size: formatBytes(byteLen), lines: total })}
@@ -806,9 +812,11 @@ function DiffView({ diff }: { diff: DiffSpec }) {
 
 function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => void; onDeny?: () => void }) {
   const { t } = useTranslation();
-  const approveRef = useRef<HTMLButtonElement>(null);
+  const rejectRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    const t = window.setTimeout(() => approveRef.current?.focus(), 150);
+    // Safer default: focus Reject on mount so an accidental Enter rejects
+    // (reversible) instead of approving a potentially destructive plan.
+    const t = window.setTimeout(() => rejectRef.current?.focus(), 150);
     return () => window.clearTimeout(t);
   }, []);
 
@@ -836,10 +844,10 @@ function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: () => vo
         </div>
       </div>
       <div className="mt-3 flex justify-end gap-2">
-        <Button variant="secondary" size="md" onClick={onDeny}>
+        <Button ref={rejectRef} variant="secondary" size="md" onClick={onDeny}>
           {t('chat.planReject')}
         </Button>
-        <Button ref={approveRef} variant="primary" size="md" onClick={onAllow}>
+        <Button variant="primary" size="md" onClick={onAllow}>
           {t('chat.planApprove')}
         </Button>
       </div>
@@ -950,6 +958,55 @@ function ErrorBlock({ text }: { text: string }) {
       <div className="flex items-start gap-2">
         <AlertCircle size={14} className="text-state-error mt-0.5 shrink-0" aria-label={t('chat.errorLabel')} />
         <span className="whitespace-pre-wrap">{text}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Inline banner shown when loading persisted history fails. Lives inside the
+ * chat scroll area so the user sees the failure immediately and has a direct
+ * path to recover via the Retry button (UI-17). On retry we clear both the
+ * sentinel `[]` seeded on failure and the error entry, then kick loadMessages
+ * fresh.
+ */
+function LoadHistoryErrorBlock({
+  message,
+  onRetry
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="alert"
+      data-testid="chat-load-history-error"
+      className="relative my-1.5 rounded-md border border-state-error/40 bg-state-error-soft pl-3 pr-3 py-2 text-sm text-state-error-fg"
+    >
+      <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-error rounded-l-md" />
+      <div className="flex items-start gap-2">
+        <AlertCircle
+          size={14}
+          className="text-state-error mt-0.5 shrink-0"
+          aria-label={t('chat.errorLabel')}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">{t('chat.loadHistoryFailed')}</div>
+          {message && (
+            <div className="mt-0.5 font-mono text-xs text-fg-tertiary whitespace-pre-wrap break-words">
+              {message}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onRetry}
+          data-testid="chat-load-history-retry"
+          className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-sm border border-state-error/50 text-mono-xs font-mono text-state-error-fg hover:bg-state-error/10 active:bg-state-error/15 transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-error/60"
+        >
+          {t('chat.retry')}
+        </button>
       </div>
     </div>
   );
@@ -1096,6 +1153,7 @@ export function ChatStream() {
   const resolvePermission = useStore((s) => s.resolvePermission);
   const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
   const loadMessages = useStore((s) => s.loadMessages);
+  const loadError = useStore((s) => s.loadMessageErrors[activeId]);
 
   // In-progress dots: show when the agent has accepted the turn but has not
   // yet emitted its first assistant token (i.e. last block is the user's
@@ -1200,44 +1258,83 @@ export function ChatStream() {
         role="log"
         className="flex-1 overflow-y-auto min-w-0"
       >
-        {blocks.length === 0 && !showThinkingDots ? (
-          <EmptyState />
+        {blocks.length === 0 && !showThinkingDots && !loadError ? (
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+              className="h-full"
+            >
+              <EmptyState />
+            </motion.div>
+          </AnimatePresence>
         ) : (
-          <div className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]">
-            {(() => {
-              // Only the LAST pending permission block gets auto-focus. Older
-              // ones (unlikely but possible) stay put so we don't rip focus
-              // off the user mid-interaction.
-              let lastPermIdx = -1;
-              for (let i = blocks.length - 1; i >= 0; i--) {
-                const b = blocks[i];
-                if (b.kind === 'waiting' && b.intent === 'permission') {
-                  lastPermIdx = i;
-                  break;
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key="blocks"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+              className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]"
+            >
+              {loadError && (
+                <LoadHistoryErrorBlock
+                  message={loadError}
+                  onRetry={() => {
+                    // Clear the sentinel/error so the load effect fires a
+                    // fresh fetch; loadMessages also clears the error entry
+                    // on entry, but clearing here first keeps the UI honest
+                    // if the retry races with an unrelated state update.
+                    useStore.setState((s) => {
+                      const nextMsgs = { ...s.messagesBySession };
+                      delete nextMsgs[activeId];
+                      const nextErrs = { ...s.loadMessageErrors };
+                      delete nextErrs[activeId];
+                      return { messagesBySession: nextMsgs, loadMessageErrors: nextErrs };
+                    });
+                    void loadMessages(activeId);
+                  }}
+                />
+              )}
+              {(() => {
+                // Only the LAST pending permission block gets auto-focus. Older
+                // ones (unlikely but possible) stay put so we don't rip focus
+                // off the user mid-interaction.
+                let lastPermIdx = -1;
+                for (let i = blocks.length - 1; i >= 0; i--) {
+                  const b = blocks[i];
+                  if (b.kind === 'waiting' && b.intent === 'permission') {
+                    lastPermIdx = i;
+                    break;
+                  }
                 }
-              }
-              return blocks.map((m, i) => (
-                <div key={m.id}>
-                  {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, {
-                    permissionAutoFocus: i === lastPermIdx,
-                    now
-                  })}
-                </div>
-              ));
-            })()}
-            {showThinkingDots && (
-              <motion.div
-                key="thinking-dots"
-                data-testid="chat-thinking-dots"
-                aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
-                className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none"
-                animate={{ opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-              >
-                {'\u00B7 \u00B7 \u00B7'}
-              </motion.div>
-            )}
-          </div>
+                return blocks.map((m, i) => (
+                  <div key={m.id}>
+                    {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, {
+                      permissionAutoFocus: i === lastPermIdx,
+                      now
+                    })}
+                  </div>
+                ));
+              })()}
+              {showThinkingDots && (
+                <motion.div
+                  key="thinking-dots"
+                  data-testid="chat-thinking-dots"
+                  aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
+                  className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none"
+                  animate={{ opacity: [0.3, 1, 0.3] }}
+                  transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+                >
+                  {'\u00B7 \u00B7 \u00B7'}
+                </motion.div>
+              )}
+            </motion.div>
+          </AnimatePresence>
         )}
       </div>
       <AnimatePresence>
