@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-ui.mjs (case id=a11y-focus-restore; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // E2E: a11y focus restore + ChatStream live region.
 //
 // Contracts under test:

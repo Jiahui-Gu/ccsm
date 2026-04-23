@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-ui.mjs (case id=no-sessions-landing; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // When there are zero sessions, the main panel should render exactly two
 // CTA buttons with identical variant/size/width (secondary / md / w-44).
 import { _electron as electron } from 'playwright';
