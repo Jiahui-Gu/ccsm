@@ -25,6 +25,7 @@ import { subscribeAgentEvents, setBackgroundWaitingHandler, maybeAutoResolveAllo
 import { initI18n } from './i18n';
 import { i18next } from './i18n';
 import { usePreferences } from './store/preferences';
+import { DURATION, EASING } from './lib/motion';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -163,6 +164,41 @@ export default function App() {
   useEffect(() => {
     window.agentory?.i18n?.setLanguage(resolvedLanguage);
   }, [resolvedLanguage]);
+
+  // Exit animation (UI-10 / #213):
+  // When the user closes the window (Cmd/Ctrl+W, X button, OS X red dot)
+  // the Electron main process hides-to-tray instead of destroying. It sends
+  // `window:beforeHide` with a duration first so we can fade the whole
+  // document out, then hides ~180ms later — giving the user a graceful
+  // exit rather than an abrupt disappearance. On restore, `window:afterShow`
+  // resets opacity. Uses the shared motion tokens (DURATION.standard /
+  // EASING.exit) for consistency with the rest of the app.
+  //
+  // Implementation note: we drive `document.documentElement.style.opacity`
+  // directly instead of wrapping the React tree in a `<motion.div>` — a
+  // root-level wrapper would be invasive and risk layout regressions,
+  // while this approach is zero-DOM, zero-rerender, and survives when
+  // React state is about to be torn down.
+  useEffect(() => {
+    const bridge = window.agentory?.window;
+    if (!bridge?.onBeforeHide || !bridge?.onAfterShow) return;
+    const root = document.documentElement;
+    const transition = `opacity ${DURATION.standard}s cubic-bezier(${EASING.exit.join(',')})`;
+    const offHide = bridge.onBeforeHide(() => {
+      root.style.transition = transition;
+      root.style.opacity = '0';
+    });
+    const offShow = bridge.onAfterShow(() => {
+      root.style.transition = transition;
+      root.style.opacity = '1';
+    });
+    return () => {
+      offHide();
+      offShow();
+      root.style.transition = '';
+      root.style.opacity = '';
+    };
+  }, []);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);

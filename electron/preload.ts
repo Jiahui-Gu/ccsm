@@ -254,6 +254,19 @@ const api = {
       ipcRenderer.on('window:maximizedChanged', wrap);
       return () => ipcRenderer.removeListener('window:maximizedChanged', wrap);
     },
+    onBeforeHide: (
+      handler: (info: { durationMs: number }) => void
+    ): (() => void) => {
+      const wrap = (_e: IpcRendererEvent, payload: { durationMs: number }) =>
+        handler(payload);
+      ipcRenderer.on('window:beforeHide', wrap);
+      return () => ipcRenderer.removeListener('window:beforeHide', wrap);
+    },
+    onAfterShow: (handler: () => void): (() => void) => {
+      const wrap = () => handler();
+      ipcRenderer.on('window:afterShow', wrap);
+      return () => ipcRenderer.removeListener('window:afterShow', wrap);
+    },
     platform: process.platform
   },
 

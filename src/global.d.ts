@@ -173,6 +173,8 @@ declare global {
         close: () => Promise<void>;
         isMaximized: () => Promise<boolean>;
         onMaximizedChanged: (handler: (max: boolean) => void) => () => void;
+        onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
+        onAfterShow: (handler: () => void) => () => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
       };
 
