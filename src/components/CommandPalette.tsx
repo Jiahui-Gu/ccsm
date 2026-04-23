@@ -6,6 +6,7 @@ import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
+import { useFocusRestore } from '../lib/useFocusRestore';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -52,11 +53,15 @@ export function CommandPalette({
     if (open) {
       setQ('');
       setActive(0);
-      // Focus after entrance animation so the ring settles cleanly.
-      const t = window.setTimeout(() => inputRef.current?.focus(), 80);
-      return () => window.clearTimeout(t);
     }
   }, [open]);
+
+  // a11y: palette is opened via Cmd+K (no Radix Trigger), so restore focus
+  // to whatever had it before the palette intercepted. Falls back to the
+  // active session row in the sidebar.
+  const { handleCloseAutoFocus } = useFocusRestore(open, {
+    fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
+  });
 
   const results: Result[] = useMemo(() => {
     const nextTheme = theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark';
@@ -182,6 +187,14 @@ export function CommandPalette({
         <DialogOverlay />
         <RD.Content
           onKeyDown={onKeyDown}
+          onOpenAutoFocus={(e) => {
+            // Let Radix's FocusScope own the focus handoff (so it knows
+            // which element to release on close), but redirect it to our
+            // search input instead of the first tabbable.
+            e.preventDefault();
+            inputRef.current?.focus();
+          }}
+          onCloseAutoFocus={handleCloseAutoFocus}
           className={cn(
             'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[calc(100vw-2rem)] max-w-xl',
             'rounded-lg border border-border-default bg-bg-panel',

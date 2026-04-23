@@ -5,6 +5,7 @@ import { Button } from './ui/Button';
 import { useStore } from '../stores/store';
 import { bucketize, type DateBucketKey } from '../utils/date-buckets';
 import { useTranslation } from '../i18n/useTranslation';
+import { useFocusRestore } from '../lib/useFocusRestore';
 
 type Scannable = {
   sessionId: string;
@@ -34,6 +35,12 @@ export function ImportDialog({ open, onOpenChange }: Props) {
   const [collapsed, setCollapsed] = useState<Set<DateBucketKey>>(new Set());
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+
+  // a11y: opened from menus / shortcuts (no Radix Trigger), so wire up
+  // focus restore manually.
+  const { handleCloseAutoFocus } = useFocusRestore(open, {
+    fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -119,6 +126,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
         title={t('importDialog.title')}
         description={t('importDialog.description')}
         width="640px"
+        onCloseAutoFocus={handleCloseAutoFocus}
       >
         <DialogBody>
           {loading ? (
