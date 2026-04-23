@@ -139,7 +139,7 @@ export function SettingsDialog({
                   className={cn(
                     'relative flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
                     'transition-[background-color,color] duration-150 ease-out',
-                    'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+                    'outline-none focus-ring',
                     isActive
                       ? 'bg-bg-hover text-fg-primary font-medium'
                       : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary'
@@ -315,7 +315,7 @@ function Segmented<T extends string>({
             onClick={() => onChange(o.value)}
             className={cn(
               'h-6 px-2.5 text-xs rounded-[3px] transition-[background-color,color,box-shadow] duration-150 ease-out',
-              'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60',
+              'outline-none focus-ring',
               active
                 ? 'bg-bg-app text-fg-primary font-medium shadow-[inset_0_0_0_1px_var(--color-border-default)]'
                 : 'text-fg-secondary hover:text-fg-primary hover:bg-bg-hover'

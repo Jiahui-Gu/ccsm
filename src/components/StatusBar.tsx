@@ -38,7 +38,7 @@ const Chip = React.forwardRef<
         accent === 'warn'
           ? 'text-state-warning hover:text-status-warning-foreground hover:bg-status-warning-muted'
           : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
-        'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+        'outline-none focus-ring',
         'transition-colors duration-120 ease-out'
       )}
     >
