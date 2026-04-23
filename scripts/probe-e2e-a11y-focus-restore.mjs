@@ -114,11 +114,21 @@ try {
   // Programmatically focus the session li (mirrors what useFocusRestore's
   // fallback selector targets). Use Playwright's locator.focus() which
   // dispatches a real focus event chain.
+  // Wait for any post-click focus orchestration (selectSession bumps
+  // focusInputNonce → InputBar effect pulls focus into the chat textarea)
+  // to settle before we anchor focus on the row for the close-restore test.
+  await win.waitForTimeout(120);
   await sessionLi.focus();
-  await win.waitForTimeout(50);
-  const focusedBefore = await win.evaluate(
-    () => document.activeElement?.getAttribute?.('data-session-id') || null
-  );
+  // Poll instead of single-read — gives the focus event a tick to land
+  // even if a microtask runs between here and the read.
+  const focusedBefore = await win
+    .waitForFunction(
+      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      null,
+      { timeout: 1000 }
+    )
+    .then(() => 'sA')
+    .catch(() => null);
   if (focusedBefore !== 'sA')
     fail(`expected session sA to be focused before opening dialog, got ${focusedBefore}`, app);
 
@@ -186,8 +196,20 @@ try {
 
   // --- Contract 3: CommandPalette focus restore ------------------------
   // Re-anchor focus to the session li to make the test deterministic.
+  // Settle InputBar's nonce-driven focus effect before re-anchoring, and
+  // poll the result to absorb any microtask races.
+  await win.waitForTimeout(120);
   await sessionLi.focus();
-  await win.waitForTimeout(50);
+  const reAnchored = await win
+    .waitForFunction(
+      () => document.activeElement?.getAttribute?.('data-session-id') === 'sA',
+      null,
+      { timeout: 1000 }
+    )
+    .then(() => 'sA')
+    .catch(() => null);
+  if (reAnchored !== 'sA')
+    fail(`expected session sA to be re-anchored before CommandPalette open, got ${reAnchored}`, app);
   await win.keyboard.press('Control+f');
   // Palette uses an <input> to receive focus on open.
   await win
