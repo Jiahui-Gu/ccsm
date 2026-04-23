@@ -187,17 +187,33 @@ function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
           todos: parseTodos(tu.input)
         });
       } else if (tu.name === 'AskUserQuestion') {
+        // Suppressed on purpose: every tool — including AskUserQuestion —
+        // is intercepted by `can_use_tool` first (we send
+        // `--permission-prompt-tool stdio` + the SDK-style `initialize`
+        // control request when starting claude.exe). That path has already
+        // appended a question block keyed by `requestId` via
+        // `permissionRequestToWaitingBlock` in lifecycle.ts, with the
+        // requestId wired so submit can resolve the pending permission
+        // promise on the main side.
+        //
+        // If we ALSO emitted a question block here, two cards would render
+        // for one logical AskUserQuestion: the second card has no
+        // requestId, so submitting it would route through `agentSend`
+        // (raw user message) instead of `agentResolvePermission`, leaving
+        // claude.exe blocked on a permission promise that never settles.
+        // claude.exe then exits with code 1 and the UI stays "running"
+        // forever waiting for a `result` frame that never arrives.
+        // (See feedback_bugfix_requires_e2e — Bugs A+B reported 2026-04-23.)
+        //
+        // We only fall back to a generic tool block when the input is so
+        // malformed that `parseQuestions` returns nothing AND the
+        // permission path also wouldn't have rendered a usable card —
+        // gives the user at least SOMETHING to inspect rather than a
+        // silent skip. The permission-path block in this case is a
+        // generic Allow/Reject prompt, which we keep too; the tool block
+        // here is purely diagnostic.
         const questions = parseQuestions(tu.input);
-        if (questions.length > 0) {
-          out.push({
-            kind: 'question',
-            id: `${baseId}:tu${toolIdx++}`,
-            toolUseId: tu.id,
-            questions
-          });
-        } else {
-          // Malformed AskUserQuestion input — fall back to a regular tool block
-          // so the user at least sees the raw payload instead of nothing.
+        if (questions.length === 0) {
           out.push({
             kind: 'tool',
             id: `${baseId}:tu${toolIdx++}`,
@@ -207,6 +223,11 @@ function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
             expanded: false,
             input: tu.input
           });
+        } else {
+          // Skip the index bump-and-continue so subsequent tool_use blocks
+          // in the same message get sequential ids — they share the
+          // numbering namespace with this suppressed slot.
+          toolIdx++;
         }
       } else {
         out.push({
