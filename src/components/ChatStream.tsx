@@ -592,9 +592,7 @@ function DiffView({ diff }: { diff: DiffSpec }) {
   const { t } = useTranslation();
   // Per-hunk accept/reject state. `null` = pending, 'accepted' / 'rejected'
   // once the user acts. Today this is UI-only — the partial-write IPC back
-  // to the main process is a follow-up (see PR body). Buttons emit
-  // console.log so the shape of the event stream is easy to see in devtools
-  // while that path is being wired up.
+  // to the main process is a follow-up (see PR body).
   const [decisions, setDecisions] = useState<Array<'accepted' | 'rejected' | null>>(
     () => diff.hunks.map(() => null)
   );
@@ -604,10 +602,8 @@ function DiffView({ diff }: { diff: DiffSpec }) {
       next[idx] = decision;
       return next;
     });
-    // TODO(partial-write): replace with an IPC that writes just this hunk to
-    // diff.filePath via a main-process handler. Today we log so reviewers can
-    // see the interaction working without the round-trip.
-    console.log('[diff-hunk]', decision, { filePath: diff.filePath, hunkIndex: idx });
+    // TODO(partial-write): replace with an IPC that writes just this hunk
+    // to diff.filePath via a main-process handler.
   };
   const lang = languageFromPath(diff.filePath);
   return (
