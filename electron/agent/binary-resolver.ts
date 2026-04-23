@@ -252,6 +252,13 @@ function runLookup(tool: string, target: string): Promise<string | null> {
     }
 
     child.stdout?.setEncoding('utf8');
+    // `error` listeners are required on each Readable we touch: if the child
+    // dies before we read the pipe (SIGPIPE etc.), Node throws "Unhandled
+    // 'error' event" and crashes main. No remediation — the lookup already
+    // resolves to null on child error below.
+    child.stdout?.on('error', () => {
+      /* ignore — surface via `close` handler below */
+    });
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
     });
@@ -345,6 +352,13 @@ export function detectClaudeVersion(binPath: string): Promise<string | null> {
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
+    // See runLookup() for why we need explicit `error` handlers on each pipe.
+    child.stdout?.on('error', () => {
+      /* ignore — `close` below settles with null */
+    });
+    child.stderr?.on('error', () => {
+      /* ignore — `close` below settles with null */
+    });
     child.stdout?.on('data', (c: string) => (stdout += c));
     child.stderr?.on('data', (c: string) => (stderr += c));
     child.on('error', () => done(null));

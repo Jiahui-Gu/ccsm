@@ -24,6 +24,17 @@ function streamerFor(sessionId: string): PartialAssistantStreamer {
   return s;
 }
 
+/**
+ * Drop the streamer accumulator for a session. Called from deleteSession() so
+ * a deleted session doesn't leave its partial-assistant-streamer state hanging
+ * around forever (tiny leak, but piles up on sessions that never emit a final
+ * `result` frame — e.g. force-killed via delete). Idempotent.
+ */
+export function disposeStreamer(sessionId: string): void {
+  streamers.delete(sessionId);
+  turnStartedAt.delete(sessionId);
+}
+
 type BackgroundWaitingHandler = (info: { sessionId: string; sessionName: string; prompt: string }) => void;
 let backgroundWaitingHandler: BackgroundWaitingHandler = () => {};
 
