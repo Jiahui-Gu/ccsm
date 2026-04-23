@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Check } from 'lucide-react';
 import * as Checkbox from '@radix-ui/react-checkbox';
+import * as RD from '@radix-ui/react-dialog';
 import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
@@ -106,6 +107,11 @@ export function SettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title={tt('title')} width="720px" hideClose={false} onCloseAutoFocus={handleCloseAutoFocus}>
+        {/* Radix requires either a Description or explicit aria-describedby
+            on DialogContent for a11y. Visible layout of Settings is driven
+            by the tab list + panel heading, so the description is sr-only;
+            screen readers announce it when focus lands in the dialog. */}
+        <RD.Description className="sr-only">{tt('description')}</RD.Description>
         <div className="flex min-h-[380px] border-t border-border-subtle">
           <nav
             className="w-[160px] shrink-0 border-r border-border-subtle py-2"

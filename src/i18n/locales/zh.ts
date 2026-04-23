@@ -155,6 +155,7 @@ const zh: EnCatalog = {
   },
   settings: {
     title: '设置',
+    description: '配置外观、通知、连接与更新。',
     tabs: {
       general: '通用',
       appearance: '外观',
