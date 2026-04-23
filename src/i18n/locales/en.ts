@@ -290,6 +290,7 @@ const en = {
   permissionPrompt: {
     title: 'Permission required',
     allowBtn: 'Allow (Y)',
+    allowAlwaysBtn: 'Allow always',
     rejectBtn: 'Reject (N)'
   },
   questionBlock: {

@@ -122,7 +122,7 @@ describe('<PermissionPromptBlock />', () => {
     expect(allow.tabIndex).not.toBe(-1);
   });
 
-  it('Escape is a no-op (forces active choice)', async () => {
+  it('Escape triggers Reject (standard alertdialog dismiss)', async () => {
     const onAllow = vi.fn();
     const onReject = vi.fn();
     render(
@@ -134,9 +134,35 @@ describe('<PermissionPromptBlock />', () => {
       />
     );
     await flush();
-    fireEvent.keyDown(window, { key: 'Escape' });
+    // Focus is auto-moved to the Reject button on mount, so focus is inside
+    // the prompt — Esc should dispatch reject.
+    const reject = screen.getByRole('button', { name: /reject \(n\)/i });
+    fireEvent.keyDown(reject, { key: 'Escape' });
+    expect(onReject).toHaveBeenCalledTimes(1);
     expect(onAllow).not.toHaveBeenCalled();
+  });
+
+  it('Escape is a no-op when focus is outside the prompt', async () => {
+    const external = document.createElement('textarea');
+    document.body.appendChild(external);
+    const onAllow = vi.fn();
+    const onReject = vi.fn();
+    render(
+      <PermissionPromptBlock
+        prompt="Bash: ls"
+        toolName="Bash"
+        autoFocus={false}
+        onAllow={onAllow}
+        onReject={onReject}
+      />
+    );
+    await flush();
+    external.focus();
+    expect(document.activeElement).toBe(external);
+    fireEvent.keyDown(external, { key: 'Escape' });
     expect(onReject).not.toHaveBeenCalled();
+    expect(onAllow).not.toHaveBeenCalled();
+    document.body.removeChild(external);
   });
 
   it('does not steal focus when user is typing in a textarea', async () => {

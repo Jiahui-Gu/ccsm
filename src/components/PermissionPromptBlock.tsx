@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ShieldAlert } from 'lucide-react';
 import { Button } from './ui/Button';
@@ -14,6 +14,8 @@ export interface PermissionPromptBlockProps {
   toolInput?: Record<string, unknown>;
   onAllow?: () => void;
   onReject?: () => void;
+  /** Third option: allow now AND remember for the rest of this app session. */
+  onAllowAlways?: () => void;
   /** When false, suppress the auto-focus-on-mount behaviour. */
   autoFocus?: boolean;
 }
@@ -69,11 +71,16 @@ export function PermissionPromptBlock({
   toolInput,
   onAllow,
   onReject,
+  onAllowAlways,
   autoFocus = true
 }: PermissionPromptBlockProps) {
   const { t } = useTranslation();
+  const reactId = useId();
+  const titleId = `perm-title-${reactId}`;
+  const descId = `perm-desc-${reactId}`;
   const rootRef = useRef<HTMLDivElement>(null);
   const allowRef = useRef<HTMLButtonElement>(null);
+  const allowAlwaysRef = useRef<HTMLButtonElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
 
   // Focus Reject on mount — safer default. Never steal focus away from any
@@ -125,19 +132,56 @@ export function PermissionPromptBlock({
 
   // Global-ish Y/N hotkeys, scoped to this prompt: we only listen while
   // mounted and only fire if the user isn't currently typing into an input /
-  // textarea / contenteditable.
+  // textarea / contenteditable. Also wires Esc -> reject and a minimal focus
+  // trap (Tab cycles only between the prompt's own buttons while focus is
+  // already inside the prompt — doesn't lock focus globally so the user can
+  // still click back into the composer).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const root = rootRef.current;
+      if (!root) return;
       const active = document.activeElement;
+      const focusInside =
+        active instanceof HTMLElement && root.contains(active);
+
+      // Focus trap: Tab cycling between Reject / Allow always / Allow while
+      // focus is inside the prompt. Plain `.focus()` is enough — the buttons
+      // share DOM order (Reject -> [Allow always] -> Allow).
+      if (e.key === 'Tab' && focusInside && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const focusables = [rejectRef.current, allowAlwaysRef.current, allowRef.current].filter(
+          (b): b is HTMLButtonElement => !!b
+        );
+        if (focusables.length > 0) {
+          const idx = focusables.indexOf(active as HTMLButtonElement);
+          if (idx !== -1) {
+            e.preventDefault();
+            const nextIdx = e.shiftKey
+              ? (idx - 1 + focusables.length) % focusables.length
+              : (idx + 1) % focusables.length;
+            focusables[nextIdx]?.focus({ preventScroll: true });
+            return;
+          }
+        }
+      }
+
+      // Esc -> reject (standard alertdialog dismiss).
+      if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (focusInside) {
+          e.preventDefault();
+          onReject?.();
+          return;
+        }
+      }
+
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const typing =
         active instanceof HTMLElement &&
         (active.tagName === 'INPUT' ||
           active.tagName === 'TEXTAREA' ||
           active.isContentEditable);
       // If typing AND focus is outside our prompt, don't hijack.
-      if (typing && !rootRef.current?.contains(active)) return;
+      if (typing && !focusInside) return;
       const key = e.key.toLowerCase();
       if (key === 'y') {
         e.preventDefault();
@@ -157,9 +201,9 @@ export function PermissionPromptBlock({
     <motion.div
       ref={rootRef}
       role="alertdialog"
-      aria-modal="false"
-      aria-labelledby="perm-title"
-      aria-describedby="perm-desc"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={descId}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
@@ -170,7 +214,7 @@ export function PermissionPromptBlock({
         className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent rounded-l-md"
       />
       <div
-        id="perm-title"
+        id={titleId}
         className="flex items-center gap-2 text-base text-fg-primary font-semibold"
       >
         <ShieldAlert size={14} className="text-accent" aria-hidden />
@@ -181,7 +225,7 @@ export function PermissionPromptBlock({
           </span>
         )}
       </div>
-      <div id="perm-desc" className="mt-2 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
+      <div id={descId} className="mt-2 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
         {prompt}
       </div>
       {summary.length > 0 && (
@@ -212,6 +256,23 @@ export function PermissionPromptBlock({
         >
           {t('permissionPrompt.rejectBtn')}
         </Button>
+        {onAllowAlways && (
+          <Button
+            ref={allowAlwaysRef}
+            variant="secondary"
+            size="md"
+            data-perm-action="allow-always"
+            onClick={onAllowAlways}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onAllowAlways?.();
+              }
+            }}
+          >
+            {t('permissionPrompt.allowAlwaysBtn')}
+          </Button>
+        )}
         <Button
           ref={allowRef}
           variant="primary"
