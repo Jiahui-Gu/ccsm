@@ -172,17 +172,27 @@ function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
   const out: MessageBlock[] = [];
   const baseId = msg.message?.id ?? msg.uuid ?? cryptoRandom();
   const content: ContentBlock[] = msg.message?.content ?? [];
-  let toolIdx = 0;
   for (let idx = 0; idx < content.length; idx++) {
     const c = content[idx];
     if (c.type === 'text' && typeof c.text === 'string') {
       out.push({ kind: 'assistant', id: `${baseId}:c${idx}`, text: c.text });
     } else if (c.type === 'tool_use') {
       const tu = c as ToolUseBlock;
+      // Block id MUST be derived from the globally-unique `tool_use.id`
+      // (e.g. `toolu_vrtx_…`), NOT from a per-event positional counter.
+      // Reason: claude.exe streams parallel tool batches as MULTIPLE
+      // assistant events with the SAME `message.id` but each carrying only
+      // ONE tool_use in `content[]`. A positional counter resets to 0 in
+      // every event, so all N parallel tool blocks would receive the same
+      // id `${msgId}:tu0` and `appendBlocks` (which coalesces by id) would
+      // collapse them into a single block — N-1 of N tool_results then have
+      // nowhere to attach. (Bug L parallel-batch follow-up; PR #172 fixed
+      // the IPC envelope, this fixes the renderer-side block id collision.)
+      const blockId = `${baseId}:${tu.id}`;
       if (tu.name === 'TodoWrite') {
         out.push({
           kind: 'todo',
-          id: `${baseId}:tu${toolIdx++}`,
+          id: blockId,
           toolUseId: tu.id,
           todos: parseTodos(tu.input)
         });
@@ -216,23 +226,18 @@ function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
         if (questions.length === 0) {
           out.push({
             kind: 'tool',
-            id: `${baseId}:tu${toolIdx++}`,
+            id: blockId,
             toolUseId: tu.id,
             name: tu.name,
             brief: briefForTool(tu.name, tu.input),
             expanded: false,
             input: tu.input
           });
-        } else {
-          // Skip the index bump-and-continue so subsequent tool_use blocks
-          // in the same message get sequential ids — they share the
-          // numbering namespace with this suppressed slot.
-          toolIdx++;
         }
       } else {
         out.push({
           kind: 'tool',
-          id: `${baseId}:tu${toolIdx++}`,
+          id: blockId,
           toolUseId: tu.id,
           name: tu.name,
           brief: briefForTool(tu.name, tu.input),
