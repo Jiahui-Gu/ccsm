@@ -163,7 +163,7 @@ function GroupRow({
                 onFocus();
                 if (!renaming) setGroupCollapsed(group.id, !collapsed);
               }}
-              className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong"
+              className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
               aria-expanded={!collapsed}
             >
               <motion.span
@@ -211,7 +211,7 @@ function GroupRow({
                     e.stopPropagation();
                     createSession({ groupId: group.id });
                   }}
-                  className="shrink-0 h-5 w-5"
+                  className="shrink-0"
                 >
                   <Plus size={12} className="stroke-[1.75]" />
                 </IconButton>
@@ -744,19 +744,19 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             className={cn(
               'flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0',
               'text-label-faint transition-colors duration-150',
-              'hover:[&]:text-[oklch(0.60_0_0)]'
+              'hover:[&]:text-fg-tertiary'
             )}
           >
             <motion.span
               initial={false}
               animate={{ rotate: archiveOpen ? 90 : 0 }}
               transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
-              className="inline-flex shrink-0 text-[oklch(0.46_0_0)]"
+              className="inline-flex shrink-0 text-fg-faint"
             >
               <ChevronRight size={12} className="stroke-[1.75]" />
             </motion.span>
             <span>{t('sidebar.archivedGroups')}</span>
-            <span className="ml-1 text-mono-sm leading-[14px] font-normal text-[oklch(0.46_0_0)] tabular-nums">
+            <span className="ml-1 text-mono-sm leading-[14px] font-normal text-fg-faint tabular-nums">
               {archived.length}
             </span>
           </button>
