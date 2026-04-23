@@ -176,7 +176,14 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   const caretAfterInt = await win.locator('span.animate-pulse').count();
   if (caretAfterInt !== 0) throw new Error(`Part 3: caret should be 0 after interrupt, found ${caretAfterInt}`);
 
-  log('Part 1 caret-during, Part 2 caret-gone-after-finalize, Part 3 caret-gone-after-interrupt');
+  const blockAfterInt = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.id === bid);
+  }, [SID2, BID2]);
+  if (!blockAfterInt) throw new Error('Part 3: in-flight block missing after interrupt — should remain with partial text');
+  if (blockAfterInt.streaming) throw new Error('Part 3: block.streaming should be false after interrupt-finalize');
+
+  log('Part 1 caret-during, Part 2 caret-gone-after-finalize, Part 3 caret-gone-after-interrupt + block-survived + streaming-cleared');
 }
 
 // ---------- inputbar-visible ----------
