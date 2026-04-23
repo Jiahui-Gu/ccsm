@@ -60,9 +60,11 @@ Conversation history is **not** duplicated — Agentory reads it directly from t
 
 ## Crash reports
 
-Agentory automatically sends crash reports and unhandled errors to the project's Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
+Agentory can send crash reports and unhandled errors to Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
 
-To disable: open Settings → Notifications and uncheck "Send crash reports to developer".
+Crash reporting is **off by default** in the open-source build: there is no hardcoded DSN. To enable it (e.g. for your own fork), set `SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>` in the process environment before launching the app. If `SENTRY_DSN` is unset, `Sentry.init()` is skipped entirely and a single informational line is logged at startup.
+
+To disable after opting in: open Settings → Notifications and uncheck "Send crash reports to developer".
 
 ## Development
 

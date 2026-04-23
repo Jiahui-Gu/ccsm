@@ -1,5 +1,14 @@
 import type { CliPermissionMode } from './agent/permission';
 import type { ClaudeStreamEvent } from '../electron/agent/stream-json-types';
+import type {
+  ConnectionInfo,
+  OpenSettingsResult,
+  DiscoveredModel,
+  CliInstallHints,
+  CliRetryResult,
+  CliSetBinaryResult,
+  LoadedCommand,
+} from './shared/ipc-types';
 
 type PermissionMode = CliPermissionMode;
 type AgentMessage = ClaudeStreamEvent;
@@ -36,47 +45,6 @@ type UpdateStatus =
   | { kind: 'downloading'; percent: number; transferred: number; total: number }
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
-
-type ModelSourceDecl =
-  | 'settings'
-  | 'env'
-  | 'manual'
-  | 'cli-picker'
-  | 'env-override'
-  | 'fallback';
-type DiscoveredModelDecl = { id: string; source: ModelSourceDecl };
-type ConnectionInfoDecl = {
-  baseUrl: string | null;
-  model: string | null;
-  hasAuthToken: boolean;
-};
-type OpenSettingsResultDecl = { ok: true } | { ok: false; error: string };
-
-type CliInstallHintsDecl = {
-  os: string;
-  arch: string;
-  commands: {
-    native?: string;
-    packageManager?: string;
-    npm: string;
-  };
-  docsUrl: string;
-};
-type CliRetryResultDecl =
-  | { found: true; path: string; version: string | null }
-  | { found: false; searchedPaths: string[] };
-type CliSetBinaryResultDecl =
-  | { ok: true; version: string | null }
-  | { ok: false; error: string };
-
-type CommandSourceDecl = 'user' | 'project' | 'plugin';
-type LoadedCommandDecl = {
-  name: string;
-  description?: string;
-  argumentHint?: string;
-  source: CommandSourceDecl;
-  pluginId?: string;
-};
 
 declare global {
   interface Window {
@@ -165,7 +133,7 @@ declare global {
       };
 
       commands: {
-        list: (cwd: string | null | undefined) => Promise<LoadedCommandDecl[]>;
+        list: (cwd: string | null | undefined) => Promise<LoadedCommand[]>;
       };
 
       openExternal: (url: string) => Promise<boolean>;
@@ -202,20 +170,20 @@ declare global {
       };
 
       connection: {
-        read: () => Promise<ConnectionInfoDecl>;
-        openSettingsFile: () => Promise<OpenSettingsResultDecl>;
+        read: () => Promise<ConnectionInfo>;
+        openSettingsFile: () => Promise<OpenSettingsResult>;
       };
 
       models: {
-        list: () => Promise<DiscoveredModelDecl[]>;
+        list: () => Promise<DiscoveredModel[]>;
       };
 
       cli: {
-        getInstallHints: () => Promise<CliInstallHintsDecl>;
+        getInstallHints: () => Promise<CliInstallHints>;
         browseBinary: () => Promise<string | null>;
-        setBinaryPath: (p: string) => Promise<CliSetBinaryResultDecl>;
+        setBinaryPath: (p: string) => Promise<CliSetBinaryResult>;
         openDocs: () => Promise<boolean>;
-        retryDetect: () => Promise<CliRetryResultDecl>;
+        retryDetect: () => Promise<CliRetryResult>;
       };
     };
   }

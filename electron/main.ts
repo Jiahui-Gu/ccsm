@@ -38,21 +38,32 @@ function loadCrashReportingOptOut(): boolean {
   }
 }
 
-Sentry.init({
-  dsn: process.env.SENTRY_DSN ?? 'https://5210c0c70b763acc29de580aab84f5dc@o4511264643481601.ingest.us.sentry.io/4511264646037504',
-  release: app.getVersion(),
-  environment: app.isPackaged ? 'prod' : 'dev',
-  sendDefaultPii: false,
-  beforeSend(event) {
-    try {
-      const optOut = loadCrashReportingOptOut();
-      if (optOut) return null;
-    } catch {
-      /* fall through, send anyway */
-    }
-    return event;
-  },
-});
+// Crash reporting is OFF by default unless the operator plugs in a DSN
+// via `SENTRY_DSN` at launch time. We intentionally do NOT ship a hardcoded
+// project DSN in the open-source repo: self-hosters would otherwise send
+// crashes to the maintainer's Sentry project with no opt-in. If you are
+// building a fork, pass `SENTRY_DSN=https://...@your-project` to the app.
+const SENTRY_DSN = process.env.SENTRY_DSN?.trim() || undefined;
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    release: app.getVersion(),
+    environment: app.isPackaged ? 'prod' : 'dev',
+    sendDefaultPii: false,
+    beforeSend(event) {
+      try {
+        const optOut = loadCrashReportingOptOut();
+        if (optOut) return null;
+      } catch {
+        /* fall through, send anyway */
+      }
+      return event;
+    },
+  });
+} else {
+  // eslint-disable-next-line no-console
+  console.info('[sentry] SENTRY_DSN not set — crash reporting disabled.');
+}
 import { sessions } from './agent/manager';
 import { resolveCwd } from './agent/sessions';
 import { installUpdaterIpc } from './updater';

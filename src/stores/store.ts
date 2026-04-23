@@ -4,6 +4,7 @@ import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
 import { loadPersisted, schedulePersist, type PersistedState } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 import { i18next } from '../i18n';
+import type { ConnectionInfo } from '../shared/ipc-types';
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -91,11 +92,10 @@ export interface DiscoveredModel {
   source: ModelSource;
 }
 
-export interface ConnectionInfo {
-  baseUrl: string | null;
-  model: string | null;
-  hasAuthToken: boolean;
-}
+// Re-export the canonical IPC shape so call sites inside the store layer
+// can keep importing `ConnectionInfo` from here. The definition itself lives
+// in `src/shared/ipc-types.ts` (single source of truth).
+export type { ConnectionInfo };
 
 // OS-level notification preferences. Persisted as a single JSON blob alongside
 // the rest of app state.
