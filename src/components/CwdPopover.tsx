@@ -23,13 +23,15 @@ import { useTranslation } from '../i18n/useTranslation';
 //     The IPC is best-effort: if it fails or returns empty we render a
 //     friendly "no recent cwds" hint and still expose Browse.
 //   - Filtering is plain case-insensitive substring — no fuzzy match. The
-//     query input is seeded with the current cwd so users can edit a path
-//     fragment instead of starting from scratch.
+//     query input starts empty on every open so the Recent list is shown
+//     in full; the current cwd is surfaced as the input placeholder so
+//     users still see "where they are" without it acting as a filter
+//     (regression fix — see PR `fix(cwd-popover)`).
 
 const RECENT_LIMIT = 10;
 
 type Props = {
-  /** Current working directory. Used to label the trigger and seed the query. */
+  /** Current working directory. Used to label the trigger and shown as the input placeholder. */
   cwd: string;
   /** When true, show a dim ⚠ next to the trigger label and explain via tooltip. */
   cwdMissing?: boolean;
@@ -70,21 +72,21 @@ async function defaultLoadRecent(): Promise<string[]> {
 export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState(cwd);
+  const [query, setQuery] = useState('');
   const [recent, setRecent] = useState<string[]>([]);
   const [active, setActive] = useState(0);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Reset query each time we re-open so users can start from the current cwd.
+  // Reset query each time we re-open so the Recent list shows in full;
+  // the current cwd is surfaced as the input placeholder instead.
   useEffect(() => {
     if (!open) return;
-    setQuery(cwd);
+    setQuery('');
     setActive(0);
     const id = window.setTimeout(() => {
       inputRef.current?.focus();
-      inputRef.current?.select();
     }, 0);
     return () => window.clearTimeout(id);
   }, [open, cwd]);
@@ -219,7 +221,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
               value={query}
               spellCheck={false}
               autoComplete="off"
-              placeholder={t('cwdPopover.placeholder')}
+              placeholder={cwd ? truncateMiddle(cwd, 48) : t('cwdPopover.placeholder')}
               onChange={(e) => {
                 setQuery(e.target.value);
                 setActive(0);
