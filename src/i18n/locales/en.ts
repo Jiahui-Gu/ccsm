@@ -489,6 +489,26 @@ const en = {
     maximize: 'Maximize',
     restore: 'Restore',
     close: 'Close'
+  },
+  shortcuts: {
+    title: 'Keyboard shortcuts',
+    description: 'Press Esc or click outside to close. Press ? to reopen.',
+    openHint: 'Shortcuts',
+    groupChat: 'Chat',
+    groupSidebar: 'Sidebar & Sessions',
+    groupNavigation: 'Navigation',
+    actionSend: 'Send message',
+    actionNewline: 'Insert newline',
+    actionStop: 'Interrupt running turn',
+    actionDismissPicker: 'Dismiss slash-command picker',
+    actionToggleSidebar: 'Toggle sidebar',
+    actionNewSession: 'New session',
+    actionNewGroup: 'New group',
+    actionSearch: 'Open search / command palette',
+    actionSettings: 'Open settings',
+    actionShortcuts: 'Show this shortcuts overlay',
+    colShortcut: 'Shortcut',
+    colAction: 'Action'
   }
 } as const;
 

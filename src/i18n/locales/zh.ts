@@ -476,6 +476,26 @@ const zh: EnCatalog = {
     maximize: '最大化',
     restore: '还原',
     close: '关闭'
+  },
+  shortcuts: {
+    title: '键盘快捷键',
+    description: '按 Esc 或点击外部关闭。按 ? 重新打开。',
+    openHint: '快捷键',
+    groupChat: '聊天',
+    groupSidebar: '侧边栏与会话',
+    groupNavigation: '导航',
+    actionSend: '发送消息',
+    actionNewline: '插入换行',
+    actionStop: '中断当前回合',
+    actionDismissPicker: '关闭斜杠命令选择器',
+    actionToggleSidebar: '切换侧边栏',
+    actionNewSession: '新建会话',
+    actionNewGroup: '新建分组',
+    actionSearch: '打开搜索 / 命令面板',
+    actionSettings: '打开设置',
+    actionShortcuts: '显示快捷键面板',
+    colShortcut: '快捷键',
+    colAction: '动作'
   }
 };
 
