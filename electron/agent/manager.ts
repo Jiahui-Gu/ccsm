@@ -4,6 +4,19 @@ import { ClaudeNotFoundError } from './binary-resolver';
 
 type Sender = (channel: string, payload: unknown) => void;
 
+/**
+ * Diagnostic surfaced from the agent subsystem that the renderer can toast.
+ * Emitted on new `agent:diagnostic` channel — separate from `agent:exit` so
+ * transient warnings (init-handshake failure, outbound control_request timeout)
+ * don't look like hard session termination.
+ */
+export type AgentDiagnostic = {
+  sessionId: string;
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+};
+
 export type StartResult =
   | { ok: true }
   | {
@@ -19,9 +32,46 @@ class SessionsManager {
 
   bindSender(wc: WebContents): void {
     this.sender = (channel, payload) => {
+      // Guard every send: the WebContents may be torn down mid-flight (window
+      // hidden→destroyed on minimize-to-tray → reshow creates a new one; the
+      // old reference here dangles until we rebind). wc.send on a destroyed
+      // WebContents throws, which would propagate into the sessions event
+      // loop and potentially kill an otherwise-healthy runner.
       if (wc.isDestroyed()) return;
-      wc.send(channel, payload);
+      try {
+        wc.send(channel, payload);
+      } catch {
+        /* WebContents went away between isDestroyed() and send() — swallow */
+      }
     };
+  }
+
+  /**
+   * Point future emits at a fresh WebContents. Called from main.ts whenever a
+   * BrowserWindow is (re)created so sessions that outlived a window hide/show
+   * cycle keep streaming into the live renderer instead of into a dead
+   * reference. Idempotent; replaces any prior sender.
+   */
+  rebindSender(wc: WebContents): void {
+    this.bindSender(wc);
+  }
+
+  /**
+   * Expose runner metadata for the dev-only debug backdoor in main.ts.
+   * Never call from production code — this is strictly for E2E probes that
+   * need to assert on the live child pid set. Returns a snapshot; mutating
+   * the array has no effect on the real runner map.
+   */
+  activeRunnerPids(): Array<{ sessionId: string; pid: number | undefined }> {
+    const out: Array<{ sessionId: string; pid: number | undefined }> = [];
+    for (const [sessionId, runner] of this.runners) {
+      out.push({ sessionId, pid: runner.getPid() });
+    }
+    return out;
+  }
+
+  activeSessionCount(): number {
+    return this.runners.size;
   }
 
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
@@ -34,7 +84,14 @@ class SessionsManager {
           this.emit('agent:exit', { sessionId, error });
           this.runners.delete(sessionId);
         },
-        (req) => this.emit('agent:permissionRequest', { sessionId, ...req })
+        (req) => this.emit('agent:permissionRequest', { sessionId, ...req }),
+        (diag) =>
+          this.emit('agent:diagnostic', {
+            sessionId,
+            level: diag.level,
+            code: diag.code,
+            message: diag.message,
+          } satisfies AgentDiagnostic)
       );
       await runner.start(opts);
       this.runners.set(sessionId, runner);
