@@ -190,7 +190,7 @@ describe('SessionRunner.start', () => {
     runner.close();
   });
 
-  it('sends an `initialize` control_request immediately after spawn so claude.exe knows we handle can_use_tool over stdio', async () => {
+  it('sends an `initialize` control_request immediately after spawn registering the PreToolUse permission hook', async () => {
     const proc = makeFakeProc();
     mockSpawnClaude.mockResolvedValue(proc);
     const runner = new SessionRunner('s-init', () => {}, () => {}, () => {});
@@ -200,17 +200,23 @@ describe('SessionRunner.start', () => {
       await new Promise((r) => setImmediate(r));
       const lines = proc.__rawStdinLines();
       const init = lines.find(
-        (l): l is { type: string; request: { subtype: string; hooks: unknown } } =>
+        (l): l is { type: string; request: { subtype: string; hooks: Record<string, Array<{ matcher?: string; hookCallbackIds: string[] }>> } } =>
           typeof l === 'object' &&
           l !== null &&
           (l as { type?: string }).type === 'control_request' &&
           (l as { request?: { subtype?: string } }).request?.subtype === 'initialize',
       );
       expect(init, 'expected an initialize control_request on stdin').toBeDefined();
-      // We send `hooks: {}` for now — no host-side hook handlers wired up. The
-      // exact value doesn't matter to claude.exe, but it MUST be present per
-      // the SDK schema (hooks is `record(string, array(...)).optional()`).
-      expect(init?.request.hooks).toEqual({});
+      // The CLI 2.x rule engine handles built-in tools entirely client-side
+      // and only emits `can_use_tool` for ask-style tools. We register a
+      // PreToolUse hook with matcher `.*` so EVERY tool invocation routes
+      // back through the host for a permission decision. Without this,
+      // Bash/Write/Edit run silently in `default` mode with no UI prompt.
+      expect(init?.request.hooks).toEqual({
+        PreToolUse: [
+          { matcher: '.*', hookCallbackIds: ['agentory-permission'] },
+        ],
+      });
     } finally {
       runner.close();
     }
@@ -313,6 +319,185 @@ describe('SessionRunner permission roundtrip', () => {
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
     const resp = lines.find((l) => l.type === 'control_response') as Record<string, unknown>;
     expect((resp.response as Record<string, unknown>).behavior).toBe('deny');
+    runner.close();
+  });
+});
+
+describe('SessionRunner PreToolUse hook permission', () => {
+  it('routes a hook_callback for a Bash tool through onPermissionRequest and writes back permissionDecision:allow', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const seen: Array<{ requestId: string; toolName: string; input: Record<string, unknown> }> = [];
+    const runner = new SessionRunner('s-hook-1', () => {}, () => {}, (req) => seen.push(req));
+    await runner.start(baseOpts);
+
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_1',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'agentory-permission',
+        input: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' },
+          tool_use_id: 'tu_hk',
+          permission_mode: 'default',
+        },
+        tool_use_id: 'tu_hk',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].toolName).toBe('Bash');
+    expect(seen[0].input.command).toBe('echo hi');
+
+    expect(runner.resolvePermission(seen[0].requestId, 'allow')).toBe(true);
+    await new Promise((r) => setImmediate(r));
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_1') as Record<string, unknown>;
+    expect(resp).toBeDefined();
+    expect(resp.response).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'allow',
+      },
+    });
+
+    runner.close();
+  });
+
+  it('writes back permissionDecision:deny with reason when user denies', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    let captured = '';
+    const runner = new SessionRunner('s-hook-2', () => {}, () => {}, (req) => {
+      captured = req.requestId;
+    });
+    await runner.start(baseOpts);
+
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_2',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'agentory-permission',
+        input: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Write',
+          tool_input: { file_path: '/x', content: 'y' },
+          permission_mode: 'default',
+        },
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    runner.resolvePermission(captured, 'deny');
+    await new Promise((r) => setImmediate(r));
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_2') as Record<string, unknown>;
+    expect(resp.response).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+      },
+    });
+    const out = resp.response as { hookSpecificOutput: { permissionDecisionReason?: string } };
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/denied/i);
+    runner.close();
+  });
+
+  it('passes through (no UI prompt) for AskUserQuestion / ExitPlanMode so the legacy can_use_tool path renders specialized UI', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const seen: Array<{ toolName: string }> = [];
+    const runner = new SessionRunner('s-hook-3', () => {}, () => {}, (req) => seen.push(req));
+    await runner.start(baseOpts);
+
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_3',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'agentory-permission',
+        input: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: { questions: [] },
+          permission_mode: 'default',
+        },
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(seen).toHaveLength(0);
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_3') as Record<string, unknown>;
+    // Empty `{}` response means "no opinion, continue" — the CLI then fires
+    // can_use_tool which the existing handler treats as a questions block.
+    expect(resp.response).toEqual({});
+    runner.close();
+  });
+
+  it('auto-allows (no UI prompt) when permission_mode is bypassPermissions or acceptEdits', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const seen: Array<{ toolName: string }> = [];
+    const runner = new SessionRunner('s-hook-4', () => {}, () => {}, (req) => seen.push(req));
+    await runner.start(baseOpts);
+
+    for (const [reqId, mode] of [
+      ['req_hk_bp', 'bypassPermissions'],
+      ['req_hk_ae', 'acceptEdits'],
+    ] as const) {
+      emitFrame(proc.stdout, {
+        type: 'control_request',
+        request_id: reqId,
+        request: {
+          subtype: 'hook_callback',
+          callback_id: 'agentory-permission',
+          input: {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'rm -rf /tmp/x' },
+            permission_mode: mode,
+          },
+        },
+      });
+    }
+    await new Promise((r) => setImmediate(r));
+    expect(seen).toHaveLength(0);
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const responses = lines.filter((l) => l.type === 'control_response');
+    expect(responses).toHaveLength(2);
+    for (const r of responses) expect(r.response).toEqual({});
+    runner.close();
+  });
+
+  it('ignores hook_callback frames with an unknown callback id (defensive)', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const seen: unknown[] = [];
+    const runner = new SessionRunner('s-hook-5', () => {}, () => {}, (req) => seen.push(req));
+    await runner.start(baseOpts);
+
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_unknown',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'some-other-hook',
+        input: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, permission_mode: 'default' },
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(seen).toHaveLength(0);
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_unknown') as Record<string, unknown>;
+    expect(resp.response).toEqual({});
     runner.close();
   });
 });

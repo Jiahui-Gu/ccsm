@@ -125,6 +125,28 @@ export type PermissionRequestHandler = (req: {
   input: Record<string, unknown>;
 }) => void;
 
+/**
+ * Single shared callback id for the `PreToolUse` hook we register at
+ * `initialize` time. The CLI echoes this string back in every
+ * `hook_callback` request, letting our control-rpc dispatcher route the
+ * call into the host permission UI.
+ */
+const HOOK_PERMISSION_CALLBACK_ID = 'agentory-permission';
+
+/**
+ * Tools whose permission UX is already handled via the legacy `can_use_tool`
+ * code path (which the CLI still emits for these specific "ask"-style tools).
+ * For these we let the `PreToolUse` hook pass through with `{}` — the CLI
+ * then proceeds to fire `can_use_tool`, which routes to handleCanUseTool and
+ * the existing renderer treatment (questions UI, plan-approval UI). Surfacing
+ * a generic permission prompt for these would double-prompt the user with a
+ * less informative dialog.
+ */
+const HOOK_PASSTHROUGH_TOOLS: ReadonlySet<string> = new Set([
+  'AskUserQuestion',
+  'ExitPlanMode',
+]);
+
 export class SessionRunner {
   private cp: ClaudeProcess | null = null;
   private rpc: ControlRpc | null = null;
@@ -180,19 +202,30 @@ export class SessionRunner {
 
     this.rpc = new ControlRpc(this.cp.stdin, {
       onCanUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
+      onHookCallback: (callbackId, input, signal) =>
+        this.handleHookCallback(callbackId, input, signal),
     });
 
     // Tell claude.exe we're an SDK-style consumer that handles permission
-    // decisions over stdio. Pairs with the `--permission-prompt-tool stdio`
-    // flag set by claude-spawner: without BOTH the flag AND this `initialize`
-    // control_request, the CLI falls back to the local rule engine and never
-    // emits `can_use_tool` requests, so the renderer never sees a permission
-    // prompt for tools like Write/Edit/NotebookEdit. We send `hooks: {}` for
-    // now (no host-side hook handlers); future work can extend this to wire up
-    // hook callbacks if/when we build a hook UI. Fire-and-forget — claude.exe
-    // responds with its commands list which we don't currently consume.
+    // decisions over stdio. The CLI 2.x rule engine handles built-in tools
+    // (Bash/Write/Edit/...) entirely client-side and never emits
+    // `can_use_tool` for them — `--permission-prompt-tool stdio` only kicks in
+    // for the small subset of "ask" tools (AskUserQuestion, ExitPlanMode). To
+    // restore host-driven permission prompts for the built-in destructive
+    // tools, we register a `PreToolUse` hook with matcher `.*` and route the
+    // resulting `hook_callback` requests into the same UI flow as
+    // `can_use_tool`. The callback id is opaque to the CLI; we use a single
+    // shared id so the handler in handleHookCallback is unambiguous. Fire-and-
+    // forget — the response carries a `commands` list we don't consume.
     void this.rpc
-      .sendControlRequest({ subtype: 'initialize', hooks: {} })
+      .sendControlRequest({
+        subtype: 'initialize',
+        hooks: {
+          PreToolUse: [
+            { matcher: '.*', hookCallbackIds: [HOOK_PERMISSION_CALLBACK_ID] },
+          ],
+        },
+      })
       .catch((err) => {
         // Quietly ignore failures during teardown — close() races the
         // initialize round-trip in tests / fast-cancel flows. Only log
@@ -284,6 +317,96 @@ export class SessionRunner {
           ? (input as Record<string, unknown>)
           : { value: input };
       this.onPermissionRequest({ requestId, toolName, input: safeInput });
+    });
+  }
+
+  /**
+   * Handle a `PreToolUse` hook_callback from the CLI. The hook fires for
+   * every tool invocation (matcher `.*` was registered at initialize time);
+   * we use it as the host-side permission gate that `--permission-prompt-tool
+   * stdio` no longer reliably provides for built-in tools in CLI 2.x.
+   *
+   * Decision rules:
+   *   - Wrong callback id → `{}` (no-op continue). Defensive — we only ever
+   *     register one callback so this should not happen, but a future
+   *     extension that registers more hooks should not silently auto-allow.
+   *   - `bypassPermissions` mode → continue (the user explicitly asked us
+   *     not to prompt).
+   *   - `acceptEdits` mode → continue. The CLI itself already auto-accepts
+   *     edits in this mode; surfacing a prompt would contradict the mode.
+   *   - Tool is in HOOK_PASSTHROUGH_TOOLS → continue. The CLI will then fire
+   *     `can_use_tool` for these tools and the existing handler renders the
+   *     specialized UI (AskUserQuestion → questions block; ExitPlanMode →
+   *     plan-approval block).
+   *   - Otherwise → surface to the renderer as a permission prompt and wait
+   *     for the user's allow / deny decision.
+   *
+   * On cancel (signal aborts because the CLI sent `control_cancel_request`
+   * or the channel broke), we resolve with `{}` continue — the response is
+   * dropped by ControlRpc anyway since the inbound entry is already gone,
+   * but cleaning up the pendingPerms entry prevents a leak.
+   */
+  private handleHookCallback(
+    callbackId: string,
+    input: unknown,
+    signal: AbortSignal
+  ): Promise<unknown> {
+    if (callbackId !== HOOK_PERMISSION_CALLBACK_ID) return Promise.resolve({});
+
+    const payload =
+      input && typeof input === 'object' && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
+    const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : 'tool';
+    const toolInputRaw = payload.tool_input;
+    const toolInput =
+      toolInputRaw && typeof toolInputRaw === 'object' && !Array.isArray(toolInputRaw)
+        ? (toolInputRaw as Record<string, unknown>)
+        : {};
+    // The CLI passes the live permission_mode inside the hook payload — we
+    // honour that rather than our own cached `this.permissionMode` since a
+    // mid-session set_permission_mode could have changed it on either side
+    // and the CLI's value is the authoritative one for THIS tool call.
+    const liveMode =
+      typeof payload.permission_mode === 'string' ? payload.permission_mode : 'default';
+
+    if (liveMode === 'bypassPermissions' || liveMode === 'acceptEdits') {
+      return Promise.resolve({});
+    }
+    if (HOOK_PASSTHROUGH_TOOLS.has(toolName)) return Promise.resolve({});
+
+    return new Promise<unknown>((resolve) => {
+      const requestId = `perm-${Date.now().toString(36)}-${(this.nextPermSeq++).toString(36)}`;
+      this.pendingPerms.set(requestId, (decision: CanUseToolDecision) => {
+        if (decision.allow) {
+          resolve({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'allow',
+            },
+          });
+        } else {
+          resolve({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: 'deny',
+              permissionDecisionReason: decision.deny_reason ?? 'User denied tool use.',
+            },
+          });
+        }
+      });
+      signal.addEventListener(
+        'abort',
+        () => {
+          if (this.pendingPerms.delete(requestId)) {
+            // Hook handler is allowed to no-op on cancel — the CLI has
+            // already moved on. Don't write a deny here; let it fall through.
+            resolve({});
+          }
+        },
+        { once: true }
+      );
+      this.onPermissionRequest({ requestId, toolName, input: toolInput });
     });
   }
 
