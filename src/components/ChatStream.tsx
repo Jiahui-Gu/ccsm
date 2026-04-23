@@ -13,6 +13,10 @@ import remarkGfm from 'remark-gfm';
 import type { MessageBlock, ImageAttachment } from '../types';
 import { useStore } from '../stores/store';
 import { attachmentToDataUrl, formatSize } from '../lib/attachments';
+import {
+  MOTION_SESSION_SWITCH_DURATION,
+  MOTION_STANDARD_EASING
+} from '../lib/motion';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 import { diffFromToolInput, type DiffSpec } from '../utils/diff';
@@ -1261,11 +1265,17 @@ export function ChatStream() {
         {blocks.length === 0 && !showThinkingDots && !loadError ? (
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key="empty"
+              // Key includes activeId so switching sessions (sidebar click)
+              // re-mounts and crossfades the right pane in sync with the
+              // sidebar selection-ring animation -- see src/lib/motion.ts.
+              key={`empty:${activeId}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+              transition={{
+                duration: MOTION_SESSION_SWITCH_DURATION,
+                ease: MOTION_STANDARD_EASING
+              }}
               className="h-full"
             >
               <EmptyState />
@@ -1274,11 +1284,17 @@ export function ChatStream() {
         ) : (
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key="blocks"
+              // Same coordination as the empty branch above: key on activeId
+              // so a session switch crossfades the content pane alongside
+              // the sidebar selection ring (shared timing in src/lib/motion).
+              key={`blocks:${activeId}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: 0.18, ease: [0, 0, 0.2, 1] }}
+              transition={{
+                duration: MOTION_SESSION_SWITCH_DURATION,
+                ease: MOTION_STANDARD_EASING
+              }}
               className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]"
             >
               {loadError && (
