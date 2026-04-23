@@ -4,7 +4,7 @@
 //   1. After clicking a session row in the sidebar, that <li> holds focus.
 //   2. Opening the Settings dialog from a keyboard shortcut and closing it
 //      via Esc restores focus to the session row that had it before.
-//   3. Same restoration contract for the CommandPalette (Cmd/Ctrl+K).
+//   3. Same restoration contract for the CommandPalette (Cmd/Ctrl+F).
 //   4. The chat scroll container exposes aria-live="polite" so streaming
 //      additions are announced to screen readers.
 import { _electron as electron } from 'playwright';
@@ -81,8 +81,8 @@ try {
   if (!liveAttrs) fail('chat stream container [data-chat-stream] not found', app);
   if (liveAttrs.live !== 'polite')
     fail(`expected aria-live=polite on chat stream, got ${liveAttrs.live}`, app);
-  if (!liveAttrs.relevant || !liveAttrs.relevant.includes('additions'))
-    fail(`expected aria-relevant to include "additions", got ${liveAttrs.relevant}`, app);
+  if (liveAttrs.relevant !== 'additions')
+    fail(`expected aria-relevant="additions" on chat stream, got ${liveAttrs.relevant}`, app);
   console.log('[probe-e2e-a11y-focus-restore] PASS contract 4: chat stream aria-live attrs');
 
   // --- Contract 1: clicking session focuses its <li> -------------------
@@ -188,7 +188,7 @@ try {
   // Re-anchor focus to the session li to make the test deterministic.
   await sessionLi.focus();
   await win.waitForTimeout(50);
-  await win.keyboard.press('Control+k');
+  await win.keyboard.press('Control+f');
   // Palette uses an <input> to receive focus on open.
   await win
     .locator('input[placeholder]')

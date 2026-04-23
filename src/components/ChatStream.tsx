@@ -1057,11 +1057,16 @@ export function ChatStream() {
         data-chat-stream
         // a11y: announce streaming additions to assistive tech. We set this
         // on the OUTER scroll container (not per-block) so SRs read newly
-        // appended text rather than re-announcing every chunk inside a
-        // single message. `additions text` covers both new nodes and text
-        // mutations within them.
+        // appended message blocks rather than re-announcing every chunk inside
+        // a single message. We deliberately use `additions` only (NOT
+        // `additions text`): the `text` token causes SRs to re-announce on
+        // every text mutation inside existing nodes, which at ~30ms streaming
+        // chunk rate overwhelms screen readers. With `additions`, each newly
+        // appended assistant/tool block is announced once when it lands;
+        // partial chunks within an existing block stay silent until the
+        // message settles into a new sibling node.
         aria-live="polite"
-        aria-relevant="additions text"
+        aria-relevant="additions"
         aria-atomic="false"
         role="log"
         className="flex-1 overflow-y-auto min-w-0"
