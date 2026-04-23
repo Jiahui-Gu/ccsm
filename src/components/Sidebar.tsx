@@ -45,6 +45,7 @@ import { InlineRename } from './ui/InlineRename';
 import { ConfirmDialog } from './ui/ConfirmDialog';
 import { useToast } from './ui/Toast';
 import { useTranslation } from '../i18n/useTranslation';
+import { DURATION_RAW, EASING } from '../lib/motion';
 import type { Group, Session } from '../types';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
@@ -153,7 +154,7 @@ function GroupRow({
                 aria-hidden
                 initial={{ scaleY: 0, opacity: 0, x: -2 }}
                 animate={{ scaleY: 1, opacity: 1, x: 0 }}
-                transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+                transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
                 style={{ originY: 0.5 }}
                 className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent rounded-r-sm"
               />
@@ -169,7 +170,7 @@ function GroupRow({
               <motion.span
                 initial={false}
                 animate={{ rotate: collapsed ? 0 : 90 }}
-                transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
+                transition={{ duration: DURATION_RAW.ms200, ease: EASING.enter }}
                 className="inline-flex shrink-0"
               >
                 <ChevronRight size={12} className="stroke-[1.75] text-fg-tertiary" />
@@ -406,7 +407,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               aria-hidden
               initial={{ scaleY: 0, opacity: 0, x: -2 }}
               animate={{ scaleY: 1, opacity: 1, x: 0 }}
-              transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+              transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
               style={{ originY: 0.5 }}
               className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent rounded-r-sm"
             />
@@ -607,7 +608,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
       // the store (see SidebarResizer + store.sidebarWidth). framer-motion
       // tweens the change so collapse/expand stays smooth.
       animate={{ width: collapsed ? 48 : sidebarWidth }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
       {/* Top drag strip — mirrors the right pane's 32px drag strip so the
@@ -755,7 +756,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             <motion.span
               initial={false}
               animate={{ rotate: archiveOpen ? 90 : 0 }}
-              transition={{ duration: 0.2, ease: [0, 0, 0.2, 1] }}
+              transition={{ duration: DURATION_RAW.ms200, ease: EASING.enter }}
               className="inline-flex shrink-0 text-fg-faint"
             >
               <ChevronRight size={12} className="stroke-[1.75]" />

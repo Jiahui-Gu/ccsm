@@ -10,6 +10,7 @@ import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
 import { useFocusRestore } from '../lib/useFocusRestore';
+import { DURATION_RAW, EASING } from '../lib/motion';
 
 type LocalUpdateStatus =
   | { kind: 'idle' }
@@ -149,7 +150,7 @@ export function SettingsDialog({
                     <motion.span
                       aria-hidden
                       layoutId="settings-tab-indicator"
-                      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+                      transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
                       className="absolute left-0 top-1 bottom-1 w-[3px] bg-accent rounded-r-sm"
                     />
                   )}

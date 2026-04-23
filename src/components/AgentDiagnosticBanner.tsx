@@ -3,6 +3,7 @@ import { AlertTriangle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
+import { DURATION_RAW, EASING } from '../lib/motion';
 
 /**
  * Non-intrusive banner showing the most recent agent-layer diagnostic (F1).
@@ -42,7 +43,7 @@ export function AgentDiagnosticBanner() {
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' }}
+          transition={{ duration: DURATION_RAW.ms150, ease: EASING.enter }}
           className="overflow-hidden"
           data-agent-diagnostic-banner
           data-severity={latest.level}
