@@ -64,10 +64,23 @@ export function ClaudeCliMissingDialog() {
     void api.getInstallHints().then(setHints).catch(() => {});
   }, [open, hints]);
 
-  // When the store flips into "found" after a successful retry / browse, we
-  // show a brief success flash and then auto-close.
+  // Track whether the missing-CLI dialog was open just before the store
+  // flipped to "found". The success flash should only fire as feedback for an
+  // in-dialog action (Retry detect / Browse for binary). On automatic startup
+  // detection, the dialog is never open, so we must NOT pop the flash — that
+  // turned every app launch into a noisy "Claude CLI detected" modal blip.
+  const wasMissingDialogOpen = useRef(false);
+  useEffect(() => {
+    if (open) wasMissingDialogOpen.current = true;
+  }, [open]);
+
+  // When the store flips into "found" after a successful retry / browse from
+  // inside the dialog, show a brief success flash and then auto-close. Suppress
+  // the flash entirely when the transition wasn't user-initiated from the
+  // dialog (e.g. the automatic checkCli() that runs on App mount).
   useEffect(() => {
     if (cliStatus.state !== 'found') return;
+    if (!wasMissingDialogOpen.current) return;
     if (!successTimer.current) {
       setSuccessVersion(cliStatus.version);
       setFoundBinary(cliStatus.binaryPath);
@@ -75,6 +88,7 @@ export function ClaudeCliMissingDialog() {
         setSuccessVersion(null);
         setFoundBinary(null);
         successTimer.current = null;
+        wasMissingDialogOpen.current = false;
       }, 1500);
     }
     return () => {
