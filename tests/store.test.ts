@@ -1079,3 +1079,34 @@ describe('store: resetSessionContext resets state', () => {
     expect(useStore.getState().startedSessions['s-reset']).toBeUndefined();
   });
 });
+
+describe('store: appendBlocks perf path (concat)', () => {
+  // Regression guard for the spread→concat refactor: a large prior array plus
+  // a small append must produce the correct combined sequence with the prior
+  // entries first, the new entries last, and no mutation of the original.
+  it('appends to a large existing array without mutating the source', () => {
+    useStore.getState().createSession('~/a');
+    const sid = useStore.getState().activeId;
+    const big = Array.from({ length: 5000 }, (_, i) => ({
+      kind: 'user' as const,
+      id: `seed-${i}`,
+      text: `m${i}`
+    }));
+    useStore.getState().replaceMessages(sid, big);
+    const before = useStore.getState().messagesBySession[sid];
+    expect(before).toHaveLength(5000);
+    useStore.getState().appendBlocks(sid, [
+      { kind: 'user', id: 'tail-1', text: 'last' }
+    ]);
+    const after = useStore.getState().messagesBySession[sid];
+    expect(after).toHaveLength(5001);
+    expect(after[0].id).toBe('seed-0');
+    expect(after[4999].id).toBe('seed-4999');
+    expect(after[5000].id).toBe('tail-1');
+    // Immutability: the previous array reference must NOT have been mutated
+    // (Zustand subscribers rely on reference inequality to detect changes).
+    expect(before).toHaveLength(5000);
+    expect(after).not.toBe(before);
+  });
+});
+
