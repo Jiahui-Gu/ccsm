@@ -8,6 +8,7 @@ import type { QuestionSpec } from '../types';
 import { Button } from './ui/Button';
 import { StateGlyph } from './ui/StateGlyph';
 import { useTranslation } from '../i18n/useTranslation';
+import { DURATION, DURATION_RAW, EASING } from '../lib/motion';
 
 export interface QuestionBlockProps {
   questions: QuestionSpec[];
@@ -110,7 +111,7 @@ export function QuestionBlock({ questions, onSubmit, autoFocus = true }: Questio
       ref={rootRef}
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative my-2 rounded-md border border-state-waiting/40 bg-state-waiting/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
       onKeyDownCapture={onKeyDownCapture}
     >
@@ -229,7 +230,7 @@ function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, auto
             key={oi}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+            transition={{ duration: DURATION.standard, delay: oi * 0.02, ease: EASING.enter }}
             htmlFor={id}
             className={labelClass(selected)}
           >
@@ -272,7 +273,7 @@ function MultiSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoF
               key={oi}
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.18, delay: oi * 0.02, ease: [0, 0, 0.2, 1] }}
+              transition={{ duration: DURATION.standard, delay: oi * 0.02, ease: EASING.enter }}
               htmlFor={id}
               className={labelClass(selected)}
             >

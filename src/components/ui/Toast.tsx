@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '../../lib/cn';
 import { StateGlyph } from './StateGlyph';
 import { useTranslation } from '../../i18n/useTranslation';
+import { DURATION_RAW, EASING } from '../../lib/motion';
 
 export type ToastKind = 'info' | 'waiting' | 'error';
 
@@ -80,7 +81,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               initial={{ opacity: 0, y: 8, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 4, scale: 0.98 }}
-              transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
+              transition={{ duration: DURATION_RAW.ms200, ease: EASING.standard }}
               className={cn(
                 'pointer-events-auto relative rounded-md border pl-3 pr-3 py-2.5',
                 'bg-bg-elevated surface-highlight surface-elevated',
