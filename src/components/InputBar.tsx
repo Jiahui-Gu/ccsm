@@ -79,7 +79,7 @@ function AttachmentChip({
         type="button"
         onClick={onRemove}
         aria-label={t('chat.removeAttachment', { name: attachment.name })}
-        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover active:scale-95 transition-all duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong"
+        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover active:scale-95 transition-all duration-150 ease-out outline-none focus-ring"
       >
         <X size={12} className="stroke-[2.25]" />
       </button>
@@ -716,7 +716,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
               'inline-flex h-6 w-6 items-center justify-center rounded-sm text-fg-tertiary',
               'hover:text-fg-primary hover:bg-bg-hover active:scale-95',
               'disabled:opacity-40 disabled:pointer-events-none',
-              'transition-all duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-border-strong'
+              'transition-all duration-150 ease-out outline-none focus-ring'
             )}
           >
             <ImagePlus size={14} className="stroke-[2.25]" />

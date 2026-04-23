@@ -71,7 +71,7 @@ function TitleButton({
         'flex h-full items-center justify-center text-fg-tertiary',
         'transition-colors duration-120 [transition-timing-function:var(--ease-spring)]',
         'hover:text-fg-primary focus:outline-none',
-        'focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+        'focus-ring',
         danger
           ? 'hover:bg-state-error hover:text-state-error-fg focus-visible:bg-state-error focus-visible:text-state-error-fg'
           : 'hover:bg-bg-hover focus-visible:bg-bg-hover'

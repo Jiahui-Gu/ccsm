@@ -182,7 +182,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
           cwdMissing
             ? 'text-state-warning hover:text-status-warning-foreground hover:bg-status-warning-muted'
             : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
-          'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+          'outline-none focus-ring',
           'transition-colors duration-120 ease-out'
         )}
       >
@@ -286,7 +286,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
               className={cn(
                 'w-full flex items-center gap-2 h-7 px-2 mx-0 rounded-sm',
                 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
-                'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong',
+                'outline-none focus-ring',
                 'transition-colors duration-120 ease-out text-left text-mono-md'
               )}
             >

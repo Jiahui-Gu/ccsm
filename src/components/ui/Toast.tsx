@@ -126,7 +126,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                           'bg-bg-app border border-border-default text-fg-primary',
                           'hover:bg-bg-elevated hover:border-border-strong',
                           'active:scale-[0.98]',
-                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          'focus-ring',
                           'transition-colors duration-150'
                         )}
                       >
@@ -141,7 +141,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                         className={cn(
                           'text-xs px-2 py-1 rounded-sm text-fg-tertiary',
                           'hover:text-fg-secondary hover:bg-bg-app',
-                          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                          'focus-ring',
                           'transition-colors duration-150'
                         )}
                       >
