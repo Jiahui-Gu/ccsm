@@ -13,6 +13,7 @@ import {
   loadClaudeBinPath,
   saveClaudeBinPath,
 } from './db';
+import { validateSaveStateInput } from './db-validate';
 
 // Reads the user's opt-out preference for crash reporting from app_state.
 // Returns false when the row is missing or the read errors — i.e. reporting
@@ -382,15 +383,38 @@ app.whenReady().then(() => {
   initDb();
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
-  ipcMain.handle('db:save', (e, key: string, value: string) => {
-    if (!fromMainFrame(e)) return;
-    saveState(key, value);
-    // Invalidate Sentry's cached opt-out so the toggle in Settings takes
-    // effect on the next error without an app restart.
-    if (key === CRASH_OPT_OUT_KEY) {
-      _crashOptOutCached = undefined;
+  // Cap renderer-supplied state values. Mirrors the per-block cap in
+  // db:saveMessages but tighter (1 MB vs 1 MB-per-block × N blocks): a
+  // single app_state row holds drafts/persist snapshots that should never
+  // approach this size — if one does, it's a bug in the persister and we
+  // refuse to commit it rather than silently growing the WAL. Validation
+  // logic lives in `./db-validate` so it's unit-testable without IPC.
+  ipcMain.handle(
+    'db:save',
+    (
+      e,
+      key: string,
+      value: string
+    ): { ok: true } | { ok: false; error: string } => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      const v = validateSaveStateInput(key, value);
+      if (!v.ok) {
+        if (v.error === 'value_too_large') {
+          console.warn(
+            `[main] db:save rejecting oversized value (${(value as string).length} bytes) for key=${key}`
+          );
+        }
+        return v;
+      }
+      saveState(key, value);
+      // Invalidate Sentry's cached opt-out so the toggle in Settings takes
+      // effect on the next error without an app restart.
+      if (key === CRASH_OPT_OUT_KEY) {
+        _crashOptOutCached = undefined;
+      }
+      return { ok: true };
     }
-  });
+  );
   ipcMain.handle('db:loadMessages', (e, sessionId: string) => {
     if (!fromMainFrame(e)) return [];
     return loadMessages(sessionId);
