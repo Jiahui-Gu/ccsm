@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-agent.mjs (case id=chat-copy; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Regression: with Menu.setApplicationMenu(null) the Edit-role accelerators
 // (Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+Z) are not registered on Windows
 // and Linux, making chat content feel "not copyable". Verify that Ctrl+A

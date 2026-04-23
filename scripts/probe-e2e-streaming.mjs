@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-agent.mjs (case id=streaming; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Verify streaming UX:
 // - calling streamAssistantText creates an assistant block with a streaming caret
 // - subsequent deltas append text in place (no duplicate blocks)
