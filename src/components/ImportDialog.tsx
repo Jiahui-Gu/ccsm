@@ -38,7 +38,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
 
   // a11y: opened from menus / shortcuts (no Radix Trigger), so wire up
   // focus restore manually.
-  useFocusRestore(open, {
+  const { handleCloseAutoFocus } = useFocusRestore(open, {
     fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
   });
 
@@ -126,6 +126,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
         title={t('importDialog.title')}
         description={t('importDialog.description')}
         width="640px"
+        onCloseAutoFocus={handleCloseAutoFocus}
       >
         <DialogBody>
           {loading ? (

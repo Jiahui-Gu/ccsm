@@ -51,7 +51,7 @@ export function SettingsDialog({
   // Settings is opened via Cmd+, / context menu / palette — none of which
   // use Radix's <Dialog.Trigger>, so its built-in restore doesn't fire.
   // Falls back to the active session row in the sidebar.
-  useFocusRestore(open, {
+  const { handleCloseAutoFocus } = useFocusRestore(open, {
     fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
   });
 
@@ -105,7 +105,7 @@ export function SettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent title={tt('title')} width="720px" hideClose={false}>
+      <DialogContent title={tt('title')} width="720px" hideClose={false} onCloseAutoFocus={handleCloseAutoFocus}>
         <div className="flex min-h-[380px] border-t border-border-subtle">
           <nav
             className="w-[160px] shrink-0 border-r border-border-subtle py-2"

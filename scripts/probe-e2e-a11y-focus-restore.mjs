@@ -194,7 +194,7 @@ try {
     .locator('input[placeholder]')
     .first()
     .waitFor({ state: 'visible', timeout: 5000 });
-  await win.waitForTimeout(120); // let the palette's setTimeout(80) focus run
+  await win.waitForTimeout(50); // let Radix FocusScope's setTimeout(0) commit
   await win.keyboard.press('Escape');
   const paletteFocusOk = await win
     .waitForFunction(
