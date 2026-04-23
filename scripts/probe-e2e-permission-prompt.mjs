@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-prompt; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Live e2e (renderer-only): inject a `waiting` permission block into the
 // running renderer store and verify the new PermissionPromptBlock component
 // renders EXPANDED with the expected keyboard behaviour. Bypasses the actual

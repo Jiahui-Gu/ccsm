@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-focus-not-stolen; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Journey 1: when a permission request appears asynchronously while the user
 // is mid-typing in the composer textarea, focus MUST remain on the textarea so
 // the next keystroke continues the in-progress message. The permission block

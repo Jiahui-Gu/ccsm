@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-mode-strict; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // E2E: agent:setPermissionMode rejects unknown mode strings rather than
 // silently coercing them to 'default'. The earlier toCliPermissionMode()
 // fallback meant a buggy renderer could downgrade `bypassPermissions` to

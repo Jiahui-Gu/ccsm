@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-sequential-focus; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Journey 4: focus transfers cleanly from one permission to the next.
 //
 // Scenario: a permission appears, user resolves it (Y -> Allow), then before

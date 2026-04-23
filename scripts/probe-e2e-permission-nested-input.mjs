@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-nested-input; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Journey 6: nested toolInput object renders as readable summary.
 //
 // Expected user experience: when toolInput is `{ command: 'ls', flags: { a:
