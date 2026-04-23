@@ -13,6 +13,7 @@ import {
   loadClaudeBinPath,
   saveClaudeBinPath,
 } from './db';
+import { validateSaveStateInput } from './db-validate';
 
 // Reads the user's opt-out preference for crash reporting from app_state.
 // Returns false when the row is missing or the read errors — i.e. reporting
@@ -386,9 +387,8 @@ app.whenReady().then(() => {
   // db:saveMessages but tighter (1 MB vs 1 MB-per-block × N blocks): a
   // single app_state row holds drafts/persist snapshots that should never
   // approach this size — if one does, it's a bug in the persister and we
-  // refuse to commit it rather than silently growing the WAL.
-  const MAX_STATE_KEY_LEN = 128;
-  const MAX_STATE_VALUE_BYTES = 1_000_000;
+  // refuse to commit it rather than silently growing the WAL. Validation
+  // logic lives in `./db-validate` so it's unit-testable without IPC.
   ipcMain.handle(
     'db:save',
     (
@@ -397,17 +397,14 @@ app.whenReady().then(() => {
       value: string
     ): { ok: true } | { ok: false; error: string } => {
       if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (typeof key !== 'string' || key.length === 0 || key.length > MAX_STATE_KEY_LEN) {
-        return { ok: false, error: 'invalid_key' };
-      }
-      if (typeof value !== 'string') {
-        return { ok: false, error: 'invalid_value' };
-      }
-      if (value.length > MAX_STATE_VALUE_BYTES) {
-        console.warn(
-          `[main] db:save rejecting oversized value (${value.length} bytes) for key=${key}`
-        );
-        return { ok: false, error: 'value_too_large' };
+      const v = validateSaveStateInput(key, value);
+      if (!v.ok) {
+        if (v.error === 'value_too_large') {
+          console.warn(
+            `[main] db:save rejecting oversized value (${(value as string).length} bytes) for key=${key}`
+          );
+        }
+        return v;
       }
       saveState(key, value);
       // Invalidate Sentry's cached opt-out so the toggle in Settings takes

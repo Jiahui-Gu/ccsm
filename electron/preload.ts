@@ -47,11 +47,21 @@ type UpdateStatus =
 
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
-  saveState: (
-    key: string,
-    value: string
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('db:save', key, value),
+  // The IPC handler returns a `{ok}` shape so it never crosses the IPC
+  // boundary as a thrown Error (Electron surfaces those as ugly stack
+  // dumps in the renderer console). We unwrap here and re-throw on
+  // failure so the existing `.catch(onPersistError)` callers in
+  // src/stores/persist.ts and src/stores/drafts.ts actually fire — a
+  // resolved `{ok:false}` would otherwise slip past `.catch` silently
+  // and produce data loss with zero renderer signal.
+  saveState: async (key: string, value: string): Promise<void> => {
+    const result = (await ipcRenderer.invoke('db:save', key, value)) as
+      | { ok: true }
+      | { ok: false; error: string };
+    if (!result.ok) {
+      throw new Error(result.error);
+    }
+  },
   // i18n: renderer reads OS locale to seed its "system" preference, and
   // pushes the resolved UI language to main so OS notifications match.
   // Lives under `i18n` to keep the bridge surface organised; renderer
