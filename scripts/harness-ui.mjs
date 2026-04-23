@@ -7,11 +7,12 @@
 // excluded from the per-file runner via scripts/run-all-e2e.mjs's
 // MERGED_INTO_HARNESS skip list.
 //
-// Scope (4 cases — pure UI / store-driven, no real claude.exe required):
+// Scope (5 cases — pure UI / store-driven, no real claude.exe required):
 //   - sidebar-align             (probe-e2e-sidebar-align)
 //   - no-sessions-landing       (probe-e2e-no-sessions-landing)
 //   - empty-state-minimal       (probe-e2e-empty-state-minimal)
 //   - a11y-focus-restore        (probe-e2e-a11y-focus-restore)
+//   - shortcut-overlay-opens    (new — UI-1 / #188)
 //
 // Related UI probes already absorbed into harness-agent.mjs:
 //   - inputbar-visible, chat-copy, input-placeholder
@@ -248,6 +249,74 @@ async function caseA11yFocusRestore({ win, log }) {
   log('contracts 1-4: session-row attrs, Settings restore, Palette restore, chat-stream aria-live');
 }
 
+// ---------- shortcut-overlay-opens ----------
+async function caseShortcutOverlayOpens({ win, log }) {
+  // Seed a normal active session so the full App branch renders (the
+  // overlay is wired into both branches, but this keeps the test closer
+  // to real usage).
+  await win.evaluate(() => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] }
+    });
+  });
+  await win.waitForTimeout(200);
+
+  // Press `?` on the body (not in any input) → overlay should open.
+  await win.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    document.body.focus();
+  });
+  await win.keyboard.press('Shift+Slash');
+
+  const overlay = win.locator('[data-shortcut-overlay]');
+  try {
+    await overlay.waitFor({ state: 'visible', timeout: 3000 });
+  } catch {
+    throw new Error('shortcut overlay did not appear after pressing ?');
+  }
+
+  // Title (rendered via DialogContent's title prop) must be present.
+  const hasTitle = await overlay.evaluate((el) => {
+    const id = el.getAttribute('aria-labelledby');
+    if (!id) return false;
+    const t = document.getElementById(id);
+    return !!t && /Keyboard shortcuts/i.test(t.textContent || '');
+  });
+  if (!hasTitle) {
+    const dump = await overlay.evaluate((el) => {
+      const id = el.getAttribute('aria-labelledby');
+      const t = id ? document.getElementById(id) : null;
+      return { id, text: t?.textContent, bodyText: el.textContent?.slice(0, 200), html: el.innerHTML.slice(0, 500) };
+    });
+    throw new Error('overlay title "Keyboard shortcuts" missing; dump=' + JSON.stringify(dump));
+  }
+  const kbdCount = await overlay.locator('kbd').count();
+  if (kbdCount < 6) throw new Error(`expected >=6 kbd chips in overlay, got ${kbdCount}`);
+
+  // Escape dismisses.
+  await win.keyboard.press('Escape');
+  const closed = await win.waitForFunction(
+    () => !document.querySelector('[data-shortcut-overlay]'),
+    null,
+    { timeout: 2000 }
+  ).then(() => true).catch(() => false);
+  if (!closed) throw new Error('overlay still present after Escape');
+
+  // Cmd/Ctrl+/ as the alternative trigger — Control on all harness hosts.
+  await win.keyboard.press('Control+/');
+  try {
+    await overlay.waitFor({ state: 'visible', timeout: 3000 });
+  } catch {
+    throw new Error('shortcut overlay did not appear after Ctrl+/');
+  }
+  await win.keyboard.press('Escape');
+
+  log(`overlay opened via ? and Ctrl+/, ${kbdCount} kbd chips`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -263,6 +332,7 @@ await runHarness({
     { id: 'sidebar-align', run: caseSidebarAlign },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
-    { id: 'a11y-focus-restore', run: caseA11yFocusRestore }
+    { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
+    { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens }
   ]
 });
