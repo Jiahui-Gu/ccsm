@@ -31,7 +31,7 @@ In:
 4. Cross-repo sessions inside one group
 5. CLI-visual-style structured rendering of the conversation stream
 6. Import: scan `~/.claude/projects/` for historical sessions
-7. Global search / Command Palette (Cmd/Ctrl+K)
+7. Global search / Command Palette (Cmd/Ctrl+F)
 8. Settings (API key, data dir, theme, font, shortcuts, auto-update)
 9. Sidebar collapse
 10. Session right-click menu (rename + move-to-group + delete) — operate inline in the sidebar; no standalone Session header
@@ -71,7 +71,7 @@ Two-column layout, expandable tree on the left. Visually minimal: no section bor
 
 ```
 Agentory                    [«]
-[🔍 Search…            ⌘K]
+[🔍 Search…            ⌘F]
 [+  New Session]
 
 ▾ Group A                  [+]
@@ -90,7 +90,7 @@ Agentory                    [«]
 - **No section visuals**: no `border-t` / section header / background-color blocks. Hierarchy via weight + color + whitespace.
 - **Archive as a bottom pinned collapsible block**: positioned at the end of the nav, above Settings, collapsed by default. MVP does NOT ship a Deleted view (delete is a hard delete; soft-delete + Deleted view is post-MVP).
 - **High-frequency vs low-frequency action layering**:
-  - Top: Search (⌘K), New Session — daily.
+  - Top: Search (⌘F), New Session — daily.
   - In nav: group list, New group (quiet row, weekly).
   - Bottom: Archived Groups block, Settings — monthly or rarer.
 - **Group row**: chevron toggles collapse; `[+]` shows on hover at the right; collapsed group shows total session count.
@@ -125,7 +125,7 @@ Agentory                    [«]
 
 ## 6. Global search / Command Palette
 
-- Single entry: Cmd/Ctrl+K, or click the sidebar top search box.
+- Single entry: Cmd/Ctrl+F, or click the sidebar top search box.
 - Single popover, mixed results:
   - Sessions (fuzzy match on name, group, cwd)
   - Groups
@@ -194,7 +194,7 @@ bottom-right, auto-dismiss in 3s, max 3 stacked. Triggered by:
 
 ## 11. Shortcuts (MVP full set)
 
-- Cmd/Ctrl+K: Search / Command Palette
+- Cmd/Ctrl+F: Search / Command Palette
 - Cmd/Ctrl+,: Settings
 - Cmd/Ctrl+N: New session (in current group, or auto-create default group)
 - Cmd/Ctrl+Shift+N: New group
@@ -236,7 +236,7 @@ Not doing: custom shortcuts, vim mode, multi-chord.
 
 ```
 ┌──────────────────────────────────┬────────────────────────────────────────────────────────┐
-│ [«]  Search…              ⌘K     │                                                        │
+│ [«]  Search…              ⌘F     │                                                        │
 │ [+ New Session]                  │  > make the webhook handler async                       │
 │ ─────────────────────────────    │                                                        │
 │ ▾ Backend Refactor        [+]    │  ● Let me look at the current handler first.            │

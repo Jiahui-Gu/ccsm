@@ -42,7 +42,7 @@ Agentory does **not** make any HTTP calls to Anthropic itself. All API traffic g
 
 ### Shortcuts
 
-- `Cmd/Ctrl+K` — Search / Command Palette
+- `Cmd/Ctrl+F` — Search / Command Palette
 - `Cmd/Ctrl+,` — Settings
 - `Cmd/Ctrl+N` — New session
 - `Cmd/Ctrl+Shift+N` — New group

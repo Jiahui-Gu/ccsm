@@ -406,7 +406,7 @@ div: h-7 px-4 flex items-center justify-between
 
 No background fill different from chat pane — only the top border separates it. Reads as part of the stream, not a control bar.
 
-### 7.7 Command palette (Cmd+K)
+### 7.7 Command palette (Cmd+F)
 
 ```
 Overlay: fixed inset-0 bg-black/40 backdrop-blur-[2px]

@@ -1,6 +1,6 @@
 // E2E: command palette keyboard navigation.
 //
-// 1. Cmd/Ctrl+K opens the palette.
+// 1. Cmd/Ctrl+F opens the palette.
 // 2. After typing, ↓ moves the active row, ↑ moves it back.
 // 3. Enter on an active session row closes the palette AND selects that
 //    session (activeId in the store flips).
@@ -78,14 +78,14 @@ await win.waitForTimeout(200);
 // 1. Open palette via global shortcut.
 await win.evaluate(() => {
   window.dispatchEvent(
-    new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true })
+    new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true })
   );
 });
 
 const searchInput = win.locator('input[placeholder*="Search"]');
 await searchInput.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
   await app.close();
-  fail('palette did not open via Ctrl+K');
+  fail('palette did not open via Ctrl+F');
 });
 
 // 2. Type "session bravo" and confirm Enter routes to bravo by checking
@@ -174,7 +174,7 @@ if (stillOpen) {
 }
 
 console.log('\n[probe-e2e-palette-nav] OK');
-console.log('  Ctrl+K opens palette');
+console.log('  Ctrl+F opens palette');
 console.log('  ArrowDown/ArrowUp move active row');
 console.log('  Enter on "session bravo" closes palette and sets activeId=s-nav-B');
 

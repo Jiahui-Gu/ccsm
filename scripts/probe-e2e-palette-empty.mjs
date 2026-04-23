@@ -1,6 +1,6 @@
 // E2E: command palette empty state.
 //
-// When the user opens the palette (Cmd/Ctrl+K), it must show ONLY the search
+// When the user opens the palette (Cmd/Ctrl+F), it must show ONLY the search
 // input — no results list, no command suggestions. Results appear only after
 // the user types at least one non-whitespace character. Esc closes it.
 //
@@ -65,12 +65,12 @@ await win.evaluate(() => {
 });
 await win.waitForTimeout(200);
 
-// 1. Open palette via Cmd+K (Ctrl+K on Win/Linux). The App.tsx handler
+// 1. Open palette via Cmd+F (Ctrl+F on Win/Linux). The App.tsx handler
 //    listens on window 'keydown' with metaKey || ctrlKey, so synthesizing the
 //    DOM event is the closest analogue to a real keypress.
 await win.evaluate(() => {
   window.dispatchEvent(
-    new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true })
+    new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true })
   );
 });
 
@@ -78,7 +78,7 @@ await win.evaluate(() => {
 const searchInput = win.locator('input[placeholder*="Search"]');
 await searchInput.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
   await app.close();
-  fail('palette did not open via Ctrl+K — search input never appeared');
+  fail('palette did not open via Ctrl+F — search input never appeared');
 });
 
 // 2. Empty state: NO option rows should be present INSIDE the palette. The
@@ -130,7 +130,7 @@ if (stillOpen) {
 }
 
 console.log('\n[probe-e2e-palette-empty] OK');
-console.log('  Ctrl+K opens palette');
+console.log('  Ctrl+F opens palette');
 console.log('  empty state: 0 options, "Type to search…" hint visible');
 console.log(`  typing "alpha" surfaces ${optionsAfterType} option(s) including "Alpha session"`);
 console.log('  Esc closes palette');

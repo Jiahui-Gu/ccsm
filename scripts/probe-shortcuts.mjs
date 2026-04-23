@@ -39,20 +39,20 @@ const result = await page.evaluate(async () => {
     out.checks.newGroupCreated = afterShiftN.groups.length === groupsBefore + 1;
     out.steps.push(`after Cmd+Shift+N: ${afterShiftN.groups.length} groups`);
 
-    // Cmd+K -> open command palette. The palette mounts a search input with
+    // Cmd+F -> open command palette. The palette mounts a search input with
     // the placeholder text from i18n; we use that as a reliable visibility
     // probe (Radix Dialog adds it as a portal under <body>, not <main>).
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true }));
     await new Promise((r) => setTimeout(r, 150));
     const paletteInput = document.querySelector('input[placeholder*="Search"]');
-    out.checks.paletteOpenedByCmdK = !!paletteInput;
-    out.steps.push(`after Cmd+K: palette input ${paletteInput ? 'visible' : 'MISSING'}`);
+    out.checks.paletteOpenedByCmdF = !!paletteInput;
+    out.steps.push(`after Cmd+F: palette input ${paletteInput ? 'visible' : 'MISSING'}`);
 
-    // Cmd+K again should toggle the palette closed.
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true }));
+    // Cmd+F again should toggle the palette closed.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true }));
     await new Promise((r) => setTimeout(r, 200));
     out.checks.paletteToggleClosed = !document.querySelector('input[placeholder*="Search"]');
-    out.steps.push(`after second Cmd+K: palette ${out.checks.paletteToggleClosed ? 'closed' : 'still open'}`);
+    out.steps.push(`after second Cmd+F: palette ${out.checks.paletteToggleClosed ? 'closed' : 'still open'}`);
 
     // Cmd+, -> open Settings dialog. Radix portals the dialog under <body>;
     // we look for the dialog title "Settings" rendered inside role=dialog.
@@ -118,7 +118,7 @@ await browser.close();
 const required = [
   'newSessionCreated',
   'newGroupCreated',
-  'paletteOpenedByCmdK',
+  'paletteOpenedByCmdF',
   'paletteToggleClosed',
   'settingsOpenedByCmdComma'
 ];
