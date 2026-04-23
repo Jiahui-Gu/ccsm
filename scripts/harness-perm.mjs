@@ -105,10 +105,15 @@ async function casePermissionPrompt({ win, log }) {
   // Wait for autoFocus effect to move focus onto the block's Reject button —
   // otherwise a just-launched InputBar can still hold focus and the Y keystroke
   // gets typed into the textarea instead of resolving the permission.
+  // Surface the timeout loudly (was `.catch(() => {})` — silently swallowed
+  // the race so the test continued and falsely "passed" even when the 2nd Y
+  // didn't resolve the prompt). Per PR #178 reviewer feedback.
   await win.waitForFunction(() => {
     const el = document.activeElement;
     return el?.getAttribute?.('data-perm-action') === 'reject';
-  }, null, { timeout: 2000 }).catch(() => {});
+  }, null, { timeout: 2000 }).catch((err) => {
+    throw new Error(`[case=permission-prompt] autoFocus never moved to Reject before 2nd Y press: ${err.message}`);
+  });
   await win.keyboard.press('y');
   try {
     await heading.waitFor({ state: 'detached', timeout: 3_000 });
