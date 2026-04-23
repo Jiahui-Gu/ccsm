@@ -287,10 +287,13 @@ describe('SessionRunner permission roundtrip', () => {
     await new Promise((r) => setImmediate(r));
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const resp = lines.find((l) => l.type === 'control_response');
+    const resp = lines.find((l) => l.type === 'control_response') as
+      | { response: { subtype: string; request_id: string; response: Record<string, unknown> } }
+      | undefined;
     expect(resp).toBeDefined();
-    expect(resp!.request_id).toBe('req_1');
-    expect(resp!.response).toMatchObject({ behavior: 'allow', toolUseID: 'toolu_a' });
+    expect(resp!.response.subtype).toBe('success');
+    expect(resp!.response.request_id).toBe('req_1');
+    expect(resp!.response.response).toMatchObject({ behavior: 'allow', toolUseID: 'toolu_a' });
 
     runner.close();
   });
@@ -318,7 +321,9 @@ describe('SessionRunner permission roundtrip', () => {
     await new Promise((r) => setImmediate(r));
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
     const resp = lines.find((l) => l.type === 'control_response') as Record<string, unknown>;
-    expect((resp.response as Record<string, unknown>).behavior).toBe('deny');
+    const env = resp.response as { subtype: string; response: Record<string, unknown> };
+    expect(env.subtype).toBe('success');
+    expect(env.response.behavior).toBe('deny');
     runner.close();
   });
 });
@@ -356,9 +361,14 @@ describe('SessionRunner PreToolUse hook permission', () => {
     await new Promise((r) => setImmediate(r));
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_1') as Record<string, unknown>;
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_1',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } } | undefined;
     expect(resp).toBeDefined();
-    expect(resp.response).toEqual({
+    expect(resp!.response.subtype).toBe('success');
+    expect(resp!.response.response).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
@@ -396,14 +406,19 @@ describe('SessionRunner PreToolUse hook permission', () => {
     await new Promise((r) => setImmediate(r));
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_2') as Record<string, unknown>;
-    expect(resp.response).toMatchObject({
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_2',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } };
+    expect(resp.response.subtype).toBe('success');
+    expect(resp.response.response).toMatchObject({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
       },
     });
-    const out = resp.response as { hookSpecificOutput: { permissionDecisionReason?: string } };
+    const out = resp.response.response as { hookSpecificOutput: { permissionDecisionReason?: string } };
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/denied/i);
     runner.close();
   });
@@ -433,10 +448,15 @@ describe('SessionRunner PreToolUse hook permission', () => {
     expect(seen).toHaveLength(0);
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_3') as Record<string, unknown>;
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_3',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } };
     // Empty `{}` response means "no opinion, continue" — the CLI then fires
     // can_use_tool which the existing handler treats as a questions block.
-    expect(resp.response).toEqual({});
+    expect(resp.response.subtype).toBe('success');
+    expect(resp.response.response).toEqual({});
     runner.close();
   });
 
@@ -470,9 +490,14 @@ describe('SessionRunner PreToolUse hook permission', () => {
     expect(seen).toHaveLength(0);
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const responses = lines.filter((l) => l.type === 'control_response');
+    const responses = lines.filter((l) => l.type === 'control_response') as Array<{
+      response: { subtype: string; request_id: string; response: Record<string, unknown> };
+    }>;
     expect(responses).toHaveLength(2);
-    for (const r of responses) expect(r.response).toEqual({});
+    for (const r of responses) {
+      expect(r.response.subtype).toBe('success');
+      expect(r.response.response).toEqual({});
+    }
     runner.close();
   });
 
@@ -496,8 +521,13 @@ describe('SessionRunner PreToolUse hook permission', () => {
     expect(seen).toHaveLength(0);
 
     const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
-    const resp = lines.find((l) => l.type === 'control_response' && l.request_id === 'req_hk_unknown') as Record<string, unknown>;
-    expect(resp.response).toEqual({});
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_unknown',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } };
+    expect(resp.response.subtype).toBe('success');
+    expect(resp.response.response).toEqual({});
     runner.close();
   });
 });

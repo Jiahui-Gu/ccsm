@@ -31,7 +31,7 @@ fields.
 | `hook_callback`: `callback_id, input, tool_use_id?` | M1 §3.4 lines 338-340; S2 §5.3 line 468 |
 | `mcp_message`: `server_name, message` | M1 §3.4 lines 341-342; S2 §5.3 line 472 |
 | outbound `user`: `type, uuid, session_id, parent_tool_use_id, isSynthetic, message` | M1 §3.2 lines 198-207 |
-| outbound `control_response`: `type, request_id, response.{behavior, message?, updatedInput?, toolUseID}` | M1 §3.2 lines 209-216; S2 §5.2 lines 415-426 |
+| outbound `control_response`: `type, response.{subtype, request_id, response{behavior, message?, updatedInput?, toolUseID} | hookSpecificOutput}` | M1 §3.2 lines 209-216; S2 §5.2 lines 415-426; cross-checked against `claude-agent-sdk-python/_internal/query.py` `success_response` builder (Bug L / A2-NEW-3) |
 | outbound control commands `interrupt / set_permission_mode {mode} / set_model {model} / set_max_thinking_tokens {tokens}` | M1 §3.2 lines 218-228 |
 
 ## What's inferred / partially confirmed
@@ -101,11 +101,21 @@ real samples and update the schemas.
   captured wire frames look like:
     success: `{ type: "control_response", response: { subtype: "success", request_id, response: {...payload} } }`
     error:   `{ type: "control_response", response: { subtype: "error",   request_id, error: "..." } }`
-  This is the OPPOSITE direction from outbound `control_response` (us → CLI),
-  which uses the FLAT `{ type, request_id, response }` shape — confirmed by
-  the fact that `can_use_tool` / `hook_callback` ack flows have always
-  worked. Don't unify the two: outbound stays flat, inbound is nested.
   Discriminate on `response.subtype` to distinguish success vs error.
+- **Outbound `control_response` (us → CLI) is ALSO NESTED — same shape as
+  inbound.** Bug L / A2-NEW-3 (April 2026): pre-fix this code emitted the
+  flat shape `{ type, request_id, response }`. Unit tests passed against a
+  mock that accepted anything; real `claude.exe` SILENTLY DROPPED the frame
+  for `hook_callback` responses, leaving every Write/Edit and any Bash that
+  triggered a permission prompt hung after the user clicked Allow (the
+  `permission-resolved` system trace appeared but no `tool_result` ever
+  arrived). Cross-checked against `claude-agent-sdk-python/_internal/query.py`
+  `success_response` / `error_response` builders, which both emit the
+  nested envelope. Treat inbound and outbound `control_response` as the
+  SAME shape — claim of asymmetry in the previous version of this note was
+  wrong. Outbound `control_request` (us → CLI) remains FLAT
+  (`{ type, request_id, request }`) — that's a different frame, don't
+  confuse with `control_response`.
 - **`ControlRequestPayloadSchema` is `z.union`, not `discriminatedUnion`.**
   `discriminatedUnion('subtype')` would reject any unknown subtype and force
   the parser into the `'unknown'` bucket — meaning control-rpc would never
