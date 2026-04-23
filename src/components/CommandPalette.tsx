@@ -227,7 +227,7 @@ export function CommandPalette({
               <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
             )}
             {hasQuery && results.length === 0 && (
-              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.noMatches')}</li>
+              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.noResultsFor', { query: q.trim() })}</li>
             )}
             {hasQuery &&
               results.map((r, i) => (
