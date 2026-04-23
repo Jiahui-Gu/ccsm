@@ -62,8 +62,13 @@ function resolveClaudeConfigDir(explicit: string | undefined): string {
  *     *Note: the CLI's real classifier-driven `auto` mode is NOT accepted
  *     here by design — we never surface it in the UI, so an `auto` on the
  *     wire must be our legacy alias for `acceptEdits`.
- * Unknown strings coerce to `'default'` rather than passing an invalid flag
- * value to claude.exe.
+ *
+ * Unknown strings THROW. Earlier behaviour silently coerced anything we
+ * didn't recognise to `'default'`, which meant a buggy renderer (or a
+ * compromised one) could downgrade `bypassPermissions` to `default` by
+ * sending a typo and never see an error. The agent:setPermissionMode IPC
+ * handler in main.ts catches this and surfaces `{ ok: false, error:
+ * 'unknown_mode' }` so the renderer can show "this mode isn't supported".
  */
 function toCliPermissionMode(mode: PermissionMode | undefined): CliPermissionMode | undefined {
   if (!mode) return undefined;
@@ -82,7 +87,7 @@ function toCliPermissionMode(mode: PermissionMode | undefined): CliPermissionMod
     case 'yolo':
       return 'bypassPermissions';
     default:
-      return 'default';
+      throw new Error(`Unknown permission mode: ${String(mode)}`);
   }
 }
 
@@ -315,9 +320,15 @@ export class SessionRunner {
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.rpc) return;
-    this.permissionMode = mode;
+    // Validate up front so a bogus mode is rejected even if the session
+    // hasn't started yet (no rpc) — the IPC layer relies on the throw to
+    // surface `unknown_mode` to the renderer.
     const cliMode = toCliPermissionMode(mode);
+    if (!this.rpc) {
+      this.permissionMode = mode;
+      return;
+    }
+    this.permissionMode = mode;
     if (!cliMode) return;
     try {
       await this.rpc.setPermissionMode(cliMode);

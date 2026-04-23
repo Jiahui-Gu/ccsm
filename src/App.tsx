@@ -116,13 +116,7 @@ export default function App() {
   const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
   useEffect(() => {
     let cancelled = false;
-    type Bridge = {
-      i18n?: {
-        getSystemLocale: () => Promise<string | undefined>;
-        setLanguage: (l: 'en' | 'zh') => void;
-      };
-    };
-    const bridge = (window as unknown as { agentory?: Bridge }).agentory;
+    const bridge = window.agentory;
     void (async () => {
       let locale: string | undefined;
       try {
@@ -140,9 +134,7 @@ export default function App() {
     };
   }, [hydrateSystemLocale]);
   useEffect(() => {
-    type Bridge = { i18n?: { setLanguage: (l: 'en' | 'zh') => void } };
-    const bridge = (window as unknown as { agentory?: Bridge }).agentory;
-    bridge?.i18n?.setLanguage(resolvedLanguage);
+    window.agentory?.i18n?.setLanguage(resolvedLanguage);
   }, [resolvedLanguage]);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);

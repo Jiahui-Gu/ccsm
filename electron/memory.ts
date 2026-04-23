@@ -23,7 +23,15 @@ export function isAllowedMemoryPath(p: unknown): p is string {
   if (typeof p !== 'string' || p.length === 0) return false;
   // Must be absolute to avoid ambiguous-cwd behavior across platforms.
   if (!path.isAbsolute(p)) return false;
+  // Reject UNC paths (`\\server\share\...` on Windows or `//server/share/...`).
+  // path.isAbsolute returns true for these, but a UNC `fs.existsSync` triggers
+  // an SMB handshake that leaks the user's NTLM hash to the named host —
+  // exactly the credential-leak primitive we're trying to slam shut.
+  if (p.startsWith('\\\\') || p.startsWith('//')) return false;
   const normalized = path.normalize(p);
+  // Re-check after normalize — path.normalize on Windows can collapse mixed
+  // separators in ways that briefly produced UNC-like prefixes pre-Node 18.
+  if (normalized.startsWith('\\\\') || normalized.startsWith('//')) return false;
   // Disallow anything that looks like it's trying to traverse after
   // normalization (normalize usually collapses `..` but on symlinked
   // structures attackers might still smuggle one in).
