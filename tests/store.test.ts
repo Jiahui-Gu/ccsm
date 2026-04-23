@@ -825,7 +825,13 @@ describe('store: createSession auto-creates default group when none usable', () 
 describe('store: restoreSession round-trip', () => {
   beforeEach(() => {
     (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+      agentory: {
+        saveMessages: vi.fn().mockResolvedValue(undefined),
+        // deleteSession fires agent:close over IPC when the session had a
+        // live child. Stubbed as a no-op here — the unit test cares about
+        // store-state transitions, not whether main.ts tore down a pid.
+        agentClose: vi.fn().mockResolvedValue(true)
+      }
     };
   });
 
