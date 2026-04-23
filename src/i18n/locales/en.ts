@@ -145,7 +145,7 @@ const en = {
     expandSidebarAria: 'Expand sidebar',
     newSessionTooltip: 'New session',
     newSessionAria: 'New session',
-    searchTooltip: 'Search  ⌘K',
+    searchTooltip: 'Search  ⌘F',
     searchAriaShort: 'Search',
     importTooltip: 'Import session',
     importAriaShort: 'Import session',

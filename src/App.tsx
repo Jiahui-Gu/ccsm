@@ -158,7 +158,10 @@ export default function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
-      if (k === 'k' && !e.shiftKey) {
+      if (k === 'f' && !e.shiftKey) {
+        // Cmd/Ctrl+F opens the global Search / Command Palette. We
+        // explicitly preventDefault so the browser/Electron's default
+        // find-in-page (when present) doesn't also fire.
         e.preventDefault();
         setPaletteOpen((p) => !p);
       } else if (k === 'b' && !e.shiftKey) {
