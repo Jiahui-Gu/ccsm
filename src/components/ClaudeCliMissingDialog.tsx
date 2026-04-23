@@ -256,7 +256,7 @@ function Header({ searchedPaths }: { searchedPaths: string[] }) {
   return (
     <div className="px-5 pt-5 pb-3">
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 text-status-warning-foreground">
+        <div className="mt-0.5 text-state-warning-text">
           <AlertTriangle size={16} className="stroke-[1.75]" />
         </div>
         <div className="flex-1 min-w-0">
@@ -419,7 +419,7 @@ function CommandRow({ row }: { row: InstallRow }) {
                 animate={{ scale: 1, opacity: 1 }}
                 exit={{ scale: 0.7, opacity: 0 }}
                 transition={{ duration: DURATION.fast }}
-                className="text-status-success-foreground"
+                className="text-state-success-text"
               >
                 <Check size={13} className="stroke-[2.25]" />
               </motion.span>
@@ -466,7 +466,7 @@ function HaveItPane({
         <span>{configuring ? t('cli.verifying') : t('cli.browseBinary')}</span>
       </Button>
       {error && (
-        <div className="text-xs text-status-error-foreground">
+        <div className="text-xs text-state-error-text">
           {error}
         </div>
       )}
@@ -498,7 +498,7 @@ function SuccessPane({
         initial={{ scale: 0.6, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.08, duration: DURATION.slow, ease: EASING.standard }}
-        className="mt-0.5 text-status-success-foreground"
+        className="mt-0.5 text-state-success-text"
       >
         <Check size={18} className="stroke-[2]" />
       </motion.div>
@@ -518,7 +518,7 @@ function SuccessPane({
             <>
               {t('cli.foundVersion')} <span className="text-fg-secondary font-mono">{version}</span>
               {belowMin && (
-                <span className="ml-1 text-status-warning-foreground">
+                <span className="ml-1 text-state-warning-text">
                   {t('cli.belowRecommended', { min: CLI_MIN_VERSION_SOFT })}
                 </span>
               )}
