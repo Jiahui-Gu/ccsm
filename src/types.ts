@@ -32,7 +32,16 @@ export interface Group {
   id: string;
   name: string;
   collapsed: boolean;
-  kind: 'normal' | 'archive' | 'deleted';
+  kind: 'normal' | 'archive';
+  /**
+   * When set, the sidebar should render `t(nameKey)` instead of `name`.
+   * Used by groups synthesized at session-create / import time so the
+   * default-group label re-localizes when the user switches language,
+   * instead of staying frozen to whatever the current locale was when
+   * the group was created. `name` is still populated with the resolved
+   * string at creation time as a fallback for any non-i18n surface.
+   */
+  nameKey?: string;
 }
 
 export interface QuestionOption {
