@@ -1135,7 +1135,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         toAppend.push(b);
       }
       if (toAppend.length === 0 && next === prev) return s;
-      const finalNext = toAppend.length > 0 ? [...next, ...toAppend] : next;
+      // Perf: `concat` is consistently as fast or faster than spread for the
+      // hot per-stream-chunk path; avoids the spread iterator overhead.
+      const finalNext = toAppend.length > 0 ? next.concat(toAppend) : next;
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: finalNext }
       };
@@ -1652,7 +1654,35 @@ export async function hydrateStore(): Promise<void> {
   ]);
 
   // After (potential) hydration, subscribe to write-through.
+  // Perf: the subscriber fires on EVERY store mutation (including hot paths
+  // like appendBlocks per stream chunk). We early-bail when none of the
+  // top-level fields that actually get persisted have changed, so we never
+  // build the snapshot object or hit `schedulePersist`'s debounce timer for
+  // mutations that wouldn't change disk state anyway. Fields are checked by
+  // reference — every persisted field is either a primitive or an immutable
+  // array we replace on update, so reference equality is correct.
+  let prevSnap: State | null = null;
   useStore.subscribe((s) => {
+    if (
+      prevSnap !== null &&
+      prevSnap.sessions === s.sessions &&
+      prevSnap.groups === s.groups &&
+      prevSnap.activeId === s.activeId &&
+      prevSnap.model === s.model &&
+      prevSnap.permission === s.permission &&
+      prevSnap.sidebarCollapsed === s.sidebarCollapsed &&
+      prevSnap.sidebarWidth === s.sidebarWidth &&
+      prevSnap.theme === s.theme &&
+      prevSnap.fontSize === s.fontSize &&
+      prevSnap.fontSizePx === s.fontSizePx &&
+      prevSnap.density === s.density &&
+      prevSnap.recentProjects === s.recentProjects &&
+      prevSnap.tutorialSeen === s.tutorialSeen &&
+      prevSnap.notificationSettings === s.notificationSettings
+    ) {
+      return;
+    }
+    prevSnap = s;
     const snapshot: PersistedState = {
       version: 1,
       sessions: s.sessions,

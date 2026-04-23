@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   ChevronRight,
@@ -69,7 +69,8 @@ function GroupRow({
   anyGroupFocused,
   autoRename,
   onSelectSession,
-  onFocus
+  onFocus,
+  normalGroups
 }: {
   group: Group;
   sessions: Session[];
@@ -82,6 +83,9 @@ function GroupRow({
   autoRename?: boolean;
   onSelectSession: (id: string) => void;
   onFocus: () => void;
+  /** Pre-filtered list of normal (non-archive) groups, hoisted to the parent
+   *  Sidebar so we don't recompute per SessionRow per render. */
+  normalGroups: Group[];
 }) {
   const { t } = useTranslation();
   const sessionIds = sessions.map((s) => s.id);
@@ -263,6 +267,7 @@ function GroupRow({
               active={s.id === activeSessionId}
               selected={!anyGroupFocused && s.id === activeSessionId}
               onSelect={() => onSelectSession(s.id)}
+              normalGroups={normalGroups}
             />
           ))}
           </ul>
@@ -294,10 +299,12 @@ function GroupRow({
   );
 }
 
-function SessionRow({ session, active, selected, onSelect }: { session: Session; active: boolean; selected: boolean; onSelect: () => void }) {
+function SessionRow({ session, active, selected, onSelect, normalGroups }: { session: Session; active: boolean; selected: boolean; onSelect: () => void; normalGroups: Group[] }) {
   const { t } = useTranslation();
   const [renaming, setRenaming] = useState(false);
-  const groups = useStore((s) => s.groups).filter((g) => g.kind === 'normal');
+  // Perf: receive `normalGroups` as a prop computed once in the parent
+  // <Sidebar>, rather than calling `s.groups.filter(...)` per row per render.
+  const groups = normalGroups;
   const renameSession = useStore((s) => s.renameSession);
   const deleteSession = useStore((s) => s.deleteSession);
   const restoreSession = useStore((s) => s.restoreSession);
@@ -514,8 +521,12 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   const collapsed = useStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
-  const normal = groups.filter((g) => g.kind === 'normal');
-  const archived = groups.filter((g) => g.kind === 'archive');
+  // Perf: hoist the normal/archive partition to the parent so SessionRow
+  // (which needs `normalGroups` for its move-to-group menu) doesn't recompute
+  // it per row per render. `useMemo` keeps the array reference stable across
+  // re-renders triggered by unrelated store mutations.
+  const normal = useMemo(() => groups.filter((g) => g.kind === 'normal'), [groups]);
+  const archived = useMemo(() => groups.filter((g) => g.kind === 'archive'), [groups]);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // J2: track the most recently created group so its <GroupRow> mounts in
@@ -712,6 +723,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
                 autoRename={justCreatedGroupId === g.id}
                 onSelectSession={onSelectSession}
                 onFocus={() => onFocusGroup(g.id)}
+                normalGroups={normal}
               />
             ))}
           </nav>
@@ -754,6 +766,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
                   anyGroupFocused={focusedGroupId !== null}
                   onSelectSession={onSelectSession}
                   onFocus={() => onFocusGroup(g.id)}
+                  normalGroups={normal}
                 />
               ))}
             </nav>
