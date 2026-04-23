@@ -28,6 +28,168 @@
 
 import { runHarness } from './probe-helpers/harness-runner.mjs';
 
+// ---------- diagnostic-banner (F1) ----------
+// Verifies that pushing an agent:diagnostic into the store surfaces a banner
+// above ChatStream, and that Dismiss hides it.
+async function caseDiagnosticBanner({ win, log }) {
+  const SID = 's-diag';
+  await win.evaluate((sid) => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'diag-probe', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [] },
+      diagnostics: [],
+      sessionInitFailures: {},
+    });
+  }, SID);
+  await win.waitForTimeout(200);
+
+  // No banner visible initially.
+  const initial = await win.locator('[data-agent-diagnostic-banner]').count();
+  if (initial !== 0) throw new Error(`expected no diagnostic banner initially, got ${initial}`);
+
+  // Push a diagnostic (simulating what lifecycle.ts does on onAgentDiagnostic).
+  await win.evaluate((sid) => {
+    window.__agentoryStore.getState().pushDiagnostic({
+      sessionId: sid,
+      level: 'error',
+      code: 'init_failed',
+      message: 'Agent initialize handshake failed — permission prompts may be degraded: E2E_PROBE',
+      timestamp: Date.now(),
+    });
+  }, SID);
+  await win.waitForTimeout(250);
+
+  const banner = win.locator('[data-agent-diagnostic-banner]').first();
+  await banner.waitFor({ state: 'visible', timeout: 3000 });
+  const severity = await banner.getAttribute('data-severity');
+  if (severity !== 'error') throw new Error(`expected severity=error, got ${severity}`);
+  const bannerText = await banner.innerText();
+  if (!bannerText.includes('E2E_PROBE')) throw new Error(`banner text missing probe message, got: ${JSON.stringify(bannerText)}`);
+
+  // Store entry exists and is not dismissed.
+  const entryBefore = await win.evaluate(() => {
+    const d = window.__agentoryStore.getState().diagnostics;
+    return d.map((x) => ({ code: x.code, level: x.level, dismissed: !!x.dismissed }));
+  });
+  if (entryBefore.length !== 1) throw new Error(`expected 1 diagnostic, got ${entryBefore.length}`);
+  if (entryBefore[0].dismissed) throw new Error('diagnostic should not be dismissed yet');
+
+  // Dismiss — banner should disappear.
+  await win.locator('[data-agent-diagnostic-dismiss]').first().click();
+  await win.waitForTimeout(300);
+  const afterDismiss = await win.locator('[data-agent-diagnostic-banner]').count();
+  if (afterDismiss !== 0) throw new Error(`banner should be hidden after dismiss, still ${afterDismiss}`);
+
+  const entryAfter = await win.evaluate(() => window.__agentoryStore.getState().diagnostics[0]);
+  if (!entryAfter.dismissed) throw new Error('dismissed flag should be set in store');
+
+  // A diagnostic for a DIFFERENT session must not surface on this active session.
+  await win.evaluate(() => {
+    window.__agentoryStore.getState().pushDiagnostic({
+      sessionId: 's-other',
+      level: 'warn',
+      code: 'control_timeout',
+      message: 'other session warn',
+      timestamp: Date.now(),
+    });
+  });
+  await win.waitForTimeout(200);
+  const crossSession = await win.locator('[data-agent-diagnostic-banner]').count();
+  if (crossSession !== 0) throw new Error(`banner should not surface cross-session, got ${crossSession}`);
+
+  log('push → banner render → dismiss → hide; cross-session entries do not leak into active view');
+}
+
+// ---------- init-failure-banner (F7) ----------
+// Verifies that setSessionInitFailure surfaces an actionable banner with
+// title, error text, Retry, Reconfigure, and dismiss. Because the
+// contextBridge-exposed window.agentory is non-configurable, we cannot
+// reliably stub `agentStart` from the renderer — so instead of driving the
+// full retry IPC round-trip, we verify the reconcile helper's observable
+// effects directly (clearing the failure hides the banner) and that the
+// Reconfigure button fires its prop callback.
+async function caseInitFailureBanner({ win, log }) {
+  const SID = 's-initfail';
+  await win.evaluate((sid) => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'initfail-probe', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [] },
+      sessionInitFailures: {},
+      diagnostics: [],
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // No banner initially.
+  const initialCount = await win.locator('[data-agent-init-failed-banner]').count();
+  if (initialCount !== 0) throw new Error(`expected no init-failed banner initially, got ${initialCount}`);
+
+  // Seed a failure — matches what startSessionAndReconcile produces for a
+  // non-CLAUDE_NOT_FOUND / non-CWD_MISSING failure.
+  await win.evaluate((sid) => {
+    window.__agentoryStore.getState().setSessionInitFailure(sid, {
+      error: 'spawn EACCES: permission denied (probe)',
+      errorCode: undefined,
+      searchedPaths: [],
+    });
+  }, SID);
+  await win.waitForTimeout(250);
+
+  const banner = win.locator('[data-agent-init-failed-banner]').first();
+  await banner.waitFor({ state: 'visible', timeout: 3000 });
+  const text = await banner.innerText();
+  if (!text.includes('Agent failed to start')) throw new Error(`missing title, got ${JSON.stringify(text)}`);
+  if (!text.includes('EACCES')) throw new Error(`missing error body, got ${JSON.stringify(text)}`);
+
+  // All three action buttons must render and be enabled.
+  const retry = win.locator('[data-agent-init-failed-retry]').first();
+  const reconfigure = win.locator('[data-agent-init-failed-reconfigure]').first();
+  if (!(await retry.isVisible())) throw new Error('Retry button should be visible');
+  if (!(await retry.isEnabled())) throw new Error('Retry button should be enabled');
+  if (!(await reconfigure.isVisible())) throw new Error('Reconfigure button should be visible');
+  if (!(await reconfigure.isEnabled())) throw new Error('Reconfigure button should be enabled');
+
+  // Clicking Reconfigure should open the Settings dialog (App wires the
+  // banner prop to setSettingsOpen). We detect it via the dialog title.
+  await reconfigure.click();
+  await win.waitForTimeout(300);
+  const settingsOpen = await win.evaluate(() => {
+    return !!document.querySelector('[role="dialog"]');
+  });
+  if (!settingsOpen) throw new Error('Reconfigure click should open Settings dialog');
+
+  // Close the dialog with Escape so it doesn't leak into the next case.
+  await win.keyboard.press('Escape');
+  await win.waitForTimeout(200);
+
+  // Clearing the failure (what a successful retry does) hides the banner.
+  await win.evaluate((sid) => {
+    window.__agentoryStore.getState().clearSessionInitFailure(sid);
+  }, SID);
+  await win.waitForTimeout(300);
+  const afterClear = await win.locator('[data-agent-init-failed-banner]').count();
+  if (afterClear !== 0) throw new Error(`banner should be hidden after clearSessionInitFailure, still ${afterClear}`);
+
+  // The banner is also session-scoped: a failure on a DIFFERENT session must
+  // not render while SID is active.
+  await win.evaluate(() => {
+    window.__agentoryStore.getState().setSessionInitFailure('s-other-session', {
+      error: 'cross-session probe',
+      errorCode: undefined,
+      searchedPaths: [],
+    });
+  });
+  await win.waitForTimeout(200);
+  const crossSession = await win.locator('[data-agent-init-failed-banner]').count();
+  if (crossSession !== 0) throw new Error(`banner should not leak across sessions, got ${crossSession}`);
+
+  log('setSessionInitFailure → banner render (title + error + Retry + Reconfigure) → Reconfigure opens Settings → clearSessionInitFailure hides banner → cross-session scoped');
+}
+
 // ---------- streaming ----------
 async function caseStreaming({ win, log }) {
   // Seed a session directly (instead of `createSession`, which triggers the
@@ -463,6 +625,8 @@ await runHarness({
     { id: 'inputbar-visible', run: caseInputbarVisible },
     { id: 'chat-copy', run: caseChatCopy },
     { id: 'input-placeholder', run: caseInputPlaceholder },
-    { id: 'tool-block-ux', run: caseToolBlockUx }
+    { id: 'tool-block-ux', run: caseToolBlockUx },
+    { id: 'diagnostic-banner', run: caseDiagnosticBanner },
+    { id: 'init-failure-banner', run: caseInitFailureBanner },
   ]
 });

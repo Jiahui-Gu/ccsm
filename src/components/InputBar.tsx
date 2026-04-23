@@ -31,6 +31,7 @@ import { useTranslation } from '../i18n/useTranslation';
 // restarts (see ../stores/drafts). Cleared on send. Image attachments stay
 // in-memory only — they're large and re-droppable.
 import { getDraft, setDraft, clearDraft } from '../stores/drafts';
+import { startSessionAndReconcile } from '../agent/startSession';
 
 // Per-session attachment cache. Same rationale as the text draft: stays in
 // memory across session switches, cleared on send. Data URLs are ephemeral
@@ -466,42 +467,15 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setRunning(sessionId, true);
 
     if (!started) {
-      const res = await api.agentStart(sessionId, {
-        cwd: session.cwd,
-        model: session.model || undefined,
-        permissionMode: permission,
-        resumeSessionId: session.resumeSessionId
-      });
-      if (!res.ok) {
+      const ok = await startSessionAndReconcile(sessionId);
+      if (!ok) {
+        // All failure branches (CLAUDE_NOT_FOUND → CLI wizard,
+        // CWD_MISSING → inline error + sidebar dim, generic →
+        // sessionInitFailures banner) are reconciled inside the helper.
+        // We just flip running off and bail out of the send path.
         setRunning(sessionId, false);
-        if (res.errorCode === 'CLAUDE_NOT_FOUND') {
-          // Don't surface this as a chat-level error — flip global state so
-          // the wizard takes over. Also rewind the user's local-echo so they
-          // can retry immediately once the CLI is configured.
-          useStore.getState().setCliMissing(res.searchedPaths ?? []);
-          return;
-        }
-        if (res.errorCode === 'CWD_MISSING') {
-          // The session's working directory was deleted between runs (often
-          // an old worktree path). Mark it on the session so the Sidebar can
-          // dim the row, then surface a chat-level hint pointing the user at
-          // the StatusBar cwd chip — that's how they repick.
-          useStore.getState().markSessionCwdMissing(sessionId, true);
-          appendBlocks(sessionId, [
-            {
-              kind: 'error',
-              id: `cwd-missing-${Date.now().toString(36)}`,
-              text: t('chat.cwdMissing', { cwd: session.cwd }),
-            },
-          ]);
-          return;
-        }
-        appendBlocks(sessionId, [
-          { kind: 'error', id: `start-${Date.now().toString(36)}`, text: res.error }
-        ]);
         return;
       }
-      markStarted(sessionId);
     }
 
     let ok: boolean;

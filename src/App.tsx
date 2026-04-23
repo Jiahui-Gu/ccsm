@@ -15,6 +15,8 @@ import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
 import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
+import { AgentDiagnosticBanner } from './components/AgentDiagnosticBanner';
+import { AgentInitFailedBanner } from './components/AgentInitFailedBanner';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
@@ -294,6 +296,8 @@ export default function App() {
                 <WindowControls />
               </DragRegion>
               <ClaudeCliMissingBanner />
+              <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
+              <AgentDiagnosticBanner />
               <ChatStream />
               <StatusBar
                 cwd={active.cwd}
