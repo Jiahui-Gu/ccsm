@@ -57,8 +57,11 @@ describe('ControlRpc — inbound can_use_tool', () => {
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual({
       type: 'control_response',
-      request_id: 'req_A',
-      response: { behavior: 'allow', toolUseID: 'toolu_1' },
+      response: {
+        subtype: 'success',
+        request_id: 'req_A',
+        response: { behavior: 'allow', toolUseID: 'toolu_1' },
+      },
     });
   });
 
@@ -74,7 +77,9 @@ describe('ControlRpc — inbound can_use_tool', () => {
 
     await new Promise((r) => setImmediate(r));
     const [frame] = lines() as Array<Record<string, unknown>>;
-    expect(frame.response).toEqual({
+    const env = frame.response as { subtype: string; response: Record<string, unknown> };
+    expect(env.subtype).toBe('success');
+    expect(env.response).toEqual({
       behavior: 'allow',
       updatedInput: { command: 'ls -la' },
       toolUseID: 't',
@@ -96,8 +101,11 @@ describe('ControlRpc — inbound can_use_tool', () => {
     const [frame] = lines() as Array<Record<string, unknown>>;
     expect(frame).toEqual({
       type: 'control_response',
-      request_id: 'req_C',
-      response: { behavior: 'deny', message: 'too risky', toolUseID: 'tu' },
+      response: {
+        subtype: 'success',
+        request_id: 'req_C',
+        response: { behavior: 'deny', message: 'too risky', toolUseID: 'tu' },
+      },
     });
     void rpc;
   });
@@ -117,10 +125,11 @@ describe('ControlRpc — inbound can_use_tool', () => {
 
     await new Promise((r) => setImmediate(r));
     const [frame] = lines() as Array<Record<string, unknown>>;
-    const response = frame.response as { behavior: string; message: string; toolUseID: string };
-    expect(response.behavior).toBe('deny');
-    expect(response.toolUseID).toBe('tu');
-    expect(response.message.toLowerCase()).toContain('error');
+    const env = frame.response as { subtype: string; response: { behavior: string; message: string; toolUseID: string } };
+    expect(env.subtype).toBe('success');
+    expect(env.response.behavior).toBe('deny');
+    expect(env.response.toolUseID).toBe('tu');
+    expect(env.response.message.toLowerCase()).toContain('error');
     void rpc;
   });
 
@@ -152,7 +161,12 @@ describe('ControlRpc — inbound can_use_tool', () => {
     expect(out).toHaveLength(2);
     // B resolves first, then A.
     expect(order).toEqual(['B', 'A']);
-    const byId = new Map(out.map((f) => [f.request_id as string, f.response as { toolUseID: string }]));
+    const byId = new Map(
+      out.map((f) => {
+        const env = f.response as { request_id: string; response: { toolUseID: string } };
+        return [env.request_id, env.response];
+      }),
+    );
     expect(byId.get('req_slow')!.toolUseID).toBe('tA');
     expect(byId.get('req_fast')!.toolUseID).toBe('tB');
     void rpc;
@@ -170,7 +184,10 @@ describe('ControlRpc — inbound hook_callback / mcp_message / unknown', () => {
     } as ControlRequestFrame);
     await new Promise((r) => setImmediate(r));
     expect(m.lines()).toEqual([
-      { type: 'control_response', request_id: 'req_H', response: {} },
+      {
+        type: 'control_response',
+        response: { subtype: 'success', request_id: 'req_H', response: {} },
+      },
     ]);
     void rpc;
   });
@@ -188,7 +205,9 @@ describe('ControlRpc — inbound hook_callback / mcp_message / unknown', () => {
     } as ControlRequestFrame);
     await new Promise((r) => setImmediate(r));
     const [frame] = m.lines() as Array<Record<string, unknown>>;
-    expect(frame.response).toEqual({ echoed: { cbId: 'cb2', payload: { x: 7 } } });
+    const env = frame.response as { subtype: string; response: Record<string, unknown> };
+    expect(env.subtype).toBe('success');
+    expect(env.response).toEqual({ echoed: { cbId: 'cb2', payload: { x: 7 } } });
     void rpc;
   });
 
@@ -202,7 +221,10 @@ describe('ControlRpc — inbound hook_callback / mcp_message / unknown', () => {
     } as ControlRequestFrame);
     await new Promise((r) => setImmediate(r));
     expect(m.lines()).toEqual([
-      { type: 'control_response', request_id: 'req_M', response: {} },
+      {
+        type: 'control_response',
+        response: { subtype: 'success', request_id: 'req_M', response: {} },
+      },
     ]);
     void rpc;
   });
@@ -564,7 +586,7 @@ describe('ControlRpc — duplicate inbound request_id', () => {
     // Exactly one response written, for the first request (toolUseID t1).
     const out = m.lines() as Array<Record<string, unknown>>;
     expect(out).toHaveLength(1);
-    expect((out[0].response as { toolUseID: string }).toolUseID).toBe('t1');
+    expect((out[0].response as { response: { toolUseID: string } }).response.toolUseID).toBe('t1');
     // Warn fired for the duplicate.
     expect(
       warn.mock.calls.some((c) => /duplicate inbound control_request/.test(String(c[0]))),
@@ -634,5 +656,89 @@ describe('ControlRpc — cancel and finish race', () => {
     await new Promise((r) => setTimeout(r, 5));
     rpc.handleIncoming({ type: 'control_cancel_request', request_id: 'req_X' });
     expect(observedSignal?.aborted).toBe(true);
+  });
+});
+
+// Bug L / A2-NEW-3 regression guard. The Claude Code CLI requires outbound
+// `control_response` frames (us → CLI) to use the SAME nested envelope it
+// itself sends inbound: `{ type: 'control_response', response: { subtype:
+// 'success' | 'error', request_id, response | error } }`. Pre-fix this code
+// emitted the FLAT shape `{ type, request_id, response }` and the CLI
+// silently dropped every PreToolUse hook_callback response, leaving every
+// Write/Edit invocation and every Bash that triggered a permission prompt
+// hung after the user clicked Allow. The mock unit-test fixtures had
+// happily accepted the flat shape, so the bug went undetected by tests
+// until live dogfood. These tests pin the on-the-wire envelope so a
+// regression to the flat shape fails fast.
+describe('ControlRpc — Bug L outbound envelope shape', () => {
+  it('outbound can_use_tool control_response uses the nested envelope', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_BugL_1',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'Write',
+        tool_use_id: 'toolu_BugL_1',
+        input: { file_path: '/tmp/x', content: 'y' },
+      },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    // Hard-pinned shape: top-level has ONLY type + response. NOT request_id.
+    expect(Object.keys(frame).sort()).toEqual(['response', 'type']);
+    expect(frame.type).toBe('control_response');
+    const env = frame.response as Record<string, unknown>;
+    expect(env.subtype).toBe('success');
+    expect(env.request_id).toBe('req_BugL_1');
+    expect(env.response).toMatchObject({ behavior: 'allow', toolUseID: 'toolu_BugL_1' });
+    void rpc;
+  });
+
+  it('outbound hook_callback control_response uses the nested envelope', async () => {
+    const m = makeStdin();
+    const onHook: HookCallbackHandler = async () => ({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    });
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll, onHookCallback: onHook });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_BugL_2',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'agentory-permission',
+        input: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: {}, permission_mode: 'default' },
+      },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    expect(Object.keys(frame).sort()).toEqual(['response', 'type']);
+    expect(frame.type).toBe('control_response');
+    const env = frame.response as { subtype: string; request_id: string; response: Record<string, unknown> };
+    expect(env.subtype).toBe('success');
+    expect(env.request_id).toBe('req_BugL_2');
+    expect(env.response.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+    });
+    void rpc;
+  });
+
+  it('outbound NEVER carries request_id at the top level (the flat shape that broke claude.exe)', async () => {
+    const m = makeStdin();
+    const rpc = new ControlRpc(m.stdin, { onCanUseTool: allowAll });
+    rpc.handleIncoming({
+      type: 'control_request',
+      request_id: 'req_BugL_flat_guard',
+      request: { subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 't', input: {} },
+    } as ControlRequestFrame);
+    await new Promise((r) => setImmediate(r));
+    const [frame] = m.lines() as Array<Record<string, unknown>>;
+    // The pre-fix BUG was a sibling `request_id` at the top level alongside
+    // `type` and `response`. Asserting its absence catches any regression
+    // that re-introduces the flat shape.
+    expect(frame).not.toHaveProperty('request_id');
+    void rpc;
   });
 });

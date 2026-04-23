@@ -85,14 +85,17 @@ export interface McpMessageRequest {
 
 export interface ControlResponseFrame {
   type: 'control_response';
-  // The Claude CLI nests `request_id` and `subtype` INSIDE `response`, not at
-  // the top level. The previous shape (`request_id` at top level) was based on
-  // an early reverse-engineering doc; captured wire frames look like:
+  // Both inbound (CLI → us) AND outbound (us → CLI) `control_response`
+  // frames use the SAME nested envelope: `{ subtype, request_id, response? |
+  // error? }` lives inside a top-level `response` field. Pre-Bug-L the
+  // outbound writer used a flat `{ type, request_id, response }` shape and
+  // claude.exe silently dropped it for `hook_callback` responses, leaving
+  // every Write/Edit/permissioned-Bash hung after Allow. See
+  // ControlResponseEventSchema, SCHEMA-NOTES.md, and Bug L / A2-NEW-3.
   //   success: { type: "control_response",
   //              response: { subtype: "success", request_id, response: {...} } }
   //   error:   { type: "control_response",
   //              response: { subtype: "error",   request_id, error: "..." } }
-  // See ControlResponseEventSchema and Bug K / Task #142.
   response: {
     subtype: string;
     request_id: string;
@@ -280,7 +283,22 @@ export class ControlRpc {
       if (!this.inbound.has(request_id)) return;
       this.inbound.delete(request_id);
       try {
-        this.writeFrame({ type: 'control_response', request_id, response });
+        // Outbound control_response uses the SAME nested envelope as the
+        // inbound (CLI → us) shape — `{ type, response: { subtype:"success",
+        // request_id, response } }`. Confirmed against
+        // claude-agent-sdk-python `_internal/query.py` (success_response /
+        // error_response builders). The previous "outbound is flat" comment
+        // in SCHEMA-NOTES.md was wrong: claude.exe SILENTLY DROPS a flat-
+        // shaped control_response for `hook_callback`, leaving every Write/
+        // Edit/permissioned-Bash invocation hung after the user clicks Allow
+        // (Bug L / A2-NEW-3 — the only reason `can_use_tool` ack flows
+        // appeared to "work" historically is they were never exercised
+        // end-to-end against the real CLI; the unit-test fixture asserts
+        // the flat shape that the mock accepts).
+        this.writeFrame({
+          type: 'control_response',
+          response: { subtype: 'success', request_id, response },
+        });
       } catch (err) {
         // Channel went away mid-write. Already logged inside writeFrame's
         // markBroken path; nothing more to do here.
