@@ -76,10 +76,28 @@ export function SlashCommandPicker({
   // so highlight + keyboard nav work uniformly across groups.
   let flatIdx = 0;
 
+  const activeCmd = filtered[activeIndex];
+  // a11y: build a "Result N of M: /name" string the SR will speak whenever
+  // activeIndex changes. Kept in a separate live region so the listbox
+  // itself stays uncluttered. When there are no matches we leave the live
+  // region empty (the visible empty-state copy already conveys the state).
+  const announcement = activeCmd
+    ? t('slashCommands.activeAnnouncement', {
+        index: activeIndex + 1,
+        total: filtered.length,
+        name: activeCmd.name,
+        defaultValue: `Result ${activeIndex + 1} of ${filtered.length}: /${activeCmd.name}`
+      })
+    : '';
+  const activeOptionId = activeCmd
+    ? `slash-cmd-option-${activeCmd.name}`
+    : undefined;
+
   return (
     <div
       role="listbox"
       aria-label={t('slashCommands.pickerTitle')}
+      aria-activedescendant={activeOptionId}
       className={cn(
         'absolute left-0 right-0 bottom-full mb-1.5 z-30',
         'rounded-md border border-border-default bg-bg-elevated',
@@ -88,6 +106,15 @@ export function SlashCommandPicker({
         'animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]'
       )}
     >
+      {/* Off-screen polite live region announcing the highlighted result. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {announcement}
+      </div>
       <div ref={listRef} className="max-h-[320px] overflow-y-auto py-1">
         {filtered.length === 0 ? (
           <div className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
@@ -106,6 +133,7 @@ export function SlashCommandPicker({
                 return (
                   <button
                     key={`${group.source}:${cmd.name}`}
+                    id={`slash-cmd-option-${cmd.name}`}
                     ref={(el) => {
                       rowsRef.current[myIdx] = el;
                     }}
