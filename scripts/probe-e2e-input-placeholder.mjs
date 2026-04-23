@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-agent.mjs (case id=input-placeholder; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Empty session -> placeholder is "Ask anything…" (not "Reply…").
 // With messages -> placeholder becomes "Reply…".
 // Robustness extensions:

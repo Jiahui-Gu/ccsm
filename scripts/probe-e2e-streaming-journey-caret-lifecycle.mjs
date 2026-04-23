@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-agent.mjs (case id=streaming-caret-lifecycle; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Journey 5: streaming caret lifecycle.
 //
 // Expectation:

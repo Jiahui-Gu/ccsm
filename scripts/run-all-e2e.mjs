@@ -1,12 +1,18 @@
-// Batch runner for every `scripts/probe-e2e-*.mjs`.
+// Batch runner for every `scripts/probe-e2e-*.mjs` AND every
+// `scripts/harness-*.mjs` themed harness.
 //
 // - Discovers probes by glob, sorts deterministically.
 // - Runs them serially (Electron can't share its singleton lock — parallel
 //   launches race on user-data-dir and port allocation).
-// - 30s wall-clock timeout per probe (kill tree on overrun).
+// - 30s wall-clock timeout per probe; 5min for harness-* (they pack many
+//   cases into one launch).
 // - Prints a final table; exit code = max child exit code (0 if all green).
 // - Skip list via `E2E_SKIP=name1,name2` (matches the suffix after
 //   `probe-e2e-` and before `.mjs`, e.g. `E2E_SKIP=streaming,tray`).
+// - Probes whose suffix is listed in `MERGED_INTO_HARNESS` are skipped here
+//   because their cases now live inside a `harness-*.mjs`. Keep the source
+//   files around as breadcrumbs (top of file says where they moved); delete
+//   them in a follow-up once the harness has stabilised.
 //
 // Run: `node scripts/run-all-e2e.mjs`
 
@@ -17,8 +23,21 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = __dirname;
-const TIMEOUT_MS = 30_000;
+const PROBE_TIMEOUT_MS = 30_000;
+const HARNESS_TIMEOUT_MS = 5 * 60_000;
 const PROBE_PREFIX = 'probe-e2e-';
+const HARNESS_PREFIX = 'harness-';
+
+// Cases now living inside a themed harness — their per-file probe is a
+// breadcrumb only. Keep this list in sync with the harness `cases:` arrays.
+const MERGED_INTO_HARNESS = new Set([
+  // harness-agent.mjs (Phase-2 pilot)
+  'streaming',
+  'streaming-journey-caret-lifecycle',
+  'inputbar-visible',
+  'chat-copy',
+  'input-placeholder'
+]);
 
 const skipRaw = (process.env.E2E_SKIP || '').trim();
 const skipSet = new Set(
@@ -29,21 +48,32 @@ const skipSet = new Set(
 );
 
 function probeName(file) {
+  if (file.startsWith(HARNESS_PREFIX)) return file.slice(0, -'.mjs'.length);
   return file.slice(PROBE_PREFIX.length, -'.mjs'.length);
 }
 
-const allFiles = readdirSync(SCRIPTS_DIR)
+const probeFiles = readdirSync(SCRIPTS_DIR)
   .filter((f) => f.startsWith(PROBE_PREFIX) && f.endsWith('.mjs'))
   .sort();
+const harnessFiles = readdirSync(SCRIPTS_DIR)
+  .filter((f) => f.startsWith(HARNESS_PREFIX) && f.endsWith('.mjs'))
+  .sort();
+// Run harnesses FIRST — they're slower per-file but pack many cases, so
+// failing fast on a regression in a merged case beats waiting for 70 cold
+// launches.
+const allFiles = [...harnessFiles, ...probeFiles];
 
 if (allFiles.length === 0) {
-  console.error('[run-all-e2e] no probes found');
+  console.error('[run-all-e2e] no probes or harnesses found');
   process.exit(1);
 }
 
-console.log(`[run-all-e2e] discovered ${allFiles.length} probe(s)`);
+console.log(`[run-all-e2e] discovered ${harnessFiles.length} harness(es) + ${probeFiles.length} probe(s)`);
 if (skipSet.size > 0) {
-  console.log(`[run-all-e2e] skipping: ${[...skipSet].join(', ')}`);
+  console.log(`[run-all-e2e] skipping (E2E_SKIP): ${[...skipSet].join(', ')}`);
+}
+if (MERGED_INTO_HARNESS.size > 0) {
+  console.log(`[run-all-e2e] skipping (merged into harness): ${[...MERGED_INTO_HARNESS].join(', ')}`);
 }
 
 /** @type {Array<{name: string, status: 'passed'|'failed'|'skipped'|'timeout', code: number, ms: number, stderrTail: string}>} */
@@ -51,7 +81,9 @@ const results = [];
 
 for (const file of allFiles) {
   const name = probeName(file);
-  if (skipSet.has(name)) {
+  const isHarness = file.startsWith(HARNESS_PREFIX);
+  const probeSuffix = isHarness ? null : file.slice(PROBE_PREFIX.length, -'.mjs'.length);
+  if (skipSet.has(name) || (probeSuffix && MERGED_INTO_HARNESS.has(probeSuffix))) {
     results.push({ name, status: 'skipped', code: 0, ms: 0, stderrTail: '' });
     console.log(`\n[run-all-e2e] SKIP  ${name}`);
     continue;
@@ -61,7 +93,8 @@ for (const file of allFiles) {
   console.log(`\n[run-all-e2e] RUN   ${name}`);
 
   const started = Date.now();
-  const { code, timedOut, stderrTail } = await runOne(full);
+  const timeoutMs = isHarness ? HARNESS_TIMEOUT_MS : PROBE_TIMEOUT_MS;
+  const { code, timedOut, stderrTail } = await runOne(full, timeoutMs);
   const ms = Date.now() - started;
 
   let status;
@@ -110,9 +143,10 @@ process.exit(exit);
  * runner). `shell: false` keeps Windows path quoting predictable.
  *
  * @param {string} scriptPath
+ * @param {number} timeoutMs
  * @returns {Promise<{code: number, timedOut: boolean, stderrTail: string}>}
  */
-function runOne(scriptPath) {
+function runOne(scriptPath, timeoutMs) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [scriptPath], {
       shell: false,
@@ -142,7 +176,7 @@ function runOne(scriptPath) {
       } catch {
         /* ignore */
       }
-    }, TIMEOUT_MS);
+    }, timeoutMs);
 
     child.on('exit', (code, signal) => {
       clearTimeout(timer);
@@ -150,7 +184,7 @@ function runOne(scriptPath) {
       resolve({
         code: code ?? (signal ? 1 : 1),
         timedOut,
-        stderrTail: timedOut ? `(killed after ${TIMEOUT_MS}ms)\n${tail}` : tail,
+        stderrTail: timedOut ? `(killed after ${timeoutMs}ms)\n${tail}` : tail,
       });
     });
 

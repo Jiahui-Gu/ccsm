@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-agent.mjs (case id=inputbar-visible; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Regression: a long chat (content taller than viewport) must NOT push the
 // InputBar textarea off-screen. The root cause was ChatStream's scroll
 // container being `flex-1` without `min-h-0` inside a `flex flex-col` main,
