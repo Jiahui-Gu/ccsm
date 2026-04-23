@@ -46,22 +46,31 @@ describe('<CwdPopover />', () => {
     expect(screen.getByRole('button', { name: /agentory/i })).toBeInTheDocument();
   });
 
-  it('opens on click and lists recent cwds from loadRecent (filtered by seeded query)', async () => {
+  it('opens on click and lists ALL recent cwds (no seeded filter)', async () => {
     const { loadRecent } = renderPopover();
     await openPopover();
     expect(loadRecent).toHaveBeenCalled();
-    // The input is seeded with the current cwd, so only entries containing
-    // "agentory" should be visible — that's two of the four sample paths.
+    // Regression: the input must NOT be seeded with the current cwd, so the
+    // full Recent list is visible on open. (Previously seeding `cwd` filtered
+    // recent down to entries containing the current path substring.)
     await waitFor(() => {
       const options = screen.getAllByRole('option');
-      expect(options.length).toBe(2);
+      expect(options.length).toBe(SAMPLE.length);
     });
   });
 
-  it('clearing the input reveals every recent cwd', async () => {
+  it('shows the current cwd as the input placeholder on open', async () => {
     renderPopover();
     await openPopover();
-    const input = screen.getByPlaceholderText(/type to filter/i);
+    const input = screen.getByRole('textbox');
+    expect(input).toHaveValue('');
+    expect((input as HTMLInputElement).placeholder).toContain('agentory');
+  });
+
+  it('clearing the input still shows every recent cwd', async () => {
+    renderPopover();
+    await openPopover();
+    const input = screen.getByRole('textbox');
     await act(async () => {
       fireEvent.change(input, { target: { value: '' } });
     });
@@ -73,8 +82,7 @@ describe('<CwdPopover />', () => {
   it('filters the recent list as the user types in the input', async () => {
     renderPopover();
     await openPopover();
-    const input = screen.getByPlaceholderText(/type to filter/i);
-    // Replace the seeded query with a substring matching only one entry.
+    const input = screen.getByRole('textbox');
     await act(async () => {
       fireEvent.change(input, { target: { value: 'cli' } });
     });
@@ -86,10 +94,6 @@ describe('<CwdPopover />', () => {
   it('clicking a recent entry calls onPick with the full path', async () => {
     const { onPick } = renderPopover();
     await openPopover();
-    const input = screen.getByPlaceholderText(/type to filter/i);
-    await act(async () => {
-      fireEvent.change(input, { target: { value: '' } });
-    });
     await waitFor(() => {
       expect(screen.getAllByRole('option').length).toBe(SAMPLE.length);
     });
@@ -128,7 +132,7 @@ describe('<CwdPopover />', () => {
   it('shows the empty hint when no recent path matches the query', async () => {
     renderPopover();
     await openPopover();
-    const input = screen.getByPlaceholderText(/type to filter/i);
+    const input = screen.getByRole('textbox');
     await act(async () => {
       fireEvent.change(input, { target: { value: 'zzz-no-match-zzz' } });
     });
@@ -139,11 +143,9 @@ describe('<CwdPopover />', () => {
   it('Enter on the input commits the highlighted recent entry', async () => {
     const { onPick } = renderPopover();
     await openPopover();
-    const input = screen.getByPlaceholderText(/type to filter/i);
-    // Clear the seeded query so the full list is shown, then arrow down once.
-    await act(async () => {
-      fireEvent.change(input, { target: { value: '' } });
-    });
+    const input = screen.getByRole('textbox');
+    // Query starts empty so the full list is shown; arrow down once to move
+    // off the first row.
     await waitFor(() => {
       expect(screen.getAllByRole('option').length).toBe(SAMPLE.length);
     });
