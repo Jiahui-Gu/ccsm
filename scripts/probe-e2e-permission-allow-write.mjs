@@ -34,8 +34,14 @@ const PROJ = path.join(os.tmpdir(), `agentory-bugl-write-proj-${TS}`);
 fs.mkdirSync(UDD, { recursive: true });
 fs.mkdirSync(PROJ, { recursive: true });
 
+// Anchor the model on the Write tool explicitly. Earlier wording
+// ("Write a file called ...") let the model occasionally pick Edit /
+// MultiEdit instead, which made the downstream `tn === 'Write'` store
+// assertion flake. We also widen that assertion below to accept any
+// file-mutating tool (Write/Edit/MultiEdit) since all three exercise the
+// same Bug L permission/control_response path.
 const PROMPT =
-  "Write a file called hello.txt with the content 'world' in the current working directory.";
+  "Use the Write tool to create a NEW file at ./hello.txt with exactly the content 'world' (no trailing newline). Do not use Edit or MultiEdit.";
 
 function log(m) {
   process.stderr.write(`[probe-bugl-write ${new Date().toISOString()}] ${m}\n`);
@@ -142,12 +148,17 @@ while (Date.now() - obsStart < 60_000) {
       const st = window.__agentoryStore?.getState?.();
       const sid = st?.activeId;
       const blocks = st?.messagesBySession?.[sid] || [];
+      // Accept any file-mutating tool — the prompt anchors on Write but if
+      // the model picks Edit/MultiEdit they exercise the SAME Bug L
+      // permission round-trip path, so the test is still valid. The fs
+      // assertion below independently verifies the file content.
+      const writeLike = new Set(['Write', 'Edit', 'MultiEdit']);
       const w = blocks.find((b) => {
         const tn = b.toolName || b.name;
-        return b.kind === 'tool' && tn === 'Write';
+        return b.kind === 'tool' && writeLike.has(tn);
       });
       return w
-        ? { hasResult: typeof w.result === 'string' && w.result.length > 0, isError: w.isError === true, resultHead: typeof w.result === 'string' ? w.result.slice(0, 120) : null }
+        ? { hasResult: typeof w.result === 'string' && w.result.length > 0, isError: w.isError === true, toolName: w.toolName || w.name, resultHead: typeof w.result === 'string' ? w.result.slice(0, 120) : null }
         : { allBlocks: blocks.map((b) => ({ kind: b.kind, toolName: b.toolName || b.name, hasResult: typeof b.result === 'string' && b.result.length > 0 })) };
     })
     .catch(() => null);
