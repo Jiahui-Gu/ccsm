@@ -1051,7 +1051,21 @@ export function ChatStream() {
 
   return (
     <div className="relative flex-1 min-h-0 min-w-0 flex flex-col">
-      <div ref={scrollRef} onScroll={onScroll} data-chat-stream className="flex-1 overflow-y-auto min-w-0">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        data-chat-stream
+        // a11y: announce streaming additions to assistive tech. We set this
+        // on the OUTER scroll container (not per-block) so SRs read newly
+        // appended text rather than re-announcing every chunk inside a
+        // single message. `additions text` covers both new nodes and text
+        // mutations within them.
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-atomic="false"
+        role="log"
+        className="flex-1 overflow-y-auto min-w-0"
+      >
         {blocks.length === 0 ? (
           <EmptyState />
         ) : (
