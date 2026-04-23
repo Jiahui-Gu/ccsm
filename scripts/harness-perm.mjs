@@ -78,11 +78,13 @@ async function casePermissionPrompt({ win, log }) {
     return { buttons: btns };
   });
 
-  if (snapshot.buttons.length !== 2) throw new Error(`expected 2 perm buttons, got ${snapshot.buttons.length}`);
+  if (snapshot.buttons.length !== 3) throw new Error(`expected 3 perm buttons, got ${snapshot.buttons.length}`);
   const reject = snapshot.buttons.find((b) => b.action === 'reject');
   const allow = snapshot.buttons.find((b) => b.action === 'allow');
+  const allowAlways = snapshot.buttons.find((b) => b.action === 'allow-always');
   if (!reject || !/Reject \(N\)/i.test(reject.label ?? '')) throw new Error(`bad reject label: ${reject?.label}`);
   if (!allow || !/Allow \(Y\)/i.test(allow.label ?? '')) throw new Error(`bad allow label: ${allow?.label}`);
+  if (!allowAlways || !/Allow always/i.test(allowAlways.label ?? '')) throw new Error(`bad allow-always label: ${allowAlways?.label}`);
   if (!reject.focused) throw new Error(`expected Reject focused; got ${JSON.stringify(snapshot.buttons)}`);
 
   // Press N -> Reject. Block should disappear.
@@ -443,6 +445,210 @@ async function casePermissionSequentialFocus({ win, log }) {
   log('focus correctly transfers to second block\'s Reject');
 }
 
+// ---------- permission-allow-always ----------
+// Covers UI-6 (#214) and guards the session-scoped auto-resolve fast-path:
+//   1. First prompt arrives, user clicks "Allow always" -> store records the
+//      tool name AND dispatches Allow IPC.
+//   2. Second prompt for the same tool name must NOT render a waiting block
+//      and must dispatch Allow IPC automatically via the lifecycle fast-path
+//      (`maybeAutoResolveAllowAlways`).
+async function casePermissionAllowAlways({ win, log }) {
+  await seedSession(win);
+
+  // Spy on the store action so we can confirm allow decisions reach the
+  // resolve path (which in turn fires the preload IPC). Mirrors the pattern
+  // used by permission-shortcut-scope — direct assignment to the
+  // contextBridge proxy is a no-op.
+  await win.evaluate(() => {
+    window.__permIpcCalls = [];
+    const store = window.__agentoryStore;
+    const orig = store.getState().resolvePermission;
+    store.setState({
+      resolvePermission: (sessionId, requestId, decision) => {
+        window.__permIpcCalls.push({ sessionId, requestId, decision });
+        return orig(sessionId, requestId, decision);
+      }
+    });
+  });
+
+  // 1. Inject first prompt and click "Allow always".
+  await injectWaiting(win, {
+    id: 'wait-PROBE-AA-1',
+    requestId: 'PROBE-AA-1',
+    toolName: 'Bash',
+    toolInput: { command: 'echo first' },
+    prompt: 'Bash: echo first'
+  });
+
+  const heading = win.locator('text=Permission required').first();
+  await heading.waitFor({ state: 'visible', timeout: 5000 });
+
+  const allowAlwaysBtn = win.locator('[data-perm-action="allow-always"]').first();
+  await allowAlwaysBtn.waitFor({ state: 'visible', timeout: 3000 });
+  await allowAlwaysBtn.click();
+
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3000 });
+  } catch {
+    throw new Error('first block did not unmount after clicking Allow always');
+  }
+
+  const firstIpc = await win.evaluate(() => window.__permIpcCalls.slice());
+  const firstCall = firstIpc.find((c) => c.requestId === 'PROBE-AA-1');
+  if (!firstCall || firstCall.decision !== 'allow') {
+    throw new Error(`first Allow always did not fire IPC allow: ${JSON.stringify(firstIpc)}`);
+  }
+
+  const snapshot1 = await win.evaluate(() => {
+    const s = window.__agentoryStore.getState();
+    return { list: s.allowAlwaysTools.slice() };
+  });
+  if (!snapshot1.list.includes('Bash')) {
+    throw new Error(`allowAlwaysTools missing Bash after click: ${JSON.stringify(snapshot1)}`);
+  }
+
+  // 2. Second prompt via the real lifecycle fast-path. Must auto-resolve
+  // (Allow IPC) and must NOT append any waiting block.
+  await win.evaluate(() => { window.__permIpcCalls = []; });
+  const blocksBefore = await win.evaluate(() => {
+    const s = window.__agentoryStore.getState();
+    return (s.messagesBySession[s.activeId] || []).filter((b) => b.kind === 'waiting').length;
+  });
+
+  const autoResolved = await win.evaluate(() => {
+    const fn = window.__agentoryMaybeAutoResolveAllowAlways;
+    if (typeof fn !== 'function') return null;
+    const sid = window.__agentoryStore.getState().activeId;
+    return fn({ sessionId: sid, requestId: 'PROBE-AA-2', toolName: 'Bash' });
+  });
+  if (autoResolved !== true) {
+    throw new Error(`expected fast-path to auto-resolve (returned true), got ${JSON.stringify(autoResolved)}`);
+  }
+
+  await win.waitForTimeout(200);
+
+  const blocksAfter = await win.evaluate(() => {
+    const s = window.__agentoryStore.getState();
+    return (s.messagesBySession[s.activeId] || []).filter((b) => b.kind === 'waiting').length;
+  });
+  if (blocksAfter !== blocksBefore) {
+    throw new Error(`expected 0 new waiting blocks on second allow-always tool use; before=${blocksBefore} after=${blocksAfter}`);
+  }
+
+  const stillHidden = await heading.isVisible().catch(() => false);
+  if (stillHidden) throw new Error('permission block rendered for allow-always tool (should have been auto-resolved)');
+
+  const secondIpc = await win.evaluate(() => window.__permIpcCalls.slice());
+  const secondCall = secondIpc.find((c) => c.requestId === 'PROBE-AA-2');
+  if (!secondCall || secondCall.decision !== 'allow') {
+    throw new Error(`fast-path did not dispatch Allow IPC for PROBE-AA-2: ${JSON.stringify(secondIpc)}`);
+  }
+
+  // 3. Guard: a non-allow-listed tool still renders a prompt.
+  await injectWaiting(win, {
+    id: 'wait-PROBE-AA-3',
+    requestId: 'PROBE-AA-3',
+    toolName: 'Write',
+    toolInput: { file_path: '/tmp/x', content: 'x' },
+    prompt: 'Write: /tmp/x'
+  });
+  await heading.waitFor({ state: 'visible', timeout: 5000 });
+  // dismiss via reject to keep state clean
+  await win.keyboard.press('n');
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3000 });
+  } catch {
+    // non-fatal — tool-not-in-list still shows a prompt, which was the point.
+  }
+
+  log('allow-always persists for Bash in-session; Write still prompts; IPC allow dispatched');
+}
+
+// ---------- permission-a11y ----------
+// Covers UI-11 (#194): role=alertdialog + aria-modal + labelled/described.
+async function casePermissionA11y({ win, log }) {
+  await seedSession(win);
+  await injectWaiting(win, {
+    id: 'wait-PROBE-A11Y',
+    requestId: 'PROBE-A11Y',
+    toolInput: { command: 'echo a11y' },
+    prompt: 'Bash a11y'
+  });
+
+  const heading = win.locator('text=Permission required').first();
+  await heading.waitFor({ state: 'visible', timeout: 5000 });
+
+  const attrs = await win.evaluate(() => {
+    const heading = Array.from(document.querySelectorAll('*')).find(
+      (n) => n.textContent?.trim() === 'Permission required'
+    );
+    const container = heading?.closest('[role="alertdialog"]');
+    if (!container) return null;
+    const labelId = container.getAttribute('aria-labelledby');
+    const descId = container.getAttribute('aria-describedby');
+    const labelEl = labelId ? document.getElementById(labelId) : null;
+    const descEl = descId ? document.getElementById(descId) : null;
+    return {
+      role: container.getAttribute('role'),
+      ariaModal: container.getAttribute('aria-modal'),
+      labelId,
+      descId,
+      labelHasText: !!labelEl?.textContent?.trim(),
+      descHasText: !!descEl?.textContent?.trim()
+    };
+  });
+
+  if (!attrs) throw new Error('container with role=alertdialog missing');
+  if (attrs.role !== 'alertdialog') throw new Error(`role must be alertdialog, got ${attrs.role}`);
+  if (attrs.ariaModal !== 'true') throw new Error(`aria-modal must be "true", got ${attrs.ariaModal}`);
+  if (!attrs.labelId) throw new Error('aria-labelledby missing');
+  if (!attrs.descId) throw new Error('aria-describedby missing');
+  if (!attrs.labelHasText) throw new Error(`aria-labelledby target #${attrs.labelId} has no text`);
+  if (!attrs.descHasText) throw new Error(`aria-describedby target #${attrs.descId} has no text`);
+
+  // Esc dismisses (acts as reject). Focus must be inside the prompt first.
+  const rejectBtn = win.locator('[data-perm-action="reject"]').first();
+  await rejectBtn.focus();
+  await win.keyboard.press('Escape');
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3000 });
+  } catch {
+    throw new Error('Escape did not dismiss the alertdialog');
+  }
+
+  // Focus trap: inject a new prompt, verify Tab cycles between perm buttons
+  // when focus is inside the prompt.
+  await injectWaiting(win, {
+    id: 'wait-PROBE-A11Y-2',
+    requestId: 'PROBE-A11Y-2',
+    toolInput: { command: 'echo cycle' },
+    prompt: 'Bash cycle'
+  });
+  await heading.waitFor({ state: 'visible', timeout: 5000 });
+  await win.waitForFunction(() => {
+    return document.activeElement?.getAttribute?.('data-perm-action') === 'reject';
+  }, null, { timeout: 2000 });
+
+  await win.keyboard.press('Tab');
+  const afterTab1 = await win.evaluate(() => document.activeElement?.getAttribute('data-perm-action'));
+  if (afterTab1 !== 'allow-always') throw new Error(`Tab from reject expected allow-always, got ${afterTab1}`);
+  await win.keyboard.press('Tab');
+  const afterTab2 = await win.evaluate(() => document.activeElement?.getAttribute('data-perm-action'));
+  if (afterTab2 !== 'allow') throw new Error(`Tab from allow-always expected allow, got ${afterTab2}`);
+  await win.keyboard.press('Tab');
+  const afterTab3 = await win.evaluate(() => document.activeElement?.getAttribute('data-perm-action'));
+  if (afterTab3 !== 'reject') throw new Error(`Tab cycle should wrap to reject, got ${afterTab3}`);
+
+  await win.keyboard.press('n');
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3000 });
+  } catch {
+    // cleanup, non-fatal
+  }
+
+  log('role=alertdialog + aria-modal=true + labelled/described; Esc dismisses; Tab cycles');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -461,6 +667,8 @@ await runHarness({
     { id: 'permission-shortcut-scope', run: casePermissionShortcutScope },
     { id: 'permission-nested-input', run: casePermissionNestedInput },
     { id: 'permission-truncate-width', run: casePermissionTruncateWidth },
-    { id: 'permission-sequential-focus', run: casePermissionSequentialFocus }
+    { id: 'permission-sequential-focus', run: casePermissionSequentialFocus },
+    { id: 'permission-allow-always', run: casePermissionAllowAlways },
+    { id: 'permission-a11y', run: casePermissionA11y }
   ]
 });

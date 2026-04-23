@@ -1069,6 +1069,7 @@ function renderBlock(
   activeId: string,
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
   bumpComposerFocus: () => void,
+  addAllowAlways: (toolName: string) => void,
   opts: { permissionAutoFocus?: boolean; now?: number } = {}
 ) {
   switch (b.kind) {
@@ -1098,6 +1099,14 @@ function renderBlock(
           autoFocus={opts.permissionAutoFocus ?? true}
           onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
           onReject={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+          onAllowAlways={
+            b.requestId && b.toolName
+              ? () => {
+                  addAllowAlways(b.toolName!);
+                  resolvePermission(activeId, b.requestId!, 'allow');
+                }
+              : undefined
+          }
         />
       );
     case 'question':
@@ -1156,6 +1165,7 @@ export function ChatStream() {
   const running = useStore((s) => !!s.runningSessions[activeId]);
   const resolvePermission = useStore((s) => s.resolvePermission);
   const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
+  const addAllowAlways = useStore((s) => s.addAllowAlways);
   const loadMessages = useStore((s) => s.loadMessages);
   const loadError = useStore((s) => s.loadMessageErrors[activeId]);
 
@@ -1330,7 +1340,7 @@ export function ChatStream() {
                 }
                 return blocks.map((m, i) => (
                   <div key={m.id}>
-                    {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, {
+                    {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, addAllowAlways, {
                       permissionAutoFocus: i === lastPermIdx,
                       now
                     })}

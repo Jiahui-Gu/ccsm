@@ -278,6 +278,7 @@ const zh: EnCatalog = {
   permissionPrompt: {
     title: '需要授权',
     allowBtn: '允许 (Y)',
+    allowAlwaysBtn: '始终允许',
     rejectBtn: '拒绝 (N)'
   },
   questionBlock: {

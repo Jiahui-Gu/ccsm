@@ -261,6 +261,17 @@ type State = {
   /** Per-session init-failure state. See `SessionInitFailure` for semantics.
    *  Cleared on successful retry via `clearSessionInitFailure`. */
   sessionInitFailures: Record<string, SessionInitFailure>;
+  /**
+   * Tool names the user has granted a session-scoped "allow always" decision
+   * for. A permission request whose `toolName` is in this set auto-resolves
+   * Allow without rendering a waiting block.
+   *
+   * Session-scoped (NOT persisted): resets on app restart. See PR discussion —
+   * persisting across restarts risks a rarely-revisited allowlist leaking
+   * privileges into future workdays. User explicitly re-confirms after each
+   * launch.
+   */
+  allowAlwaysTools: string[];
 };
 
 export interface CreateSessionOptions {
@@ -372,6 +383,11 @@ type Actions = {
   dequeueMessage: (sessionId: string) => QueuedMessage | undefined;
   clearQueue: (sessionId: string) => void;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
+  /** Mark `toolName` as always-allowed for the rest of this app session. Future
+   *  permission requests with the same `toolName` will auto-resolve Allow in
+   *  `onAgentPermissionRequest` (see `agent/lifecycle.ts`). No-op if already
+   *  present. Not persisted across restarts. */
+  addAllowAlways: (toolName: string) => void;
   /** Increment `focusInputNonce` to ask the InputBar to take focus. Use after
    *  any user-driven action in the chat stream that should return focus to the
    *  composer (question submit, etc.). Permission/plan paths bump implicitly
@@ -622,6 +638,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   cliStatus: DEFAULT_CLI_STATUS,
   diagnostics: [],
   sessionInitFailures: {},
+  allowAlwaysTools: [],
 
   selectSession: (id) => {
     set((s) => ({
@@ -1554,6 +1571,14 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
     });
     void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
+  },
+
+  addAllowAlways: (toolName) => {
+    if (!toolName) return;
+    set((s) => {
+      if (s.allowAlwaysTools.includes(toolName)) return s;
+      return { allowAlwaysTools: [...s.allowAlwaysTools, toolName] };
+    });
   },
 
   bumpComposerFocus: () => {

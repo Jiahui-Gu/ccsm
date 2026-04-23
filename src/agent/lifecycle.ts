@@ -144,6 +144,35 @@ export function permissionRequestToWaitingBlock(req: {
   };
 }
 
+/**
+ * If the user previously ticked "Allow always" for this tool in the current
+ * app session, dispatch an Allow decision and return true so the caller can
+ * skip rendering a waiting block. `AskUserQuestion` / `ExitPlanMode` are
+ * always treated as user-interaction — they never auto-resolve.
+ *
+ * Exported so probes can exercise the fast-path without wiring a real
+ * `onAgentPermissionRequest` IPC payload.
+ */
+export function maybeAutoResolveAllowAlways(req: {
+  sessionId: string;
+  requestId: string;
+  toolName: string;
+}): boolean {
+  const interactive = req.toolName === 'AskUserQuestion' || req.toolName === 'ExitPlanMode';
+  if (interactive) return false;
+  const store = useStore.getState();
+  if (!store.allowAlwaysTools.includes(req.toolName)) return false;
+  // Route through the store action rather than calling the preload IPC
+  // directly — keeps the decision path consistent (single callsite for
+  // `agent:resolvePermission` IPC) and lets tests / future listeners observe
+  // the decision by wrapping the store action. `resolvePermission` no-ops on
+  // the messagesBySession branch when no matching waiting block exists
+  // (idx === -1), then still fires the preload IPC, which is exactly what we
+  // want here — we intentionally never appended a waiting block.
+  store.resolvePermission(req.sessionId, req.requestId, 'allow');
+  return true;
+}
+
 export function subscribeAgentEvents(): void {
   if (installed) return;
   const api = window.agentory;
@@ -278,6 +307,10 @@ export function subscribeAgentEvents(): void {
   });
 
   api.onAgentPermissionRequest((req) => {
+    // Session-scoped "Allow always" fast-path: if the user previously ticked
+    // "Allow always" for this tool name, auto-resolve Allow and skip rendering
+    // a waiting block.
+    if (maybeAutoResolveAllowAlways(req)) return;
     const store = useStore.getState();
     const block = permissionRequestToWaitingBlock(req);
     store.appendBlocks(req.sessionId, [block]);

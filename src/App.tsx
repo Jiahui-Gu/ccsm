@@ -21,7 +21,7 @@ import { AgentInitFailedBanner } from './components/AgentInitFailedBanner';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
-import { subscribeAgentEvents, setBackgroundWaitingHandler } from './agent/lifecycle';
+import { subscribeAgentEvents, setBackgroundWaitingHandler, maybeAutoResolveAllowAlways } from './agent/lifecycle';
 import { initI18n } from './i18n';
 import { i18next } from './i18n';
 import { usePreferences } from './store/preferences';
@@ -41,6 +41,9 @@ subscribeAgentEvents();
 // security boundary; same trade-off as `window.__agentoryI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
+  (window as unknown as {
+    __agentoryMaybeAutoResolveAllowAlways?: typeof maybeAutoResolveAllowAlways;
+  }).__agentoryMaybeAutoResolveAllowAlways = maybeAutoResolveAllowAlways;
 }
 
 /**
