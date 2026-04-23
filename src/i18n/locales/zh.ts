@@ -111,7 +111,9 @@ const zh: EnCatalog = {
     prCheckRunning: '运行中',
     prCheckPassed: '通过',
     prCheckFailed: '失败',
-    prOpenDetailsAria: '打开 {{name}} 的详情'
+    prOpenDetailsAria: '打开 {{name}} 的详情',
+    loadHistoryFailed: '加载历史记录失败',
+    retry: '重试'
   },
   sidebar: {
     newSession: '新会话',

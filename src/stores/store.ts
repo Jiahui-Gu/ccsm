@@ -221,6 +221,13 @@ type State = {
   tutorialSeen: boolean;
   notificationSettings: NotificationSettings;
   messagesBySession: Record<string, MessageBlock[]>;
+  /**
+   * Transient load-history error per session. Populated when `loadMessages`
+   * IPC throws; cleared on next successful load (or explicit retry). The
+   * ChatStream renders an inline ErrorBlock when this is set so a failed
+   * history fetch isn't silent.
+   */
+  loadMessageErrors: Record<string, string>;
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
   statsBySession: Record<string, SessionStats>;
@@ -602,6 +609,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   tutorialSeen: false,
   notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
   messagesBySession: {},
+  loadMessageErrors: {},
   startedSessions: {},
   runningSessions: {},
   statsBySession: {},
@@ -1342,6 +1350,13 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (!api || typeof api.loadMessages !== 'function') return;
     if (inFlightLoads.has(sessionId)) return;
     inFlightLoads.add(sessionId);
+    // Clear any stale load error for this session before attempting.
+    set((s) => {
+      if (!(sessionId in s.loadMessageErrors)) return s;
+      const next = { ...s.loadMessageErrors };
+      delete next[sessionId];
+      return { loadMessageErrors: next };
+    });
     try {
       let rows: MessageBlock[] = [];
       try {
@@ -1351,13 +1366,18 @@ export const useStore = create<State & Actions>((set, get) => ({
         // sentinel write, every subsequent selectSession would re-trigger
         // the load — an infinite retry loop on a permanent failure. Seed
         // an empty array so the key is "known" and we leave a breadcrumb
-        // for the user / Sentry instead of failing silently.
+        // for the user / Sentry instead of failing silently. Also surface
+        // the failure as an inline error so the user sees "Failed to load
+        // history — Retry" in the chat scroll (UI-17).
         console.warn(`[store] loadMessages(${sessionId}) failed:`, err);
-        set((s) =>
-          sessionId in s.messagesBySession
-            ? s
-            : { messagesBySession: { ...s.messagesBySession, [sessionId]: [] } }
-        );
+        const message = err instanceof Error ? err.message : String(err);
+        set((s) => ({
+          messagesBySession:
+            sessionId in s.messagesBySession
+              ? s.messagesBySession
+              : { ...s.messagesBySession, [sessionId]: [] },
+          loadMessageErrors: { ...s.loadMessageErrors, [sessionId]: message }
+        }));
         return;
       }
       // Sanitize: a row persisted with streaming=true means the previous run
