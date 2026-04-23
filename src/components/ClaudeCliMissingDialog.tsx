@@ -487,10 +487,20 @@ function SuccessPane({
   const { t } = useTranslation();
   const belowMin = isVersionBelow(version, CLI_MIN_VERSION_SOFT);
   return (
-    <div className="px-5 py-6 flex items-start gap-3">
-      <div className="mt-0.5 text-status-success-foreground">
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
+      className="px-5 py-6 flex items-start gap-3"
+    >
+      <motion.div
+        initial={{ scale: 0.6, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ delay: 0.08, duration: 0.24, ease: [0.32, 0.72, 0, 1] }}
+        className="mt-0.5 text-status-success-foreground"
+      >
         <Check size={18} className="stroke-[2]" />
-      </div>
+      </motion.div>
       <div className="flex-1 min-w-0">
         <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
           {t('cli.detected')}
@@ -521,6 +531,6 @@ function SuccessPane({
           <div className="mt-1 truncate font-mono text-mono-sm text-fg-disabled">{binaryPath}</div>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
