@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-perm.mjs (case id=permission-truncate-width; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Journey 3: long toolInput truncation + container width.
 //
 // Expected user experience: a permission whose toolInput is an 800-char SQL

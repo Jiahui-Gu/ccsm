@@ -1,3 +1,5 @@
+// MERGED INTO scripts/harness-ui.mjs (case id=sidebar-align; see harness file).
+// This per-file probe is kept as a breadcrumb. The runner skips it via MERGED_INTO_HARNESS.
 // Measure sidebar vs chat-panel top/bottom alignment. Expectation: the two
 // column top edges and bottom edges should match within 1px. Before the fix
 // the sidebar is flush to window (top=0, bottom=vh) while <main> has my-2

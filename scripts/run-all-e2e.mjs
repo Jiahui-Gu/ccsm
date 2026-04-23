@@ -36,7 +36,25 @@ const MERGED_INTO_HARNESS = new Set([
   'streaming-journey-caret-lifecycle',
   'inputbar-visible',
   'chat-copy',
-  'input-placeholder'
+  'input-placeholder',
+  // harness-perm.mjs (Phase-3)
+  'permission-prompt',
+  'permission-mode-strict',
+  'permission-focus-not-stolen',
+  'permission-shortcut-scope',
+  'permission-nested-input',
+  'permission-truncate-width',
+  'permission-sequential-focus',
+  // harness-ui.mjs (Phase-3)
+  'sidebar-align',
+  'no-sessions-landing',
+  'a11y-focus-restore'
+  // NOTE: 'empty-state-minimal' is only PARTIALLY absorbed into harness-ui.mjs.
+  // The hero/no-starter-cards/no-"Working in" assertions are in the harness,
+  // but the "Claude CLI detected startup flash" guard needs a cold launch
+  // through the real startup pipeline (the harness sets cliStatus=found out of
+  // band in setup()). Kept as a per-file probe so that regression is still
+  // covered — do NOT add it here.
 ]);
 
 const skipRaw = (process.env.E2E_SKIP || '').trim();
