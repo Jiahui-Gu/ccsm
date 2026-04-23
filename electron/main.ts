@@ -19,11 +19,20 @@ import {
 // is opt-OUT, default ON. We swallow errors here because Sentry's beforeSend
 // is on the hot error path; failing closed (silently sending) is preferable
 // to dropping a crash because the DB happened to be locked.
+//
+// Sentry's beforeSend runs on the hot error path, so we cache the value in
+// a module-scope variable after the first read. The `db:save` handler below
+// invalidates the cache when the renderer writes the `crashReportingOptOut`
+// key, so the toggle in Settings still takes effect immediately.
+const CRASH_OPT_OUT_KEY = 'crashReportingOptOut';
+let _crashOptOutCached: boolean | undefined;
 function loadCrashReportingOptOut(): boolean {
+  if (_crashOptOutCached !== undefined) return _crashOptOutCached;
   try {
-    const raw = loadState('crashReportingOptOut');
-    if (raw == null) return false;
-    return raw === 'true' || raw === '1';
+    const raw = loadState(CRASH_OPT_OUT_KEY);
+    const value = raw != null && (raw === 'true' || raw === '1');
+    _crashOptOutCached = value;
+    return value;
   } catch {
     return false;
   }
@@ -59,6 +68,37 @@ import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 import { loadCommands } from './commands-loader';
+
+// ─────────────────────── IPC security helpers ────────────────────────────
+//
+// Filter renderer-supplied filesystem paths before any `fs.*` call. UNC paths
+// (`\\server\share\...` or `//server/share/...`) MUST be rejected on Windows:
+// node's fs will dutifully reach out over SMB to fetch the file, and on
+// Windows that handshake leaks the user's NTLM hash to whatever host the
+// renderer named. (CRITICAL — even a single innocuous-looking `existsSync`
+// call against a chosen UNC target is a credential-leak primitive.)
+//
+// We also require absolute paths because every renderer caller already
+// passes absolute paths (cwds, persisted disk locations, etc.); a relative
+// path here is always a sign of a confused or malicious caller.
+function isSafePath(p: unknown): p is string {
+  return (
+    typeof p === 'string' &&
+    path.isAbsolute(p) &&
+    !p.startsWith('\\\\') &&
+    !p.startsWith('//')
+  );
+}
+
+// Defense-in-depth: every IPC handler that takes a privileged action should
+// first confirm the message originated from our top-level renderer frame. A
+// compromised iframe (e.g. via a future webview, or a misconfigured CSP)
+// can otherwise call into ipcMain with the same `e.sender`. Pairs with the
+// `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
+// installed in createWindow().
+function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
+  return e.senderFrame === e.sender.mainFrame;
+}
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `AGENTORY_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -200,11 +240,47 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // sandbox:true is the recommended Electron baseline (forces the
+      // preload into a Chromium sandbox where Node built-ins are
+      // unavailable), but our preload's `require('@sentry/electron/preload')`
+      // can't be resolved by the sandboxed preload's restricted require —
+      // it only follows relative paths and a small whitelist. Enabling it
+      // results in: "Error: module not found: @sentry/electron/preload"
+      // and `window.agentory` is never installed.
+      //
+      // Followup: bundle preload through webpack (or vendor the sentry
+      // preload into electron/) so the require resolves at build time, then
+      // flip this back to true. Tracked separately to keep this PR scoped
+      // to the IPC hardening fixes that don't require a build-pipeline
+      // change.
+      sandbox: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });
 
   win.setMenuBarVisibility(false);
+
+  // Block the renderer from spawning new BrowserWindows. We have no use
+  // case for window.open(); a successful call would create a popup with
+  // our preload attached.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
+  // Block in-window navigation away from our renderer origin. The renderer
+  // should never navigate; all external links go through `shell:openExternal`
+  // (which itself filters to http(s) only).
+  win.webContents.on('will-navigate', (event, url) => {
+    try {
+      const u = new URL(url);
+      const devPort = process.env.AGENTORY_DEV_PORT || '4100';
+      const allowed =
+        u.origin === `http://localhost:${devPort}` ||
+        u.origin === 'http://localhost:4100' ||
+        u.protocol === 'file:';
+      if (!allowed) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
+  });
 
   if (isDev) {
     const port = process.env.AGENTORY_DEV_PORT || '4100';
@@ -295,12 +371,61 @@ app.whenReady().then(() => {
   initDb();
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
-  ipcMain.handle('db:save', (_e, key: string, value: string) => saveState(key, value));
-  ipcMain.handle('db:loadMessages', (_e, sessionId: string) => loadMessages(sessionId));
+  ipcMain.handle('db:save', (e, key: string, value: string) => {
+    if (!fromMainFrame(e)) return;
+    saveState(key, value);
+    // Invalidate Sentry's cached opt-out so the toggle in Settings takes
+    // effect on the next error without an app restart.
+    if (key === CRASH_OPT_OUT_KEY) {
+      _crashOptOutCached = undefined;
+    }
+  });
+  ipcMain.handle('db:loadMessages', (e, sessionId: string) => {
+    if (!fromMainFrame(e)) return [];
+    return loadMessages(sessionId);
+  });
+  // Cap renderer-supplied message payloads. The DB column is unbounded TEXT,
+  // so a buggy or malicious renderer could otherwise pin the WAL with
+  // gigabytes of JSON and balloon `~/.config/.../agentory.db` past disk
+  // budget. The caps below are well above any legitimate session:
+  //   - 64 chars per sessionId (sessions are uuid-ish ~36 chars)
+  //   - 50_000 blocks per session (current cap on history retention)
+  //   - 1 MB per individual block JSON (a single block this large is a bug)
+  const MAX_SESSION_ID_LEN = 64;
+  const MAX_BLOCKS = 50_000;
+  const MAX_BLOCK_BYTES = 1_000_000;
   ipcMain.handle(
     'db:saveMessages',
-    (_e, sessionId: string, blocks: Array<{ id: string; kind: string }>) =>
-      saveMessages(sessionId, blocks)
+    (
+      e,
+      sessionId: string,
+      blocks: Array<{ id: string; kind: string }>
+    ): { ok: true } | { ok: false; error: string } => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      if (typeof sessionId !== 'string' || sessionId.length > MAX_SESSION_ID_LEN) {
+        return { ok: false, error: 'payload_too_large' };
+      }
+      if (!Array.isArray(blocks) || blocks.length > MAX_BLOCKS) {
+        return { ok: false, error: 'payload_too_large' };
+      }
+      const filtered: Array<{ id: string; kind: string }> = [];
+      for (const b of blocks) {
+        try {
+          const json = JSON.stringify(b);
+          if (json.length > MAX_BLOCK_BYTES) {
+            console.warn(
+              `[main] db:saveMessages dropping oversized block (${json.length} bytes) for session=${sessionId}`
+            );
+            continue;
+          }
+          filtered.push(b);
+        } catch {
+          console.warn('[main] db:saveMessages dropping unserializable block');
+        }
+      }
+      saveMessages(sessionId, filtered);
+      return { ok: true };
+    }
   );
 
   // i18n: renderer mirrors the resolved UI language to main so OS
@@ -360,7 +485,8 @@ app.whenReady().then(() => {
       !!env.ANTHROPIC_API_KEY?.trim();
     return { baseUrl, model, hasAuthToken };
   });
-  ipcMain.handle('connection:openSettingsFile', async () => {
+  ipcMain.handle('connection:openSettingsFile', async (e) => {
+    if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
     const file = path.join(os.homedir(), '.claude', 'settings.json');
     // shell.openPath returns '' on success, error string on failure. If the
     // file does not exist, create an empty stub so the editor opens cleanly.
@@ -381,7 +507,8 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
-  ipcMain.handle('dialog:pickDirectory', async () => {
+  ipcMain.handle('dialog:pickDirectory', async (e) => {
+    if (!fromMainFrame(e)) return null;
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     const res = await dialog.showOpenDialog(win, {
       properties: ['openDirectory'],
@@ -393,13 +520,26 @@ app.whenReady().then(() => {
 
   // Save tool output to a file the user picks. Used by the long-output
   // viewer's `Save as .log` action — for >10MB outputs this is the ONLY
-  // way the user can see the full content.
+  // way the user can see the full content. Capped at 50 MB per file:
+  // legitimate "save big tool dump" use cases live well under that, and
+  // anything bigger is almost certainly a runaway loop or accidental
+  // serialization of a giant in-memory buffer.
+  const MAX_SAVE_FILE_BYTES = 50 * 1024 * 1024;
   ipcMain.handle(
     'dialog:saveFile',
     async (
-      _e,
+      e,
       args: { defaultName?: string; content: string }
     ): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      const content = typeof args?.content === 'string' ? args.content : '';
+      // String length is a fine proxy here — UTF-8 bytes can be at most 4×
+      // chars but realistic content (ASCII/UTF-8 text dumps) is ~1×, so we
+      // gate on raw length to avoid a wasted Buffer.byteLength roundtrip.
+      // The dialog filters offer .log/.txt only.
+      if (content.length > MAX_SAVE_FILE_BYTES) {
+        return { ok: false, error: 'content_too_large' };
+      }
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
       try {
         const res = await dialog.showSaveDialog(win, {
@@ -410,7 +550,7 @@ app.whenReady().then(() => {
           ]
         });
         if (res.canceled || !res.filePath) return { ok: false, canceled: true };
-        fs.writeFileSync(res.filePath, args.content, 'utf8');
+        await fs.promises.writeFile(res.filePath, content, 'utf8');
         return { ok: true, path: res.filePath };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -438,7 +578,7 @@ app.whenReady().then(() => {
   ipcMain.handle(
     'agent:start',
     async (
-      _e,
+      e,
       sessionId: string,
       opts: {
         cwd: string;
@@ -447,6 +587,9 @@ app.whenReady().then(() => {
         resumeSessionId?: string;
       }
     ) => {
+      if (!fromMainFrame(e)) {
+        return { ok: false, error: 'rejected', errorCode: 'CWD_MISSING' as const };
+      }
       // Guard against stale `cwd` paths that no longer exist on disk. Common
       // failure mode: a session was created inside a now-deleted worktree
       // (the Sept worktree feature was reverted in #104), so its persisted
@@ -454,7 +597,10 @@ app.whenReady().then(() => {
       // with ENOENT inside SessionRunner; catching here gives the renderer a
       // clean error code it can surface as "repick your folder".
       const resolvedCwd = resolveCwd(opts.cwd);
-      if (!fs.existsSync(resolvedCwd)) {
+      // UNC + non-absolute paths are rejected up front. resolveCwd expands
+      // `~` to the home dir, so by this point a safe cwd is always absolute
+      // and never a UNC share. See isSafePath() at top-of-file.
+      if (!isSafePath(resolvedCwd) || !fs.existsSync(resolvedCwd)) {
         return {
           ok: false,
           error: `Working directory no longer exists: ${opts.cwd}`,
@@ -472,29 +618,64 @@ app.whenReady().then(() => {
       return result;
     }
   );
-  ipcMain.handle('agent:send', (_e, sessionId: string, text: string) =>
-    sessions.send(sessionId, text)
-  );
+  ipcMain.handle('agent:send', (e, sessionId: string, text: string) => {
+    if (!fromMainFrame(e)) return false;
+    return sessions.send(sessionId, text);
+  });
   ipcMain.handle(
     'agent:sendContent',
-    (_e, sessionId: string, content: unknown[]) =>
-      sessions.sendContent(sessionId, Array.isArray(content) ? content : [])
+    (e, sessionId: string, content: unknown[]) => {
+      if (!fromMainFrame(e)) return false;
+      return sessions.sendContent(sessionId, Array.isArray(content) ? content : []);
+    }
   );
   ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
-  ipcMain.handle('agent:setPermissionMode', (_e, sessionId: string, mode: PermissionMode) =>
-    sessions.setPermissionMode(sessionId, mode)
+  ipcMain.handle(
+    'agent:setPermissionMode',
+    async (
+      e,
+      sessionId: string,
+      mode: PermissionMode
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      // Validate the mode up front so an unknown value gets rejected even
+      // when the session no longer exists (manager.setPermissionMode would
+      // otherwise short-circuit to `false` and we'd never hit the throw in
+      // toCliPermissionMode). The list here mirrors the union in
+      // electron/agent/sessions.ts:PermissionMode — keep them in sync.
+      const KNOWN_MODES = new Set<string>([
+        'default', 'acceptEdits', 'plan', 'bypassPermissions',
+        'ask', 'standard', 'dontAsk', 'auto', 'yolo'
+      ]);
+      if (typeof mode !== 'string' || !KNOWN_MODES.has(mode)) {
+        return { ok: false, error: 'unknown_mode' };
+      }
+      try {
+        await sessions.setPermissionMode(sessionId, mode);
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof Error && /Unknown permission mode/i.test(err.message)) {
+          return { ok: false, error: 'unknown_mode' };
+        }
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
   );
-  ipcMain.handle('agent:setModel', (_e, sessionId: string, model?: string) =>
-    sessions.setModel(sessionId, model)
-  );
-  ipcMain.handle('agent:close', (_e, sessionId: string) => {
+  ipcMain.handle('agent:setModel', (e, sessionId: string, model?: string) => {
+    if (!fromMainFrame(e)) return false;
+    return sessions.setModel(sessionId, model);
+  });
+  ipcMain.handle('agent:close', (e, sessionId: string) => {
+    if (!fromMainFrame(e)) return false;
     return sessions.close(sessionId);
   });
 
   ipcMain.handle(
     'agent:resolvePermission',
-    (_e, sessionId: string, requestId: string, decision: 'allow' | 'deny') =>
-      sessions.resolvePermission(sessionId, requestId, decision)
+    (e, sessionId: string, requestId: string, decision: 'allow' | 'deny') => {
+      if (!fromMainFrame(e)) return false;
+      return sessions.resolvePermission(sessionId, requestId, decision);
+    }
   );
 
   ipcMain.handle('import:scan', () => getImportableSessions());
@@ -513,8 +694,19 @@ app.whenReady().then(() => {
       : [];
     const out: Record<string, boolean> = {};
     for (const p of list) {
+      // Reject UNC + non-absolute paths BEFORE touching fs. On Windows,
+      // `fs.existsSync('\\\\server\\share\\probe')` triggers an SMB lookup
+      // and leaks the user's NTLM hash to the named host. We map any unsafe
+      // path to `false` so the renderer's hydration migration treats it as
+      // "missing cwd" — exactly the desired behaviour. resolveCwd is still
+      // applied so `~`-prefixed cwds are expanded before the safety check.
       try {
-        out[p] = fs.existsSync(resolveCwd(p));
+        const resolved = resolveCwd(p);
+        if (!isSafePath(resolved)) {
+          out[p] = false;
+          continue;
+        }
+        out[p] = fs.existsSync(resolved);
       } catch {
         out[p] = false;
       }
@@ -528,11 +720,17 @@ app.whenReady().then(() => {
   // Renderer calls this on focus / cwd change. Execution stays pass-through:
   // selecting one inserts `/<name>` into the textarea, which the existing
   // send path forwards to claude.exe. We never parse the body.
-  ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) =>
-    loadCommands({ cwd: cwd ?? null })
-  );
+  ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) => {
+    // commands-loader does its own fs reads against the supplied cwd; UNC or
+    // relative inputs get filtered out here so we don't leak NTLM (Windows)
+    // or descend into wherever a confused renderer points us. Empty list is
+    // the safe fallback for any unsafe input.
+    if (cwd != null && !isSafePath(cwd)) return [];
+    return loadCommands({ cwd: cwd ?? null });
+  });
 
-  ipcMain.handle('shell:openExternal', async (_e, url: string) => {
+  ipcMain.handle('shell:openExternal', async (e, url: string) => {
+    if (!fromMainFrame(e)) return false;
     // Only http(s). Everything else is a potential shell hijack.
     if (!/^https?:\/\//i.test(url)) return false;
     try {
@@ -619,11 +817,15 @@ app.whenReady().then(() => {
 
   ipcMain.handle(
     'cli:setBinaryPath',
-    async (_e, rawPath: string): Promise<
+    async (e, rawPath: string): Promise<
       { ok: true; version: string | null } | { ok: false; error: string }
     > => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
       const p = typeof rawPath === 'string' ? rawPath.trim() : '';
       if (!p) return { ok: false, error: 'Empty path' };
+      // Refuse UNC / non-absolute. The browse dialog only emits absolute
+      // local paths, so an unsafe input here is always a hand-crafted call.
+      if (!isSafePath(p)) return { ok: false, error: 'Invalid path' };
       try {
         if (!fs.existsSync(p)) return { ok: false, error: 'File does not exist' };
         const stat = fs.statSync(p);
