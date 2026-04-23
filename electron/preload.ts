@@ -47,7 +47,10 @@ type UpdateStatus =
 
 const api = {
   loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
-  saveState: (key: string, value: string): Promise<void> =>
+  saveState: (
+    key: string,
+    value: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke('db:save', key, value),
   // i18n: renderer reads OS locale to seed its "system" preference, and
   // pushes the resolved UI language to main so OS notifications match.

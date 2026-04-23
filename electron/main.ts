@@ -382,15 +382,42 @@ app.whenReady().then(() => {
   initDb();
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
-  ipcMain.handle('db:save', (e, key: string, value: string) => {
-    if (!fromMainFrame(e)) return;
-    saveState(key, value);
-    // Invalidate Sentry's cached opt-out so the toggle in Settings takes
-    // effect on the next error without an app restart.
-    if (key === CRASH_OPT_OUT_KEY) {
-      _crashOptOutCached = undefined;
+  // Cap renderer-supplied state values. Mirrors the per-block cap in
+  // db:saveMessages but tighter (1 MB vs 1 MB-per-block × N blocks): a
+  // single app_state row holds drafts/persist snapshots that should never
+  // approach this size — if one does, it's a bug in the persister and we
+  // refuse to commit it rather than silently growing the WAL.
+  const MAX_STATE_KEY_LEN = 128;
+  const MAX_STATE_VALUE_BYTES = 1_000_000;
+  ipcMain.handle(
+    'db:save',
+    (
+      e,
+      key: string,
+      value: string
+    ): { ok: true } | { ok: false; error: string } => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      if (typeof key !== 'string' || key.length === 0 || key.length > MAX_STATE_KEY_LEN) {
+        return { ok: false, error: 'invalid_key' };
+      }
+      if (typeof value !== 'string') {
+        return { ok: false, error: 'invalid_value' };
+      }
+      if (value.length > MAX_STATE_VALUE_BYTES) {
+        console.warn(
+          `[main] db:save rejecting oversized value (${value.length} bytes) for key=${key}`
+        );
+        return { ok: false, error: 'value_too_large' };
+      }
+      saveState(key, value);
+      // Invalidate Sentry's cached opt-out so the toggle in Settings takes
+      // effect on the next error without an app restart.
+      if (key === CRASH_OPT_OUT_KEY) {
+        _crashOptOutCached = undefined;
+      }
+      return { ok: true };
     }
-  });
+  );
   ipcMain.handle('db:loadMessages', (e, sessionId: string) => {
     if (!fromMainFrame(e)) return [];
     return loadMessages(sessionId);
