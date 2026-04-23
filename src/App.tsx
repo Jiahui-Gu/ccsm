@@ -217,7 +217,7 @@ export default function App() {
                   {tutorialSeen ? (
                     <div className="flex items-center gap-3">
                       <Button
-                        variant="secondary"
+                        variant="primary"
                         size="md"
                         onClick={newSession}
                         className="w-44 justify-center"
