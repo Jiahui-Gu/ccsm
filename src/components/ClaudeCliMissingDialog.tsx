@@ -495,6 +495,13 @@ function SuccessPane({
         <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
           {t('cli.detected')}
         </RD.Title>
+        {/* Radix requires a Description (or explicit aria-describedby) on
+            DialogContent. The visible summary below carries the same info
+            but isn't wired to Radix, so we render an sr-only Description
+            to satisfy the contract and silence the console warning. */}
+        <RD.Description className="sr-only">
+          {version ? t('cli.foundVersion') + ' ' + version : t('cli.foundBinaryUnknown')}
+        </RD.Description>
         <div className="mt-1 text-sm text-fg-tertiary">
           {version ? (
             <>

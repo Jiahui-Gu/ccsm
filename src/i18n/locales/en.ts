@@ -161,6 +161,7 @@ const en = {
   },
   settings: {
     title: 'Settings',
+    description: 'Configure appearance, notifications, connection, and updates.',
     tabs: {
       general: 'General',
       appearance: 'Appearance',
