@@ -738,7 +738,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               <ChevronRight size={12} className="stroke-[1.75]" />
             </motion.span>
             <span>{t('sidebar.archivedGroups')}</span>
-            <span className="ml-1 text-[11px] leading-[14px] font-normal text-[oklch(0.46_0_0)] tabular-nums">
+            <span className="ml-1 text-mono-sm leading-[14px] font-normal text-[oklch(0.46_0_0)] tabular-nums">
               {archived.length}
             </span>
           </button>

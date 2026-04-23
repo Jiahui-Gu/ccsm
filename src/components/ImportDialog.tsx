@@ -190,7 +190,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                                 />
                                 <div className="min-w-0 flex-1">
                                   <div className="font-mono text-xs text-fg-primary truncate">{it.title}</div>
-                                  <div className="font-mono text-[11px] text-fg-tertiary truncate">
+                                  <div className="font-mono text-mono-sm text-fg-tertiary truncate">
                                     {it.cwd} · {new Date(it.mtime).toLocaleString()}
                                   </div>
                                 </div>

@@ -619,7 +619,7 @@ function ConnectionPane() {
                 className="flex items-center justify-between px-3 py-1.5 text-xs"
               >
                 <span className="font-mono text-fg-primary truncate">{m.id}</span>
-                <span className="text-[10px] uppercase tracking-wide text-fg-tertiary ml-2 shrink-0">
+                <span className="text-mono-xs uppercase tracking-wide text-fg-tertiary ml-2 shrink-0">
                   {m.source}
                 </span>
               </li>

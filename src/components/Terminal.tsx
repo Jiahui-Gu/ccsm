@@ -161,7 +161,7 @@ export function Terminal({ data, running }: TerminalProps) {
         style={{ width: '100%' }}
       />
       {empty && (
-        <div className="px-3 py-1 font-mono text-[11px] text-fg-tertiary border-t border-border-subtle">
+        <div className="px-3 py-1 font-mono text-mono-sm text-fg-tertiary border-t border-border-subtle">
           {running ? t('terminal.waitingOutput') : t('terminal.noOutput')}
         </div>
       )}

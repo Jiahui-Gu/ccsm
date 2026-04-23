@@ -458,6 +458,25 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
     color: oklch(0.93 0 0);
   }
 
+  /* ── Fine-grained mono typography scale ──
+     Used by chat tool buttons, terminal headers, code chips, command
+     palette inline metadata. These ride below the semantic
+     text-label-*/text-body-* tier — they're for content that is
+     intentionally typographically dense (mono, often uppercase) and needs
+     sub-13px sizing without each call site rolling its own arbitrary
+     `text-[10px]`. Color is *not* baked in here so the same size class
+     can be paired with text-fg-tertiary, text-state-error, etc.
+
+       mono-xs : 10/14 — tool chip buttons, micro-labels
+       mono-sm : 11/15 — code paths, terminal headers, hint chips
+       mono-md : 12/16 — popover input text, inline command labels
+       mono-lg : 13/18 — palette command text (matches body-row)
+  */
+  .text-mono-xs { font-size: 10px; line-height: 14px; }
+  .text-mono-sm { font-size: 11px; line-height: 15px; }
+  .text-mono-md { font-size: 12px; line-height: 16px; }
+  .text-mono-lg { font-size: 13px; line-height: 18px; }
+
   /* 1px lighter top edge — the "light from above" cue. Apply on any card-like
      surface (sidebar, panel, elevated, dropdown, tooltip, input wrapper). */
   .surface-highlight {

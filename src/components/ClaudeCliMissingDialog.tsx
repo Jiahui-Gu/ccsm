@@ -250,7 +250,7 @@ function Header({ searchedPaths }: { searchedPaths: string[] }) {
           </RD.Title>
           <RD.Description className="mt-1 text-sm text-fg-tertiary">
             {t('cli.dialogDescriptionPrefix')}
-            {' '}<code className="font-mono text-[12px] text-fg-secondary">claude</code>{' '}
+            {' '}<code className="font-mono text-mono-md text-fg-secondary">claude</code>{' '}
             {t('cli.dialogDescriptionSuffix')}
           </RD.Description>
           {searchedPaths.length > 0 && (
@@ -369,7 +369,7 @@ function CommandRow({ row }: { row: InstallRow }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[11px] uppercase tracking-wide text-fg-disabled font-medium">
+        <span className="text-mono-sm uppercase tracking-wide text-fg-disabled font-medium">
           {row.label}
         </span>
       </div>
@@ -423,7 +423,7 @@ function CommandRow({ row }: { row: InstallRow }) {
         </button>
       </div>
       {row.hint && (
-        <div className="mt-1 text-[11px] text-fg-disabled">{row.hint}</div>
+        <div className="mt-1 text-mono-sm text-fg-disabled">{row.hint}</div>
       )}
     </div>
   );
@@ -443,7 +443,7 @@ function HaveItPane({
     <div className="space-y-3">
       <p className="text-xs text-fg-tertiary">
         {t('cli.haveItHint')}{' '}
-        <code className="font-mono text-[12px] text-fg-secondary">claude</code> {t('cli.binaryLabel')}
+        <code className="font-mono text-mono-md text-fg-secondary">claude</code> {t('cli.binaryLabel')}
         {' '}{t('cli.rememberHint')}
       </p>
       <Button variant="secondary" size="md" onClick={onBrowse} disabled={configuring}>
@@ -455,7 +455,7 @@ function HaveItPane({
           {error}
         </div>
       )}
-      <div className="text-[11px] text-fg-disabled leading-relaxed">
+      <div className="text-mono-sm text-fg-disabled leading-relaxed">
         {t('cli.verifyHint')}{' '}
         <code className="font-mono text-fg-tertiary">{t('cli.versionFlag')}</code> {t('cli.verifyHintSuffix')}
       </div>
@@ -497,7 +497,7 @@ function SuccessPane({
           )}
         </div>
         {binaryPath && (
-          <div className="mt-1 truncate font-mono text-[11px] text-fg-disabled">{binaryPath}</div>
+          <div className="mt-1 truncate font-mono text-mono-sm text-fg-disabled">{binaryPath}</div>
         )}
       </div>
     </div>
