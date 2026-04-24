@@ -170,6 +170,21 @@ class SessionsManager {
     return r.resolvePermission(requestId, decision);
   }
 
+  /**
+   * Per-hunk partial-accept variant of resolvePermission (#251).
+   * `acceptedHunks` indices map to the `DiffSpec.hunks` produced by
+   * `src/utils/diff.ts` for the original tool call.
+   */
+  resolvePermissionPartial(
+    sessionId: string,
+    requestId: string,
+    acceptedHunks: number[]
+  ): boolean {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    return r.resolvePermissionPartial(requestId, acceptedHunks);
+  }
+
   close(sessionId: string): boolean {
     const r = this.runners.get(sessionId);
     if (!r) return false;
