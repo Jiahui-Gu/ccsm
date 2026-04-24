@@ -122,6 +122,14 @@
   --text-body--line-height: 24px;
   --text-heading: 16px;
   --text-heading--line-height: 22px;
+  /* 5th tier added in #256. Markdown h1 inside assistant prose was riding
+     --text-lg (17px), barely 1px above --text-heading (16px) — the 4-step
+     ladder collapsed at the top. `text-display` gives prose h1 (and the
+     Tutorial step heading) a clear step above heading without screaming.
+     21px/28px = roughly a major-third up from 16/22, lands on the 4px
+     grid, and keeps Inter hinting in the comfortable range. */
+  --text-display: 21px;
+  --text-display--line-height: 28px;
 
   --radius-xs: 3px;
   --radius-sm: 5px;
