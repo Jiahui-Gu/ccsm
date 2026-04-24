@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
+import { Search, SearchX, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
@@ -218,16 +218,24 @@ export function CommandPalette({
                 'outline-none'
               )}
             />
-            <kbd className="font-mono text-meta px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
-              {t('commandPalette.escKey')}
-            </kbd>
           </div>
           <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
             {!hasQuery && (
               <li className="px-4 py-6 text-center text-chrome text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
             )}
             {hasQuery && results.length === 0 && (
-              <li className="px-4 py-6 text-center text-chrome text-fg-tertiary">{t('commandPalette.noResultsFor', { query: q.trim() })}</li>
+              <li
+                className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center"
+                data-testid="cmd-palette-no-matches"
+              >
+                <SearchX size={28} className="stroke-[1.5] text-fg-disabled" aria-hidden />
+                <div className="text-chrome text-fg-secondary">
+                  {t('commandPalette.noMatches')}
+                </div>
+                <div className="text-meta text-fg-tertiary">
+                  {t('commandPalette.noResultsFor', { query: q.trim() })}
+                </div>
+              </li>
             )}
             {hasQuery &&
               results.map((r, i) => (
@@ -255,6 +263,29 @@ export function CommandPalette({
                 </li>
               ))}
           </ul>
+          <div
+            className="flex items-center gap-4 px-3 h-8 border-t border-border-subtle text-meta text-fg-tertiary"
+            data-testid="cmd-palette-kbd-hints"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {'\u2191\u2193'}
+              </kbd>
+              <span>{t('commandPalette.hintNavigate')}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {'\u21B5'}
+              </kbd>
+              <span>{t('commandPalette.hintSelect')}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {t('commandPalette.escKey')}
+              </kbd>
+              <span>{t('commandPalette.hintClose')}</span>
+            </span>
+          </div>
         </RD.Content>
       </DialogPortal>
     </Dialog>

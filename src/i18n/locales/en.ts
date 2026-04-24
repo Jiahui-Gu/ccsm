@@ -445,7 +445,10 @@ const en = {
     cmdToggleSidebar: 'Toggle sidebar',
     cmdImport: 'Import from Claude Code…',
     cmdOpenSettings: 'Open settings',
-    cmdSwitchTheme: 'Switch theme \u2192 {{next}}'
+    cmdSwitchTheme: 'Switch theme \u2192 {{next}}',
+    hintNavigate: 'Navigate',
+    hintSelect: 'Select',
+    hintClose: 'Close'
   },
   prDialog: {
     title: 'Create Pull Request',
