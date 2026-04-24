@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, ChevronDown } from 'lucide-react';
+import { Check, ChevronRight, ChevronDown } from 'lucide-react';
+import * as Checkbox from '@radix-ui/react-checkbox';
 import { Dialog, DialogContent, DialogBody, DialogFooter, DialogClose } from './ui/Dialog';
 import { Button } from './ui/Button';
+import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { bucketize, type DateBucketKey } from '../utils/date-buckets';
 import { useTranslation } from '../i18n/useTranslation';
@@ -139,13 +141,14 @@ export function ImportDialog({ open, onOpenChange }: Props) {
           ) : (
             <>
               <div className="flex items-center justify-between mb-2">
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={toggleAll}
-                  className="focus-ring font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
+                  aria-label={selected.size === items.length ? t('importDialog.deselectAll') : t('importDialog.selectAll')}
                 >
                   {selected.size === items.length ? t('importDialog.deselectAll') : t('importDialog.selectAll')} ({items.length})
-                </button>
+                </Button>
                 <span className="font-mono text-chrome text-fg-tertiary">{t('importDialog.selected', { count: selected.size })}</span>
               </div>
               <div className="max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle">
@@ -171,32 +174,45 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                         <span className="font-mono text-chrome text-fg-secondary flex-1">
                           {bucket.label} · {bucket.items.length}
                         </span>
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="xs"
                           onClick={() => toggleBucket(ids)}
-                          className="focus-ring font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
+                          aria-label={allPicked ? t('importDialog.deselectGroup') : t('importDialog.selectGroup')}
                         >
                           {allPicked ? t('importDialog.deselectGroup') : t('importDialog.selectGroup')}
                           {pickedCount > 0 && !allPicked && ` (${pickedCount}/${ids.length})`}
-                        </button>
+                        </Button>
                       </div>
                       {!isCollapsed && (
                         <ul className="divide-y divide-border-subtle">
                           {bucket.items.map((it) => {
                             const checked = selected.has(it.sessionId);
+                            const checkboxId = `import-row-${it.sessionId}`;
                             return (
                               <li
                                 key={it.sessionId}
                                 onClick={() => toggle(it.sessionId)}
                                 className="flex items-start gap-2 px-3 py-2 hover:bg-bg-hover cursor-pointer"
                               >
-                                <input
-                                  type="checkbox"
+                                <Checkbox.Root
+                                  id={checkboxId}
                                   checked={checked}
-                                  onChange={() => toggle(it.sessionId)}
+                                  onCheckedChange={() => toggle(it.sessionId)}
                                   onClick={(e) => e.stopPropagation()}
-                                  className="mt-0.5 accent-accent"
-                                />
+                                  aria-label={it.title}
+                                  className={cn(
+                                    'mt-0.5 h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong',
+                                    'data-[state=checked]:bg-accent data-[state=checked]:border-accent',
+                                    'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
+                                    'focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app',
+                                    'transition-colors duration-150'
+                                  )}
+                                >
+                                  <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
+                                    <Check size={10} strokeWidth={3} />
+                                  </Checkbox.Indicator>
+                                </Checkbox.Root>
                                 <div className="min-w-0 flex-1">
                                   <div className="font-mono text-chrome text-fg-primary truncate">{it.title}</div>
                                   <div className="font-mono text-mono-sm text-fg-tertiary truncate">

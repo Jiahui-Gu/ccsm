@@ -268,7 +268,10 @@ const en = {
       modelsLoading: 'Loading…',
       modelsEmpty: 'No models discovered. Run <code>claude /config</code> to set one up.',
       openSettingsFile: 'Open settings.json',
-      opening: 'Opening…'
+      opening: 'Opening…',
+      copyBaseUrl: 'Copy URL',
+      copyModel: 'Copy model',
+      copied: 'Copied'
     },
     updates: {
       version: 'Version',
