@@ -5,7 +5,7 @@ import { cn } from '../../lib/cn';
 //
 // Before this primitive, ~10 sites across popovers, the slash-command picker,
 // and tutorial chrome rolled their own
-//   `font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary`
+//   `font-mono text-mono-xs tracking-wider text-fg-tertiary`
 // (and a couple of mono-sm variants). Each callsite drifted slightly —
 // some omitted `font-mono`, one used `text-meta` instead of `text-mono-xs`,
 // and a few injected extra padding inline. Centralizing the recipe here:
@@ -17,6 +17,12 @@ import { cn } from '../../lib/cn';
 //     and inline counters) and `sm` (11/15 — used for the cwd popover's
 //     "Recent" header where the larger leading reads better above a list
 //     row).
+//
+// Casing (#327): we deliberately do NOT bake `uppercase` into the recipe.
+// SCREAMING-CASE chrome is forbidden by the no-uppercase-UI-strings rule;
+// callsites should pass natural sentence-case copy. If a single callsite
+// genuinely needs uppercase (none today), it can opt in via
+// `className="uppercase"` with a comment explaining why.
 //
 // Naming note (#300): MetaLabel rides the **mono** micro-scale
 // (`text-mono-xs` = 10/14, `text-mono-sm` = 11/15). It is NOT interchangeable
@@ -39,7 +45,7 @@ export function MetaLabel({ size = 'xs', className, children, ...rest }: MetaLab
     <span
       {...rest}
       className={cn(
-        'font-mono uppercase tracking-wider text-fg-tertiary select-none',
+        'font-mono tracking-wider text-fg-tertiary select-none',
         size === 'sm' ? 'text-mono-sm' : 'text-mono-xs',
         className
       )}
