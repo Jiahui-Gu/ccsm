@@ -24,7 +24,8 @@ export function ToolBlock({
   input,
   now,
   sessionId,
-  toolUseId
+  toolUseId,
+  permissionPending
 }: {
   name: string;
   brief: string;
@@ -43,6 +44,19 @@ export function ToolBlock({
   // the click falls back to the old console.warn stub.
   sessionId?: string;
   toolUseId?: string;
+  // Bug #248-1: when a permission gate is intercepting this tool's
+  // execution, the wall-clock elapsed counter is misleading — we haven't
+  // started running yet, the user is just thinking about whether to
+  // allow it. ChatStream sets this to true when a sibling waiting/permission
+  // block is targeting this tool's name. While true:
+  //   - we DON'T capture startedAtRef (it stays null; deferred to gate clear)
+  //   - the elapsed chip / stall hint / escalation banner / Cancel link are
+  //     all suppressed (no chip → no stall → no Cancel)
+  // The "…" in-flight ellipsis (in the truncating name span above) keeps
+  // signaling that the block is alive. Once the user resolves the prompt
+  // (allow/deny), this flips false; first render after that captures the
+  // real execution-begin moment in startedAtRef.
+  permissionPending?: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(!!isError);
@@ -74,19 +88,22 @@ export function ToolBlock({
   const emptyBrief = !brief || brief.length === 0;
   const isDropped = (emptyResult || (hasResult && emptyBrief)) && !isError;
   // Elapsed-time tracking (A2-NEW-5). We capture startedAt on the first
-  // render where `result` is still undefined, and freeze endedAt when
-  // result first lands. Refs keep the value stable across re-renders
-  // without triggering re-render cycles of their own.
-  const startedAtRef = useRef<number | null>(hasResult ? null : Date.now());
+  // render where `result` is still undefined AND no permission gate is
+  // currently pending — the latter half (#248-1) is what makes "elapsed"
+  // mean "execution time" instead of "request time". Refs keep the value
+  // stable across re-renders without triggering re-render cycles of
+  // their own.
+  const initialStartedAt = hasResult || permissionPending ? null : Date.now();
+  const startedAtRef = useRef<number | null>(initialStartedAt);
   const endedAtRef = useRef<number | null>(hasResult ? Date.now() : null);
-  if (!hasResult && startedAtRef.current === null) {
+  if (!hasResult && !permissionPending && startedAtRef.current === null) {
     startedAtRef.current = Date.now();
     endedAtRef.current = null;
   }
   if (hasResult && endedAtRef.current === null) {
     endedAtRef.current = Date.now();
   }
-  const running = !hasResult && !isError;
+  const running = !hasResult && !isError && !permissionPending;
   const elapsedMs =
     running && startedAtRef.current !== null
       ? Math.max(0, (now ?? Date.now()) - startedAtRef.current)
