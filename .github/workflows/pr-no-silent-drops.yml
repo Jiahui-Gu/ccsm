@@ -1,0 +1,77 @@
+name: pr-no-silent-drops
+
+# Catches the "rebase resolved by deleting unrelated changes" pattern
+# (see PR #250 post-mortem):
+#
+#   * GitHub still lists files X, Y in the PR's file list (the API
+#     reports the union of paths touched across the PR's commits).
+#   * A bad rebase / squash drops X and Y from the actual base...head
+#     diff.
+#   * Reviewers approve the diff they see; the claimed-but-missing
+#     files silently never ship.
+#
+# Assertion: every path in `gh pr view --json files` MUST appear in
+# `git diff <base>...<head> --name-only`. Extra files in the diff are
+# fine (the API truncates around 300 files; we only catch claimed-but-
+# absent, never absent-but-present).
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  no-silent-drops:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Ensure base ref is fetched
+        run: git fetch origin "${{ github.base_ref }}" --depth=0
+
+      - name: Compare claimed files vs actual diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+
+          # Files the PR API claims are part of this PR.
+          gh pr view "$PR_NUMBER" --json files -q '.files[].path' \
+            | sort -u > /tmp/claimed.txt
+
+          # Files actually present in the merge-base diff.
+          git diff "origin/${BASE_REF}...HEAD" --name-only \
+            | sort -u > /tmp/actual.txt
+
+          echo "::group::Claimed files ($(wc -l < /tmp/claimed.txt))"
+          cat /tmp/claimed.txt
+          echo "::endgroup::"
+
+          echo "::group::Actual diff files ($(wc -l < /tmp/actual.txt))"
+          cat /tmp/actual.txt
+          echo "::endgroup::"
+
+          # claimed - actual : files the PR claims but the diff lost.
+          comm -23 /tmp/claimed.txt /tmp/actual.txt > /tmp/missing.txt
+
+          if [ -s /tmp/missing.txt ]; then
+            echo "::error::PR claims files that are absent from the base...head diff."
+            echo "This usually means a rebase or squash silently dropped commits."
+            echo ""
+            echo "Claimed but missing from diff:"
+            sed 's/^/  - /' /tmp/missing.txt
+            echo ""
+            echo "Recover the dropped changes (re-cherry-pick or re-apply) and push again."
+            exit 1
+          fi
+
+          echo "OK: every claimed file is present in the diff."
