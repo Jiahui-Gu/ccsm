@@ -1,5 +1,21 @@
 # Dogfood public-001 — 2026-04-24
 
+## Re-triage note (2026-04-24)
+
+Manager clarified the definition of "clean config" after the original pass:
+
+- **"Clean config"** = CCSM's own config is empty (`%APPDATA%\CCSM` deleted).
+- **"Clean config" does NOT mean** Claude Code's global config (`~/.claude/`) is cleared.
+- CCSM is a GUI shell for Claude Code. Inheriting the user's Claude Code config — skills, settings, credentials, MCP servers, subagents — is **correct product behavior**, not a bug.
+
+Under this corrected definition, the original P0 finding ("claude.exe inherits `~/.claude/skills` and runs them on every turn") is **rescinded**. It has been struck through below to preserve the audit trail. Gap 4 ("Chinese PUA preamble without attribution") has been rewritten so its severity rests on discoverability (a skill-badged turn is reasonable even when inheritance is correct), not on the premise that inheritance itself is wrong.
+
+No other finding was materially affected by the corrected definition. No re-run was needed — all remaining findings are independent of the isolation question.
+
+Updated counts: **6 bugs (was 7) / 7 UX gaps**. Severity distribution: **0 P0, 7 P1, 6 P2**.
+
+---
+
 Worker: claude opus 4.7 (1M context), running as ccsm public-dogfood agent.
 Driver: playwright-core v latest, connected via CDP `--remote-debugging-port=9222` to the installed prod build.
 Goal: run a real ~10-20 min task on installed CCSM, document bugs and UX gaps, no fixes.
@@ -18,7 +34,7 @@ Snapshots (PNG + body text + UI JSON dumps) are under `dogfood-logs/dogfood-publ
 
 Launched the prod exe via PowerShell `Start-Process` with `--remote-debugging-port=9222`. CDP endpoint at `http://localhost:9222/json` exposed normally — the prod build accepts the flag. Title `CCSM`, app version reports `CCSM/0.1.0` over Electron 33.4.11.
 
-HOME sanitization: I tried to point HOME to a temp dir for the driver subprocesses, but the relevant subprocess is `claude.exe` spawned by CCSM itself — that inherits the OS user environment, so HOME sanitization on my driver shell did NOT propagate. See bug #2.
+HOME sanitization: I tried to point HOME to a temp dir for the driver subprocesses, but the relevant subprocess is `claude.exe` spawned by CCSM itself — that inherits the OS user environment, so HOME sanitization on my driver shell did NOT propagate. (Originally flagged as part of Bug #2; under the corrected "clean config" definition this inheritance is correct behavior — see re-triage note above.)
 
 ---
 
@@ -43,7 +59,7 @@ All times local (Asia/Shanghai-ish based on box clock).
 | 23:24:xx | Clicked through onboarding Next x3 -> Done. Each step instant. |
 | 23:24:55 | Onboarding ended. Shell shows empty Sessions panel, `Sessions 1` (one auto-created session named "New session"), no group dialog, no welcome empty-state. |
 | 23:25:14 (est) | Sent first prompt (Task A) via Enter on textarea. |
-| 23:25:21 (est) | First chunk back. **TTFR ~7s.** First action was a `Skill({"skill":"pua"})` invocation — see bug #2. |
+| 23:25:21 (est) | First chunk back. **TTFR ~7s.** First action was a `Skill({"skill":"pua"})` invocation — see rescinded Bug #2 / Gap #4 (skill inheritance is correct behavior). |
 | 23:25:40 | First permission prompt visible (Skill pua). I clicked Reject. |
 | 23:26:50 | Second permission prompt — Bash mkdir+npm. Allowed (Y). |
 | 23:27:20 | npm install ran, finished after ~2:13 elapsed counter (see bug #3). |
@@ -78,23 +94,25 @@ End: ~23:33. Total wall time ~10 min.
 
 ---
 
-### Bug 2 — P0 (data exfil / hostile UX): claude.exe inside CCSM auto-loads user's `~/.claude/skills` and tries to invoke them on EVERY turn
+### ~~Bug 2 — P0 (data exfil / hostile UX): claude.exe inside CCSM auto-loads user's `~/.claude/skills` and tries to invoke them on EVERY turn~~
 
-**Repro:**
-1. Have any third-party skill installed in `~/.claude/skills` (e.g. `pua`).
-2. Launch CCSM, send a benign prompt like "Please initialize a tiny Node CLI tool".
-3. The agent's FIRST tool call is `Skill({"skill":"pua"})`, requiring user permission.
-4. Reject. The agent proceeds with the actual task, but on the NEXT user turn, again calls Skill pua first.
+**RESCINDED (2026-04-24 re-triage):** `~/.claude` inheritance is correct behavior (CCSM is a Claude Code GUI shell). The original finding assumed CCSM should sandbox itself from the user's Claude Code config; under the corrected definition of "clean config" (CCSM-specific `%APPDATA%\CCSM` only), inheriting skills / settings / credentials / MCP servers from `~/.claude` is working as designed. Preserved below strike-through for audit trail.
 
-**Why it's bad:**
-- Probe skill injection (as documented in `project_probe_skill_injection.md` for agentory) — CCSM inherits arbitrary user-level skills with no isolation toggle.
-- The agent's natural-language preamble was Chinese big-tech-PUA-style (`收到，按 owner 意识闭环这个事情...`) — for a user who doesn't have PUA skill, this would be totally unexpected behavior. For a fresh-install dogfood it's especially jarring because the user expects a vanilla agent.
-- Adds 5-15s to every turn just to wait/reject the unwanted skill load.
-- Breaks the prod-install dogfood promise: the install was clean (`%APPDATA%\CCSM` empty) but the underlying claude.exe still pulls full user-skill state.
+~~**Repro:**~~
+~~1. Have any third-party skill installed in `~/.claude/skills` (e.g. `pua`).~~
+~~2. Launch CCSM, send a benign prompt like "Please initialize a tiny Node CLI tool".~~
+~~3. The agent's FIRST tool call is `Skill({"skill":"pua"})`, requiring user permission.~~
+~~4. Reject. The agent proceeds with the actual task, but on the NEXT user turn, again calls Skill pua first.~~
 
-**Severity:** P0 release-blocker for "fresh user" story. P1 if framed as "advanced users only".
+~~**Why it's bad:**~~
+~~- Probe skill injection (as documented in `project_probe_skill_injection.md` for agentory) — CCSM inherits arbitrary user-level skills with no isolation toggle.~~
+~~- The agent's natural-language preamble was Chinese big-tech-PUA-style (`收到，按 owner 意识闭环这个事情...`) — for a user who doesn't have PUA skill, this would be totally unexpected behavior. For a fresh-install dogfood it's especially jarring because the user expects a vanilla agent.~~
+~~- Adds 5-15s to every turn just to wait/reject the unwanted skill load.~~
+~~- Breaks the prod-install dogfood promise: the install was clean (`%APPDATA%\CCSM` empty) but the underlying claude.exe still pulls full user-skill state.~~
 
-**Files:** `06-poll-*.txt` (every poll shows `Skill ({"skill":"pua"})` as the first tool), `12-long-task.txt` (turn 2 also opens with same skill call).
+~~**Severity:** P0 release-blocker for "fresh user" story. P1 if framed as "advanced users only".~~
+
+~~**Files:** `06-poll-*.txt` (every poll shows `Skill ({"skill":"pua"})` as the first tool), `12-long-task.txt` (turn 2 also opens with same skill call).~~
 
 ---
 
@@ -185,15 +203,15 @@ Severity: P1 — silent destructive-default risk.
 
 Files: `14-streaming.txt` (the popover content).
 
-### Gap 4 — P2: Skill calls' Chinese PUA preamble is silently shown without explaining where it came from
+### Gap 4 — P2: Skill-driven turns are not visually attributed to the skill
 
-A first-time user sees:
+A first-time user who has a Claude Code skill installed (e.g. `pua`) sees:
 > 收到，按 owner 意识闭环这个事情。先拉通 PUA 方法论对齐颗粒度。
 > Skill ({"skill":"pua"})
 
-…with no indication that this is from a user-installed skill. They would think the model genuinely talks like this. (See bug #2 for root cause; this gap is the discoverability angle.)
+…with no UI affordance indicating this preamble is coming from a user-installed skill rather than the base model. Even though inheriting skills from `~/.claude` is correct CCSM behavior (see re-triage note), CCSM could improve discoverability by tagging skill-driven turns with a visible badge ("via skill: pua") so the provenance of unusual tone / wording is obvious at a glance.
 
-Severity: P2 — could be addressed by tagging skill-driven turns with a badge.
+Severity: P2 — UX discoverability improvement on top of correct inheritance behavior.
 
 ### Gap 5 — P2: Tool elapsed timer + "still no result" notice gives wrong story (see bug #1) — UX side
 
@@ -225,18 +243,18 @@ Failed action via interrupt: yes (Esc).
 
 ## 7. One-line verdict
 
-**A real first-time user would NOT keep using this after first session in current state.**
+**A real first-time user would struggle with cwd-defaults-to-home + misleading "still no result" warning + SCREAMING onboarding strings; these are fixable UX issues, not release blockers.**
 
-Reasons (in order of severity):
+Reasons (in order of severity, post re-triage):
 1. Default cwd to user home + no visible cwd indicator means writes go to surprising locations (Gap #3).
-2. Inherited user skills running unbidden at every turn, in Chinese PUA tone, for a brand-new install — looks broken or hostile (Bug #2).
-3. Misleading "still no result" warning that fingers the *user* (not the unanswered permission prompt) makes the app feel slow (Bug #1).
+2. Misleading "still no result" warning that fingers the *user* (not the unanswered permission prompt) makes the app feel slow (Bug #1).
+3. Onboarding wizard violates the no-SCREAMING-strings rule (Gap #1), and onboarding doesn't connect to a first-run empty state (Gap #2).
 
-Bug count by severity:
-- P0: 1 (skill inheritance / fresh-install bleed-through)
-- P1: 4 (counter timing, allow-always copy, screaming strings, missing welcome, hidden cwd) → really 4 P1 bugs + 3 P1 gaps
-- P2: 4 bugs + 4 gaps
+Bug count by severity (post re-triage):
+- P0: 0 (skill inheritance rescinded — correct product behavior)
+- P1: 3 bugs (counter timing, allow-always copy, missing initial bash output lines — the latter tracked under Bug #5 if reproducible) + 4 P1 gaps (screaming strings, missing welcome, hidden cwd, plus Bug-1 mirror Gap #5) → 7 P1 total
+- P2: 3 bugs (Esc multi-binding, bash stdout collapsed, duplicate "New session" naming) + 3 P2 gaps (skill-badge discoverability, new-session skips group, no continue-after-interrupt) → 6 P2 total
 
-Bright spots: TTFR ~7s good. CDP works on prod build. Permission prompt UI is clear (Reject/Allow/Allow always). Tool calls collapsible into a clean transcript. Multi-session sidebar exists. Settings popover fast.
+Bright spots: TTFR ~7s good. CDP works on prod build. Permission prompt UI is clear (Reject/Allow/Allow always). Tool calls collapsible into a clean transcript. Multi-session sidebar exists. Settings popover fast. `~/.claude` inheritance works as designed — skills, credentials, and MCP servers carry over from the user's Claude Code setup.
 
-These bugs are fixable in 2-4 days of focused work. Bug #2 needs an architectural decision (--strict-isolation flag for spawn? configurable HOME? sandboxed skills dir?).
+These bugs are fixable in 2-4 days of focused work. No architectural change needed.
