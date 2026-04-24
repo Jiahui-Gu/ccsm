@@ -138,6 +138,7 @@ export function QuestionBlock({ questions, onSubmit, autoFocus = true }: Questio
           ref={submitRef}
           variant="primary"
           size="md"
+          className="focus-ring"
           disabled={!allAnswered || submitted}
           onClick={submit}
         >

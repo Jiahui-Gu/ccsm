@@ -240,8 +240,6 @@ const en = {
         'Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped.',
       sound: 'Sound',
       soundHint: 'Play the OS default notification sound.',
-      toggleOn: 'On',
-      toggleOff: 'Off',
       testButton: 'Test notification',
       testTitle: 'CCSM test notification',
       testBody: 'If you can read this, OS notifications are working.',
