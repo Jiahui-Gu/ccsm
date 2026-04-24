@@ -165,6 +165,23 @@
   --color-terminal-accent: oklch(0.55 0.17 155);
   --color-terminal-hover-bg: oklch(0.22 0.005 240);
 
+  /* ── Syntax highlighting palette (#284). Used by CodeBlock to color
+     Prism tokens. Centralizing here means light/dark themes can shift the
+     palette without editing the React theme inline. Each token name maps
+     to a Prism token-type group inside CodeBlock.tsx. Dark values match
+     the historical inline theme — light values are tuned for AA-large
+     contrast on the near-white --color-bg-panel surface (see html.theme-light
+     overrides below). ── */
+  --color-syntax-keyword: oklch(0.72 0.13 260);
+  --color-syntax-string: oklch(0.72 0.15 145);
+  --color-syntax-number: oklch(0.72 0.12 65);
+  --color-syntax-comment: oklch(0.55 0 0);
+  --color-syntax-function: oklch(0.78 0.12 220);
+  --color-syntax-punctuation: oklch(0.65 0 0);
+  --color-syntax-tag: oklch(0.72 0.15 20);
+  --color-syntax-variable: oklch(0.82 0 0);
+  --color-syntax-regex: oklch(0.72 0.15 300);
+
   /* ── Per-window tint palette (UI-10c). Faint accent washes layered on
      top of the title-bar drag strip so users can tell parallel CCSM
      windows apart at a glance. Six hues plus `none` (handled by JS as
@@ -331,6 +348,19 @@ html.theme-light {
   --color-terminal-border: oklch(0.30 0.005 240);
   --color-terminal-accent: oklch(0.60 0.17 155);
   --color-terminal-hover-bg: oklch(0.24 0.005 240);
+
+  /* Syntax tokens — light mode. Drop lightness, hold chroma so highlight
+     reads cleanly on bg-panel (oklch 0.995). Hue parity with the dark
+     palette keeps token identity stable across theme switch. */
+  --color-syntax-keyword: oklch(0.45 0.16 260);
+  --color-syntax-string: oklch(0.42 0.14 145);
+  --color-syntax-number: oklch(0.50 0.14 50);
+  --color-syntax-comment: oklch(0.55 0.01 240);
+  --color-syntax-function: oklch(0.50 0.14 220);
+  --color-syntax-punctuation: oklch(0.50 0.005 240);
+  --color-syntax-tag: oklch(0.48 0.18 25);
+  --color-syntax-variable: oklch(0.32 0.01 240);
+  --color-syntax-regex: oklch(0.48 0.18 300);
 
   /* Per-window tint palette — light mode. Boost chroma and drop lightness
      vs. the dark block so the wash holds up on a near-white sidebar. Same
