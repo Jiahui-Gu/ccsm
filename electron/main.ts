@@ -845,6 +845,20 @@ app.whenReady().then(() => {
     }
   );
 
+  // Per-hunk partial accept for Edit / Write / MultiEdit (#251). Additive —
+  // the legacy `agent:resolvePermission` channel above stays as the whole-tool
+  // allow/deny path. Renderer should validate `acceptedHunks` is a non-empty
+  // subset of available hunk indices before invoking.
+  ipcMain.handle(
+    'agent:resolvePermissionPartial',
+    (e, sessionId: string, requestId: string, acceptedHunks: unknown) => {
+      if (!fromMainFrame(e)) return false;
+      if (!Array.isArray(acceptedHunks)) return false;
+      const indices = acceptedHunks.filter((n): n is number => Number.isInteger(n) && n >= 0);
+      return sessions.resolvePermissionPartial(sessionId, requestId, indices);
+    }
+  );
+
   ipcMain.handle('import:scan', () => getImportableSessions());
   ipcMain.handle('import:recentCwds', () => getRecentCwds());
   ipcMain.handle('import:topModel', () => getTopModel());

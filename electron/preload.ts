@@ -112,6 +112,17 @@ const api = {
     decision: 'allow' | 'deny'
   ): Promise<boolean> =>
     ipcRenderer.invoke('agent:resolvePermission', sessionId, requestId, decision),
+  /**
+   * Per-hunk partial accept (#251). `acceptedHunks` indices map to
+   * `DiffSpec.hunks` from `src/utils/diff.ts`. Empty array => deny.
+   * UI follow-up (#TBD) will surface this in PermissionPromptBlock.
+   */
+  agentResolvePermissionPartial: (
+    sessionId: string,
+    requestId: string,
+    acceptedHunks: number[]
+  ): Promise<boolean> =>
+    ipcRenderer.invoke('agent:resolvePermissionPartial', sessionId, requestId, acceptedHunks),
   onAgentEvent: (handler: (e: AgentEvent) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: AgentEvent) => handler(payload);
     ipcRenderer.on('agent:event', wrap);
