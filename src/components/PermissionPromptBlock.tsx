@@ -207,29 +207,31 @@ export function PermissionPromptBlock({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
-      className="relative my-2 rounded-md border border-accent/50 bg-accent/[0.06] surface-highlight surface-elevated pl-4 pr-4 py-3"
+      className="relative my-1 pl-3 pr-2 py-1.5 font-mono text-sm"
     >
       <span
         aria-hidden
-        className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent rounded-l-md"
+        className="absolute left-0 top-0 bottom-0 w-[2px] bg-accent rounded-l-sm"
       />
       <div
         id={titleId}
-        className="flex items-center gap-2 text-base text-fg-primary font-semibold"
+        className="flex items-baseline gap-2"
       >
-        <ShieldAlert size={14} className="text-accent" aria-hidden />
-        <span>{t('permissionPrompt.title')}</span>
+        <ShieldAlert size={12} className="text-accent self-center shrink-0" aria-hidden />
+        <span className="font-mono uppercase tracking-wider text-mono-xs text-accent">
+          {t('permissionPrompt.title')}
+        </span>
         {toolName && (
-          <span className="font-mono text-xs text-fg-tertiary uppercase tracking-wider">
+          <span className="font-mono text-mono-xs text-fg-tertiary">
             {toolName}
           </span>
         )}
       </div>
-      <div id={descId} className="mt-2 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
+      <div id={descId} className="mt-1 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
         {prompt}
       </div>
       {summary.length > 0 && (
-        <dl className="mt-2 rounded-sm border border-border-subtle bg-bg-app/40 px-3 py-2 font-mono text-xs text-fg-secondary">
+        <dl className="mt-1 border-l border-border-subtle pl-2 font-mono text-xs text-fg-secondary">
           {summary.map(({ key, value }) => (
             <div key={key} className="flex gap-2 py-0.5">
               <dt className="text-fg-tertiary shrink-0">{key}</dt>
@@ -240,11 +242,11 @@ export function PermissionPromptBlock({
           ))}
         </dl>
       )}
-      <div className="mt-3 flex items-center justify-end gap-2">
+      <div className="mt-2 flex items-center justify-end gap-2">
         <Button
           ref={rejectRef}
           variant="secondary"
-          size="md"
+          size="sm"
           data-perm-action="reject"
           onClick={onReject}
           onKeyDown={(e) => {
@@ -260,7 +262,7 @@ export function PermissionPromptBlock({
           <Button
             ref={allowAlwaysRef}
             variant="secondary"
-            size="md"
+            size="sm"
             data-perm-action="allow-always"
             onClick={onAllowAlways}
             onKeyDown={(e) => {
@@ -276,7 +278,7 @@ export function PermissionPromptBlock({
         <Button
           ref={allowRef}
           variant="primary"
-          size="md"
+          size="sm"
           data-perm-action="allow"
           onClick={onAllow}
           onKeyDown={(e) => {
