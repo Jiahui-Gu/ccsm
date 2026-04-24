@@ -1261,3 +1261,51 @@ describe('store: appendBlocks perf path (concat)', () => {
   });
 });
 
+
+describe('store: openPopover / closePopover (global popover mutex)', () => {
+  it('initial openPopoverId is null', () => {
+    expect(useStore.getState().openPopoverId).toBeNull();
+  });
+
+  it('openPopover sets the slot to the requested id', () => {
+    useStore.getState().openPopover('cwd');
+    expect(useStore.getState().openPopoverId).toBe('cwd');
+  });
+
+  it('opening a different popover replaces the previous (mutual exclusion)', () => {
+    useStore.getState().openPopover('cwd');
+    useStore.getState().openPopover('model');
+    expect(useStore.getState().openPopoverId).toBe('model');
+  });
+
+  it('closePopover only clears when the requested id matches', () => {
+    useStore.getState().openPopover('model');
+    // Stale close from a popover that was already superseded must NOT clobber
+    // the active owner's slot. This is the key invariant that prevents
+    // race-y unmount cleanups from closing the popover the user just opened.
+    useStore.getState().closePopover('cwd');
+    expect(useStore.getState().openPopoverId).toBe('model');
+    useStore.getState().closePopover('model');
+    expect(useStore.getState().openPopoverId).toBeNull();
+  });
+
+  it('opening the same id twice is a no-op (no state churn)', () => {
+    useStore.getState().openPopover('cwd');
+    const before = useStore.getState();
+    useStore.getState().openPopover('cwd');
+    const after = useStore.getState();
+    // Reference equality: the action returns the same state object, so
+    // subscribers don't get a spurious re-render.
+    expect(after).toBe(before);
+    expect(after.openPopoverId).toBe('cwd');
+  });
+
+  it('closePopover when nothing is open is a no-op', () => {
+    expect(useStore.getState().openPopoverId).toBeNull();
+    const before = useStore.getState();
+    useStore.getState().closePopover('cwd');
+    const after = useStore.getState();
+    expect(after).toBe(before);
+    expect(after.openPopoverId).toBeNull();
+  });
+});
