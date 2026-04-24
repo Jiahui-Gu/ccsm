@@ -30,6 +30,34 @@ const stepCounter = win.locator('text=/Step 1 of 4/i').first();
 await stepCounter.waitFor({ state: 'visible', timeout: 5000 });
 await win.locator('text=/A workbench for AI sessions/i').first().waitFor({ state: 'visible', timeout: 3000 });
 
+// SCREAMING-strings guard (PR #248 Gap #1, task #315). The step counter and
+// any demo group/section labels in the tutorial must NOT be CSS-uppercased —
+// per `feedback_no_uppercase_ui_strings.md`. Walk every visible text node
+// inside the tutorial root and assert computed `text-transform !== uppercase`.
+const screaming = await win.evaluate(() => {
+  const root = document.querySelector('[data-testid="tutorial"], main, body');
+  if (!root) return [];
+  const offenders = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node = walker.currentNode;
+  while (node) {
+    const el = node;
+    if (el && el.textContent && el.children.length === 0) {
+      const txt = el.textContent.trim();
+      if (txt && /[a-zA-Z]/.test(txt)) {
+        const tt = window.getComputedStyle(el).textTransform;
+        if (tt === 'uppercase') offenders.push(`${el.tagName}: ${txt.slice(0, 60)}`);
+      }
+    }
+    node = walker.nextNode();
+  }
+  return offenders;
+});
+if (screaming.length > 0) {
+  await app.close();
+  fail(`tutorial has CSS-uppercased text (forbidden):\n  ${screaming.join('\n  ')}`);
+}
+
 // Skip button present.
 const skipBtn = win.getByRole('button', { name: /^Skip$/ });
 await skipBtn.waitFor({ state: 'visible', timeout: 3000 });

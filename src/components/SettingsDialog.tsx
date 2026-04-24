@@ -851,8 +851,14 @@ function ConnectionPane() {
                 className="flex items-center justify-between px-3 py-1.5 text-meta"
               >
                 <span className="font-mono text-fg-primary truncate">{m.id}</span>
-                <span className="text-mono-xs uppercase tracking-wide text-fg-tertiary ml-2 shrink-0">
-                  {m.source}
+                <span className="text-mono-xs tracking-wide text-fg-tertiary ml-2 shrink-0">
+                  {m.source === 'settings'
+                    ? t('connection.modelSourceSettings')
+                    : m.source === 'cli-picker'
+                      ? t('connection.modelSourceCliPicker')
+                      : m.source === 'fallback'
+                        ? t('connection.modelSourceFallback')
+                        : m.source}
                 </span>
               </li>
             ))}
