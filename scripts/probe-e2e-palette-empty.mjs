@@ -118,6 +118,53 @@ if (!alphaRowVisible) {
   fail('typing "alpha" did not surface the seeded "Alpha session" row');
 }
 
+// 3b. Kbd hint footer is always visible (#258 CP4). Three hints expected:
+//     ↑↓ Navigate / ↵ Select / Esc Close.
+const kbdHints = paletteDialog.locator('[data-testid="cmd-palette-kbd-hints"]');
+const kbdHintsVisible = await kbdHints.isVisible().catch(() => false);
+if (!kbdHintsVisible) {
+  await app.close();
+  fail('kbd hint row [data-testid=cmd-palette-kbd-hints] not visible (#258 CP4)');
+}
+const hintsText = (await kbdHints.innerText()).replace(/\s+/g, ' ').trim();
+for (const expected of ['Navigate', 'Select', 'Close']) {
+  if (!hintsText.includes(expected)) {
+    await app.close();
+    fail(`kbd hint row missing label "${expected}" — got: ${hintsText}`);
+  }
+}
+
+// 3c. No-matches state (#258 CP3). Type a query that matches nothing — the
+//     palette must render the dedicated no-matches block (icon + "No matches"
+//     + the typed query), NOT the dim plain-text fallback.
+await searchInput.fill('zzz-no-such-thing-zzz');
+await win.waitForTimeout(150);
+const noMatchesBlock = paletteDialog.locator('[data-testid="cmd-palette-no-matches"]');
+const noMatchesVisible = await noMatchesBlock.isVisible().catch(() => false);
+if (!noMatchesVisible) {
+  await app.close();
+  fail('no-matches block [data-testid=cmd-palette-no-matches] not visible after typing nonsense (#258 CP3)');
+}
+const noMatchesText = await noMatchesBlock.innerText();
+if (!noMatchesText.includes('No matches')) {
+  await app.close();
+  fail(`no-matches block missing "No matches" copy — got: ${noMatchesText}`);
+}
+if (!noMatchesText.includes('zzz-no-such-thing-zzz')) {
+  await app.close();
+  fail(`no-matches block did not echo the typed query — got: ${noMatchesText}`);
+}
+// SearchX icon is rendered as inline SVG by lucide-react; check at least one
+// SVG is present inside the no-matches block.
+const noMatchesSvg = await noMatchesBlock.locator('svg').count();
+if (noMatchesSvg < 1) {
+  await app.close();
+  fail('no-matches block has no SVG icon (expected SearchX) (#258 CP3)');
+}
+
+// Reset query for the close-on-Esc check below.
+await searchInput.fill('');
+
 // 4. Esc closes the palette. Radix Dialog handles Esc itself; press it on
 //    the focused search input to ensure the event reaches the dialog tree.
 await searchInput.focus();
@@ -133,6 +180,8 @@ console.log('\n[probe-e2e-palette-empty] OK');
 console.log('  Ctrl+F opens palette');
 console.log('  empty state: 0 options, "Type to search…" hint visible');
 console.log(`  typing "alpha" surfaces ${optionsAfterType} option(s) including "Alpha session"`);
+console.log('  kbd hint row visible with Navigate / Select / Close (#258 CP4)');
+console.log('  no-matches block renders icon + "No matches" + typed query (#258 CP3)');
 console.log('  Esc closes palette');
 
 await app.close();
