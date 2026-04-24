@@ -1,4 +1,4 @@
-# Agentory
+# CCSM (Claude Code Session Manager)
 
 A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) — manage multiple parallel agent sessions across repos with the visual density of a CLI and the interaction model of a native app.
 
@@ -6,7 +6,7 @@ A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-co
 
 ## What it is
 
-Claude Code is a powerful CLI, but switching between 5+ active sessions in different repos becomes tab-juggling. Agentory groups your sessions by task (not by repo) and gives them a sidebar — you stay in flow across multiple parallel conversations.
+Claude Code is a powerful CLI, but switching between 5+ active sessions in different repos becomes tab-juggling. CCSM groups your sessions by task (not by repo) and gives them a sidebar — you stay in flow across multiple parallel conversations.
 
 - **Groups, not projects** — a group is your task; sessions inside it can live in different repos
 - **Native interactions** — drag to reorder, right-click context menus, keyboard shortcuts, inline rename
@@ -16,25 +16,25 @@ Claude Code is a powerful CLI, but switching between 5+ active sessions in diffe
 
 ## Requirements
 
-- **Claude Code CLI** installed and authenticated. Agentory delegates 100% of agent execution to the CLI:
+- **Claude Code CLI** installed and authenticated. CCSM delegates 100% of agent execution to the CLI:
   - Install: `npm i -g @anthropic-ai/claude-code` (or your platform package manager)
   - First-time login: run `claude` once to complete OAuth (or set `ANTHROPIC_API_KEY` in your environment)
-  - **If `claude` works in your terminal, Agentory will work. If it doesn't, Agentory won't either.**
-  - Override the binary location with `AGENTORY_CLAUDE_BIN=/path/to/claude` if needed.
+  - **If `claude` works in your terminal, CCSM will work. If it doesn't, CCSM won't either.**
+  - Override the binary location with `CCSM_CLAUDE_BIN=/path/to/claude` if needed.
 - **OS**: Windows 10+, macOS 11+ (Big Sur), or Linux (glibc 2.17+)
 - **Disk**: ~200 MB
 
-Agentory does **not** make any HTTP calls to Anthropic itself. All API traffic goes through your local `claude` binary, with your existing credentials.
+CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes through your local `claude` binary, with your existing credentials.
 
 ## Install
 
-1. Download the latest `.exe` (Windows) / `.dmg` (macOS) / `.AppImage` / `.deb` / `.rpm` (Linux) from [Releases](https://github.com/Jiahui-Gu/agentory/releases).
+1. Download the latest `.exe` (Windows) / `.dmg` (macOS) / `.AppImage` / `.deb` / `.rpm` (Linux) from [Releases](https://github.com/Jiahui-Gu/Agentory-next/releases).
 2. Run the installer.
-3. Launch Agentory. If the Claude CLI isn't found, you'll see an actionable error showing every path Agentory searched.
+3. Launch CCSM. If the Claude CLI isn't found, you'll see an actionable error showing every path CCSM searched.
 
 ## Quickstart
 
-1. Click **+ New Group** in the sidebar to create a task bucket (or skip — Agentory auto-creates a default group on the first session).
+1. Click **+ New Group** in the sidebar to create a task bucket (or skip — CCSM auto-creates a default group on the first session).
 2. Click **+ New Session** inside a group. Pick a working directory (any repo). The session spawns `claude` in that cwd.
 3. Type in the composer at the bottom. **Enter** to send, **Shift+Enter** for newline, **Esc** to cancel inline edits.
 4. When the agent requests a tool, a permission block appears at the tail of the conversation — Allow / Deny.
@@ -52,15 +52,15 @@ Agentory does **not** make any HTTP calls to Anthropic itself. All API traffic g
 
 Local SQLite database (groups, sessions, user-defined order, sidebar state, theme):
 
-- **Windows**: `%APPDATA%\Agentory\`
-- **macOS**: `~/Library/Application Support/Agentory/`
-- **Linux**: `~/.config/Agentory/`
+- **Windows**: `%APPDATA%\CCSM\`
+- **macOS**: `~/Library/Application Support/CCSM/`
+- **Linux**: `~/.config/CCSM/`
 
-Conversation history is **not** duplicated — Agentory reads it directly from the Claude CLI's `~/.claude/projects/` jsonl files. Anthropic credentials are stored by the CLI itself; Agentory never touches them.
+Conversation history is **not** duplicated — CCSM reads it directly from the Claude CLI's `~/.claude/projects/` jsonl files. Anthropic credentials are stored by the CLI itself; CCSM never touches them.
 
 ## Crash reports
 
-Agentory can send crash reports and unhandled errors to Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
+CCSM can send crash reports and unhandled errors to Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
 
 Crash reporting is **off by default** in the open-source build: there is no hardcoded DSN. To enable it (e.g. for your own fork), set `SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>` in the process environment before launching the app. If `SENTRY_DSN` is unset, `Sentry.init()` is skipped entirely and a single informational line is logged at startup.
 
@@ -81,7 +81,7 @@ npm run make:mac     # build macOS .dmg + .zip
 npm run make:linux   # build AppImage / .deb / .rpm
 ```
 
-The architecture has a hard rule: **frontend code under `src/` may not import from `electron`**. The only backend entry point is `window.agentory` (declared in `src/global.d.ts`), exposed via `electron/preload.ts`. This keeps the door open for a future remote daemon. See `docs/mvp-design.md` §15.
+The architecture has a hard rule: **frontend code under `src/` may not import from `electron`**. The only backend entry point is `window.ccsm` (declared in `src/global.d.ts`), exposed via `electron/preload.ts`. This keeps the door open for a future remote daemon. See `docs/mvp-design.md` §15.
 
 ## Status
 

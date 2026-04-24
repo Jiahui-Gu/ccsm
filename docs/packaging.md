@@ -1,9 +1,9 @@
 # Packaging
 
-Agentory Next is packaged with [`electron-builder`](https://www.electron.build).
+CCSM Next is packaged with [`electron-builder`](https://www.electron.build).
 Configuration lives in `package.json → build` — there is a single source of
-truth for app id, product name, and icons. The `appId` is `com.agentory.next`;
-`productName` is `Agentory`.
+truth for app id, product name, and icons. The `appId` is `com.ccsm.app`;
+`productName` is `CCSM`.
 
 Run a local build:
 
@@ -22,12 +22,12 @@ Output is written to `release/`.
 
 | File                                   | Purpose                                |
 | -------------------------------------- | -------------------------------------- |
-| `Agentory-Setup-<ver>-x64.exe`         | NSIS installer, 64-bit Intel/AMD       |
-| `Agentory-Setup-<ver>-arm64.exe`       | NSIS installer, 64-bit ARM             |
-| `Agentory-Setup-<ver>-x64.exe.blockmap`| Delta-update blockmap (auto-updater)   |
+| `CCSM-Setup-<ver>-x64.exe`         | NSIS installer, 64-bit Intel/AMD       |
+| `CCSM-Setup-<ver>-arm64.exe`       | NSIS installer, 64-bit ARM             |
+| `CCSM-Setup-<ver>-x64.exe.blockmap`| Delta-update blockmap (auto-updater)   |
 | `latest.yml`                           | Auto-update metadata feed              |
 
-Default install path: `%LOCALAPPDATA%\Programs\Agentory\` (per-user install,
+Default install path: `%LOCALAPPDATA%\Programs\CCSM\` (per-user install,
 no admin prompt in the installer UI). User can override via "Customize" in
 the installer.
 
@@ -44,13 +44,13 @@ Known caveats:
 
 | File                            | Purpose                                  |
 | ------------------------------- | ---------------------------------------- |
-| `Agentory-<ver>-x64.dmg`        | Disk image, Intel                        |
-| `Agentory-<ver>-arm64.dmg`      | Disk image, Apple Silicon                |
-| `Agentory-<ver>-x64.zip`        | Zip (required by auto-updater on macOS)  |
-| `Agentory-<ver>-arm64.zip`      | Zip, Apple Silicon                       |
+| `CCSM-<ver>-x64.dmg`        | Disk image, Intel                        |
+| `CCSM-<ver>-arm64.dmg`      | Disk image, Apple Silicon                |
+| `CCSM-<ver>-x64.zip`        | Zip (required by auto-updater on macOS)  |
+| `CCSM-<ver>-arm64.zip`      | Zip, Apple Silicon                       |
 | `latest-mac.yml`                | Auto-update metadata feed                |
 
-Install path: the user drags `Agentory.app` to `/Applications`.
+Install path: the user drags `CCSM.app` to `/Applications`.
 
 Known caveats:
 
@@ -70,17 +70,17 @@ Known caveats:
 
 | File                         | Purpose                                   |
 | ---------------------------- | ----------------------------------------- |
-| `Agentory-<ver>-x64.AppImage`| Portable single-file executable           |
-| `Agentory-<ver>-x64.deb`     | Debian / Ubuntu package                   |
-| `Agentory-<ver>-x64.rpm`     | Fedora / RHEL / openSUSE package          |
+| `CCSM-<ver>-x64.AppImage`| Portable single-file executable           |
+| `CCSM-<ver>-x64.deb`     | Debian / Ubuntu package                   |
+| `CCSM-<ver>-x64.rpm`     | Fedora / RHEL / openSUSE package          |
 | `latest-linux.yml`           | Auto-update metadata feed                 |
 
 Install:
 
-- `AppImage`: `chmod +x Agentory-*.AppImage && ./Agentory-*.AppImage`.
+- `AppImage`: `chmod +x CCSM-*.AppImage && ./CCSM-*.AppImage`.
   Install path: wherever the user runs it from.
-- `deb`: `sudo apt install ./Agentory-*.deb`. Install path: `/opt/Agentory/`.
-- `rpm`: `sudo rpm -i Agentory-*.rpm`. Install path: `/opt/Agentory/`.
+- `deb`: `sudo apt install ./CCSM-*.deb`. Install path: `/opt/CCSM/`.
+- `rpm`: `sudo rpm -i CCSM-*.rpm`. Install path: `/opt/CCSM/`.
 
 Known caveats:
 
