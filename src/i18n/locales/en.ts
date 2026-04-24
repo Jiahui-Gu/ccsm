@@ -348,6 +348,11 @@ const en = {
     backgroundSessionFallback: 'Background session',
     backgroundWaitingToastTitle: '{{name}} needs your input'
   },
+  tray: {
+    show: 'Show CCSM',
+    quit: 'Quit',
+    tooltip: 'CCSM'
+  },
   errors: {
     generic: 'Something went wrong.',
     network: 'Network error. Check your connection.',
