@@ -126,6 +126,9 @@ const zh: EnCatalog = {
   chatStream: {
     emptyHint: '输入消息后按'
   },
+  assistantBlock: {
+    viaSkill: '通过 skill: {{name}}'
+  },
   sidebar: {
     newSession: '新会话',
     newSessionInThisGroup: '在此 Group 新建 Session',
