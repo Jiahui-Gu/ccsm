@@ -237,7 +237,11 @@ const zh: EnCatalog = {
       testBody: '能看到这条消息说明系统通知正常工作。',
       testIpcUnavailable: 'IPC 不可用。',
       testSent: '已发送。',
-      testFailed: '失败 — 系统通知不可用。'
+      testFailed: '失败 — 系统通知不可用。',
+      moduleAvailable: '富文本 Windows 通知可用。',
+      moduleUnavailable:
+        '当前环境无法使用富文本 Windows 通知 — 可选的 @ccsm/notify 原生模块未安装。CCSM 会降级到应用内横幅和标准系统通知。',
+      moduleChecking: '正在检查通知模块…'
     },
     connection: {
       intro:
