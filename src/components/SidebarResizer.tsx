@@ -67,7 +67,7 @@ export function SidebarResizer() {
       onPointerDown={onPointerDown}
       onDoubleClick={resetSidebarWidth}
       title={t('resizerTooltip', { default: SIDEBAR_WIDTH_DEFAULT })}
-      className="group/resizer relative w-1 shrink-0 cursor-col-resize bg-transparent hover:bg-border-strong active:bg-accent transition-colors duration-150 select-none"
+      className="pane-resize-handle shrink-0"
     />
   );
 }
