@@ -82,6 +82,7 @@ import {
   lookupToastTarget,
   consumeToastTarget,
 } from './notify-bootstrap';
+import { cancelQuestionRetry } from './notify-retry';
 import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
@@ -890,6 +891,15 @@ app.whenReady().then(() => {
     'agent:resolvePermission',
     (e, sessionId: string, requestId: string, decision: 'allow' | 'deny') => {
       if (!fromMainFrame(e)) return false;
+      // Wave 3 polish (#252): if this resolve is answering an ask-question
+      // (renderer's QuestionBlock onSubmit calls agentResolvePermission with
+      // decision='deny' to release the underlying CLI gate), cancel any
+      // pending toast retry. The toastId for question events is `q-${requestId}`
+      // (see lifecycle.ts permission dispatch); permissions themselves don't
+      // schedule retries today so cancelling under the bare requestId is a
+      // cheap, defensive no-op.
+      cancelQuestionRetry(`q-${requestId}`);
+      cancelQuestionRetry(requestId);
       return sessions.resolvePermission(sessionId, requestId, decision);
     }
   );
@@ -1168,6 +1178,8 @@ app.whenReady().then(() => {
     const notifyMod = require('./notify') as typeof import('./notify');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const bootstrapMod = require('./notify-bootstrap') as typeof import('./notify-bootstrap');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const retryMod = require('./notify-retry') as typeof import('./notify-retry');
     (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
       activeSessionPids: () => sessions.activeRunnerPids(),
       activeSessionCount: () => sessions.activeSessionCount(),
@@ -1176,6 +1188,10 @@ app.whenReady().then(() => {
       // `require` from inside `app.evaluate` (where it's not in scope).
       notify: notifyMod,
       notifyBootstrap: bootstrapMod,
+      // Wave 3 polish (#252): retry module exposed so the e2e probe can
+      // install a fake scheduler (no real 30s wait) and assert the retry
+      // fires once + cancels on resolve.
+      notifyRetry: retryMod,
       sessions,
     };
   }
