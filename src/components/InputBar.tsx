@@ -71,7 +71,7 @@ function AttachmentChip({
         <span className="text-meta text-fg-primary truncate max-w-[180px]" title={attachment.name}>
           {attachment.name}
         </span>
-        <span className="text-mono-xs text-fg-tertiary font-mono uppercase tracking-wider">
+        <span className="text-meta text-fg-tertiary">
           {attachment.mediaType.replace('image/', '')} · {formatSize(attachment.size)}
         </span>
       </div>
@@ -103,7 +103,7 @@ function DropOverlay({ show }: { show: boolean }) {
         >
           <ImagePlus size={28} className="text-accent" />
           <span className="font-mono text-chrome text-accent tracking-wide">{t('chat.dropImageHint')}</span>
-          <span className="font-mono text-mono-xs uppercase tracking-wider text-accent/70">
+          <span className="text-meta text-accent/70">
             {t('chat.attachmentFormatsHint', { size: formatSize(MAX_IMAGE_BYTES) })}
           </span>
         </motion.div>
@@ -645,7 +645,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
                 type="button"
                 onClick={() => setRejections([])}
                 aria-label={t('common.dismiss')}
-                className="shrink-0 text-state-error/70 hover:text-state-error transition-colors duration-150 ease-out"
+                className="shrink-0 inline-flex items-center justify-center rounded-sm text-state-error/70 hover:text-state-error transition-colors duration-150 ease-out outline-none focus-ring-destructive"
               >
                 <X size={12} />
               </button>
