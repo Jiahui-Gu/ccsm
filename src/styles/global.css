@@ -502,6 +502,11 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
       - .focus-ring           : inset 1px accent (default selectable / chrome)
       - .focus-ring-destructive: outset 1px state-error at 0.6 alpha
         (destructive chips — Reject / Delete / Interrupt)
+      - .focus-ring-waiting   : outset 1px state-waiting at 0.6 alpha
+        (selectable options blocking on user input — QuestionBlock rows)
+      - .focus-ring-success   : outset 1px state-success at 0.6 alpha
+        (affirmative actions paired with destructive chips — DiffView Accept,
+        QuestionBlock once submitted)
   */
   .focus-ring:focus-visible {
     outline: 1px solid var(--color-accent);
@@ -509,6 +514,28 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   }
   .focus-ring-destructive:focus-visible {
     outline: 1px solid oklch(from var(--color-state-error) l c h / 0.6);
+    outline-offset: 0;
+  }
+  /*
+    `focus-ring-waiting` is geometrically identical to `focus-ring-destructive`
+    (1px outset at 0.6 alpha) but tinted with the waiting amber. We use it
+    on QuestionBlock options where the surface itself is already tinted with
+    `state-waiting/[0.06]` — the matched-hue ring reads as "this row belongs
+    to the waiting prompt" rather than a generic accent.
+
+    Both `:focus-visible` and `:focus-within` selectors are exposed because
+    QuestionBlock wraps the radio inside a `<label>`, so the wrapper needs
+    to react when the inner Radix control receives focus. Toolbar-style
+    consumers that focus the element directly only fire `:focus-visible`.
+  */
+  .focus-ring-waiting:focus-visible,
+  .focus-ring-waiting:focus-within {
+    outline: 1px solid oklch(from var(--color-state-waiting) l c h / 0.6);
+    outline-offset: 0;
+  }
+  .focus-ring-success:focus-visible,
+  .focus-ring-success:focus-within {
+    outline: 1px solid oklch(from var(--color-state-success) l c h / 0.6);
     outline-offset: 0;
   }
 }

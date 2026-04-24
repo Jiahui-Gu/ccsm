@@ -110,8 +110,13 @@ function TitleButton({
         'transition-colors duration-120 [transition-timing-function:var(--ease-spring)]',
         'hover:text-fg-primary focus:outline-none',
         'focus-ring',
+        // Danger branch can't lean on `.focus-ring`'s cyan accent outline
+        // alone — its hover bg = focus bg = saturated state-error, which
+        // swallows the outline. Keyboard users can't tell hover from focus
+        // (audit top-10 #9). Add an inset translucent-cyan halo on focus
+        // only; `--color-focus-ring` is calibrated to read against red.
         danger
-          ? 'hover:bg-state-error hover:text-state-error-fg focus-visible:bg-state-error focus-visible:text-state-error-fg'
+          ? 'hover:bg-state-error hover:text-state-error-fg focus-visible:bg-state-error focus-visible:text-state-error-fg focus-visible:shadow-[inset_0_0_0_2px_var(--color-focus-ring)]'
           : 'hover:bg-bg-hover focus-visible:bg-bg-hover'
       )}
       style={{ width: 46 }}

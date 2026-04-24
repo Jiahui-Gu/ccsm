@@ -158,8 +158,13 @@ interface QuestionRowProps {
 }
 
 function QuestionRow({ q, qi, picks, submitted, onToggle, isFirstQuestion }: QuestionRowProps) {
+  // Once submitted the prompt is read-only / confirmed; flip the amber
+  // waiting halo to the success-green halo so the surface visibly settles
+  // (matches DiffView Accept's success ring after a hunk is accepted).
+  const ringClass = submitted ? 'focus-ring-success' : 'focus-ring-waiting';
   const labelClass = (selected: boolean) =>
-    'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out outline-none focus-within:ring-2 focus-within:ring-state-waiting/60 focus-within:ring-offset-1 focus-within:ring-offset-bg-app ' +
+    'flex items-start gap-2 w-full text-left px-3 py-2 rounded-sm border cursor-pointer transition-colors duration-150 ease-out outline-none ' +
+    ringClass + ' ' +
     (selected
       ? 'border-state-waiting/70 bg-state-waiting/10'
       : 'border-border-subtle hover:bg-bg-hover hover:border-border-default active:bg-bg-hover/80') +
@@ -208,6 +213,10 @@ interface GroupProps {
 
 function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoFocusFirst }: GroupProps) {
   const value = useMemo(() => (picks.size > 0 ? String(Array.from(picks)[0]) : ''), [picks]);
+  // The label wrapper carries focus-within: tone via labelClass; the radio
+  // dot itself rides the matching utility on its own focus-visible so a
+  // direct keyboard tab onto the control still shows a halo.
+  const innerRing = submitted ? 'focus-ring-success' : 'focus-ring-waiting';
   return (
     <RadioGroup.Root
       value={value}
@@ -239,7 +248,10 @@ function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, auto
               value={String(oi)}
               data-question-option=""
               data-question-first={isFirst ? 'true' : 'false'}
-              className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border border-border-strong data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+              className={
+                'mt-[3px] h-3.5 w-3.5 shrink-0 rounded-full border border-border-strong data-[state=checked]:border-state-waiting outline-none transition-colors duration-150 ' +
+                innerRing
+              }
             >
               <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
             </RadioGroup.Item>
@@ -257,6 +269,7 @@ function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, auto
 }
 
 function MultiSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoFocusFirst }: GroupProps) {
+  const innerRing = submitted ? 'focus-ring-success' : 'focus-ring-waiting';
   return (
     <RovingFocusGroup.Root
       asChild
@@ -285,7 +298,10 @@ function MultiSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoF
                   onCheckedChange={() => onToggle(qi, oi, true)}
                   data-question-option=""
                   data-question-first={isFirst ? 'true' : 'false'}
-                  className="mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong data-[state=checked]:bg-state-waiting data-[state=checked]:border-state-waiting outline-none focus-visible:ring-2 focus-visible:ring-state-waiting/60 focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app transition-colors duration-150"
+                  className={
+                    'mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong data-[state=checked]:bg-state-waiting data-[state=checked]:border-state-waiting outline-none transition-colors duration-150 ' +
+                    innerRing
+                  }
                 >
                   <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
                     <Check size={10} strokeWidth={3} />
