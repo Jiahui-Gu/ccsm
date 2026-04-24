@@ -1,0 +1,17 @@
+New Session
+Groups
+Sessions
+Archived Groups
+0
+Settings
+Skip
+STEP 2 OF 4
+Run many sessions in parallel
+
+Each session is its own agent thread with its own working directory. Switch between them like tabs — the agents keep working in the background.
+
+Refactor auth middleware
+Investigate flaky test
+Sketch landing page copy
+Back
+Next

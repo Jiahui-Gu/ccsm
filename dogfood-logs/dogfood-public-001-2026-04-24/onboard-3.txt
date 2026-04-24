@@ -1,0 +1,21 @@
+New Session
+Groups
+Sessions
+Archived Groups
+0
+Settings
+Skip
+STEP 3 OF 4
+Organize work by task, not by repo
+
+Group sessions across repositories. A real task usually spans more than one project — CCSM lets you keep them together.
+
+Q2 LAUNCH
+frontend
+api
+infra
+BUG TRIAGE
+issue #4821
+issue #4830
+Back
+Next
