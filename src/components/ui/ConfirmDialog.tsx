@@ -7,8 +7,10 @@ type ConfirmDialogProps = {
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: React.ReactNode;
-  confirmLabel?: string;
-  cancelLabel?: string;
+  // Required so callers cannot fall back to English literals and silently
+  // leak en into other locales. Always pass via the i18n hook (t(...)).
+  confirmLabel: string;
+  cancelLabel: string;
   destructive?: boolean;
   onConfirm: () => void;
   /**
@@ -28,8 +30,8 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   destructive = false,
   onConfirm,
   onCancel
@@ -84,6 +86,7 @@ export function ConfirmDialog({
               ref={cancelRef}
               variant="secondary"
               size="md"
+              data-testid="confirm-dialog-cancel"
             >
               {cancelLabel}
             </Button>
@@ -91,6 +94,7 @@ export function ConfirmDialog({
           <Button
             variant={destructive ? 'danger' : 'primary'}
             size="md"
+            data-testid="confirm-dialog-confirm"
             onClick={() => {
               confirmingRef.current = true;
               onConfirm();

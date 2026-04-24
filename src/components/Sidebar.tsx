@@ -291,6 +291,7 @@ function GroupRow({
             : t('sidebar.deleteGroupEmpty')
         }
         confirmLabel={t('sidebar.deleteGroup')}
+        cancelLabel={t('common.cancel')}
         destructive
         onConfirm={() => {
           const snap = deleteGroup(group.id);
