@@ -10,6 +10,9 @@ import {
   type CanUseToolDecision,
   type ParsedStreamEvent,
 } from './control-rpc';
+import type { StartErrorCode } from './start-result-types';
+
+export type { StartErrorCode, StartResult } from './start-result-types';
 
 // Permission mode accepted across the IPC boundary. Values match the CLI's
 // `--permission-mode` flag 1:1 — the renderer's `PermissionMode` enum is
@@ -159,6 +162,50 @@ const HOOK_PASSTHROUGH_TOOLS: ReadonlySet<string> = new Set([
   'ExitPlanMode',
 ]);
 
+/**
+ * How long we wait, after `spawn()` returns, before declaring the child has
+ * "successfully started". Two race winners declare success early:
+ *   - first byte arriving on the child's stdout or stderr (proves the binary
+ *     launched and is producing output);
+ *   - the timer expiring with the child still alive (no exit/error event).
+ * Failure (`exit` with non-zero code, or libuv `error` event surfaced by the
+ * spawner as exitCode -1) inside the window throws a typed
+ * `ClaudeSpawnFailedError` instead of returning `{ ok: true }`.
+ *
+ * 800ms is a comfortable upper bound on Windows shim + cmd.exe wrap-up; the
+ * common case resolves in <50ms once the CLI's first stdout frame lands, so
+ * the success path no longer pays the full window.
+ */
+const SPAWN_EARLY_FAILURE_WINDOW_MS = 800;
+
+/**
+ * Thrown by `SessionRunner.start()` when the child process emits `exit`
+ * with a non-zero code (or an `error` event, which the spawner surfaces as
+ * exitCode -1) inside the early-failure window. Carries enough context for
+ * the renderer to render an actionable banner: a short reason + the tail of
+ * whatever the child managed to write to stderr before dying.
+ *
+ * `manager.start()` translates this into a `{ ok: false, errorCode:
+ * 'CLI_SPAWN_FAILED', detail }` IPC reply. The reason for a typed error
+ * rather than reshaping `start()`'s return: keeping the happy path
+ * void-returning means existing callers (live IPC handler, resume flow,
+ * tests) don't have to learn a new sum type, and the manager already has
+ * a try/catch that translates `ClaudeNotFoundError` into a structured IPC
+ * reply — we slot in alongside it.
+ */
+export class ClaudeSpawnFailedError extends Error {
+  public readonly code: StartErrorCode = 'CLI_SPAWN_FAILED';
+  constructor(
+    message: string,
+    public readonly detail: string,
+    public readonly exitCode: number | null,
+    public readonly signal: NodeJS.Signals | null
+  ) {
+    super(message);
+    this.name = 'ClaudeSpawnFailedError';
+  }
+}
+
 export class SessionRunner {
   private cp: ClaudeProcess | null = null;
   private rpc: ControlRpc | null = null;
@@ -186,6 +233,93 @@ export class SessionRunner {
   /** Test-only backdoor: expose the child pid for dev probes. */
   getPid(): number | undefined {
     return this.cp?.pid;
+  }
+
+  /**
+   * Race the child's first stdout byte against `cp.wait()` and the
+   * `SPAWN_EARLY_FAILURE_WINDOW_MS` timer. Resolves with `null` for
+   * "presumed healthy" (first stdout byte arrived OR the timer expired
+   * with the child still running OR an immediate clean exit), or with the
+   * failure info when the child died non-zero / errored inside the window.
+   *
+   * Why stdout only (not stderr): the CLI's first protocol frame lands on
+   * stdout, so seeing a stdout byte is unambiguous proof of life. Stderr
+   * is ambiguous — a binary that prints a warning to stderr then exits 1
+   * (e.g. our spawn-error probe's fake binary) would otherwise win the
+   * race against `cp.wait()` and falsely resolve as healthy. Failures
+   * still surface via the `cp.wait()` branch below regardless of whether
+   * the child wrote stderr first.
+   *
+   * Uses `'readable'` (not `'data'`) so the stream stays in paused mode —
+   * the consumer's `for await (… of splitNDJSON(stdout))` attached later
+   * still owns delivery and no bytes are consumed by this detector.
+   *
+   * Pre-fix this method always awaited the full window on the happy path
+   * (`cp.wait()` only resolves on exit), adding ~800ms to every successful
+   * `agent:start`. PR #209 review P1.
+   */
+  private detectEarlyFailure(
+    cp: ClaudeProcess
+  ): Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; detail: string } | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const settle = (
+        v: { exitCode: number | null; signal: NodeJS.Signals | null; detail: string } | null
+      ) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        try {
+          cp.stdout.off('readable', onStdoutReadable);
+        } catch {
+          /* stream may already be closed */
+        }
+        resolve(v);
+      };
+
+      // First byte on stdout proves the binary launched and is producing
+      // protocol output. Stderr is intentionally NOT a signal — see the
+      // doc comment above.
+      //
+      // 'readable' fires on EOF too (with `readableLength === 0`), and the
+      // failing-binary case (exit 1, no stdout) would otherwise win the
+      // race against `cp.wait()`. Guard with a length check so we only
+      // settle on actual bytes — the stream stays in paused mode and the
+      // bytes remain queued for the consumer's `for await` reader.
+      const onStdoutReadable = () => {
+        if (cp.stdout.readableLength > 0) settle(null);
+      };
+
+      cp.stdout.on('readable', onStdoutReadable);
+
+      // Failure paths: cp.wait() resolves on either a real exit or an
+      // 'error' event surfaced by the spawner as exitCode -1.
+      void cp.wait().then(({ code, signal }) => {
+        // code === 0 means the CLI ran to completion in <window with success
+        // status — rare (an immediate `--version`-style argv would do it) but
+        // not a failure to surface.
+        if (code === 0) {
+          settle(null);
+          return;
+        }
+        const stderrTail = cp.getRecentStderr().trim();
+        const detail =
+          stderrTail.length > 0
+            ? stderrTail
+            : `claude.exe exited with code=${code ?? 'null'}${signal ? ` signal=${signal}` : ''} and no stderr output.`;
+        settle({ exitCode: code, signal, detail });
+      });
+
+      // Window expired with no exit and no stdout — assume healthy. (Some
+      // CLIs may silently set up before emitting their first frame.)
+      timer = setTimeout(() => settle(null), SPAWN_EARLY_FAILURE_WINDOW_MS);
+      timer.unref?.();
+    });
   }
 
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean {
@@ -217,6 +351,37 @@ export class SessionRunner {
       binaryPath: opts.binaryPath,
       signal: this.abort.signal,
     });
+
+    // Early-failure detection: wait briefly for the child to either prove
+    // it's alive (survives the window) or die noisily (`exit` with non-zero
+    // code, or libuv `error` event surfaced by the spawner as exitCode=-1).
+    // Without this, a CLI that exits immediately — stale binPath, missing
+    // dependency, bad shim, etc. — slips through as `{ ok: true }` and the
+    // user sees a chat that just never streams. Surfacing as
+    // `CLI_SPAWN_FAILED` lets the renderer show the "Failed to start Claude"
+    // banner with stderr context instead.
+    const earlyFailure = await this.detectEarlyFailure(this.cp);
+    if (earlyFailure) {
+      // Tear the cp down — the child is already gone but kill() is
+      // idempotent and ensures the abort listeners + stderr ring are
+      // released. Then null out the runner's process refs so a retry can
+      // re-spawn cleanly.
+      try {
+        this.cp.kill('SIGTERM');
+      } catch {
+        /* already dead */
+      }
+      this.cp = null;
+      this.abort = null;
+      throw new ClaudeSpawnFailedError(
+        `claude.exe exited immediately after spawn (code=${
+          earlyFailure.exitCode ?? 'null'
+        }${earlyFailure.signal ? ` signal=${earlyFailure.signal}` : ''})`,
+        earlyFailure.detail,
+        earlyFailure.exitCode,
+        earlyFailure.signal
+      );
+    }
 
     this.rpc = new ControlRpc(this.cp.stdin, {
       onCanUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),

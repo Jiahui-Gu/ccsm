@@ -151,7 +151,7 @@ export interface DiagnosticEntry {
  * (CLAUDE_NOT_FOUND → CLI wizard; CWD_MISSING → inline error block + StatusBar
  * hint). Cleared on successful retry or when the user repicks the cwd/model.
  *
- * The UI surfaces this as an actionable banner ("Agent failed to start — Retry
+ * The UI surfaces this as an actionable banner ("Failed to start Claude — Retry
  * / Reconfigure") so a stuck session isn't left silently spinning on
  * `setRunning(true)` with no explanation.
  */

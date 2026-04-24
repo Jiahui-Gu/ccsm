@@ -62,7 +62,7 @@ export function AgentInitFailedBanner({
           presenceKey={activeId ?? 'agent-init-failed'}
           testId="agent-init-failed-banner"
           icon={<AlertOctagon size={14} className="stroke-[2]" />}
-          title="Agent failed to start"
+          title="Failed to start Claude"
           body={failure.error}
           onDismiss={onDismiss}
           actions={

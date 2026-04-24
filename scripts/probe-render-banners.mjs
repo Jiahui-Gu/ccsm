@@ -98,7 +98,7 @@ const beforeAgentInitFailed = `
   <div class="banner-row err">
     ${iconAlertOctagon(14)}
     <div class="grow">
-      <span class="meta semi">Agent failed to start</span>
+      <span class="meta semi">Failed to start Claude</span>
       <span class="meta mono truncate opacity-90" style="font-size:11px">spawn ENOENT</span>
     </div>
     <button class="btn primary"><span>${iconRotate}</span><span class="label">Retry</span></button>
@@ -141,7 +141,7 @@ function afterRow({ variant, icon, title, body, actions, dismiss, dismissLabel =
 const afterAgentInitFailed = afterRow({
   variant: 'error',
   icon: iconAlertOctagon(14),
-  title: 'Agent failed to start',
+  title: 'Failed to start Claude',
   body: 'spawn ENOENT',
   actions: `
     <button class="btn primary"><span>${iconRotate}</span><span class="label">Retry</span></button>

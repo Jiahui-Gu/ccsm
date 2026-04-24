@@ -1,6 +1,9 @@
 import type { WebContents } from 'electron';
-import { SessionRunner, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
+import { SessionRunner, ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
 import { ClaudeNotFoundError } from './binary-resolver';
+import type { StartResult } from './start-result-types';
+
+export type { StartErrorCode, StartResult } from './start-result-types';
 
 type Sender = (channel: string, payload: unknown) => void;
 
@@ -16,15 +19,6 @@ export type AgentDiagnostic = {
   code: string;
   message: string;
 };
-
-export type StartResult =
-  | { ok: true }
-  | {
-      ok: false;
-      error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
-      searchedPaths?: string[];
-    };
 
 class SessionsManager {
   private runners = new Map<string, SessionRunner>();
@@ -103,6 +97,14 @@ class SessionsManager {
           error: err.message,
           errorCode: 'CLAUDE_NOT_FOUND',
           searchedPaths: err.searchedPaths,
+        };
+      }
+      if (err instanceof ClaudeSpawnFailedError) {
+        return {
+          ok: false,
+          error: err.message,
+          errorCode: 'CLI_SPAWN_FAILED',
+          detail: err.detail,
         };
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
