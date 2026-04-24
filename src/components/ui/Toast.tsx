@@ -71,6 +71,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo(() => ({ push, dismiss }), [push, dismiss]);
 
+  // Expose toast push/dismiss on `window` for E2E probes (#298 toast-a11y
+  // case in scripts/harness-ui.mjs). Same debug-affordance pattern as
+  // `window.__ccsmStore` / `window.__ccsmI18n` — set unconditionally
+  // because production builds dead-strip NODE_ENV-gated branches.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    (window as unknown as { __ccsmToast?: ToastCtx }).__ccsmToast = value;
+    return () => {
+      delete (window as unknown as { __ccsmToast?: ToastCtx }).__ccsmToast;
+    };
+  }, [value]);
+
   // Esc dismisses the most recent toast — keyboard parity for users who
   // can't reach the close button via mouse. Only fires when at least one
   // toast is mounted so it doesn't swallow Esc elsewhere in the app.

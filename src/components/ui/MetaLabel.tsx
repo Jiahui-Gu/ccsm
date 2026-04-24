@@ -18,6 +18,12 @@ import { cn } from '../../lib/cn';
 //     "Recent" header where the larger leading reads better above a list
 //     row).
 //
+// Naming note (#300): MetaLabel rides the **mono** micro-scale
+// (`text-mono-xs` = 10/14, `text-mono-sm` = 11/15). It is NOT interchangeable
+// with the proportional `text-meta` (11px Inter) used for banner subtitles
+// and toast bodies. See the comment block above the `.text-mono-*` rules in
+// `src/styles/global.css` for the full rationale.
+//
 // We deliberately keep this as a thin wrapper rather than a styled span:
 // callers can still pass `className` to add layout (margins, padding,
 // alignment) without re-asserting the type recipe.
