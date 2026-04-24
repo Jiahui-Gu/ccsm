@@ -84,7 +84,7 @@ async function casePermissionPrompt({ win, log }) {
   const allowAlways = snapshot.buttons.find((b) => b.action === 'allow-always');
   if (!reject || !/Reject \(N\)/i.test(reject.label ?? '')) throw new Error(`bad reject label: ${reject?.label}`);
   if (!allow || !/Allow \(Y\)/i.test(allow.label ?? '')) throw new Error(`bad allow label: ${allow?.label}`);
-  if (!allowAlways || !/Allow always/i.test(allowAlways.label ?? '')) throw new Error(`bad allow-always label: ${allowAlways?.label}`);
+  if (!allowAlways || !/Always allow .* this session/i.test(allowAlways.label ?? '')) throw new Error(`bad allow-always label: ${allowAlways?.label}`);
   if (!reject.focused) throw new Error(`expected Reject focused; got ${JSON.stringify(snapshot.buttons)}`);
 
   // Press N -> Reject. Block should disappear.
