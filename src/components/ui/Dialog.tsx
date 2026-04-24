@@ -65,12 +65,12 @@ export const DialogContent = forwardRef<
           <div className="flex items-start gap-3 px-5 pt-4 pb-3">
             <div className="flex-1 min-w-0">
               {title && (
-                <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
+                <RD.Title className="text-heading font-semibold text-fg-primary leading-tight">
                   {title}
                 </RD.Title>
               )}
               {description && (
-                <RD.Description className="mt-1 text-sm text-fg-tertiary">
+                <RD.Description className="mt-1 text-chrome text-fg-tertiary">
                   {description}
                 </RD.Description>
               )}

@@ -223,7 +223,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
             'absolute left-0 bottom-full mb-1 z-40 min-w-[320px] max-w-[480px]',
             'rounded-md border border-border-default bg-bg-elevated',
             'surface-highlight shadow-[var(--surface-shadow)]',
-            'text-sm text-fg-secondary overflow-hidden',
+            'text-chrome text-fg-secondary overflow-hidden',
             'animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]'
           )}
         >

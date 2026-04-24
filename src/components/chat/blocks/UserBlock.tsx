@@ -3,7 +3,7 @@ import { attachmentToDataUrl, formatSize } from '../../../lib/attachments';
 
 export function UserBlock({ text, images }: { text: string; images?: ImageAttachment[] }) {
   return (
-    <div className="flex gap-3 text-base">
+    <div className="flex gap-3 text-body" data-type-scale-role="user-body">
       <span className="text-fg-tertiary select-none w-3 shrink-0 font-mono">&gt;</span>
       <div className="min-w-0 flex-1 flex flex-col gap-1.5">
         {images && images.length > 0 && (

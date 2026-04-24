@@ -7,7 +7,7 @@ export function StatusBanner({ tone, title, detail }: { tone: 'info' | 'warn'; t
     <div
       role="status"
       className={
-        'relative my-1.5 rounded-md border pl-3 pr-3 py-1.5 text-xs ' +
+        'relative my-1.5 rounded-md border pl-3 pr-3 py-1.5 text-meta ' +
         (isWarn
           ? 'border-state-waiting/40 bg-state-waiting/[0.06] text-fg-secondary'
           : 'border-border-subtle bg-bg-elevated/60 text-fg-tertiary')

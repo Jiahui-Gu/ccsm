@@ -238,7 +238,7 @@ export function StatusBar({
   ];
 
   return (
-    <div className="h-6 px-4 pt-0.5 flex items-center gap-1 font-mono text-xs">
+    <div data-type-scale-role="status-bar" className="h-6 px-4 pt-0.5 flex items-center gap-1 font-mono text-meta">
       {chips.map((c, i) => (
         <React.Fragment key={i}>
           {i > 0 ? <span className="text-fg-disabled px-1">·</span> : null}

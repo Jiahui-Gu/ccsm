@@ -5,7 +5,7 @@ import { CodeBlock } from '../../CodeBlock';
 
 export function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
-    <div className="flex gap-3 text-base">
+    <div className="flex gap-3 text-body" data-type-scale-role="assistant-body">
       <span className="text-fg-secondary select-none w-3 shrink-0 font-mono font-semibold leading-[22px]">●</span>
       <div className="text-fg-primary min-w-0 leading-[22px]">
         <ReactMarkdown
@@ -34,7 +34,7 @@ export function AssistantBlock({ text, streaming }: { text: string; streaming?: 
               return <CodeBlock code={code} language={lang} />;
             },
             pre: ({ children }) => (
-              <pre className="my-2 p-3 rounded-md bg-bg-elevated border border-border-subtle overflow-x-auto font-mono text-sm whitespace-pre">
+              <pre className="my-2 p-3 rounded-md bg-bg-elevated border border-border-subtle overflow-x-auto font-mono text-chrome whitespace-pre">
                 {children}
               </pre>
             ),
@@ -47,8 +47,8 @@ export function AssistantBlock({ text, streaming }: { text: string; streaming?: 
               </a>
             ),
             h1: ({ children }) => <h1 className="text-lg font-semibold mt-3 mb-2">{children}</h1>,
-            h2: ({ children }) => <h2 className="text-base font-semibold mt-3 mb-1.5">{children}</h2>,
-            h3: ({ children }) => <h3 className="text-base font-semibold mt-2 mb-1">{children}</h3>,
+            h2: ({ children }) => <h2 className="text-heading font-semibold mt-3 mb-1.5">{children}</h2>,
+            h3: ({ children }) => <h3 className="text-heading font-semibold mt-2 mb-1">{children}</h3>,
             blockquote: ({ children }) => (
               <blockquote className="border-l-2 border-border-subtle pl-3 my-2 text-fg-secondary">
                 {children}
@@ -56,7 +56,7 @@ export function AssistantBlock({ text, streaming }: { text: string; streaming?: 
             ),
             table: ({ children }) => (
               <div className="my-2 overflow-x-auto">
-                <table className="border-collapse text-sm">{children}</table>
+                <table className="border-collapse text-chrome">{children}</table>
               </div>
             ),
             th: ({ children }) => (

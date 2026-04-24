@@ -85,7 +85,7 @@ export function ToolBlock({
   return (
     <div
       className={
-        'font-mono text-sm ' +
+        'font-mono text-chrome ' +
         (isError
           ? 'relative rounded-sm border border-state-error/40 bg-state-error-soft/50 pl-3 pr-2 py-1 my-0.5'
           : '')
@@ -125,6 +125,7 @@ export function ToolBlock({
             />
           )}
           <span
+            data-type-scale-role="tool-name"
             className={
               isError
                 ? 'text-state-error group-hover:text-state-error transition-colors duration-150 ease-out font-semibold'
@@ -133,17 +134,17 @@ export function ToolBlock({
           >
             {name}
           </span>
-          <span className={isError ? 'text-state-error/80 text-xs' : 'text-fg-tertiary text-xs'}>({brief})</span>
-          {isError && <span className="text-state-error/80 text-xs ml-1 uppercase tracking-wider">{t('chat.toolFailedTag')}</span>}
+          <span className={isError ? 'text-state-error/80 text-meta' : 'text-fg-tertiary text-meta'}>({brief})</span>
+          {isError && <span className="text-state-error/80 text-meta ml-1 uppercase tracking-wider">{t('chat.toolFailedTag')}</span>}
           {isDropped && (
             <span
               data-testid="tool-no-result"
-              className="text-fg-tertiary/80 text-xs italic ml-1"
+              className="text-fg-tertiary/80 text-meta italic ml-1"
             >
               {t('chat.toolNoResult')}
             </span>
           )}
-          {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
+          {!hasResult && !isError && <span className="text-fg-tertiary text-meta ml-2">…</span>}
         </span>
         {/* Right-aligned cluster: elapsed counter (A2-NEW-5) + stall hint
             (A2-NEW-7) + escalation tier (#208). Lives outside the truncating
@@ -235,7 +236,7 @@ export function ToolBlock({
               <LongOutputView text={result as string} isError={!!isError} toolName={name} />
             ) : (
               <pre
-                className={`mt-1 ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${
+                className={`mt-1 ml-6 pl-3 border-l text-meta whitespace-pre-wrap font-mono ${
                   isError ? 'border-state-error/40 text-state-error-fg' : 'border-border-subtle text-fg-tertiary'
                 }`}
               >

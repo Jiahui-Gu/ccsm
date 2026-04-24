@@ -25,14 +25,14 @@ export function ClaudeCliMissingBanner() {
       role="status"
     >
       <AlertTriangle size={13} className="stroke-[2] shrink-0" />
-      <span className="flex-1 min-w-0 truncate text-xs">
+      <span className="flex-1 min-w-0 truncate text-meta">
         {t('cli.bannerNotConfigured')}
       </span>
       <button
         type="button"
         onClick={openDialog}
         className={cn(
-          'shrink-0 h-6 px-2 rounded text-xs font-medium',
+          'shrink-0 h-6 px-2 rounded text-meta font-medium',
           'bg-black/20 hover:bg-black/30 transition-colors duration-150',
           'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.15)]'
         )}

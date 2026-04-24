@@ -14,6 +14,7 @@
 //   - a11y-focus-restore        (probe-e2e-a11y-focus-restore)
 //   - shortcut-overlay-opens    (new — UI-1 / #188)
 //   - popover-cross-dismiss     (new — popover-mutex / #221)
+//   - type-scale-snapshot       (new — #225, guards 4-step type token system)
 //
 // Related UI probes already absorbed into harness-agent.mjs:
 //   - inputbar-visible, chat-copy, input-placeholder
@@ -391,6 +392,83 @@ async function casePopoverCrossDismiss({ win, log }) {
   log('cwd→model→cwd cross-dismiss + Escape clears mutex slot');
 }
 
+// ---------- type-scale-snapshot ----------
+// Guards the 4-step semantic type token system introduced in #225.
+// We seed the store with one session that has an assistant message + a tool
+// block, open the Settings dialog, then walk the DOM to read the computed
+// font-size of one element from each semantic tier and assert it matches the
+// spec. Any future drift (someone reverting `text-chrome` back to `text-sm`,
+// or a Tailwind config change that breaks the token resolution) trips here.
+//
+// Spec (from docs/design/type-scale-audit.md):
+//   text-meta    = 11px : status pills, durations, hint chips
+//   text-chrome  = 13px : sidebar list rows, tool block name, status bar
+//   text-body    = 15px : assistant + user message body
+//   text-heading = 16px : dialog titles, section headers
+async function caseTypeScaleSnapshot({ win, log }) {
+  await win.evaluate(() => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: {
+        s1: [
+          // One assistant text block — drives text-body sample.
+          { kind: 'assistant', id: 'm-asst', text: 'Hello from the assistant.' },
+          // One tool block — drives text-chrome sample (tool name).
+          { kind: 'tool', id: 'm-tool', name: 'read_file', brief: '/tmp/x', expanded: false, result: 'ok', input: { path: '/tmp/x' } }
+        ]
+      }
+    });
+  });
+  await win.waitForTimeout(400);
+
+  // Open Settings to capture a dialog title.
+  await win.keyboard.press('Control+,');
+  await win.locator('[role="dialog"]').first().waitFor({ state: 'visible', timeout: 5000 });
+  await win.waitForTimeout(150);
+
+  const sizes = await win.evaluate(() => {
+    const px = (el) => Math.round(parseFloat(getComputedStyle(el).fontSize));
+    const pickFirst = (sel) => document.querySelector(sel);
+    const sidebarRow = pickFirst('[data-session-id="s1"]');
+    const assistantBody = pickFirst('[data-type-scale-role="assistant-body"]');
+    const toolName = pickFirst('[data-type-scale-role="tool-name"]');
+    const dialogTitle = pickFirst('[role="dialog"] h2, [role="dialog"] [id$="-title"]');
+    const messagesAny = document.querySelectorAll('[data-message-id], [data-message]').length;
+    return {
+      sidebar: sidebarRow ? { px: px(sidebarRow), tag: sidebarRow.tagName, cls: sidebarRow.className } : null,
+      assistant: assistantBody ? { px: px(assistantBody), tag: assistantBody.tagName } : null,
+      tool: toolName ? { px: px(toolName), tag: toolName.tagName } : null,
+      dialog: dialogTitle ? { px: px(dialogTitle), tag: dialogTitle.tagName, text: (dialogTitle.textContent || '').slice(0, 40) } : null,
+      messageCount: messagesAny,
+      bodyText: document.querySelector('main')?.textContent?.slice(0, 160) ?? null
+    };
+  });
+
+  await win.keyboard.press('Escape');
+
+  const failures = [];
+  // text-chrome = 13px (audit allows 12-13; we picked 13 in global.css).
+  if (!sizes.sidebar) failures.push('sidebar row [data-session-id="s1"] not found');
+  else if (sizes.sidebar.px !== 13) failures.push(`sidebar row expected 13px (text-chrome), got ${sizes.sidebar.px}px`);
+  // text-body = 15px.
+  if (!sizes.assistant) failures.push('assistant body [data-type-scale-role="assistant-body"] not found');
+  else if (sizes.assistant.px !== 15) failures.push(`assistant body expected 15px (text-body), got ${sizes.assistant.px}px`);
+  // tool name inherits text-chrome (13px) from the parent ToolBlock container.
+  if (!sizes.tool) failures.push('tool name [data-type-scale-role="tool-name"] not found');
+  else if (sizes.tool.px !== 13) failures.push(`tool name expected 13px (text-chrome), got ${sizes.tool.px}px`);
+  // dialog title = text-heading (16px). Audit says 16-18; we picked 16.
+  if (!sizes.dialog) failures.push('dialog title not found');
+  else if (sizes.dialog.px < 16 || sizes.dialog.px > 18) failures.push(`dialog title expected 16-18px (text-heading), got ${sizes.dialog.px}px`);
+
+  if (failures.length > 0) {
+    throw new Error('type-scale snapshot mismatch:\n  - ' + failures.join('\n  - ') + '\n  sizes=' + JSON.stringify(sizes));
+  }
+
+  log(`sidebar=${sizes.sidebar.px}px assistant=${sizes.assistant.px}px tool=${sizes.tool.px}px dialog=${sizes.dialog.px}px`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -408,6 +486,7 @@ await runHarness({
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
     { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
-    { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss }
+    { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss },
+    { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot }
   ]
 });

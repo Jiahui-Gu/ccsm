@@ -110,8 +110,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   <StateGlyph size="sm" className="mt-0.5 shrink-0 text-state-running" />
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-fg-primary leading-tight">{toast.title}</div>
-                  {toast.body && <div className="mt-0.5 text-xs text-fg-tertiary">{toast.body}</div>}
+                  <div className="text-chrome font-medium text-fg-primary leading-tight">{toast.title}</div>
+                  {toast.body && <div className="mt-0.5 text-meta text-fg-tertiary">{toast.body}</div>}
                   {toast.action && (
                     <div className="mt-2 flex items-center gap-2">
                       <button
@@ -122,7 +122,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                           dismiss(toast.id);
                         }}
                         className={cn(
-                          'text-xs font-medium px-2 py-1 rounded-sm',
+                          'text-meta font-medium px-2 py-1 rounded-sm',
                           'bg-bg-app border border-border-default text-fg-primary',
                           'hover:bg-bg-elevated hover:border-border-strong',
                           'active:scale-[0.98]',
@@ -139,7 +139,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                           dismiss(toast.id);
                         }}
                         className={cn(
-                          'text-xs px-2 py-1 rounded-sm text-fg-tertiary',
+                          'text-meta px-2 py-1 rounded-sm text-fg-tertiary',
                           'hover:text-fg-secondary hover:bg-bg-app',
                           'focus-ring',
                           'transition-colors duration-150'

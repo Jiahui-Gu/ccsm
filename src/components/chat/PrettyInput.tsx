@@ -96,7 +96,7 @@ export function PrettyInput({ input }: { input: unknown }) {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.15, ease: [0, 0, 0.2, 1] }}
-        className="mt-1 ml-6 pl-3 border-l border-border-subtle text-xs font-mono text-fg-secondary whitespace-pre-wrap mb-1"
+        className="mt-1 ml-6 pl-3 border-l border-border-subtle text-meta font-mono text-fg-secondary whitespace-pre-wrap mb-1"
       >
         <span className="text-fg-tertiary text-mono-xs uppercase tracking-wider mr-2">{t('chat.inputBytes')}</span>
         {render(input, 0, 'root')}

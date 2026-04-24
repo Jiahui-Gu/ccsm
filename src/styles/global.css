@@ -88,6 +88,32 @@
   --text-lg: 17px;
   --text-lg--line-height: 24px;
 
+  /* ── 4-step semantic type scale (#225) ──
+     Replaces the per-call-site mix of text-xs/text-sm/text-base across
+     src/components. See docs/design/type-scale-audit.md for the full
+     rationale; the short version is that the codebase had collapsed onto
+     ~14px for everything (chrome AND content), giving the eye nowhere to
+     land. The four tokens map to deliberate semantic roles:
+
+       text-meta    11px : micro-metadata — status pills, durations, hint chips
+       text-chrome  13px : sidebar rows, buttons, status bar, tool block name
+       text-body    15px : primary reading surface — assistant + user messages
+       text-heading 16px : section titles, dialog titles, markdown h3
+
+     The audit specifies chrome at "12 or 13" and heading at "16-18". We
+     pick 13 for chrome (it carries the sidebar list — the heaviest chrome
+     surface) and 16 for heading (matching --text-base ladder + the Inter
+     hinting sweet spot). Markdown h2 inside assistant prose continues to
+     ride --text-lg (17px) for the next step up. */
+  --text-meta: 11px;
+  --text-meta--line-height: 14px;
+  --text-chrome: 13px;
+  --text-chrome--line-height: 18px;
+  --text-body: 15px;
+  --text-body--line-height: 24px;
+  --text-heading: 16px;
+  --text-heading--line-height: 22px;
+
   --radius-xs: 3px;
   --radius-sm: 5px;
   --radius-md: 8px;
