@@ -11,6 +11,7 @@ import {
   type ParsedStreamEvent,
 } from './control-rpc';
 import type { StartErrorCode } from './start-result-types';
+import { filterToolInputByAcceptedHunks } from './partial-write';
 
 export type { StartErrorCode, StartResult } from './start-result-types';
 
@@ -227,7 +228,19 @@ export class SessionRunner {
    * to the renderer. resolvePermission() looks the entry up to settle the
    * promise that ControlRpc is awaiting before it writes the control_response.
    */
-  private pendingPerms = new Map<string, (d: CanUseToolDecision) => void>();
+  private pendingPerms = new Map<
+    string,
+    {
+      resolve: (d: CanUseToolDecision) => void;
+      /**
+       * Captured at handleCanUseTool() time so resolvePermissionPartial()
+       * can build an `updatedInput` containing only the user-accepted hunks
+       * without an extra renderer round-trip. See electron/agent/partial-write.ts (#251).
+       */
+      toolName: string;
+      input: unknown;
+    }
+  >();
   private nextPermSeq = 0;
 
   constructor(
@@ -331,14 +344,48 @@ export class SessionRunner {
   }
 
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean {
-    const resolve = this.pendingPerms.get(requestId);
-    if (!resolve) return false;
+    const entry = this.pendingPerms.get(requestId);
+    if (!entry) return false;
     this.pendingPerms.delete(requestId);
-    resolve(
+    entry.resolve(
       decision === 'allow'
         ? { allow: true }
         : { allow: false, deny_reason: 'User denied tool use.' }
     );
+    return true;
+  }
+
+  /**
+   * Partial-accept variant of resolvePermission (#251).
+   *
+   * `acceptedHunks` is the list of hunk indices the user accepted in the
+   * permission prompt's diff view. Index ordering matches the `DiffSpec`
+   * produced by `src/utils/diff.ts` for this tool name.
+   *
+   * Behaviour:
+   *   - Empty `acceptedHunks` -> denies the call (passing an empty Edit /
+   *     Write to claude.exe would corrupt the file silently).
+   *   - All hunks accepted -> equivalent to plain `resolvePermission(allow)`.
+   *   - Subset -> sends `{ allow: true, updatedInput }` so claude.exe runs
+   *     a rewritten tool call containing only the accepted hunks.
+   *
+   * Returns false if no pending permission matches `requestId` (race with
+   * cancel / session close), true on a successful resolve.
+   */
+  resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean {
+    const entry = this.pendingPerms.get(requestId);
+    if (!entry) return false;
+    this.pendingPerms.delete(requestId);
+    const result = filterToolInputByAcceptedHunks(entry.toolName, entry.input, acceptedHunks);
+    if (result.kind === 'reject') {
+      entry.resolve({ allow: false, deny_reason: 'User rejected all proposed hunks.' });
+      return true;
+    }
+    if (result.kind === 'updated') {
+      entry.resolve({ allow: true, updatedInput: result.updatedInput });
+      return true;
+    }
+    entry.resolve({ allow: true });
     return true;
   }
 
@@ -503,7 +550,7 @@ export class SessionRunner {
   ): Promise<CanUseToolDecision> {
     return new Promise<CanUseToolDecision>((resolve) => {
       const requestId = `perm-${Date.now().toString(36)}-${(this.nextPermSeq++).toString(36)}`;
-      this.pendingPerms.set(requestId, resolve);
+      this.pendingPerms.set(requestId, { resolve, toolName, input });
       // If claude.exe cancels the request mid-flight, fail-closed via the
       // signal so we don't leak the pending entry.
       ctx.signal.addEventListener(
@@ -580,23 +627,38 @@ export class SessionRunner {
 
     return new Promise<unknown>((resolve) => {
       const requestId = `perm-${Date.now().toString(36)}-${(this.nextPermSeq++).toString(36)}`;
-      this.pendingPerms.set(requestId, (decision: CanUseToolDecision) => {
-        if (decision.allow) {
-          resolve({
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: 'allow',
-            },
-          });
-        } else {
-          resolve({
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: 'deny',
-              permissionDecisionReason: decision.deny_reason ?? 'User denied tool use.',
-            },
-          });
-        }
+      this.pendingPerms.set(requestId, {
+        resolve: (decision: CanUseToolDecision) => {
+          if (decision.allow) {
+            // CLI 2.x routes Edit/Write/MultiEdit through the PreToolUse hook
+            // path, NOT the can_use_tool path, so the partial-accept rewrite
+            // (#251) only takes effect if the hook response forwards
+            // `updatedInput` here. Per the official hook protocol, a
+            // PreToolUse hookSpecificOutput may include `updatedInput` which
+            // replaces the entire tool_input before execution. Without this
+            // line a MultiEdit subset selection is silently dropped and the
+            // CLI runs ALL edits.
+            resolve({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'allow',
+                ...(decision.updatedInput !== undefined
+                  ? { updatedInput: decision.updatedInput }
+                  : {}),
+              },
+            });
+          } else {
+            resolve({
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: decision.deny_reason ?? 'User denied tool use.',
+              },
+            });
+          }
+        },
+        toolName,
+        input: toolInput,
       });
       signal.addEventListener(
         'abort',
@@ -730,8 +792,8 @@ export class SessionRunner {
   close(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const resolve of this.pendingPerms.values()) {
-      resolve({ allow: false, deny_reason: 'Session closed.' });
+    for (const entry of this.pendingPerms.values()) {
+      entry.resolve({ allow: false, deny_reason: 'Session closed.' });
     }
     this.pendingPerms.clear();
     this.rpc?.close();
@@ -746,8 +808,8 @@ export class SessionRunner {
 
   private cleanupAfterExit(): void {
     this.disposed = true;
-    for (const resolve of this.pendingPerms.values()) {
-      resolve({ allow: false, deny_reason: 'Session ended.' });
+    for (const entry of this.pendingPerms.values()) {
+      entry.resolve({ allow: false, deny_reason: 'Session ended.' });
     }
     this.pendingPerms.clear();
     this.rpc?.close();

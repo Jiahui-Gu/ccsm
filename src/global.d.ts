@@ -107,6 +107,11 @@ declare global {
         requestId: string,
         decision: 'allow' | 'deny'
       ) => Promise<boolean>;
+      agentResolvePermissionPartial: (
+        sessionId: string,
+        requestId: string,
+        acceptedHunks: number[]
+      ) => Promise<boolean>;
       onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
       onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void) => () => void;
