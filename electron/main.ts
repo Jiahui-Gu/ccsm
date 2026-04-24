@@ -797,6 +797,37 @@ app.whenReady().then(() => {
     }
   );
   ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
+  /**
+   * (#239) Per-tool-use cancel IPC. Validates payload shape so a malformed
+   * call from a compromised renderer can't tickle the manager with bogus
+   * args. Returns the same `{ok:true} | {ok:false, error}` shape the
+   * renderer already handles for setPermissionMode.
+   */
+  ipcMain.handle(
+    'agent:cancelToolUse',
+    async (
+      e,
+      args: { sessionId: string; toolUseId: string }
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      if (
+        !args ||
+        typeof args !== 'object' ||
+        typeof args.sessionId !== 'string' ||
+        typeof args.toolUseId !== 'string' ||
+        !args.sessionId ||
+        !args.toolUseId
+      ) {
+        return { ok: false, error: 'bad_payload' };
+      }
+      try {
+        const ok = await sessions.cancelToolUse(args.sessionId, args.toolUseId);
+        return ok ? { ok: true } : { ok: false, error: 'no_session' };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  );
   ipcMain.handle(
     'agent:setPermissionMode',
     async (

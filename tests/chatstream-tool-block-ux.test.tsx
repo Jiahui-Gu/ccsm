@@ -195,4 +195,74 @@ describe('ToolBlock UX triad', () => {
       vi.useRealTimers();
     }
   });
+
+  // (#239) Per-tool-use cancel IPC. After the 90s escalation threshold the
+  // Cancel link appears; clicking it must call window.ccsm.agentCancelToolUse
+  // with the {sessionId, toolUseId} pair AND flip the link to a disabled
+  // "Cancelling…" state. Reverse-verify lives in scripts/probe-e2e-tool-
+  // journey-render.mjs (J9) — if the cancel handler is stashed, the click
+  // becomes a no-op and the probe FAILs.
+  it('clicking Cancel after 90s invokes agentCancelToolUse with {sessionId, toolUseId}', async () => {
+    const base = 1_700_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(base);
+    const cancelSpy = vi.fn().mockResolvedValue({ ok: true });
+    // Stub the bridge. The component reads window.ccsm at click time, so a
+    // partial mock with just the one method we care about is enough — the
+    // useStore selectors run on the real store fixture.
+    (globalThis as unknown as { window: { ccsm: { agentCancelToolUse: typeof cancelSpy } } }).window =
+      Object.assign(globalThis.window ?? {}, {
+        ccsm: { agentCancelToolUse: cancelSpy }
+      }) as unknown as typeof globalThis.window;
+    try {
+      seed([
+        {
+          kind: 'tool',
+          id: 't-cancel',
+          name: 'Bash',
+          brief: 'sleep 200',
+          expanded: false,
+          toolUseId: 'tu-cancel-1'
+        }
+      ]);
+      const { container } = render(<ChatStream />);
+      // Jump past the 90s escalation threshold and tick the interval.
+      await act(async () => {
+        vi.setSystemTime(base + 95_000);
+        vi.advanceTimersByTime(200);
+      });
+      const cancelEl = container.querySelector(
+        '[data-testid="tool-stall-cancel"]'
+      ) as HTMLElement | null;
+      expect(cancelEl).toBeTruthy();
+      // Aria-label must match the renamed (sentence-case) string.
+      expect(cancelEl?.getAttribute('aria-label')).toBe('Cancel tool');
+      // focus-ring + role=button parity.
+      expect(cancelEl?.getAttribute('role')).toBe('button');
+      expect(cancelEl?.className).toContain('focus-ring');
+      // Click. activeId is 's1' from the seed() helper so sessionId === 's1'.
+      await act(async () => {
+        cancelEl!.click();
+      });
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+      expect(cancelSpy).toHaveBeenCalledWith({
+        sessionId: 's1',
+        toolUseId: 'tu-cancel-1'
+      });
+      // After click the link must show the cancelling state and become
+      // aria-disabled so a second click can't double-fire the IPC.
+      const after = container.querySelector(
+        '[data-testid="tool-stall-cancel"]'
+      ) as HTMLElement | null;
+      expect(after?.textContent ?? '').toMatch(/cancelling/i);
+      expect(after?.getAttribute('aria-disabled')).toBe('true');
+      // Second click is a no-op.
+      await act(async () => {
+        after!.click();
+      });
+      expect(cancelSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

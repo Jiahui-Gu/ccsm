@@ -514,6 +514,121 @@ try {
     }
   }
 
+  // ── Journey 9: per-tool-use cancel IPC (#239) ──────────────────────────
+  // Reverse-verify: stash ToolBlock's onCancelStalled handler body and this
+  // journey FAILs because the click no longer invokes the IPC stub.
+  // Seed a tool block whose `now` makes elapsedMs >= STALL_ESCALATE_AFTER_MS
+  // (90s) so the Cancel link renders. Stub window.ccsm.agentCancelToolUse to
+  // record calls without touching real main.
+  {
+    // Use a startedAt 100s in the past relative to a fixed `now` we feed via
+    // the store's tick. Easiest path: inject a custom timestamp that the
+    // ChatStream already passes as `now` — set the system clock forward in
+    // the store after seeding so the elapsedMs counter crosses the
+    // escalation threshold.
+    await win.evaluate(() => {
+      const calls = [];
+      window.__ccsm = window.ccsm ?? {};
+      window.__cancelCalls = calls;
+      // Replace just the one method we want to observe; preserve the rest
+      // of the bridge so unrelated renderer code (notify, settings, etc.)
+      // still works.
+      window.ccsm = new Proxy(window.ccsm ?? {}, {
+        get(target, prop) {
+          if (prop === 'agentCancelToolUse') {
+            return (args) => {
+              calls.push(args);
+              return Promise.resolve({ ok: true });
+            };
+          }
+          return Reflect.get(target, prop);
+        },
+      });
+    });
+
+    await seed([
+      { kind: 'tool', id: 't-cancel', toolUseId: 'tu-cancel-XYZ', name: 'Bash',
+        brief: 'sleep 200', expanded: false /* in-flight: no result */ },
+    ]);
+
+    // ChatStream drives the elapsed counter via a `now` interval; the easiest
+    // way to fast-forward is to wait long enough for the 90s threshold to
+    // pass, but that would gate the probe on wall-clock time. Instead, peek
+    // at how the block records startedAt internally — it captures Date.now()
+    // on first render. We wrap Date.now to add a +95_000ms offset so the
+    // very next render frames see "elapsed >= 95s" without any waiting.
+    await win.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      const offset = 95_000;
+      // Snapshot the original first so we can restore after the assertion.
+      window.__realDateNow = realNow;
+      Date.now = () => realNow() + offset;
+      // Force a re-render by appending a no-op assistant block; ChatStream's
+      // tick reads the patched Date.now and propagates `now` to ToolBlock.
+      window.__ccsmStore.getState().appendBlocks('s-tool', [
+        { kind: 'assistant', id: 'a-noop-cancel', text: '' },
+      ]);
+    });
+    // ChatStream's `now` interval ticks every ~100ms; wait a couple cycles.
+    await win.waitForTimeout(400);
+
+    const cancelEl = await win.$('[data-testid="tool-stall-cancel"]');
+    const cancelVisibleBefore = !!cancelEl;
+    let invokedWith = null;
+    let cancellingTextAfter = null;
+    let ariaDisabledAfter = null;
+    if (cancelEl) {
+      // Verify aria-label matches the renamed sentence-case string.
+      const aria = await cancelEl.getAttribute('aria-label');
+      if (aria !== 'Cancel tool') {
+        record('J9 cancel link aria-label is "Cancel tool"',
+          'aria-label="Cancel tool"',
+          `aria-label="${aria}"`,
+          false);
+      } else {
+        record('J9 cancel link aria-label is "Cancel tool"',
+          'aria-label="Cancel tool"',
+          `aria-label="${aria}"`,
+          true);
+      }
+      await cancelEl.click();
+      await win.waitForTimeout(150);
+      const observed = await win.evaluate(() => ({
+        calls: window.__cancelCalls.slice(),
+        text: document.querySelector('[data-testid="tool-stall-cancel"]')?.textContent ?? null,
+        aria: document.querySelector('[data-testid="tool-stall-cancel"]')?.getAttribute('aria-disabled') ?? null,
+      }));
+      invokedWith = observed.calls[0] ?? null;
+      cancellingTextAfter = observed.text;
+      ariaDisabledAfter = observed.aria;
+    }
+
+    // Restore Date.now so subsequent journeys aren't affected if anyone adds
+    // more after this one.
+    await win.evaluate(() => {
+      if (window.__realDateNow) Date.now = window.__realDateNow;
+    });
+
+    const passWiring =
+      cancelVisibleBefore &&
+      invokedWith &&
+      invokedWith.sessionId === 's-tool' &&
+      invokedWith.toolUseId === 'tu-cancel-XYZ';
+    record('J9 cancel button invokes agentCancelToolUse with {sessionId, toolUseId}',
+      'after 90s, click on tool-stall-cancel calls agentCancelToolUse({sessionId:"s-tool", toolUseId:"tu-cancel-XYZ"})',
+      `cancelVisible=${cancelVisibleBefore}, invokedWith=${JSON.stringify(invokedWith)}`,
+      !!passWiring,
+      passWiring ? '' : 'click did not propagate to IPC bridge — cancel button is a no-op stub');
+
+    const passCancellingState =
+      cancellingTextAfter && /cancelling/i.test(cancellingTextAfter) && ariaDisabledAfter === 'true';
+    record('J9b cancel link flips to disabled "Cancelling…" after click',
+      'data-testid=tool-stall-cancel text matches /cancelling/i AND aria-disabled="true"',
+      `text=${JSON.stringify(cancellingTextAfter)}, aria-disabled=${ariaDisabledAfter}`,
+      !!passCancellingState,
+      passCancellingState ? '' : 'no transient state — user cannot tell whether the click registered');
+  }
+
   // ── summary matrix ──────────────────────────────────────────────────────
   console.log('\n=== consistency matrix ===');
   for (const r of results) {

@@ -24,7 +24,7 @@ export function renderBlock(
     case 'assistant':
       return <AssistantBlock text={b.text} streaming={b.streaming} />;
     case 'tool':
-      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} />;
+      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} sessionId={activeId} toolUseId={b.toolUseId} />;
     case 'todo':
       return <TodoBlock todos={b.todos} />;
     case 'waiting':

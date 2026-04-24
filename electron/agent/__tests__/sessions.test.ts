@@ -600,6 +600,73 @@ describe('SessionRunner outbound control', () => {
     expect(proc.__stdinLines()).toEqual([]);
     runner.close();
   });
+
+  // (#239) cancelToolUse falls back to a turn-level interrupt control_request
+  // because the spawn protocol has no per-tool-use cancel subtype today.
+  // We assert (a) the diagnostic explaining the fallback is emitted with
+  // the correct code so dogfood logs / metrics can pick it up, and (b) the
+  // same `interrupt` control_request the StatusBar Stop button uses gets
+  // written to stdin. The reverse-verify lives in the e2e probe (J9) where
+  // stashing the cancel call makes the click a no-op.
+  it('cancelToolUse() emits a tool_cancel_fallback diagnostic and forwards a turn-level interrupt', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const diagnostics: Array<{ level: string; code: string; message: string }> = [];
+    const runner = new SessionRunner(
+      's-cancel',
+      () => {},
+      () => {},
+      () => {},
+      (d) => diagnostics.push(d),
+    );
+    await runner.start(baseOpts);
+
+    const p = runner.cancelToolUse('tu-abc-123');
+    await new Promise((r) => setImmediate(r));
+
+    // Diagnostic emitted up-front so the renderer / metrics pipeline can
+    // observe the SDK-limitation fallback even if the interrupt round-trip
+    // is still pending.
+    expect(diagnostics.some((d) => d.code === 'tool_cancel_fallback')).toBe(true);
+    const fallback = diagnostics.find((d) => d.code === 'tool_cancel_fallback');
+    expect(fallback?.message).toContain('tu-abc-123');
+
+    // Same control_request shape interrupt() emits — hex-fingerprint that
+    // we didn't accidentally invent a new subtype claude.exe would reject.
+    const out = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const req = out.find(
+      (l) =>
+        l.type === 'control_request' &&
+        (l.request as Record<string, unknown>).subtype === 'interrupt',
+    ) as Record<string, unknown> | undefined;
+    expect(req).toBeDefined();
+
+    emitFrame(proc.stdout, {
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: req!.request_id,
+        response: {},
+      },
+    });
+    await expect(p).resolves.toBeUndefined();
+    runner.close();
+  });
+
+  it('cancelToolUse() before start() is a safe no-op (no rpc yet)', async () => {
+    const diagnostics: Array<{ level: string; code: string; message: string }> = [];
+    const runner = new SessionRunner(
+      's-cancel-pre',
+      () => {},
+      () => {},
+      () => {},
+      (d) => diagnostics.push(d),
+    );
+    // Must not throw, and must not emit the diagnostic — there's no
+    // session for the diagnostic to be useful against.
+    await expect(runner.cancelToolUse('tu-xyz')).resolves.toBeUndefined();
+    expect(diagnostics).toEqual([]);
+  });
 });
 
 describe('SessionRunner exit handling', () => {
