@@ -1,0 +1,146 @@
+[
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "New Session",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Sessions",
+    "cls": "flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-non",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Archived Groups\n0",
+    "cls": "flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0 text-label-fain",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Settings",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Skip",
+    "cls": "absolute right-4 top-3 z-10 font-mono text-meta text-fg-tertiary hover:text-fg-s",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "h-1.5 rounded-full transition-all duration-200 w-6 bg-fg-primary",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "h-1.5 rounded-full transition-all duration-200 w-1.5 bg-border-strong hover:bg-f",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "h-1.5 rounded-full transition-all duration-200 w-1.5 bg-border-strong hover:bg-f",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "h-1.5 rounded-full transition-all duration-200 w-1.5 bg-border-strong hover:bg-f",
+    "id": "",
+    "visible": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Next",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "id": "",
+    "visible": true
+  }
+]

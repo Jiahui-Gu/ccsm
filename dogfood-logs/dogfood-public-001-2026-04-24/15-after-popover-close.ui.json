@@ -1,0 +1,177 @@
+[
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "New Session",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Sessions\n1",
+    "cls": "flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-non",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Archived Groups\n0",
+    "cls": "flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0 text-label-fain",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Settings",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Skill\n({\"skill\":\"pua\"})\nFAILED",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Bash\n(mkdir -p /c/Users/jiahuigu/AppData/Local/Temp/dogfood-target && cd /c/User",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Write\n(C:/Users/jiahuigu/AppData/Local/Temp/dogfood-target/index.js)",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Write\n(C:/Users/jiahuigu/AppData/Local/Temp/dogfood-target/test.js)",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Bash\n(node test.js)",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Skill\n({\"skill\":\"pua\"})\nFAILED",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Bash\n(for i in $(seq 1 60); do echo \"tick $i\"; sleep 1; done)\nFAILED",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "jiahuigu",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "claude-opus-4-7",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Default",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "TEXTAREA",
+    "role": null,
+    "text": "Reply…",
+    "cls": "block w-full resize-none px-3 pt-2 pb-7 text-body leading-[22px] bg-transparent ",
+    "vis": true
+  },
+  {
+    "tag": "INPUT",
+    "role": null,
+    "text": "",
+    "cls": "hidden",
+    "vis": false
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-flex h-6 w-6 items-center justify-center rounded-sm text-fg-tertiary hove",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Send",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  }
+]

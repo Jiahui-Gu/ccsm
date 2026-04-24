@@ -1,0 +1,156 @@
+[
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "New Session",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Sessions\n1",
+    "cls": "flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-non",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Archived Groups\n0",
+    "cls": "flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0 text-label-fain",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Settings",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Skill\n({\"skill\":\"pua\"})\n…\n48.5s\n(taking longer than usual…)",
+    "cls": "group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Reject (N)",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Allow always",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Allow (Y)",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "jiahuigu",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "claude-opus-4-7",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Default",
+    "cls": "inline-flex items-center gap-1 h-5 px-1.5 rounded-sm text-fg-tertiary hover:text",
+    "vis": true
+  },
+  {
+    "tag": "TEXTAREA",
+    "role": null,
+    "text": "Running… (Esc to interrupt, Enter to queue)",
+    "cls": "block w-full resize-none px-3 pt-2 pb-7 text-body leading-[22px] bg-transparent ",
+    "vis": true
+  },
+  {
+    "tag": "INPUT",
+    "role": null,
+    "text": "",
+    "cls": "hidden",
+    "vis": false
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-flex h-6 w-6 items-center justify-center rounded-sm text-fg-tertiary hove",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Stop",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  }
+]

@@ -1,0 +1,93 @@
+[
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "New Session",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Sessions",
+    "cls": "flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-non",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border border",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Archived Groups\n0",
+    "cls": "flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0 text-label-fain",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Settings",
+    "cls": "inline-flex items-center justify-center rounded-md select-none whitespace-nowrap",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "inline-grid place-items-center rounded-md select-none outline-none border transi",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "",
+    "cls": "flex h-full items-center justify-center text-fg-tertiary transition-colors durat",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "New Session",
+    "cls": "inline-flex items-center rounded-md select-none whitespace-nowrap transition-[ba",
+    "vis": true
+  },
+  {
+    "tag": "BUTTON",
+    "role": null,
+    "text": "Import Session",
+    "cls": "inline-flex items-center rounded-md select-none whitespace-nowrap transition-[ba",
+    "vis": true
+  }
+]
