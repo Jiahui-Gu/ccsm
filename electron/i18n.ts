@@ -22,7 +22,14 @@ type NotificationCatalog = {
   permissionRequestBody: string;
 };
 
+type TrayCatalog = {
+  show: string;
+  quit: string;
+  tooltip: string;
+};
+
 type NotificationKey = keyof NotificationCatalog;
+type TrayKey = keyof TrayCatalog;
 
 // IMPORTANT: keep these strings byte-identical to the renderer catalog
 // `notifications` namespace. The renderer catalog is the source of truth.
@@ -42,6 +49,22 @@ const catalogs: Record<SupportedLanguage, NotificationCatalog> = {
     sessionDoneBody: '{{name}} 完成了任务',
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}'
+  }
+};
+
+// Tray menu / tooltip strings. Same parity rule as the notifications
+// catalog above: keep these byte-identical to the renderer catalog
+// `tray` namespace in `src/i18n/locales/{en,zh}.ts`.
+const trayCatalogs: Record<SupportedLanguage, TrayCatalog> = {
+  en: {
+    show: 'Show CCSM',
+    quit: 'Quit',
+    tooltip: 'CCSM'
+  },
+  zh: {
+    show: '显示 CCSM',
+    quit: '退出',
+    tooltip: 'CCSM'
   }
 };
 
@@ -71,6 +94,11 @@ export function tNotification(
   const catalog = catalogs[activeLanguage] ?? catalogs.en;
   const template = catalog[key] ?? catalogs.en[key] ?? key;
   return interpolate(template, vars);
+}
+
+export function tTray(key: TrayKey): string {
+  const catalog = trayCatalogs[activeLanguage] ?? trayCatalogs.en;
+  return catalog[key] ?? trayCatalogs.en[key] ?? key;
 }
 
 // Resolve a system locale tag into one of the two supported languages.
