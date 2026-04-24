@@ -121,6 +121,9 @@ const en = {
     loadHistoryFailed: 'Failed to load history',
     retry: 'Retry'
   },
+  chatStream: {
+    emptyHint: 'Type a message and press'
+  },
   sidebar: {
     newSession: 'New Session',
     newSessionInThisGroup: 'New session in this group',

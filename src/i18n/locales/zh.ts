@@ -120,6 +120,9 @@ const zh: EnCatalog = {
     loadHistoryFailed: '加载历史记录失败',
     retry: '重试'
   },
+  chatStream: {
+    emptyHint: '输入消息后按'
+  },
   sidebar: {
     newSession: '新会话',
     newSessionInThisGroup: '在此 Group 新建 Session',

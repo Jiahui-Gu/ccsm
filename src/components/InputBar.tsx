@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
+import { MetaLabel } from './ui/MetaLabel';
 import { useStore } from '../stores/store';
 import { DURATION, EASING } from '../lib/motion';
 import { useShallow } from 'zustand/react/shallow';
@@ -740,19 +741,16 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             <ImagePlus size={14} className="stroke-[2.25]" />
           </button>
           {attachments.length > 0 && (
-            <span className="font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary">
+            <MetaLabel>
               {attachments.length}/{MAX_IMAGES_PER_MESSAGE}
-            </span>
+            </MetaLabel>
           )}
         </div>
         <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
           {queueLength > 0 && (
-            <span
-              className="font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary"
-              title={t('chat.queueChip', { count: queueLength })}
-            >
+            <MetaLabel title={t('chat.queueChip', { count: queueLength })}>
               {t('chat.queueChip', { count: queueLength })}
-            </span>
+            </MetaLabel>
           )}
           {running ? (
             <>

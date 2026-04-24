@@ -5,22 +5,23 @@ import { useTranslation } from '../i18n/useTranslation';
 import { Tooltip } from './ui/Tooltip';
 import { cn } from '../lib/cn';
 
-// Minimal dark-ish palette that matches the app's accent + state colors. We
-// intentionally avoid shipping a full Prism theme — only the eight token types
-// that actually appear in our code blocks get a color, everything else falls
-// through to `text-fg-primary`.
+// Minimal palette wired to CSS custom properties (--color-syntax-*) so the
+// theme follows light/dark switches automatically. See `:root` and
+// `html.theme-light` blocks in src/styles/global.css for the actual hues.
+// Only the eight token types that actually appear in our code blocks get a
+// color, everything else falls through to `text-fg-primary`.
 const theme: PrismTheme = {
   plain: { color: 'var(--color-fg-primary, #e6e6e6)', backgroundColor: 'transparent' },
   styles: [
-    { types: ['comment', 'prolog', 'doctype', 'cdata'], style: { color: 'oklch(0.55 0 0)', fontStyle: 'italic' } },
-    { types: ['punctuation'], style: { color: 'oklch(0.65 0 0)' } },
-    { types: ['property', 'tag', 'constant', 'symbol', 'deleted'], style: { color: 'oklch(0.72 0.15 20)' } },
-    { types: ['boolean', 'number'], style: { color: 'oklch(0.72 0.12 65)' } },
-    { types: ['selector', 'attr-name', 'string', 'char', 'builtin', 'inserted'], style: { color: 'oklch(0.72 0.15 145)' } },
-    { types: ['operator', 'entity', 'url', 'variable'], style: { color: 'oklch(0.82 0 0)' } },
-    { types: ['atrule', 'attr-value', 'keyword'], style: { color: 'oklch(0.72 0.13 260)' } },
-    { types: ['function', 'class-name'], style: { color: 'oklch(0.78 0.12 220)' } },
-    { types: ['regex', 'important'], style: { color: 'oklch(0.72 0.15 300)' } }
+    { types: ['comment', 'prolog', 'doctype', 'cdata'], style: { color: 'var(--color-syntax-comment)', fontStyle: 'italic' } },
+    { types: ['punctuation'], style: { color: 'var(--color-syntax-punctuation)' } },
+    { types: ['property', 'tag', 'constant', 'symbol', 'deleted'], style: { color: 'var(--color-syntax-tag)' } },
+    { types: ['boolean', 'number'], style: { color: 'var(--color-syntax-number)' } },
+    { types: ['selector', 'attr-name', 'string', 'char', 'builtin', 'inserted'], style: { color: 'var(--color-syntax-string)' } },
+    { types: ['operator', 'entity', 'url', 'variable'], style: { color: 'var(--color-syntax-variable)' } },
+    { types: ['atrule', 'attr-value', 'keyword'], style: { color: 'var(--color-syntax-keyword)' } },
+    { types: ['function', 'class-name'], style: { color: 'var(--color-syntax-function)' } },
+    { types: ['regex', 'important'], style: { color: 'var(--color-syntax-regex)' } }
   ]
 };
 

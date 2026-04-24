@@ -3,6 +3,7 @@ import { ChevronDown, Folder, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useTranslation } from '../i18n/useTranslation';
 import { useStore } from '../stores/store';
+import { MetaLabel } from './ui/MetaLabel';
 
 // Stable id for this popover in the global mutex slot. See
 // `openPopoverId` in src/stores/store.ts: opening any popover sets the id
@@ -248,9 +249,9 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
             />
           </div>
 
-          <div className="px-3 pt-1.5 pb-1 text-mono-sm uppercase tracking-wider text-fg-tertiary">
+          <MetaLabel size="sm" className="block px-3 pt-1.5 pb-1">
             {t('cwdPopover.recent')}
-          </div>
+          </MetaLabel>
           <ul className="max-h-[260px] overflow-y-auto pb-1" role="listbox">
             {filtered.length === 0 ? (
               <li className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
