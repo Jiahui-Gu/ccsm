@@ -28,6 +28,7 @@ import {
   type AttachmentRejection
 } from '../lib/attachments';
 import { useTranslation } from '../i18n/useTranslation';
+import { runningPlaceholderForMode } from '../lib/runningPlaceholder';
 
 // Per-session text drafts persist across session switches AND across app
 // restarts (see ../stores/drafts). Cleared on send. Image attachments stay
@@ -703,7 +704,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           }}
           onPaste={onPaste}
           rows={2}
-          placeholder={running ? t('chat.runningPlaceholder') : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
+          placeholder={running ? runningPlaceholderForMode(t, permission) : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
           className={cn(
             'block w-full resize-none px-3 pt-2 pb-7 text-body leading-[22px]',
             'bg-transparent text-fg-primary placeholder:text-fg-tertiary',

@@ -122,7 +122,16 @@ const en = {
     prCheckFailed: 'failed',
     prOpenDetailsAria: 'Open details for {{name}}',
     loadHistoryFailed: 'Failed to load history',
-    retry: 'Retry'
+    retry: 'Retry',
+    // task #320 — permission-mode-aware running placeholder. Each variant
+    // makes the active permission posture visible while a turn is in flight,
+    // so the user knows what to expect (will I be prompted? are edits being
+    // auto-applied? am I in plan-only mode?). The trailing affordance hint
+    // matches the original `runningPlaceholder` so muscle memory survives.
+    runningPlaceholderDefault: 'Running… will ask for permission on tool use (Esc to interrupt, Enter to queue)',
+    runningPlaceholderAcceptEdits: 'Running… auto-accepting edits (Esc to interrupt, Enter to queue)',
+    runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
+    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)'
   },
   chatStream: {
     emptyHint: 'Type a message and press'
