@@ -142,7 +142,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                 <button
                   type="button"
                   onClick={toggleAll}
-                  className="font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
+                  className="focus-ring font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
                 >
                   {selected.size === items.length ? t('importDialog.deselectAll') : t('importDialog.selectAll')} ({items.length})
                 </button>
@@ -174,7 +174,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                         <button
                           type="button"
                           onClick={() => toggleBucket(ids)}
-                          className="font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
+                          className="focus-ring font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
                         >
                           {allPicked ? t('importDialog.deselectGroup') : t('importDialog.selectGroup')}
                           {pickedCount > 0 && !allPicked && ` (${pickedCount}/${ids.length})`}
@@ -195,7 +195,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                                   checked={checked}
                                   onChange={() => toggle(it.sessionId)}
                                   onClick={(e) => e.stopPropagation()}
-                                  className="mt-0.5 accent-fg-primary"
+                                  className="mt-0.5 accent-accent"
                                 />
                                 <div className="min-w-0 flex-1">
                                   <div className="font-mono text-chrome text-fg-primary truncate">{it.title}</div>
