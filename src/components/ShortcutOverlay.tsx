@@ -77,7 +77,7 @@ export function ShortcutOverlay({ open, onOpenChange }: ShortcutOverlayProps) {
         <div className="px-5 pb-5 pt-1">
           {groups.map((g, gi) => (
             <section key={g.titleKey} className={gi === 0 ? '' : 'mt-5'}>
-              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-tertiary mb-2">
+              <h3 className="text-meta font-semibold uppercase tracking-wider text-fg-tertiary mb-2">
                 {t(g.titleKey)}
               </h3>
               <table className="w-full text-chrome">
@@ -138,7 +138,7 @@ function KeyChips({ combo }: { combo: string }) {
                     'inline-flex items-center justify-center ' +
                     'min-w-[22px] h-[22px] px-1.5 ' +
                     'rounded border border-border-default bg-bg-elevated ' +
-                    'font-mono text-[11px] leading-none text-fg-primary ' +
+                    'font-mono text-meta leading-none text-fg-primary ' +
                     'shadow-[inset_0_-1px_0_0_oklch(0_0_0_/_0.25)]'
                   }
                 >

@@ -66,6 +66,15 @@
      makes a flat surface read as 3D without a real shadow. */
   --surface-highlight: oklch(1 0 0 / 0.04);
   --surface-shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 4px 16px oklch(0 0 0 / 0.2);
+  /* Drag overlay shadow — heavier than --surface-shadow because the lifted
+     row floats well above the sidebar surface during a DnD gesture. The
+     0_0_0_1px highlight ring fakes a thin rim of catch-light at the top of
+     the tile so it reads as picked-up, not pasted-on. Mirrors the dark
+     vs. light split below — light mode swaps to warmer, lower-alpha values
+     so a dragged tile on near-white sidebar doesn't punch a black hole. */
+  --shadow-drag-overlay:
+    0 12px 32px -8px oklch(0 0 0 / 0.5),
+    0 0 0 1px oklch(1 0 0 / 0.08);
   /* 2px focus halo. Token-driven so light mode can pull saturation/lightness
      down — the dark cyan stays vibrant on dark surfaces, but reads as a
      glaring teal smear on near-white. Each mode picks its own oklch(). */
@@ -287,6 +296,9 @@ html.theme-light {
   --surface-shadow:
     0 1px 2px oklch(0 0 0 / 0.06),
     0 4px 16px oklch(0.6 0.02 60 / 0.08);
+  --shadow-drag-overlay:
+    0 12px 32px -8px oklch(0.4 0.02 60 / 0.18),
+    0 0 0 1px oklch(0 0 0 / 0.06);
   --color-focus-ring: oklch(0.55 0.15 215 / 0.55); /* a11y: boosted opacity for inline-rename + input focus visibility in light mode */
 
   --color-bg-app-foreground: var(--color-fg-primary);
