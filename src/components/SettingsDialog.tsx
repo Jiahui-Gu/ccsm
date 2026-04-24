@@ -400,7 +400,22 @@ function NotificationsPane() {
   const setNotificationSettings = useStore((s) => s.setNotificationSettings);
   const activeId = useStore((s) => s.activeId);
   const [testStatus, setTestStatus] = useState<string | null>(null);
+  const [moduleStatus, setModuleStatus] = useState<
+    { available: boolean; error: string | null } | null
+  >(null);
   const { t } = useTranslation('settings');
+
+  useEffect(() => {
+    let cancelled = false;
+    const api = window.ccsm;
+    if (!api?.notifyAvailability) return;
+    api.notifyAvailability().then((res) => {
+      if (!cancelled) setModuleStatus(res);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const Toggle = ({
     checked,
@@ -454,6 +469,25 @@ function NotificationsPane() {
     <>
       <div className="text-meta text-fg-tertiary mb-4">
         {t('notifications.intro')}
+      </div>
+      <div
+        data-testid="notifications-module-status"
+        data-available={
+          moduleStatus === null ? 'unknown' : moduleStatus.available ? 'true' : 'false'
+        }
+        className={cn(
+          'text-meta mb-4 rounded-md border px-3 py-2',
+          moduleStatus === null && 'border-border-subtle text-fg-tertiary',
+          moduleStatus?.available && 'border-border-subtle text-fg-secondary',
+          moduleStatus && !moduleStatus.available &&
+            'border-amber-500/40 bg-amber-500/5 text-fg-secondary'
+        )}
+      >
+        {moduleStatus === null
+          ? t('notifications.moduleChecking')
+          : moduleStatus.available
+            ? t('notifications.moduleAvailable')
+            : t('notifications.moduleUnavailable')}
       </div>
       <Field label={t('notifications.enable')}>
         <Toggle

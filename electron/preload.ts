@@ -214,6 +214,8 @@ const api = {
     eventType?: 'permission' | 'question' | 'turn_done' | 'test';
     silent?: boolean;
   }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
+  notifyAvailability: (): Promise<{ available: boolean; error: string | null }> =>
+    ipcRenderer.invoke('notify:availability'),
   onNotificationFocus: (handler: (sessionId: string) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
     ipcRenderer.on('notification:focusSession', wrap);
