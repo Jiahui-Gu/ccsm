@@ -26,8 +26,8 @@ await win.evaluate(() => {
 await win.waitForTimeout(300);
 
 const main = win.locator('main');
-const newBtn = main.getByRole('button', { name: /^New Session$/ });
-const importBtn = main.getByRole('button', { name: /^Import Session$/ });
+const newBtn = main.getByRole('button', { name: /^New session$/ });
+const importBtn = main.getByRole('button', { name: /^Import a CLI session$/ });
 await newBtn.waitFor({ state: 'visible', timeout: 5000 });
 await importBtn.waitFor({ state: 'visible', timeout: 5000 });
 
