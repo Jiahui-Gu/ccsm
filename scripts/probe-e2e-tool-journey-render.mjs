@@ -514,6 +514,75 @@ try {
     }
   }
 
+  // ── Journey 10: per-file diff collapse chrome (#302) ───────────────────
+  // Render three sequential Edit tool calls. Each lights up its own DiffView;
+  // we assert the new per-file chrome is wired into the live chat renderer:
+  //   - data-testid="diff-view" container present per tool block
+  //   - data-file-count attribute set to the spec's file count
+  //   - header chip carries chevron button[aria-expanded] + +N/-M counts
+  //
+  // Reverse-verify: stash the data-testid/data-file-count attrs on DiffView
+  // and this journey FAILs because the probe can no longer find the wrapper.
+  {
+    await seed([
+      { kind: 'tool', id: 't-d1', toolUseId: 'tu_d1', name: 'Edit',
+        brief: 'a.ts', expanded: true,
+        input: { file_path: '/a.ts', old_string: 'old_A', new_string: 'NEW_A_TOK' },
+        result: 'ok', isError: false },
+      { kind: 'tool', id: 't-d2', toolUseId: 'tu_d2', name: 'Edit',
+        brief: 'b.ts', expanded: true,
+        input: { file_path: '/b.ts', old_string: 'old_B\nold_B2', new_string: 'NEW_B_TOK\nNEW_B2_TOK' },
+        result: 'ok', isError: false },
+      { kind: 'tool', id: 't-d3', toolUseId: 'tu_d3', name: 'Edit',
+        brief: 'c.ts', expanded: true,
+        input: { file_path: '/c.ts', old_string: '', new_string: 'NEW_C_TOK' },
+        result: 'ok', isError: false },
+    ]);
+    // Tool blocks default to collapsed body; force them open so DiffView mounts.
+    await win.evaluate(() => {
+      document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
+    });
+    await win.waitForTimeout(250);
+
+    const probe = await win.evaluate(() => {
+      const wrappers = Array.from(document.querySelectorAll('[data-testid="diff-view"]'));
+      const fileCounts = wrappers.map((w) => w.getAttribute('data-file-count'));
+      const fileToggleBtns = Array.from(
+        document.querySelectorAll('[data-testid="diff-view"] button[aria-expanded][aria-label^="Toggle file:"]')
+      );
+      const ariaLabels = fileToggleBtns.map((b) => b.getAttribute('aria-label'));
+      const expandedStates = fileToggleBtns.map((b) => b.getAttribute('aria-expanded'));
+      const text = document.body.innerText;
+      // Counts chip should render +X / -Y for each file. We don't pin exact
+      // numbers; we just verify the chip text shape exists at least 3 times.
+      const plusMatches = (text.match(/\+\d+\s*\/\s*-\d+/g) ?? []).length;
+      return {
+        diffViewCount: wrappers.length,
+        fileCounts,
+        toggleBtnCount: fileToggleBtns.length,
+        ariaLabels,
+        expandedStates,
+        plusMatches,
+        sawTokA: text.includes('NEW_A_TOK'),
+        sawTokB: text.includes('NEW_B_TOK'),
+        sawTokC: text.includes('NEW_C_TOK'),
+      };
+    });
+
+    const pass =
+      probe.diffViewCount === 3 &&
+      probe.fileCounts.every((c) => c === '1') &&
+      probe.toggleBtnCount === 3 &&
+      probe.expandedStates.every((s) => s === 'true') &&
+      probe.plusMatches >= 3 &&
+      probe.sawTokA && probe.sawTokB && probe.sawTokC;
+    record('J10 per-file diff collapse chrome wired (#302)',
+      '3 DiffView wrappers, each data-file-count="1", with one button[aria-expanded][aria-label^="Toggle file:"] + a "+N / -M" chip; bodies expanded by default at file_count=1',
+      JSON.stringify(probe),
+      pass,
+      pass ? '' : 'per-file collapse chrome missing or aria-label not in sentence case');
+  }
+
   // ── Journey 9: per-tool-use cancel IPC (#239) ──────────────────────────
   // Reverse-verify: stash ToolBlock's onCancelStalled handler body and this
   // journey FAILs because the click no longer invokes the IPC stub.
