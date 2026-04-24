@@ -163,9 +163,31 @@ declare global {
         body?: string;
         eventType?: 'permission' | 'question' | 'turn_done' | 'test';
         silent?: boolean;
+        extras?: {
+          toastId?: string;
+          sessionName?: string;
+          groupName?: string;
+          toolName?: string;
+          toolBrief?: string;
+          question?: string;
+          selectionKind?: 'single' | 'multi';
+          optionCount?: number;
+          lastUserMsg?: string;
+          lastAssistantMsg?: string;
+          elapsedMs?: number;
+          toolCount?: number;
+          cwd?: string;
+        };
       }) => Promise<boolean>;
       notifyAvailability: () => Promise<{ available: boolean; error: string | null }>;
       onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
+      onNotifyToastAction?: (
+        handler: (e: {
+          sessionId: string;
+          requestId: string;
+          action: 'allow' | 'allow-always' | 'reject' | 'focus';
+        }) => void,
+      ) => () => void;
 
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
