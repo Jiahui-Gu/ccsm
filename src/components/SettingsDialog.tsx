@@ -1,11 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Check } from 'lucide-react';
+import { Check, Copy } from 'lucide-react';
 import * as Checkbox from '@radix-ui/react-checkbox';
 import * as RD from '@radix-ui/react-dialog';
 import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
+import { Tooltip } from './ui/Tooltip';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
@@ -697,6 +698,59 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// Hover-revealed copy affordance for read-only connection values (Base URL,
+// model). Mirrors the CodeBlock copy button pattern: opacity-0 by default,
+// reveals on group-hover or focus-visible, flips to a Check + "Copied"
+// tooltip for ~1.5s after a successful clipboard write.
+function CopyValueButton({ value, idleLabel, copiedLabel }: { value: string; idleLabel: string; copiedLabel: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  const onCopy = useCallback(async () => {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        console.warn('[ConnectionPane] clipboard API unavailable');
+        return;
+      }
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.warn('[ConnectionPane] clipboard write failed', err);
+    }
+  }, [value]);
+
+  const label = copied ? copiedLabel : idleLabel;
+
+  return (
+    <Tooltip content={label} side="left">
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={label}
+        data-copied={copied || undefined}
+        className={cn(
+          'absolute top-1 right-1 inline-grid place-items-center',
+          'h-5 w-5 rounded-md border border-transparent',
+          'text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover',
+          'transition-[opacity,background-color,color] duration-150',
+          '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
+          'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+          'data-[copied]:opacity-100 data-[copied]:text-state-success',
+          'focus-ring outline-none'
+        )}
+      >
+        {copied ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+      </button>
+    </Tooltip>
+  );
+}
+
 function ConnectionPane() {
   const connection = useStore((s) => s.connection);
   const models = useStore((s) => s.models);
@@ -739,21 +793,39 @@ function ConnectionPane() {
       />
 
       <Field label={t('connection.baseUrl')}>
-        <code
-          data-connection-base-url
-          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
-        >
-          {baseUrl ?? t('connection.baseUrlDefault')}
-        </code>
+        <div className="group relative">
+          <code
+            data-connection-base-url
+            className="block px-2 py-1.5 pr-8 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
+          >
+            {baseUrl ?? t('connection.baseUrlDefault')}
+          </code>
+          {baseUrl && (
+            <CopyValueButton
+              value={baseUrl}
+              idleLabel={t('connection.copyBaseUrl')}
+              copiedLabel={t('connection.copied')}
+            />
+          )}
+        </div>
       </Field>
 
       <Field label={t('connection.defaultModel')}>
-        <code
-          data-connection-model
-          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
-        >
-          {model ?? t('connection.modelUnset')}
-        </code>
+        <div className="group relative">
+          <code
+            data-connection-model
+            className="block px-2 py-1.5 pr-8 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
+          >
+            {model ?? t('connection.modelUnset')}
+          </code>
+          {model && (
+            <CopyValueButton
+              value={model}
+              idleLabel={t('connection.copyModel')}
+              copiedLabel={t('connection.copied')}
+            />
+          )}
+        </div>
       </Field>
 
       <Field label={t('connection.authToken')}>
