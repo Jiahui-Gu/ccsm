@@ -114,6 +114,20 @@ the renderer (per-session focus check) and in the main process
 (`BrowserWindow.isFocused()`), so devtools / debuggers / playwright
 sessions can't bypass it.
 
+### Dev mode notifications
+
+Adaptive Toast notifications require a registered AppUserModelID (AUMID)
+plus a Start Menu shortcut that points at the same AUMID. NSIS installs of
+CCSM register both automatically. For `npm run dev` (no installer is run),
+register them once per machine:
+
+```powershell
+pwsh node_modules/@ccsm/notify/scripts/setup-aumid.ps1
+```
+
+Without this, the Adaptive Toast pipeline silently no-ops in dev mode and
+CCSM falls back to plain Electron notifications.
+
 ## Status
 
 This is **MVP**. The author uses it daily as a personal driver. Public release pending.

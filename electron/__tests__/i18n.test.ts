@@ -9,6 +9,8 @@ import {
   getMainLanguage,
   tNotification,
   tTray,
+  tMenu,
+  tDialog,
   resolveSystemLanguage
 } from '../i18n';
 
@@ -63,5 +65,28 @@ describe('main process i18n', () => {
     expect(labels.some((s) => /[\u4e00-\u9fff]/.test(s))).toBe(true);
     expect(tTray('show')).toBe('显示 CCSM');
     expect(tTray('quit')).toBe('退出');
+  });
+
+  it('localizes the app accelerator menu Edit label (en + zh)', () => {
+    setMainLanguage('en');
+    expect(tMenu('edit')).toBe('&Edit');
+    setMainLanguage('zh');
+    // Localized label must contain Chinese characters and preserve the
+    // `&E` accelerator marker so Alt+E still opens the submenu on
+    // Windows/Linux.
+    const zhEdit = tMenu('edit');
+    expect(/[\u4e00-\u9fff]/.test(zhEdit)).toBe(true);
+    expect(zhEdit).toContain('&E');
+  });
+
+  it('localizes native dialog titles (en + zh)', () => {
+    setMainLanguage('en');
+    expect(tDialog('chooseCwd')).toBe('Choose working directory');
+    expect(tDialog('selectClaude')).toBe('Select claude binary');
+    setMainLanguage('zh');
+    const zhCwd = tDialog('chooseCwd');
+    const zhClaude = tDialog('selectClaude');
+    expect(/[\u4e00-\u9fff]/.test(zhCwd)).toBe(true);
+    expect(/[\u4e00-\u9fff]/.test(zhClaude)).toBe(true);
   });
 });

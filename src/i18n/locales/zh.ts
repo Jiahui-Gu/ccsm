@@ -346,6 +346,13 @@ const zh: EnCatalog = {
     quit: '退出',
     tooltip: 'CCSM'
   },
+  menu: {
+    edit: '编辑(&E)'
+  },
+  dialog: {
+    chooseCwd: '选择工作目录',
+    selectClaude: '选择 claude 程序'
+  },
   errors: {
     generic: '出错了。',
     network: '网络错误。请检查连接。',

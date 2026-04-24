@@ -194,12 +194,23 @@ async function getTopModel(): Promise<string | null> {
 // feel "not copyable". Install a minimal, hidden app menu whose only job
 // is to carry those accelerators, and hide the menu bar so it's not
 // visible. On macOS, the default app menu already handles this.
-if (process.platform === 'darwin') {
-  // Let Electron use its default macOS menu.
-} else {
+//
+// Wrapped in a function so language switches via `ccsm:set-language` can
+// rebuild the menu with the localized "Edit" label (mirrors the
+// `applyTrayLocale()` pattern below). The submenu items use Electron
+// `role`s and are localized by the OS automatically.
+function applyAppMenuLocale() {
+  if (process.platform === 'darwin') {
+    // Let Electron use its default macOS menu.
+    return;
+  }
+  // Local require keeps the import graph linear (see the longer comment
+  // near the `ccsm:set-language` handler below).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const i18n = require('./i18n') as typeof import('./i18n');
   const accelMenu = Menu.buildFromTemplate([
     {
-      label: '&Edit',
+      label: i18n.tMenu('edit'),
       submenu: [
         { role: 'undo' },
         { role: 'redo' },
@@ -213,6 +224,7 @@ if (process.platform === 'darwin') {
   ]);
   Menu.setApplicationMenu(accelMenu);
 }
+applyAppMenuLocale();
 
 // Right-click context menu for the renderer — Copy/Cut/Paste/Select All,
 // contextually enabled based on selection + editable state. Attached per
@@ -596,9 +608,11 @@ app.whenReady().then(() => {
   ipcMain.on('ccsm:set-language', (_e, lang: unknown) => {
     if (lang === 'en' || lang === 'zh') {
       i18n.setMainLanguage(lang);
-      // Tray menu / tooltip are built once on app ready; rebuild so a
-      // language switch from Settings is reflected immediately.
+      // Tray menu / tooltip + app accelerator menu are built once on app
+      // ready; rebuild both so a language switch from Settings is reflected
+      // immediately (Edit label, tray show/quit, tooltip).
       applyTrayLocale();
+      applyAppMenuLocale();
     }
   });
   // Seed the active language from the OS at boot, before any window is
@@ -606,6 +620,10 @@ app.whenReady().then(() => {
   // renderer hasn't dispatched yet.
   try {
     i18n.setMainLanguage(i18n.resolveSystemLanguage(app.getLocale()));
+    // Rebuild the app menu now that the seed has flipped the active
+    // language; otherwise the top-level `applyAppMenuLocale()` call left
+    // it stuck on English.
+    applyAppMenuLocale();
   } catch {
     /* ignore — falls through to the default 'en' */
   }
@@ -668,7 +686,7 @@ app.whenReady().then(() => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
     const res = await dialog.showOpenDialog(win, {
       properties: ['openDirectory'],
-      title: 'Choose working directory'
+      title: i18n.tDialog('chooseCwd')
     });
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
@@ -989,7 +1007,7 @@ app.whenReady().then(() => {
         : [{ name: 'All files', extensions: ['*'] }];
     const res = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
-      title: 'Select claude binary',
+      title: i18n.tDialog('selectClaude'),
       filters,
     });
     if (res.canceled || res.filePaths.length === 0) return null;

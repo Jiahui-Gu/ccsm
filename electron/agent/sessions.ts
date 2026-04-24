@@ -163,18 +163,26 @@ const HOOK_PASSTHROUGH_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * How long we wait, after `spawn()` returns, before declaring the child has
- * "successfully started". Two race winners declare success early:
- *   - first byte arriving on the child's stdout or stderr (proves the binary
- *     launched and is producing output);
- *   - the timer expiring with the child still alive (no exit/error event).
- * Failure (`exit` with non-zero code, or libuv `error` event surfaced by the
- * spawner as exitCode -1) inside the window throws a typed
- * `ClaudeSpawnFailedError` instead of returning `{ ok: true }`.
+ * How long `detectEarlyFailure()` waits, after `spawn()` returns, before
+ * concluding the child has "successfully started". The window is a three-way
+ * race resolved in `detectEarlyFailure()`:
+ *   - stdout `'readable'` with bytes queued — proves the binary launched and
+ *     is producing protocol output → resolve healthy. **Stdout only**: stderr
+ *     is intentionally NOT a liveness signal, since a binary can print a
+ *     warning to stderr and still exit non-zero (see contract in the
+ *     `detectEarlyFailure()` doc comment).
+ *   - `cp.wait()` resolving inside the window — process exited (or libuv
+ *     `error` surfaced as exitCode -1). Non-zero/-1 → throw
+ *     `ClaudeSpawnFailedError`; code 0 → resolve healthy.
+ *   - the timer (this constant) firing with the child still alive and silent
+ *     — assume healthy.
  *
- * 800ms is a comfortable upper bound on Windows shim + cmd.exe wrap-up; the
- * common case resolves in <50ms once the CLI's first stdout frame lands, so
- * the success path no longer pays the full window.
+ * Important: the 800ms is **not** awaited on the success path. PR #209 P1
+ * removed the implicit full-window wait by racing stdout against the timer;
+ * the common case now resolves in <50ms once the CLI's first stdout frame
+ * lands. The window only bounds the failure-detection path (waiting long
+ * enough to catch an immediate exit/error). 800ms is a comfortable upper
+ * bound on Windows shim + cmd.exe wrap-up.
  */
 const SPAWN_EARLY_FAILURE_WINDOW_MS = 800;
 

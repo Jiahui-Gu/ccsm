@@ -359,6 +359,13 @@ const en = {
     quit: 'Quit',
     tooltip: 'CCSM'
   },
+  menu: {
+    edit: '&Edit'
+  },
+  dialog: {
+    chooseCwd: 'Choose working directory',
+    selectClaude: 'Select claude binary'
+  },
   errors: {
     generic: 'Something went wrong.',
     network: 'Network error. Check your connection.',
