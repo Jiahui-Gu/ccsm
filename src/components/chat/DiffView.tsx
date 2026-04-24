@@ -110,7 +110,7 @@ export function DiffView({ diff }: { diff: DiffSpec }) {
                       <button
                         type="button"
                         onClick={() => decide(i, 'accepted')}
-                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-visible:ring-1 focus-visible:ring-state-running/60"
+                        className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-state-running hover:border-state-running/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring-success"
                       >
                         {t('chat.diffAccept')}
                       </button>
