@@ -13,11 +13,16 @@ import { useTranslation } from '../i18n/useTranslation';
  *
  *  - Pointer drag updates `sidebarWidth` (px), clamped to [200, 480].
  *  - Double-click resets to the default width.
+ *  - Keyboard accessible (#263): tabbable, ArrowLeft/Right resize by 8px,
+ *    Shift+Arrow by 32px, Home/End snap to min/max, Enter/Esc blur.
  *  - Listeners attach on `pointerdown` and detach on `pointerup`/`pointercancel`
  *    so we never leak.
  *  - Body cursor + select are locked during drag so the cursor doesn't flicker
  *    over child elements and text doesn't get accidentally selected.
  */
+export const SIDEBAR_RESIZER_STEP = 8;
+export const SIDEBAR_RESIZER_STEP_LARGE = 32;
+
 export function SidebarResizer() {
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const setSidebarWidth = useStore((s) => s.setSidebarWidth);
@@ -56,18 +61,53 @@ export function SidebarResizer() {
     [setSidebarWidth]
   );
 
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      const current = useStore.getState().sidebarWidth;
+      const step = e.shiftKey ? SIDEBAR_RESIZER_STEP_LARGE : SIDEBAR_RESIZER_STEP;
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          setSidebarWidth(sanitizeSidebarWidth(current - step));
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          setSidebarWidth(sanitizeSidebarWidth(current + step));
+          break;
+        case 'Home':
+          e.preventDefault();
+          setSidebarWidth(SIDEBAR_WIDTH_MIN);
+          break;
+        case 'End':
+          e.preventDefault();
+          setSidebarWidth(SIDEBAR_WIDTH_MAX);
+          break;
+        case 'Enter':
+        case 'Escape':
+          e.preventDefault();
+          (e.currentTarget as HTMLDivElement).blur();
+          break;
+        default:
+          break;
+      }
+    },
+    [setSidebarWidth]
+  );
+
   return (
     <div
       role="separator"
+      tabIndex={0}
       aria-orientation="vertical"
       aria-label={t('resizerAriaLabel')}
       aria-valuemin={SIDEBAR_WIDTH_MIN}
       aria-valuemax={SIDEBAR_WIDTH_MAX}
       aria-valuenow={sidebarWidth}
       onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
       onDoubleClick={resetSidebarWidth}
       title={t('resizerTooltip', { default: SIDEBAR_WIDTH_DEFAULT })}
-      className="pane-resize-handle shrink-0"
+      className="pane-resize-handle focus-ring shrink-0"
     />
   );
 }
