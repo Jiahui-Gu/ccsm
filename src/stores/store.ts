@@ -6,6 +6,7 @@ import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './draf
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { disposeStreamer } from '../agent/lifecycle';
+import { streamEventToTranslation } from '../agent/stream-to-blocks';
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -317,7 +318,7 @@ type Actions = {
   selectSession: (id: string) => void;
   focusGroup: (id: string | null) => void;
   createSession: (cwd: string | null | CreateSessionOptions) => void;
-  importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string }) => string;
+  importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string; projectDir?: string }) => string;
   renameSession: (id: string, name: string) => void;
   deleteSession: (id: string) => SessionSnapshot | null;
   /** Re-insert a session previously removed by `deleteSession`. Restores the
@@ -574,6 +575,85 @@ export function resolveEffectiveTheme(
 const inFlightLoads = new Set<string>();
 
 /**
+ * Project a sequence of CLI .jsonl frames (assistant / user / system / result)
+ * into our store's MessageBlock format. Mirrors the live agent's reduction
+ * (lifecycle.ts → streamEventToTranslation + setToolResult patches) but runs
+ * synchronously over a finished transcript instead of subscribing to a stream.
+ *
+ * Used by importSession() to hydrate `messagesBySession[id]` immediately on
+ * import — without this the imported chat looks empty until the user sends a
+ * follow-up that triggers `--resume` and replays history. We deliberately
+ * skip stream_event / control_request / control_response / agent_metadata
+ * frames: those are runtime-only artifacts with no rendered representation.
+ */
+export function framesToBlocks(frames: unknown[]): MessageBlock[] {
+  const out: MessageBlock[] = [];
+  for (const raw of frames) {
+    if (!raw || typeof raw !== 'object') continue;
+    const f = raw as { type?: unknown };
+    if (typeof f.type !== 'string') continue;
+    // streamEventToTranslation already silently no-ops on unrecognized
+    // types, so this is safe to feed everything to it.
+    const { append, toolResults } = streamEventToTranslation(f as { type: string });
+    if (append.length > 0) {
+      // Coalesce by id — assistant messages spread across multiple frames
+      // (parallel tool batches share the same message.id with different
+      // tool_use ids in our block-id scheme, so this is mostly a defensive
+      // dedupe rather than load-bearing). Skip duplicates by id.
+      for (const b of append) {
+        const idx = out.findIndex((x) => x.id === b.id);
+        if (idx === -1) out.push(b);
+      }
+    }
+    for (const tr of toolResults) {
+      const idx = out.findIndex(
+        (b) => (b.kind === 'tool' || b.kind === 'todo') && b.toolUseId === tr.toolUseId
+      );
+      if (idx === -1) continue;
+      const target = out[idx];
+      if (target.kind === 'tool') {
+        out[idx] = { ...target, result: tr.result, isError: tr.isError };
+      }
+      // todo blocks don't carry result text, skip — TodoWrite returns void.
+    }
+    // Plain user-text frames aren't emitted by streamEventToTranslation
+    // (the live path renders them via local-echo on send). For imported
+    // history we DO need to surface them, otherwise the chat shows only
+    // assistant turns. Pull text out of `message.content` here.
+    if (f.type === 'user') {
+      const userBlock = userFrameToBlock(raw);
+      if (userBlock) out.push(userBlock);
+    }
+  }
+  return out;
+}
+
+function userFrameToBlock(raw: unknown): MessageBlock | null {
+  const f = raw as { uuid?: unknown; message?: { content?: unknown } };
+  const content = f.message?.content;
+  let text = '';
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue;
+      const p = part as { type?: unknown; text?: unknown };
+      if (p.type === 'text' && typeof p.text === 'string') {
+        text += (text ? '\n' : '') + p.text;
+      }
+      // Skip tool_result parts — those become tool block patches above.
+    }
+  }
+  if (!text) return null;
+  // Slash-command wrappers like `<command-name>...</command-name>` carry
+  // synthetic metadata, not user-typed text. Filter them so the imported
+  // chat looks like the user remembers it.
+  if (text.startsWith('<command-')) return null;
+  const id = typeof f.uuid === 'string' && f.uuid ? `u-${f.uuid}` : `u-${Math.random().toString(36).slice(2, 10)}`;
+  return { kind: 'user', id, text };
+}
+
+/**
  * Compact one-line summary of a tool input for the post-resolution trace
  * block. Picks the most descriptive scalar field (command/path/url/...) and
  * truncates aggressively — the user just needs a hint of what was decided,
@@ -740,7 +820,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
   },
 
-  importSession: ({ name, cwd, groupId, resumeSessionId }) => {
+  importSession: ({ name, cwd, groupId, resumeSessionId, projectDir }) => {
     const { sessions, groups, model, models, connection } = get();
     const id = nextId('s');
     let initialModel = model;
@@ -767,6 +847,37 @@ export const useStore = create<State & Actions>((set, get) => ({
       focusedGroupId: null,
       groups: ensured.groups
     });
+    // Hydrate the imported session's chat from its `.jsonl` so the user sees
+    // the real history immediately, instead of an empty pane until they send
+    // a follow-up. We need both `projectDir` (for the on-disk path) and the
+    // resume sessionId; without `projectDir` we can't safely guess the
+    // encoded directory, so we just leave the chat empty (graceful degrade).
+    if (projectDir && typeof window !== 'undefined' && window.agentory?.loadImportHistory) {
+      const api = window.agentory;
+      void (async () => {
+        try {
+          const frames = await api.loadImportHistory(projectDir, resumeSessionId);
+          if (!Array.isArray(frames) || frames.length === 0) return;
+          const blocks = framesToBlocks(frames);
+          if (blocks.length === 0) return;
+          set((s) => ({
+            messagesBySession: {
+              ...s.messagesBySession,
+              [id]: blocks
+            }
+          }));
+          // Persist to our DB so subsequent loads come from sqlite without
+          // re-parsing the .jsonl. saveMessages is a bulk DELETE+INSERT and
+          // is idempotent.
+          if (typeof api.saveMessages === 'function') {
+            void api.saveMessages(id, blocks);
+          }
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[store] importSession history load failed', err);
+        }
+      })();
+    }
     return id;
   },
 

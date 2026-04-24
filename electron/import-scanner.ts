@@ -14,6 +14,58 @@ export type ScannableSession = {
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 
+// `os.tmpdir()` is platform-aware: returns `%LOCALAPPDATA%\Temp` on Windows,
+// `/tmp` on Linux, `/var/folders/.../T/` on macOS. We capture it at module
+// load — it's a process-wide constant for any given user.
+const TMP_ROOT = os.tmpdir();
+
+/**
+ * Heuristic filter for agentory's own short-lived spawn cwds. Dogfood H found
+ * 92% of `~/.claude/projects/` entries on a real user's machine were
+ * agentory-spawned temporary dirs (paths like `<tmpdir>/agentory-…`), drowning
+ * the import picker in noise.
+ *
+ * Match conditions (any one):
+ *   1. cwd starts with the platform temp dir AND a path segment begins with
+ *      `agentory-` (the prefix our own spawn helpers use).
+ *   2. cwd appears under common cross-platform temp roots and matches the
+ *      same `agentory-` segment rule. Belt-and-suspenders for cases where
+ *      `os.tmpdir()` resolves to a path that doesn't match the on-disk cwd
+ *      verbatim (symlinks, drive-letter casing on Windows).
+ *
+ * Exported for unit testing.
+ */
+export function isAgentoryTempCwd(cwd: string): boolean {
+  if (!cwd || typeof cwd !== 'string') return false;
+  // Normalise separators so the segment check works on both Windows-style
+  // (`\`) and POSIX (`/`) inputs without case-folding the whole path.
+  const normalized = cwd.replace(/\\/g, '/');
+  // Look for any path segment that starts with `agentory-` — this matches
+  // every spawn flavour we use today (`agentory-A2N1-…`, `agentory-bugl-bash`,
+  // `agentory-probe-import-…`, etc.). The leading `/` rules out matching a
+  // user-named directory like `my-agentory-project`.
+  const hasAgentorySegment = /(^|\/)agentory-/.test(normalized);
+  if (!hasAgentorySegment) return false;
+  const tmpNorm = TMP_ROOT.replace(/\\/g, '/');
+  // Case-insensitive prefix on Windows (drive letter case can differ between
+  // `os.tmpdir()` and what the CLI recorded). Cheap on every other platform —
+  // file paths there are case-sensitive but `os.tmpdir()` returns the same
+  // casing the kernel does, so the lower-cased compare still matches.
+  const cwdLow = normalized.toLowerCase();
+  const tmpLow = tmpNorm.toLowerCase();
+  if (cwdLow.startsWith(tmpLow)) return true;
+  // Belt-and-suspenders for common temp roots that `os.tmpdir()` might not
+  // surface (e.g. `/tmp` on macOS where it's actually `/var/folders/...`).
+  const COMMON_TEMP_PREFIXES = ['/tmp/', '/private/tmp/', '/var/folders/'];
+  for (const p of COMMON_TEMP_PREFIXES) {
+    if (cwdLow.startsWith(p)) return true;
+  }
+  // Windows fallback: detect `…/AppData/Local/Temp/` regardless of drive
+  // (some users' OS install lives on D: but tmpdir resolves to C:).
+  if (/\/appdata\/local\/temp\//i.test(cwdLow)) return true;
+  return false;
+}
+
 // Read just enough of the head of a jsonl to determine cwd + a usable title.
 // CLI-written transcripts can be hundreds of MB; we never read the whole file.
 const MAX_HEAD_LINES = 200;
@@ -42,6 +94,9 @@ export async function scanImportableSessions(): Promise<ScannableSession[]> {
       try {
         const head = await readHead(full);
         if (!head) continue;
+        // Drop agentory's own short-lived spawn cwds — they're noise to the
+        // user. See `isAgentoryTempCwd` for the heuristic.
+        if (isAgentoryTempCwd(head.cwd)) continue;
         const stat = await fs.promises.stat(full);
         out.push({
           sessionId,
@@ -72,9 +127,20 @@ function readHead(file: string): Promise<Head | null> {
     let firstUserText = '';
     let model: string | null = null;
     let lines = 0;
+    let firstFrameInspected = false;
+    let isSidechain = false;
     const finish = () => {
       rl.removeAllListeners();
       stream.destroy();
+      // Sub-agent transcripts (those spawned by the Task tool) are not
+      // independently importable — they're a slice of a parent run and
+      // resuming them out of context produces nonsense. The CLI marks them
+      // by setting `parentUuid` non-null OR `isSidechain: true` on the very
+      // first frame. Skip those.
+      if (isSidechain) {
+        resolve(null);
+        return;
+      }
       const title = aiTitle || firstUserText || '(untitled session)';
       if (!cwd && !aiTitle && !firstUserText && !model) {
         resolve(null);
@@ -94,6 +160,14 @@ function readHead(file: string): Promise<Head | null> {
         d = JSON.parse(line);
       } catch {
         return;
+      }
+      if (!firstFrameInspected) {
+        firstFrameInspected = true;
+        if (isSidechainFrame(d)) {
+          isSidechain = true;
+          finish();
+          return;
+        }
       }
       if (typeof d.cwd === 'string' && !cwd) cwd = d.cwd;
       if (d.type === 'ai-title' && typeof d.aiTitle === 'string') {
@@ -165,6 +239,18 @@ export function deriveRecentCwds(
   return out;
 }
 
+// A frame written by the CLI for a sub-agent (Task tool spawn) carries either
+// `parentUuid` (non-null string) or `isSidechain: true` on its first line.
+// Keep this loose — the CLI only sets the field on sub-agent transcripts and
+// regular sessions emit `parentUuid: null` (or omit it entirely).
+export function isSidechainFrame(d: unknown): boolean {
+  if (!d || typeof d !== 'object') return false;
+  const o = d as Record<string, unknown>;
+  if (o.isSidechain === true) return true;
+  if (typeof o.parentUuid === 'string' && o.parentUuid.length > 0) return true;
+  return false;
+}
+
 // Pure head-parsing helper, exported for unit testing. Given an array of jsonl
 // lines (already parsed-back-to-strings or raw), return the same Head shape
 // the streaming reader produces.
@@ -173,6 +259,7 @@ export function parseHead(lines: string[]): Head | null {
   let aiTitle = '';
   let firstUserText = '';
   let model: string | null = null;
+  let firstFrameInspected = false;
   for (let i = 0; i < lines.length && i < MAX_HEAD_LINES; i++) {
     const line = lines[i];
     if (!line) continue;
@@ -181,6 +268,10 @@ export function parseHead(lines: string[]): Head | null {
       d = JSON.parse(line);
     } catch {
       continue;
+    }
+    if (!firstFrameInspected) {
+      firstFrameInspected = true;
+      if (isSidechainFrame(d)) return null;
     }
     if (typeof d.cwd === 'string' && !cwd) cwd = d.cwd;
     if (d.type === 'ai-title' && typeof d.aiTitle === 'string') aiTitle = d.aiTitle;

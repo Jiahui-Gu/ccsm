@@ -162,6 +162,15 @@ const api = {
   topModel: (): Promise<string | null> => ipcRenderer.invoke('import:topModel'),
 
   /**
+   * Read the raw frames of an importable session's `.jsonl` transcript so the
+   * renderer can hydrate `messagesBySession` immediately on import (otherwise
+   * the imported chat looks empty until the user sends a follow-up that
+   * triggers `--resume` history replay).
+   */
+  loadImportHistory: (projectDir: string, sessionId: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('import:loadHistory', projectDir, sessionId),
+
+  /**
    * Best-effort batched existence check. Returns a map keyed by the input
    * path; permission errors and ENOENT both map to `false`. Used by the
    * renderer's hydration migration to flag sessions whose persisted `cwd`
