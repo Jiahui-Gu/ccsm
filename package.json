@@ -1,17 +1,17 @@
 {
-  "name": "agentory",
+  "name": "ccsm",
   "version": "0.1.0",
-  "description": "Group-first manager for many Claude Code sessions",
-  "productName": "Agentory",
+  "description": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
+  "productName": "CCSM",
   "license": "MIT",
   "author": {
     "name": "Jiahui Gu",
-    "email": "noreply@agentory.dev"
+    "email": "noreply@ccsm.dev"
   },
-  "homepage": "https://github.com/Jiahui-Gu/agentory",
+  "homepage": "https://github.com/Jiahui-Gu/Agentory-next",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jiahui-Gu/agentory.git"
+    "url": "https://github.com/Jiahui-Gu/Agentory-next.git"
   },
   "main": "dist/electron/main.js",
   "scripts": {
@@ -103,8 +103,8 @@
     "webpack-dev-server": "^5.2.0"
   },
   "build": {
-    "appId": "com.agentory.app",
-    "productName": "Agentory",
+    "appId": "com.ccsm.app",
+    "productName": "CCSM",
     "copyright": "Copyright (c) 2026 Jiahui Gu",
     "asar": true,
     "asarUnpack": [
@@ -126,7 +126,7 @@
       {
         "provider": "github",
         "owner": "Jiahui-Gu",
-        "repo": "agentory"
+        "repo": "Agentory-next"
       }
     ],
     "win": {
@@ -197,8 +197,8 @@
         }
       ],
       "category": "Development",
-      "maintainer": "Jiahui Gu <noreply@agentory.dev>",
-      "synopsis": "Group-first manager for many Claude Code sessions",
+      "maintainer": "Jiahui Gu <noreply@ccsm.dev>",
+      "synopsis": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
       "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
