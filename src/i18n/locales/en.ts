@@ -93,6 +93,8 @@ const en = {
     diffReject: 'Reject',
     diffAccepted: 'accepted',
     diffRejected: 'rejected',
+    diffFileToggleAria: 'Toggle file: {{path}}',
+    diffCountsAria: '{{added}} added, {{removed}} removed',
     permResolvedAllowed: 'Allowed',
     permResolvedDenied: 'Denied',
     inputBytes: 'input',
