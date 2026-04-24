@@ -200,6 +200,18 @@ const en = {
       normal: 'Normal',
       comfortable: 'Comfortable'
     },
+    windowTint: 'Window tint',
+    windowTintHint:
+      'Faint accent on this window\u2019s title bar to tell parallel Agentory windows apart at a glance. Local to this window only.',
+    windowTintOptions: {
+      none: 'None',
+      slate: 'Slate',
+      sky: 'Sky',
+      mint: 'Mint',
+      amber: 'Amber',
+      rose: 'Rose',
+      violet: 'Violet'
+    },
     language: 'Language',
     languageHint: 'Choose the interface language. Changes apply immediately.',
     languageOptions: {

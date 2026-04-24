@@ -194,6 +194,17 @@ const zh: EnCatalog = {
       normal: '常规',
       comfortable: '宽松'
     },
+    windowTint: '窗口色调',
+    windowTintHint: '为当前窗口的标题栏添加一抹淡色，便于在多开 Agentory 窗口时一眼区分。仅作用于当前窗口。',
+    windowTintOptions: {
+      none: '无',
+      slate: '石板',
+      sky: '天蓝',
+      mint: '薄荷',
+      amber: '琥珀',
+      rose: '玫瑰',
+      violet: '紫罗兰'
+    },
     language: '语言',
     languageHint: '选择界面语言。修改立即生效。',
     languageOptions: {
