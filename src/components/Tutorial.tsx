@@ -75,7 +75,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
               <div className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">
                 {t('tutorial.stepXofY', { current: stepIdx + 1, total: steps.length })}
               </div>
-              <h1 className="text-2xl font-semibold text-fg-primary leading-tight">{step.title}</h1>
+              <h1 className="text-display font-semibold text-fg-primary leading-tight">{step.title}</h1>
               <p className="text-body text-fg-secondary leading-relaxed">{step.body}</p>
               {isLast && (
                 <div className="flex items-center gap-3 pt-4">

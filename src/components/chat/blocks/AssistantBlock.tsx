@@ -46,7 +46,7 @@ export function AssistantBlock({ text, streaming }: { text: string; streaming?: 
                 {children}
               </a>
             ),
-            h1: ({ children }) => <h1 className="text-lg font-semibold mt-3 mb-2">{children}</h1>,
+            h1: ({ children }) => <h1 className="text-display font-semibold mt-3 mb-2">{children}</h1>,
             h2: ({ children }) => <h2 className="text-heading font-semibold mt-3 mb-1.5">{children}</h2>,
             h3: ({ children }) => <h3 className="text-heading font-semibold mt-2 mb-1">{children}</h3>,
             blockquote: ({ children }) => (

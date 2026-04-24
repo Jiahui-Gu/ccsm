@@ -19,7 +19,7 @@ const merge = extendTailwindMerge({
   extend: {
     classGroups: {
       'font-size': [
-        { text: ['meta', 'chrome', 'body', 'heading', 'mono-xs', 'mono-sm', 'mono-md', 'mono-lg'] }
+        { text: ['meta', 'chrome', 'body', 'heading', 'display', 'mono-xs', 'mono-sm', 'mono-md', 'mono-lg'] }
       ]
     }
   }
