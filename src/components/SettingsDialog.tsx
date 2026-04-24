@@ -7,6 +7,7 @@ import { cn } from '../lib/cn';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { Button } from './ui/Button';
 import { Tooltip } from './ui/Tooltip';
+import { Switch } from './ui/Switch';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
@@ -400,21 +401,12 @@ function NotificationsPane() {
     disabled?: boolean;
     ariaLabel?: string;
   }) => (
-    <label
-      className={cn(
-        'inline-flex items-center select-none',
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
-      )}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        aria-label={ariaLabel}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-accent"
-      />
-    </label>
+    <Switch
+      checked={checked}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      onCheckedChange={onChange}
+    />
   );
 
   const onTest = async () => {
@@ -641,11 +633,10 @@ function UpdatesPane() {
       </Field>
       <Field label={t('updates.automaticChecks')} hint={t('updates.automaticChecksHint')}>
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-          <input
-            type="checkbox"
+          <Switch
             checked={autoCheck}
-            onChange={(e) => void onToggleAutoCheck(e.target.checked)}
-            className="h-4 w-4 accent-accent"
+            onCheckedChange={(v) => void onToggleAutoCheck(v)}
+            aria-label={t('updates.automaticChecksToggle')}
           />
           <span className="text-chrome text-fg-secondary">{t('updates.automaticChecksToggle')}</span>
         </label>

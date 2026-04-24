@@ -75,6 +75,14 @@
   --shadow-drag-overlay:
     0 12px 32px -8px oklch(0 0 0 / 0.5),
     0 0 0 1px oklch(1 0 0 / 0.08);
+  /* Tutorial-only ornamentals (#293). The first-run welcome icon needs a
+     two-stop accent gradient (cyan -> indigo) and the visual cards need a
+     deep, warm drop shadow that reads against the dark app surface. These
+     are too specific to belong in --color-accent / --surface-shadow but we
+     still want them as tokens so the light-mode override flows through. */
+  --gradient-tutorial-welcome:
+    linear-gradient(135deg, oklch(0.72 0.14 215) 0%, oklch(0.55 0.18 265) 100%);
+  --shadow-tutorial-card: 0 24px 48px -12px oklch(0 0 0 / 0.5);
   /* 2px focus halo. Token-driven so light mode can pull saturation/lightness
      down — the dark cyan stays vibrant on dark surfaces, but reads as a
      glaring teal smear on near-white. Each mode picks its own oklch(). */
@@ -324,6 +332,13 @@ html.theme-light {
   --shadow-drag-overlay:
     0 12px 32px -8px oklch(0.4 0.02 60 / 0.18),
     0 0 0 1px oklch(0 0 0 / 0.06);
+  /* Tutorial ornamentals — light variant. Drop one lightness step so the
+     white message glyph keeps AA contrast on the welcome bubble, and swap
+     the deep black card shadow for a softer warm one to match the rest of
+     the light surface stack. */
+  --gradient-tutorial-welcome:
+    linear-gradient(135deg, oklch(0.62 0.14 215) 0%, oklch(0.48 0.18 265) 100%);
+  --shadow-tutorial-card: 0 24px 48px -12px oklch(0.4 0.02 60 / 0.20);
   --color-focus-ring: oklch(0.55 0.15 215 / 0.55); /* a11y: boosted opacity for inline-rename + input focus visibility in light mode */
 
   --color-bg-app-foreground: var(--color-fg-primary);
