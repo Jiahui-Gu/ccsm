@@ -2,12 +2,34 @@ import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CodeBlock } from '../../CodeBlock';
+import { Tooltip } from '../../ui/Tooltip';
+import { useTranslation } from '../../../i18n/useTranslation';
+import type { SkillProvenance } from '../../../types';
 
-export function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean }) {
+export function AssistantBlock({
+  text,
+  streaming,
+  viaSkill
+}: {
+  text: string;
+  streaming?: boolean;
+  viaSkill?: SkillProvenance;
+}) {
+  const { t } = useTranslation();
   return (
     <div className="flex gap-3 text-body" data-type-scale-role="assistant-body">
       <span className="text-fg-secondary select-none w-3 shrink-0 font-mono font-semibold leading-[22px]">●</span>
       <div className="text-fg-primary min-w-0 leading-[22px]">
+        {viaSkill && (
+          <Tooltip content={viaSkill.path ?? viaSkill.name} side="top" align="start">
+            <span
+              data-testid="assistant-via-skill-badge"
+              className="inline-flex items-center gap-1 mb-1 px-1.5 py-px rounded border border-border-subtle bg-bg-elevated text-fg-secondary text-meta font-mono select-none cursor-default align-middle"
+            >
+              {t('assistantBlock.viaSkill', { name: viaSkill.name })}
+            </span>
+          </Tooltip>
+        )}
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{

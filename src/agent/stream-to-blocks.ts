@@ -8,7 +8,7 @@ import type {
   ToolUseBlock,
   UserEvent
 } from '../../electron/agent/stream-json-types';
-import type { MessageBlock, TodoItem } from '../types';
+import type { MessageBlock, SkillProvenance, TodoItem } from '../types';
 import { parseQuestions } from './ask-user-question';
 
 export type ToolResultPatch = {
@@ -20,6 +20,15 @@ export type ToolResultPatch = {
 export type StreamTranslation = {
   append: MessageBlock[];
   toolResults: ToolResultPatch[];
+  // When the just-translated event mutated the per-turn skill provenance
+  // — either the assistant invoked a Skill tool_use (set) or the turn
+  // finished via a `result` frame (cleared) — we surface the new value here
+  // so callers that hold per-session state can keep their `activeSkill`
+  // for the next event in sync. `undefined` (the default) means "no
+  // change"; an explicit `null` means "cleared". Live agent path uses this
+  // via lifecycle.ts; the import-history projector in store.ts threads it
+  // through a local var.
+  nextActiveSkill?: SkillProvenance | null;
 };
 
 const EMPTY: StreamTranslation = { append: [], toolResults: [] };
@@ -79,7 +88,36 @@ export type TranslationContext = {
   // frame arrived. Used to demote `error_during_execution` from an error
   // block to a neutral "Interrupted" status banner.
   interrupted?: boolean;
+  // The skill provenance currently in flight for this session's turn, set
+  // by an earlier Skill tool_use and cleared at turn end (`result` frame).
+  // When present, assistant text blocks emitted in this call are stamped
+  // with `viaSkill` so AssistantBlock can render the badge. (Task #318.)
+  activeSkill?: SkillProvenance | null;
 };
+
+// Skill tool name as emitted by claude.exe stream-json. Confirmed in
+// dogfood-logs/bug-186-2026-04-23T16-55-26-819Z.json (toolName: "Skill",
+// input: {"skill":"using-superpowers"}).
+const SKILL_TOOL_NAME = 'Skill';
+
+function readSkillName(input: unknown): string | null {
+  if (!input || typeof input !== 'object') return null;
+  const v = (input as Record<string, unknown>).skill;
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+// Best-effort skill source path. Plugin-namespaced skills (e.g. "pua:p7")
+// live under ~/.claude/plugins/<plugin>/skills/<skill>; user skills live
+// under ~/.claude/skills/<name>. Mirrors the discovery order in
+// electron/commands-loader.ts. The renderer can't actually stat disk so
+// this is a tooltip hint, not a clickable resolved file.
+export function skillSourcePath(name: string): string {
+  if (name.includes(':')) {
+    const [plugin, skill] = name.split(':', 2);
+    return `~/.claude/plugins/${plugin}/skills/${skill}/SKILL.md`;
+  }
+  return `~/.claude/skills/${name}/SKILL.md`;
+}
 
 export function streamEventToTranslation(
   event: ClaudeStreamEvent | { type: string },
@@ -87,20 +125,49 @@ export function streamEventToTranslation(
 ): StreamTranslation {
   switch (event.type) {
     case 'assistant':
-      return { append: assistantBlocksWithError(event as AssistantEvent), toolResults: [] };
+      return assistantTranslation(event as AssistantEvent, ctx);
     case 'user':
       return { append: [], toolResults: extractToolResults(event as UserEvent) };
     case 'system':
       return { append: systemBlocks(event as SystemEvent), toolResults: [] };
     case 'result':
-      return { append: resultBlocks(event as ResultEvent, ctx), toolResults: [] };
+      // End-of-turn: clear any in-flight skill provenance so the next
+      // turn doesn't inherit it.
+      return {
+        append: resultBlocks(event as ResultEvent, ctx),
+        toolResults: [],
+        nextActiveSkill: ctx.activeSkill ? null : undefined
+      };
     default:
       return EMPTY;
   }
 }
 
-function assistantBlocksWithError(msg: AssistantEvent): MessageBlock[] {
-  const out = assistantBlocks(msg);
+function assistantTranslation(msg: AssistantEvent, ctx: TranslationContext): StreamTranslation {
+  // Pre-scan content for a Skill tool_use — if present we update the per-turn
+  // active skill BEFORE stamping any text blocks in this same event, so a
+  // single AssistantEvent that interleaves a Skill call with subsequent text
+  // (rare but possible) tags the text correctly.
+  let activeSkill: SkillProvenance | null | undefined = ctx.activeSkill ?? null;
+  let nextActiveSkill: SkillProvenance | null | undefined = undefined;
+  const content: ContentBlock[] = msg.message?.content ?? [];
+  for (const c of content) {
+    if (c.type === 'tool_use' && (c as ToolUseBlock).name === SKILL_TOOL_NAME) {
+      const skillName = readSkillName((c as ToolUseBlock).input);
+      if (skillName) {
+        const next: SkillProvenance = { name: skillName, path: skillSourcePath(skillName) };
+        activeSkill = next;
+        nextActiveSkill = next;
+      }
+    }
+  }
+
+  const out = assistantBlocksWithError(msg, activeSkill ?? undefined);
+  return { append: out, toolResults: [], nextActiveSkill };
+}
+
+function assistantBlocksWithError(msg: AssistantEvent, activeSkill?: SkillProvenance): MessageBlock[] {
+  const out = assistantBlocks(msg, activeSkill);
   const err = msg.error;
   if (err === 'rate_limit') {
     out.push({
@@ -168,14 +235,16 @@ function systemBlocks(msg: SystemEvent): MessageBlock[] {
   return [];
 }
 
-function assistantBlocks(msg: AssistantEvent): MessageBlock[] {
+function assistantBlocks(msg: AssistantEvent, activeSkill?: SkillProvenance): MessageBlock[] {
   const out: MessageBlock[] = [];
   const baseId = msg.message?.id ?? msg.uuid ?? cryptoRandom();
   const content: ContentBlock[] = msg.message?.content ?? [];
   for (let idx = 0; idx < content.length; idx++) {
     const c = content[idx];
     if (c.type === 'text' && typeof c.text === 'string') {
-      out.push({ kind: 'assistant', id: `${baseId}:c${idx}`, text: c.text });
+      const block: MessageBlock = { kind: 'assistant', id: `${baseId}:c${idx}`, text: c.text };
+      if (activeSkill) (block as { viaSkill?: SkillProvenance }).viaSkill = activeSkill;
+      out.push(block);
     } else if (c.type === 'tool_use') {
       const tu = c as ToolUseBlock;
       // Block id MUST be derived from the globally-unique `tool_use.id`

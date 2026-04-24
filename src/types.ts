@@ -76,9 +76,26 @@ export interface ImageAttachment {
   size: number;
 }
 
+// Provenance marker on assistant text blocks emitted while a Skill tool
+// invocation is in flight for the current turn. Surfaced as a small
+// "via skill: <name>" badge in AssistantBlock so users can tell when a
+// reply is being driven by a Skill (Task #318) — this is discoverability,
+// not a quality signal: skills running is correct behavior.
+export interface SkillProvenance {
+  // The skill name as the Skill tool received it (e.g. "using-superpowers"
+  // or "pua:pua-loop"). Plugin-namespaced skills carry the `<plugin>:<skill>`
+  // form and are rendered verbatim.
+  name: string;
+  // Best-effort filesystem path for the tooltip. Renderer-side derivation
+  // since the renderer can't list disk; matches the convention in
+  // electron/commands-loader.ts (skills under ~/.claude/skills/<name> or
+  // ~/.claude/plugins/<plugin>/skills/<skill>).
+  path?: string;
+}
+
 export type MessageBlock =
   | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
-  | { kind: 'assistant'; id: string; text: string; streaming?: boolean }
+  | { kind: 'assistant'; id: string; text: string; streaming?: boolean; viaSkill?: SkillProvenance }
   | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean; input?: unknown }
   | { kind: 'todo'; id: string; toolUseId?: string; todos: TodoItem[] }
   | {
