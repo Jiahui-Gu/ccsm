@@ -46,7 +46,7 @@ beforeEach(() => {
     StubResizeObserver;
 });
 
-import { render, cleanup, act } from '@testing-library/react';
+import { render, cleanup, act, fireEvent } from '@testing-library/react';
 import { ChatStream } from '../src/components/ChatStream';
 import { useStore } from '../src/stores/store';
 import type { MessageBlock } from '../src/types';
@@ -261,6 +261,117 @@ describe('ToolBlock UX triad', () => {
         after!.click();
       });
       expect(cancelSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// #304 — auto-expand a ToolBlock when the user most needs to see its body:
+//   (a) on initial render if the tool already failed (`isError === true`)
+//   (b) when the stall escalation threshold (#208 / 90s) fires
+// In both cases the user can still manually collapse afterwards; once they
+// touch the chevron we lock in their choice (`userToggledRef`) so subsequent
+// re-renders / new triggers don't override them.
+describe('ToolBlock #304 auto-expand', () => {
+  it('auto-expands an errored tool block on first render', () => {
+    seed([
+      {
+        kind: 'tool',
+        id: 't-err-1',
+        name: 'Bash',
+        brief: 'fail',
+        expanded: false,
+        toolUseId: 'tu-err-1',
+        result: 'permission denied',
+        isError: true
+      }
+    ]);
+    const { container } = render(<ChatStream />);
+    const btn = container.querySelector('button[aria-expanded]');
+    expect(btn).toBeTruthy();
+    expect(btn?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('keeps a healthy tool block collapsed by default', () => {
+    seed([
+      {
+        kind: 'tool',
+        id: 't-ok-1',
+        name: 'Bash',
+        brief: 'ls',
+        expanded: false,
+        toolUseId: 'tu-ok-1',
+        result: 'a\nb\n',
+        isError: false
+      }
+    ]);
+    const { container } = render(<ChatStream />);
+    const btn = container.querySelector('button[aria-expanded]');
+    expect(btn).toBeTruthy();
+    expect(btn?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('lets the user collapse an auto-expanded error block and stays collapsed', () => {
+    seed([
+      {
+        kind: 'tool',
+        id: 't-err-2',
+        name: 'Bash',
+        brief: 'fail',
+        expanded: false,
+        toolUseId: 'tu-err-2',
+        result: 'permission denied',
+        isError: true
+      }
+    ]);
+    const { container } = render(<ChatStream />);
+    const btn = container.querySelector('button[aria-expanded]') as HTMLButtonElement | null;
+    expect(btn).toBeTruthy();
+    expect(btn!.getAttribute('aria-expanded')).toBe('true');
+    // User collapses.
+    act(() => {
+      fireEvent.click(btn!);
+    });
+    expect(btn!.getAttribute('aria-expanded')).toBe('false');
+    // Force a re-render of the same block (no state change). The user choice
+    // must persist — auto-expand must NOT slam it back open.
+    act(() => {
+      useStore.setState({ messagesBySession: { ...useStore.getState().messagesBySession } });
+    });
+    expect(btn!.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('auto-expands when stall escalates past 90s', async () => {
+    const base = 1_700_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(base);
+    try {
+      seed([
+        {
+          kind: 'tool',
+          id: 't-stall-1',
+          name: 'Bash',
+          brief: 'sleep 120',
+          expanded: false,
+          toolUseId: 'tu-stall-1'
+          // no result -> in-flight
+        }
+      ]);
+      const { container } = render(<ChatStream />);
+      const btn = container.querySelector('button[aria-expanded]');
+      expect(btn?.getAttribute('aria-expanded')).toBe('false');
+
+      // Jump 95s (past the 90s STALL_ESCALATE_AFTER_MS) and let the parent
+      // interval tick re-feed `now`.
+      await act(async () => {
+        vi.setSystemTime(base + 95_000);
+        vi.advanceTimersByTime(200);
+      });
+
+      expect(container.querySelector('[data-testid="tool-stall-escalated"]')).toBeTruthy();
+      expect(btn?.getAttribute('aria-expanded')).toBe('true');
     } finally {
       vi.useRealTimers();
     }
