@@ -159,4 +159,49 @@ describe('InputBar: diff-comment prepend on send', () => {
     });
     expect(screen.queryByText(/diff comments will be sent/i)).toBeNull();
   });
+
+  it('clicking the indicator scrolls the FIRST pending comment (smallest line) into view', () => {
+    freshStoreWithSession(SID, { started: true });
+    // Add comments out of order — the indicator must still scroll the
+    // smallest-line one (matches serializeDiffCommentsForPrompt order).
+    act(() => {
+      useStore.getState().addDiffComment(SID, { file: '/a.ts', line: 5, text: 'fifth' });
+      useStore.getState().addDiffComment(SID, { file: '/a.ts', line: 1, text: 'first' });
+      useStore.getState().addDiffComment(SID, { file: '/a.ts', line: 3, text: 'third' });
+    });
+    // Resolve the comment ids the way the click handler will: by walking the
+    // store and picking (file asc, line asc, createdAt asc).
+    const bucket = useStore.getState().pendingDiffComments[SID]!;
+    const sorted = Object.values(bucket).sort((a, b) => a.line - b.line);
+    const firstId = sorted[0].id;
+
+    // Mount fake chip elements representing the rendered DiffView. We mount
+    // them in DOM order DIFFERENT from line order so a naive
+    // `querySelector('[data-diff-comment-chip]')` would pick the wrong one.
+    const wrap = document.createElement('div');
+    sorted
+      .slice()
+      .reverse()
+      .forEach((c) => {
+        const chip = document.createElement('button');
+        chip.setAttribute('data-diff-comment-chip', '');
+        chip.setAttribute('data-diff-comment-id', c.id);
+        wrap.appendChild(chip);
+      });
+    document.body.appendChild(wrap);
+    const firstEl = wrap.querySelector(
+      `[data-diff-comment-id="${firstId}"]`
+    ) as HTMLElement;
+    const scrollSpy = vi.fn();
+    firstEl.scrollIntoView = scrollSpy as unknown as Element['scrollIntoView'];
+
+    stubCCSM();
+    render(<InputBar sessionId={SID} />);
+    const indicator = screen.getByText(/3 diff comments will be sent/i);
+    fireEvent.click(indicator);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+
+    document.body.removeChild(wrap);
+  });
 });

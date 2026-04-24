@@ -777,11 +777,38 @@ export function InputBar({ sessionId }: { sessionId: string }) {
         </div>
         <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
           {pendingDiffCommentsCount > 0 && (
-            <MetaLabel
+            <Button
+              variant="ghost"
+              size="xs"
               title={t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
+              onClick={() => {
+                // Locate the first pending diff comment for this session
+                // (sorted by file path asc, then line asc, then createdAt asc —
+                // matches the deterministic order used by
+                // serializeDiffCommentsForPrompt) and scroll the chip into
+                // view. If the chip isn't currently mounted (chat scrolled
+                // away, file collapsed, etc.) we silently no-op rather than
+                // log — there's no useful action the user could take.
+                const bucket = useStore.getState().pendingDiffComments[sessionId];
+                if (!bucket) return;
+                const list = Object.values(bucket);
+                if (list.length === 0) return;
+                list.sort((a, b) => {
+                  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+                  if (a.line !== b.line) return a.line - b.line;
+                  return a.createdAt - b.createdAt;
+                });
+                const first = list[0];
+                const el = document.querySelector(
+                  `[data-diff-comment-id="${first.id}"]`
+                ) as HTMLElement | null;
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              className="font-mono text-mono-xs tracking-wider text-fg-tertiary"
             >
               {t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
-            </MetaLabel>
+            </Button>
           )}
           {queueLength > 0 && (
             <MetaLabel title={t('chat.queueChip', { count: queueLength })}>

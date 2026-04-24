@@ -478,6 +478,7 @@ function DiffLineRow({
             type="button"
             onClick={onOpenComposer}
             data-diff-comment-chip=""
+            data-diff-comment-id={comment.id}
             title={comment.text}
             aria-label={t('task303.diffEditCommentAria')}
             className="mr-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary hover:text-fg-secondary hover:border-border-default transition-colors duration-150 ease-out outline-none focus-ring text-mono-xs font-mono"
