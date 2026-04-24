@@ -831,7 +831,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           className={cn(
             'flex items-center gap-2.5 h-9 pl-3 pr-2 rounded-sm text-chrome',
             'bg-bg-active text-fg-primary font-medium',
-            'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.5),0_0_0_1px_oklch(1_0_0_/_0.08)]',
+            'shadow-[var(--shadow-drag-overlay)]',
             'w-60'
           )}
         >

@@ -140,7 +140,7 @@ export function TopBanner({
           {body !== undefined && body !== null && (
             <span
               className={cn(
-                'text-[11px] truncate opacity-90',
+                'text-meta truncate opacity-90',
                 typeof body === 'string' && 'font-mono'
               )}
             >
