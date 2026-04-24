@@ -1,7 +1,8 @@
 import React from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { CwdPopover } from '../src/components/CwdPopover';
+import { useStore } from '../src/stores/store';
 
 const SAMPLE = [
   '/home/alice/projects/agentory',
@@ -41,6 +42,13 @@ async function openPopover() {
 }
 
 describe('<CwdPopover />', () => {
+  // The popover's open state now lives on the global store (PR #221:
+  // openPopoverId mutex). Reset between tests so a leftover "cwd" slot from
+  // the previous case doesn't make the next click toggle the popover shut.
+  beforeEach(() => {
+    useStore.setState({ openPopoverId: null });
+  });
+
   it('renders the trigger labelled with the last cwd path segment', () => {
     renderPopover();
     expect(screen.getByRole('button', { name: /agentory/i })).toBeInTheDocument();

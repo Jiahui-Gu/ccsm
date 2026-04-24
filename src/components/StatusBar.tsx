@@ -60,6 +60,9 @@ type ChipOption<V extends string> =
   | { kind: 'label'; primary: string };
 
 type ChipMenuProps<V extends string> = {
+  /** Stable id for the global popover-mutex slot. Two ChipMenu instances must
+   *  not share the same id. */
+  popoverId: string;
   label: string;
   triggerLabel: string;
   triggerTitle?: string;
@@ -69,6 +72,7 @@ type ChipMenuProps<V extends string> = {
 };
 
 function ChipMenu<V extends string>({
+  popoverId,
   label,
   triggerLabel,
   triggerTitle,
@@ -76,8 +80,26 @@ function ChipMenu<V extends string>({
   options,
   onSelect
 }: ChipMenuProps<V>) {
+  // Bind Radix's controlled `open` to the global mutex slot so opening any
+  // other popover (or another ChipMenu) auto-closes this one. Radix would
+  // otherwise own its open state internally and never react to a sibling's
+  // openPopoverId change.
+  const open = useStore((s) => s.openPopoverId === popoverId);
+  const openPopover = useStore((s) => s.openPopover);
+  const closePopover = useStore((s) => s.closePopover);
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      open={open}
+      // Non-modal: clicks on other StatusBar chips (cwd, sibling chip) must
+      // reach their triggers and route through the global popover mutex —
+      // the default modal=true installs a pointer-events guard on <body> that
+      // blocks every click outside the menu, breaking cross-popover dismiss.
+      modal={false}
+      onOpenChange={(next) => {
+        if (next) openPopover(popoverId);
+        else closePopover(popoverId);
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <Chip title={triggerTitle} accent={triggerAccent}>{triggerLabel}</Chip>
       </DropdownMenuTrigger>
@@ -197,6 +219,7 @@ export function StatusBar({
     cwdChip,
     <ChipMenu
       key="model"
+      popoverId="model"
       label={t('statusBar.model')}
       triggerLabel={modelTriggerLabel}
       options={modelOptions}
@@ -204,6 +227,7 @@ export function StatusBar({
     />,
     <ChipMenu
       key="permission"
+      popoverId="permission"
       label={t('statusBar.permissionMode')}
       triggerLabel={primaryOf(permissionOptions, permission)}
       triggerTitle={permissionTooltips[permission]}
