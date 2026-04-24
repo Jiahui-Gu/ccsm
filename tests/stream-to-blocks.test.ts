@@ -480,3 +480,128 @@ describe('PartialAssistantStreamer (stream-json)', () => {
     ).toBeNull();
   });
 });
+
+describe('streamEventToTranslation — Skill provenance (#318)', () => {
+  it('Skill tool_use sets nextActiveSkill so the next assistant text block is tagged', () => {
+    // First event: assistant invokes the Skill tool. There is no text in the
+    // same event yet — the skill output lands in a SUBSEQUENT assistant
+    // event after the tool_result echoes back.
+    const skillEvt = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-skill',
+        message: {
+          id: 'm-skill',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu-skill', name: 'Skill', input: { skill: 'using-superpowers' } }
+          ]
+        }
+      })
+    );
+    expect(skillEvt.nextActiveSkill).toEqual({
+      name: 'using-superpowers',
+      path: '~/.claude/skills/using-superpowers/SKILL.md'
+    });
+    // The Skill tool_use itself should still render as a tool block — the
+    // user can see the invocation. The badge is purely about the text turn
+    // that FOLLOWS the skill.
+    expect(skillEvt.append.find((b) => b.kind === 'tool' && b.name === 'Skill')).toBeTruthy();
+
+    // Second event: assistant text generated WHILE the skill is active.
+    // Caller (lifecycle.ts) threads activeSkill from the first event into
+    // the ctx for the second.
+    const textEvt = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-after',
+        message: {
+          id: 'm-after',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Doing the skill thing.' }]
+        }
+      }),
+      { activeSkill: skillEvt.nextActiveSkill ?? null }
+    );
+    expect(textEvt.append).toHaveLength(1);
+    const a = textEvt.append[0] as { kind: string; viaSkill?: { name: string; path?: string } };
+    expect(a.kind).toBe('assistant');
+    expect(a.viaSkill).toEqual({
+      name: 'using-superpowers',
+      path: '~/.claude/skills/using-superpowers/SKILL.md'
+    });
+  });
+
+  it('plugin-namespaced skill name produces a plugins/<plugin>/skills path', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-plug',
+        message: {
+          id: 'm-plug',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu-p', name: 'Skill', input: { skill: 'pua:p7' } }
+          ]
+        }
+      })
+    );
+    expect(out.nextActiveSkill).toEqual({
+      name: 'pua:p7',
+      path: '~/.claude/plugins/pua/skills/p7/SKILL.md'
+    });
+  });
+
+  it('result frame clears the active skill so the next turn does not inherit it', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: 's',
+        uuid: 'r1'
+      }),
+      { activeSkill: { name: 'using-superpowers' } }
+    );
+    expect(out.nextActiveSkill).toBeNull();
+  });
+
+  it('assistant text without an active skill is not stamped', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-plain',
+        message: {
+          id: 'm-plain',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Plain reply.' }]
+        }
+      })
+    );
+    const a = out.append[0] as { kind: string; viaSkill?: unknown };
+    expect(a.kind).toBe('assistant');
+    expect(a.viaSkill).toBeUndefined();
+  });
+
+  it('Skill tool_use with malformed input (no string `skill`) does not set provenance', () => {
+    const out = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'msg-bad-skill',
+        message: {
+          id: 'm-bs',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu-bs', name: 'Skill', input: { not_skill: true } }
+          ]
+        }
+      })
+    );
+    expect(out.nextActiveSkill).toBeUndefined();
+  });
+});

@@ -127,6 +127,12 @@ const en = {
   chatStream: {
     emptyHint: 'Type a message and press'
   },
+  assistantBlock: {
+    // Sentence case — surfaced as a small badge above any assistant text
+    // generated while a Skill tool invocation is active. Discoverability
+    // marker only, not a quality signal. Task #318.
+    viaSkill: 'via skill: {{name}}'
+  },
   sidebar: {
     newSession: 'New Session',
     newSessionInThisGroup: 'New session in this group',

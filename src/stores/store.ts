@@ -612,13 +612,23 @@ const inFlightLoads = new Set<string>();
  */
 export function framesToBlocks(frames: unknown[]): MessageBlock[] {
   const out: MessageBlock[] = [];
+  // Per-turn skill provenance threaded across frames so assistant text
+  // generated after a Skill tool_use carries the `viaSkill` badge in
+  // imported / hydrated history just like the live path (Task #318).
+  let activeSkill: import('../types').SkillProvenance | null = null;
   for (const raw of frames) {
     if (!raw || typeof raw !== 'object') continue;
     const f = raw as { type?: unknown };
     if (typeof f.type !== 'string') continue;
     // streamEventToTranslation already silently no-ops on unrecognized
     // types, so this is safe to feed everything to it.
-    const { append, toolResults } = streamEventToTranslation(f as { type: string });
+    const { append, toolResults, nextActiveSkill } = streamEventToTranslation(
+      f as { type: string },
+      { activeSkill }
+    );
+    if (nextActiveSkill !== undefined) {
+      activeSkill = nextActiveSkill;
+    }
     if (append.length > 0) {
       // Coalesce by id — assistant messages spread across multiple frames
       // (parallel tool batches share the same message.id with different

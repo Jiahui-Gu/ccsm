@@ -4,11 +4,16 @@ import { parseQuestions } from './ask-user-question';
 import { dispatchNotification, handleNotificationFocus } from '../notifications/dispatch';
 import { buildUserContentBlocks } from '../lib/attachments';
 import { i18next } from '../i18n';
-import type { MessageBlock } from '../types';
+import type { MessageBlock, SkillProvenance } from '../types';
 
 let installed = false;
 
 const streamers = new Map<string, PartialAssistantStreamer>();
+// Per-turn skill provenance for each session. Set when the assistant invokes
+// the `Skill` tool, cleared on `result`. Threaded into streamEventToTranslation
+// so subsequent assistant text blocks in the same turn carry `viaSkill` for
+// the AssistantBlock badge (Task #318).
+const activeSkillBySession = new Map<string, SkillProvenance | null>();
 // Wall-clock timestamps for currently-running turns. We use elapsed time as
 // one of the signals for whether a `turn_done` is worth notifying about — a
 // fast turn that wraps in <15s is rarely worth surfacing, but a long-running
@@ -33,6 +38,7 @@ function streamerFor(sessionId: string): PartialAssistantStreamer {
 export function disposeStreamer(sessionId: string): void {
   streamers.delete(sessionId);
   turnStartedAt.delete(sessionId);
+  activeSkillBySession.delete(sessionId);
 }
 
 type BackgroundWaitingHandler = (info: { sessionId: string; sessionName: string; prompt: string }) => void;
@@ -201,9 +207,13 @@ export function subscribeAgentEvents(): void {
     const store = useStore.getState();
     const ctx =
       e.message.type === 'result'
-        ? { interrupted: store.consumeInterrupted(e.sessionId) }
-        : {};
-    const { append, toolResults } = streamEventToTranslation(e.message, ctx);
+        ? { interrupted: store.consumeInterrupted(e.sessionId), activeSkill: activeSkillBySession.get(e.sessionId) ?? null }
+        : { activeSkill: activeSkillBySession.get(e.sessionId) ?? null };
+    const { append, toolResults, nextActiveSkill } = streamEventToTranslation(e.message, ctx);
+    if (nextActiveSkill !== undefined) {
+      if (nextActiveSkill === null) activeSkillBySession.delete(e.sessionId);
+      else activeSkillBySession.set(e.sessionId, nextActiveSkill);
+    }
     if (append.length > 0) store.appendBlocks(e.sessionId, append);
     for (const tr of toolResults) {
       store.setToolResult(e.sessionId, tr.toolUseId, tr.result, tr.isError);
