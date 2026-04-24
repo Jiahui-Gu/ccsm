@@ -750,6 +750,109 @@ try {
       passCancellingState ? '' : 'no transient state — user cannot tell whether the click registered');
   }
 
+  // ── Journey 11: elapsed counter pauses while permission is pending (#311) ─
+  // Bug #248-1: the elapsed counter started ticking at REQUEST time (when the
+  // assistant emitted tool_use) rather than EXECUTION time (when permission
+  // resolved + the tool actually started running). Result: a user staring
+  // at the permission prompt for 90s would see a "still no result" stall
+  // banner fire even though nothing had run yet.
+  //
+  // Reverse-verify: revert ChatStream.tsx + renderBlock.tsx + ToolBlock.tsx
+  // to drop the `permissionPending` plumbing — this journey FAILs because
+  // the elapsed chip / stall escalation banner re-appear during the gate.
+  {
+    // Seed: an in-flight tool block followed by a waiting/permission block
+    // for the SAME toolName. Use the Date.now patching trick to fast-forward
+    // 95s so without the fix the escalation banner would render.
+    await win.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      window.__realDateNow = realNow;
+      window.__nowOffset = 0;
+      Date.now = () => realNow() + window.__nowOffset;
+    });
+    await seed([
+      { kind: 'user', id: 'u-pp', text: 'run a command' },
+      { kind: 'tool', id: 't-pp', toolUseId: 'tu-pp-1', name: 'Bash',
+        brief: 'rm -rf node_modules', expanded: false /* in-flight: no result */ },
+      { kind: 'waiting', id: 'wait-pp', intent: 'permission',
+        requestId: 'req-pp', toolName: 'Bash',
+        prompt: 'Bash: rm -rf node_modules',
+        toolInput: { command: 'rm -rf node_modules' } },
+    ]);
+    // Fast-forward 95s of wall-clock and force a render tick.
+    await win.evaluate(() => {
+      window.__nowOffset = 95_000;
+      window.__ccsmStore.getState().appendBlocks('s-tool', [
+        { kind: 'assistant', id: 'a-noop-pp', text: '' },
+      ]);
+    });
+    await win.waitForTimeout(400);
+
+    const pendingProbe = await win.evaluate(() => ({
+      hasElapsed: !!document.querySelector('[data-testid="tool-elapsed"]'),
+      hasStalled: !!document.querySelector('[data-testid="tool-stalled"]'),
+      hasEscalated: !!document.querySelector('[data-testid="tool-stall-escalated"]'),
+      hasCancel: !!document.querySelector('[data-testid="tool-stall-cancel"]'),
+      hasPermissionPrompt:
+        !!document.querySelector('[data-testid="permission-prompt"]') ||
+        document.body.innerText.includes('rm -rf node_modules'),
+    }));
+    const pausedPass =
+      pendingProbe.hasElapsed === false &&
+      pendingProbe.hasStalled === false &&
+      pendingProbe.hasEscalated === false &&
+      pendingProbe.hasCancel === false &&
+      pendingProbe.hasPermissionPrompt === true;
+    record('J11a elapsed counter + stall banners suppressed while permission pending (#311)',
+      'no tool-elapsed / tool-stalled / tool-stall-escalated / tool-stall-cancel rendered when a sibling waiting/permission block targets this tool, even after 95s wall-clock advance',
+      JSON.stringify(pendingProbe),
+      pausedPass,
+      pausedPass ? '' : 'elapsed/stall UI fires during the permission gate — the user sees "still no result" before the tool has even started running');
+
+    // Now resolve the permission (remove the waiting block) and verify the
+    // counter starts ticking from ZERO at gate-clear, not retroactively from
+    // tool_use arrival.
+    await win.evaluate(() => {
+      const store = window.__ccsmStore;
+      const blocks = store.getState().messagesBySession['s-tool'].filter((b) => b.kind !== 'waiting');
+      store.setState({ messagesBySession: { 's-tool': blocks } });
+    });
+    await win.waitForTimeout(200);
+
+    // Capture elapsed immediately after gate clears — should be ~0s, NOT ~95s.
+    const justClearedText = await win.evaluate(() =>
+      document.querySelector('[data-testid="tool-elapsed"]')?.textContent ?? null);
+    // Advance another 2s and confirm the counter ticks normally.
+    await win.evaluate(() => { window.__nowOffset = 95_000 + 2_000; });
+    await win.waitForTimeout(300);
+    const afterTickText = await win.evaluate(() =>
+      document.querySelector('[data-testid="tool-elapsed"]')?.textContent ?? null);
+
+    // Parse "<num>.<num>s" → seconds.
+    const parseSec = (s) => {
+      if (!s) return NaN;
+      const m = s.match(/^(\d+)\.(\d)s$/);
+      return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 10 : NaN;
+    };
+    const justSec = parseSec(justClearedText);
+    const tickSec = parseSec(afterTickText);
+    const startsFromZero = !isNaN(justSec) && justSec < 1.5;
+    const ticksAfter = !isNaN(tickSec) && tickSec >= 1.5 && tickSec < 5.0;
+    const noEscalation = await win.evaluate(() =>
+      !document.querySelector('[data-testid="tool-stall-escalated"]'));
+    const resumePass = startsFromZero && ticksAfter && noEscalation;
+    record('J11b elapsed counter starts from zero at execution-begin, not request-time (#311)',
+      'after permission resolves: tool-elapsed ~0s (NOT ~95s carried over), then advances by ~2s on next tick, no escalation banner',
+      `justCleared="${justClearedText}" (${justSec}s), afterTick="${afterTickText}" (${tickSec}s), noEscalation=${noEscalation}`,
+      resumePass,
+      resumePass ? '' : 'elapsed counter retroactively counted the permission-pending window — execution-time semantics broken');
+
+    // Restore Date.now so subsequent journeys (none today, but defensive) aren't affected.
+    await win.evaluate(() => {
+      if (window.__realDateNow) Date.now = window.__realDateNow;
+    });
+  }
+
   // ── summary matrix ──────────────────────────────────────────────────────
   console.log('\n=== consistency matrix ===');
   for (const r of results) {

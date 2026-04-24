@@ -192,11 +192,43 @@ export function ChatStream() {
                     break;
                   }
                 }
+                // Bug #248-1: the bash elapsed counter starts at REQUEST time
+                // (assistant's tool_use lands → ToolBlock first-render captures
+                // Date.now()), not at EXECUTION time. When a permission gate
+                // intercepts, the user can spend 90s+ deciding while the
+                // counter ticks and the stall / "still no result" escalation
+                // banners fire — misleading, since the tool hasn't even
+                // started running. We mark each in-flight tool block whose
+                // toolName matches a SUBSEQUENT pending permission block as
+                // permission-pending; ToolBlock then suppresses the elapsed
+                // chip + stall banners and defers `startedAtRef` capture
+                // until the gate clears. Matching by toolName-after-this-tool
+                // is enough in practice because claude.exe serializes
+                // permission prompts; the waiting block doesn't carry a
+                // toolUseId we could match more precisely.
+                const permissionPendingToolIds = new Set<string>();
+                for (let i = 0; i < blocks.length; i++) {
+                  const b = blocks[i];
+                  if (b.kind !== 'tool' || typeof b.result === 'string' || b.isError) continue;
+                  if (!b.toolUseId) continue;
+                  for (let j = i + 1; j < blocks.length; j++) {
+                    const w = blocks[j];
+                    if (
+                      w.kind === 'waiting' &&
+                      w.intent === 'permission' &&
+                      w.toolName === b.name
+                    ) {
+                      permissionPendingToolIds.add(b.toolUseId);
+                      break;
+                    }
+                  }
+                }
                 return blocks.map((m, i) => (
                   <div key={m.id}>
                     {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, addAllowAlways, {
                       permissionAutoFocus: i === lastPermIdx,
-                      now
+                      now,
+                      permissionPendingToolIds
                     })}
                   </div>
                 ));
