@@ -610,6 +610,17 @@ const en = {
     diffCommentPlaceholder: 'Add a comment for the agent\u2026',
     diffCommentSave: 'Save',
     diffCommentsPendingChip: '{{count}} diff comments will be sent'
+  },
+  // task #329 — first-run empty-state CTA shown when there is no active
+  // session (fresh install, or all sessions deleted). Sentence case per
+  // repo rule. Tip echoes the brainstorm spec: groups are organised by
+  // task, not by repo.
+  firstRun: {
+    welcome: 'Welcome to ccsm.',
+    newSession: 'New session',
+    importSession: 'Import a CLI session',
+    newGroup: 'Create a new group',
+    tip: 'Tip: groups organize sessions by task, not by repo.'
   }
 } as const;
 
