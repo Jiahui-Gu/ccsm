@@ -1,9 +1,8 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
-import { TopBanner, TopBannerPresence } from './chrome/TopBanner';
+import { TopBanner, TopBannerAction, TopBannerPresence } from './chrome/TopBanner';
 
 /**
  * Amber banner shown at the top of the right pane whenever the user has
@@ -29,18 +28,13 @@ export function ClaudeCliMissingBanner() {
           icon={<AlertTriangle size={13} className="stroke-[2]" />}
           title={t('cli.bannerNotConfigured')}
           actions={
-            <button
-              type="button"
+            <TopBannerAction
+              tone="neutral"
               onClick={openDialog}
               data-cli-missing-setup
-              className={cn(
-                'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center',
-                'bg-black/20 hover:bg-black/30 active:bg-black/40 transition-colors duration-150',
-                'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
-              )}
             >
               {t('cli.bannerSetUp')}
-            </button>
+            </TopBannerAction>
           }
         />
       )}

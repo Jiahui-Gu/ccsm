@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X } from 'lucide-react';
+import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '../../lib/cn';
 import { DURATION_RAW, EASING } from '../../lib/motion';
 
@@ -73,6 +74,98 @@ const VARIANT_STYLES: Record<TopBannerVariant, string> = {
   warning: 'bg-[oklch(0.32_0.08_75)] text-[oklch(0.94_0.06_90)]',
   info: 'bg-[oklch(0.30_0.05_240)] text-[oklch(0.94_0.02_240)]',
 };
+
+/**
+ * Action button styling for buttons that sit ON TOP of a `<TopBanner />`
+ * surface (retry / reconfigure / set-up / dismiss / …). Centralises four
+ * previously-duplicated inline impls (#273) so every banner CTA gets the
+ * same focus halo, hover/active feedback, and motion timing.
+ *
+ * Two axes:
+ *   - `tone`     — background intensity. `primary` (more saturated black
+ *                  overlay) for the canonical action, `secondary` for
+ *                  supporting actions, `dismiss` matches the `×` button.
+ *   - `shape`    — `pill` for label (or icon + label) buttons, `square`
+ *                  for icon-only (e.g. the dismiss `×`).
+ *
+ * Background uses `black/N` overlays on top of the variant's already-tinted
+ * surface so a single set of tone classes works across error/warning/info
+ * — the underlying hue bleeds through. Focus halo is a 2px white ring
+ * (`oklch(1 0 0 / 0.18)`) — a colored ring would clash with each banner
+ * variant.
+ */
+export const bannerActionVariants = cva(
+  cn(
+    'shrink-0 inline-flex items-center justify-center rounded font-medium',
+    'transition-colors duration-150',
+    'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]',
+    'disabled:opacity-60 disabled:cursor-not-allowed'
+  ),
+  {
+    variants: {
+      tone: {
+        // Primary CTA on the banner (e.g. Retry on the init-failed banner).
+        // Slightly stronger contrast so it's the obvious target.
+        primary: 'bg-black/25 hover:bg-black/35 active:bg-black/45',
+        // Supporting CTA (e.g. Reconfigure, Set up). Lighter so it visually
+        // sits behind the primary action without disappearing.
+        secondary: 'bg-black/10 hover:bg-black/25 active:bg-black/35',
+        // Mid-weight overlay used by the standalone CLI-missing banner where
+        // there's only one action and no primary/secondary hierarchy.
+        neutral: 'bg-black/20 hover:bg-black/30 active:bg-black/40',
+        // Dismiss `×`. Same lightness as `secondary`; kept separate so its
+        // intent reads at the call site.
+        dismiss: 'bg-black/10 hover:bg-black/25 active:bg-black/35',
+      },
+      shape: {
+        // Label (with optional leading icon). 7×label height, snug padding.
+        pill: 'h-7 px-2.5 text-meta gap-1.5',
+        // Icon-only square (dismiss button).
+        square: 'h-7 w-7',
+      },
+    },
+    defaultVariants: { tone: 'primary', shape: 'pill' },
+  }
+);
+
+export type BannerActionTone = NonNullable<VariantProps<typeof bannerActionVariants>['tone']>;
+export type BannerActionShape = NonNullable<VariantProps<typeof bannerActionVariants>['shape']>;
+
+export interface TopBannerActionProps
+  extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'type'>,
+    VariantProps<typeof bannerActionVariants> {
+  /**
+   * Optional ref forwarded to the underlying `<button>`. Banners rarely
+   * need this but keyboard-focus probes do.
+   */
+  buttonRef?: React.Ref<HTMLButtonElement>;
+}
+
+/**
+ * Single source of truth for buttons that sit on top of a `<TopBanner />`
+ * surface. Always renders `<button type="button">` (banner CTAs are never
+ * form submits) and forwards every other prop, so callers keep their
+ * existing `data-*` hooks, `onClick`, `disabled`, `aria-label`, etc.
+ */
+export function TopBannerAction({
+  tone,
+  shape,
+  className,
+  buttonRef,
+  children,
+  ...rest
+}: TopBannerActionProps) {
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className={cn(bannerActionVariants({ tone, shape }), className)}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
 
 /**
  * Unified top-of-pane status banner. Wraps every variant of the
@@ -154,19 +247,15 @@ export function TopBanner({
           </div>
         )}
         {onDismiss && (
-          <button
-            type="button"
+          <TopBannerAction
+            tone="dismiss"
+            shape="square"
             onClick={onDismiss}
             aria-label={dismissLabel}
             data-top-banner-dismiss=""
-            className={cn(
-              'shrink-0 h-7 w-7 rounded inline-flex items-center justify-center',
-              'bg-black/10 hover:bg-black/25 active:bg-black/35 transition-colors duration-150',
-              'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
-            )}
           >
             <X size={13} className="stroke-[2]" />
-          </button>
+          </TopBannerAction>
         )}
       </div>
     </motion.div>
