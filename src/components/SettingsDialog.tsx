@@ -431,7 +431,7 @@ function NotificationsPane() {
   );
 
   const onTest = async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api) {
       setTestStatus(t('notifications.testIpcUnavailable'));
       setTimeout(() => setTestStatus(null), 2000);
@@ -515,7 +515,7 @@ function CrashReportingField() {
     let cancelled = false;
     void (async () => {
       try {
-        const raw = await window.agentory?.loadState('crashReportingOptOut');
+        const raw = await window.ccsm?.loadState('crashReportingOptOut');
         if (cancelled) return;
         setOptOut(raw === 'true' || raw === '1');
       } finally {
@@ -531,7 +531,7 @@ function CrashReportingField() {
     // UI is "Send crash reports" (positive). Persisted key is the inverse.
     const nextOptOut = !sendReports;
     setOptOut(nextOptOut);
-    void window.agentory?.saveState('crashReportingOptOut', String(nextOptOut));
+    void window.ccsm?.saveState('crashReportingOptOut', String(nextOptOut));
   };
 
   const checked = !optOut;
@@ -578,10 +578,10 @@ function UpdatesPane() {
   const { t } = useTranslation('settings');
 
   useEffect(() => {
-    window.agentory?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
-    void window.agentory?.updatesStatus().then(setStatus).catch(() => {});
-    void window.agentory?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
-    const off = window.agentory?.onUpdateStatus(setStatus);
+    window.ccsm?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
+    void window.ccsm?.updatesStatus().then(setStatus).catch(() => {});
+    void window.ccsm?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
+    const off = window.ccsm?.onUpdateStatus(setStatus);
     return () => off?.();
   }, []);
 
@@ -590,24 +590,24 @@ function UpdatesPane() {
   const canCheck = !isChecking && !isDownloading && status.kind !== 'downloaded';
 
   async function onCheck() {
-    if (!window.agentory) return;
+    if (!window.ccsm) return;
     setStatus({ kind: 'checking' });
-    await window.agentory.updatesCheck();
+    await window.ccsm.updatesCheck();
     // Real status arrives via the push event; nothing to do here.
   }
 
   async function onDownload() {
-    await window.agentory?.updatesDownload();
+    await window.ccsm?.updatesDownload();
   }
 
   function onInstall() {
-    void window.agentory?.updatesInstall();
+    void window.ccsm?.updatesInstall();
   }
 
   async function onToggleAutoCheck(next: boolean) {
     setAutoCheck(next);
-    if (window.agentory) {
-      const applied = await window.agentory.updatesSetAutoCheck(next);
+    if (window.ccsm) {
+      const applied = await window.ccsm.updatesSetAutoCheck(next);
       setAutoCheck(applied);
     }
   }
@@ -697,7 +697,7 @@ function ConnectionPane() {
   }, [loadConnection, loadModels]);
 
   async function onOpenSettings() {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.connection?.openSettingsFile) return;
     setOpening(true);
     setOpenError(null);

@@ -18,10 +18,10 @@ function fail(msg) {
 const app = await electron.launch({ args: ['.'], cwd: root, env: { ...process.env, NODE_ENV: 'development' } });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({ sessions: [], activeId: undefined, tutorialSeen: true });
+  window.__ccsmStore.setState({ sessions: [], activeId: undefined, tutorialSeen: true });
 });
 await win.waitForTimeout(300);
 

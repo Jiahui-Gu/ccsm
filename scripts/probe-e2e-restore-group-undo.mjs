@@ -50,7 +50,7 @@ await seedStore(win, {
 
 // Capture original session order in gDoom for later comparison.
 const orderBefore = await win.evaluate(() =>
-  window.__agentoryStore
+  window.__ccsmStore
     .getState()
     .sessions.filter((s) => s.groupId === 'gDoom')
     .map((s) => s.id)
@@ -77,7 +77,7 @@ await confirmBtn.click();
 // Group + sessions vanish.
 await win.waitForFunction(
   () => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return !s.groups.some((g) => g.id === 'gDoom') && !s.sessions.some((x) => x.groupId === 'gDoom');
   },
   null,
@@ -98,7 +98,7 @@ await undoBtn.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
 await undoBtn.click();
 
 await win.waitForFunction(
-  () => !!window.__agentoryStore.getState().groups.find((g) => g.id === 'gDoom'),
+  () => !!window.__ccsmStore.getState().groups.find((g) => g.id === 'gDoom'),
   null,
   { timeout: 3000 }
 ).catch(async () => {
@@ -108,7 +108,7 @@ await win.waitForFunction(
 });
 
 const after = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   return {
     groupBack: !!s.groups.find((g) => g.id === 'gDoom'),
     members: s.sessions.filter((x) => x.groupId === 'gDoom').map((x) => x.id),

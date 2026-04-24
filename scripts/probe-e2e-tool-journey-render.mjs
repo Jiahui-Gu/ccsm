@@ -49,7 +49,7 @@ function record(name, expected, observed, pass, note = '') {
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) },
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) },
 });
 
 let exitCode = 0;
@@ -58,7 +58,7 @@ try {
   win.on('pageerror', (e) => console.error(`[pageerror] ${e.message}`));
 
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 20_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
   // Wait for sidebar to mount (seedStore precondition).
   await win.waitForFunction(() => !!document.querySelector('aside'), null, { timeout: 10_000 });
 
@@ -66,7 +66,7 @@ try {
   // the blocks we want for this journey. Avoids cross-journey pollution.
   async function seed(blocks) {
     await win.evaluate(({ blocks }) => {
-      const store = window.__agentoryStore;
+      const store = window.__ccsmStore;
       store.setState({
         groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
         sessions: [{
@@ -127,7 +127,7 @@ try {
 
       // Now append a new assistant block — simulates a new frame from agent.
       await win.evaluate(() => {
-        window.__agentoryStore.getState().appendBlocks('s-tool', [
+        window.__ccsmStore.getState().appendBlocks('s-tool', [
           { kind: 'assistant', id: 'a-new', text: 'new turn after toggle' },
         ]);
       });

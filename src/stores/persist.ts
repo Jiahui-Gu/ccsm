@@ -82,9 +82,9 @@ export interface PersistedState {
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
-  if (!window.agentory) return null;
+  if (!window.ccsm) return null;
   try {
-    const raw = await window.agentory.loadState(STATE_KEY);
+    const raw = await window.ccsm.loadState(STATE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedState;
     if (parsed.version !== 1) return null;
@@ -108,7 +108,7 @@ export function setPersistErrorHandler(handler: (err: unknown) => void): void {
 }
 
 export function schedulePersist(state: PersistedState): void {
-  if (!window.agentory) return;
+  if (!window.ccsm) return;
   pendingSnapshot = state;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
@@ -116,7 +116,7 @@ export function schedulePersist(state: PersistedState): void {
     const snap = pendingSnapshot;
     pendingSnapshot = null;
     if (!snap) return;
-    window.agentory!.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
+    window.ccsm!.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
       if (onPersistError) onPersistError(err);
     });
   }, WRITE_DEBOUNCE_MS);
@@ -130,7 +130,7 @@ export function schedulePersist(state: PersistedState): void {
  * handlers can't reliably hold the page open across async work.
  */
 export function flushNow(): void {
-  if (!window.agentory) return;
+  if (!window.ccsm) return;
   if (writeTimer) {
     clearTimeout(writeTimer);
     writeTimer = null;
@@ -138,7 +138,7 @@ export function flushNow(): void {
   const snap = pendingSnapshot;
   pendingSnapshot = null;
   if (!snap) return;
-  window.agentory.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
+  window.ccsm.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
     if (onPersistError) onPersistError(err);
   });
 }

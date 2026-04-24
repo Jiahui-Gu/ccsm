@@ -138,14 +138,14 @@ describe('SessionRunner.start', () => {
   it('falls back to the env-based config dir when none is provided', async () => {
     const proc = makeFakeProc();
     mockSpawnClaude.mockResolvedValue(proc);
-    process.env.AGENTORY_CLAUDE_CONFIG_DIR = '/env/cfg';
+    process.env.CCSM_CLAUDE_CONFIG_DIR = '/env/cfg';
 
     const runner = new SessionRunner('s2', () => {}, () => {}, () => {});
     try {
       await runner.start({ cwd: '/w' });
       expect(mockSpawnClaude.mock.calls[0][0].configDir).toBe('/env/cfg');
     } finally {
-      delete process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+      delete process.env.CCSM_CLAUDE_CONFIG_DIR;
       runner.close();
     }
   });
@@ -154,8 +154,8 @@ describe('SessionRunner.start', () => {
     const proc = makeFakeProc();
     mockSpawnClaude.mockResolvedValue(proc);
     // Make sure the env override is not set for this test.
-    const prev = process.env.AGENTORY_CLAUDE_CONFIG_DIR;
-    delete process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+    const prev = process.env.CCSM_CLAUDE_CONFIG_DIR;
+    delete process.env.CCSM_CLAUDE_CONFIG_DIR;
 
     const os = await import('node:os');
     const path = await import('node:path');
@@ -166,7 +166,7 @@ describe('SessionRunner.start', () => {
       await runner.start({ cwd: '/w' });
       expect(mockSpawnClaude.mock.calls[0][0].configDir).toBe(expected);
     } finally {
-      if (prev !== undefined) process.env.AGENTORY_CLAUDE_CONFIG_DIR = prev;
+      if (prev !== undefined) process.env.CCSM_CLAUDE_CONFIG_DIR = prev;
       runner.close();
     }
   });
@@ -214,7 +214,7 @@ describe('SessionRunner.start', () => {
       // Bash/Write/Edit run silently in `default` mode with no UI prompt.
       expect(init?.request.hooks).toEqual({
         PreToolUse: [
-          { matcher: '.*', hookCallbackIds: ['agentory-permission'] },
+          { matcher: '.*', hookCallbackIds: ['ccsm-permission'] },
         ],
       });
     } finally {
@@ -341,7 +341,7 @@ describe('SessionRunner PreToolUse hook permission', () => {
       request_id: 'req_hk_1',
       request: {
         subtype: 'hook_callback',
-        callback_id: 'agentory-permission',
+        callback_id: 'ccsm-permission',
         input: {
           hook_event_name: 'PreToolUse',
           tool_name: 'Bash',
@@ -392,7 +392,7 @@ describe('SessionRunner PreToolUse hook permission', () => {
       request_id: 'req_hk_2',
       request: {
         subtype: 'hook_callback',
-        callback_id: 'agentory-permission',
+        callback_id: 'ccsm-permission',
         input: {
           hook_event_name: 'PreToolUse',
           tool_name: 'Write',
@@ -435,7 +435,7 @@ describe('SessionRunner PreToolUse hook permission', () => {
       request_id: 'req_hk_3',
       request: {
         subtype: 'hook_callback',
-        callback_id: 'agentory-permission',
+        callback_id: 'ccsm-permission',
         input: {
           hook_event_name: 'PreToolUse',
           tool_name: 'AskUserQuestion',
@@ -476,7 +476,7 @@ describe('SessionRunner PreToolUse hook permission', () => {
         request_id: reqId,
         request: {
           subtype: 'hook_callback',
-          callback_id: 'agentory-permission',
+          callback_id: 'ccsm-permission',
           input: {
             hook_event_name: 'PreToolUse',
             tool_name: 'Bash',

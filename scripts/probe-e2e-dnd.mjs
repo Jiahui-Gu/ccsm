@@ -1,6 +1,6 @@
 // E2E: cross-group drag & drop, plus drag-handle vs inline-rename coexistence.
 //
-// Fixture: seed sessions directly into the store (window.__agentoryStore
+// Fixture: seed sessions directly into the store (window.__ccsmStore
 // is exposed on window). Seeding pre-existing sessions is equivalent to "user
 // had these from prior runs" — the start point we care about is the drag
 // gesture, the end point is the DOM after drop. No SDK / API key involved.
@@ -44,7 +44,7 @@ console.log(`[probe-e2e-dnd] userData = ${ud.dir}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
 const win = await appWindow(app);
@@ -144,7 +144,7 @@ await renameInput.fill('renamed via probe');
 await renameInput.press('Enter');
 await win.waitForTimeout(300);
 const after = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState().sessions.find((x) => x.id === 's3');
+  const s = window.__ccsmStore.getState().sessions.find((x) => x.id === 's3');
   return s ? s.name : null;
 });
 if (after !== 'renamed via probe') {

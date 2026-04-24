@@ -15,8 +15,8 @@ await page.waitForTimeout(1500);
 const result = await page.evaluate(async () => {
   const out = { steps: [], errors: [], checks: {} };
   try {
-    const useStore = window.__agentoryStore;
-    if (!useStore) throw new Error('window.__agentoryStore missing');
+    const useStore = window.__ccsmStore;
+    if (!useStore) throw new Error('window.__ccsmStore missing');
 
     const before = useStore.getState();
     const sessionsBefore = before.sessions.length;
@@ -84,7 +84,7 @@ const result = await page.evaluate(async () => {
     // The toast push is encapsulated; easiest E2E check is to look at the
     // toast region's children count after manually firing a permission
     // request would arrive. We can't fire onAgentPermissionRequest from the
-    // page (window.agentory is undefined in dev:web). So toast
+    // page (window.ccsm is undefined in dev:web). So toast
     // verification is best-effort: confirm the toast root exists and is
     // empty, then assert no errors occurred during shortcut handling.
     const toastRoot = document.querySelector('.pointer-events-none.fixed.bottom-3.right-3');

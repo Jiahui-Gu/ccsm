@@ -31,7 +31,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT),
+    CCSM_DEV_PORT: String(PORT),
     LANG: 'en_US.UTF-8'
   }
 });
@@ -40,7 +40,7 @@ let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
   await win.waitForTimeout(400);
 
   async function openSettings() {

@@ -216,15 +216,15 @@ export function buildSpawnEnv(opts: {
 
   // Required: point claude.exe at the configured CLAUDE_CONFIG_DIR. By default
   // this is the user's real ~/.claude/ (see sessions.ts → resolveClaudeConfigDir)
-  // so Agentory shares login state with the user's existing CLI install.
+  // so CCSM shares login state with the user's existing CLI install.
   env.CLAUDE_CONFIG_DIR = opts.configDir;
 
   // Identifies us in server-side logs. We unconditionally overwrite the
-  // parent's CLAUDE_CODE_ENTRYPOINT (which will be `cli` when Agentory is
+  // parent's CLAUDE_CODE_ENTRYPOINT (which will be `cli` when CCSM is
   // spawned from a Claude Code session for dogfooding) so every spawn from
-  // Agentory reports as `agentory-desktop`. envOverrides below can still
+  // CCSM reports as `ccsm-desktop`. envOverrides below can still
   // rename it (e.g. for tests).
-  env.CLAUDE_CODE_ENTRYPOINT = 'agentory-desktop';
+  env.CLAUDE_CODE_ENTRYPOINT = 'ccsm-desktop';
 
   // Caller overrides win — this is where ANTHROPIC_BASE_URL /
   // ANTHROPIC_AUTH_TOKEN / CLAUDE_CODE_SKIP_AUTH_LOGIN come in.

@@ -61,7 +61,7 @@ async function drainNextQueued(sessionId: string): Promise<void> {
   const store = useStore.getState();
   const queue = store.messageQueues[sessionId];
   if (!queue || queue.length === 0) return;
-  const api = window.agentory;
+  const api = window.ccsm;
   if (!api) return;
   const session = store.sessions.find((s) => s.id === sessionId);
   if (!session) return;
@@ -175,7 +175,7 @@ export function maybeAutoResolveAllowAlways(req: {
 
 export function subscribeAgentEvents(): void {
   if (installed) return;
-  const api = window.agentory;
+  const api = window.ccsm;
   if (!api) return;
   installed = true;
 
@@ -240,8 +240,8 @@ export function subscribeAgentEvents(): void {
       // Saving on `result` rather than on every delta avoids writing partial
       // streaming blocks; the bulk DELETE+INSERT is idempotent.
       const blocks = useStore.getState().messagesBySession[e.sessionId];
-      if (blocks && blocks.length > 0 && typeof window.agentory?.saveMessages === 'function') {
-        void window.agentory.saveMessages(e.sessionId, blocks);
+      if (blocks && blocks.length > 0 && typeof window.ccsm?.saveMessages === 'function') {
+        void window.ccsm.saveMessages(e.sessionId, blocks);
       }
       // `turn_done` notification policy: only ping when the turn meaningfully
       // consumed the user's patience — long (>15s), or errored, or this

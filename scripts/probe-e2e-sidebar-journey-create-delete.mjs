@@ -37,7 +37,7 @@ console.log(`[${PROBE}] userData = ${ud.dir}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 const win = await appWindow(app);
 const errors = [];
@@ -64,15 +64,15 @@ function diverge(j, expected, observed) {
   console.log(`[${PROBE}] ${j} DIVERGE — expected: ${expected} | observed: ${observed}`);
 }
 
-const state = () => win.evaluate(() => window.__agentoryStore.getState());
+const state = () => win.evaluate(() => window.__ccsmStore.getState());
 const sessionsIn = (gid) =>
   win.evaluate(
-    (g) => window.__agentoryStore.getState().sessions.filter((s) => s.groupId === g).map((s) => s.id),
+    (g) => window.__ccsmStore.getState().sessions.filter((s) => s.groupId === g).map((s) => s.id),
     gid
   );
 const groupCollapsed = (gid) =>
   win.evaluate(
-    (g) => window.__agentoryStore.getState().groups.find((x) => x.id === g)?.collapsed ?? null,
+    (g) => window.__ccsmStore.getState().groups.find((x) => x.id === g)?.collapsed ?? null,
     gid
   );
 
@@ -252,7 +252,7 @@ await seedStore(win, {
   // Seed some draft text into k2 so we can verify the undo restores it.
   await win.evaluate(() => {
     // Write directly via the drafts module — exposed only for tests/probes
-    // through window.__agentoryStore in real life; here we just persist via
+    // through window.__ccsmStore in real life; here we just persist via
     // the store's saveState and re-load on restoreSession (handled inside).
     // We reach in via the drafts module indirectly: enqueue a draft using a
     // fake hook is overkill — instead, we inject through localStorage-like
@@ -339,7 +339,7 @@ await seedStore(win, {
   });
   // Drive deletion programmatically (still goes through deleteSession in store)
   // since J4 already covered the UI path / dialog presence.
-  await win.evaluate(() => window.__agentoryStore.getState().deleteSession('k1'));
+  await win.evaluate(() => window.__ccsmStore.getState().deleteSession('k1'));
   await win.waitForTimeout(200);
   const after = await state();
   if (after.activeId !== 'k1b') {
@@ -369,7 +369,7 @@ await seedStore(win, {
     startedSessions: { r1: true },
     messageQueues: { r1: [{ id: 'q1', text: 'pending msg', images: [] }] }
   });
-  await win.evaluate(() => window.__agentoryStore.getState().deleteSession('r1'));
+  await win.evaluate(() => window.__ccsmStore.getState().deleteSession('r1'));
   await win.waitForTimeout(200);
   const after = await state();
   if (after.sessions.some((s) => s.id === 'r1')) diverge('J6.removed', `r1 removed from sessions[]`, `still present`);

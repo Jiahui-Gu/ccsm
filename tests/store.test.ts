@@ -286,8 +286,8 @@ describe('store: messages + tool result wiring (PR G regression guard)', () => {
 describe('store: resolvePermission', () => {
   it('replaces the waiting block with a system trace and calls the IPC bridge', () => {
     const ipc = vi.fn().mockResolvedValue(true);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { agentResolvePermission: ipc }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentResolvePermission: ipc }
     };
 
     useStore.getState().createSession('~/a');
@@ -323,8 +323,8 @@ describe('store: resolvePermission', () => {
 
   it('emits a "denied" trace on deny so the chat retains the rejection', () => {
     const ipc = vi.fn().mockResolvedValue(true);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { agentResolvePermission: ipc }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentResolvePermission: ipc }
     };
 
     useStore.getState().createSession('~/a');
@@ -477,8 +477,8 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
       { kind: 'assistant', id: 'a1', text: 'hello there' }
     ];
     const load = vi.fn().mockResolvedValue(persisted);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load }
     };
 
     await useStore.getState().loadMessages('s-ghost');
@@ -491,8 +491,8 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
     const load = vi.fn(
       () => new Promise<unknown[]>((r) => { resolve = r; })
     );
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load }
     };
 
     const promise = useStore.getState().loadMessages('s-race');
@@ -517,8 +517,8 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
     const load = vi.fn(
       () => new Promise<unknown[]>((r) => { resolve = r; })
     );
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load }
     };
 
     const promise = useStore.getState().loadMessages('s-dup');
@@ -536,8 +536,8 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
 
   it('selectSession triggers loadMessages when history is missing', () => {
     const load = vi.fn().mockResolvedValue([]);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load }
     };
     useStore.setState({
       sessions: [
@@ -550,8 +550,8 @@ describe('store: loadMessages + selectSession autoload (session restore)', () =>
 
   it('selectSession skips the load when messagesBySession already has an entry', () => {
     const load = vi.fn().mockResolvedValue([]);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load }
     };
     useStore.setState({
       sessions: [
@@ -597,10 +597,10 @@ describe('store: selectSession bumps focusInputNonce', () => {
 
 describe('store: checkCli / CLI missing flow', () => {
   beforeEach(() => {
-    // Every test in this suite stubs the cli API on window.agentory; reset
+    // Every test in this suite stubs the cli API on window.ccsm; reset
     // to a known baseline each run.
     (globalThis as { window?: unknown }).window = (globalThis as { window?: unknown }).window ?? {};
-    (window as unknown as { agentory?: unknown }).agentory = undefined;
+    (window as unknown as { ccsm?: unknown }).ccsm = undefined;
     useStore.setState({ cliStatus: { state: 'checking' } });
   });
 
@@ -611,7 +611,7 @@ describe('store: checkCli / CLI missing flow', () => {
       .mockResolvedValueOnce({ found: true, path: '/opt/claude', version: '2.1.5' });
     const setBinaryPath = vi.fn().mockResolvedValue({ ok: true, version: '2.1.5' });
     const browseBinary = vi.fn().mockResolvedValue('/opt/claude');
-    (window as unknown as { agentory: unknown }).agentory = {
+    (window as unknown as { ccsm: unknown }).ccsm = {
       cli: {
         getInstallHints: vi.fn(),
         browseBinary,
@@ -633,17 +633,17 @@ describe('store: checkCli / CLI missing flow', () => {
     // then re-runs checkCli.
     const picked = await (
       window as unknown as {
-        agentory: { cli: { browseBinary: () => Promise<string | null> } };
+        ccsm: { cli: { browseBinary: () => Promise<string | null> } };
       }
-    ).agentory.cli.browseBinary();
+    ).ccsm.cli.browseBinary();
     expect(picked).toBe('/opt/claude');
     const res = await (
       window as unknown as {
-        agentory: {
+        ccsm: {
           cli: { setBinaryPath: (p: string) => Promise<{ ok: boolean }> };
         };
       }
-    ).agentory.cli.setBinaryPath(picked as string);
+    ).ccsm.cli.setBinaryPath(picked as string);
     expect(res.ok).toBe(true);
 
     await useStore.getState().checkCli();
@@ -673,7 +673,7 @@ describe('store: checkCli / CLI missing flow', () => {
   });
 
   it('checkCli without preload API marks status found (keeps app usable in tests)', async () => {
-    (window as unknown as { agentory?: unknown }).agentory = undefined;
+    (window as unknown as { ccsm?: unknown }).ccsm = undefined;
     await useStore.getState().checkCli();
     const s = useStore.getState().cliStatus;
     expect(s.state).toBe('found');
@@ -691,8 +691,8 @@ describe('store: composer focus orchestration', () => {
 
   it('resolvePermission bumps focusInputNonce when a matching block is removed', () => {
     const ipc = vi.fn().mockResolvedValue(true);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { agentResolvePermission: ipc }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentResolvePermission: ipc }
     };
     useStore.getState().createSession('~/a');
     const sid = useStore.getState().activeId;
@@ -758,8 +758,8 @@ describe('store: messageQueues (CLI-style enqueue while running)', () => {
   });
 
   it('deleteSession also wipes the queue for that session', () => {
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { saveMessages: vi.fn().mockResolvedValue(undefined) }
     };
     useStore.getState().createSession('~/a');
     const sid = useStore.getState().activeId;
@@ -825,8 +825,8 @@ describe('store: createSession auto-creates default group when none usable', () 
 
 describe('store: restoreSession round-trip', () => {
   beforeEach(() => {
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: {
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: {
         saveMessages: vi.fn().mockResolvedValue(undefined),
         // deleteSession fires agent:close over IPC when the session had a
         // live child. Stubbed as a no-op here — the unit test cares about
@@ -880,8 +880,8 @@ describe('store: restoreSession round-trip', () => {
 
 describe('store: restoreGroup round-trip', () => {
   beforeEach(() => {
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { saveMessages: vi.fn().mockResolvedValue(undefined) }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { saveMessages: vi.fn().mockResolvedValue(undefined) }
     };
   });
 
@@ -1154,7 +1154,7 @@ describe('store: defaultGroupName via nameKey sentinel', () => {
 
 describe('store: setGlobalModel / setSessionModel split', () => {
   beforeEach(() => {
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = { agentory: undefined };
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = { ccsm: undefined };
   });
 
   it('setGlobalModel changes the global default but does NOT touch sessions', () => {
@@ -1182,8 +1182,8 @@ describe('store: setGlobalModel / setSessionModel split', () => {
 describe('store: loadMessages failure seeds [] and clears in-flight', () => {
   it('IPC reject leaves an empty array and the next selectSession does not retry', async () => {
     const load = vi.fn().mockRejectedValue(new Error('db locked'));
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { loadMessages: load, saveMessages: vi.fn() }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadMessages: load, saveMessages: vi.fn() }
     };
     // Suppress the expected console.warn in test output.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -1219,8 +1219,8 @@ describe('store: resetSessionContext resets state', () => {
     });
     useStore.getState().markStarted('s-reset');
     useStore.getState().setRunning('s-reset', true);
-    (globalThis as unknown as { window?: { agentory?: unknown } }).window = {
-      agentory: { saveMessages: vi.fn() }
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { saveMessages: vi.fn() }
     };
 
     useStore.getState().resetSessionContext('s-reset');

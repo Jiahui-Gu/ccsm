@@ -36,25 +36,25 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT)
+    CCSM_DEV_PORT: String(PORT)
   }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.agentory, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
 
   const result = await win.evaluate(async () => {
     const out = {};
     // 1. Oversized sessionId.
     const longId = 'x'.repeat(200);
-    out.bigId = await window.agentory.saveMessages(longId, [{ id: 'a', kind: 'user' }]);
-    out.bigIdLoaded = await window.agentory.loadMessages(longId);
+    out.bigId = await window.ccsm.saveMessages(longId, [{ id: 'a', kind: 'user' }]);
+    out.bigIdLoaded = await window.ccsm.loadMessages(longId);
     // 2. Too many blocks (well above MAX_BLOCKS=50_000).
     const tooManyBlocks = Array.from({ length: 60_000 }, (_, i) => ({ id: `b${i}`, kind: 'user' }));
-    out.tooMany = await window.agentory.saveMessages('s-too-many', tooManyBlocks);
-    out.tooManyLoaded = await window.agentory.loadMessages('s-too-many');
+    out.tooMany = await window.ccsm.saveMessages('s-too-many', tooManyBlocks);
+    out.tooManyLoaded = await window.ccsm.loadMessages('s-too-many');
     // 3. One oversized block among small ones — should drop the giant
     //    block and persist only the small ones.
     const giant = 'x'.repeat(1_500_000);
@@ -63,8 +63,8 @@ try {
       { id: 'big', kind: 'user', text: giant },
       { id: 'small-2', kind: 'assistant' }
     ];
-    out.mixed = await window.agentory.saveMessages('s-mixed', mixed);
-    out.mixedLoaded = await window.agentory.loadMessages('s-mixed');
+    out.mixed = await window.ccsm.saveMessages('s-mixed', mixed);
+    out.mixedLoaded = await window.ccsm.loadMessages('s-mixed');
     return out;
   });
 

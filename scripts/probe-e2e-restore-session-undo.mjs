@@ -91,7 +91,7 @@ await win.waitForFunction(
 });
 
 const after = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   const sess = s.sessions.find((x) => x.id === 's-doom');
   return {
     present: !!sess,

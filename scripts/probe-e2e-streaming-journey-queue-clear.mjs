@@ -30,11 +30,11 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   const SID = 's-qclear';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{
         id: sid,
@@ -64,7 +64,7 @@ try {
   // already covered by probe-e2e-msg-queue.mjs).
   const queueWanted = ['queued one', 'queued two', 'queued three'];
   await win.evaluate(([sid, msgs]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     for (const m of msgs) st.enqueueMessage(sid, { text: m, attachments: [] });
   }, [SID, queueWanted]);
   await win.waitForTimeout(150);
@@ -73,7 +73,7 @@ try {
   await chip.waitFor({ state: 'visible', timeout: 3000 }).catch(() => fail('"+3 queued" chip never appeared', app));
 
   const preEscQueue = await win.evaluate(
-    (sid) => (window.__agentoryStore.getState().messageQueues[sid] ?? []).map((m) => m.text),
+    (sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).map((m) => m.text),
     SID
   );
   if (JSON.stringify(preEscQueue) !== JSON.stringify(queueWanted)) {
@@ -87,7 +87,7 @@ try {
   await win.waitForTimeout(250);
 
   const postEsc = await win.evaluate((sid) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     return {
       interrupted: !!st.interruptedSessions[sid],
       queueLen: (st.messageQueues[sid] ?? []).length,

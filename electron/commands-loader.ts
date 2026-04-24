@@ -1,7 +1,7 @@
 // Disk-based slash-command loader.
 //
 // Mirrors what claude.exe does internally: pull `*.md` command files from
-// the user's Claude config tree so the GUI picker can offer them. Agentory
+// the user's Claude config tree so the GUI picker can offer them. CCSM
 // only DISCOVERS — execution is always pass-through to claude.exe (the
 // renderer types `/<name> <args>` and the CLI handles it).
 //

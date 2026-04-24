@@ -45,7 +45,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT)
+    CCSM_DEV_PORT: String(PORT)
   }
 });
 
@@ -162,7 +162,7 @@ try {
         activeId: el?.getAttribute?.('data-session-id') || null,
         activeAttrs: el ? Array.from(el.attributes).map(a => `${a.name}=${a.value}`).join(' ') : null,
         textareaExists: !!ta,
-        nonce: window.__agentoryStore?.getState()?.focusInputNonce
+        nonce: window.__ccsmStore?.getState()?.focusInputNonce
       };
     });
     fail(`expected chat textarea focused after session click, debug=${JSON.stringify(dbg)}`, app);

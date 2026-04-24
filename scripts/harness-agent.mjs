@@ -34,7 +34,7 @@ import { runHarness } from './probe-helpers/harness-runner.mjs';
 async function caseDiagnosticBanner({ win, log }) {
   const SID = 's-diag';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'diag-probe', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -51,7 +51,7 @@ async function caseDiagnosticBanner({ win, log }) {
 
   // Push a diagnostic (simulating what lifecycle.ts does on onAgentDiagnostic).
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().pushDiagnostic({
+    window.__ccsmStore.getState().pushDiagnostic({
       sessionId: sid,
       level: 'error',
       code: 'init_failed',
@@ -70,7 +70,7 @@ async function caseDiagnosticBanner({ win, log }) {
 
   // Store entry exists and is not dismissed.
   const entryBefore = await win.evaluate(() => {
-    const d = window.__agentoryStore.getState().diagnostics;
+    const d = window.__ccsmStore.getState().diagnostics;
     return d.map((x) => ({ code: x.code, level: x.level, dismissed: !!x.dismissed }));
   });
   if (entryBefore.length !== 1) throw new Error(`expected 1 diagnostic, got ${entryBefore.length}`);
@@ -82,12 +82,12 @@ async function caseDiagnosticBanner({ win, log }) {
   const afterDismiss = await win.locator('[data-agent-diagnostic-banner]').count();
   if (afterDismiss !== 0) throw new Error(`banner should be hidden after dismiss, still ${afterDismiss}`);
 
-  const entryAfter = await win.evaluate(() => window.__agentoryStore.getState().diagnostics[0]);
+  const entryAfter = await win.evaluate(() => window.__ccsmStore.getState().diagnostics[0]);
   if (!entryAfter.dismissed) throw new Error('dismissed flag should be set in store');
 
   // A diagnostic for a DIFFERENT session must not surface on this active session.
   await win.evaluate(() => {
-    window.__agentoryStore.getState().pushDiagnostic({
+    window.__ccsmStore.getState().pushDiagnostic({
       sessionId: 's-other',
       level: 'warn',
       code: 'control_timeout',
@@ -105,7 +105,7 @@ async function caseDiagnosticBanner({ win, log }) {
 // ---------- init-failure-banner (F7) ----------
 // Verifies that setSessionInitFailure surfaces an actionable banner with
 // title, error text, Retry, Reconfigure, and dismiss. Because the
-// contextBridge-exposed window.agentory is non-configurable, we cannot
+// contextBridge-exposed window.ccsm is non-configurable, we cannot
 // reliably stub `agentStart` from the renderer — so instead of driving the
 // full retry IPC round-trip, we verify the reconcile helper's observable
 // effects directly (clearing the failure hides the banner) and that the
@@ -113,7 +113,7 @@ async function caseDiagnosticBanner({ win, log }) {
 async function caseInitFailureBanner({ win, log }) {
   const SID = 's-initfail';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'initfail-probe', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -131,7 +131,7 @@ async function caseInitFailureBanner({ win, log }) {
   // Seed a failure — matches what startSessionAndReconcile produces for a
   // non-CLAUDE_NOT_FOUND / non-CWD_MISSING failure.
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().setSessionInitFailure(sid, {
+    window.__ccsmStore.getState().setSessionInitFailure(sid, {
       error: 'spawn EACCES: permission denied (probe)',
       errorCode: undefined,
       searchedPaths: [],
@@ -168,7 +168,7 @@ async function caseInitFailureBanner({ win, log }) {
 
   // Clearing the failure (what a successful retry does) hides the banner.
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearSessionInitFailure(sid);
+    window.__ccsmStore.getState().clearSessionInitFailure(sid);
   }, SID);
   await win.waitForTimeout(300);
   const afterClear = await win.locator('[data-agent-init-failed-banner]').count();
@@ -177,7 +177,7 @@ async function caseInitFailureBanner({ win, log }) {
   // The banner is also session-scoped: a failure on a DIFFERENT session must
   // not render while SID is active.
   await win.evaluate(() => {
-    window.__agentoryStore.getState().setSessionInitFailure('s-other-session', {
+    window.__ccsmStore.getState().setSessionInitFailure('s-other-session', {
       error: 'cross-session probe',
       errorCode: undefined,
       searchedPaths: [],
@@ -199,7 +199,7 @@ async function caseStreaming({ win, log }) {
   // exercises.
   const sessionId = 's-stream';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'streaming-probe', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -209,7 +209,7 @@ async function caseStreaming({ win, log }) {
   await win.waitForTimeout(150);
 
   await win.evaluate((sid) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.streamAssistantText(sid, 'msg-probe:c0', 'Hel', false);
     st.streamAssistantText(sid, 'msg-probe:c0', 'lo, ', false);
     st.streamAssistantText(sid, 'msg-probe:c0', 'world!', false);
@@ -217,7 +217,7 @@ async function caseStreaming({ win, log }) {
   await win.waitForTimeout(200);
 
   const midState = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.map((b) => ({ id: b.id, kind: b.kind, text: b.text, streaming: b.streaming }));
   }, sessionId);
   const streamingBlocks = midState.filter((b) => b.id === 'msg-probe:c0');
@@ -239,14 +239,14 @@ async function caseStreaming({ win, log }) {
   if (caretCount < 1) throw new Error('streaming caret not rendered in DOM');
 
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [
+    window.__ccsmStore.getState().appendBlocks(sid, [
       { kind: 'assistant', id: 'msg-probe:c0', text: 'Final reply.' }
     ]);
   }, sessionId);
   await win.waitForTimeout(200);
 
   const finalState = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.filter((b) => b.id === 'msg-probe:c0').map((b) => ({ text: b.text, streaming: b.streaming }));
   }, sessionId);
   if (finalState.length !== 1) throw new Error(`after finalize, expected 1 block, got ${finalState.length}`);
@@ -264,7 +264,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   const SID1 = 's-caret-final';
   const BID1 = 'msg-caret:final';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'caret-final', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -275,7 +275,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   }, SID1);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.streamAssistantText(sid, bid, 'partial ', false);
     st.streamAssistantText(sid, bid, 'reply ', false);
   }, [SID1, BID1]);
@@ -290,8 +290,8 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   if (caretDuring < 1) throw new Error('Part 1: expected caret during stream, found 0');
 
   await win.evaluate(([sid, bid]) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text: 'final reply' }]);
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text: 'final reply' }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, [SID1, BID1]);
   await win.waitForTimeout(150);
 
@@ -299,7 +299,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   if (caretAfterFinal !== 0) throw new Error(`Part 2: expected caret gone after finalize, found ${caretAfterFinal}`);
 
   const blockAfterFinal = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid);
   }, [SID1, BID1]);
   if (!blockAfterFinal) throw new Error('Part 2: finalized block missing');
@@ -309,11 +309,11 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   const SID2 = 's-caret-int';
   const BID2 = 'msg-caret:int';
   await win.evaluate((sid) => {
-    const cur = window.__agentoryStore.getState();
+    const cur = window.__ccsmStore.getState();
     const sessions = cur.sessions.some((s) => s.id === sid)
       ? cur.sessions
       : [{ id: sid, name: 'caret-int', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }, ...cur.sessions];
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       sessions,
       activeId: sid,
       messagesBySession: { ...cur.messagesBySession, [sid]: [{ kind: 'user', id: 'u-2', text: 'count' }] },
@@ -323,7 +323,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   }, SID2);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.streamAssistantText(sid, bid, '1 ', false);
     st.streamAssistantText(sid, bid, '2 ', false);
     st.streamAssistantText(sid, bid, '3 ', false);
@@ -352,7 +352,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   await win.waitForTimeout(150);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.consumeInterrupted(sid);
     const open = (st.messagesBySession[sid] ?? []).find((b) => b.id === bid);
     if (open) {
@@ -367,7 +367,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
   if (caretAfterInt !== 0) throw new Error(`Part 3: caret should be 0 after interrupt, found ${caretAfterInt}`);
 
   const blockAfterInt = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid);
   }, [SID2, BID2]);
   if (!blockAfterInt) throw new Error('Part 3: in-flight block missing after interrupt — should remain with partial text');
@@ -379,7 +379,7 @@ async function caseStreamingCaretLifecycle({ win, log }) {
 // ---------- inputbar-visible ----------
 async function caseInputbarVisible({ win, log }) {
   await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     const many = [];
     for (let i = 0; i < 80; i++) {
       many.push({ kind: 'user', id: `u-${i}`, text: `message ${i} — ${'lorem '.repeat(12)}` });
@@ -430,7 +430,7 @@ async function caseInputbarVisible({ win, log }) {
 async function caseChatCopy({ win, log }) {
   const SAMPLE = 'COPY_ME_PROBE_TEXT this should land in the clipboard';
   await win.evaluate((sample) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -461,12 +461,12 @@ async function caseInputPlaceholder({ win, log, registerDispose }) {
   // i18n is a global side effect; restore en at case end via dispose.
   registerDispose(async () => {
     await win.evaluate(async () => {
-      try { if (window.__agentoryI18n) await window.__agentoryI18n.changeLanguage('en'); } catch {}
+      try { if (window.__ccsmI18n) await window.__ccsmI18n.changeLanguage('en'); } catch {}
     });
   });
 
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -481,7 +481,7 @@ async function caseInputPlaceholder({ win, log, registerDispose }) {
   if (emptyPlaceholder !== 'Ask anything…') throw new Error(`empty-session placeholder should be "Ask anything…", got ${JSON.stringify(emptyPlaceholder)}`);
 
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       messagesBySession: { s1: [{ kind: 'user', id: 'u1', text: 'hi' }] }
     });
   });
@@ -495,33 +495,33 @@ async function caseInputPlaceholder({ win, log, registerDispose }) {
     for (let i = 0; i < 200; i++) {
       many.push({ kind: i % 2 ? 'assistant' : 'user', id: `b-${i}`, text: `block ${i}` });
     }
-    window.__agentoryStore.setState({ messagesBySession: { s1: many } });
+    window.__ccsmStore.setState({ messagesBySession: { s1: many } });
   });
   await win.waitForTimeout(200);
   const longReplyPh = await ta.getAttribute('placeholder');
   if (longReplyPh !== 'Reply…') throw new Error(`after long stream, placeholder should still be "Reply…", got ${JSON.stringify(longReplyPh)}`);
 
-  await win.evaluate(() => window.__agentoryStore.getState().setRunning('s1', true));
+  await win.evaluate(() => window.__ccsmStore.getState().setRunning('s1', true));
   await win.waitForTimeout(150);
   const runningPh = await ta.getAttribute('placeholder');
   if (!runningPh || !runningPh.includes('Esc')) throw new Error(`running placeholder should mention Esc, got ${JSON.stringify(runningPh)}`);
-  await win.evaluate(() => window.__agentoryStore.getState().setRunning('s1', false));
+  await win.evaluate(() => window.__ccsmStore.getState().setRunning('s1', false));
   await win.waitForTimeout(150);
   const backToReply = await ta.getAttribute('placeholder');
   if (backToReply !== 'Reply…') throw new Error(`after running off, placeholder should return to "Reply…", got ${JSON.stringify(backToReply)}`);
 
   // zh.
   const switched = await win.evaluate(async () => {
-    for (let i = 0; i < 20 && !window.__agentoryI18n; i++) await new Promise((r) => setTimeout(r, 100));
-    if (!window.__agentoryI18n) return { ok: false, err: 'window.__agentoryI18n missing' };
-    await window.__agentoryI18n.changeLanguage('zh');
-    return { ok: true, lang: window.__agentoryI18n.language };
+    for (let i = 0; i < 20 && !window.__ccsmI18n; i++) await new Promise((r) => setTimeout(r, 100));
+    if (!window.__ccsmI18n) return { ok: false, err: 'window.__ccsmI18n missing' };
+    await window.__ccsmI18n.changeLanguage('zh');
+    return { ok: true, lang: window.__ccsmI18n.language };
   });
   if (switched.ok) {
     await win.waitForTimeout(200);
     const zhPlaceholder = await ta.getAttribute('placeholder');
     if (zhPlaceholder !== '回复…') throw new Error(`zh with-messages placeholder should be "回复…", got ${JSON.stringify(zhPlaceholder)}`);
-    await win.evaluate(() => window.__agentoryStore.setState({ messagesBySession: { s1: [] } }));
+    await win.evaluate(() => window.__ccsmStore.setState({ messagesBySession: { s1: [] } }));
     await win.waitForTimeout(150);
     const zhEmpty = await ta.getAttribute('placeholder');
     if (zhEmpty !== '问点什么…') throw new Error(`zh empty placeholder should be "问点什么…", got ${JSON.stringify(zhEmpty)}`);
@@ -542,7 +542,7 @@ async function caseInputPlaceholder({ win, log, registerDispose }) {
 async function caseToolBlockUx({ win, log }) {
   const sid = 's-tool-ux';
   await win.evaluate((s) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: s, name: 'tool-ux', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: s,
@@ -617,12 +617,12 @@ async function caseToolBlockUx({ win, log }) {
 
   // Transition: result lands on the in-flight block -> counter disappears.
   await win.evaluate((s) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     const prev = st.messagesBySession[s] ?? [];
     const next = prev.map((b) =>
       b.id === 't-run' ? { ...b, result: 'done\n' } : b
     );
-    window.__agentoryStore.setState({ messagesBySession: { ...st.messagesBySession, [s]: next } });
+    window.__ccsmStore.setState({ messagesBySession: { ...st.messagesBySession, [s]: next } });
   }, sid);
   await win.waitForTimeout(250);
 
@@ -677,7 +677,7 @@ async function caseToolStallEscalation({ win, log, registerDispose }) {
     }, 31_000);
 
     await win.evaluate((s) => {
-      window.__agentoryStore.setState({
+      window.__ccsmStore.setState({
         groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
         sessions: [{ id: s, name: 'stall-31', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
         activeId: s,
@@ -736,7 +736,7 @@ async function caseToolStallEscalation({ win, log, registerDispose }) {
     }, 91_000);
 
     await win.evaluate((s) => {
-      window.__agentoryStore.setState({
+      window.__ccsmStore.setState({
         groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
         sessions: [{ id: s, name: 'stall-91', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
         activeId: s,
@@ -805,7 +805,7 @@ await runHarness({
     // never invoke claude.exe (they drive the renderer state machine
     // directly), so claiming the CLI is found is a safe fixture.
     await win.evaluate(() => {
-      window.__agentoryStore?.setState({
+      window.__ccsmStore?.setState({
         cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });

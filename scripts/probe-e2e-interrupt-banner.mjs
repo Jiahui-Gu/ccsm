@@ -28,7 +28,7 @@ const app = await electron.launch({
 });
 const win = await appWindow(app, { timeout: 45000 });
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
 
 // EmptyState check: with no session, the "Ready when you are." line must be
 // selectable. Grab its computed user-select.
@@ -46,9 +46,9 @@ if (emptyStateSelectable.userSelect === 'none')
 
 // Create a session and simulate the interrupt flow.
 const sessionId = await win.evaluate(() => {
-  const st = window.__agentoryStore.getState();
+  const st = window.__ccsmStore.getState();
   st.createSession('~/interrupt-probe');
-  const id = window.__agentoryStore.getState().activeId;
+  const id = window.__ccsmStore.getState().activeId;
   // Put it in running + add a partial assistant reply so the Stop path is
   // plausible even though we never actually spawn claude.exe.
   st.setRunning(id, true);
@@ -63,7 +63,7 @@ if (!sessionId) fail('no active session id');
 // Simulate the Stop button: mark interrupted, then consume it on the next
 // "result" frame — same sequence lifecycle.ts uses.
 const statusBlock = await win.evaluate((sid) => {
-  const st = window.__agentoryStore.getState();
+  const st = window.__ccsmStore.getState();
   st.markInterrupted(sid);
   // This is exactly what lifecycle.ts does for a result frame, inlined so
   // the probe doesn't have to fake an IPC event.
@@ -104,7 +104,7 @@ if (banner.text?.toLowerCase().includes('error_during_execution'))
 
 // Genuine error path still renders an ErrorBlock and is also selectable.
 await win.evaluate((sid) => {
-  window.__agentoryStore.getState().appendBlocks(sid, [
+  window.__ccsmStore.getState().appendBlocks(sid, [
     { kind: 'error', id: 'err-probe', text: 'Genuine failure details' }
   ]);
 }, sessionId);

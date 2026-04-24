@@ -1,19 +1,19 @@
 // E2E: pre-corrupt the on-disk SQLite file before launch and verify
-// Agentory boots without crashing, the corrupt file is moved aside to
-// `agentory.db.corrupt-*`, and a brand-new empty database takes its place.
+// CCSM boots without crashing, the corrupt file is moved aside to
+// `ccsm.db.corrupt-*`, and a brand-new empty database takes its place.
 //
 // Strategy:
 //   1. Create an isolated userData dir with `--user-data-dir=…` (matches
 //      the pattern used by probe-e2e-connection-pane and friends).
-//   2. Write 256 bytes of random garbage to `agentory.db` inside that dir
+//   2. Write 256 bytes of random garbage to `ccsm.db` inside that dir
 //      BEFORE launching electron. SQLite will accept the open() — it's
 //      lazy — and the first read pragma inside initDb() will trip
 //      `quick_check`, which is our corruption gate.
 //   3. Launch electron and wait for the renderer to mount (sidebar visible
 //      = main process didn't crash on db init).
 //   4. Inspect the userData dir: assert (a) at least one file matching
-//      `agentory.db.corrupt-*` exists (the backup) and (b) the new
-//      `agentory.db` is a valid SQLite header (starts with "SQLite format 3\0").
+//      `ccsm.db.corrupt-*` exists (the backup) and (b) the new
+//      `ccsm.db` is a valid SQLite header (starts with "SQLite format 3\0").
 //
 // Pre-fix verification: if `ensureHealthyDb` is removed from electron/db.ts,
 // `new Database(file)` succeeds but the first `pragma('journal_mode = WAL')`
@@ -44,17 +44,17 @@ console.log(`[probe-e2e-db-corruption-recovery] userData = ${userDataDir}`);
 // Pre-seed the userData dir with garbage at the canonical db path. 256 bytes
 // is enough to defeat SQLite's header check while staying small enough that
 // the test suite stays snappy.
-const dbFile = path.join(userDataDir, 'agentory.db');
+const dbFile = path.join(userDataDir, 'ccsm.db');
 fs.writeFileSync(dbFile, crypto.randomBytes(256));
 
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  // AGENTORY_PROD_BUNDLE=1 forces main to loadFile() the bundled renderer
+  // CCSM_PROD_BUNDLE=1 forces main to loadFile() the bundled renderer
   // instead of trying to loadURL(http://localhost:4100). This probe is
   // about main-process db init, not renderer hot reload — we don't want to
   // require a webpack-dev-server side-process.
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
 // Surface main-process stderr so a crash inside initDb shows up here
@@ -88,11 +88,11 @@ try {
 await win.waitForTimeout(250);
 
 const siblings = fs.readdirSync(userDataDir);
-const backups = siblings.filter((n) => n.startsWith('agentory.db.corrupt-'));
+const backups = siblings.filter((n) => n.startsWith('ccsm.db.corrupt-'));
 if (backups.length === 0) {
   await app.close();
   fail(
-    `expected at least one agentory.db.corrupt-* backup; saw ${JSON.stringify(siblings)}`
+    `expected at least one ccsm.db.corrupt-* backup; saw ${JSON.stringify(siblings)}`
   );
 }
 
@@ -100,13 +100,13 @@ if (backups.length === 0) {
 // "SQLite format 3\0" — 16 bytes at offset 0.
 if (!fs.existsSync(dbFile)) {
   await app.close();
-  fail('expected a fresh agentory.db to exist after recovery');
+  fail('expected a fresh ccsm.db to exist after recovery');
 }
 const header = fs.readFileSync(dbFile).subarray(0, 16);
 const expected = Buffer.concat([Buffer.from('SQLite format 3'), Buffer.from([0])]);
 if (!header.equals(expected)) {
   await app.close();
-  fail(`new agentory.db is not a SQLite file; header=${header.toString('hex')}`);
+  fail(`new ccsm.db is not a SQLite file; header=${header.toString('hex')}`);
 }
 
 await app.close();

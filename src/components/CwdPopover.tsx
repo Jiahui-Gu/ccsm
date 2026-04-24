@@ -25,7 +25,7 @@ const POPOVER_ID = 'cwd';
 //     project doesn't have it as a direct dependency and the brief forbids
 //     adding new ones. Positioning is a simple absolute layout anchored to
 //     the trigger; click-outside + Escape close the popover.
-//   - The recent list comes from `window.agentory.recentCwds()` which the
+//   - The recent list comes from `window.ccsm.recentCwds()` which the
 //     main process eager-scans at boot from `~/.claude/projects` (PR #94).
 //     The IPC is best-effort: if it fails or returns empty we render a
 //     friendly "no recent cwds" hint and still expose Browse.
@@ -66,7 +66,7 @@ function truncateMiddle(path: string, max = 56): string {
 async function defaultLoadRecent(): Promise<string[]> {
   type Bridge = { recentCwds?: () => Promise<string[]> };
   const bridge = (typeof window !== 'undefined'
-    ? (window as unknown as { agentory?: Bridge }).agentory
+    ? (window as unknown as { ccsm?: Bridge }).ccsm
     : undefined);
   try {
     const list = await bridge?.recentCwds?.();

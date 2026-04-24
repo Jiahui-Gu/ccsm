@@ -30,7 +30,7 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   const A = 's-par-A';
   const B = 's-par-B';
@@ -38,7 +38,7 @@ try {
   const BID_B = 'msg-B:par';
 
   await win.evaluate(([a, b]) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [
         { id: a, name: 'A', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' },
@@ -60,17 +60,17 @@ try {
 
   // Interleave: A0 B0 A1 B1 ... A5 B5
   for (let i = 0; i < 6; i++) {
-    await win.evaluate(([sid, bid, text]) => window.__agentoryStore.getState().streamAssistantText(sid, bid, text, false), [A, BID_A, A_CHUNKS[i]]);
-    await win.evaluate(([sid, bid, text]) => window.__agentoryStore.getState().streamAssistantText(sid, bid, text, false), [B, BID_B, B_CHUNKS[i]]);
+    await win.evaluate(([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false), [A, BID_A, A_CHUNKS[i]]);
+    await win.evaluate(([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false), [B, BID_B, B_CHUNKS[i]]);
   }
   await win.waitForTimeout(150);
 
   const aText = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid)?.text;
   }, [A, BID_A]);
   const bText = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid)?.text;
   }, [B, BID_B]);
 
@@ -89,11 +89,11 @@ try {
 
   // Each session should have exactly 1 streaming assistant block (its own).
   const aBlocks = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.filter((b) => b.kind === 'assistant').map((b) => ({ id: b.id, streaming: b.streaming, text: b.text }));
   }, A);
   const bBlocks = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.filter((b) => b.kind === 'assistant').map((b) => ({ id: b.id, streaming: b.streaming, text: b.text }));
   }, B);
   if (aBlocks.length !== 1) fail(`A should have 1 assistant block, got ${aBlocks.length}: ${JSON.stringify(aBlocks)}`, app);
@@ -104,32 +104,32 @@ try {
 
   // Finalize A only — B should remain streaming.
   await win.evaluate(([sid, bid, text]) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, [A, BID_A, wantA]);
   await win.waitForTimeout(150);
 
   // Switch view to A so we can confirm caret state for A is gone.
-  await win.evaluate((sid) => window.__agentoryStore.setState({ activeId: sid }), A);
+  await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), A);
   await win.waitForTimeout(120);
   const caretAfterA = await win.locator('span.animate-pulse').count();
   if (caretAfterA !== 0) fail(`A's caret should be gone after finalize, found ${caretAfterA}`, app);
 
   // B should still be streaming in store; switch to B and confirm caret.
   const bStillStreaming = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.kind === 'assistant')?.streaming === true;
   }, B);
   if (!bStillStreaming) fail('B should still be streaming after only A was finalized', app);
-  await win.evaluate((sid) => window.__agentoryStore.setState({ activeId: sid }), B);
+  await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), B);
   await win.waitForTimeout(150);
   const caretOnB = await win.locator('span.animate-pulse').count();
   if (caretOnB < 1) fail('B should still show caret', app);
 
   // Finalize B.
   await win.evaluate(([sid, bid, text]) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, [B, BID_B, wantB]);
   await win.waitForTimeout(150);
   const caretFinal = await win.locator('span.animate-pulse').count();

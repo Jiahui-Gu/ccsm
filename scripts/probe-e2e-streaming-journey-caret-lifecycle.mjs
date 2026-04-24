@@ -36,13 +36,13 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // ===== Part 1 + 2: caret during stream, gone after finalize =====
   const SID1 = 's-caret-final';
   const BID1 = 'msg-caret:final';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'caret-final', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -53,7 +53,7 @@ try {
   }, SID1);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.streamAssistantText(sid, bid, 'partial ', false);
     st.streamAssistantText(sid, bid, 'reply ', false);
   }, [SID1, BID1]);
@@ -64,8 +64,8 @@ try {
 
   // Finalize.
   await win.evaluate(([sid, bid]) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text: 'final reply' }]);
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text: 'final reply' }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, [SID1, BID1]);
   await win.waitForTimeout(150);
 
@@ -73,7 +73,7 @@ try {
   if (caretAfterFinal !== 0) fail(`Part 2: expected caret gone after finalize, found ${caretAfterFinal}`, app);
 
   const blockAfterFinal = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid);
   }, [SID1, BID1]);
   if (!blockAfterFinal) fail('Part 2: finalized block missing', app);
@@ -83,11 +83,11 @@ try {
   const SID2 = 's-caret-int';
   const BID2 = 'msg-caret:int';
   await win.evaluate((sid) => {
-    const cur = window.__agentoryStore.getState();
+    const cur = window.__ccsmStore.getState();
     const sessions = cur.sessions.some((s) => s.id === sid)
       ? cur.sessions
       : [{ id: sid, name: 'caret-int', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }, ...cur.sessions];
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       sessions,
       activeId: sid,
       messagesBySession: { ...cur.messagesBySession, [sid]: [{ kind: 'user', id: 'u-2', text: 'count' }] },
@@ -97,7 +97,7 @@ try {
   }, SID2);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.streamAssistantText(sid, bid, '1 ', false);
     st.streamAssistantText(sid, bid, '2 ', false);
     st.streamAssistantText(sid, bid, '3 ', false);
@@ -115,7 +115,7 @@ try {
   await win.waitForTimeout(150);
 
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.consumeInterrupted(sid);
     const open = (st.messagesBySession[sid] ?? []).find((b) => b.id === bid);
     if (open) {
@@ -132,7 +132,7 @@ try {
   if (caretAfterInt !== 0) fail(`Part 3: caret should be 0 after interrupt, found ${caretAfterInt}`, app);
 
   const blockAfterInt = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid);
   }, [SID2, BID2]);
   if (!blockAfterInt) fail('Part 3: in-flight block missing after interrupt — should remain with partial text', app);

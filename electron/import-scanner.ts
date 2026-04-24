@@ -20,32 +20,37 @@ const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const TMP_ROOT = os.tmpdir();
 
 /**
- * Heuristic filter for agentory's own short-lived spawn cwds. Dogfood H found
+ * Heuristic filter for our own short-lived spawn cwds. Dogfood H found
  * 92% of `~/.claude/projects/` entries on a real user's machine were
- * agentory-spawned temporary dirs (paths like `<tmpdir>/agentory-…`), drowning
- * the import picker in noise.
+ * app-spawned temporary dirs (paths like `<tmpdir>/ccsm-…` or the legacy
+ * `<tmpdir>/agentory-…` from before the CCSM rename), drowning the import
+ * picker in noise.
  *
  * Match conditions (any one):
  *   1. cwd starts with the platform temp dir AND a path segment begins with
- *      `agentory-` (the prefix our own spawn helpers use).
+ *      `ccsm-` or `agentory-` (the prefixes our own spawn helpers use today
+ *      and historically).
  *   2. cwd appears under common cross-platform temp roots and matches the
- *      same `agentory-` segment rule. Belt-and-suspenders for cases where
- *      `os.tmpdir()` resolves to a path that doesn't match the on-disk cwd
- *      verbatim (symlinks, drive-letter casing on Windows).
+ *      same segment rule. Belt-and-suspenders for cases where `os.tmpdir()`
+ *      resolves to a path that doesn't match the on-disk cwd verbatim
+ *      (symlinks, drive-letter casing on Windows).
  *
- * Exported for unit testing.
+ * Function name kept as `isCCSMTempCwd` for low-churn — it's an internal
+ * helper and renaming it cascades through every caller site for no user
+ * benefit. Exported for unit testing.
  */
-export function isAgentoryTempCwd(cwd: string): boolean {
+export function isCCSMTempCwd(cwd: string): boolean {
   if (!cwd || typeof cwd !== 'string') return false;
   // Normalise separators so the segment check works on both Windows-style
   // (`\`) and POSIX (`/`) inputs without case-folding the whole path.
   const normalized = cwd.replace(/\\/g, '/');
-  // Look for any path segment that starts with `agentory-` — this matches
-  // every spawn flavour we use today (`agentory-A2N1-…`, `agentory-bugl-bash`,
-  // `agentory-probe-import-…`, etc.). The leading `/` rules out matching a
-  // user-named directory like `my-agentory-project`.
-  const hasAgentorySegment = /(^|\/)agentory-/.test(normalized);
-  if (!hasAgentorySegment) return false;
+  // Look for any path segment that starts with `ccsm-` or the legacy
+  // `agentory-` prefix — this matches every spawn flavour we use today
+  // (`ccsm-A2N1-…`, `ccsm-bugl-bash`, `ccsm-probe-import-…`) and historical
+  // transcripts written before the CCSM rename. The leading `/` rules out
+  // matching a user-named directory like `my-agentory-project`.
+  const hasTempSegment = /(^|\/)(ccsm|agentory)-/.test(normalized);
+  if (!hasTempSegment) return false;
   const tmpNorm = TMP_ROOT.replace(/\\/g, '/');
   // Case-insensitive prefix on Windows (drive letter case can differ between
   // `os.tmpdir()` and what the CLI recorded). Cheap on every other platform —
@@ -94,9 +99,9 @@ export async function scanImportableSessions(): Promise<ScannableSession[]> {
       try {
         const head = await readHead(full);
         if (!head) continue;
-        // Drop agentory's own short-lived spawn cwds — they're noise to the
-        // user. See `isAgentoryTempCwd` for the heuristic.
-        if (isAgentoryTempCwd(head.cwd)) continue;
+        // Drop our own short-lived spawn cwds — they're noise to the
+        // user. See `isCCSMTempCwd` for the heuristic.
+        if (isCCSMTempCwd(head.cwd)) continue;
         const stat = await fs.promises.stat(full);
         out.push({
           sessionId,

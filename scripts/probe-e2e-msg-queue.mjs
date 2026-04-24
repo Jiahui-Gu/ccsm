@@ -12,7 +12,7 @@
 // FIFO order. The IPC-side drain (lifecycle.ts) is covered by
 // probe-e2e-input-queue.mjs against a real SDK.
 //
-// Why we don't intercept window.agentory: contextBridge.exposeInMainWorld
+// Why we don't intercept window.ccsm: contextBridge.exposeInMainWorld
 // freezes the surface, so renderer-side reassignment doesn't take. Observable
 // store state is the contract that matters here.
 import { _electron as electron } from 'playwright';
@@ -43,12 +43,12 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // Seed a started + running session so the first Enter goes to the queue
   // (InputBar.send() routes to enqueueMessage when running).
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{
         id: 's-q',
@@ -102,16 +102,16 @@ try {
       const v = await win.evaluate(() => document.querySelector('textarea')?.value);
       fail(`pre-Enter textarea value mismatch: got ${JSON.stringify(v)} want ${JSON.stringify(msg)}`, app);
     });
-    const running = await win.evaluate(() => !!window.__agentoryStore.getState().runningSessions['s-q']);
+    const running = await win.evaluate(() => !!window.__ccsmStore.getState().runningSessions['s-q']);
     if (!running) fail('running flag false at iteration ' + i, app);
     await textarea.press('Enter');
     await win.waitForFunction(
-      (n) => (window.__agentoryStore.getState().messageQueues['s-q'] ?? []).length === n,
+      (n) => (window.__ccsmStore.getState().messageQueues['s-q'] ?? []).length === n,
       want,
       { timeout: 3000 }
     ).catch(async () => {
-      const len = await win.evaluate(() => (window.__agentoryStore.getState().messageQueues['s-q'] ?? []).length);
-      const dump = await win.evaluate(() => (window.__agentoryStore.getState().messageQueues['s-q'] ?? []).map((m) => m.text));
+      const len = await win.evaluate(() => (window.__ccsmStore.getState().messageQueues['s-q'] ?? []).length);
+      const dump = await win.evaluate(() => (window.__ccsmStore.getState().messageQueues['s-q'] ?? []).map((m) => m.text));
       fail(`enqueue #${want} did not advance queue length (got ${len}, queue=${JSON.stringify(dump)})`, app);
     });
     // Wait for the composer to clear before typing the next message.
@@ -121,14 +121,14 @@ try {
   // Chip text uses i18n format `+{{count}} queued`. Match the count.
   const chip = win.getByText(/\+3 queued/);
   await chip.waitFor({ state: 'visible', timeout: 3000 }).catch(async () => {
-    const queueDump = await win.evaluate(() => window.__agentoryStore.getState().messageQueues);
+    const queueDump = await win.evaluate(() => window.__ccsmStore.getState().messageQueues);
     console.error('--- queue state ---\n' + JSON.stringify(queueDump, null, 2));
     fail('"+3 queued" chip never appeared after 3 Enters', app);
   });
 
   // Confirm queue order in the store matches insertion order.
   const queuedTexts = await win.evaluate(() =>
-    (window.__agentoryStore.getState().messageQueues['s-q'] ?? []).map((m) => m.text)
+    (window.__ccsmStore.getState().messageQueues['s-q'] ?? []).map((m) => m.text)
   );
   if (JSON.stringify(queuedTexts) !== JSON.stringify(messages)) {
     fail(`queue order wrong after 3 Enters: got ${JSON.stringify(queuedTexts)}, want ${JSON.stringify(messages)}`, app);
@@ -143,13 +143,13 @@ try {
   // Drain head one at a time using the store's public dequeueMessage.
   // Assert FIFO order + chip count drops in lockstep.
   for (let i = 0; i < 3; i++) {
-    const head = await win.evaluate(() => window.__agentoryStore.getState().dequeueMessage('s-q'));
+    const head = await win.evaluate(() => window.__ccsmStore.getState().dequeueMessage('s-q'));
     if (!head) fail(`dequeue #${i + 1} returned null — queue ran dry early`, app);
     if (head.text !== messages[i]) {
       fail(`dequeue #${i + 1} popped wrong message: got "${head.text}", expected "${messages[i]}"`, app);
     }
     await win.waitForTimeout(80);
-    const remaining = await win.evaluate(() => (window.__agentoryStore.getState().messageQueues['s-q'] ?? []).length);
+    const remaining = await win.evaluate(() => (window.__ccsmStore.getState().messageQueues['s-q'] ?? []).length);
     const expectRemaining = 3 - i - 1;
     if (remaining !== expectRemaining) {
       fail(`after dequeue #${i + 1}, queue length should be ${expectRemaining}, got ${remaining}`, app);
@@ -164,7 +164,7 @@ try {
   }
 
   // After all 3 drains the queue must be empty.
-  const finalQueue = await win.evaluate(() => window.__agentoryStore.getState().messageQueues['s-q']);
+  const finalQueue = await win.evaluate(() => window.__ccsmStore.getState().messageQueues['s-q']);
   if (finalQueue && finalQueue.length > 0) {
     fail(`queue not empty after 3 dequeues: ${JSON.stringify(finalQueue)}`, app);
   }

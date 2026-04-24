@@ -4,8 +4,8 @@ dist/
 *.log
 .env
 .env.local
-agentory-data.db
-agentory-data.db-journal
+ccsm-data.db
+ccsm-data.db-journal
 scripts/spike-*
 scripts/e2e-artifacts/
 release/

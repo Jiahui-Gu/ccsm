@@ -10,7 +10,7 @@ import {
 
 // Minimal fake of the IPC surface the drafts module touches: just
 // loadState/saveState scoped to a single in-memory blob.
-function installAgentory(initial?: string) {
+function installCCSM(initial?: string) {
   const store = new Map<string, string>();
   if (initial) store.set('drafts', initial);
   const loadState = vi.fn(async (k: string) => store.get(k) ?? null);
@@ -18,7 +18,7 @@ function installAgentory(initial?: string) {
     store.set(k, v);
   });
   // Cast through unknown — we're only exercising the two methods drafts.ts uses.
-  (window as unknown as { agentory: unknown }).agentory = { loadState, saveState };
+  (window as unknown as { ccsm: unknown }).ccsm = { loadState, saveState };
   return { store, loadState, saveState };
 }
 
@@ -29,7 +29,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
-  delete (window as unknown as { agentory?: unknown }).agentory;
+  delete (window as unknown as { ccsm?: unknown }).ccsm;
 });
 
 async function flushPersist() {
@@ -40,33 +40,33 @@ async function flushPersist() {
 
 describe('drafts persistence', () => {
   it('hydrates an empty cache when no blob exists', async () => {
-    const { loadState } = installAgentory();
+    const { loadState } = installCCSM();
     await hydrateDrafts();
     expect(loadState).toHaveBeenCalledWith('drafts');
     expect(getDraft('s-1')).toBe('');
   });
 
   it('hydrates from a v1 blob', async () => {
-    installAgentory(JSON.stringify({ version: 1, drafts: { 's-1': 'hello', 's-2': 'world' } }));
+    installCCSM(JSON.stringify({ version: 1, drafts: { 's-1': 'hello', 's-2': 'world' } }));
     await hydrateDrafts();
     expect(getDraft('s-1')).toBe('hello');
     expect(getDraft('s-2')).toBe('world');
   });
 
   it('ignores blobs with the wrong version', async () => {
-    installAgentory(JSON.stringify({ version: 2, drafts: { 's-1': 'oops' } }));
+    installCCSM(JSON.stringify({ version: 2, drafts: { 's-1': 'oops' } }));
     await hydrateDrafts();
     expect(getDraft('s-1')).toBe('');
   });
 
   it('survives corrupt JSON without throwing', async () => {
-    installAgentory('{not json');
+    installCCSM('{not json');
     await expect(hydrateDrafts()).resolves.not.toThrow();
     expect(getDraft('s-1')).toBe('');
   });
 
   it('writes via debounced saveState on setDraft', async () => {
-    const { saveState } = installAgentory();
+    const { saveState } = installCCSM();
     await hydrateDrafts();
     setDraft('s-1', 'half-typed');
     expect(saveState).not.toHaveBeenCalled(); // debounced
@@ -77,7 +77,7 @@ describe('drafts persistence', () => {
   });
 
   it('coalesces rapid edits into a single write', async () => {
-    const { saveState } = installAgentory();
+    const { saveState } = installCCSM();
     await hydrateDrafts();
     setDraft('s-1', 'a');
     setDraft('s-1', 'ab');
@@ -89,7 +89,7 @@ describe('drafts persistence', () => {
   });
 
   it('clearDraft removes the entry and persists the deletion', async () => {
-    const { saveState } = installAgentory(
+    const { saveState } = installCCSM(
       JSON.stringify({ version: 1, drafts: { 's-1': 'old' } })
     );
     await hydrateDrafts();
@@ -102,7 +102,7 @@ describe('drafts persistence', () => {
   });
 
   it('deleteDrafts batches removals and only writes when something changed', async () => {
-    const { saveState } = installAgentory(
+    const { saveState } = installCCSM(
       JSON.stringify({ version: 1, drafts: { 's-1': 'a', 's-2': 'b' } })
     );
     await hydrateDrafts();
@@ -118,7 +118,7 @@ describe('drafts persistence', () => {
   });
 
   it('preserves multiline / unicode / emoji content verbatim', async () => {
-    const { saveState } = installAgentory();
+    const { saveState } = installCCSM();
     await hydrateDrafts();
     const tricky = 'line1\nline2 <tag> `code` 🚀\n\tindented';
     setDraft('s-1', tricky);

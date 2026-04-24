@@ -34,7 +34,7 @@ const app = await electron.launch({
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 async function clickSidebarNewSession() {
   // Scope to <aside> so we don't accidentally hit the empty-state CTA in
@@ -46,7 +46,7 @@ async function clickSidebarNewSession() {
 
 async function readState() {
   return await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return {
       groups: s.groups.map((g) => ({ id: g.id, name: g.name, kind: g.kind })),
       sessions: s.sessions.map((x) => ({ id: x.id, groupId: x.groupId, name: x.name })),
@@ -78,7 +78,7 @@ await seedStore(win, {
 await clickSidebarNewSession();
 await win.waitForFunction(
   () => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return s.groups.length === 1 && s.sessions.length === 1 && !!s.activeId;
   },
   null,
@@ -109,7 +109,7 @@ await seedStore(win, {
 await clickSidebarNewSession();
 await win.waitForFunction(
   () => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return s.groups.length === 2 && s.sessions.length === 1 && !!s.activeId;
   },
   null,

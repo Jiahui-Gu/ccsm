@@ -32,7 +32,7 @@ const ud = isolatedUserData(PROBE);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -56,14 +56,14 @@ if (await newBtn.isVisible().catch(() => false)) {
 
 // Ensure a session exists with a valid cwd so InputBar enables the textarea.
 await win.evaluate((cwd) => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (!s.activeId) s.createSession?.(cwd);
   // Force a usable cwd on the active session (otherwise InputBar may stay disabled).
-  const cur = window.__agentoryStore.getState();
+  const cur = window.__ccsmStore.getState();
   const sessions = cur.sessions.map((x) =>
     x.id === cur.activeId ? { ...x, cwd } : x
   );
-  window.__agentoryStore.setState({ sessions });
+  window.__ccsmStore.setState({ sessions });
 }, root);
 await win.waitForTimeout(300);
 
@@ -82,8 +82,8 @@ if (focusedBefore !== 'textarea') {
 
 // Inject permission block via store (simulates async agent request).
 const inj = await win.evaluate(() => {
-  const store = window.__agentoryStore;
-  if (!store) return { ok: false, reason: 'no __agentoryStore' };
+  const store = window.__ccsmStore;
+  if (!store) return { ok: false, reason: 'no __ccsmStore' };
   const s = store.getState();
   const activeId = s.activeId;
   if (!activeId) return { ok: false, reason: 'no active session' };

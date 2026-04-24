@@ -27,7 +27,7 @@ console.log(`[probe-e2e-group-add] userData = ${ud.dir}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 const win = await appWindow(app);
 const errors = [];
@@ -60,19 +60,19 @@ async function bail(msg) {
 }
 
 // === Case 1: clicking g2's + creates a session in g2 (not in g1). ===
-const before = await win.evaluate(() => window.__agentoryStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
+const before = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
 const g2Plus = win.locator('[data-group-header-id="g2"] button[aria-label*="new session" i], [data-group-header-id="g2"] button[aria-label*="新建" i]').first();
 await g2Plus.waitFor({ state: 'visible', timeout: 3000 });
 await g2Plus.click();
 await win.waitForTimeout(300);
-const after = await win.evaluate(() => window.__agentoryStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
+const after = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
 const beforeIds = new Set(before.map((s) => s.id));
 const fresh = after.filter((s) => !beforeIds.has(s.id));
 if (fresh.length !== 1) await bail(`expected exactly 1 new session, got ${fresh.length}`);
 if (fresh[0].groupId !== 'g2') await bail(`new session should land in g2, got ${fresh[0].groupId}`);
 
 // === Case 2: the new session is now active. ===
-const activeId = await win.evaluate(() => window.__agentoryStore.getState().activeId);
+const activeId = await win.evaluate(() => window.__ccsmStore.getState().activeId);
 if (activeId !== fresh[0].id) await bail(`new session should be active; activeId=${activeId}, fresh.id=${fresh[0].id}`);
 
 // === Case 3: g2 stays expanded (the + click must not toggle collapse). ===

@@ -1,6 +1,6 @@
 // Live probe for the "Claude CLI not found" first-run wizard.
 //
-// Case A (original): Runs against the built app with AGENTORY_CLAUDE_BIN
+// Case A (original): Runs against the built app with CCSM_CLAUDE_BIN
 // pointing at a non-existent file so the resolver falls back to a scrubbed
 // PATH and flips the store into `missing` state. Asserts:
 //   - The blocking modal renders with title + body.
@@ -68,7 +68,7 @@ const app = await electron.launch({
     // "throws with non-existent override" branch in resolveClaudeBinary and
     // surfaces to the renderer as CLAUDE_NOT_FOUND after we click "Send".
     //
-    // Hmm — except: with AGENTORY_CLAUDE_BIN set but missing, the resolver
+    // Hmm — except: with CCSM_CLAUDE_BIN set but missing, the resolver
     // throws a plain Error (not ClaudeNotFoundError), which falls through to
     // generic error. For this probe we want the missing flow — so clear the
     // env var and rely on PATH being empty below.
@@ -83,7 +83,7 @@ await app.evaluate(async () => {
   process.env.PATH = '';
   process.env.path = '';
   if (process.platform === 'win32') process.env.PATHEXT = '';
-  delete process.env.AGENTORY_CLAUDE_BIN;
+  delete process.env.CCSM_CLAUDE_BIN;
 });
 
 // Stub the file picker to return our fake binary when the user clicks
@@ -209,12 +209,12 @@ try {
     process.env.PATH = '';
     process.env.path = '';
     if (process.platform === 'win32') process.env.PATHEXT = '';
-    delete process.env.AGENTORY_CLAUDE_BIN;
+    delete process.env.CCSM_CLAUDE_BIN;
   });
 
   const win2 = await appWindow(app2);
   await win2.waitForLoadState('domcontentloaded');
-  await win2.waitForFunction(() => !!window.agentory?.agentStart, null, {
+  await win2.waitForFunction(() => !!window.ccsm?.agentStart, null, {
     timeout: 10_000,
   });
 
@@ -223,12 +223,12 @@ try {
   // value (the first-run wizard's saveClaudeBinPath path under the hood
   // routes through the same app_state row).
   await win2.evaluate(async (p) => {
-    await window.agentory.saveState('claudeBinPath', p);
+    await window.ccsm.saveState('claudeBinPath', p);
   }, stalePath);
 
   // Sanity: the seed actually landed.
   const seeded = await win2.evaluate(async () => {
-    return await window.agentory.loadState('claudeBinPath');
+    return await window.ccsm.loadState('claudeBinPath');
   });
   if (seeded !== stalePath) {
     await app2.close();
@@ -242,7 +242,7 @@ try {
   // root` (this repo) so the CWD existsSync guard is satisfied; the only
   // thing under test is binaryPath validation + CLAUDE_NOT_FOUND surfacing.
   const startResult = await win2.evaluate(async (cwd) => {
-    return await window.agentory.agentStart('probe-stale-binpath-session', { cwd });
+    return await window.ccsm.agentStart('probe-stale-binpath-session', { cwd });
   }, root);
 
   if (startResult.ok) {
@@ -269,7 +269,7 @@ try {
   // a subsequent launch falls cleanly into the resolver / first-run wizard
   // instead of hitting the same dead path forever.
   const after = await win2.evaluate(async () => {
-    return await window.agentory.loadState('claudeBinPath');
+    return await window.ccsm.loadState('claudeBinPath');
   });
   if (after !== null) {
     await app2.close();

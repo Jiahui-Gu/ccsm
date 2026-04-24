@@ -24,7 +24,7 @@ export async function appWindow(app, { timeout = 15000 } = {}) {
 // E2E probes that MUST load this worktree's bundle — never the developer's
 // possibly-stale `npm run dev:web` instance on the default port 4100.
 //
-// Pair with `AGENTORY_DEV_PORT=<port>` in the electron launch env so
+// Pair with `CCSM_DEV_PORT=<port>` in the electron launch env so
 // `electron/main.ts` points the BrowserWindow at our server instead of
 // the well-known dev port.
 export async function startBundleServer(rootDir) {
@@ -153,13 +153,13 @@ export function isolatedUserData(prefix) {
 // hydrated and a bare setState can race the persisted-state apply.
 export async function seedStore(win, state) {
   await win.waitForFunction(
-    () => !!window.__agentoryStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
   await win.evaluate((s) => {
-    const store = window.__agentoryStore;
-    if (!store) throw new Error('__agentoryStore missing on window — App.tsx no longer exposes it?');
+    const store = window.__ccsmStore;
+    if (!store) throw new Error('__ccsmStore missing on window — App.tsx no longer exposes it?');
     store.setState(s);
   }, state);
   await win.waitForTimeout(200);

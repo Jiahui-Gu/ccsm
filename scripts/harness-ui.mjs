@@ -66,7 +66,7 @@ async function caseSidebarAlign({ win, log }) {
 // ---------- no-sessions-landing ----------
 async function caseNoSessionsLanding({ win, log }) {
   await win.evaluate(() => {
-    window.__agentoryStore.setState({ sessions: [], activeId: undefined, tutorialSeen: true });
+    window.__ccsmStore.setState({ sessions: [], activeId: undefined, tutorialSeen: true });
   });
   await win.waitForTimeout(300);
 
@@ -102,7 +102,7 @@ async function caseEmptyStateMinimal({ win, log }) {
   // "Working in" line) contract IS absorbed here.
 
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -132,7 +132,7 @@ async function caseEmptyStateMinimal({ win, log }) {
 // ---------- a11y-focus-restore ----------
 async function caseA11yFocusRestore({ win, log }) {
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'Group One', collapsed: false, kind: 'normal' }],
       sessions: [
         { id: 'sA', name: 'session-a', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
@@ -257,7 +257,7 @@ async function caseShortcutOverlayOpens({ win, log }) {
   // overlay is wired into both branches, but this keeps the test closer
   // to real usage).
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -325,7 +325,7 @@ async function casePopoverCrossDismiss({ win, log }) {
   // the model + permission ChipMenus. The model id is the trigger label,
   // so a fixed value gives us a stable selector.
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -345,7 +345,7 @@ async function casePopoverCrossDismiss({ win, log }) {
   await cwdChip.click();
   const cwdPopover = win.locator('[role="dialog"][aria-label="Working directory"]');
   await cwdPopover.waitFor({ state: 'visible', timeout: 3000 });
-  let openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  let openId = await win.evaluate(() => window.__ccsmStore.getState().openPopoverId);
   if (openId !== 'cwd') throw new Error(`expected openPopoverId=cwd after cwd click, got ${openId}`);
 
   // Step 2: click the model selector trigger.
@@ -360,7 +360,7 @@ async function casePopoverCrossDismiss({ win, log }) {
   ).catch(() => { throw new Error('cwd popover did not auto-close after clicking model chip'); });
   const modelMenu = win.locator('[role="menu"]');
   await modelMenu.first().waitFor({ state: 'visible', timeout: 3000 });
-  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  openId = await win.evaluate(() => window.__ccsmStore.getState().openPopoverId);
   if (openId !== 'model') throw new Error(`expected openPopoverId=model after model click, got ${openId}`);
 
   // Step 4: click the cwd selector trigger again.
@@ -373,7 +373,7 @@ async function casePopoverCrossDismiss({ win, log }) {
     { timeout: 2000 }
   ).catch(() => { throw new Error('model menu did not auto-close after clicking cwd chip') });
   await cwdPopover.waitFor({ state: 'visible', timeout: 3000 });
-  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  openId = await win.evaluate(() => window.__ccsmStore.getState().openPopoverId);
   if (openId !== 'cwd') throw new Error(`expected openPopoverId=cwd after re-clicking cwd, got ${openId}`);
 
   // Step 6 (bonus): Escape closes the cwd popover (CwdPopover's onKey
@@ -386,7 +386,7 @@ async function casePopoverCrossDismiss({ win, log }) {
     null,
     { timeout: 2000 }
   ).catch(() => { throw new Error('Escape did not close all popovers') });
-  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  openId = await win.evaluate(() => window.__ccsmStore.getState().openPopoverId);
   if (openId !== null) throw new Error(`expected openPopoverId=null after Escape, got ${openId}`);
 
   log('cwd→model→cwd cross-dismiss + Escape clears mutex slot');
@@ -407,7 +407,7 @@ async function casePopoverCrossDismiss({ win, log }) {
 //   text-heading = 16px : dialog titles, section headers
 async function caseTypeScaleSnapshot({ win, log }) {
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
@@ -475,7 +475,7 @@ await runHarness({
   setup: async ({ win }) => {
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {
-      window.__agentoryStore?.setState({
+      window.__ccsmStore?.setState({
         cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });

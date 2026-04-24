@@ -14,8 +14,8 @@ await page.waitForTimeout(1500);
 const result = await page.evaluate(async () => {
   const out = { steps: [], errors: [], checks: {} };
   try {
-    const useStore = window.__agentoryStore;
-    if (!useStore) throw new Error('window.__agentoryStore missing');
+    const useStore = window.__ccsmStore;
+    if (!useStore) throw new Error('window.__ccsmStore missing');
 
     useStore.getState().createSession('~/probe');
     const sid = useStore.getState().activeId;

@@ -29,7 +29,7 @@ function fail(msg) {
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-restore-plan-'));
 console.log(`[probe-e2e-restore-journey-plan] userData = ${userDataDir}`);
 
-const commonEnv = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
+const commonEnv = { ...process.env, CCSM_PROD_BUNDLE: '1' };
 const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
 
 const SESSION_ID = 's-restore-plan-1';
@@ -61,8 +61,8 @@ const PRELUDE = [
 
   const seeded = await win.evaluate(
     async ({ sid, gid, blocks }) => {
-      const api = window.agentory;
-      if (!api) return { ok: false, err: 'no window.agentory' };
+      const api = window.ccsm;
+      if (!api) return { ok: false, err: 'no window.ccsm' };
       const state = {
         version: 1,
         sessions: [

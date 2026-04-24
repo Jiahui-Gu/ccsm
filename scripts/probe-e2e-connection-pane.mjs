@@ -66,7 +66,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT),
+    CCSM_DEV_PORT: String(PORT),
     HOME: homeDir,
     USERPROFILE: homeDir,
     // Strip any inherited ANTHROPIC_* values so the fixture wins
@@ -82,7 +82,7 @@ let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
   await win.waitForTimeout(500);
 
   // Open Settings via the sidebar button, then click the Connection tab.

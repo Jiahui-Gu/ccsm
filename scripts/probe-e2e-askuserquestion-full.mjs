@@ -3,7 +3,7 @@
 // Strategy: bypass real claude.exe by directly seeding `kind: 'question'`
 // blocks into the renderer's zustand store via `appendBlocks`. This isolates
 // the rendering / interaction contract from agent-spawn flakiness and lets
-// us assert the journeys deterministically. We ALSO stub `window.agentory`
+// us assert the journeys deterministically. We ALSO stub `window.ccsm`
 // IPC functions (`agentSend`, `agentResolvePermission`, `saveMessages`,
 // `loadMessages`) so we can capture what the QuestionBlock would have sent
 // and so seeded data round-trips through restart.
@@ -35,7 +35,7 @@ async function newWin(extraEnv = {}, extraArgs = []) {
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${ud.dir}`, ...extraArgs],
     cwd: root,
-    env: { ...process.env, AGENTORY_PROD_BUNDLE: '1', ...extraEnv },
+    env: { ...process.env, CCSM_PROD_BUNDLE: '1', ...extraEnv },
   });
   const win = await appWindow(app);
   const errors = [];
@@ -46,7 +46,7 @@ async function newWin(extraEnv = {}, extraArgs = []) {
   await win.waitForLoadState('domcontentloaded');
   // Wait for store to hydrate & a session/composer to be available.
   await win.waitForFunction(
-    () => !!window.__agentoryStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
@@ -56,7 +56,7 @@ async function newWin(extraEnv = {}, extraArgs = []) {
   // We override cliStatus to a synthetic 'found' so the rest of the app
   // behaves as if the binary existed.
   await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     store.setState({
       cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
     });
@@ -89,7 +89,7 @@ async function installAgentSendCapture(_win) {
   // Replace the main-side IPC handlers for `agent:send`,
   // `agent:sendContent`, and `agent:resolvePermission` with capturing stubs.
   // Renderer-side patching is impossible because contextBridge freezes
-  // `window.agentory`; main-side `ipcMain.handle` re-registration with
+  // `window.ccsm`; main-side `ipcMain.handle` re-registration with
   // `removeHandler` first is the supported override path.
   await app.evaluate(({ ipcMain }) => {
     if (!global.__probeCapture) {
@@ -134,7 +134,7 @@ async function clearCaptured() {
 
 async function ensureSession(win, name = 'probe') {
   return await win.evaluate((sn) => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     const s = store.getState();
     if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
     s.createSession({ name: sn });
@@ -145,7 +145,7 @@ async function ensureSession(win, name = 'probe') {
 async function injectQuestion(win, sessionId, blockId, questions) {
   await win.evaluate(
     ({ sessionId, blockId, questions }) => {
-      const store = window.__agentoryStore;
+      const store = window.__ccsmStore;
       store.getState().appendBlocks(sessionId, [
         { kind: 'question', id: blockId, questions },
       ]);
@@ -266,7 +266,7 @@ async function journey1_singleSelect_doesNotStealTextarea(win) {
 
   // Clean up the injected block so subsequent journeys start fresh.
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearMessages(sid);
+    window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
   record('J1', true, 'auto-focus did not steal textarea; ↓↓↑Enter routed TypeScript to correct session; focus returned');
@@ -278,7 +278,7 @@ async function journey2_multiSelect_submitGating(win) {
   await installAgentSendCapture(win);
 
   // Make sure there is no leftover question block.
-  await win.evaluate((sid) => window.__agentoryStore.getState().clearMessages(sid), sessionId);
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
 
   await injectQuestion(win, sessionId, 'q-J2', [
     {
@@ -345,7 +345,7 @@ async function journey2_multiSelect_submitGating(win) {
     return;
   }
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearMessages(sid);
+    window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
   record('J2', true, 'gating tracks current pick count (0→1→0→2); both labels submitted');
@@ -355,7 +355,7 @@ async function journey2_multiSelect_submitGating(win) {
 async function journey3_threeQuestions_latestPicks(win) {
   const sessionId = await ensureSession(win, 'J3');
   await installAgentSendCapture(win);
-  await win.evaluate((sid) => window.__agentoryStore.getState().clearMessages(sid), sessionId);
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
 
   await injectQuestion(win, sessionId, 'q-J3', [
     { question: 'Q1 lang', options: [{ label: 'A1' }, { label: 'A2' }, { label: 'A3' }] },
@@ -417,7 +417,7 @@ async function journey3_threeQuestions_latestPicks(win) {
     return;
   }
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearMessages(sid);
+    window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
   record('J3', true, `revised picks captured (A3+B1+C0 default), no stale A2`);
@@ -427,7 +427,7 @@ async function journey3_threeQuestions_latestPicks(win) {
 async function journey4_twelveOptions_wrapAndSubmit(win) {
   const sessionId = await ensureSession(win, 'J4');
   await installAgentSendCapture(win);
-  await win.evaluate((sid) => window.__agentoryStore.getState().clearMessages(sid), sessionId);
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
 
   const opts = Array.from({ length: 12 }, (_, i) => ({ label: `Opt-${String(i + 1).padStart(2, '0')}` }));
   await injectQuestion(win, sessionId, 'q-J4', [{ question: 'Pick one of 12', options: opts }]);
@@ -476,7 +476,7 @@ async function journey4_twelveOptions_wrapAndSubmit(win) {
     return;
   }
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearMessages(sid);
+    window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
   record('J4', true, 'down wraps to first, up wraps to last, last option submits via Enter');
@@ -486,7 +486,7 @@ async function journey4_twelveOptions_wrapAndSubmit(win) {
 async function journey5_longLabelDescription_noOverflow(win) {
   const sessionId = await ensureSession(win, 'J5');
   await installAgentSendCapture(win);
-  await win.evaluate((sid) => window.__agentoryStore.getState().clearMessages(sid), sessionId);
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
 
   const longUrl =
     'https://example.com/' + 'a'.repeat(60); // 80 chars, single token (no break opportunities)
@@ -615,7 +615,7 @@ async function journey5_longLabelDescription_noOverflow(win) {
     return;
   }
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().clearMessages(sid);
+    window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
   record('J5', true, `no horizontal overflow (container ${overflow.containerW}px ≤ stream ${overflow.streamW}px; ${overflow.labelCount} labels fit within container ${overflow.containerClientW}px; no offending rows)`);
@@ -626,7 +626,7 @@ async function journey6_twoSessions_answerRouting(win) {
   await installAgentSendCapture(win);
 
   const ids = await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     // Wipe everything to a known starting point with two fresh sessions.
     store.setState({
       sessions: [],
@@ -653,7 +653,7 @@ async function journey6_twoSessions_answerRouting(win) {
   ]);
 
   // Currently active is B (the most recently created). Verify and submit B's question.
-  const activeNow = await win.evaluate(() => window.__agentoryStore.getState().activeId);
+  const activeNow = await win.evaluate(() => window.__ccsmStore.getState().activeId);
   if (activeNow !== ids.bId) {
     record('J6', false, `expected active=${ids.bId} (B), got ${activeNow}`);
     return;
@@ -681,7 +681,7 @@ async function journey6_twoSessions_answerRouting(win) {
 
   // Switch to A and verify the visible question still belongs to A
   // (no leakage of B's now-answered Q into A).
-  await win.evaluate((aId) => window.__agentoryStore.getState().selectSession(aId), ids.aId);
+  await win.evaluate((aId) => window.__ccsmStore.getState().selectSession(aId), ids.aId);
   await win.waitForTimeout(250);
   // The question block for A should have its options "A-Yes / A-No".
   const labelsInA = await win.evaluate(() =>
@@ -725,7 +725,7 @@ async function journey6_twoSessions_answerRouting(win) {
 async function journey7_restartInteractive() {
   const ud = isolatedUserData('agentory-probe-aq-restart');
   const args = ['.', `--user-data-dir=${ud.dir}`];
-  const env = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
+  const env = { ...process.env, CCSM_PROD_BUNDLE: '1' };
 
   const SESSION_ID = 's-aq-restart';
   const QUESTION_BLOCK_ID = 'q-restart';
@@ -735,12 +735,12 @@ async function journey7_restartInteractive() {
     const app = await electron.launch({ args, cwd: root, env });
     const win = await appWindow(app);
     await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.agentory, null, { timeout: 15_000 });
+    await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
 
     const seeded = await win.evaluate(
       async ({ sid, qid }) => {
-        const api = window.agentory;
-        if (!api) return { ok: false, err: 'no agentory' };
+        const api = window.ccsm;
+        if (!api) return { ok: false, err: 'no ccsm' };
         const state = {
           version: 1,
           sessions: [
@@ -804,11 +804,11 @@ async function journey7_restartInteractive() {
       if (m.type() === 'error') errors.push(`[console.error] ${m.text()}`);
     });
     await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.agentory && !!window.__agentoryStore, null, { timeout: 20_000 });
+    await win.waitForFunction(() => !!window.ccsm && !!window.__ccsmStore, null, { timeout: 20_000 });
     await win.waitForTimeout(1000);
     // Suppress the CLI-missing first-run dialog so it doesn't trap focus.
     await win.evaluate(() => {
-      window.__agentoryStore.setState({
+      window.__ccsmStore.setState({
         cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
       });
     });
@@ -907,7 +907,7 @@ async function safeRun(name, fn) {
     // Best-effort cleanup so the next journey starts from a known state.
     try {
       await win.evaluate(() => {
-        const s = window.__agentoryStore?.getState?.();
+        const s = window.__ccsmStore?.getState?.();
         if (!s) return;
         for (const sid of Object.keys(s.messagesBySession || {})) s.clearMessages(sid);
       });

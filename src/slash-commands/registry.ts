@@ -9,7 +9,7 @@
 //
 //   - DYNAMIC: discovered at runtime by scanning user / project / plugin
 //     command directories on disk (see electron/commands-loader.ts). These
-//     are ALWAYS pass-through — Agentory deliberately does not parse the
+//     are ALWAYS pass-through — CCSM deliberately does not parse the
 //     markdown body or inject anything into the system prompt; the CLI
 //     already knows how to execute its own commands. We're just surfacing
 //     them in the GUI picker so users don't have to remember names.
@@ -48,7 +48,7 @@ export type SlashCommand = {
 // Built-in commands. Order = display order in the BUILT-IN section of the
 // picker. Keep this list deliberately tiny — the rule is "if the CLI can do
 // it, let the CLI do it"; we only own commands whose effect is local to
-// Agentory's own state.
+// CCSM's own state.
 export const BUILT_IN_COMMANDS: SlashCommand[] = [
   {
     name: 'clear',
@@ -168,7 +168,7 @@ export function detectSlashTrigger(value: string, caret: number): SlashTriggerSt
 // ──────────────────── dynamic command loader (renderer) ────────────────────
 //
 // Wraps the IPC. Lives here (not in InputBar) so unit tests can stub the
-// bridge directly via `window.agentory`. Returns an empty array — never
+// bridge directly via `window.ccsm`. Returns an empty array — never
 // throws — when the bridge is missing (browser-only probes) or the IPC
 // call rejects.
 
@@ -183,7 +183,7 @@ export type DynamicCommand = {
 export async function loadDynamicCommands(
   cwd: string | null | undefined
 ): Promise<SlashCommand[]> {
-  const bridge = (typeof window !== 'undefined' ? window.agentory : undefined);
+  const bridge = (typeof window !== 'undefined' ? window.ccsm : undefined);
   if (!bridge?.commands?.list) return [];
   let raw: DynamicCommand[];
   try {

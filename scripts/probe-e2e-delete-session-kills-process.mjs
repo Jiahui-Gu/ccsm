@@ -6,11 +6,11 @@
 //
 // Strategy:
 //   - Launch Electron with an isolated userData dir + a real CLI present on
-//     the machine (resolved through AGENTORY_CLAUDE_BIN / PATH by main).
+//     the machine (resolved through CCSM_CLAUDE_BIN / PATH by main).
 //   - Seed a session and trigger agentStart through the live IPC bridge.
 //     claude.exe sits at the stdio prompt waiting for a `user` frame — it
 //     doesn't need a real prompt or network to exist as a process.
-//   - Snapshot the pid via the dev-only `globalThis.__agentoryDebug` backdoor
+//   - Snapshot the pid via the dev-only `globalThis.__ccsmDebug` backdoor
 //     installed in electron/main.ts (guarded by !app.isPackaged).
 //   - Call the store's deleteSession action and then poll
 //     `process.kill(pid, 0)` from the probe's node runtime — on Windows this
@@ -59,16 +59,16 @@ console.log(`[probe-e2e-delete-session-kills-process] userData = ${userDataDir}`
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  // AGENTORY_PROD_BUNDLE=1 routes main.ts to load the built renderer from
+  // CCSM_PROD_BUNDLE=1 routes main.ts to load the built renderer from
   // dist/renderer instead of webpack-dev-server on :4100 — lets this probe
   // run without a live `npm run dev:web` in the background.
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_PROD_BUNDLE: '1' }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore && !!window.agentory, null, {
+  await win.waitForFunction(() => !!window.__ccsmStore && !!window.ccsm, null, {
     timeout: 15_000
   });
 
@@ -78,7 +78,7 @@ try {
   const sessionId = 's-delete-probe';
   await win.evaluate(
     ({ sid, cwd }) => {
-      const store = window.__agentoryStore;
+      const store = window.__ccsmStore;
       store.setState({
         groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
         sessions: [
@@ -104,7 +104,7 @@ try {
   // Kick off the real agent spawn through the live IPC bridge.
   const startRes = await win.evaluate(
     async ({ sid, cwd }) =>
-      await window.agentory.agentStart(sid, {
+      await window.ccsm.agentStart(sid, {
         cwd,
         permissionMode: 'default'
       }),
@@ -121,7 +121,7 @@ try {
   // Flip started/running in the store so deleteSession actually dispatches
   // agentClose (it short-circuits for never-spawned sessions).
   await win.evaluate((sid) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     st.markStarted(sid);
     st.setRunning(sid, true);
   }, sessionId);
@@ -132,10 +132,10 @@ try {
   let pid = null;
   for (let i = 0; i < 30; i++) {
     const pids = await app.evaluate(() => {
-      const dbg = globalThis.__agentoryDebug;
+      const dbg = globalThis.__ccsmDebug;
       return dbg ? dbg.activeSessionPids() : null;
     });
-    if (!pids) fail('globalThis.__agentoryDebug missing in main process', app);
+    if (!pids) fail('globalThis.__ccsmDebug missing in main process', app);
     const row = pids.find((r) => r.sessionId === sessionId);
     if (row && typeof row.pid === 'number') {
       pid = row.pid;
@@ -151,9 +151,9 @@ try {
   }
 
   // Trigger the store's deleteSession — the path under test. This should
-  // dispatch window.agentory.agentClose(sid) as a side effect.
+  // dispatch window.ccsm.agentClose(sid) as a side effect.
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().deleteSession(sid);
+    window.__ccsmStore.getState().deleteSession(sid);
   }, sessionId);
 
   // Poll for the pid to go away. The spawner escalates SIGTERM → SIGKILL
@@ -174,7 +174,7 @@ try {
 
   // Double-check the main-process map also forgot the runner.
   const remaining = await app.evaluate(() => {
-    const dbg = globalThis.__agentoryDebug;
+    const dbg = globalThis.__ccsmDebug;
     return dbg ? dbg.activeSessionCount() : -1;
   });
   if (remaining !== 0) {

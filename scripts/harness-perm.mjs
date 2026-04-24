@@ -30,7 +30,7 @@ import { runHarness } from './probe-helpers/harness-runner.mjs';
 // the textarea. Mirrors the seed pattern used across the source probes.
 async function seedSession(win, { sid = 's-perm', cwd = 'C:/x' } = {}) {
   await win.evaluate(({ sid, cwd }) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'perm-probe', state: 'idle', cwd, model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -43,7 +43,7 @@ async function seedSession(win, { sid = 's-perm', cwd = 'C:/x' } = {}) {
 
 async function injectWaiting(win, { id, requestId, toolName = 'Bash', toolInput, prompt = 'Bash op' }) {
   await win.evaluate((args) => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     s.appendBlocks(s.activeId, [{
       kind: 'waiting',
       id: args.id,
@@ -130,8 +130,8 @@ async function casePermissionPrompt({ win, log }) {
 async function casePermissionModeStrict({ win, log }) {
   // Pure IPC contract test — no DOM.
   const result = await win.evaluate(async () => {
-    const bogus = await window.agentory.agentSetPermissionMode('s-nonexistent', 'not-a-real-mode');
-    const valid = await window.agentory.agentSetPermissionMode('s-nonexistent', 'default');
+    const bogus = await window.ccsm.agentSetPermissionMode('s-nonexistent', 'not-a-real-mode');
+    const valid = await window.ccsm.agentSetPermissionMode('s-nonexistent', 'default');
     return { bogus, valid };
   });
 
@@ -198,7 +198,7 @@ async function casePermissionShortcutScope({ win, log }) {
   // Wrap the store's resolvePermission action to spy on calls.
   await win.evaluate(() => {
     window.__permCalls = [];
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     const origAction = store.getState().resolvePermission;
     store.setState({
       resolvePermission: (sessionId, requestId, decision) => {
@@ -461,7 +461,7 @@ async function casePermissionAllowAlways({ win, log }) {
   // contextBridge proxy is a no-op.
   await win.evaluate(() => {
     window.__permIpcCalls = [];
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     const orig = store.getState().resolvePermission;
     store.setState({
       resolvePermission: (sessionId, requestId, decision) => {
@@ -500,7 +500,7 @@ async function casePermissionAllowAlways({ win, log }) {
   }
 
   const snapshot1 = await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return { list: s.allowAlwaysTools.slice() };
   });
   if (!snapshot1.list.includes('Bash')) {
@@ -511,14 +511,14 @@ async function casePermissionAllowAlways({ win, log }) {
   // (Allow IPC) and must NOT append any waiting block.
   await win.evaluate(() => { window.__permIpcCalls = []; });
   const blocksBefore = await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return (s.messagesBySession[s.activeId] || []).filter((b) => b.kind === 'waiting').length;
   });
 
   const autoResolved = await win.evaluate(() => {
-    const fn = window.__agentoryMaybeAutoResolveAllowAlways;
+    const fn = window.__ccsmMaybeAutoResolveAllowAlways;
     if (typeof fn !== 'function') return null;
-    const sid = window.__agentoryStore.getState().activeId;
+    const sid = window.__ccsmStore.getState().activeId;
     return fn({ sessionId: sid, requestId: 'PROBE-AA-2', toolName: 'Bash' });
   });
   if (autoResolved !== true) {
@@ -528,7 +528,7 @@ async function casePermissionAllowAlways({ win, log }) {
   await win.waitForTimeout(200);
 
   const blocksAfter = await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return (s.messagesBySession[s.activeId] || []).filter((b) => b.kind === 'waiting').length;
   });
   if (blocksAfter !== blocksBefore) {
@@ -655,7 +655,7 @@ await runHarness({
   setup: async ({ win }) => {
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {
-      window.__agentoryStore?.setState({
+      window.__ccsmStore?.setState({
         cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });

@@ -33,18 +33,18 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT)
+    CCSM_DEV_PORT: String(PORT)
   }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.agentory, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
 
   const result = await win.evaluate(async () => {
-    const bogus = await window.agentory.agentSetPermissionMode('s-nonexistent', 'not-a-real-mode');
-    const valid = await window.agentory.agentSetPermissionMode('s-nonexistent', 'default');
+    const bogus = await window.ccsm.agentSetPermissionMode('s-nonexistent', 'not-a-real-mode');
+    const valid = await window.ccsm.agentSetPermissionMode('s-nonexistent', 'default');
     return { bogus, valid };
   });
 

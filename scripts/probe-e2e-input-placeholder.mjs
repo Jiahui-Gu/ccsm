@@ -22,10 +22,10 @@ function fail(msg) {
 const app = await electron.launch({ args: ['.'], cwd: root, env: { ...process.env, NODE_ENV: 'development' } });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
     sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
     activeId: 's1',
@@ -43,7 +43,7 @@ if (emptyPlaceholder !== 'Ask anything…') {
 }
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     messagesBySession: { s1: [{ kind: 'user', id: 'u1', text: 'hi' }] }
   });
 });
@@ -63,7 +63,7 @@ await win.evaluate(() => {
   for (let i = 0; i < 200; i++) {
     many.push({ kind: i % 2 ? 'assistant' : 'user', id: `b-${i}`, text: `block ${i}` });
   }
-  window.__agentoryStore.setState({ messagesBySession: { s1: many } });
+  window.__ccsmStore.setState({ messagesBySession: { s1: many } });
 });
 await win.waitForTimeout(200);
 const longReplyPh = await ta.getAttribute('placeholder');
@@ -74,7 +74,7 @@ if (longReplyPh !== 'Reply…') {
 
 // Flip running on -> placeholder becomes the running string.
 await win.evaluate(() => {
-  window.__agentoryStore.getState().setRunning('s1', true);
+  window.__ccsmStore.getState().setRunning('s1', true);
 });
 await win.waitForTimeout(150);
 const runningPh = await ta.getAttribute('placeholder');
@@ -84,7 +84,7 @@ if (!runningPh || !runningPh.includes('Esc')) {
 }
 // Flip back off.
 await win.evaluate(() => {
-  window.__agentoryStore.getState().setRunning('s1', false);
+  window.__ccsmStore.getState().setRunning('s1', false);
 });
 await win.waitForTimeout(150);
 const backToReply = await ta.getAttribute('placeholder');
@@ -94,17 +94,17 @@ if (backToReply !== 'Reply…') {
 }
 
 // --- Robustness #2: switch language to zh, placeholder must localize ---
-// src/i18n/index.ts exposes the i18next singleton on window.__agentoryI18n
+// src/i18n/index.ts exposes the i18next singleton on window.__ccsmI18n
 // (unconditional, not gated on NODE_ENV) so probes can flip language without
 // going through the React hook tree.
 const switched = await win.evaluate(async () => {
   // Wait briefly for the singleton to appear (i18n init runs at module load).
-  for (let i = 0; i < 20 && !window.__agentoryI18n; i++) {
+  for (let i = 0; i < 20 && !window.__ccsmI18n; i++) {
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!window.__agentoryI18n) return { ok: false, err: 'window.__agentoryI18n missing' };
-  await window.__agentoryI18n.changeLanguage('zh');
-  return { ok: true, lang: window.__agentoryI18n.language };
+  if (!window.__ccsmI18n) return { ok: false, err: 'window.__ccsmI18n missing' };
+  await window.__ccsmI18n.changeLanguage('zh');
+  return { ok: true, lang: window.__ccsmI18n.language };
 });
 if (!switched.ok) {
   console.log(`  [skip] could not switch language dynamically: ${switched.err}`);
@@ -119,7 +119,7 @@ if (!switched.ok) {
     fail(`after switching to zh, with-messages placeholder should be "回复…", got ${JSON.stringify(zhPlaceholder)}`);
   }
   // Empty session zh check.
-  await win.evaluate(() => window.__agentoryStore.setState({ messagesBySession: { s1: [] } }));
+  await win.evaluate(() => window.__ccsmStore.setState({ messagesBySession: { s1: [] } }));
   await win.waitForTimeout(150);
   const zhEmpty = await ta.getAttribute('placeholder');
   if (zhEmpty !== '问点什么…') {
@@ -130,7 +130,7 @@ if (!switched.ok) {
   // the app instance closes immediately after, but if anyone composes
   // probes this prevents bleed-through).
   await win.evaluate(async () => {
-    if (window.__agentoryI18n) await window.__agentoryI18n.changeLanguage('en');
+    if (window.__ccsmI18n) await window.__ccsmI18n.changeLanguage('en');
   });
 }
 

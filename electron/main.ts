@@ -114,10 +114,10 @@ function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
 }
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
-// `AGENTORY_PROD_BUNDLE=1` env var lets E2E probes force-load the production
+// `CCSM_PROD_BUNDLE=1` env var lets E2E probes force-load the production
 // bundle from `dist/renderer/index.html` even though we're invoked via
 // `electron .`, so they don't require a running webpack-dev-server.
-const isDev = !app.isPackaged && process.env.AGENTORY_PROD_BUNDLE !== '1';
+const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 
 // ───────────────────── importable-sessions cache ─────────────────────────
 //
@@ -181,7 +181,7 @@ async function getTopModel(): Promise<string | null> {
   return topModelCache;
 }
 
-// We don't want a visible File/Edit/View menu bar — Agentory is a single-
+// We don't want a visible File/Edit/View menu bar — CCSM is a single-
 // window tool and those menus add noise. But on Windows/Linux, setting the
 // app menu to null also removes the built-in Edit-role accelerators
 // (Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A / Ctrl+Z), which makes chat content
@@ -259,7 +259,7 @@ function createWindow() {
       // can't be resolved by the sandboxed preload's restricted require —
       // it only follows relative paths and a small whitelist. Enabling it
       // results in: "Error: module not found: @sentry/electron/preload"
-      // and `window.agentory` is never installed.
+      // and `window.ccsm` is never installed.
       //
       // Followup: bundle preload through webpack (or vendor the sentry
       // preload into electron/) so the require resolves at build time, then
@@ -284,7 +284,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (event, url) => {
     try {
       const u = new URL(url);
-      const devPort = process.env.AGENTORY_DEV_PORT || '4100';
+      const devPort = process.env.CCSM_DEV_PORT || '4100';
       const allowed =
         u.origin === `http://localhost:${devPort}` ||
         u.origin === 'http://localhost:4100' ||
@@ -296,7 +296,7 @@ function createWindow() {
   });
 
   if (isDev) {
-    const port = process.env.AGENTORY_DEV_PORT || '4100';
+    const port = process.env.CCSM_DEV_PORT || '4100';
     win.loadURL(`http://localhost:${port}`);
     win.webContents.openDevTools({ mode: 'detach' });
   } else {
@@ -390,7 +390,7 @@ function buildTrayIcon() {
 function ensureTray() {
   if (tray) return tray;
   tray = new Tray(buildTrayIcon());
-  tray.setToolTip('Agentory');
+  tray.setToolTip('CCSM');
   const showWindow = () => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) {
@@ -406,7 +406,7 @@ function ensureTray() {
   tray.on('double-click', showWindow);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show Agentory', click: showWindow },
+      { label: 'Show CCSM', click: showWindow },
       { type: 'separator' },
       {
         label: 'Quit',
@@ -424,7 +424,7 @@ app.whenReady().then(() => {
   // On Windows, notifications need a stable AppUserModelID so the OS knows
   // which app the toast belongs to (otherwise it shows "electron.exe").
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.agentory.next');
+    app.setAppUserModelId('com.ccsm.app');
   }
   initDb();
 
@@ -467,7 +467,7 @@ app.whenReady().then(() => {
   });
   // Cap renderer-supplied message payloads. The DB column is unbounded TEXT,
   // so a buggy or malicious renderer could otherwise pin the WAL with
-  // gigabytes of JSON and balloon `~/.config/.../agentory.db` past disk
+  // gigabytes of JSON and balloon `~/.config/.../ccsm.db` past disk
   // budget. The caps below are well above any legitimate session:
   //   - 64 chars per sessionId (sessions are uuid-ish ~36 chars)
   //   - 50_000 blocks per session (current cap on history retention)
@@ -516,14 +516,14 @@ app.whenReady().then(() => {
   // require here keeps the import graph linear.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const i18n = require('./i18n') as typeof import('./i18n');
-  ipcMain.handle('agentory:get-system-locale', () => {
+  ipcMain.handle('ccsm:get-system-locale', () => {
     try {
       return app.getLocale();
     } catch {
       return undefined;
     }
   });
-  ipcMain.on('agentory:set-language', (_e, lang: unknown) => {
+  ipcMain.on('ccsm:set-language', (_e, lang: unknown) => {
     if (lang === 'en' || lang === 'zh') i18n.setMainLanguage(lang);
   });
   // Seed the active language from the OS at boot, before any window is
@@ -537,7 +537,7 @@ app.whenReady().then(() => {
 
   // Connection + models IPC. Single source of truth = ~/.claude/settings.json
   // (+ ANTHROPIC_* env vars). Users edit via `claude /config` or by hand;
-  // Agentory does not let them edit the connection here.
+  // CCSM does not let them edit the connection here.
   ipcMain.handle('connection:read', () => {
     const env = process.env;
     let settingsModel: string | null = null;
@@ -858,7 +858,7 @@ app.whenReady().then(() => {
   //       their pick to `app_state`;
   //   (c) clicks the docs link → `cli:openDocs`.
   //
-  // The persisted path wins over $AGENTORY_CLAUDE_BIN and PATH on subsequent
+  // The persisted path wins over $CCSM_CLAUDE_BIN and PATH on subsequent
   // `agent:start` (see handler above). Intentionally no bundled binary and no
   // auto-downloader — both would drag us into code-signing + update infra that
   // is out of scope for MVP (and legally murky for claude.exe specifically).
@@ -1030,12 +1030,12 @@ app.whenReady().then(() => {
   installUpdaterIpc();
 
   // Dev-only debug backdoor for E2E probes. Probes call this via
-  // `app.evaluate(() => globalThis.__agentoryDebug.activeSessionPids())` on
+  // `app.evaluate(() => globalThis.__ccsmDebug.activeSessionPids())` on
   // the Electron main process (NOT the renderer — we intentionally don't
   // widen preload.ts's surface for a test-only affordance). Guarded behind
   // `!app.isPackaged` so prod bundles never expose it.
   if (!app.isPackaged) {
-    (globalThis as unknown as Record<string, unknown>).__agentoryDebug = {
+    (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
       activeSessionPids: () => sessions.activeRunnerPids(),
       activeSessionCount: () => sessions.activeSessionCount(),
     };

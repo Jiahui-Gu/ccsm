@@ -46,15 +46,15 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // Stub IPC where contextBridge allows. NOTE: the contextBridge-exposed
-  // `window.agentory` is non-configurable, so renderer reassignment of its
+  // `window.ccsm` is non-configurable, so renderer reassignment of its
   // methods is best-effort — we rely on observable store/UI state instead
   // of intercepting the IPC calls themselves.
   await win.evaluate(() => {
     try {
-      const real = window.agentory;
+      const real = window.ccsm;
       if (real) {
         // Best-effort no-ops; if the contextBridge wrapper rejects these
         // assignments we fall back to letting the real IPC run (it will
@@ -69,7 +69,7 @@ try {
   // Seed two sessions in two groups so we have something to switch between
   // and a sidebar group header to click on.
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [
         { id: 'g1', name: 'Group One', collapsed: false, kind: 'normal' },
         { id: 'g2', name: 'Group Two', collapsed: false, kind: 'normal' }
@@ -112,7 +112,7 @@ try {
   // Confirm the send went through by looking for the local-echo user block
   // in the store (InputBar.send() appends it synchronously before any IPC).
   const echoLanded = await win.evaluate(() => {
-    const blocks = window.__agentoryStore.getState().messagesBySession['sA'] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession['sA'] ?? [];
     return blocks.some((b) => b.kind === 'user' && b.text === 'hello there');
   });
   if (!echoLanded) fail('Send click did not produce a user-echo block — send() never ran', app);
@@ -242,7 +242,7 @@ try {
   if (beforeBump !== '__probeInput') {
     fail(`failed to focus probe input pre-bump (activeElement id=${beforeBump})`, app);
   }
-  await win.evaluate(() => window.__agentoryStore.getState().bumpComposerFocus());
+  await win.evaluate(() => window.__ccsmStore.getState().bumpComposerFocus());
   await win.waitForTimeout(120);
   const afterBump = await win.evaluate(() => document.activeElement?.id);
   if (afterBump !== '__probeInput') {

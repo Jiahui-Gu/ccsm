@@ -29,7 +29,7 @@ const ud = isolatedUserData('agentory-probe-sidebar-resize');
 console.log(`[probe-e2e-sidebar-resize] userData = ${ud.dir}`);
 
 const commonArgs = ['.', `--user-data-dir=${ud.dir}`];
-const commonEnv = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
+const commonEnv = { ...process.env, CCSM_PROD_BUNDLE: '1' };
 
 async function asideWidth(win) {
   return await win.evaluate(() => {
@@ -38,7 +38,7 @@ async function asideWidth(win) {
   });
 }
 async function storeWidth(win) {
-  return await win.evaluate(() => window.__agentoryStore.getState().sidebarWidth);
+  return await win.evaluate(() => window.__ccsmStore.getState().sidebarWidth);
 }
 async function constants(win) {
   return await win.evaluate(() => {
@@ -46,7 +46,7 @@ async function constants(win) {
     // setSidebarWidth clamps to [MIN, MAX], so we round-trip extreme values
     // to recover the bounds. Cheaper than threading constants through the
     // window.
-    const s = window.__agentoryStore;
+    const s = window.__ccsmStore;
     const before = s.getState().sidebarWidth;
     s.getState().setSidebarWidth(99999);
     const max = s.getState().sidebarWidth;
@@ -64,7 +64,7 @@ let chosenWidth;
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
 
   const { min, max } = await constants(win);
   console.log(`[probe-e2e-sidebar-resize] bounds: min=${min} max=${max}`);
@@ -142,14 +142,14 @@ let chosenWidth;
   // === Case 3: double-click resets to default. ===
   // SIDEBAR_WIDTH_DEFAULT isn't exposed; round-trip via store (resetter).
   const defaultW = await win.evaluate(() => {
-    const s = window.__agentoryStore;
+    const s = window.__ccsmStore;
     s.getState().resetSidebarWidth();
     return s.getState().sidebarWidth;
   });
   // Re-grow first, then double-click the resizer to reset back. Wait long
   // enough for the framer-motion width tween to settle so the resizer's
   // reported boundingBox matches its real hit-testing position.
-  await win.evaluate((w) => window.__agentoryStore.getState().setSidebarWidth(w + 80), defaultW);
+  await win.evaluate((w) => window.__ccsmStore.getState().setSidebarWidth(w + 80), defaultW);
   await win.waitForTimeout(500);
   const rb3 = await resizer.boundingBox();
   await resizer.dblclick();
@@ -163,7 +163,7 @@ let chosenWidth;
 
   // === Case 4: choose a non-default width and confirm before quit. ===
   chosenWidth = Math.min(max, Math.max(min, defaultW + 73));
-  await win.evaluate((w) => window.__agentoryStore.getState().setSidebarWidth(w), chosenWidth);
+  await win.evaluate((w) => window.__ccsmStore.getState().setSidebarWidth(w), chosenWidth);
   // Persistence is debounced by `schedulePersist` — wait long enough for
   // the write to flush before we close the app, otherwise the next launch
   // will see the prior value.
@@ -184,7 +184,7 @@ let chosenWidth;
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
   const restored = await storeWidth(win);
   const restoredDom = await asideWidth(win);
   if (restored !== chosenWidth) {

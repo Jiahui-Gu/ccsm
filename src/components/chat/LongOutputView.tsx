@@ -69,7 +69,7 @@ export function LongOutputView({
   };
 
   const onSave = async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.saveFile) {
       setSaved('err');
       setTimeout(() => setSaved(null), 1500);

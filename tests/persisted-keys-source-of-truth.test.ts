@@ -21,7 +21,7 @@ import { PERSISTED_KEYS } from '../src/stores/persist';
 async function freshStore(saveState: ReturnType<typeof vi.fn>) {
   vi.resetModules();
   (globalThis as unknown as { window?: unknown }).window = {
-    agentory: {
+    ccsm: {
       saveState,
       loadState: vi.fn().mockResolvedValue(null),
       saveMessages: vi.fn().mockResolvedValue(undefined),

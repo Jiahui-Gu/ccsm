@@ -14,11 +14,11 @@
 //   6. Persisted resumeSessionId is dropped (next message starts fresh).
 //
 // Usage:
-//   AGENTORY_DEV_PORT=4192 npm run dev:web   # in another shell
-//   AGENTORY_DEV_PORT=4192 node scripts/probe-slash-clear.mjs
+//   CCSM_DEV_PORT=4192 npm run dev:web   # in another shell
+//   CCSM_DEV_PORT=4192 node scripts/probe-slash-clear.mjs
 import { chromium } from 'playwright';
 
-const PORT = process.env.AGENTORY_DEV_PORT ?? '4192';
+const PORT = process.env.CCSM_DEV_PORT ?? '4192';
 const URL = `http://localhost:${PORT}/`;
 
 function fail(msg) {
@@ -57,7 +57,7 @@ if (beforeCount < 1) fail(`expected at least one session in sidebar, got ${befor
 
 const beforeState = await page.evaluate(() => {
   const w = /** @type {any} */ (window);
-  const store = w.__agentoryStore ?? null;
+  const store = w.__ccsmStore ?? null;
   if (!store) return null;
   const s = store.getState();
   const sid = s.activeId;
@@ -84,7 +84,7 @@ const beforeState = await page.evaluate(() => {
 });
 
 if (!beforeState) {
-  fail('window.__agentoryStore not exposed; the dev build must expose it (see App.tsx).');
+  fail('window.__ccsmStore not exposed; the dev build must expose it (see App.tsx).');
 }
 
 // Run /clear via the textarea so we exercise the real dispatch path.
@@ -102,7 +102,7 @@ if (afterCount !== beforeCount) {
 }
 
 const afterState = await page.evaluate(() => {
-  const store = /** @type {any} */ (window).__agentoryStore;
+  const store = /** @type {any} */ (window).__ccsmStore;
   const s = store.getState();
   const session = s.sessions.find((x) => x.id === s.activeId);
   return {
