@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
 
 // startSessionAndReconcile reaches into the IPC layer; stub it so the
 // AgentInitFailedBanner retry path doesn't try to spawn a real session.
@@ -13,6 +13,7 @@ import { AgentInitFailedBanner } from '../src/components/AgentInitFailedBanner';
 import { AgentDiagnosticBanner } from '../src/components/AgentDiagnosticBanner';
 import { ClaudeCliMissingBanner } from '../src/components/ClaudeCliMissingBanner';
 import { useStore } from '../src/stores/store';
+import { usePreferences } from '../src/store/preferences';
 
 const initial = useStore.getState();
 
@@ -277,5 +278,82 @@ describe('banner trio integration', () => {
     );
     const { container } = render(<ClaudeCliMissingBanner />);
     expect(container.querySelector('[data-top-banner]')).toBeNull();
+  });
+});
+
+describe('banner trio i18n (zh locale)', () => {
+  beforeEach(async () => {
+    useStore.setState(initial, true);
+    await act(async () => {
+      usePreferences.getState().setLanguage('zh');
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      usePreferences.getState().setLanguage('en');
+    });
+  });
+
+  it('AgentInitFailedBanner renders Chinese title + CTAs when locale=zh', () => {
+    useStore.setState(
+      {
+        ...initial,
+        activeId: 's1',
+        sessionInitFailures: {
+          s1: { error: 'spawn ENOENT', timestamp: Date.now() },
+        },
+      },
+      true
+    );
+    render(<AgentInitFailedBanner onRequestReconfigure={() => {}} />);
+    expect(screen.getByText('无法启动 Claude')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新配置' })).toBeInTheDocument();
+  });
+
+  it('AgentDiagnosticBanner renders Chinese warning title + dismiss label when locale=zh', () => {
+    useStore.setState(
+      {
+        ...initial,
+        activeId: 's1',
+        diagnostics: [
+          {
+            id: 'd1',
+            sessionId: 's1',
+            level: 'warn',
+            code: 'init.timeout',
+            message: '初始化握手超时',
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      true
+    );
+    render(<AgentDiagnosticBanner />);
+    expect(screen.getByText('Agent 警告')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭诊断信息' })).toBeInTheDocument();
+  });
+
+  it('AgentDiagnosticBanner renders Chinese error title when level=error and locale=zh', () => {
+    useStore.setState(
+      {
+        ...initial,
+        activeId: 's1',
+        diagnostics: [
+          {
+            id: 'd2',
+            sessionId: 's1',
+            level: 'error',
+            code: 'init.crash',
+            message: 'agent 在初始化阶段崩溃',
+            timestamp: Date.now(),
+          },
+        ],
+      },
+      true
+    );
+    render(<AgentDiagnosticBanner />);
+    expect(screen.getByText('Agent 错误')).toBeInTheDocument();
   });
 });
