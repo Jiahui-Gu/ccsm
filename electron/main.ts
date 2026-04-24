@@ -79,8 +79,8 @@ import { showNotification, type ShowNotificationPayload } from './notifications'
 import { probeNotifyAvailability, notifyLastError } from './notify';
 import {
   bootstrapNotify,
-  lookupToastTarget,
-  consumeToastTarget,
+  setNotifyRuntimeState,
+  createDefaultToastActionRouter,
 } from './notify-bootstrap';
 import { cancelQuestionRetry } from './notify-retry';
 import type { PermissionMode } from './agent/sessions';
@@ -464,44 +464,15 @@ app.whenReady().then(() => {
   // button clicks (Allow / Allow always / Reject / Focus) back into the same
   // code paths the in-app prompts use.
   try {
-    bootstrapNotify((event) => {
-      const target = lookupToastTarget(event.toastId);
-      if (!target) return;
-      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-      if (target.kind === 'permission') {
-        // The toastId for permission events IS the requestId (see lifecycle.ts
-        // → permissionRequestToWaitingBlock). Resolve the underlying CLI
-        // permission gate and notify the renderer so it can update its
-        // waiting-block UI + (for `allow-always`) seed `allowAlwaysTools`.
-        const requestId = event.toastId;
-        if (event.action === 'allow' || event.action === 'allow-always') {
-          sessions.resolvePermission(target.sessionId, requestId, 'allow');
-        } else if (event.action === 'reject') {
-          sessions.resolvePermission(target.sessionId, requestId, 'deny');
-        }
-        if (win) {
-          win.webContents.send('notify:toastAction', {
-            sessionId: target.sessionId,
-            requestId,
-            action: event.action,
-          });
-        }
-        consumeToastTarget(event.toastId);
-      } else if (target.kind === 'question' || target.kind === 'turn_done') {
-        // Questions + turn_done only carry `focus`; other actions are no-ops
-        // here (the renderer drives the actual answer flow once focused).
-        consumeToastTarget(event.toastId);
-      }
-      // Always raise the window on any action — the user clicked the toast,
-      // they want to see ccsm. Mirrors the existing `notification:focusSession`
-      // path used by the legacy Electron Notification.
-      if (win) {
-        if (win.isMinimized()) win.restore();
-        if (!win.isVisible()) win.show();
-        win.focus();
-        win.webContents.send('notification:focusSession', target.sessionId);
-      }
-    });
+    bootstrapNotify(
+      createDefaultToastActionRouter({
+        resolvePermission: (sessionId, requestId, decision) =>
+          sessions.resolvePermission(sessionId, requestId, decision),
+        cancelQuestionRetry,
+        getMainWindow: () =>
+          BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null,
+      }),
+    );
   } catch (err) {
     // bootstrapNotify already swallows internally; this is belt-and-suspenders
     // so an unexpected throw still can't take down app startup.
@@ -1179,6 +1150,25 @@ app.whenReady().then(() => {
     const available = await probeNotifyAvailability();
     return { available, error: notifyLastError() };
   });
+
+  // Renderer → main mirror of notification runtime state (#307). The
+  // ask-question retry timer fires in main ~30s after the original toast;
+  // by then the user may have toggled notifications off or focused the
+  // question's session. The renderer's store is the source of truth, so
+  // it pushes the two fields the retry gate needs (`notificationsEnabled`,
+  // `activeSessionId`) whenever they change. Partial payload — both fields
+  // are independently optional.
+  ipcMain.handle(
+    'notify:setRuntimeState',
+    (
+      e,
+      patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
+    ): { ok: true } | { ok: false } => {
+      if (!fromMainFrame(e)) return { ok: false };
+      setNotifyRuntimeState(patch);
+      return { ok: true };
+    },
+  );
 
   installUpdaterIpc();
 

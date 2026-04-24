@@ -26,6 +26,14 @@
 // (only one notifyQuestion call instead of two). Stash the
 // `cancelQuestionRetry(...)` calls in `electron/main.ts` ⇒ assertion 10
 // trips (timer not cancelled).
+// For task #307 / #308:
+//   * Stash `if (shouldSuppressRetry(entry.sessionId)) return;` in
+//     `electron/notify-retry.ts:fireRetry` ⇒ case 10b trips (the retry
+//     fires through the closed gate and produces an extra question call).
+//   * Stash the `cancelQuestionRetry(\`q-\${requestId}\`)` /
+//     `cancelQuestionRetry(requestId)` lines in the toast-action reject
+//     branch of `electron/main.ts` ⇒ case 10c trips (live retry timer
+//     count does NOT decrease after reject).
 
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -102,20 +110,14 @@ try {
     bootstrapMod.__resetBootstrapForTests();
     bootstrapMod.bootstrapNotify((event) => {
       g.__notifyCalls.push({ kind: 'router', event });
-      const target = bootstrapMod.lookupToastTarget(event.toastId);
-      if (target && target.kind === 'permission') {
-        const decision = event.action === 'reject' ? 'deny' : 'allow';
-        dbg.sessions.resolvePermission(target.sessionId, event.toastId, decision);
-        const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed());
-        if (w) {
-          w.webContents.send('notify:toastAction', {
-            sessionId: target.sessionId,
-            requestId: event.toastId,
-            action: event.action,
-          });
-        }
-        bootstrapMod.consumeToastTarget(event.toastId);
-      }
+      // Delegate to the production router (#308) so we test the actual
+      // wiring rather than a probe-local copy. createDefaultToastActionRouter
+      // returns the same logic main.ts installs (cancel-on-reject etc.).
+      bootstrapMod.createDefaultToastActionRouter({
+        resolvePermission: dbg.sessions.resolvePermission.bind(dbg.sessions),
+        cancelQuestionRetry: dbg.notifyRetry.cancelQuestionRetry,
+        getMainWindow: () => BrowserWindow.getAllWindows().find((x) => !x.isDestroyed()) ?? null,
+      })(event);
     });
     await notifyMod.probeNotifyAvailability();
     return notifyMod.isNotifyAvailable();
@@ -506,6 +508,218 @@ try {
   if (afterCancel !== beforeCancel + 1) fail(`expected exactly 1 question call (no retry) after cancellation, got ${afterCancel - beforeCancel}`);
   console.log('[probe-e2e-notify-integration] question retry cancellation OK');
 
+  // ── 10b. Fire-time gate (#307): notifications-disabled suppresses retry ─
+  //
+  // The retry timer fires in main process ~30s after the original toast.
+  // If the user toggled notifications off during that window, the retry
+  // MUST NOT re-emit. We push the runtime-state mirror via the renderer
+  // bridge (`window.ccsm.notifySetRuntimeState`) so this exercises the
+  // full IPC path the production renderer uses.
+  //
+  // Reverse-verify: stash the `if (shouldSuppressRetry(entry.sessionId)) return;`
+  // line in `electron/notify-retry.ts:fireRetry` and re-run; this case
+  // FAILS (the retry fires through the closed gate ⇒ extra question call).
+  const GATE_REQ = 'probe-q-gate-1';
+  const GATE_TOAST_ID = `q-${GATE_REQ}`;
+  // Reset state: notifications enabled, no active session collision.
+  await win.evaluate(() =>
+    window.ccsm.notifySetRuntimeState({
+      notificationsEnabled: true,
+      activeSessionId: null,
+    }),
+  );
+  const beforeGate = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+
+  await win.evaluate((args) => {
+    return window.ccsm.notify({
+      sessionId: args.sessionId,
+      title: 'Question (gate)',
+      body: 'Pick one',
+      eventType: 'question',
+      extras: {
+        toastId: args.toastId,
+        sessionName: 'Test Session',
+        question: 'Pick one',
+        selectionKind: 'single',
+        optionCount: 2,
+        cwd: '/tmp/probe-cwd',
+      },
+    });
+  }, { sessionId, toastId: GATE_TOAST_ID });
+
+  // Wait for the initial question call + queued retry timer.
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const qCount = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      const retryCount = globalThis.__retryQueue.filter((q) => !q.entry.cancelled).length;
+      if (qCount >= 1 && retryCount >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for gate-case initial question + retry schedule');
+  });
+
+  // Now flip notifications OFF before firing the retry timer.
+  await win.evaluate(() =>
+    window.ccsm.notifySetRuntimeState({ notificationsEnabled: false }),
+  );
+  // Round-trip beat for the IPC.
+  await new Promise((r) => setTimeout(r, 200));
+
+  // Manually fire the retry timer that was scheduled for THIS toast id.
+  await app.evaluate((toastId) => {
+    const live = globalThis.__retryQueue.filter(
+      (q) => !q.entry.cancelled && q.entry.cb,
+    );
+    // We can't see the toastId from inside the timer cb (it's closed-over),
+    // so we fire the most-recent live timer — which corresponds to the
+    // gate-case schedule because it was the last `notify` we made.
+    const last = live[live.length - 1];
+    if (!last) throw new Error('no live retry timer to fire for gate case');
+    last.entry.cb();
+    void toastId;
+  }, GATE_TOAST_ID);
+
+  // Give fireRetry a beat to either emit (bug) or no-op (correct).
+  await new Promise((r) => setTimeout(r, 200));
+  const afterGate = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterGate !== beforeGate + 1) {
+    fail(`expected exactly 1 question call when notifications disabled at fire-time, got ${afterGate - beforeGate}`);
+  }
+  // Restore enabled for subsequent assertions.
+  await win.evaluate(() =>
+    window.ccsm.notifySetRuntimeState({ notificationsEnabled: true }),
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  console.log('[probe-e2e-notify-integration] fire-time settings gate OK');
+
+  // ── 10c. Toast-action reject cancels pending retry (#308) ────────────────
+  //
+  // The toast-action router in main.ts (`bootstrapNotify` onAction
+  // callback) routes permission-toast rejects through
+  // `sessions.resolvePermission(... 'deny')`. Today permission events
+  // don't schedule retries (only question events do, and those are routed
+  // separately), but the reject branch must defensively call
+  // `cancelQuestionRetry` so a future change wiring questions through the
+  // same path can't leak the timer past the user's explicit reject.
+  //
+  // Note on the assertion strategy: the reject path already goes through
+  // the renderer IPC `agent:resolvePermission` handler as a SIDE EFFECT
+  // (via `store.resolvePermission` called from `onNotifyToastAction`), and
+  // THAT handler ALSO calls `cancelQuestionRetry`. So observing "did the
+  // pending retry drop?" alone doesn't distinguish the router's own cancel
+  // call from the IPC's cancel call. Instead we wrap
+  // `cancelQuestionRetry` in a spy and assert the router invokes it
+  // directly at least once.
+  //
+  // Reverse-verify: stash the `deps.cancelQuestionRetry(...)` lines inside
+  // `createDefaultToastActionRouter` (`electron/notify-bootstrap.ts`, reject
+  // branch) and re-run; this case FAILS because the wrapped spy only
+  // observes the IPC-side call (if any), never the router-direct call.
+  const REJECT_REQ = 'probe-q-reject-1';
+  // Ensure the window is blurred so focus suppression doesn't gate the
+  // initial emit (case 8 above re-focused it).
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.blur(); } catch {}
+    }
+  });
+
+  // Install a spy on `cancelQuestionRetry` that flags calls coming from
+  // the router by wrapping the deps-injected reference, not the module
+  // export. The router's call path is: bootstrapNotify onAction →
+  // probe wrapper → createDefaultToastActionRouter(deps)(event) →
+  // deps.cancelQuestionRetry. The IPC's call path is:
+  // `agent:resolvePermission` handler → imported `cancelQuestionRetry`
+  // from notify-retry. These are separate bindings so we can
+  // independently wrap the router's to record its calls.
+  await app.evaluate(() => {
+    globalThis.__routerCancelCalls = [];
+  });
+
+  // Re-install the bootstrap with a router whose `deps.cancelQuestionRetry`
+  // goes through our router-side spy. This lets us observe the router's
+  // own direct invocation separately from any IPC-path invocation.
+  await app.evaluate(({ BrowserWindow }) => {
+    const g = globalThis;
+    const dbg = g.__ccsmDebug;
+    dbg.notifyBootstrap.__resetBootstrapForTests();
+    const wrapCancel = (toastId) => {
+      (g.__routerCancelCalls ||= []).push(toastId);
+      dbg.notifyRetry.cancelQuestionRetry(toastId);
+    };
+    dbg.notifyBootstrap.bootstrapNotify((event) => {
+      g.__notifyCalls.push({ kind: 'router', event });
+      dbg.notifyBootstrap.createDefaultToastActionRouter({
+        resolvePermission: dbg.sessions.resolvePermission.bind(dbg.sessions),
+        cancelQuestionRetry: wrapCancel,
+        getMainWindow: () =>
+          BrowserWindow.getAllWindows().find((x) => !x.isDestroyed()) ?? null,
+      })(event);
+    });
+  });
+
+  await win.evaluate((args) => {
+    // First: schedule a fresh question retry (toastId = `q-${args.req}`).
+    return window.ccsm.notify({
+      sessionId: args.sessionId,
+      title: 'Question (reject)',
+      body: 'Pick one',
+      eventType: 'question',
+      extras: {
+        toastId: `q-${args.req}`,
+        sessionName: 'Test Session',
+        question: 'Pick one',
+        selectionKind: 'single',
+        optionCount: 2,
+        cwd: '/tmp/probe-cwd',
+      },
+    });
+  }, { sessionId, req: REJECT_REQ });
+
+  // Wait for initial question call + scheduled retry.
+  await app.evaluate(async (_electron, args) => {
+    const toastId = args.toastId;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const has = (globalThis.__notifyCalls || []).some((c) => c.kind === 'question' && c.payload.toastId === toastId);
+      const pendingHas = globalThis.__ccsmDebug.notifyRetry.__pendingRetryKeysForTests().includes(toastId);
+      if (has && pendingHas) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for reject-case initial question + retry schedule');
+  }, { toastId: `q-${REJECT_REQ}` });
+
+  // Register a permission target sharing the bare requestId so the router
+  // treats the synthesized reject as a permission reject.
+  await app.evaluate((_e, args) => {
+    const dbg = globalThis.__ccsmDebug;
+    dbg.notifyBootstrap.registerToastTarget(args.req, args.sessionId, 'permission');
+    // Synthesize a toast reject for the permission target. The
+    // bootstrap's onAction wraps the router (`g.__notifyOnAction`).
+    const cb = globalThis.__notifyOnAction;
+    if (!cb) throw new Error('onAction not captured');
+    cb({ toastId: args.req, action: 'reject', args: {} });
+  }, { sessionId, req: REJECT_REQ });
+
+  // Beat for sync calls inside the router + any renderer IPC round-trip.
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Assert the router invoked cancelQuestionRetry directly (not just via
+  // the IPC round-trip). The task #308 fix adds two direct calls in the
+  // router's reject branch (`q-${requestId}` + bare requestId). Our spy
+  // only records the router's deps-injected path, so a hit means the
+  // router itself made the call.
+  const routerCancelCalls = await app.evaluate(() => globalThis.__routerCancelCalls ?? []);
+  if (routerCancelCalls.length === 0) {
+    fail(`expected toast-action reject router to call cancelQuestionRetry directly (#308); got zero router-side calls`);
+  }
+  const hasQPrefix = routerCancelCalls.includes(`q-${REJECT_REQ}`);
+  if (!hasQPrefix) {
+    fail(`router called cancelQuestionRetry but not with q-${REJECT_REQ}: ${JSON.stringify(routerCancelCalls)}`);
+  }
+  console.log('[probe-e2e-notify-integration] toast-action reject cancellation OK');
+
   // ── 11. Wave 3 polish (#252): rich done payload composition ─────────────
   //
   // Assert that when notifyDone fires, the wrapper sees the assistant
@@ -513,6 +727,14 @@ try {
   // and the groupName + sessionName are passed through so the SDK can
   // render "{groupName} · {sessionName}" as the toast title.
   const longAssistant = 'x'.repeat(200);
+  // The toast-action reject path (case 10c) routes through the default
+  // router which focuses the main window. Blur again before firing the
+  // next emit so focus suppression doesn't gate it.
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.blur(); } catch {}
+    }
+  });
   await win.evaluate((args) => {
     return window.ccsm.notify({
       sessionId: args.sessionId,

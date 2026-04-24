@@ -246,6 +246,16 @@ const api = {
   }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
   notifyAvailability: (): Promise<{ available: boolean; error: string | null }> =>
     ipcRenderer.invoke('notify:availability'),
+  /**
+   * Push the renderer's notification runtime state into the main process
+   * mirror so the ask-question retry timer (#307) can recheck gates at
+   * fire time. Both fields independently optional. Returns `{ok}` mainly
+   * for parity with other handlers; renderers fire-and-forget.
+   */
+  notifySetRuntimeState: (
+    patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
+  ): Promise<{ ok: true } | { ok: false }> =>
+    ipcRenderer.invoke('notify:setRuntimeState', patch),
   onNotificationFocus: (handler: (sessionId: string) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
     ipcRenderer.on('notification:focusSession', wrap);
