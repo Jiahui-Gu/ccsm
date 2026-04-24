@@ -92,6 +92,8 @@ const zh: EnCatalog = {
     diffReject: '拒绝',
     diffAccepted: '已接受',
     diffRejected: '已拒绝',
+    diffFileToggleAria: '展开/收起文件: {{path}}',
+    diffCountsAria: '新增 {{added}} 行，删除 {{removed}} 行',
     permResolvedAllowed: '已允许',
     permResolvedDenied: '已拒绝',
     inputBytes: '输入',
