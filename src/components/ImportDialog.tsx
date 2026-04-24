@@ -111,7 +111,8 @@ export function ImportDialog({ open, onOpenChange }: Props) {
           name: it.title,
           cwd: it.cwd,
           groupId,
-          resumeSessionId: it.sessionId
+          resumeSessionId: it.sessionId,
+          projectDir: it.projectDir
         });
       }
       onOpenChange(false);

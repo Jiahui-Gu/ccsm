@@ -119,6 +119,14 @@ declare global {
       topModel: () => Promise<string | null>;
 
       /**
+       * Read the raw frames of an importable `.jsonl` so the renderer can
+       * project them through `streamEventToTranslation` and hydrate
+       * `messagesBySession` immediately at import time. Returns [] on any
+       * read error so the caller can fall back to the empty-chat behavior.
+       */
+      loadImportHistory: (projectDir: string, sessionId: string) => Promise<unknown[]>;
+
+      /**
        * Best-effort batched existence check. Returns a map keyed by the
        * input path; permission errors and ENOENT both map to `false`.
        * Used by the renderer's hydration migration to flag sessions whose

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore } from '../src/stores/store';
+import { framesToBlocks } from '../src/stores/store';
 
 // The store auto-subscribes to persist via hydrateStore(); since we never call
 // hydrateStore() in tests, the subscriber is never installed, so set() is
@@ -1036,6 +1037,89 @@ describe('store: importSession synthesis path', () => {
     expect(session).toBeDefined();
     expect(session!.groupId).toBe(s.groups[0].id);
     expect(session!.resumeSessionId).toBe('resume-abc');
+  });
+});
+
+describe('framesToBlocks', () => {
+  it('returns [] for empty input', () => {
+    expect(framesToBlocks([])).toEqual([]);
+  });
+
+  it('projects a user → assistant turn into matching blocks in order', () => {
+    const blocks = framesToBlocks([
+      {
+        type: 'user',
+        uuid: 'u-1',
+        message: { role: 'user', content: [{ type: 'text', text: 'hello' }] }
+      },
+      {
+        type: 'assistant',
+        session_id: 's',
+        message: {
+          id: 'msg-1',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'hi back' }]
+        }
+      }
+    ]);
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ kind: 'user', text: 'hello' });
+    expect(blocks[1]).toMatchObject({ kind: 'assistant', text: 'hi back' });
+  });
+
+  it('attaches tool_result content to the matching tool block', () => {
+    const blocks = framesToBlocks([
+      {
+        type: 'assistant',
+        session_id: 's',
+        message: {
+          id: 'msg-1',
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'ls' } }
+          ]
+        }
+      },
+      {
+        type: 'user',
+        uuid: 'u-2',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 'tu-1', content: 'file1\nfile2' }
+          ]
+        }
+      }
+    ]);
+    const tool = blocks.find((b) => b.kind === 'tool');
+    expect(tool).toBeDefined();
+    expect(tool && (tool as { result?: string }).result).toBe('file1\nfile2');
+  });
+
+  it('skips slash-command wrapped user frames', () => {
+    const blocks = framesToBlocks([
+      {
+        type: 'user',
+        uuid: 'u-1',
+        message: { content: [{ type: 'text', text: '<command-name>/cost</command-name>' }] }
+      },
+      {
+        type: 'user',
+        uuid: 'u-2',
+        message: { content: [{ type: 'text', text: 'real prompt' }] }
+      }
+    ]);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: 'user', text: 'real prompt' });
+  });
+
+  it('ignores stream_event / control_request / agent_metadata noise', () => {
+    const blocks = framesToBlocks([
+      { type: 'stream_event', event: { type: 'content_block_delta' } },
+      { type: 'control_request', request_id: 'r' },
+      { type: 'agent_metadata', agent_id: 'a' }
+    ]);
+    expect(blocks).toEqual([]);
   });
 });
 
