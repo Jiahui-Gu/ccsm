@@ -1,10 +1,9 @@
 import React from 'react';
 import { AlertOctagon, RotateCw, Settings } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { startSessionAndReconcile } from '../agent/startSession';
-import { DURATION_RAW, EASING } from '../lib/motion';
+import { TopBanner, TopBannerPresence } from './chrome/TopBanner';
 
 /**
  * Banner shown at the top of the right pane when `agent:start` failed for the
@@ -20,6 +19,9 @@ import { DURATION_RAW, EASING } from '../lib/motion';
  *   - Reconfigure: fires the `onRequestReconfigure` prop. App.tsx wires this
  *     to `setSettingsOpen(true)` so the Settings dialog surfaces the
  *     user-configurable bits (CLI binary path, endpoint, etc).
+ *
+ * Layout, motion, and a11y are delegated to the shared `<TopBanner />`
+ * (#237 — banner trio unification). Only copy + CTAs live here.
  */
 export function AgentInitFailedBanner({
   onRequestReconfigure,
@@ -53,74 +55,50 @@ export function AgentInitFailedBanner({
   }, [activeId, clearFailure]);
 
   return (
-    <AnimatePresence initial={false}>
+    <TopBannerPresence>
       {failure && (
-        <motion.div
-          key={activeId}
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: DURATION_RAW.ms150, ease: EASING.enter }}
-          className="overflow-hidden"
-          data-agent-init-failed-banner
-        >
-          <div
-            className={cn(
-              'flex items-center gap-2 px-3 py-2 border-b border-border-subtle',
-              'bg-[oklch(0.3_0.11_25)] text-[oklch(0.95_0.06_25)]'
-            )}
-            role="alert"
-          >
-            <AlertOctagon size={14} className="stroke-[2] shrink-0" />
-            <div className="flex-1 min-w-0 flex flex-col">
-              <span className="text-meta font-semibold">Agent failed to start</span>
-              <span className="text-[11px] font-mono truncate opacity-90">
-                {failure.error}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={onRetry}
-              disabled={retrying}
-              data-agent-init-failed-retry
-              className={cn(
-                'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
-                'bg-black/25 hover:bg-black/35 active:bg-black/45 transition-colors duration-150',
-                'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]',
-                'disabled:opacity-60 disabled:cursor-not-allowed'
-              )}
-            >
-              <RotateCw size={12} className={cn('stroke-[2]', retrying && 'animate-spin')} />
-              <span>{retrying ? 'Retrying…' : 'Retry'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={onRequestReconfigure}
-              data-agent-init-failed-reconfigure
-              className={cn(
-                'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
-                'bg-black/10 hover:bg-black/25 active:bg-black/35 transition-colors duration-150',
-                'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
-              )}
-            >
-              <Settings size={12} className="stroke-[2]" />
-              <span>Reconfigure</span>
-            </button>
-            <button
-              type="button"
-              onClick={onDismiss}
-              aria-label="Dismiss"
-              className={cn(
-                'shrink-0 h-7 w-7 rounded inline-flex items-center justify-center text-chrome',
-                'bg-black/10 hover:bg-black/25 active:bg-black/35 transition-colors duration-150',
-                'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
-              )}
-            >
-              ×
-            </button>
-          </div>
-        </motion.div>
+        <TopBanner
+          variant="error"
+          presenceKey={activeId ?? 'agent-init-failed'}
+          testId="agent-init-failed-banner"
+          icon={<AlertOctagon size={14} className="stroke-[2]" />}
+          title="Agent failed to start"
+          body={failure.error}
+          onDismiss={onDismiss}
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={onRetry}
+                disabled={retrying}
+                data-agent-init-failed-retry
+                className={cn(
+                  'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
+                  'bg-black/25 hover:bg-black/35 active:bg-black/45 transition-colors duration-150',
+                  'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]',
+                  'disabled:opacity-60 disabled:cursor-not-allowed'
+                )}
+              >
+                <RotateCw size={12} className={cn('stroke-[2]', retrying && 'animate-spin')} />
+                <span>{retrying ? 'Retrying…' : 'Retry'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={onRequestReconfigure}
+                data-agent-init-failed-reconfigure
+                className={cn(
+                  'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
+                  'bg-black/10 hover:bg-black/25 active:bg-black/35 transition-colors duration-150',
+                  'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
+                )}
+              >
+                <Settings size={12} className="stroke-[2]" />
+                <span>Reconfigure</span>
+              </button>
+            </>
+          }
+        />
       )}
-    </AnimatePresence>
+    </TopBannerPresence>
   );
 }
