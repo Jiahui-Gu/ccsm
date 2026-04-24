@@ -478,6 +478,58 @@ try {
       !differs ? 'success and error tool blocks render identically — user cannot tell them apart' : '');
   }
 
+  // ── Journey 5b: tool error auto-expands by default (#304) ────────────
+  // Regression guard: an `isError:true` tool block must render with
+  // aria-expanded="true" without any user click — the user shouldn't have
+  // to hunt for the chevron to see why the tool failed. Reverse-verify:
+  // strip the auto-expand effect from ToolBlock.tsx and this case must
+  // fail (button starts as aria-expanded="false").
+  {
+    await seed([
+      { kind: 'tool', id: 't5c', toolUseId: 'tu_5c', name: 'Bash',
+        brief: 'fail-auto', expanded: false,
+        result: 'AUTO_EXPAND_ERR_TOKEN', isError: true },
+      { kind: 'tool', id: 't5d', toolUseId: 'tu_5d', name: 'Bash',
+        brief: 'ok-auto', expanded: false,
+        result: 'AUTO_EXPAND_OK_TOKEN', isError: false },
+    ]);
+    // Do NOT click anything — that's the whole point of the test.
+    await win.waitForTimeout(200);
+    const probe = await win.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('main button[aria-expanded]'));
+      // Find the button whose row contains our tokens.
+      function find(token) {
+        for (const b of btns) {
+          // Walk up to the block container, then check its text body.
+          let cur = b.parentElement;
+          for (let i = 0; i < 6 && cur; i++) {
+            if (cur.textContent && cur.textContent.includes(token)) return b;
+            cur = cur.parentElement;
+          }
+        }
+        return null;
+      }
+      const errBtn = find('fail-auto');
+      const okBtn = find('ok-auto');
+      return {
+        errExpanded: errBtn ? errBtn.getAttribute('aria-expanded') : null,
+        okExpanded: okBtn ? okBtn.getAttribute('aria-expanded') : null,
+        errBodyVisible: document.body.innerText.includes('AUTO_EXPAND_ERR_TOKEN'),
+        okBodyVisible: document.body.innerText.includes('AUTO_EXPAND_OK_TOKEN'),
+      };
+    });
+    const pass =
+      probe.errExpanded === 'true' &&
+      probe.okExpanded === 'false' &&
+      probe.errBodyVisible === true &&
+      probe.okBodyVisible === false;
+    record('J5b errored tool block auto-expands; healthy block stays collapsed (#304)',
+      'errored block: aria-expanded=true + body visible; healthy block: aria-expanded=false + body hidden',
+      JSON.stringify(probe),
+      pass,
+      !pass ? 'tool failure is hidden behind the chevron — user has to click to find out what went wrong' : '');
+  }
+
   // ── Journey 6: multi-tool serial — independent toggles ─────────────────
   {
     await seed([
