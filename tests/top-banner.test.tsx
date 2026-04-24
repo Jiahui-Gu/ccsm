@@ -98,7 +98,7 @@ describe('banner trio integration', () => {
     const alert = screen.getByRole('alert');
     expect(alert).toHaveAttribute('aria-live', 'polite');
     expect(document.querySelector('[data-top-banner]')).toHaveAttribute('data-variant', 'error');
-    expect(screen.getByText('Agent failed to start')).toBeInTheDocument();
+    expect(screen.getByText('Failed to start Claude')).toBeInTheDocument();
     expect(screen.getByText('spawn ENOENT')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /reconfigure/i })).toBeInTheDocument();

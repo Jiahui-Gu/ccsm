@@ -23,7 +23,7 @@ export interface TopBannerProps {
   /** Leading icon (typically a `lucide-react` glyph at size 14). */
   icon?: React.ReactNode;
   /**
-   * Short, sentence-case headline (e.g. "Agent failed to start").
+   * Short, sentence-case headline (e.g. "Failed to start Claude").
    * Required because every banner needs a scannable label for the
    * `role="alert"` announcement.
    */

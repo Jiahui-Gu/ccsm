@@ -1,6 +1,9 @@
 import type { WebContents } from 'electron';
 import { SessionRunner, ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
 import { ClaudeNotFoundError } from './binary-resolver';
+import type { StartResult } from './start-result-types';
+
+export type { StartErrorCode, StartResult } from './start-result-types';
 
 type Sender = (channel: string, payload: unknown) => void;
 
@@ -16,23 +19,6 @@ export type AgentDiagnostic = {
   code: string;
   message: string;
 };
-
-export type StartResult =
-  | { ok: true }
-  | {
-      ok: false;
-      error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING' | 'CLI_SPAWN_FAILED';
-      searchedPaths?: string[];
-      /**
-       * Tail of stderr (or the libuv error message) captured during the
-       * early-failure window. Populated for `CLI_SPAWN_FAILED` so the
-       * renderer banner can show the user *why* the CLI bailed (missing
-       * dependency, bad shim, stale env, etc.) instead of an opaque
-       * "agent failed to start".
-       */
-      detail?: string;
-    };
 
 class SessionsManager {
   private runners = new Map<string, SessionRunner>();

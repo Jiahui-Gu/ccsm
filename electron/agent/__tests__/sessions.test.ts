@@ -39,6 +39,14 @@ function makeFakeProc(): FakeProc {
   child.stderr = new PassThrough();
   child.stdin = new PassThrough();
 
+  // Pre-buffer a single zero-length keepalive frame so the new
+  // detectEarlyFailure (PR #209 P1 fix) fires `'readable'` immediately when
+  // SessionRunner.start() attaches its listener — otherwise every success-path
+  // test would wait the full SPAWN_EARLY_FAILURE_WINDOW_MS (~800ms) before
+  // start() resolves. The blank line is dropped by splitNDJSON, so the
+  // consumer sees no event from it.
+  child.stdout.write('\n');
+
   const stdinChunks: Buffer[] = [];
   child.stdin.on('data', (c) => stdinChunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c))));
 

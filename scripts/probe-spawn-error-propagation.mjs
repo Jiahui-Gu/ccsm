@@ -14,7 +14,7 @@
 // stderr tail; manager.start() translates it into
 // {ok:false, errorCode:'CLI_SPAWN_FAILED', detail:<stderr tail>}.
 // The renderer's existing AgentInitFailedBanner picks this up via
-// setSessionInitFailure and shows "Agent failed to start" with the
+// setSessionInitFailure and shows "Failed to start Claude" with the
 // captured stderr context.
 //
 // What this probe asserts:
@@ -25,7 +25,7 @@
 //      sentinel stderr line.
 //   3. Drive setSessionInitFailure through the same code path the
 //      InputBar uses, then assert the AgentInitFailedBanner mounts with
-//      the "Agent failed to start" copy and the sentinel stderr string in
+//      the "Failed to start Claude" copy and the sentinel stderr string in
 //      the body.
 //
 // Reverse-verify (documented in PR body): comment out the
@@ -72,8 +72,35 @@ function writeFailingBinary(dir) {
   return p;
 }
 
+// Build a fake claude "binary" that emits a single stdout byte and then
+// hangs around. Used to measure the success-path latency of
+// SessionRunner.detectEarlyFailure(): with the PR #209 P1 fix, the first
+// stdout byte resolves the early-failure window immediately. Without the
+// fix, the timer wins and the call is gated on SPAWN_EARLY_FAILURE_WINDOW_MS
+// (~800ms).
+function writeAliveBinary(dir) {
+  if (process.platform === 'win32') {
+    const p = path.join(dir, 'fake-claude-alive.cmd');
+    // Echo a blank line (splitNDJSON drops it) then block on stdin via
+    // `set /p` (cmd builtin). The probe sanitizes PATH to '' so external
+    // sleeps like `ping` / `timeout` aren't reachable; `set /p` blocks on
+    // stdin EOF without depending on any PATH lookup. The probe closes the
+    // child via agentClose afterwards.
+    fs.writeFileSync(
+      p,
+      `@echo off\r\necho.\r\nset /p _=<CON\r\n`
+    );
+    return p;
+  }
+  const p = path.join(dir, 'fake-claude-alive.sh');
+  fs.writeFileSync(p, `#!/bin/sh\nprintf '\\n'\nsleep 60\n`);
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-spawn-error-'));
 const fakeBin = writeFailingBinary(tmp);
+const aliveBin = writeAliveBinary(tmp);
 
 const ud = isolatedUserData('probe-spawn-error-userdata');
 // Sanitize HOME so the developer's ~/.claude skills do not leak into the
@@ -176,6 +203,61 @@ console.log('\n[probe-spawn-error-propagation] phase 1 OK (ipc)');
 console.log('  agent:start ok:false errorCode:CLI_SPAWN_FAILED detail contains sentinel');
 
 // ─────────────────────────────────────────────────────────────────────────
+// Phase 1.5: success-path latency. Re-seed claudeBinPath at a binary that
+// emits a stdout byte and stays alive. The PR #209 P1 fix races
+// detectEarlyFailure against the first stdout byte, so agent:start should
+// resolve in well under SPAWN_EARLY_FAILURE_WINDOW_MS (~800ms). Pre-fix it
+// always paid the full window. Threshold: 300ms (covers Windows shim +
+// cmd.exe wrap-up + IPC round-trip with comfortable headroom).
+//
+// Reverse-verify: revert the detectEarlyFailure change in
+// electron/agent/sessions.ts → this assertion MUST FAIL because cp.wait()
+// never resolves on the alive binary, the timer wins, and elapsed >= 800ms.
+// ─────────────────────────────────────────────────────────────────────────
+await win.evaluate(async (p) => {
+  await window.agentory.saveState('claudeBinPath', p);
+}, aliveBin);
+
+const SUCCESS_LATENCY_BUDGET_MS = 300;
+const t0 = Date.now();
+const aliveResult = await win.evaluate(async (cwd) => {
+  return await window.agentory.agentStart('probe-spawn-error-alive-session', { cwd });
+}, root);
+const elapsed = Date.now() - t0;
+
+if (!aliveResult.ok) {
+  await app.close();
+  cleanup();
+  fail(
+    `agent:start against the alive fake binary unexpectedly returned ok:false. ` +
+      `Full result: ${JSON.stringify(aliveResult)}`
+  );
+}
+if (elapsed >= SUCCESS_LATENCY_BUDGET_MS) {
+  await app.close();
+  cleanup();
+  fail(
+    `agent:start success-path took ${elapsed}ms, exceeding the ` +
+      `${SUCCESS_LATENCY_BUDGET_MS}ms budget. The detectEarlyFailure ` +
+      `race against first-stdout-byte (PR #209 P1 fix) appears to be ` +
+      `regressing — start() is paying the full ` +
+      `SPAWN_EARLY_FAILURE_WINDOW_MS window on the happy path.`
+  );
+}
+
+// Tear the alive session down so it doesn't outlive the probe.
+await win.evaluate(async () => {
+  try { await window.agentory.agentClose('probe-spawn-error-alive-session'); } catch {}
+});
+// Restore the failing binary so phase 2 still drives the failure path.
+await win.evaluate(async (p) => {
+  await window.agentory.saveState('claudeBinPath', p);
+}, fakeBin);
+
+console.log('[probe-spawn-error-propagation] phase 1.5 OK (success latency)');
+console.log(`  agent:start success path resolved in ${elapsed}ms (budget ${SUCCESS_LATENCY_BUDGET_MS}ms)`);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Phase 2: renderer banner surfaces the failure.
 //
 // Synthesize a session in the store, then drive the same setSessionInitFailure
@@ -242,7 +324,7 @@ await banner.waitFor({ state: 'visible', timeout: 5_000 }).catch(async () => {
 });
 
 const bannerText = (await banner.textContent()) ?? '';
-if (!/Agent failed to start/.test(bannerText)) {
+if (!/Failed to start Claude/.test(bannerText)) {
   await app.close();
   cleanup();
   fail(
@@ -268,4 +350,4 @@ cleanup();
 
 console.log('\n[probe-spawn-error-propagation] OK');
 console.log('  errorCode:    CLI_SPAWN_FAILED propagated through ipc');
-console.log('  ui:           "Agent failed to start" banner mounted with stderr detail');
+console.log('  ui:           "Failed to start Claude" banner mounted with stderr detail');
