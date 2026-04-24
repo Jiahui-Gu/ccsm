@@ -121,7 +121,12 @@ const zh: EnCatalog = {
     prCheckFailed: '失败',
     prOpenDetailsAria: '打开 {{name}} 的详情',
     loadHistoryFailed: '加载历史记录失败',
-    retry: '重试'
+    retry: '重试',
+    // task #320 — 权限模式感知的运行中占位文案
+    runningPlaceholderDefault: '执行中… 工具调用前会询问权限（Esc 中断，Enter 排队）',
+    runningPlaceholderAcceptEdits: '执行中… 自动接受编辑（Esc 中断，Enter 排队）',
+    runningPlaceholderBypass: '执行中… 跳过所有权限询问（Esc 中断，Enter 排队）',
+    runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）'
   },
   chatStream: {
     emptyHint: '输入消息后按'
