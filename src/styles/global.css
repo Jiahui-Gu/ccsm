@@ -670,6 +670,25 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
        mono-sm : 11/15 — code paths, terminal headers, hint chips
        mono-md : 12/16 — popover input text, inline command labels
        mono-lg : 13/18 — palette command text (matches body-row)
+
+     ── Naming convention (#300, finalized) ──
+     `text-meta` (11px proportional) and `text-mono-xs` (10px mono) are
+     intentionally separate utilities, not interchangeable:
+       - `text-meta`   = 11px, line-height 14px, **proportional Inter**.
+                         Use for status pills, durations, hint chips, and
+                         anywhere a micro-label sits inside a body-text
+                         flow (banner subtitles, toast bodies). Defined
+                         in the semantic 4-step scale above.
+       - `text-mono-xs` = 10px, line-height 14px, **monospace**. Use for
+                         tool chip buttons, code byte counters, mono
+                         micro-labels (inside ToolBlock, DiffView,
+                         PrettyInput, etc).
+     They differ in BOTH font family AND size (11 vs 10), so composing
+     `text-meta font-mono` would silently bump 10px → 11px and break the
+     mono micro-scale alignment with mono-sm/md/lg. Keep them split.
+     The shared `MetaLabel` primitive (src/components/ui/MetaLabel.tsx)
+     wraps the mono variant; bare `text-meta` is the right choice when
+     the surrounding text is already proportional.
   */
   .text-mono-xs { font-size: 10px; line-height: 14px; }
   .text-mono-sm { font-size: 11px; line-height: 15px; }

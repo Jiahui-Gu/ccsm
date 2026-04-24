@@ -469,6 +469,208 @@ async function caseTypeScaleSnapshot({ win, log }) {
   log(`sidebar=${sizes.sidebar.px}px assistant=${sizes.assistant.px}px tool=${sizes.tool.px}px dialog=${sizes.dialog.px}px`);
 }
 
+// ---------- banner-i18n-toggle ----------
+// Asserts AgentInitFailedBanner + AgentDiagnosticBanner re-render with the
+// active i18n catalog when the language preference flips. The banners read
+// their copy from the `banner.*` namespace via `useTranslation()`; if any
+// future regression hard-codes one of those strings, the corresponding
+// title check below will keep showing the English literal in zh and trip.
+//
+// Reverse-verify: temporarily change `<TopBanner title={t('banner...')}>`
+// in either AgentInitFailedBanner.tsx or AgentDiagnosticBanner.tsx to a
+// hardcoded English literal — this case must FAIL.
+async function caseBannerI18nToggle({ win, log }) {
+  // Seed an active session + a sessionInitFailures entry + a diagnostic
+  // entry so both banners mount above the chat surface.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      sessionInitFailures: {
+        s1: { error: 'spawn ENOENT', errorCode: 'EUNKNOWN', timestamp: Date.now() }
+      },
+      diagnostics: [
+        { id: 'd1', sessionId: 's1', level: 'warn', code: 'INIT_HANDSHAKE_TIMEOUT', message: 'init handshake timed out', timestamp: Date.now(), dismissed: false }
+      ]
+    });
+  });
+  // Wait for the chat surface to render so the banners are mounted.
+  await win.locator('textarea[data-input-bar]').waitFor({ state: 'visible', timeout: 5000 });
+  await win.waitForTimeout(250);
+
+  async function setLang(lang) {
+    // Drive through window.ccsm.i18n.setLanguage which mirrors what
+    // SettingsDialog calls when the user picks a language. Also update
+    // the renderer i18next directly through __ccsmI18n to ensure the
+    // catalog swap is observed before the banner re-render assertion.
+    await win.evaluate((l) => {
+      window.ccsm?.i18n?.setLanguage?.(l);
+      const i18n = window.__ccsmI18n;
+      if (i18n && typeof i18n.changeLanguage === 'function') {
+        return i18n.changeLanguage(l);
+      }
+      return undefined;
+    }, lang);
+    await win.waitForTimeout(200);
+  }
+
+  async function readBannerTitles() {
+    return await win.evaluate(() => {
+      const initEl = document.querySelector('[data-testid="agent-init-failed-banner"]');
+      const diagEl = document.querySelector('[data-testid="agent-diagnostic-banner"]');
+      // The title slot inside <TopBanner /> is the first text element
+      // inside the grow column (font-semibold text-meta).
+      const text = (el) => (el?.textContent || '').trim();
+      return {
+        initText: text(initEl),
+        diagText: text(diagEl),
+        initFound: !!initEl,
+        diagFound: !!diagEl
+      };
+    });
+  }
+
+  // ---- English baseline ----
+  await setLang('en');
+  const en = await readBannerTitles();
+  if (!en.initFound) throw new Error('agent-init-failed-banner not mounted (en); did seeding miss sessionInitFailures?');
+  if (!en.diagFound) throw new Error('agent-diagnostic-banner not mounted (en); did seeding miss diagnostics?');
+  if (!/Failed to start Claude/i.test(en.initText)) {
+    throw new Error(`expected init banner to contain English title in en, got: ${en.initText}`);
+  }
+  if (!/Agent warning/i.test(en.diagText)) {
+    throw new Error(`expected diagnostic banner to contain English title in en, got: ${en.diagText}`);
+  }
+  if (/[\u4e00-\u9fff]/.test(en.initText) || /[\u4e00-\u9fff]/.test(en.diagText)) {
+    throw new Error(`unexpected CJK in en banners: init=${en.initText} diag=${en.diagText}`);
+  }
+
+  // ---- Switch to Chinese ----
+  await setLang('zh');
+  const zh = await readBannerTitles();
+  if (!zh.initFound || !zh.diagFound) {
+    throw new Error('banners disappeared after language switch (should re-render, not unmount)');
+  }
+  if (!/[\u4e00-\u9fff]/.test(zh.initText)) {
+    throw new Error(`expected CJK in init banner after zh switch, got: ${zh.initText}`);
+  }
+  if (!/[\u4e00-\u9fff]/.test(zh.diagText)) {
+    throw new Error(`expected CJK in diagnostic banner after zh switch, got: ${zh.diagText}`);
+  }
+  // Source-of-truth strings from src/i18n/locales/zh.ts. If these change
+  // intentionally update the assertions; if they change unintentionally
+  // the parity test will trip elsewhere.
+  if (!/无法启动 Claude/.test(zh.initText)) {
+    throw new Error(`expected zh init title '无法启动 Claude' in: ${zh.initText}`);
+  }
+  if (!/Agent 警告/.test(zh.diagText)) {
+    throw new Error(`expected zh diag title 'Agent 警告' in: ${zh.diagText}`);
+  }
+
+  // ---- Flip back to English ----
+  await setLang('en');
+  const en2 = await readBannerTitles();
+  if (!/Failed to start Claude/i.test(en2.initText)) {
+    throw new Error(`flip back to en: init banner did not revert, got: ${en2.initText}`);
+  }
+  if (/[\u4e00-\u9fff]/.test(en2.initText)) {
+    throw new Error(`flip back to en: CJK still present, got: ${en2.initText}`);
+  }
+
+  log('banners flip en→zh→en (init: "Failed to start Claude" ↔ "无法启动 Claude"; diag: "Agent warning" ↔ "Agent 警告")');
+}
+
+// ---------- toast-a11y ----------
+// Asserts the Toast a11y contract (#298 follow-up):
+//   - Error toasts live inside a region with role=alert + aria-live=assertive
+//     AND render a glyph icon (currently AlertCircle from lucide).
+//   - Default/info/waiting toasts live inside role=status + aria-live=polite.
+//   - Body click does NOT dismiss the toast (clicks anywhere outside the
+//     close button + outside the action button must be no-ops).
+//   - Close button DOES dismiss the toast.
+//
+// Reverse-verify: flip the error region role to "status" in
+// src/components/ui/Toast.tsx — this case must FAIL on the role check.
+async function caseToastA11y({ win, log }) {
+  // Wait for the ToastProvider to expose its bridge.
+  await win.waitForFunction(() => !!window.__ccsmToast, null, { timeout: 5000 });
+
+  // Push one of each variant. Use unique titles so we can locate them
+  // by text after.
+  const ids = await win.evaluate(() => {
+    const tx = window.__ccsmToast;
+    return {
+      errId: tx.push({ kind: 'error', title: 'TOAST-A11Y-ERR', body: 'boom', persistent: true }),
+      infoId: tx.push({ kind: 'info', title: 'TOAST-A11Y-INFO', persistent: true })
+    };
+  });
+  await win.waitForTimeout(200);
+
+  const regions = await win.evaluate(() => {
+    const errToast = document.querySelector('[data-testid="toast-error"]');
+    const infoToast = document.querySelector('[data-testid="toast-info"]');
+    const climb = (el) => {
+      let cur = el?.parentElement || null;
+      while (cur) {
+        const role = cur.getAttribute('role');
+        if (role === 'alert' || role === 'status') {
+          return { role, live: cur.getAttribute('aria-live') };
+        }
+        cur = cur.parentElement;
+      }
+      return null;
+    };
+    return {
+      errFound: !!errToast,
+      infoFound: !!infoToast,
+      errRegion: climb(errToast),
+      infoRegion: climb(infoToast),
+      errIcon: !!errToast?.querySelector('svg'),
+      errCloseBtn: !!errToast?.querySelector('button[aria-label]')
+    };
+  });
+
+  if (!regions.errFound) throw new Error('error toast did not render after push()');
+  if (!regions.infoFound) throw new Error('info toast did not render after push()');
+  if (!regions.errRegion) throw new Error('error toast has no ancestor live region');
+  if (!regions.infoRegion) throw new Error('info toast has no ancestor live region');
+  if (regions.errRegion.role !== 'alert' || regions.errRegion.live !== 'assertive') {
+    throw new Error(`error toast region expected role=alert + aria-live=assertive, got role=${regions.errRegion.role} live=${regions.errRegion.live}`);
+  }
+  if (regions.infoRegion.role !== 'status' || regions.infoRegion.live !== 'polite') {
+    throw new Error(`info toast region expected role=status + aria-live=polite, got role=${regions.infoRegion.role} live=${regions.infoRegion.live}`);
+  }
+  if (!regions.errIcon) throw new Error('error toast missing glyph icon (svg)');
+  if (!regions.errCloseBtn) throw new Error('error toast missing aria-labeled close button');
+
+  // Body-click does NOT dismiss. Click on the title element specifically.
+  await win.evaluate(() => {
+    const errToast = document.querySelector('[data-testid="toast-error"]');
+    const title = errToast?.querySelector('div.text-chrome, div.font-medium');
+    title?.click();
+  });
+  await win.waitForTimeout(150);
+  const stillThere = await win.evaluate(() => !!document.querySelector('[data-testid="toast-error"]'));
+  if (!stillThere) throw new Error('error toast was dismissed by body click — should be sticky to close button + Esc');
+
+  // Close button DOES dismiss.
+  await win.evaluate(() => {
+    const errToast = document.querySelector('[data-testid="toast-error"]');
+    const btn = errToast?.querySelector('button[aria-label]');
+    btn?.click();
+  });
+  await win.waitForTimeout(250);
+  const gone = await win.evaluate(() => !document.querySelector('[data-testid="toast-error"]'));
+  if (!gone) throw new Error('error toast survived close-button click');
+
+  // Cleanup the persistent info toast.
+  await win.evaluate((id) => window.__ccsmToast?.dismiss(id), ids.infoId);
+
+  log('error: role=alert/assertive + glyph + close-only dismiss; info: role=status/polite');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -487,6 +689,8 @@ await runHarness({
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
     { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
     { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss },
-    { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot }
+    { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot },
+    { id: 'banner-i18n-toggle', run: caseBannerI18nToggle },
+    { id: 'toast-a11y', run: caseToastA11y }
   ]
 });

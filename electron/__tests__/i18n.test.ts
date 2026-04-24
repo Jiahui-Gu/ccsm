@@ -89,4 +89,55 @@ describe('main process i18n', () => {
     expect(/[\u4e00-\u9fff]/.test(zhCwd)).toBe(true);
     expect(/[\u4e00-\u9fff]/.test(zhClaude)).toBe(true);
   });
+
+  // E2E coverage for #295 (tray-menu i18n).
+  //
+  // We can't drive the real Tray.setContextMenu() in CI: Electron's tray
+  // surface is OS-native (Windows shell notification area, GNOME indicator,
+  // macOS NSStatusItem) and exposes no scriptable accessor for the resolved
+  // menu items. Playwright sees the BrowserWindow tree, not the OS chrome.
+  //
+  // Instead this case asserts the underlying string source that
+  // `applyTrayLocale()` in electron/main.ts feeds into the menu template
+  // (`i18n.tTray(key)`). Coverage chain:
+  //   IPC ccsm:set-language → setMainLanguage → tTray returns localized →
+  //   Menu.buildFromTemplate uses those labels.
+  // The IPC handler itself is verified by the language-toggle E2E probe
+  // (scripts/probe-e2e-language-toggle.mjs) which calls
+  // window.ccsm.i18n.setLanguage and observes the renderer flip.
+  describe('#295 tray-menu i18n end-to-end via setMainLanguage', () => {
+    it('flipping language flips every tray catalog key, with no English bleed in zh', () => {
+      setMainLanguage('en');
+      const enLabels = {
+        show: tTray('show'),
+        quit: tTray('quit'),
+        tooltip: tTray('tooltip')
+      };
+      expect(enLabels.show).toBe('Show CCSM');
+      expect(enLabels.quit).toBe('Quit');
+
+      setMainLanguage('zh');
+      const zhLabels = {
+        show: tTray('show'),
+        quit: tTray('quit'),
+        tooltip: tTray('tooltip')
+      };
+      // Every menu item (show, quit) MUST contain CJK once switched.
+      // 'tooltip' is the brand 'CCSM' in both locales by design — exclude.
+      expect(/[\u4e00-\u9fff]/.test(zhLabels.show)).toBe(true);
+      expect(/[\u4e00-\u9fff]/.test(zhLabels.quit)).toBe(true);
+      // No English-only fallback leaked through.
+      expect(zhLabels.show).not.toBe(enLabels.show);
+      expect(zhLabels.quit).not.toBe(enLabels.quit);
+      expect(zhLabels.show).not.toMatch(/^Show /);
+      expect(zhLabels.quit).not.toMatch(/^Quit$/);
+
+      // Reverse-verify: revert to en and assert the English literals come
+      // back. This guards against a regression where setMainLanguage gets
+      // wired to a constant.
+      setMainLanguage('en');
+      expect(tTray('show')).toBe('Show CCSM');
+      expect(tTray('quit')).toBe('Quit');
+    });
+  });
 });
