@@ -3,6 +3,7 @@ import { AlertOctagon, RotateCw, Settings } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { startSessionAndReconcile } from '../agent/startSession';
+import { useTranslation } from '../i18n/useTranslation';
 import { TopBanner, TopBannerAction, TopBannerPresence } from './chrome/TopBanner';
 
 /**
@@ -28,6 +29,7 @@ export function AgentInitFailedBanner({
 }: {
   onRequestReconfigure: () => void;
 }) {
+  const { t } = useTranslation();
   const activeId = useStore((s) => s.activeId);
   const failure = useStore((s) => (activeId ? s.sessionInitFailures[activeId] : undefined));
   const clearFailure = useStore((s) => s.clearSessionInitFailure);
@@ -62,7 +64,7 @@ export function AgentInitFailedBanner({
           presenceKey={activeId ?? 'agent-init-failed'}
           testId="agent-init-failed-banner"
           icon={<AlertOctagon size={14} className="stroke-[2]" />}
-          title="Failed to start Claude"
+          title={t('banner.agentInitFailed.title')}
           body={failure.error}
           onDismiss={onDismiss}
           actions={
@@ -74,7 +76,7 @@ export function AgentInitFailedBanner({
                 data-agent-init-failed-retry
               >
                 <RotateCw size={12} className={cn('stroke-[2]', retrying && 'animate-spin')} />
-                <span>{retrying ? 'Retrying…' : 'Retry'}</span>
+                <span>{retrying ? t('banner.agentInitFailed.retrying') : t('banner.agentInitFailed.retry')}</span>
               </TopBannerAction>
               <TopBannerAction
                 tone="secondary"
@@ -82,7 +84,7 @@ export function AgentInitFailedBanner({
                 data-agent-init-failed-reconfigure
               >
                 <Settings size={12} className="stroke-[2]" />
-                <span>Reconfigure</span>
+                <span>{t('banner.agentInitFailed.reconfigure')}</span>
               </TopBannerAction>
             </>
           }

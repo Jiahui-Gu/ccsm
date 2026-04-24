@@ -523,6 +523,19 @@ const zh: EnCatalog = {
     actionShortcuts: '显示快捷键面板',
     colShortcut: '快捷键',
     colAction: '动作'
+  },
+  banner: {
+    agentInitFailed: {
+      title: '无法启动 Claude',
+      retry: '重试',
+      retrying: '重试中\u2026',
+      reconfigure: '重新配置'
+    },
+    agentDiagnostic: {
+      titleError: 'Agent 错误',
+      titleWarning: 'Agent 警告',
+      dismiss: '关闭诊断信息'
+    }
   }
 };
 
