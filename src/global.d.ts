@@ -193,6 +193,9 @@ declare global {
         };
       }) => Promise<boolean>;
       notifyAvailability: () => Promise<{ available: boolean; error: string | null }>;
+      notifySetRuntimeState: (
+        patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
+      ) => Promise<{ ok: true } | { ok: false }>;
       onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
       onNotifyToastAction?: (
         handler: (e: {

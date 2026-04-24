@@ -179,7 +179,10 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
       // `agent:resolvePermission` IPC handler when the question is answered
       // (in-app QuestionBlock submit calls agentResolvePermission with
       // decision='deny' to release the underlying CLI gate).
-      scheduleQuestionRetry(questionPayload);
+      // sessionId is forwarded so the retry's fire-time gate (#307) can
+      // suppress the re-emit when the user has since focused this session
+      // or globally disabled notifications.
+      scheduleQuestionRetry(questionPayload, payload.sessionId);
       return;
     }
     case 'turn_done': {

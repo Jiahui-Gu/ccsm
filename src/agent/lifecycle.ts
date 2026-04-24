@@ -433,4 +433,29 @@ export function subscribeAgentEvents(): void {
     // `focus` carries no decision — the click already raised the window via
     // `notification:focusSession`, no further action needed here.
   });
+
+  // Mirror notification runtime state into main (#307). The ask-question
+  // retry timer fires in main ~30s after the original toast; by then the
+  // user may have toggled notifications off or focused the question's
+  // session. We push the two fields the retry gate needs whenever they
+  // change. Push initial values immediately so a renderer that wires this
+  // before the user touches anything still has a true mirror.
+  const pushRuntimeState = (s: ReturnType<typeof useStore.getState>) => {
+    void api.notifySetRuntimeState?.({
+      notificationsEnabled: s.notificationSettings.enabled,
+      activeSessionId: s.activeId || null,
+    });
+  };
+  pushRuntimeState(useStore.getState());
+  let lastEnabled = useStore.getState().notificationSettings.enabled;
+  let lastActive = useStore.getState().activeId;
+  useStore.subscribe((state) => {
+    const enabled = state.notificationSettings.enabled;
+    const active = state.activeId;
+    if (enabled !== lastEnabled || active !== lastActive) {
+      lastEnabled = enabled;
+      lastActive = active;
+      pushRuntimeState(state);
+    }
+  });
 }

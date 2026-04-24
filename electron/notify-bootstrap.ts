@@ -112,6 +112,146 @@ export function shouldSuppressForFocus(): boolean {
   return false;
 }
 
+// ── Runtime-state mirror (#307) ──────────────────────────────────────────
+//
+// The renderer-side `dispatchNotification` evaluates the user's notification
+// preferences (global enabled toggle, per-event toggles, per-session mute,
+// debounce) BEFORE asking main to fire a toast. Initial emits therefore
+// honour those gates by construction. The ask-question retry timer (#252),
+// however, lives in main and re-emits ~30s later — by which time the user
+// may have toggled notifications off or focused the question's session.
+// Without a mirror of the relevant renderer state, the retry would happily
+// fire through that closed gate.
+//
+// Mirror is push-based: the renderer subscribes to its own store and pushes
+// the two fields that matter for retry gating (`notificationsEnabled`,
+// `activeSessionId`) via `notify:setRuntimeState` whenever they change.
+// Defaults are conservative — we assume notifications are enabled until the
+// renderer tells us otherwise so a renderer that never wires the bridge
+// doesn't accidentally suppress every toast.
+interface NotifyRuntimeState {
+  notificationsEnabled: boolean;
+  activeSessionId: string | null;
+}
+
+const runtimeState: NotifyRuntimeState = {
+  notificationsEnabled: true,
+  activeSessionId: null,
+};
+
+/**
+ * Update the main-process mirror of renderer notification state. Called
+ * via the `notify:setRuntimeState` IPC handler. Partial — fields not
+ * present are left unchanged so the renderer can push deltas.
+ */
+export function setNotifyRuntimeState(patch: Partial<NotifyRuntimeState>): void {
+  if (typeof patch.notificationsEnabled === 'boolean') {
+    runtimeState.notificationsEnabled = patch.notificationsEnabled;
+  }
+  if (patch.activeSessionId === null || typeof patch.activeSessionId === 'string') {
+    runtimeState.activeSessionId = patch.activeSessionId;
+  }
+}
+
+/** Read-only snapshot for gate-checks at toast-fire time. */
+export function getNotifyRuntimeState(): Readonly<NotifyRuntimeState> {
+  return runtimeState;
+}
+
+/**
+ * Combined gate evaluated at retry-fire time (#307). Returns true when the
+ * caller should NOT fire — either the user globally disabled notifications,
+ * or the user is focused on the question's own session (so the in-app
+ * affordance is already visible and a fresh OS toast would be noise).
+ *
+ * Pure read against `runtimeState` + `BrowserWindow.isFocused()`; safe to
+ * call repeatedly and from any module without circular-import risk.
+ */
+export function shouldSuppressRetry(sessionId: string | null | undefined): boolean {
+  if (!runtimeState.notificationsEnabled) return true;
+  if (sessionId && runtimeState.activeSessionId === sessionId) {
+    if (shouldSuppressForFocus()) return true;
+  }
+  return false;
+}
+
+/** Test-only — restore mirror to defaults between unit tests. */
+export function __resetNotifyRuntimeStateForTests(): void {
+  runtimeState.notificationsEnabled = true;
+  runtimeState.activeSessionId = null;
+}
+
+// ── Default toast-action router factory (#308) ───────────────────────────
+//
+// Extracted from main.ts so the e2e probe can install the EXACT same
+// router behaviour rather than a hand-rolled copy that drifts from
+// production. The router consumes a few host capabilities (resolve
+// permission against the live session manager, cancel pending question
+// retries, look up the foreground window) injected as functions so this
+// module stays free of cyclic imports against `agent/sessions` and
+// `notify-retry`.
+export interface ToastActionRouterDeps {
+  /** Resolve a CLI permission gate (typically `sessions.resolvePermission`). */
+  resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => unknown;
+  /** Cancel a scheduled question retry (typically from `notify-retry`). */
+  cancelQuestionRetry: (toastId: string) => void;
+  /** Returns the window to send `notify:toastAction` to, or null. */
+  getMainWindow: () => { isDestroyed?: () => boolean; webContents?: { send: (channel: string, payload: unknown) => void }; isMinimized?: () => boolean; restore?: () => void; isVisible?: () => boolean; show?: () => void; focus?: () => void } | null;
+}
+
+export function createDefaultToastActionRouter(
+  deps: ToastActionRouterDeps,
+): (event: { toastId: string; action: 'allow' | 'allow-always' | 'reject' | 'focus'; args: Record<string, string> }) => void {
+  return (event) => {
+    const target = lookupToastTarget(event.toastId);
+    if (!target) return;
+    const win = deps.getMainWindow();
+    if (target.kind === 'permission') {
+      // The toastId for permission events IS the requestId (see lifecycle.ts
+      // → permissionRequestToWaitingBlock). Resolve the underlying CLI
+      // permission gate and notify the renderer so it can update its
+      // waiting-block UI + (for `allow-always`) seed `allowAlwaysTools`.
+      const requestId = event.toastId;
+      if (event.action === 'allow' || event.action === 'allow-always') {
+        deps.resolvePermission(target.sessionId, requestId, 'allow');
+      } else if (event.action === 'reject') {
+        deps.resolvePermission(target.sessionId, requestId, 'deny');
+        // Defensive cancel (#308): permission toasts don't schedule a retry
+        // today (only question events do), but if a future change ever
+        // routes question activations through the same toast-action path,
+        // a forgotten cancel would leak the timer past the user's explicit
+        // reject. Cheap belt-and-suspenders — `cancelQuestionRetry` is a
+        // safe no-op when no entry exists. Both id shapes are tried so
+        // either lifecycle convention (`q-${requestId}` or bare requestId)
+        // is covered.
+        deps.cancelQuestionRetry(`q-${requestId}`);
+        deps.cancelQuestionRetry(requestId);
+      }
+      if (win && win.webContents) {
+        win.webContents.send('notify:toastAction', {
+          sessionId: target.sessionId,
+          requestId,
+          action: event.action,
+        });
+      }
+      consumeToastTarget(event.toastId);
+    } else if (target.kind === 'question' || target.kind === 'turn_done') {
+      // Questions + turn_done only carry `focus`; other actions are no-ops
+      // here (the renderer drives the actual answer flow once focused).
+      consumeToastTarget(event.toastId);
+    }
+    // Always raise the window on any action — the user clicked the toast,
+    // they want to see ccsm. Mirrors the existing `notification:focusSession`
+    // path used by the legacy Electron Notification.
+    if (win) {
+      if (win.isMinimized?.()) win.restore?.();
+      if (!win.isVisible?.()) win.show?.();
+      win.focus?.();
+      win.webContents?.send('notification:focusSession', target.sessionId);
+    }
+  };
+}
+
 /**
  * Track which session a given toastId belongs to so the onAction router can
  * call back into the agent runner with the right sessionId. Populated by

@@ -27,6 +27,7 @@
 // instead of two).
 
 import { notifyQuestion, type QuestionPayload } from './notify';
+import { shouldSuppressRetry } from './notify-bootstrap';
 
 const DEFAULT_RETRY_DELAY_MS = 30_000;
 const MAX_RETRIES = 1;
@@ -35,6 +36,11 @@ interface PendingRetry {
   remaining: number;
   timer: ReturnType<typeof setTimeout>;
   payload: QuestionPayload;
+  // sessionId captured at schedule time so the fire-time gate
+  // (`shouldSuppressRetry`) can compare against the renderer's current
+  // activeSessionId. QuestionPayload itself doesn't carry sessionId — it's
+  // a wrapper-shaped type — so we keep it alongside.
+  sessionId: string | null;
 }
 
 const pending = new Map<string, PendingRetry>();
@@ -62,9 +68,15 @@ export function __setRetrySchedulerForTests(
  * `delayMs` (default 30s). Idempotent per `payload.toastId`: a second call
  * for the same id while a retry is still pending is a no-op (the original
  * scheduling stands; we don't want overlapping timers).
+ *
+ * `sessionId` is captured for fire-time gate evaluation (#307) — the retry
+ * checks `shouldSuppressRetry(sessionId)` before re-emitting so a user who
+ * disabled notifications or focused the question's session during the
+ * 30s window doesn't get a stale toast.
  */
 export function scheduleQuestionRetry(
   payload: QuestionPayload,
+  sessionId: string | null = null,
   delayMs: number = DEFAULT_RETRY_DELAY_MS,
 ): void {
   const id = payload.toastId;
@@ -73,6 +85,7 @@ export function scheduleQuestionRetry(
   const entry: PendingRetry = {
     remaining: MAX_RETRIES,
     payload,
+    sessionId,
     // The timer body is set after entry-creation so the cleanup path
     // (`pending.delete(id)`) runs unconditionally even if `notifyQuestion`
     // throws synchronously (it shouldn't — wrapper is async-no-throw — but
@@ -90,6 +103,12 @@ function fireRetry(id: string): void {
   // the entry while the wrapper runs, but be explicit).
   entry.remaining -= 1;
   pending.delete(id);
+  // Recheck gates at fire time (#307). Settings could have flipped or the
+  // user could have focused the originating session during the 30s window;
+  // either way the retry should NOT re-emit. We do this here (not at
+  // schedule time) because the gate state lives outside this module and
+  // can change at any moment between schedule and fire.
+  if (shouldSuppressRetry(entry.sessionId)) return;
   void notifyQuestion(entry.payload).catch(() => {
     /* wrapper logs internally */
   });
@@ -113,6 +132,11 @@ export function cancelQuestionRetry(toastId: string): void {
  */
 export function __pendingRetryCountForTests(): number {
   return pending.size;
+}
+
+/** Test-only inspector — returns the toastId keys of the pending map. */
+export function __pendingRetryKeysForTests(): string[] {
+  return Array.from(pending.keys());
 }
 
 /** Test-only reset — clears all pending entries (timers leaked intentionally
