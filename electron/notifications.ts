@@ -8,6 +8,19 @@ import {
   isNotifyAvailable,
 } from './notify';
 import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap';
+import { scheduleQuestionRetry } from './notify-retry';
+
+// Wave 3 polish (#252): cap the assistant-message preview that the legacy
+// Electron Notification body renders. The @ccsm/notify Adaptive Toast
+// re-truncates inside the SDK (xml/done.ts ASSISTANT_LINE_MAX = 80), so we
+// match the same budget here for consistency. Anything longer just waste
+// pixels in the OS banner.
+const DONE_BODY_PREVIEW_MAX = 80;
+
+function truncatePreview(s: string, n = DONE_BODY_PREVIEW_MAX): string {
+  if (!s) return '';
+  return s.length > n ? `${s.slice(0, n - 1)}\u2026` : s;
+}
 
 export type NotificationEventType = 'permission' | 'question' | 'turn_done' | 'test';
 
@@ -91,9 +104,24 @@ export function showNotification(
     return false;
   }
 
+  // Wave 3 polish (#252): for turn_done events, if the host didn't supply
+  // a body but did pass `extras.lastAssistantMsg`, surface the first ~80
+  // chars as the legacy toast body so the OS banner conveys real context
+  // instead of just "{name} is done". The Adaptive Toast pipeline already
+  // does this via `xml/done.ts`; we mirror it here for parity on machines
+  // where @ccsm/notify is unavailable (non-win32, missing native deps).
+  let body = payload.body ?? '';
+  if (
+    payload.eventType === 'turn_done' &&
+    !payload.body &&
+    payload.extras?.lastAssistantMsg
+  ) {
+    body = truncatePreview(payload.extras.lastAssistantMsg);
+  }
+
   const n = new Notification({
     title: payload.title,
-    body: payload.body ?? '',
+    body,
     silent: !!payload.silent,
   });
   n.on('click', () => {
@@ -137,24 +165,38 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
     }
     case 'question': {
       registerToastTarget(e.toastId, payload.sessionId, 'question');
-      await notifyQuestion({
+      const questionPayload = {
         toastId: e.toastId,
         sessionName,
         question: e.question ?? payload.body ?? '',
         selectionKind: e.selectionKind ?? 'single',
         optionCount: e.optionCount ?? 0,
         cwdBasename: cwdBase,
-      });
+      };
+      await notifyQuestion(questionPayload);
+      // Wave 3 polish (#252): schedule a single re-emit after ~30s in case
+      // the user missed the first banner. Cancelled by the
+      // `agent:resolvePermission` IPC handler when the question is answered
+      // (in-app QuestionBlock submit calls agentResolvePermission with
+      // decision='deny' to release the underlying CLI gate).
+      scheduleQuestionRetry(questionPayload);
       return;
     }
     case 'turn_done': {
       registerToastTarget(e.toastId, payload.sessionId, 'turn_done');
+      // Mirror the SDK's xml/done.ts ASSISTANT_LINE_MAX (80) here so the
+      // wrapper sees a payload that matches what the toast will actually
+      // render. Defensive duplication: callers (lifecycle.ts) currently
+      // truncate to 200; the SDK re-truncates to 80; we tighten on this
+      // hop too so any future caller gets the same treatment.
       await notifyDone({
         toastId: e.toastId,
         groupName: e.groupName ?? '',
         sessionName,
         lastUserMsg: e.lastUserMsg ?? '',
-        lastAssistantMsg: e.lastAssistantMsg ?? payload.body ?? '',
+        lastAssistantMsg: truncatePreview(
+          e.lastAssistantMsg ?? payload.body ?? '',
+        ),
         elapsedMs: e.elapsedMs ?? 0,
         toolCount: e.toolCount ?? 0,
         cwdBasename: cwdBase,
