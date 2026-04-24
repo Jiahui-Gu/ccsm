@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import { Search, SearchX, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
-import { useStore } from '../stores/store';
+import { useStore, resolveEffectiveTheme } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { useFocusRestore } from '../lib/useFocusRestore';
 
@@ -48,6 +49,24 @@ export function CommandPalette({
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const prefersReducedMotion = useReducedMotion();
+
+  // Track OS preference so the "Switch theme → X" label always reflects the
+  // currently rendered theme (when persisted is `system`, raw label would
+  // say "Switch theme → dark" even if dark is already showing). Cheap
+  // matchMedia subscription, mirrors App.tsx's effect.
+  const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => setOsPrefersDark(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => {
     if (open) {
@@ -64,7 +83,11 @@ export function CommandPalette({
   });
 
   const results: Result[] = useMemo(() => {
-    const nextTheme = theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark';
+    // Derive the next theme from what is *actually rendered*, not from the
+    // persisted preference. When persisted is `system`, the raw value would
+    // misreport (e.g. "Switch theme → dark" while dark is already showing).
+    const resolvedTheme = resolveEffectiveTheme(theme, osPrefersDark);
+    const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
     const all: Result[] = [
       ...sessions.map<Result>((s) => ({
         id: `session:${s.id}`,
@@ -160,7 +183,7 @@ export function CommandPalette({
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
-  }, [q, sessions, groups, theme, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
+  }, [q, sessions, groups, theme, osPrefersDark, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
 
   const hasQuery = q.trim().length > 0;
 
@@ -237,31 +260,51 @@ export function CommandPalette({
                 </div>
               </li>
             )}
-            {hasQuery &&
-              results.map((r, i) => (
-                <li
-                  key={r.id}
-                  role="option"
-                  aria-selected={i === active}
-                  onMouseEnter={() => setActive(i)}
-                  onClick={() => r.onPick()}
-                  className={cn(
-                    'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
-                    'text-chrome',
-                    i === active
-                      ? 'bg-bg-hover text-fg-primary surface-highlight'
-                      : 'text-fg-secondary'
-                  )}
-                >
-                  <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
-                  <span className="flex-1 min-w-0 truncate">{r.label}</span>
-                  {r.hint && (
-                    <span className="text-meta text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
-                      {r.hint}
-                    </span>
-                  )}
-                </li>
-              ))}
+            {hasQuery && results.length > 0 && (
+              <motion.div
+                // Re-key on the result set so the stagger replays whenever the
+                // user types and the list changes.
+                key={results.map((r) => r.id).join('|')}
+                initial="hidden"
+                animate="visible"
+                variants={{
+                  hidden: {},
+                  visible: {
+                    transition: prefersReducedMotion ? {} : { staggerChildren: 0.015 }
+                  }
+                }}
+                role="presentation"
+              >
+                {results.map((r, i) => (
+                  <motion.li
+                    key={r.id}
+                    role="option"
+                    aria-selected={i === active}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => r.onPick()}
+                    variants={{
+                      hidden: { opacity: prefersReducedMotion ? 1 : 0 },
+                      visible: { opacity: 1 }
+                    }}
+                    className={cn(
+                      'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
+                      'text-chrome',
+                      i === active
+                        ? 'bg-bg-hover text-fg-primary surface-highlight'
+                        : 'text-fg-secondary'
+                    )}
+                  >
+                    <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
+                    <span className="flex-1 min-w-0 truncate">{r.label}</span>
+                    {r.hint && (
+                      <span className="text-meta text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
+                        {r.hint}
+                      </span>
+                    )}
+                  </motion.li>
+                ))}
+              </motion.div>
+            )}
           </ul>
           <div
             className="flex items-center gap-4 px-3 h-8 border-t border-border-subtle text-meta text-fg-tertiary"
