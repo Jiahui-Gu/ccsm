@@ -1,3 +1,5 @@
+> Superseded by [post-migration-gap-triage-2026-04-24.md](../post-migration-gap-triage-2026-04-24.md)
+
 # Post-Migration Gap Analysis: CCSM vs Claude Desktop
 
 **Date**: 2026-04-21
