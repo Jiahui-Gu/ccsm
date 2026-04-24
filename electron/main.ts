@@ -689,7 +689,18 @@ app.whenReady().then(() => {
         };
       }
 
-      const binaryPath = loadClaudeBinPath() ?? undefined;
+      // Validate the persisted path exists on disk. A stale entry (e.g. from a
+      // dev probe whose temp dir was GC'd) would otherwise be passed to the
+      // spawner verbatim, bypassing resolveClaudeBinary() and producing an
+      // opaque "system cannot find the path specified" exit instead of the
+      // CLI-missing dialog. Self-heal by clearing the dead value so subsequent
+      // launches fall through to PATH lookup / first-run wizard.
+      const persisted = loadClaudeBinPath();
+      const binaryPath =
+        persisted && fs.existsSync(persisted) ? persisted : undefined;
+      if (persisted && !binaryPath) {
+        saveClaudeBinPath(null);
+      }
 
       const result = await sessions.start(sessionId, {
         ...opts,
