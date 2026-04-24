@@ -7,6 +7,7 @@ import {
   type SlashCommandSource,
 } from '../slash-commands/registry';
 import { useTranslation } from '../i18n/useTranslation';
+import { MetaLabel } from './ui/MetaLabel';
 
 type Props = {
   open: boolean;
@@ -123,9 +124,9 @@ export function SlashCommandPicker({
         ) : (
           groups.map((group) => (
             <div key={group.source} className="py-0.5">
-              <div className="px-3 pt-1.5 pb-1 font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary select-none">
+              <MetaLabel className="block px-3 pt-1.5 pb-1">
                 {t(GROUP_LABEL_KEY[group.source])}
-              </div>
+              </MetaLabel>
               {group.commands.map((cmd) => {
                 const myIdx = flatIdx++;
                 const Icon = cmd.icon;
