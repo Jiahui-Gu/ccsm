@@ -269,7 +269,10 @@ const zh: EnCatalog = {
       opening: '打开中…',
       copyBaseUrl: '复制 URL',
       copyModel: '复制模型',
-      copied: '已复制'
+      copied: '已复制',
+      modelSourceSettings: '设置',
+      modelSourceCliPicker: 'CLI 选择列表',
+      modelSourceFallback: '兜底'
     },
     updates: {
       version: '版本',

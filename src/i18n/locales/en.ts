@@ -277,7 +277,10 @@ const en = {
       opening: 'Opening…',
       copyBaseUrl: 'Copy URL',
       copyModel: 'Copy model',
-      copied: 'Copied'
+      copied: 'Copied',
+      modelSourceSettings: 'Settings',
+      modelSourceCliPicker: 'CLI picker',
+      modelSourceFallback: 'Fallback'
     },
     updates: {
       version: 'Version',
