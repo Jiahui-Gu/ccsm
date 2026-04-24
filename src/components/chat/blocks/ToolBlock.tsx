@@ -139,7 +139,12 @@ export function ToolBlock({
           {isDropped && (
             <span
               data-testid="tool-no-result"
-              className="text-fg-tertiary/80 text-meta italic ml-1"
+              // a11y (audit TB6): solid text-fg-tertiary (no /80 alpha) so the
+              // 11px "(no result)" marker clears WCAG AA (4.5:1) on bg-panel
+              // in both themes — fg-tertiary/80 measured 3.08:1 in light mode.
+              // The "dropped" visual cue is carried by the italic modifier and
+              // the parenthetical tone, not by extra dimming.
+              className="text-fg-tertiary text-meta italic ml-1"
             >
               {t('chat.toolNoResult')}
             </span>
