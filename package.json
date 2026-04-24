@@ -8,10 +8,10 @@
     "name": "Jiahui Gu",
     "email": "noreply@ccsm.dev"
   },
-  "homepage": "https://github.com/Jiahui-Gu/Agentory-next",
+  "homepage": "https://github.com/Jiahui-Gu/ccsm",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Jiahui-Gu/Agentory-next.git"
+    "url": "https://github.com/Jiahui-Gu/ccsm.git"
   },
   "main": "dist/electron/main.js",
   "scripts": {
@@ -126,7 +126,7 @@
       {
         "provider": "github",
         "owner": "Jiahui-Gu",
-        "repo": "Agentory-next"
+        "repo": "ccsm"
       }
     ],
     "win": {
