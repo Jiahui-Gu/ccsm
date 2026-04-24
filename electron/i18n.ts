@@ -28,8 +28,19 @@ type TrayCatalog = {
   tooltip: string;
 };
 
+type MenuCatalog = {
+  edit: string;
+};
+
+type DialogCatalog = {
+  chooseCwd: string;
+  selectClaude: string;
+};
+
 type NotificationKey = keyof NotificationCatalog;
 type TrayKey = keyof TrayCatalog;
+type MenuKey = keyof MenuCatalog;
+type DialogKey = keyof DialogCatalog;
 
 // IMPORTANT: keep these strings byte-identical to the renderer catalog
 // `notifications` namespace. The renderer catalog is the source of truth.
@@ -68,6 +79,32 @@ const trayCatalogs: Record<SupportedLanguage, TrayCatalog> = {
   }
 };
 
+// Application accelerator menu (Edit submenu carrying Cut/Copy/Paste/Undo
+// shortcuts). Single label since the submenu items use Electron `role`s and
+// are localized by the OS. Keep parity with the renderer catalog `menu`
+// namespace.
+const menuCatalogs: Record<SupportedLanguage, MenuCatalog> = {
+  en: {
+    edit: '&Edit'
+  },
+  zh: {
+    edit: '编辑(&E)'
+  }
+};
+
+// Native file/directory picker dialog titles. Keep parity with the renderer
+// catalog `dialog` namespace.
+const dialogCatalogs: Record<SupportedLanguage, DialogCatalog> = {
+  en: {
+    chooseCwd: 'Choose working directory',
+    selectClaude: 'Select claude binary'
+  },
+  zh: {
+    chooseCwd: '选择工作目录',
+    selectClaude: '选择 claude 程序'
+  }
+};
+
 let activeLanguage: SupportedLanguage = 'en';
 
 export function setMainLanguage(lang: SupportedLanguage): void {
@@ -99,6 +136,16 @@ export function tNotification(
 export function tTray(key: TrayKey): string {
   const catalog = trayCatalogs[activeLanguage] ?? trayCatalogs.en;
   return catalog[key] ?? trayCatalogs.en[key] ?? key;
+}
+
+export function tMenu(key: MenuKey): string {
+  const catalog = menuCatalogs[activeLanguage] ?? menuCatalogs.en;
+  return catalog[key] ?? menuCatalogs.en[key] ?? key;
+}
+
+export function tDialog(key: DialogKey): string {
+  const catalog = dialogCatalogs[activeLanguage] ?? dialogCatalogs.en;
+  return catalog[key] ?? dialogCatalogs.en[key] ?? key;
 }
 
 // Resolve a system locale tag into one of the two supported languages.
