@@ -5,6 +5,7 @@ import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
 import { MetaLabel } from './ui/MetaLabel';
 import { useStore } from '../stores/store';
+import { serializeDiffCommentsForPrompt } from '../stores/store';
 import { DURATION, EASING } from '../lib/motion';
 import { useShallow } from 'zustand/react/shallow';
 import { SlashCommandPicker } from './SlashCommandPicker';
@@ -137,7 +138,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // Perf: subscribe to all reactive per-session signals via useShallow so this
   // component only re-renders when one of these specific values changes
   // (instead of once per any store mutation, like an appendBlocks chunk).
-  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce } = useStore(
+  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount } = useStore(
     useShallow((s) => ({
       session: s.sessions.find((x) => x.id === sessionId),
       started: !!s.startedSessions[sessionId],
@@ -151,11 +152,16 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       hasPendingWaiting: (s.messagesBySession[sessionId] ?? []).some((b) => b.kind === 'waiting'),
       permission: s.permission,
       focusInputNonce: s.focusInputNonce,
+      // Count of pending per-line diff comments queued up to ride the next
+      // user prompt as `<diff-feedback>` blocks (#303). Drives the "N diff
+      // comments will be sent" indicator + lets the send path skip the
+      // serialization round-trip when there are none.
+      pendingDiffCommentsCount: Object.keys(s.pendingDiffComments[sessionId] ?? {}).length,
     }))
   );
   // Action references are stable across renders in Zustand v5, so reading them
   // via getState() avoids registering listeners that would never fire anyway.
-  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus } =
+  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments } =
     useStore.getState();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -458,11 +464,33 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       // 'pass-through' and 'unknown' fall through to the normal send path.
     }
 
+    // #303: bake any pending per-line diff comments into the outgoing prompt
+    // body BEFORE the user text. Comments are session-scoped; we serialize
+    // and clear in one shot so the same comments can never ride two turns.
+    // Done here (before the queueing branch) so a turn enqueued during a
+    // running session captures exactly the comments visible at the moment
+    // the user pressed Enter — not whatever is left over when the queue
+    // eventually drains. Override (slash-command pass-through, command
+    // panel) skips comments: an override is a programmatic send, not a
+    // user composing in the textarea.
+    let outgoingText = text;
+    if (override === undefined) {
+      const { pendingDiffComments } = useStore.getState();
+      const prefix = serializeDiffCommentsForPrompt(pendingDiffComments[sessionId]);
+      if (prefix) {
+        // Two newlines between prefix and user text so a markdown-rendering
+        // model treats them as separate paragraphs even if it ignores the
+        // structured tag.
+        outgoingText = `${prefix}\n\n${text}`;
+        clearDiffComments(sessionId);
+      }
+    }
+
     // Queue non-slash messages while a turn is in flight. The drain happens
     // in agent/lifecycle.ts when `result` arrives. Clear the composer so the
     // user can keep typing the next thought immediately.
     if (running) {
-      enqueueMessage(sessionId, { text, attachments: imgs });
+      enqueueMessage(sessionId, { text: outgoingText, attachments: imgs });
       update('');
       setAttachmentsAndCache([]);
       setRejections([]);
@@ -478,7 +506,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       {
         kind: 'user',
         id: nextLocalId(),
-        text,
+        text: outgoingText,
         ...(imgs.length > 0 ? { images: imgs } : {})
       }
     ]);
@@ -501,10 +529,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
     let ok: boolean;
     if (imgs.length > 0) {
-      const content = buildUserContentBlocks(text, imgs);
+      const content = buildUserContentBlocks(outgoingText, imgs);
       ok = await api.agentSendContent(sessionId, content);
     } else {
-      ok = await api.agentSend(sessionId, text);
+      ok = await api.agentSend(sessionId, outgoingText);
     }
     if (!ok) {
       setRunning(sessionId, false);
@@ -748,6 +776,40 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           )}
         </div>
         <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
+          {pendingDiffCommentsCount > 0 && (
+            <Button
+              variant="ghost"
+              size="xs"
+              title={t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
+              onClick={() => {
+                // Locate the first pending diff comment for this session
+                // (sorted by file path asc, then line asc, then createdAt asc —
+                // matches the deterministic order used by
+                // serializeDiffCommentsForPrompt) and scroll the chip into
+                // view. If the chip isn't currently mounted (chat scrolled
+                // away, file collapsed, etc.) we silently no-op rather than
+                // log — there's no useful action the user could take.
+                const bucket = useStore.getState().pendingDiffComments[sessionId];
+                if (!bucket) return;
+                const list = Object.values(bucket);
+                if (list.length === 0) return;
+                list.sort((a, b) => {
+                  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+                  if (a.line !== b.line) return a.line - b.line;
+                  return a.createdAt - b.createdAt;
+                });
+                const first = list[0];
+                const el = document.querySelector(
+                  `[data-diff-comment-id="${first.id}"]`
+                ) as HTMLElement | null;
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              className="font-mono text-mono-xs tracking-wider text-fg-tertiary"
+            >
+              {t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
+            </Button>
+          )}
           {queueLength > 0 && (
             <MetaLabel title={t('chat.queueChip', { count: queueLength })}>
               {t('chat.queueChip', { count: queueLength })}
