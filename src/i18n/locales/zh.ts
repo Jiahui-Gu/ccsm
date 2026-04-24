@@ -98,6 +98,8 @@ const zh: EnCatalog = {
     collapseString: '收起',
     longOutputCopy: '复制全部',
     longOutputCopied: '已复制',
+    codeBlockCopy: '复制代码',
+    codeBlockCopied: '已复制',
     longOutputSave: '另存为 .log',
     longOutputSaved: '已保存',
     longOutputSaveFailed: '保存失败',

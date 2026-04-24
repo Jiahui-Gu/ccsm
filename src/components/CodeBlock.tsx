@@ -1,4 +1,9 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Highlight, type PrismTheme } from 'prism-react-renderer';
+import { Check, Copy } from 'lucide-react';
+import { useTranslation } from '../i18n/useTranslation';
+import { Tooltip } from './ui/Tooltip';
+import { cn } from '../lib/cn';
 
 // Minimal dark-ish palette that matches the app's accent + state colors. We
 // intentionally avoid shipping a full Prism theme — only the eight token types
@@ -43,26 +48,88 @@ function normalize(lang?: string): string {
   return LANG_ALIAS[key] ?? key;
 }
 
+// Tiny copy-to-clipboard control that lives in the corner of a code block.
+// Visibility is gated by `group-hover` on the wrapping <div>; keyboard users
+// also see it via `focus-visible`. After a successful write the button shows
+// a Check icon + "Copied" tooltip for ~1.5s, then reverts.
+function CopyButton({ code }: { code: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  const onCopy = useCallback(async () => {
+    try {
+      // navigator.clipboard requires a secure context; in jsdom and older
+      // Electron renderers it can be undefined. Bail early so the UI does NOT
+      // claim "Copied" when nothing actually landed on the clipboard.
+      if (!navigator.clipboard?.writeText) {
+        console.warn('[CodeBlock] clipboard API unavailable');
+        return;
+      }
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.warn('[CodeBlock] clipboard write failed', err);
+    }
+  }, [code]);
+
+  const label = copied ? t('chat.codeBlockCopied') : t('chat.codeBlockCopy');
+
+  return (
+    <Tooltip content={label} side="left">
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={label}
+        data-copied={copied || undefined}
+        className={cn(
+          'absolute top-1.5 right-1.5 inline-grid place-items-center',
+          'h-6 w-6 rounded-md border border-transparent',
+          'text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover',
+          'hover:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]',
+          'transition-[opacity,background-color,color,box-shadow] duration-150',
+          '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
+          'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+          'data-[copied]:opacity-100 data-[copied]:text-state-success',
+          'focus-ring outline-none'
+        )}
+      >
+        {copied ? <Check size={12} aria-hidden /> : <Copy size={12} aria-hidden />}
+      </button>
+    </Tooltip>
+  );
+}
+
 export function CodeBlock({ code, language }: { code: string; language?: string }) {
   const lang = normalize(language);
+  const trimmed = code.replace(/\n$/, '');
   return (
-    <Highlight theme={theme} code={code.replace(/\n$/, '')} language={lang}>
-      {({ tokens, getLineProps, getTokenProps }) => (
-        <code className="font-mono text-chrome whitespace-pre">
-          {tokens.map((line, i) => {
-            const { key: _lk, ...lineProps } = getLineProps({ line, key: i });
-            return (
-              <div key={i} {...lineProps}>
-                {line.map((token, j) => {
-                  const { key: _tk, ...tokenProps } = getTokenProps({ token, key: j });
-                  return <span key={j} {...tokenProps} />;
-                })}
-              </div>
-            );
-          })}
-        </code>
-      )}
-    </Highlight>
+    <div className="group relative">
+      <Highlight theme={theme} code={trimmed} language={lang}>
+        {({ tokens, getLineProps, getTokenProps }) => (
+          <code className="font-mono text-chrome whitespace-pre block pr-8">
+            {tokens.map((line, i) => {
+              const { key: _lk, ...lineProps } = getLineProps({ line, key: i });
+              return (
+                <div key={i} {...lineProps}>
+                  {line.map((token, j) => {
+                    const { key: _tk, ...tokenProps } = getTokenProps({ token, key: j });
+                    return <span key={j} {...tokenProps} />;
+                  })}
+                </div>
+              );
+            })}
+          </code>
+        )}
+      </Highlight>
+      <CopyButton code={trimmed} />
+    </div>
   );
 }
 
