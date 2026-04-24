@@ -1,13 +1,25 @@
-// One-off screenshot capture for task #242 (dropped-tool surface contrast).
-// Captures the ToolBlock "(no result)" marker in both light and dark themes,
-// scoped tight to the row, so reviewer can eyeball before/after contrast.
+// Screenshot capture for task #242 (dropped-tool surface contrast).
+// Captures the ToolBlock "(no result)" marker in BOTH light and dark themes.
+//
+// History (#264):
+//   The original version of this script flipped `theme-light` / `theme-dark`
+//   classes on <html> directly. PR #218 reviewer noticed the resulting PNGs
+//   md5-matched across themes — the manual class flip was racing the App's
+//   `useEffect([theme])` and getting reverted, AND the App actually toggles
+//   `dark` (not `theme-dark`), so the dark-side flip was a no-op.
+//   Fix: route theme switches through the new `setTheme()` helper in
+//   probe-utils.mjs, which goes through the store (the App's single source
+//   of truth) and double-rAF settles before screenshotting.
 //
 // Run: node scripts/capture-dropped-tool-contrast-242.mjs <label>
-//   label = "before" or "after". Output: dogfood-logs/dropped-tool-contrast-242/<theme>-<label>.png
+//   label = "before" or "after". Outputs four PNGs:
+//     dogfood-logs/dropped-tool-contrast-242/dark-<label>.png
+//     dogfood-logs/dropped-tool-contrast-242/light-<label>.png
 import { _electron as electron } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import { setTheme } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -49,11 +61,13 @@ await win.evaluate((s) => {
 await win.waitForTimeout(400);
 
 for (const theme of ['dark', 'light']) {
-  await win.evaluate((th) => {
-    document.documentElement.classList.remove('theme-light', 'theme-dark');
-    if (th === 'light') document.documentElement.classList.add('theme-light');
-  }, theme);
-  await win.waitForTimeout(200);
+  // setTheme: routes through the store (App.tsx's `useEffect([theme])` is
+  // the single source of truth for class application), waits for the
+  // App-applied classes/data-theme attribute to land, then double-rAF
+  // settles. `verify: true` asserts the --color-bg-app CSS variable
+  // actually swapped — catches the "class lands but Tailwind purged the
+  // override" failure mode.
+  await setTheme(win, theme, { verify: true });
   const marker = win.locator('[data-testid="tool-no-result"]').first();
   // Clip to the row containing the marker so the screenshot focuses on the
   // dropped-tool surface, not the whole window.

@@ -1,10 +1,32 @@
-// Verify the packaged app icon asset is present, non-trivial, and a valid
-// PNG. This is the lightweight "catch accidental deletion" regression
-// guard — it does NOT boot Electron. Rationale: on Windows the BrowserWindow
-// icon path is flaky across environments (electron-builder converts
-// build/icon.png to .ico at package time; `getIcon()` on an unpackaged
-// runtime is usually empty). Checking the source asset is the test that
-// actually fails when someone rm's it.
+// Verify the packaged app icon asset is present, non-trivial, a valid PNG,
+// AND wired into electron-builder for every shipped platform.
+//
+// Why a file/config check, not an Electron runtime probe?
+//   On Windows the BrowserWindow icon path is FLAKY across environments —
+//   electron-builder converts `build/icon.png` to `.ico` at package time and
+//   bakes it into the .exe resource table; `BrowserWindow.getIcon()` on an
+//   unpackaged dev runtime is usually empty, and Windows shell icon caching
+//   means even a packaged-build runtime check can return a stale icon for
+//   minutes after install. A booted-Electron probe here would either:
+//     (a) hit asar resolution differences between dev and prod and false-fail,
+//     (b) race against icon-load and false-fail, or
+//     (c) get cached-shell results and false-pass.
+//   The actual regression we want to catch is "someone deleted build/icon.png
+//   or unwired it from the platform-specific build config" — both are pure
+//   filesystem/JSON checks that need zero windowing system. Per
+//   feedback_correctness_over_cost.md we REPLACED the Electron runtime probe
+//   (#247: was flaky on Windows) with these deterministic checks rather than
+//   skipping or marking flaky.
+//
+// Coverage:
+//   1. build/icon.png exists, is a real file, > 1 KiB.
+//   2. PNG signature is valid.
+//   3. IHDR width/height are >= 256 (electron-builder's minimum for win/mac
+//      .ico/.icns conversion).
+//   4. package.json `build.{win,mac,linux}.icon` all reference an existing
+//      file under repo root (catches the "icon present but unwired in
+//      electron-builder config" regression that #247's runtime probe was
+//      trying — and failing — to catch).
 //
 // If the icon ever regresses, run `node scripts/generate-app-icon.mjs`.
 
@@ -44,4 +66,46 @@ if (width < 256 || height < 256) {
   fail(`icon dimensions ${width}x${height} are below the 256x256 minimum electron-builder expects for win/mac conversion`);
 }
 
-console.log(`[probe-e2e-app-icon-present] OK: ${iconPath} (${st.size} bytes, ${width}x${height})`);
+// (#247) Verify electron-builder is actually pointed at build/icon.png for
+// every platform we ship. A correct PNG that nobody references in the build
+// config produces a packaged app with the default Electron icon — exactly
+// the regression the original runtime probe tried to catch but couldn't
+// reliably observe on Windows.
+const pkgRaw = await readFile(path.join(root, 'package.json'), 'utf8');
+let pkg;
+try {
+  pkg = JSON.parse(pkgRaw);
+} catch (e) {
+  fail(`package.json is not valid JSON: ${e.message}`);
+}
+
+const build = pkg && pkg.build;
+if (!build || typeof build !== 'object') {
+  fail('package.json missing top-level "build" object (electron-builder config)');
+}
+
+for (const platform of ['win', 'mac', 'linux']) {
+  const cfg = build[platform];
+  if (!cfg || typeof cfg !== 'object') {
+    fail(`package.json build.${platform} missing — electron-builder won't package an icon for ${platform}`);
+  }
+  const ref = cfg.icon;
+  if (typeof ref !== 'string' || ref.length === 0) {
+    fail(`package.json build.${platform}.icon is not set; ${platform} build will use Electron's default icon`);
+  }
+  const abs = path.resolve(root, ref);
+  let refSt;
+  try {
+    refSt = await stat(abs);
+  } catch (e) {
+    fail(`package.json build.${platform}.icon points at "${ref}" but ${abs} does not exist`);
+  }
+  if (!refSt.isFile()) {
+    fail(`package.json build.${platform}.icon "${ref}" resolves to ${abs} which is not a regular file`);
+  }
+}
+
+console.log(
+  `[probe-e2e-app-icon-present] OK: ${iconPath} (${st.size} bytes, ${width}x${height})` +
+    `; build.{win,mac,linux}.icon all wired and resolvable`
+);

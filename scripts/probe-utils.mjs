@@ -146,6 +146,118 @@ export function isolatedUserData(prefix) {
   };
 }
 
+// Switch the renderer's theme deterministically and wait for the swap to
+// take visual effect.
+//
+// Why this helper exists (#264):
+//   The naive "flip `theme-light`/`theme-dark` classes on <html>" approach
+//   used by earlier capture scripts (e.g. the original
+//   capture-dropped-tool-contrast-242.mjs) produced screenshots that
+//   md5-matched across themes. Three reasons compound:
+//     1. App.tsx owns a `useEffect([theme])` that re-applies BOTH `dark`
+//        and `theme-light` classes from the zustand store. A manual
+//        classList.toggle race-loses to the next React render that
+//        re-fires this effect; the manual class is silently reverted.
+//        The store is the single source of truth — only `setTheme(...)`
+//        survives the next render cycle.
+//     2. The classes the App actually toggles are `dark` and
+//        `theme-light` (NOT `theme-dark`). Capture scripts that removed
+//        `theme-dark` were no-ops on the dark side; the previously-set
+//        `dark` class lingered.
+//     3. Even after the class lands, `getComputedStyle().backgroundColor`
+//        is sampled before Chromium has re-resolved the dependent CSS
+//        variables and re-painted. Two rAFs (style → layout → paint)
+//        are the minimum settle window before screenshotting.
+//
+// What this helper does:
+//   - Calls `__ccsmStore.setState({ theme: <mode> })` so the App's
+//     `useEffect([theme])` fires its own apply() and writes ALL the
+//     classes/data attributes the rest of the styling depends on.
+//   - Awaits a `waitForFunction` that the expected `html.theme-light` /
+//     `html.dark` class is present and `data-theme` matches — proves the
+//     effect ran, not just that we asked for the change.
+//   - Awaits double rAF in the page so Chromium has had a paint cycle to
+//     resolve the new `--color-*` custom properties before any
+//     screenshot or color sample.
+//   - Optionally asserts a sentinel CSS variable swapped by reading
+//     `--color-bg-app` and confirming the OK-Lch lightness moved past a
+//     midpoint (light > 0.6, dark < 0.6). This catches the scenario
+//     where the class lands but the CSS file we built doesn't actually
+//     contain the override (e.g. Tailwind purge dropped it). Off by
+//     default (`verify: false`) for callers that haven't built with the
+//     full theme CSS.
+export async function setTheme(win, mode, { verify = false, timeoutMs = 5000 } = {}) {
+  if (mode !== 'light' && mode !== 'dark') {
+    throw new Error(`setTheme: mode must be 'light' or 'dark', got ${mode}`);
+  }
+  // Wait for BOTH the store to be exposed AND React to have mounted at least
+  // one component subtree. Calling setTheme before React mounts is a no-op
+  // in terms of class application — the App.tsx `useEffect([theme])` hasn't
+  // run yet, so writing `theme: 'dark'` to the store changes nothing on
+  // <html> until first render. The original capture-dropped-tool-contrast-242
+  // script (#264) ran into exactly this and produced theme-identical PNGs
+  // because the class flips it issued were either reverted by the eventual
+  // first render or never re-applied.
+  await win.waitForFunction(
+    () => !!window.__ccsmStore && (document.getElementById('root')?.children.length ?? 0) > 0,
+    null,
+    { timeout: timeoutMs }
+  );
+  await win.evaluate((m) => {
+    const store = window.__ccsmStore;
+    const st = store.getState();
+    if (typeof st.setTheme === 'function') st.setTheme(m);
+    else store.setState({ theme: m });
+  }, mode);
+  // The App's useEffect([theme]) is what actually writes the classes; wait
+  // for ITS output, not ours.
+  await win.waitForFunction(
+    (m) => {
+      const html = document.documentElement;
+      if (m === 'light') {
+        return html.classList.contains('theme-light') &&
+          !html.classList.contains('dark') &&
+          html.dataset.theme === 'light';
+      }
+      return html.classList.contains('dark') &&
+        !html.classList.contains('theme-light') &&
+        html.dataset.theme === 'dark';
+    },
+    mode,
+    { timeout: timeoutMs }
+  );
+  // Double rAF: rAF #1 fires after style recalc, rAF #2 fires after layout
+  // and paint scheduling. Screenshots taken before rAF #2 returns can still
+  // capture the old paint frame on Chromium under heavy renderer load.
+  await win.evaluate(
+    () =>
+      new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+  );
+  if (verify) {
+    const bgLum = await win.evaluate(() => {
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-bg-app')
+        .trim();
+      const m = raw.match(/^oklch\(\s*([0-9.]+)/i) || raw.match(/^oklab\(\s*([0-9.]+)/i);
+      if (m) return parseFloat(m[1]);
+      const rgb = raw.match(/rgba?\(\s*(\d+)[, ]+(\d+)[, ]+(\d+)/);
+      if (rgb) {
+        return (0.2126 * +rgb[1] + 0.7152 * +rgb[2] + 0.0722 * +rgb[3]) / 255;
+      }
+      return null;
+    });
+    if (bgLum == null) {
+      throw new Error(`setTheme(${mode}): could not parse --color-bg-app; theme CSS may not be loaded`);
+    }
+    if (mode === 'light' && bgLum < 0.6) {
+      throw new Error(`setTheme('light'): --color-bg-app lightness=${bgLum.toFixed(2)} too dark; class flip didn't propagate`);
+    }
+    if (mode === 'dark' && bgLum > 0.6) {
+      throw new Error(`setTheme('dark'): --color-bg-app lightness=${bgLum.toFixed(2)} too light; class flip didn't propagate`);
+    }
+  }
+}
+
 // Wait for the renderer's zustand store to finish hydration (rendering
 // implies React has mounted, which implies hydrateStore().finally() has run).
 // Then forcibly replace state with the fixture and yield long enough for
