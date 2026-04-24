@@ -273,6 +273,17 @@ type State = {
    * launch.
    */
   allowAlwaysTools: string[];
+  /**
+   * Id of the currently-open popover/menu, or null when nothing is open. A
+   * single global slot enforces mutual exclusion: opening any popover sets
+   * the id (implicitly closing whatever was previously open), closing sets
+   * it back to null. Each popover binds its open state to
+   * `useStore(s => s.openPopoverId === '<my-id>')`.
+   *
+   * NOT persisted — popover open state must not survive reload (would land
+   * the user on a randomly-open menu after restart).
+   */
+  openPopoverId: string | null;
 };
 
 export interface CreateSessionOptions {
@@ -416,6 +427,19 @@ type Actions = {
   setSessionInitFailure: (sessionId: string, fail: Omit<SessionInitFailure, 'timestamp'>) => void;
   /** Clear the init-failure flag after a successful retry or cwd/model repick. */
   clearSessionInitFailure: (sessionId: string) => void;
+
+  /**
+   * Open the popover/menu identified by `id`. Sets `openPopoverId` to `id`,
+   * which implicitly closes any other popover currently bound to the same
+   * slot. Safe to call when already open (no-op).
+   */
+  openPopover: (id: string) => void;
+  /**
+   * Close the popover/menu identified by `id`, but ONLY if it's currently the
+   * open one. Idempotent: a stale close from a popover that was already
+   * superseded by another opener won't clobber the new owner's slot.
+   */
+  closePopover: (id: string) => void;
 };
 
 function nextId(prefix: string): string {
@@ -719,6 +743,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   diagnostics: [],
   sessionInitFailures: {},
   allowAlwaysTools: [],
+  openPopoverId: null,
 
   selectSession: (id) => {
     set((s) => ({
@@ -1694,6 +1719,14 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   bumpComposerFocus: () => {
     set((s) => ({ focusInputNonce: s.focusInputNonce + 1 }));
+  },
+
+  openPopover: (id) => {
+    set((s) => (s.openPopoverId === id ? s : { openPopoverId: id }));
+  },
+
+  closePopover: (id) => {
+    set((s) => (s.openPopoverId === id ? { openPopoverId: null } : s));
   },
 
   loadModels: async () => {

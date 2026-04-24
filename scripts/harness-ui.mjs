@@ -7,12 +7,13 @@
 // excluded from the per-file runner via scripts/run-all-e2e.mjs's
 // MERGED_INTO_HARNESS skip list.
 //
-// Scope (5 cases — pure UI / store-driven, no real claude.exe required):
+// Scope (6 cases — pure UI / store-driven, no real claude.exe required):
 //   - sidebar-align             (probe-e2e-sidebar-align)
 //   - no-sessions-landing       (probe-e2e-no-sessions-landing)
 //   - empty-state-minimal       (probe-e2e-empty-state-minimal)
 //   - a11y-focus-restore        (probe-e2e-a11y-focus-restore)
 //   - shortcut-overlay-opens    (new — UI-1 / #188)
+//   - popover-cross-dismiss     (new — popover-mutex / #221)
 //
 // Related UI probes already absorbed into harness-agent.mjs:
 //   - inputbar-visible, chat-copy, input-placeholder
@@ -317,6 +318,79 @@ async function caseShortcutOverlayOpens({ win, log }) {
   log(`overlay opened via ? and Ctrl+/, ${kbdCount} kbd chips`);
 }
 
+// ---------- popover-cross-dismiss ----------
+async function casePopoverCrossDismiss({ win, log }) {
+  // Seed an active session so the StatusBar renders with the cwd chip and
+  // the model + permission ChipMenus. The model id is the trigger label,
+  // so a fixed value gives us a stable selector.
+  await win.evaluate(() => {
+    window.__agentoryStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      model: 'claude-opus-4',
+      models: [{ id: 'claude-opus-4', source: 'manual' }, { id: 'claude-sonnet-4', source: 'manual' }],
+      modelsLoaded: true,
+      messagesBySession: { s1: [] },
+      openPopoverId: null
+    });
+  });
+  await win.waitForTimeout(200);
+
+  const cwdChip = win.locator('[data-cwd-chip]');
+  await cwdChip.waitFor({ state: 'visible', timeout: 5000 });
+
+  // Step 1: open the cwd popover, assert visible.
+  await cwdChip.click();
+  const cwdPopover = win.locator('[role="dialog"][aria-label="Working directory"]');
+  await cwdPopover.waitFor({ state: 'visible', timeout: 3000 });
+  let openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  if (openId !== 'cwd') throw new Error(`expected openPopoverId=cwd after cwd click, got ${openId}`);
+
+  // Step 2: click the model selector trigger.
+  const modelChip = win.locator('button', { hasText: 'claude-opus-4' });
+  await modelChip.first().click();
+
+  // Step 3: cwd popover must be hidden, model menu must be visible.
+  await win.waitForFunction(
+    () => !document.querySelector('[role="dialog"][aria-label="Working directory"]'),
+    null,
+    { timeout: 2000 }
+  ).catch(() => { throw new Error('cwd popover did not auto-close after clicking model chip'); });
+  const modelMenu = win.locator('[role="menu"]');
+  await modelMenu.first().waitFor({ state: 'visible', timeout: 3000 });
+  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  if (openId !== 'model') throw new Error(`expected openPopoverId=model after model click, got ${openId}`);
+
+  // Step 4: click the cwd selector trigger again.
+  await cwdChip.click();
+
+  // Step 5: model menu must be hidden, cwd popover visible.
+  await win.waitForFunction(
+    () => document.querySelectorAll('[role="menu"]').length === 0,
+    null,
+    { timeout: 2000 }
+  ).catch(() => { throw new Error('model menu did not auto-close after clicking cwd chip') });
+  await cwdPopover.waitFor({ state: 'visible', timeout: 3000 });
+  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  if (openId !== 'cwd') throw new Error(`expected openPopoverId=cwd after re-clicking cwd, got ${openId}`);
+
+  // Step 6 (bonus): Escape closes the cwd popover (CwdPopover's onKey
+  // listener calls closePopover('cwd')). After Escape, openPopoverId is null
+  // and no popover/menu is mounted.
+  await win.keyboard.press('Escape');
+  await win.waitForFunction(
+    () => !document.querySelector('[role="dialog"][aria-label="Working directory"]') &&
+          document.querySelectorAll('[role="menu"]').length === 0,
+    null,
+    { timeout: 2000 }
+  ).catch(() => { throw new Error('Escape did not close all popovers') });
+  openId = await win.evaluate(() => window.__agentoryStore.getState().openPopoverId);
+  if (openId !== null) throw new Error(`expected openPopoverId=null after Escape, got ${openId}`);
+
+  log('cwd→model→cwd cross-dismiss + Escape clears mutex slot');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -333,6 +407,7 @@ await runHarness({
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
-    { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens }
+    { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
+    { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss }
   ]
 });

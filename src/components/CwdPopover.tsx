@@ -2,6 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Folder, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useTranslation } from '../i18n/useTranslation';
+import { useStore } from '../stores/store';
+
+// Stable id for this popover in the global mutex slot. See
+// `openPopoverId` in src/stores/store.ts: opening any popover sets the id
+// (closing whatever else was open), so clicking a different chip while the
+// cwd popover is open auto-dismisses this one.
+const POPOVER_ID = 'cwd';
 
 // Typeahead popover for the StatusBar `cwd` chip.
 //
@@ -71,7 +78,13 @@ async function defaultLoadRecent(): Promise<string[]> {
 
 export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Props) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  // Open state is owned by the store so opening any other popover (or this
+  // one's trigger again) flips us shut without local listeners. The mousedown
+  // fallback below still calls closePopover for outside clicks that don't
+  // hit another mutex-aware trigger (e.g. blank chrome).
+  const open = useStore((s) => s.openPopoverId === POPOVER_ID);
+  const openPopover = useStore((s) => s.openPopover);
+  const closePopover = useStore((s) => s.closePopover);
   const [query, setQuery] = useState('');
   const [recent, setRecent] = useState<string[]>([]);
   const [active, setActive] = useState(0);
@@ -117,11 +130,11 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
       if (!target) return;
       if (popRef.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
-      setOpen(false);
+      closePopover(POPOVER_ID);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setOpen(false);
+        closePopover(POPOVER_ID);
       }
     };
     document.addEventListener('mousedown', onDown);
@@ -130,7 +143,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open]);
+  }, [open, closePopover]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -145,10 +158,10 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
 
   const commit = useCallback(
     (path: string) => {
-      setOpen(false);
+      closePopover(POPOVER_ID);
       onPick(path);
     },
-    [onPick]
+    [onPick, closePopover]
   );
 
   const onListKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -174,7 +187,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
         type="button"
         data-cwd-chip
         title={cwdMissing ? t('cwdPopover.cwdMissingTooltip', { cwd }) : cwd}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? closePopover(POPOVER_ID) : openPopover(POPOVER_ID))}
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
@@ -280,7 +293,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
-                setOpen(false);
+                closePopover(POPOVER_ID);
                 onBrowse();
               }}
               className={cn(

@@ -205,6 +205,24 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (activeIndex >= filtered.length) setActiveIndex(Math.max(0, filtered.length - 1));
   }, [pickerOpen, filtered.length, activeIndex]);
 
+  // Wire the slash picker into the global popover mutex (id: 'slash'). When
+  // the user opens any other popover (cwd / model chip / permission chip),
+  // openPopoverId moves off 'slash' and we dismiss the picker so it can't
+  // visually overlap a sibling. Conversely, opening the picker claims the
+  // slot, which auto-closes whichever popover was previously open.
+  const openPopoverId = useStore((s) => s.openPopoverId);
+  const openPopover = useStore((s) => s.openPopover);
+  const closePopover = useStore((s) => s.closePopover);
+  useEffect(() => {
+    if (pickerOpen) openPopover('slash');
+    else closePopover('slash');
+  }, [pickerOpen, openPopover, closePopover]);
+  useEffect(() => {
+    if (pickerOpen && openPopoverId !== null && openPopoverId !== 'slash') {
+      setPickerDismissed(true);
+    }
+  }, [openPopoverId, pickerOpen]);
+
   useEffect(() => {
     setValue(getDraft(sessionId));
     setAttachments(attachmentCache.get(sessionId) ?? []);
