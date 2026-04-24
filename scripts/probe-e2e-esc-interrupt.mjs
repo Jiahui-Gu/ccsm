@@ -1,5 +1,5 @@
 // E2E: pressing Esc while a turn is running must:
-//   1. Call window.agentory.agentInterrupt(sessionId).
+//   1. Call window.ccsm.agentInterrupt(sessionId).
 //   2. Mark the session interrupted in the store (so the next `result` frame
 //      gets rendered as a neutral "Interrupted" status block, not an error).
 //   3. Drop any messages the user queued during this turn (CLI Ctrl+C parity).
@@ -10,7 +10,7 @@
 // Strategy:
 //   We don't need a real SDK turn — the InputBar's Esc handler is pure
 //   renderer logic. We boot Electron with an isolated userData dir, seed a
-//   running session via the store, stub `window.agentory.agentInterrupt` to
+//   running session via the store, stub `window.ccsm.agentInterrupt` to
 //   capture the call, fire Esc, then simulate the SDK's result frame the same
 //   way lifecycle.ts does. This is deterministic and skips needing claude.exe.
 import { _electron as electron } from 'playwright';
@@ -41,10 +41,10 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // Stub the IPC bridge to suppress real claude.exe calls. NOTE: the
-  // contextBridge-exposed `window.agentory` is non-configurable, so we can't
+  // contextBridge-exposed `window.ccsm` is non-configurable, so we can't
   // intercept its method calls from the renderer side. We rely on observable
   // side effects of stop() (markInterrupted + clearQueue + running flip)
   // instead of recording the agentInterrupt call directly.
@@ -53,7 +53,7 @@ try {
     // seed doesn't accidentally hit a real process. Wrapping is best-effort
     // and silently no-ops when the contextBridge object refuses overrides.
     try {
-      const real = window.agentory;
+      const real = window.ccsm;
       if (real) {
         // These reassignments will throw on a contextBridge proxy — that's
         // fine, we catch and move on.
@@ -65,7 +65,7 @@ try {
   // Seed a running session with an in-flight assistant reply + a queued
   // message that should get dropped on interrupt.
   const sessionId = await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     store.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{
@@ -130,11 +130,11 @@ try {
   if (!sawEsc) fail('document never saw the Escape keydown — playwright dispatch path broken', app);
 
   // Observable side effects of stop(): markInterrupted set, queue cleared.
-  // We can't intercept the contextBridge-frozen window.agentory.agentInterrupt
+  // We can't intercept the contextBridge-frozen window.ccsm.agentInterrupt
   // call directly, but if both flags moved we know stop() ran end-to-end.
   const postEsc = await win.evaluate(() => ({
-    interrupted: !!window.__agentoryStore.getState().interruptedSessions['s-esc'],
-    queueLen: (window.__agentoryStore.getState().messageQueues['s-esc'] ?? []).length,
+    interrupted: !!window.__ccsmStore.getState().interruptedSessions['s-esc'],
+    queueLen: (window.__ccsmStore.getState().messageQueues['s-esc'] ?? []).length,
   }));
   if (!postEsc.interrupted) {
     fail('after Esc, interruptedSessions flag was not set — stop() did not run', app);
@@ -151,7 +151,7 @@ try {
 
   // Assert the interrupted flag is set on the store (so the upcoming result
   // frame will be translated to a neutral "Interrupted" status block).
-  const interruptedFlag = await win.evaluate(() => !!window.__agentoryStore.getState().interruptedSessions['s-esc']);
+  const interruptedFlag = await win.evaluate(() => !!window.__ccsmStore.getState().interruptedSessions['s-esc']);
   if (!interruptedFlag) {
     fail('interruptedSessions flag was not set — markInterrupted did not fire', app);
   }
@@ -161,7 +161,7 @@ try {
   // error_during_execution: consume the flag, append a neutral status block,
   // flip running off.
   await win.evaluate((sid) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     const consumed = st.consumeInterrupted(sid);
     if (!consumed) throw new Error('interrupted flag was not consumed');
     st.appendBlocks(sid, [

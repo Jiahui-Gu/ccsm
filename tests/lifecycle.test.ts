@@ -28,8 +28,8 @@ async function freshHarness(): Promise<Harness> {
   let eventHandler: ((e: AgentEvent) => void) | null = null;
   let exitHandler: ((e: AgentExit) => void) | null = null;
   const notifyCalls: Array<{ sessionId: string; title: string; body?: string }> = [];
-  (globalThis as unknown as { window: { agentory: unknown } }).window = {
-    agentory: {
+  (globalThis as unknown as { window: { ccsm: unknown } }).window = {
+    ccsm: {
       onAgentEvent: (h: (e: AgentEvent) => void) => {
         eventHandler = h;
         return () => {};

@@ -27,12 +27,12 @@ const app = await electron.launch({
 
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 20_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
 
 // Wipe the store: zero sessions, zero groups. Importing into this state
 // must synthesize a usable group rather than orphan the imported row.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [],
     sessions: [],
     activeId: '',
@@ -52,7 +52,7 @@ await win.waitForTimeout(150);
 // covered by probe-e2e-import-session; here we want to exercise the
 // synth path with a known-stale groupId.
 const beforeGroupCount = await win.evaluate(
-  () => window.__agentoryStore.getState().groups.length
+  () => window.__ccsmStore.getState().groups.length
 );
 if (beforeGroupCount !== 0) {
   await app.close();
@@ -61,7 +61,7 @@ if (beforeGroupCount !== 0) {
 }
 
 const newId = await win.evaluate(() =>
-  window.__agentoryStore.getState().importSession({
+  window.__ccsmStore.getState().importSession({
     name: 'Imported into nothingness',
     cwd: '/tmp/no-group-cwd',
     groupId: 'g-stale-from-old-blob',
@@ -70,7 +70,7 @@ const newId = await win.evaluate(() =>
 );
 
 const after = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   return {
     groups: s.groups,
     sessions: s.sessions,

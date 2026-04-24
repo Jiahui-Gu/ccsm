@@ -4,7 +4,7 @@
 //  - Stop clears the queue (matches CLI Ctrl+C dropping pending input)
 //  - The +N queued chip surfaces queue depth
 //
-// We render <InputBar /> against the real Zustand store and stub `window.agentory`
+// We render <InputBar /> against the real Zustand store and stub `window.ccsm`
 // to capture IPC calls. This is intentionally not a probe — we want fast feedback
 // on the keyboard plumbing without spinning up Electron.
 import React from 'react';
@@ -42,7 +42,7 @@ function freshStoreWithSession(sessionId: string, opts: { running?: boolean; sta
   );
 }
 
-function stubAgentory(overrides: Partial<Record<string, unknown>> = {}) {
+function stubCCSM(overrides: Partial<Record<string, unknown>> = {}) {
   const api = {
     agentInterrupt: vi.fn().mockResolvedValue(undefined),
     agentSend: vi.fn().mockResolvedValue(true),
@@ -50,19 +50,19 @@ function stubAgentory(overrides: Partial<Record<string, unknown>> = {}) {
     agentStart: vi.fn().mockResolvedValue({ ok: true }),
     ...overrides
   };
-  (globalThis as unknown as { window: Window & { agentory?: unknown } }).window.agentory = api;
+  (globalThis as unknown as { window: Window & { ccsm?: unknown } }).window.ccsm = api;
   return api;
 }
 
 beforeEach(() => {
   cleanup();
-  (globalThis as unknown as { window: Window & { agentory?: unknown } }).window.agentory = undefined;
+  (globalThis as unknown as { window: Window & { ccsm?: unknown } }).window.ccsm = undefined;
 });
 
 describe('InputBar: Esc to interrupt running turn', () => {
   it('Esc fires agentInterrupt when the session is running', () => {
     freshStoreWithSession('s-esc', { running: true, started: true });
-    const api = stubAgentory();
+    const api = stubCCSM();
     render(<InputBar sessionId="s-esc" />);
     act(() => {
       fireEvent.keyDown(document, { key: 'Escape' });
@@ -74,7 +74,7 @@ describe('InputBar: Esc to interrupt running turn', () => {
 
   it('Esc is a no-op when the session is NOT running', () => {
     freshStoreWithSession('s-idle', { running: false, started: true });
-    const api = stubAgentory();
+    const api = stubCCSM();
     render(<InputBar sessionId="s-idle" />);
     act(() => {
       fireEvent.keyDown(document, { key: 'Escape' });
@@ -84,7 +84,7 @@ describe('InputBar: Esc to interrupt running turn', () => {
 
   it('Esc yields to an open Radix dialog (lets the dialog close itself)', () => {
     freshStoreWithSession('s-modal', { running: true, started: true });
-    const api = stubAgentory();
+    const api = stubCCSM();
     render(<InputBar sessionId="s-modal" />);
     // Inject a fake dialog element — the global handler must back off when one
     // is present so settings/command-palette Esc-to-close still works.
@@ -105,7 +105,7 @@ describe('InputBar: Esc to interrupt running turn', () => {
 describe('InputBar: send-while-running enqueues into FIFO', () => {
   it('typing + Send while running enqueues instead of calling agentSend', () => {
     freshStoreWithSession('s-q', { running: true, started: true });
-    const api = stubAgentory();
+    const api = stubCCSM();
     render(<InputBar sessionId="s-q" />);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: 'queued thought' } });
@@ -121,7 +121,7 @@ describe('InputBar: send-while-running enqueues into FIFO', () => {
 
   it('renders a +N queued chip reflecting queue length', () => {
     freshStoreWithSession('s-chip', { running: true, started: true });
-    stubAgentory();
+    stubCCSM();
     act(() => {
       useStore.getState().enqueueMessage('s-chip', { text: 'first', attachments: [] });
       useStore.getState().enqueueMessage('s-chip', { text: 'second', attachments: [] });
@@ -132,7 +132,7 @@ describe('InputBar: send-while-running enqueues into FIFO', () => {
 
   it('Stop clears the queue (CLI Ctrl+C behavior)', async () => {
     freshStoreWithSession('s-stop', { running: true, started: true });
-    const api = stubAgentory();
+    const api = stubCCSM();
     render(<InputBar sessionId="s-stop" />);
     act(() => {
       useStore.getState().enqueueMessage('s-stop', { text: 'pending', attachments: [] });
@@ -151,7 +151,7 @@ describe('InputBar: send-while-running enqueues into FIFO', () => {
 describe('InputBar: textarea remains editable while running', () => {
   it('does not set the disabled attribute on the textarea during a running turn', () => {
     freshStoreWithSession('s-edit', { running: true, started: true });
-    stubAgentory();
+    stubCCSM();
     render(<InputBar sessionId="s-edit" />);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     expect(ta.disabled).toBe(false);

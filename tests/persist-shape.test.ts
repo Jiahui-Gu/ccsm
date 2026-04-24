@@ -13,7 +13,7 @@ describe('persist: curated snapshot payload', () => {
   it('only includes the curated subset of state when serialized', () => {
     const saveState = vi.fn().mockResolvedValue(undefined);
     (globalThis as unknown as { window?: unknown }).window = {
-      agentory: { saveState }
+      ccsm: { saveState }
     };
     vi.useFakeTimers();
     try {

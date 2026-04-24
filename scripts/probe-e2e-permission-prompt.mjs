@@ -23,7 +23,7 @@ function fail(msg, app) {
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: process.env.AGENTORY_DEV_PORT ?? '4102' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: process.env.CCSM_DEV_PORT ?? '4102' }
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
@@ -52,8 +52,8 @@ if (await newBtn.isVisible().catch(() => false)) {
 // Inject a fake permission block into the renderer store directly. Uses the
 // public zustand hook on window for test access.
 const injectResult = await win.evaluate(() => {
-  const store = window.__agentoryStore;
-  if (!store) return { ok: false, reason: 'no __agentoryStore on window' };
+  const store = window.__ccsmStore;
+  if (!store) return { ok: false, reason: 'no __ccsmStore on window' };
   const state = store.getState();
   const activeId = state.activeId;
   if (!activeId) return { ok: false, reason: 'no active session' };
@@ -72,7 +72,7 @@ const injectResult = await win.evaluate(() => {
 });
 
 if (!injectResult.ok) {
-  const preloaded = await win.evaluate(() => typeof window.agentory !== 'undefined');
+  const preloaded = await win.evaluate(() => typeof window.ccsm !== 'undefined');
   fail(`cannot inject: ${injectResult.reason}, preload=${preloaded}`, app);
 }
 
@@ -126,7 +126,7 @@ try {
 
 // Now inject a second one and press Y.
 await win.evaluate(() => {
-  const store = window.__agentoryStore;
+  const store = window.__ccsmStore;
   const s = store.getState();
   s.appendBlocks(s.activeId, [
     {

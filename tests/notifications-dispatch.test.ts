@@ -10,7 +10,7 @@ type NotifyPayload = {
 
 // Each test rebuilds the module graph so module-level dispatch state (the
 // per-(session,event) debounce map) starts clean. We also stub out
-// window.agentory minimally — dispatch only needs `notify`.
+// window.ccsm minimally — dispatch only needs `notify`.
 async function freshDispatch(): Promise<{
   dispatch: typeof import('../src/notifications/dispatch');
   store: typeof import('../src/stores/store').useStore;
@@ -18,8 +18,8 @@ async function freshDispatch(): Promise<{
 }> {
   vi.resetModules();
   const notifyCalls: NotifyPayload[] = [];
-  (globalThis as unknown as { window: { agentory: unknown } }).window = {
-    agentory: {
+  (globalThis as unknown as { window: { ccsm: unknown } }).window = {
+    ccsm: {
       notify: async (payload: NotifyPayload) => {
         notifyCalls.push(payload);
         return true;
@@ -212,7 +212,7 @@ describe('dispatchNotification', () => {
 describe('notification settings persistence', () => {
   it('round-trips notificationSettings through the persisted snapshot shape', async () => {
     vi.resetModules();
-    (globalThis as unknown as { window: unknown }).window = { agentory: undefined };
+    (globalThis as unknown as { window: unknown }).window = { ccsm: undefined };
     const storeMod = await import('../src/stores/store');
     const store = storeMod.useStore;
 

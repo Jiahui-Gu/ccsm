@@ -110,7 +110,7 @@ plantSession('-tmp-probe-fixture-clean', SIDECHAIN_SID, [
   }
 ]);
 
-// (4) Agentory-temp cwd transcript: top-level (parentUuid null) but the cwd
+// (4) CCSM-temp cwd transcript: top-level (parentUuid null) but the cwd
 //     lives under the platform tmp dir with an `agentory-` segment. This is
 //     dogfood-H's noise category — should be filtered.
 const TEMP_SID = 'ddddddd4-4444-4444-4444-444444444444';
@@ -141,7 +141,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'production',
-    AGENTORY_PROD_BUNDLE: '1',
+    CCSM_PROD_BUNDLE: '1',
     HOME: fakeHome,
     USERPROFILE: fakeHome,
     CLAUDE_HOME: fakeHome
@@ -156,11 +156,11 @@ win.on('console', (m) => {
 });
 
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
 // Force a known starting state.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     sessions: [],
     groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
     activeId: '',
@@ -169,7 +169,7 @@ await win.evaluate(() => {
 });
 await win.waitForTimeout(300);
 
-const sessionsBefore = await win.evaluate(() => window.__agentoryStore.getState().sessions.length);
+const sessionsBefore = await win.evaluate(() => window.__ccsmStore.getState().sessions.length);
 if (sessionsBefore !== 0) {
   await app.close();
   fail(`expected 0 sessions before import, got ${sessionsBefore}`);
@@ -233,7 +233,7 @@ await confirmBtn.click();
 // empty until the user sent a follow-up).
 await win.waitForFunction(
   () => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     if (s.sessions.length !== 1) return false;
     const id = s.sessions[0].id;
     const msgs = s.messagesBySession[id];
@@ -243,7 +243,7 @@ await win.waitForFunction(
   { timeout: 8000 }
 ).catch(async () => {
   const dump = await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     return {
       sessions: s.sessions,
       messagesBySession: s.messagesBySession
@@ -256,7 +256,7 @@ await win.waitForFunction(
 });
 
 const hydrated = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   const sid = s.sessions[0].id;
   return {
     sid,

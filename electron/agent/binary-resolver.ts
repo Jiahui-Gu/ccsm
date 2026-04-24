@@ -7,7 +7,7 @@ const INSTALL_HINT =
 
 /**
  * Thrown by `resolveClaudeBinary()` when the CLI could not be located via any
- * of: persisted `claudeBinPath`, `AGENTORY_CLAUDE_BIN` env var, or the
+ * of: persisted `claudeBinPath`, `CCSM_CLAUDE_BIN` env var, or the
  * platform's PATH lookup (`where`/`which`).
  *
  * Carries `searchedPaths` so the UI can show the user *where* we looked, which
@@ -54,16 +54,16 @@ export type ResolvedInvocation =
  */
 export async function resolveClaudeBinary(): Promise<string> {
   const searched: string[] = [];
-  const override = process.env.AGENTORY_CLAUDE_BIN;
+  const override = process.env.CCSM_CLAUDE_BIN;
   if (override && override.length > 0) {
-    searched.push(`AGENTORY_CLAUDE_BIN=${override}`);
+    searched.push(`CCSM_CLAUDE_BIN=${override}`);
     if (!existsSync(override)) {
       // Throw the generic Error (not ClaudeNotFoundError) because the user
       // explicitly set the env var to something bogus — surface a targeted
       // message, not the "we couldn't find it" wizard. Manager's outer catch
       // still reports this as a plain start failure.
       throw new Error(
-        `AGENTORY_CLAUDE_BIN points to a non-existent file: ${override}`
+        `CCSM_CLAUDE_BIN points to a non-existent file: ${override}`
       );
     }
     return override;

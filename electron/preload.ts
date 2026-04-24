@@ -71,12 +71,12 @@ const api = {
   // i18n: renderer reads OS locale to seed its "system" preference, and
   // pushes the resolved UI language to main so OS notifications match.
   // Lives under `i18n` to keep the bridge surface organised; renderer
-  // accesses via `window.agentory.i18n.*`.
+  // accesses via `window.ccsm.i18n.*`.
   i18n: {
     getSystemLocale: (): Promise<string | undefined> =>
-      ipcRenderer.invoke('agentory:get-system-locale'),
+      ipcRenderer.invoke('ccsm:get-system-locale'),
     setLanguage: (lang: 'en' | 'zh'): void => {
-      ipcRenderer.send('agentory:set-language', lang);
+      ipcRenderer.send('ccsm:set-language', lang);
     }
   },
   loadMessages: (sessionId: string): Promise<unknown[]> =>
@@ -299,6 +299,6 @@ const api = {
   },
 };
 
-contextBridge.exposeInMainWorld('agentory', api);
+contextBridge.exposeInMainWorld('ccsm', api);
 
-export type AgentoryAPI = typeof api;
+export type CCSMAPI = typeof api;

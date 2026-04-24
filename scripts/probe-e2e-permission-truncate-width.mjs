@@ -27,7 +27,7 @@ const ud = isolatedUserData(PROBE);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -58,13 +58,13 @@ const padded = longSql.length < 800
   : longSql;
 
 await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (!s.activeId) s.createSession?.(null);
 });
 await win.waitForTimeout(200);
 
 await win.evaluate((sql) => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   s.appendBlocks(s.activeId, [{
     kind: 'waiting',
     id: 'wait-PROBE-LONG',

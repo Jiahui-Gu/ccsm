@@ -18,10 +18,10 @@ function fail(msg) {
 const app = await electron.launch({ args: ['.'], cwd: root, env: { ...process.env, NODE_ENV: 'development' } });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({ sessions: [], activeId: undefined, tutorialSeen: false });
+  window.__ccsmStore.setState({ sessions: [], activeId: undefined, tutorialSeen: false });
 });
 await win.waitForTimeout(200);
 
@@ -55,7 +55,7 @@ await win.getByRole('button', { name: /^Import Session$/ }).first().waitFor({ st
 await win.getByRole('button', { name: /^Done$/ }).click();
 await win.waitForTimeout(300);
 
-const seen = await win.evaluate(() => window.__agentoryStore.getState().tutorialSeen);
+const seen = await win.evaluate(() => window.__ccsmStore.getState().tutorialSeen);
 if (!seen) { await app.close(); fail('Done did not set tutorialSeen=true'); }
 
 const stillTutorial = await win.locator('text=/Step \\d of 4/i').count();

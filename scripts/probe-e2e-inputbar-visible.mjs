@@ -27,11 +27,11 @@ const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForTimeout(1500);
 
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
-  const store = window.__agentoryStore;
-  if (!store) throw new Error('__agentoryStore not on window — dev build?');
+  const store = window.__ccsmStore;
+  if (!store) throw new Error('__ccsmStore not on window — dev build?');
   const many = [];
   for (let i = 0; i < 80; i++) {
     many.push({ kind: 'user', id: `u-${i}`, text: `message ${i} — ${'lorem '.repeat(12)}` });

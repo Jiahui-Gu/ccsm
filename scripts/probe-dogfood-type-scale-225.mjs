@@ -29,19 +29,19 @@ async function shoot(win, name) {
 const app = await electron.launch({
   args: ['.'],
   cwd: REPO_ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' }
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 20_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
 await win.evaluate(() => {
-  window.__agentoryStore.setState({ cliStatus: { state: 'found', binaryPath: '<harness>', version: null } });
+  window.__ccsmStore.setState({ cliStatus: { state: 'found', binaryPath: '<harness>', version: null } });
 });
 await win.waitForTimeout(300);
 
 // Sidebar + populated chat + tool block + assistant body.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [
       { id: 'g-pinned', name: 'Pinned', collapsed: false, kind: 'normal' },
       { id: 'g-recent', name: 'Recent', collapsed: false, kind: 'normal' }
@@ -81,7 +81,7 @@ await win.waitForTimeout(150);
 
 // Empty state.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
     sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
     activeId: 's1',

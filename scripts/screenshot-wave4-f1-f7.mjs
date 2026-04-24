@@ -12,25 +12,25 @@ const ROOT = path.resolve(__dirname, '..');
 const app = await electron.launch({
   args: ['.'],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
 
 try {
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
   await win.setViewportSize({ width: 1100, height: 700 });
 
   // Suppress CLI-missing dialog.
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       cliStatus: { state: 'found', binaryPath: '<screenshot>', version: null },
     });
   });
 
   const SID = 's-shot';
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: sid, name: 'screenshot', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4-7', groupId: 'g1', agentType: 'claude-code' }],
       activeId: sid,
@@ -41,7 +41,7 @@ try {
 
   // --- F1: diagnostic banner (error level) ---
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().pushDiagnostic({
+    window.__ccsmStore.getState().pushDiagnostic({
       sessionId: sid,
       level: 'error',
       code: 'init_failed',
@@ -55,14 +55,14 @@ try {
 
   // Dismiss and seed an init-failed banner for the F7 screenshot.
   await win.evaluate(() => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     for (const d of st.diagnostics) st.dismissDiagnostic(d.id);
   });
   await win.waitForTimeout(200);
 
   // --- F7: init-failed banner ---
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().setSessionInitFailure(sid, {
+    window.__ccsmStore.getState().setSessionInitFailure(sid, {
       error: 'spawn claude.exe EACCES: permission denied (C:\\Users\\me\\claude\\claude.exe)',
       errorCode: undefined,
       searchedPaths: [],

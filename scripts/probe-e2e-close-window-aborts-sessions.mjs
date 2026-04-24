@@ -9,7 +9,7 @@
 // Strategy:
 //   - Launch Electron with an isolated userData dir.
 //   - Spawn a real claude.exe via agentStart; capture pid through the
-//     `globalThis.__agentoryDebug` backdoor.
+//     `globalThis.__ccsmDebug` backdoor.
 //   - Set `isQuitting=true` equivalent by calling `app.quit()` on the main
 //     process — this bypasses the minimize-to-tray window.close hook and
 //     drives the real shutdown path.
@@ -55,17 +55,17 @@ console.log(`[probe-e2e-close-window-aborts-sessions] userData = ${userDataDir}`
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  // AGENTORY_PROD_BUNDLE=1 avoids a running webpack-dev-server dependency —
+  // CCSM_PROD_BUNDLE=1 avoids a running webpack-dev-server dependency —
   // main.ts loads dist/renderer/index.html directly. The backdoor we rely on
   // is guarded by !app.isPackaged, so it still installs under this flag
   // because we're launched via `electron .` (never packaged).
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_PROD_BUNDLE: '1' }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore && !!window.agentory, null, {
+  await win.waitForFunction(() => !!window.__ccsmStore && !!window.ccsm, null, {
     timeout: 15_000
   });
 
@@ -73,7 +73,7 @@ try {
   const sessionId = 's-close-probe';
   await win.evaluate(
     ({ sid, cwd }) => {
-      const store = window.__agentoryStore;
+      const store = window.__ccsmStore;
       store.setState({
         groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
         sessions: [
@@ -98,7 +98,7 @@ try {
 
   const startRes = await win.evaluate(
     async ({ sid, cwd }) =>
-      await window.agentory.agentStart(sid, { cwd, permissionMode: 'default' }),
+      await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default' }),
     { sid: sessionId, cwd }
   );
   if (!startRes || startRes.ok !== true) {
@@ -112,10 +112,10 @@ try {
   let pid = null;
   for (let i = 0; i < 30; i++) {
     const pids = await app.evaluate(() => {
-      const dbg = globalThis.__agentoryDebug;
+      const dbg = globalThis.__ccsmDebug;
       return dbg ? dbg.activeSessionPids() : null;
     });
-    if (!pids) fail('globalThis.__agentoryDebug missing in main process', app);
+    if (!pids) fail('globalThis.__ccsmDebug missing in main process', app);
     const row = pids.find((r) => r.sessionId === sessionId);
     if (row && typeof row.pid === 'number') {
       pid = row.pid;

@@ -128,10 +128,10 @@ if (await cwdChip.isVisible().catch(() => false)) {
 
 // Force-set cwd via store as a fallback so this probe is robust to
 // StatusBar refactors. Safe — this is a dev build; production doesn't ship
-// __agentoryStore.
+// __ccsmStore.
 await win.evaluate((cwd) => {
   const w = /** @type {any} */ (window);
-  if (w.__agentoryStore) w.__agentoryStore.getState().changeCwd(cwd);
+  if (w.__ccsmStore) w.__ccsmStore.getState().changeCwd(cwd);
 }, tmpRepo);
 
 // Re-open settings on Memory tab.
@@ -170,7 +170,7 @@ await win.waitForTimeout(200);
 const chosen = 0.34;
 await win.evaluate((pct) => {
   const w = /** @type {any} */ (window);
-  if (w.__agentoryStore) w.__agentoryStore.getState().setSidebarWidthPct(pct);
+  if (w.__ccsmStore) w.__ccsmStore.getState().setSidebarWidthPct(pct);
 }, chosen);
 
 // Wait out the 250ms persist debounce.
@@ -183,7 +183,7 @@ await win.waitForTimeout(2000);
 
 const persisted = await win.evaluate(() => {
   const w = /** @type {any} */ (window);
-  return w.__agentoryStore?.getState().sidebarWidthPct ?? null;
+  return w.__ccsmStore?.getState().sidebarWidthPct ?? null;
 });
 if (persisted === null || Math.abs(persisted - chosen) > 0.005) {
   fail(`sidebarWidthPct did not persist: got ${persisted}, expected ${chosen}`);

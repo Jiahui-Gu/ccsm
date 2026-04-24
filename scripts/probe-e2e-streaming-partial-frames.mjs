@@ -12,7 +12,7 @@
 // This probe is the wire-level e2e the reviewer required:
 //   1. Boots the production bundle in headless Electron.
 //   2. Spawns a real claude.exe via the normal `agent:start` IPC flow.
-//   3. Hooks `window.agentory.onAgentEvent` from inside the renderer to
+//   3. Hooks `window.ccsm.onAgentEvent` from inside the renderer to
 //      capture every IPC frame with its `type`. Counts `stream_event`
 //      frames that contain a `content_block_delta(text_delta)` payload —
 //      these are the wire-level signature of `--include-partial-messages`.
@@ -62,7 +62,7 @@ log(`START PROJ=${PROJ} UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
@@ -84,7 +84,7 @@ await win.waitForLoadState('domcontentloaded');
 await win.waitForTimeout(2500);
 
 // Install the IPC frame recorder inside the renderer BEFORE we trigger
-// any session work. We hook `window.agentory.onAgentEvent` (the same
+// any session work. We hook `window.ccsm.onAgentEvent` (the same
 // channel `subscribeAgentEvents` consumes in src/agent/lifecycle.ts).
 // Each captured frame records: type, ts (ms since hook install), and —
 // for stream_event frames — the inner event.type and delta.type. We
@@ -94,7 +94,7 @@ await win.evaluate(() => {
   window.__probeFrames = [];
   window.__probeFirstTextDeltaAt = null;
   const t0 = Date.now();
-  const off = window.agentory.onAgentEvent((e) => {
+  const off = window.ccsm.onAgentEvent((e) => {
     const msg = e.message;
     const entry = {
       ts: Date.now() - t0,
@@ -122,7 +122,7 @@ await win.waitForTimeout(1000);
 log('clicked New Session');
 
 await win.evaluate((p) => {
-  const st = window.__agentoryStore?.getState?.();
+  const st = window.__ccsmStore?.getState?.();
   if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
 }, PROJ);
 await win.waitForTimeout(400);

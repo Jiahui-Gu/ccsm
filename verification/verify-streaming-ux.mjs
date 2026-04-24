@@ -3,7 +3,7 @@
 //   T0: running + only user block  -> dots visible
 //   T1: running + assistant streaming  -> dots gone, assistant text rendering
 //   T2: running + assistant streaming + more text   -> text grew (incremental)
-// We drive state via window.__agentoryStore (the dev shim) since
+// We drive state via window.__ccsmStore (the dev shim) since
 // running real claude.exe end-to-end is out of scope for this PR's
 // verification (the spawner-arg fix is regression-guarded by unit test;
 // the visible UI behavior is what we screenshot here).
@@ -22,12 +22,12 @@ page.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 
 await page.goto('http://localhost:4100/', { waitUntil: 'networkidle' });
-await page.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await page.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 // Wait for at least one session to exist (boot creates one), then grab id.
 // In dev:web (no electron backend), boot may not create one — seed manually.
 const sid = await page.evaluate(() => {
-  const useStore = window.__agentoryStore;
+  const useStore = window.__ccsmStore;
   let s = useStore.getState();
   if (s.activeId) return s.activeId;
   // Seed minimal session into store directly so ChatStream has somewhere to render.
@@ -48,7 +48,7 @@ console.log('active session id:', sid);
 
 // --- T0: user just sent, no assistant block, running flips true ---
 await page.evaluate((id) => {
-  const useStore = window.__agentoryStore;
+  const useStore = window.__ccsmStore;
   useStore.setState((s) => ({
     messagesBySession: {
       ...s.messagesBySession,
@@ -64,7 +64,7 @@ console.log('T0 dots visible:', t0HasDots);
 
 // --- T1: first assistant token lands; dots should disappear ---
 await page.evaluate((id) => {
-  const useStore = window.__agentoryStore;
+  const useStore = window.__ccsmStore;
   useStore.setState((s) => ({
     messagesBySession: {
       ...s.messagesBySession,
@@ -93,7 +93,7 @@ const chunks = [
 ];
 for (const c of chunks) {
   await page.evaluate(({ id, c }) => {
-    const useStore = window.__agentoryStore;
+    const useStore = window.__ccsmStore;
     useStore.setState((s) => {
       const blocks = s.messagesBySession[id].slice();
       const last = blocks[blocks.length - 1];
@@ -105,7 +105,7 @@ for (const c of chunks) {
 }
 await page.screenshot({ path: path.join(here, 'T2-incremental-streaming.png'), fullPage: false });
 const finalLen = await page.evaluate((id) => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   const blocks = s.messagesBySession[id];
   return blocks[blocks.length - 1].text.length;
 }, sid);

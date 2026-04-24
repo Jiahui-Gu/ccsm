@@ -17,7 +17,7 @@ type PreferencesState = {
   hydrateSystemLocale: (locale: string | undefined) => void;
 };
 
-const STORAGE_KEY = 'agentory:preferences';
+const STORAGE_KEY = 'ccsm:preferences';
 
 function getNavigatorLocale(): string | undefined {
   if (typeof navigator === 'undefined') return undefined;

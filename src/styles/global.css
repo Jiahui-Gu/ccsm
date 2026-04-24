@@ -149,7 +149,7 @@
   --color-terminal-hover-bg: oklch(0.22 0.005 240);
 
   /* ── Per-window tint palette (UI-10c). Faint accent washes layered on
-     top of the title-bar drag strip so users can tell parallel Agentory
+     top of the title-bar drag strip so users can tell parallel CCSM
      windows apart at a glance. Six hues plus `none` (handled by JS as
      "no overlay"). Alphas are deliberately tiny — tint is a *secondary*
      cue, the window title is still the load-bearing identifier.

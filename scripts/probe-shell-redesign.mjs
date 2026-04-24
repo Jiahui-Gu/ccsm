@@ -33,13 +33,13 @@ const app = await electron.launch({
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 // Theme is stored in the zustand store's `theme` field. Flip via setState
 // so the useEffect in App.tsx toggles the `.dark` class on <html>.
 async function setTheme(theme) {
   await win.evaluate((t) => {
-    const s = window.__agentoryStore;
+    const s = window.__ccsmStore;
     if (!s) throw new Error('store not on window');
     s.setState({ theme: t });
   }, theme);

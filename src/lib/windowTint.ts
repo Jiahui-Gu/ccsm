@@ -1,7 +1,7 @@
 /**
  * Per-window tint setting (UI-10c).
  *
- * When the user runs more than one Agentory window at the same time (a
+ * When the user runs more than one CCSM window at the same time (a
  * thing per-instance hotkey/exit-anim work in #213 enabled), it can be hard
  * to tell at a glance which window is which. This module gives each window
  * an opt-in faint accent tint applied to the title-bar drag strip — purely
@@ -54,8 +54,8 @@ export type WindowTint = typeof WINDOW_TINT_PRESETS[number];
 
 export const DEFAULT_WINDOW_TINT: WindowTint = 'none';
 
-const SESSION_KEY = 'agentory:windowId';
-const TINT_KEY_PREFIX = 'agentory:windowTint:';
+const SESSION_KEY = 'ccsm:windowId';
+const TINT_KEY_PREFIX = 'ccsm:windowTint:';
 
 /** Same shape as `crypto.randomUUID` falls back to when crypto is missing. */
 function mintId(): string {
@@ -134,7 +134,7 @@ export function saveWindowTint(tint: WindowTint): void {
   // fires on OTHER documents, never the one that wrote — hence the manual
   // dispatch.
   try {
-    window.dispatchEvent(new CustomEvent<WindowTint>('agentory:windowTintChange', { detail: tint }));
+    window.dispatchEvent(new CustomEvent<WindowTint>('ccsm:windowTintChange', { detail: tint }));
   } catch {
     /* ignore */
   }
@@ -153,8 +153,8 @@ export function useWindowTint(): [WindowTint, (next: WindowTint) => void] {
       const detail = (e as CustomEvent<WindowTint>).detail;
       if (isWindowTint(detail)) setTint(detail);
     };
-    window.addEventListener('agentory:windowTintChange', onChange);
-    return () => window.removeEventListener('agentory:windowTintChange', onChange);
+    window.addEventListener('ccsm:windowTintChange', onChange);
+    return () => window.removeEventListener('ccsm:windowTintChange', onChange);
   }, []);
 
   return [tint, (next) => {

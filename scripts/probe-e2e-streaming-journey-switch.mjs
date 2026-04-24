@@ -36,11 +36,11 @@ const app = await electron.launch({
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // Seed two sessions in the same group, A active.
   await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     store.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [
@@ -80,7 +80,7 @@ try {
   // Helper to inject one delta to A.
   const inject = async (idx) => {
     await win.evaluate(
-      ([sid, bid, text]) => window.__agentoryStore.getState().streamAssistantText(sid, bid, text, false),
+      ([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false),
       ['s-A', BLOCK_ID, CHUNKS[idx]]
     );
   };
@@ -95,7 +95,7 @@ try {
 
   // The block must exist with chunks 0..9 concatenated.
   const aMid = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     const matches = blocks.filter((b) => b.id === bid);
     return matches.map((b) => ({ text: b.text, streaming: b.streaming }));
   }, ['s-A', BLOCK_ID]);
@@ -109,7 +109,7 @@ try {
   // Phase 2: switch to B. Use store mutator (matches the runtime path used
   // when sidebar click triggers selectSession). This is the moment that
   // historically breaks per-session reducers.
-  await win.evaluate(() => window.__agentoryStore.setState({ activeId: 's-B' }));
+  await win.evaluate(() => window.__ccsmStore.setState({ activeId: 's-B' }));
   await win.waitForTimeout(150);
 
   // While on B, deliver chunks 10..24 to A. A is offscreen — store must
@@ -120,7 +120,7 @@ try {
   // While on B, A must NOT have leaked into B's chat. B's user message and
   // nothing else.
   const bWhileAStreams = await win.evaluate(
-    (sid) => (window.__agentoryStore.getState().messagesBySession[sid] ?? []).map((b) => ({
+    (sid) => (window.__ccsmStore.getState().messagesBySession[sid] ?? []).map((b) => ({
       kind: b.kind,
       id: b.id,
       text: b.text
@@ -144,13 +144,13 @@ try {
   for (let i = 25; i < 30; i++) await inject(i);
   await win.waitForTimeout(100);
 
-  await win.evaluate(() => window.__agentoryStore.setState({ activeId: 's-A' }));
+  await win.evaluate(() => window.__ccsmStore.setState({ activeId: 's-A' }));
   await win.waitForTimeout(200);
 
   // After return, A's block must contain ALL 30 chunks contiguous, no torn
   // duplicates.
   const aFull = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     const matches = blocks.filter((b) => b.id === bid);
     return matches.map((b) => ({ text: b.text, streaming: b.streaming }));
   }, ['s-A', BLOCK_ID]);
@@ -167,15 +167,15 @@ try {
   // We finalize by appendBlocks with the same id (the established contract
   // exercised by probe-e2e-streaming.mjs).
   await win.evaluate(([sid, bid, text]) => {
-    window.__agentoryStore.getState().appendBlocks(sid, [
+    window.__ccsmStore.getState().appendBlocks(sid, [
       { kind: 'assistant', id: bid, text }
     ]);
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, ['s-A', BLOCK_ID, expectedFull]);
   await win.waitForTimeout(150);
 
   const aFinal = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.filter((b) => b.id === bid).map((b) => ({ text: b.text, streaming: b.streaming }));
   }, ['s-A', BLOCK_ID]);
   if (aFinal.length !== 1) fail(`after finalize, expected 1 block, got ${aFinal.length}`, app);

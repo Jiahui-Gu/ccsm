@@ -61,7 +61,7 @@ describe('per-window id', () => {
     const b = getWindowId();
     expect(a).toBe(b);
     expect(a.length).toBeGreaterThan(0);
-    expect(window.sessionStorage.getItem('agentory:windowId')).toBe(a);
+    expect(window.sessionStorage.getItem('ccsm:windowId')).toBe(a);
   });
 
   it('a fresh sessionStorage means a fresh id (mimics a new window)', () => {
@@ -87,32 +87,32 @@ describe('tint persistence', () => {
   it("saving 'none' clears the storage entry rather than persisting it", () => {
     saveWindowTint('mint');
     const id = getWindowId();
-    expect(window.localStorage.getItem(`agentory:windowTint:${id}`)).toBe('mint');
+    expect(window.localStorage.getItem(`ccsm:windowTint:${id}`)).toBe('mint');
     saveWindowTint('none');
-    expect(window.localStorage.getItem(`agentory:windowTint:${id}`)).toBeNull();
+    expect(window.localStorage.getItem(`ccsm:windowTint:${id}`)).toBeNull();
     expect(loadWindowTint()).toBe('none');
   });
 
   it('rejects bogus persisted values and falls back to the default', () => {
     const id = getWindowId();
-    window.localStorage.setItem(`agentory:windowTint:${id}`, 'plaid');
+    window.localStorage.setItem(`ccsm:windowTint:${id}`, 'plaid');
     expect(loadWindowTint()).toBe('none');
   });
 
   it('saveWindowTint dispatches an in-window change event', () => {
     const handler = vi.fn();
-    window.addEventListener('agentory:windowTintChange', handler);
+    window.addEventListener('ccsm:windowTintChange', handler);
     saveWindowTint('violet');
     expect(handler).toHaveBeenCalledTimes(1);
     const ev = handler.mock.calls[0][0] as CustomEvent;
     expect(ev.detail).toBe('violet');
-    window.removeEventListener('agentory:windowTintChange', handler);
+    window.removeEventListener('ccsm:windowTintChange', handler);
   });
 
   it('isolates one window from another (different ids → different keys)', () => {
     saveWindowTint('rose');
     const idA = getWindowId();
-    expect(window.localStorage.getItem(`agentory:windowTint:${idA}`)).toBe('rose');
+    expect(window.localStorage.getItem(`ccsm:windowTint:${idA}`)).toBe('rose');
 
     // Simulate a second window: fresh sessionStorage mints a new id, and
     // its load must NOT see window A's choice.
@@ -122,6 +122,6 @@ describe('tint persistence', () => {
     expect(idB).not.toBe(idA);
 
     // Window A's persisted value is still present under its own key.
-    expect(window.localStorage.getItem(`agentory:windowTint:${idA}`)).toBe('rose');
+    expect(window.localStorage.getItem(`ccsm:windowTint:${idA}`)).toBe('rose');
   });
 });

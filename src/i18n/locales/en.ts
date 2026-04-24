@@ -202,7 +202,7 @@ const en = {
     },
     windowTint: 'Window tint',
     windowTintHint:
-      'Faint accent on this window\u2019s title bar to tell parallel Agentory windows apart at a glance. Local to this window only.',
+      'Faint accent on this window\u2019s title bar to tell parallel CCSM windows apart at a glance. Local to this window only.',
     windowTintOptions: {
       none: 'None',
       slate: 'Slate',
@@ -241,7 +241,7 @@ const en = {
       toggleOn: 'On',
       toggleOff: 'Off',
       testButton: 'Test notification',
-      testTitle: 'Agentory test notification',
+      testTitle: 'CCSM test notification',
       testBody: 'If you can read this, OS notifications are working.',
       testIpcUnavailable: 'IPC unavailable.',
       testSent: 'Sent.',
@@ -249,7 +249,7 @@ const en = {
     },
     connection: {
       intro:
-        'Agentory reads connection settings from <code>~/.claude/settings.json</code> plus your <code>ANTHROPIC_*</code> environment variables. To change them, run <code>claude /config</code> or edit the file directly. Restart Agentory to pick up changes.',
+        'CCSM reads connection settings from <code>~/.claude/settings.json</code> plus your <code>ANTHROPIC_*</code> environment variables. To change them, run <code>claude /config</code> or edit the file directly. Restart CCSM to pick up changes.',
       baseUrl: 'Base URL',
       baseUrlDefault: 'https://api.anthropic.com (default)',
       defaultModel: 'Default model',
@@ -271,7 +271,7 @@ const en = {
       status: 'Status',
       automaticChecks: 'Automatic checks',
       automaticChecksHint:
-        'When on, Agentory checks GitHub for updates on launch and every 4 hours.',
+        'When on, CCSM checks GitHub for updates on launch and every 4 hours.',
       automaticChecksToggle: 'Check for updates automatically',
       checking: 'Checking…',
       checkButton: 'Check for updates',
@@ -354,14 +354,14 @@ const en = {
   cli: {
     missingTitle: 'Claude Code CLI not found',
     missingBody:
-      'Agentory needs the Claude Code CLI to run sessions. Install it and we will detect it automatically.',
+      'CCSM needs the Claude Code CLI to run sessions. Install it and we will detect it automatically.',
     installInstructionsHeader: 'Install instructions',
     detectAgain: 'Detect again',
     cliPathLabel: 'CLI path',
     tutorialNextLabel: 'Next',
     tutorialDoneLabel: "I'm ready",
     dialogTitle: 'Claude CLI not found',
-    dialogDescriptionPrefix: 'Agentory wraps the Claude Code CLI. We couldn\u2019t find',
+    dialogDescriptionPrefix: 'CCSM wraps the Claude Code CLI. We couldn\u2019t find',
     dialogDescriptionSuffix: 'on your system.',
     whereWeLooked: 'Where we looked',
     tabInstall: 'Install',
@@ -406,11 +406,11 @@ const en = {
     stepXofY: 'Step {{current}} of {{total}}',
     goToStepAria: 'Go to step {{n}}',
     welcomeTitle: 'A workbench for AI sessions',
-    welcomeBody: 'Agentory turns Claude Code transcripts into something you can navigate. Think of it as a desktop client for the same agent — same power, less terminal.',
+    welcomeBody: 'CCSM turns Claude Code transcripts into something you can navigate. Think of it as a desktop client for the same agent — same power, less terminal.',
     sessionsTitle: 'Run many sessions in parallel',
     sessionsBody: 'Each session is its own agent thread with its own working directory. Switch between them like tabs — the agents keep working in the background.',
     groupsTitle: 'Organize work by task, not by repo',
-    groupsBody: 'Group sessions across repositories. A real task usually spans more than one project — Agentory lets you keep them together.',
+    groupsBody: 'Group sessions across repositories. A real task usually spans more than one project — CCSM lets you keep them together.',
     startTitle: 'Ready when you are',
     startBody: 'Create a fresh session, or import what you already have from the Claude Code CLI.',
     newSessionBtn: 'New Session',
@@ -418,7 +418,7 @@ const en = {
   },
   importDialog: {
     title: 'Import sessions from Claude Code',
-    description: 'Pick existing CLI transcripts to surface in Agentory. They resume on open.',
+    description: 'Pick existing CLI transcripts to surface in CCSM. They resume on open.',
     scanning: 'Scanning…',
     noImportablePrefix: 'No importable transcripts found in',
     selectAll: 'Select all',

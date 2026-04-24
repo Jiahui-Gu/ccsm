@@ -29,7 +29,7 @@ const ud = isolatedUserData(PROBE);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -58,17 +58,17 @@ if (await cwdChip.isVisible().catch(() => false)) {
 
 // Ensure a session exists.
 await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (!s.activeId) s.createSession?.(null);
 });
 await win.waitForTimeout(200);
 
 // Install spy by wrapping the store's resolvePermission action — IPC layer
-// (window.agentory) is frozen by contextBridge so a property assignment
+// (window.ccsm) is frozen by contextBridge so a property assignment
 // silently no-ops. Wrapping the store action captures the same call.
 await win.evaluate(() => {
   window.__permCalls = [];
-  const store = window.__agentoryStore;
+  const store = window.__ccsmStore;
   const origAction = store.getState().resolvePermission;
   store.setState({
     resolvePermission: (sessionId, requestId, decision) => {
@@ -83,7 +83,7 @@ await textarea.waitFor({ state: 'visible', timeout: 5000 }).catch(() => fail('te
 
 // ---- Case A: focus outside textarea, press Y -> Allow ----
 const injA = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   s.appendBlocks(s.activeId, [{
     kind: 'waiting',
     id: 'wait-PROBE-SCOPE-A',
@@ -124,7 +124,7 @@ if (!allowCall || allowCall.decision !== 'allow') {
 await win.evaluate(() => { window.__permCalls = []; });
 
 await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   s.appendBlocks(s.activeId, [{
     kind: 'waiting',
     id: 'wait-PROBE-SCOPE-B',

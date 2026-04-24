@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
-import { parseHead, deriveRecentCwds, deriveTopModel, isSidechainFrame, isAgentoryTempCwd } from '../electron/import-scanner';
+import { parseHead, deriveRecentCwds, deriveTopModel, isSidechainFrame, isCCSMTempCwd } from '../electron/import-scanner';
 
 const j = (o: unknown) => JSON.stringify(o);
 
@@ -145,39 +145,39 @@ describe('isSidechainFrame', () => {
   });
 });
 
-describe('isAgentoryTempCwd', () => {
+describe('isCCSMTempCwd', () => {
   it('matches a Windows AppData/Local/Temp cwd with agentory- prefix', () => {
     expect(
-      isAgentoryTempCwd('C:\\Users\\x\\AppData\\Local\\Temp\\agentory-bugl-bash-proj')
+      isCCSMTempCwd('C:\\Users\\x\\AppData\\Local\\Temp\\agentory-bugl-bash-proj')
     ).toBe(true);
   });
   it('matches a /tmp cwd with agentory- prefix (POSIX)', () => {
-    expect(isAgentoryTempCwd('/tmp/agentory-A2N1-changeCwd-proj-1234')).toBe(true);
+    expect(isCCSMTempCwd('/tmp/agentory-A2N1-changeCwd-proj-1234')).toBe(true);
   });
   it('matches a macOS /var/folders cwd', () => {
     expect(
-      isAgentoryTempCwd('/var/folders/xy/abc/T/agentory-probe-foo-9999')
+      isCCSMTempCwd('/var/folders/xy/abc/T/agentory-probe-foo-9999')
     ).toBe(true);
   });
   it('matches the real os.tmpdir() prefix on this platform', () => {
     const cwd = path.join(os.tmpdir(), 'agentory-test-suite-fixture');
-    expect(isAgentoryTempCwd(cwd)).toBe(true);
+    expect(isCCSMTempCwd(cwd)).toBe(true);
   });
   it('does NOT match a user-named directory that contains "agentory" mid-segment', () => {
-    expect(isAgentoryTempCwd('C:\\Users\\me\\my-agentory-project')).toBe(false);
-    expect(isAgentoryTempCwd('/home/me/projects/agentory-next')).toBe(false);
+    expect(isCCSMTempCwd('C:\\Users\\me\\my-agentory-project')).toBe(false);
+    expect(isCCSMTempCwd('/home/me/projects/agentory-next')).toBe(false);
   });
   it('does NOT match a non-temp cwd even if it has the agentory- prefix', () => {
     // The agent worktrees live under projects/, NOT temp — they ARE
     // legitimate places the user might have done real CLI work.
     expect(
-      isAgentoryTempCwd('C:\\Users\\me\\projects\\agentory-next\\.claude\\worktrees\\agent-deadbeef')
+      isCCSMTempCwd('C:\\Users\\me\\projects\\agentory-next\\.claude\\worktrees\\agent-deadbeef')
     ).toBe(false);
   });
   it('returns false on empty / non-string input', () => {
-    expect(isAgentoryTempCwd('')).toBe(false);
+    expect(isCCSMTempCwd('')).toBe(false);
     // @ts-expect-error — runtime guard
-    expect(isAgentoryTempCwd(null)).toBe(false);
+    expect(isCCSMTempCwd(null)).toBe(false);
   });
 });
 

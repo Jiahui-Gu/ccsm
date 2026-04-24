@@ -16,16 +16,16 @@ fs.mkdirSync(outDir, { recursive: true });
 const app = await electron.launch({
   args: [root],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_E2E: '1', AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, NODE_ENV: 'production', AGENTORY_E2E: '1', CCSM_PROD_BUNDLE: '1' }
 });
 const win = await app.firstWindow();
 await win.waitForLoadState('domcontentloaded');
 // Wait for store bootstrap.
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 // Seed session so the chat stream has a home to live in.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
   });
 });
@@ -37,7 +37,7 @@ await win.evaluate(() => {
 async function scenarioElapsed() {
   const sid = 's-shot-elapsed';
   await win.evaluate((s) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: s, name: 'elapsed', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: s,
@@ -52,9 +52,9 @@ async function scenarioElapsed() {
   }, sid);
   await win.waitForTimeout(1200);
   await win.evaluate((s) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     const prev = st.messagesBySession[s] ?? [];
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       messagesBySession: {
         ...st.messagesBySession,
         [s]: [...prev, { kind: 'tool', id: 't2', name: 'Bash', brief: 'npm test', expanded: false, toolUseId: 'tu2' }]
@@ -63,9 +63,9 @@ async function scenarioElapsed() {
   }, sid);
   await win.waitForTimeout(1200);
   await win.evaluate((s) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     const prev = st.messagesBySession[s] ?? [];
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       messagesBySession: {
         ...st.messagesBySession,
         [s]: [...prev, { kind: 'tool', id: 't3', name: 'Bash', brief: 'docker build .', expanded: false, toolUseId: 'tu3' }]
@@ -82,7 +82,7 @@ async function scenarioElapsed() {
 async function scenarioDropped() {
   const sid = 's-shot-dropped';
   await win.evaluate((s) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: s, name: 'dropped', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: s,
@@ -112,7 +112,7 @@ async function scenarioStalled() {
     const realNow = Date.now.bind(Date);
     const shift = 45_000;
     Date.now = () => realNow() + shift;
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: s, name: 'stalled', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: s,

@@ -42,7 +42,7 @@ log(`START PROJ=${PROJ} UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
@@ -68,7 +68,7 @@ await win.waitForTimeout(1000);
 log('clicked New Session');
 
 await win.evaluate((p) => {
-  const st = window.__agentoryStore?.getState?.();
+  const st = window.__ccsmStore?.getState?.();
   if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
 }, PROJ);
 await win.waitForTimeout(400);
@@ -107,7 +107,7 @@ while (Date.now() - obsStart < 30_000) {
   await win.waitForTimeout(1500);
   const snap = await win
     .evaluate(() => {
-      const st = window.__agentoryStore?.getState?.();
+      const st = window.__ccsmStore?.getState?.();
       const sid = st?.activeId;
       const blocks = st?.messagesBySession?.[sid] || [];
       const b = blocks.find((x) => {

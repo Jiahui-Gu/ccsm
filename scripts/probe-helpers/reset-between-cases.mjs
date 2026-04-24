@@ -61,9 +61,9 @@ export async function resetBetweenCases(app, win, opts = {}) {
   // 2. Close every open agent subprocess via IPC. Iterate from the renderer
   //    so we hit the exact same code path the user does (Delete Session).
   await win.evaluate(async () => {
-    const ids = (window.__agentoryStore?.getState().sessions ?? []).map((s) => s.id);
+    const ids = (window.__ccsmStore?.getState().sessions ?? []).map((s) => s.id);
     for (const id of ids) {
-      try { await window.agentory?.agentClose?.(id); } catch { /* ignore */ }
+      try { await window.ccsm?.agentClose?.(id); } catch { /* ignore */ }
     }
   }).catch(() => { /* renderer may have just navigated; not fatal */ });
 
@@ -75,7 +75,7 @@ export async function resetBetweenCases(app, win, opts = {}) {
   //    doesn't bleed into the next case in CI environments where claude.exe
   //    isn't on PATH.
   await win.evaluate(() => {
-    const store = window.__agentoryStore;
+    const store = window.__ccsmStore;
     if (!store) return;
     store.setState({
       sessions: [],
@@ -109,7 +109,7 @@ export async function resetBetweenCases(app, win, opts = {}) {
       const path = require('node:path');
       const Database = require('better-sqlite3');
       const { app: electronApp } = require('electron');
-      const dbPath = path.join(electronApp.getPath('userData'), 'agentory.db');
+      const dbPath = path.join(electronApp.getPath('userData'), 'ccsm.db');
       const db = new Database(dbPath);
       db.exec('DELETE FROM messages;');
       if (keepKeys.length === 0) {

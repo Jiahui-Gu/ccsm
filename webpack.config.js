@@ -34,7 +34,7 @@ module.exports = (_env, argv = {}) => ({
   },
   plugins: [new HtmlWebpackPlugin({ template: './src/index.html' })],
   devServer: {
-    port: Number(process.env.AGENTORY_DEV_PORT) || 4100,
+    port: Number(process.env.CCSM_DEV_PORT) || 4100,
     hot: true,
     historyApiFallback: true
   }

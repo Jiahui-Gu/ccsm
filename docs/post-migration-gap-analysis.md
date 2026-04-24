@@ -1,4 +1,4 @@
-# Post-Migration Gap Analysis: Agentory-next vs Claude Desktop
+# Post-Migration Gap Analysis: CCSM vs Claude Desktop
 
 **Date**: 2026-04-21
 
@@ -31,11 +31,11 @@
 - Edit: Monaco createDiffEditor + jsdiff hunks + hunk buttons
 - Read/Glob: File tree with folder navigation
 - Bash: ANSI colors + PTY rendering
-- AskUserQuestion: Interactive option grid (currently missing in Agentory)
+- AskUserQuestion: Interactive option grid (currently missing in CCSM)
 
 ---
 
-## 2. Agentory-next Current State
+## 2. CCSM Current State
 
 ### Block Status:
 - user, assistant, todo, waiting, status, error: ✅ Implemented
@@ -116,5 +116,5 @@
 
 Source files (read-only):
 - Claude Desktop reverse-eng: S2, S4, S5
-- Agentory: types.ts, stream-to-blocks.ts, ChatStream.tsx, lifecycle.ts
+- CCSM: types.ts, stream-to-blocks.ts, ChatStream.tsx, lifecycle.ts
 - Feature matrix: comparison/A-feature-matrix.md

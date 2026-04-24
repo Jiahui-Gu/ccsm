@@ -50,7 +50,7 @@ const ud = isolatedUserData('agentory-probe-aq-nodup');
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' },
 });
 const win = await appWindow(app);
 const errors = [];
@@ -62,13 +62,13 @@ win.on('console', (m) => {
 try {
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(
-    () => !!window.__agentoryStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
   // Suppress the "Claude CLI missing" first-run dialog so it can't trap focus.
   await win.evaluate(() => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
     });
   });
@@ -96,15 +96,15 @@ try {
   });
 
   const sessionId = await win.evaluate(() => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
     s.createSession({ name: 'no-dup probe' });
-    return window.__agentoryStore.getState().activeId;
+    return window.__ccsmStore.getState().activeId;
   });
 
   // Mark session as running so we can verify it gets cleared after submit.
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().setRunning(sid, true);
+    window.__ccsmStore.getState().setRunning(sid, true);
   }, sessionId);
 
   // ── J1: SAME `requestId` duplicate ──────────────────────────────────────
@@ -114,7 +114,7 @@ try {
   ];
   await win.evaluate(
     ({ sid, q }) => {
-      const store = window.__agentoryStore.getState();
+      const store = window.__ccsmStore.getState();
       // First dispatch: the can_use_tool path emits a question block keyed
       // by `q-${requestId}` and carries the `requestId` so submit can route
       // through agentResolvePermission.
@@ -156,7 +156,7 @@ try {
 
   // Assertion: store has 1 question block.
   const storeQCountJ1 = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] || [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
     return blocks.filter((b) => b.kind === 'question').length;
   }, sessionId);
   if (storeQCountJ1 !== 1) {
@@ -203,10 +203,10 @@ try {
   // Simulate the lifecycle drop (would normally arrive via the `result` frame
   // after claude.exe processes the resolve + answer round-trip).
   await win.evaluate((sid) => {
-    window.__agentoryStore.getState().setRunning(sid, false);
+    window.__ccsmStore.getState().setRunning(sid, false);
   }, sessionId);
   const stillRunning = await win.evaluate((sid) => {
-    return !!window.__agentoryStore.getState().runningSessions[sid];
+    return !!window.__ccsmStore.getState().runningSessions[sid];
   }, sessionId);
   if (stillRunning) {
     fail('J1', 'runningSessions[sid] still true after setRunning(false) — store regression');
@@ -217,7 +217,7 @@ try {
   // ── J2: SAME `toolUseId` duplicate ─────────────────────────────────────
   // Validates the other half of the dedupe predicate.
   await win.evaluate((sid) => {
-    const store = window.__agentoryStore.getState();
+    const store = window.__ccsmStore.getState();
     store.clearMessages(sid);
   }, sessionId);
   await app.evaluate(() => {
@@ -231,7 +231,7 @@ try {
   ];
   await win.evaluate(
     ({ sid, q }) => {
-      const store = window.__agentoryStore.getState();
+      const store = window.__ccsmStore.getState();
       // Two blocks with different ids but the SAME toolUseId — exactly
       // what the assistant `tool_use` path would have emitted in addition
       // to a (here-omitted) can_use_tool block, before the fix.
@@ -251,7 +251,7 @@ try {
     document.querySelectorAll('[role="radiogroup"], [role="group"]').length
   );
   const storeQCountJ2 = await win.evaluate((sid) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] || [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
     return blocks.filter((b) => b.kind === 'question').length;
   }, sessionId);
   if (groupsJ2 !== 1) {

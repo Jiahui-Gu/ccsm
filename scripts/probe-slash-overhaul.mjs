@@ -2,7 +2,7 @@
 //
 // Verifies the renderer-side wiring of the disk-based command loader:
 //   1. Built-in /clear and /compact appear under a BUILT-IN group.
-//   2. A stubbed `window.agentory.commands.list` returns user / project /
+//   2. A stubbed `window.ccsm.commands.list` returns user / project /
 //      plugin commands; each surfaces under its own group with the right
 //      label and (for plugin) the namespace prefix.
 //   3. Selecting a dynamic command with no `argument-hint` clears the
@@ -14,11 +14,11 @@
 // preload bridge before the React tree mounts.
 //
 // Usage:
-//   AGENTORY_DEV_PORT=4191 npm run dev:web   # in another shell
-//   AGENTORY_DEV_PORT=4191 node scripts/probe-slash-overhaul.mjs
+//   CCSM_DEV_PORT=4191 npm run dev:web   # in another shell
+//   CCSM_DEV_PORT=4191 node scripts/probe-slash-overhaul.mjs
 import { chromium } from 'playwright';
 
-const PORT = process.env.AGENTORY_DEV_PORT ?? '4191';
+const PORT = process.env.CCSM_DEV_PORT ?? '4191';
 const URL = `http://localhost:${PORT}/`;
 
 function fail(msg) {

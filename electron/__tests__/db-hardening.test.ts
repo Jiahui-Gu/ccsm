@@ -62,7 +62,7 @@ describe('db hardening: startup integrity check', () => {
     // Pre-seed the userData dir with a garbage file under the canonical
     // name. SQLite will accept the open() (it's lazy) but the first pragma
     // call inside ensureHealthyDb() will report corruption.
-    const file = path.join(tmpDir, 'agentory.db');
+    const file = path.join(tmpDir, 'ccsm.db');
     fs.writeFileSync(file, Buffer.from('not a sqlite database, just bytes'));
 
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -71,7 +71,7 @@ describe('db hardening: startup integrity check', () => {
 
     // Original file got renamed aside.
     const siblings = fs.readdirSync(tmpDir);
-    const backup = siblings.find((n) => n.startsWith('agentory.db.corrupt-'));
+    const backup = siblings.find((n) => n.startsWith('ccsm.db.corrupt-'));
     expect(backup, `expected a *.corrupt-* backup, saw ${siblings.join(', ')}`).toBeTruthy();
 
     // Fresh DB is usable end-to-end.

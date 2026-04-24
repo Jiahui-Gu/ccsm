@@ -1,6 +1,6 @@
 # Release flow
 
-This document describes how to cut a release of Agentory Next and how signing
+This document describes how to cut a release of CCSM Next and how signing
 secrets are wired into CI.
 
 ## TL;DR — cut a release

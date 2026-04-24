@@ -26,7 +26,7 @@ const app = await electron.launch({
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForTimeout(1500);
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 // NOTE: Playwright's keyboard.press dispatches events via CDP, which bypasses
 // Electron's application-menu accelerator system. So the Ctrl+A / Ctrl+C path
@@ -37,7 +37,7 @@ await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000
 const SAMPLE = 'COPY_ME_PROBE_TEXT this should land in the clipboard';
 
 await win.evaluate((sample) => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
     sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
     activeId: 's1',

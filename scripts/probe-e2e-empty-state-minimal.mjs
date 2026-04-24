@@ -27,19 +27,19 @@ const app = await electron.launch({
 
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 // Wait for the startup CLI check to settle (state leaves 'checking'). If the
 // regression returns, the success flash pops here — give it a real chance to
 // appear before we assert absence.
 await win.waitForFunction(
-  () => window.__agentoryStore.getState().cliStatus.state !== 'checking',
+  () => window.__ccsmStore.getState().cliStatus.state !== 'checking',
   null,
   { timeout: 10000 }
 ).catch(() => { /* fall through — assertion below will catch a stuck state if relevant */ });
 await win.waitForTimeout(800);
 
-const cliState = await win.evaluate(() => window.__agentoryStore.getState().cliStatus.state);
+const cliState = await win.evaluate(() => window.__ccsmStore.getState().cliStatus.state);
 if (cliState === 'found') {
   // Only assert absence when CLI was actually detected — if CLI is genuinely
   // missing on this machine, the wizard is supposed to be visible and we
@@ -54,7 +54,7 @@ if (cliState === 'found') {
 }
 
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
     sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
     activeId: 's1',

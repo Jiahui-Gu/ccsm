@@ -40,13 +40,13 @@ win.on('console', (m) => {
 });
 
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10_000 });
 
 // Seed a session + group so the palette has something it COULD show — that
 // way the empty-state assertion is meaningful (we're saying "even though
 // matches exist, none should render until the user types").
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     sessions: [
       {
         id: 's-palette-1',

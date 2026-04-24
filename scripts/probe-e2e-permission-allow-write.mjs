@@ -57,7 +57,7 @@ log(`START PROJ=${PROJ} UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
@@ -83,11 +83,11 @@ await win.waitForTimeout(1000);
 log('clicked New Session');
 
 const cwdRes = await win.evaluate((p) => {
-  const st = window.__agentoryStore?.getState?.();
+  const st = window.__ccsmStore?.getState?.();
   if (!st) return { err: 'no store' };
   if (typeof st.changeCwd !== 'function') return { err: 'no changeCwd' };
   st.changeCwd(p);
-  const after = window.__agentoryStore.getState();
+  const after = window.__ccsmStore.getState();
   const sess = (after.sessions || []).find((x) => x.id === after.activeId);
   return { sid: after.activeId, cwd: sess?.cwd };
 }, PROJ);
@@ -109,7 +109,7 @@ async function snapDiag(label) {
   let snap = null;
   try {
     snap = await win.evaluate(() => {
-      const st = window.__agentoryStore?.getState?.();
+      const st = window.__ccsmStore?.getState?.();
       const sid = st?.activeId;
       const blocks = (st?.messagesBySession?.[sid] || []).map((b) => ({
         kind: b.kind,
@@ -173,7 +173,7 @@ async function getWaitingPrompt() {
   // block, if any. Best-effort — shape matches what snapDiag reads.
   return await win
     .evaluate(() => {
-      const st = window.__agentoryStore?.getState?.();
+      const st = window.__ccsmStore?.getState?.();
       const sid = st?.activeId;
       const blocks = st?.messagesBySession?.[sid] || [];
       // Waiting permission blocks surface as kind 'tool' with a
@@ -264,7 +264,7 @@ while (Date.now() < overallDl) {
   }
   const storeSnap = await win
     .evaluate(() => {
-      const st = window.__agentoryStore?.getState?.();
+      const st = window.__ccsmStore?.getState?.();
       const sid = st?.activeId;
       const blocks = st?.messagesBySession?.[sid] || [];
       const writeLike = new Set(['Write', 'Edit', 'MultiEdit']);

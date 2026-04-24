@@ -1,4 +1,4 @@
-# Agentory-next MVP Design
+# CCSM MVP Design
 
 Frozen: 2026-04-18 (last realignment: 2026-04-20)
 Status: MVP design locked — single source of truth before scaffolding.
@@ -70,7 +70,7 @@ Edge cases:
 Two-column layout, expandable tree on the left. Visually minimal: no section borders, no section labels, regions separated naturally by whitespace + color hierarchy.
 
 ```
-Agentory                    [«]
+CCSM                    [«]
 [🔍 Search…            ⌘F]
 [+  New Session]
 
@@ -113,7 +113,7 @@ Agentory                    [«]
   1. Top `[«]` / `[»]` IconButton
   2. `⌘B` / `Ctrl+B` global shortcut
   3. Right-edge 1.5px clickable rail (1px accent hairline shows on hover)
-- **Do not migrate to shadcn Sidebar**: the wrapper is ~30 lines; shadcn's value (Dialog/Command/Form etc.) is low-ROI here and adds token-mapping cognitive load (`--sidebar-*` ↔ `bg-bg-sidebar`). Internal `GroupRow` / `SessionRow` are Agentory-specific UI (rollup, state glyphs, cwdTail) — no library helps; keep hand-rolled.
+- **Do not migrate to shadcn Sidebar**: the wrapper is ~30 lines; shadcn's value (Dialog/Command/Form etc.) is low-ROI here and adds token-mapping cognitive load (`--sidebar-*` ↔ `bg-bg-sidebar`). Internal `GroupRow` / `SessionRow` are CCSM-specific UI (rollup, state glyphs, cwdTail) — no library helps; keep hand-rolled.
 - Collapsed state persisted locally (SQLite).
 
 ### 5.2 Archive behavior
@@ -282,9 +282,9 @@ A Mac at home runs the daemon (SDK + filesystem ops + long-running tasks). Phone
 
 **Frontend code is NOT allowed to `import { ipcRenderer }` or `import` anything from `electron/*`.**
 
-The only allowed backend entry point is `window.agentory` (declared in `src/global.d.ts`). Any new backend capability extends this interface first, then adds an IPC implementation.
+The only allowed backend entry point is `window.ccsm` (declared in `src/global.d.ts`). Any new backend capability extends this interface first, then adds an IPC implementation.
 
-Reason: `window.agentory` is a frontend/backend contract. Hiding the transport (Electron IPC) behind it means a future WebSocket implementation only swaps `preload.ts`'s equivalent — `src/` doesn't change a line.
+Reason: `window.ccsm` is a frontend/backend contract. Hiding the transport (Electron IPC) behind it means a future WebSocket implementation only swaps `preload.ts`'s equivalent — `src/` doesn't change a line.
 
 ### Questions to ask when designing a backend capability
 
@@ -306,4 +306,4 @@ A PR that triggers any of the below must be rejected or rewritten:
 - [ ] `from 'electron'` appears under `src/`
 - [ ] `ipcRenderer` / `ipcMain` appears under `src/`
 - [ ] Components directly read/write local paths like `~/.claude/projects/`
-- [ ] A backend capability bypasses `window.agentory` via a temporary preload-exposed global
+- [ ] A backend capability bypasses `window.ccsm` via a temporary preload-exposed global

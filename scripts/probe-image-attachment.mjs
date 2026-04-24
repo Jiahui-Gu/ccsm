@@ -2,11 +2,11 @@
 // drops a synthesized PNG into the window, pastes another one, asserts chips
 // appear, removes one via the × button, then sends the turn and asserts the
 // user block in the chat stream carries a rendered <img>. No network is
-// required: we intercept window.agentory.agentSendContent in the renderer so
+// required: we intercept window.ccsm.agentSendContent in the renderer so
 // we can assert the shape of the content-block array without depending on a
 // live claude.exe + key.
 //
-// Run: `AGENTORY_DEV_PORT=4186 npm run dev` in one terminal, then:
+// Run: `CCSM_DEV_PORT=4186 npm run dev` in one terminal, then:
 // `node scripts/probe-image-attachment.mjs`
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -29,7 +29,7 @@ const PNG_1X1_BASE64 =
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: '4186' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: '4186' }
 });
 
 const win = await appWindow(app);
@@ -49,7 +49,7 @@ await app.evaluate(async ({ dialog }, fakeCwd) => {
 
 // Intercept agent IPC in the MAIN process so we can observe the payload the
 // renderer sent without depending on a live claude.exe + key. contextBridge
-// freezes window.agentory so we can't monkey-patch on the renderer side.
+// freezes window.ccsm so we can't monkey-patch on the renderer side.
 await app.evaluate(async ({ ipcMain, webContents }) => {
   // Remove the live handlers and reinstall stubs.
   ipcMain.removeHandler('agent:start');
