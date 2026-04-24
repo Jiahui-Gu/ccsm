@@ -148,7 +148,10 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
 
 function VisualCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative w-full max-w-sm aspect-[4/3] rounded-xl border border-border-subtle bg-bg-elevated/60 backdrop-blur p-4 shadow-[0_24px_48px_-12px_oklch(0_0_0_/_0.5)]">
+    <div
+      className="relative w-full max-w-sm aspect-[4/3] rounded-xl border border-border-subtle bg-bg-elevated/60 backdrop-blur p-4"
+      style={{ boxShadow: 'var(--shadow-tutorial-card)' }}
+    >
       {children}
     </div>
   );
@@ -162,7 +165,8 @@ function WelcomeVisual() {
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ delay: 0.15, duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-          className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-[oklch(0.72_0.14_215)] to-[oklch(0.55_0.18_265)] shadow-lg"
+          className="flex h-16 w-16 items-center justify-center rounded-2xl shadow-lg"
+          style={{ background: 'var(--gradient-tutorial-welcome)' }}
         >
           <MessageSquare size={28} className="text-white stroke-[1.5]" />
         </motion.div>
@@ -178,7 +182,7 @@ function SessionsVisual() {
     { name: 'Sketch landing page copy', state: 'idle' as const }
   ];
   const dotColor = (s: typeof rows[number]['state']) =>
-    s === 'running' ? 'bg-[oklch(0.78_0.16_145)]' : s === 'waiting' ? 'bg-[oklch(0.78_0.16_70)]' : 'bg-fg-tertiary';
+    s === 'running' ? 'bg-state-running' : s === 'waiting' ? 'bg-state-waiting' : 'bg-fg-tertiary';
   return (
     <VisualCard>
       <div className="space-y-2">

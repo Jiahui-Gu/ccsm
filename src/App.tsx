@@ -18,6 +18,7 @@ import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
 import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
 import { AgentDiagnosticBanner } from './components/AgentDiagnosticBanner';
 import { AgentInitFailedBanner } from './components/AgentInitFailedBanner';
+import { TopBannerStack } from './components/chrome/TopBanner';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
@@ -378,9 +379,11 @@ export default function App() {
               <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
                 <WindowControls />
               </DragRegion>
-              <ClaudeCliMissingBanner />
-              <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
-              <AgentDiagnosticBanner />
+              <TopBannerStack>
+                <ClaudeCliMissingBanner />
+                <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
+                <AgentDiagnosticBanner />
+              </TopBannerStack>
               <ChatStream />
               <StatusBar
                 cwd={active.cwd}

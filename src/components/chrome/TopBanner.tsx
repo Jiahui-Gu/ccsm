@@ -274,3 +274,53 @@ export function TopBanner({
 export function TopBannerPresence({ children }: { children: React.ReactNode }) {
   return <AnimatePresence initial={false}>{children}</AnimatePresence>;
 }
+
+/**
+ * Stack container for vertically stacked `<TopBanner />` instances (#287).
+ *
+ * Problem it solves: every TopBanner renders its own `border-b` separator
+ * so that, when only one banner is showing, there is a single 1px line
+ * between the strip and the content beneath it. When TWO banners stack
+ * (e.g. AgentInitFailed + ClaudeCliMissing both visible), each banner
+ * draws its own `border-b`, producing TWO horizontal hairlines back-to-back
+ * — readable as a doubled / heavier divider that other UI surfaces never
+ * use, and visually noisy.
+ *
+ * Fix: a CSS-only adjustment on the wrapper that nullifies `border-b` on
+ * every non-last banner inside the stack via the
+ * `[data-top-banner]:not(:last-child)>div { border-bottom-width: 0 }`
+ * descendant selector. The selector targets the inner `<div role="...">`
+ * (which actually carries the border) inside each banner's outer
+ * `motion.div`. Single-banner case is untouched: the only banner is
+ * `:last-child` and keeps its border.
+ *
+ * Usage at call site (App.tsx):
+ *
+ *   <TopBannerStack>
+ *     <ClaudeCliMissingBanner />
+ *     <AgentInitFailedBanner ... />
+ *     <AgentDiagnosticBanner />
+ *   </TopBannerStack>
+ *
+ * Each banner internally still uses its own `<TopBannerPresence>` —
+ * stacking does not interfere with mount/unmount animations.
+ */
+export function TopBannerStack({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      data-top-banner-stack=""
+      className={cn(
+        '[&_[data-top-banner]:not(:last-child)>div]:border-b-0',
+        className
+      )}
+    >
+      {children}
+    </div>
+  );
+}
