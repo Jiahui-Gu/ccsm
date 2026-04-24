@@ -264,6 +264,14 @@ export function PermissionPromptBlock({
             variant="secondary"
             size="sm"
             data-perm-action="allow-always"
+            // Native tooltip — quickest way to give the user the full scope
+            // story without crowding the inline label. The visible label is
+            // already scope-explicit; this just expands on the lifetime.
+            title={
+              toolName
+                ? t('permissionPrompt.allowAlwaysHint', { tool: toolName })
+                : t('permissionPrompt.allowAlwaysHintFallback')
+            }
             onClick={onAllowAlways}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -272,7 +280,9 @@ export function PermissionPromptBlock({
               }
             }}
           >
-            {t('permissionPrompt.allowAlwaysBtn')}
+            {toolName
+              ? t('permissionPrompt.allowAlwaysBtn', { tool: toolName })
+              : t('permissionPrompt.allowAlwaysBtnFallback')}
           </Button>
         )}
         <Button

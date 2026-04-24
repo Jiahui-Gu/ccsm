@@ -305,7 +305,11 @@ const zh: EnCatalog = {
   permissionPrompt: {
     title: '需要授权',
     allowBtn: '允许 (Y)',
-    allowAlwaysBtn: '始终允许',
+    // 显式标注作用域：只针对该工具名（不是单条命令），且仅本次会话内有效。
+    allowAlwaysBtn: '本会话始终允许 {{tool}}',
+    allowAlwaysBtnFallback: '本会话始终允许此工具',
+    allowAlwaysHint: '本次会话内的所有 {{tool}} 调用都将自动通过，应用退出后失效。',
+    allowAlwaysHintFallback: '本次会话内对此工具的所有调用都将自动通过，应用退出后失效。',
     rejectBtn: '拒绝 (N)'
   },
   questionBlock: {

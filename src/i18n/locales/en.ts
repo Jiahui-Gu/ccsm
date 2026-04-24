@@ -318,7 +318,13 @@ const en = {
   permissionPrompt: {
     title: 'Permission required',
     allowBtn: 'Allow (Y)',
-    allowAlwaysBtn: 'Allow always',
+    // Scope-explicit copy. The fast-path keys off toolName only, and the
+    // allowlist lives in the in-memory store — so the truth is "all uses of
+    // this tool, this session". Mirror that, don't promise more.
+    allowAlwaysBtn: 'Always allow {{tool}} this session',
+    allowAlwaysBtnFallback: 'Always allow this tool this session',
+    allowAlwaysHint: 'Skip the prompt for any {{tool}} call until you quit the app. Resets next launch.',
+    allowAlwaysHintFallback: 'Skip the prompt for any call to this tool until you quit the app. Resets next launch.',
     rejectBtn: 'Reject (N)'
   },
   questionBlock: {
