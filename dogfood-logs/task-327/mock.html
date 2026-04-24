@@ -1,0 +1,158 @@
+<!doctype html>
+<!--
+  task #327 — visual mock of every MetaLabel callsite.
+
+  MetaLabel previously baked `uppercase` into its base classes, forcing
+  SCREAMING-CASE on every callsite (violates the no-uppercase-UI-strings
+  rule). After the fix, callsites render in their natural sentence case.
+
+  This mock recreates each of the 4 live callsites with the exact
+  recipe from `src/components/ui/MetaLabel.tsx`:
+    - InputBar attachment counter           "1/3"     (digits, no visible diff)
+    - InputBar queue chip                   "+1 queued"
+    - SlashCommandPicker section header     "Built-in"
+    - SlashCommandPicker section header     "User commands"
+
+  ?variant=before  → with `text-transform: uppercase`
+  ?variant=after   → without `text-transform: uppercase`
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>task #327 — MetaLabel callsites</title>
+    <style>
+      :root {
+        --bg: #0b0c0e;
+        --bg-input: #131418;
+        --bg-card: #16181c;
+        --border: #23262d;
+        --fg-primary: #e6e6e6;
+        --fg-tertiary: #888a90;
+        --fg-disabled: #5a5d63;
+        --accent: #d97757;
+        font-family: ui-sans-serif, system-ui, 'Inter Variable', sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: var(--bg);
+        color: var(--fg-primary);
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 4px;
+        font-weight: 500;
+      }
+      h2 {
+        font-size: 12px;
+        margin: 24px 0 8px;
+        font-weight: 500;
+        color: var(--fg-tertiary);
+      }
+      .sub {
+        color: var(--fg-tertiary);
+        font-size: 12px;
+        margin-bottom: 16px;
+      }
+      .surface {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 12px;
+      }
+      .input-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--bg-input);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        height: 56px;
+      }
+      .picker {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 6px 0;
+        max-width: 360px;
+      }
+      .picker .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 12px;
+        font-size: 13px;
+      }
+      .picker .row .name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--fg-primary);
+      }
+      .picker .row .desc {
+        color: var(--fg-tertiary);
+        font-size: 12px;
+      }
+      /* MetaLabel recipe (mirrors src/components/ui/MetaLabel.tsx). */
+      .meta {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+        line-height: 14px;
+        letter-spacing: 0.05em; /* tracking-wider */
+        color: var(--fg-tertiary);
+        user-select: none;
+      }
+      .meta.block { display: block; padding: 6px 12px 4px; }
+      .label-line {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 6px;
+      }
+      .label-line .annotation {
+        color: var(--fg-disabled);
+        font-size: 11px;
+      }
+      [data-variant='before'] .meta { text-transform: uppercase; }
+    </style>
+  </head>
+  <body>
+    <h1>task #327 — MetaLabel without baked-in uppercase</h1>
+    <p class="sub">Variant rendered: <span id="variant-label"></span></p>
+
+    <div id="root">
+      <h2>1. InputBar — attachment counter</h2>
+      <div class="surface">
+        <div class="input-bar">
+          <span style="color: var(--fg-tertiary); font-size: 13px;">Type a message…</span>
+          <span class="meta">1/3</span>
+        </div>
+      </div>
+
+      <h2>2. InputBar — queue chip</h2>
+      <div class="surface">
+        <div class="input-bar">
+          <span style="color: var(--fg-tertiary); font-size: 13px;">Working on previous turn…</span>
+          <span class="meta">+1 queued</span>
+        </div>
+      </div>
+
+      <h2>3. SlashCommandPicker — section headers</h2>
+      <div class="picker">
+        <span class="meta block">Built-in</span>
+        <div class="row"><span class="name">/help</span><span class="desc">Show shortcuts</span></div>
+        <div class="row"><span class="name">/clear</span><span class="desc">Reset conversation</span></div>
+        <span class="meta block">User commands</span>
+        <div class="row"><span class="name">/review</span><span class="desc">Run code review</span></div>
+        <span class="meta block">Project commands</span>
+        <div class="row"><span class="name">/deploy</span><span class="desc">Trigger deploy script</span></div>
+      </div>
+    </div>
+
+    <script>
+      const variant = new URLSearchParams(location.search).get('variant') || 'after';
+      document.body.dataset.variant = variant;
+      document.getElementById('variant-label').textContent = variant;
+    </script>
+  </body>
+</html>
