@@ -263,7 +263,10 @@ const zh: EnCatalog = {
       modelsLoading: '加载中…',
       modelsEmpty: '没有发现可用模型。运行 <code>claude /config</code> 配置一个。',
       openSettingsFile: '打开 settings.json',
-      opening: '打开中…'
+      opening: '打开中…',
+      copyBaseUrl: '复制 URL',
+      copyModel: '复制模型',
+      copied: '已复制'
     },
     updates: {
       version: '版本',
