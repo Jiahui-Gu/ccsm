@@ -198,9 +198,25 @@ export function subscribeAgentEvents(): void {
       const streamer = streamerFor(e.sessionId);
       const patch = streamer.consume(e.message);
       if (patch) {
-        useStore
-          .getState()
-          .streamAssistantText(e.sessionId, patch.blockId, patch.appendText, patch.done);
+        if (patch.kind === 'text') {
+          useStore
+            .getState()
+            .streamAssistantText(e.sessionId, patch.blockId, patch.appendText, patch.done);
+        } else {
+          // bash-input (#336): live preview of the Bash command as the
+          // model generates the tool_use input JSON. The canonical
+          // assistant tool_use event arrives shortly after and replaces
+          // this placeholder via appendBlocks coalesce-by-id.
+          useStore
+            .getState()
+            .streamBashToolInput(
+              e.sessionId,
+              patch.toolBlockId,
+              patch.toolUseId,
+              patch.bashPartialCommand,
+              patch.done
+            );
+        }
       }
       return;
     }

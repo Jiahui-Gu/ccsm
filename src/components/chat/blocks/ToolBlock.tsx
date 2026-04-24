@@ -25,7 +25,9 @@ export function ToolBlock({
   now,
   sessionId,
   toolUseId,
-  permissionPending
+  permissionPending,
+  bashPartialCommand,
+  streamingInput
 }: {
   name: string;
   brief: string;
@@ -57,6 +59,13 @@ export function ToolBlock({
   // (allow/deny), this flips false; first render after that captures the
   // real execution-begin moment in startedAtRef.
   permissionPending?: boolean;
+  // (#336) Live Bash command preview. Only set on placeholder blocks
+  // created from `input_json_delta` stream events while the assistant
+  // tool_use is still being typed by the model. While `streamingInput`
+  // is true we render the partial string with `.bash-typing-caret` and
+  // suppress the elapsed/stall chrome (the tool hasn't started running).
+  bashPartialCommand?: string;
+  streamingInput?: boolean;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState<boolean>(!!isError);
@@ -93,17 +102,17 @@ export function ToolBlock({
   // mean "execution time" instead of "request time". Refs keep the value
   // stable across re-renders without triggering re-render cycles of
   // their own.
-  const initialStartedAt = hasResult || permissionPending ? null : Date.now();
+  const initialStartedAt = hasResult || permissionPending || streamingInput ? null : Date.now();
   const startedAtRef = useRef<number | null>(initialStartedAt);
   const endedAtRef = useRef<number | null>(hasResult ? Date.now() : null);
-  if (!hasResult && !permissionPending && startedAtRef.current === null) {
+  if (!hasResult && !permissionPending && !streamingInput && startedAtRef.current === null) {
     startedAtRef.current = Date.now();
     endedAtRef.current = null;
   }
   if (hasResult && endedAtRef.current === null) {
     endedAtRef.current = Date.now();
   }
-  const running = !hasResult && !isError && !permissionPending;
+  const running = !hasResult && !isError && !permissionPending && !streamingInput;
   const elapsedMs =
     running && startedAtRef.current !== null
       ? Math.max(0, (now ?? Date.now()) - startedAtRef.current)
@@ -217,7 +226,19 @@ export function ToolBlock({
           >
             {name}
           </span>
-          <span className={isError ? 'text-state-error/80 text-meta' : 'text-fg-tertiary text-meta'}>({brief})</span>
+          <span className={isError ? 'text-state-error/80 text-meta' : 'text-fg-tertiary text-meta'}>
+            ({streamingInput && typeof bashPartialCommand === 'string' ? bashPartialCommand : brief}
+            {streamingInput && (
+              <span
+                data-testid="bash-typing-caret"
+                aria-hidden
+                className="bash-typing-caret"
+              >
+                {'\u258B'}
+              </span>
+            )}
+            )
+          </span>
           {isError && <span className="text-state-error/80 text-meta ml-1 uppercase tracking-wider">{t('chat.toolFailedTag')}</span>}
           {isDropped && (
             <span

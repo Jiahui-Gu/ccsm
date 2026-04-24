@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   PartialAssistantStreamer,
-  streamEventToTranslation
+  streamEventToTranslation,
+  extractPartialBashCommand
 } from '../src/agent/stream-to-blocks';
 
 const asEvent = <T>(x: T) => x as unknown as Parameters<typeof streamEventToTranslation>[0];
@@ -410,16 +411,37 @@ function stopBlock(index: number) {
   });
 }
 
+describe('extractPartialBashCommand (#336)', () => {
+  it('returns null when no command key is present yet', () => {
+    expect(extractPartialBashCommand('{"description":"x"')).toBeNull();
+  });
+  it('returns the in-flight command string mid-stream', () => {
+    expect(extractPartialBashCommand('{"command":"npm ru')).toBe('npm ru');
+  });
+  it('handles description-then-command order', () => {
+    expect(extractPartialBashCommand('{"description":"y","command":"ls -la')).toBe('ls -la');
+  });
+  it('decodes common JSON escapes (\\" and \\n)', () => {
+    expect(extractPartialBashCommand('{"command":"echo \\"hi\\"')).toBe('echo "hi"');
+    expect(extractPartialBashCommand('{"command":"a\\nb')).toBe('a\nb');
+  });
+  it('stops at the closing quote of the command string', () => {
+    expect(extractPartialBashCommand('{"command":"ls","x":1}')).toBe('ls');
+  });
+});
+
 describe('PartialAssistantStreamer (stream-json)', () => {
   it('emits one patch per text_delta keyed by message.id + content index', () => {
     const s = new PartialAssistantStreamer();
     s.consume(startEvent('msg-X'));
     expect(s.consume(deltaEvent(0, 'Hel'))).toEqual({
+      kind: 'text',
       blockId: 'msg-X:c0',
       appendText: 'Hel',
       done: false
     });
     expect(s.consume(deltaEvent(0, 'lo'))).toEqual({
+      kind: 'text',
       blockId: 'msg-X:c0',
       appendText: 'lo',
       done: false
@@ -430,6 +452,7 @@ describe('PartialAssistantStreamer (stream-json)', () => {
     const s = new PartialAssistantStreamer();
     s.consume(startEvent('msg-X'));
     expect(s.consume(stopBlock(0))).toEqual({
+      kind: 'text',
       blockId: 'msg-X:c0',
       appendText: '',
       done: true
@@ -460,10 +483,13 @@ describe('PartialAssistantStreamer (stream-json)', () => {
         message: { id: 'msg-Z', role: 'assistant', content: [{ type: 'text', text: 'Hi there' }] }
       })
     );
-    expect(partial?.blockId).toBe((final.append[0] as { id: string }).id);
+    expect(partial?.kind).toBe('text');
+    expect(partial?.kind === 'text' && partial.blockId).toBe(
+      (final.append[0] as { id: string }).id
+    );
   });
 
-  it('ignores non-text deltas (input_json, thinking)', () => {
+  it('ignores input_json_delta when no tool_use content block has started', () => {
     const s = new PartialAssistantStreamer();
     s.consume(startEvent('msg-X'));
     expect(
@@ -478,6 +504,158 @@ describe('PartialAssistantStreamer (stream-json)', () => {
         })
       )
     ).toBeNull();
+  });
+
+  // (#336) Bash input streaming: progressively surface the `command` arg as
+  // the model types the tool_use input JSON.
+  it('streams Bash command preview from input_json_delta chunks', () => {
+    const s = new PartialAssistantStreamer();
+    s.consume(startEvent('msg-B'));
+    s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id: 'tu-bash-1', name: 'Bash' }
+        }
+      })
+    );
+    const inputDelta = (chunk: string) =>
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: chunk }
+        }
+      });
+    expect(s.consume(inputDelta('{"command":"npm '))).toEqual({
+      kind: 'bash-input',
+      toolBlockId: 'msg-B:tu-bash-1',
+      toolUseId: 'tu-bash-1',
+      bashPartialCommand: 'npm ',
+      done: false
+    });
+    expect(s.consume(inputDelta('run '))).toEqual({
+      kind: 'bash-input',
+      toolBlockId: 'msg-B:tu-bash-1',
+      toolUseId: 'tu-bash-1',
+      bashPartialCommand: 'npm run ',
+      done: false
+    });
+    expect(s.consume(inputDelta('build"}'))).toEqual({
+      kind: 'bash-input',
+      toolBlockId: 'msg-B:tu-bash-1',
+      toolUseId: 'tu-bash-1',
+      bashPartialCommand: 'npm run build',
+      done: false
+    });
+    // content_block_stop emits a final done patch so the renderer can flip
+    // the typing flag off pre-emptively.
+    expect(s.consume(stopBlock(1))).toEqual({
+      kind: 'bash-input',
+      toolBlockId: 'msg-B:tu-bash-1',
+      toolUseId: 'tu-bash-1',
+      bashPartialCommand: 'npm run build',
+      done: true
+    });
+  });
+
+  it('Bash placeholder id matches the finalized tool block id (coalesces in store)', () => {
+    const s = new PartialAssistantStreamer();
+    s.consume(startEvent('msg-B2'));
+    s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu-x', name: 'Bash' }
+        }
+      })
+    );
+    const partial = s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' }
+        }
+      })
+    );
+    const final = streamEventToTranslation(
+      asEvent({
+        type: 'assistant',
+        session_id: 's',
+        uuid: 'u',
+        message: {
+          id: 'msg-B2',
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 'tu-x', name: 'Bash', input: { command: 'ls' } }]
+        }
+      })
+    );
+    expect(partial?.kind).toBe('bash-input');
+    expect(partial?.kind === 'bash-input' && partial.toolBlockId).toBe(
+      (final.append[0] as { id: string }).id
+    );
+  });
+
+  it('does not stream input for non-Bash tools (Read, Edit, etc.)', () => {
+    const s = new PartialAssistantStreamer();
+    s.consume(startEvent('msg-R'));
+    s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu-r', name: 'Read' }
+        }
+      })
+    );
+    const out = s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: '{"file_path":"/x"' }
+        }
+      })
+    );
+    expect(out).toBeNull();
+  });
+
+  it('dedupes no-op Bash input deltas (description typed before command)', () => {
+    const s = new PartialAssistantStreamer();
+    s.consume(startEvent('msg-D'));
+    s.consume(
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu-d', name: 'Bash' }
+        }
+      })
+    );
+    const inputDelta = (chunk: string) =>
+      asPartial({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'input_json_delta', partial_json: chunk }
+        }
+      });
+    // Description streams first; no `command` field yet.
+    expect(s.consume(inputDelta('{"description":"in'))).toBeNull();
+    expect(s.consume(inputDelta('stall"'))).toBeNull();
+    // Now command starts.
+    expect(s.consume(inputDelta(',"command":"ls"}'))?.kind).toBe('bash-input');
   });
 });
 
