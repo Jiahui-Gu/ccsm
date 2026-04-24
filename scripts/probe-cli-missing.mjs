@@ -1,12 +1,23 @@
 // Live probe for the "Claude CLI not found" first-run wizard.
 //
-// Runs against the built app with AGENTORY_CLAUDE_BIN pointing at a non-
-// existent file so the resolver falls back to a scrubbed PATH and flips the
-// store into `missing` state. Asserts:
+// Case A (original): Runs against the built app with AGENTORY_CLAUDE_BIN
+// pointing at a non-existent file so the resolver falls back to a scrubbed
+// PATH and flips the store into `missing` state. Asserts:
 //   - The blocking modal renders with title + body.
 //   - OS-appropriate install commands are visible.
 //   - Copy button writes the command to the clipboard.
 //   - Browse (stubbed via dialog monkey-patch) succeeds and closes the modal.
+//
+// Case B (stale persisted binPath, P0 regression — see fix/stale-binpath-p0):
+//   - Pre-seeds the SQLite `app_state` table with `claudeBinPath` pointing
+//     at a path that does not exist on disk (mimics a dev probe whose temp
+//     dir was GC'd).
+//   - Calls `agent:start` directly with empty PATH.
+//   - Asserts `errorCode === 'CLAUDE_NOT_FOUND'` (NOT a generic spawn
+//     error) and that the stale row was self-healed (DB row cleared).
+//   - Reverse-verify: stash the validation block in electron/main.ts → this
+//     case must FAIL because spawn dies via cmd.exe with "system cannot
+//     find the path specified" and CLAUDE_NOT_FOUND is never raised.
 //
 // Env vars understood:
 //   AGENTORY_FAKE_CLAUDE   path to a fake binary whose `--version` outputs
@@ -19,7 +30,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from './probe-utils.mjs';
+import { appWindow, isolatedUserData } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -151,4 +162,130 @@ try {
   fs.rmSync(tmp, { recursive: true, force: true });
 } catch {
   /* ignore */
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Case B: stale persisted claudeBinPath self-heals on agent:start.
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression guard for the P0 first-message-fails-on-prod-install bug.
+// Pre-condition: SQLite has `claudeBinPath = <non-existent path>`. Without
+// the fix, agent:start would forward this to spawnClaude(), which routes a
+// `.cmd` extension through cmd.exe and exits with a generic "system cannot
+// find the path specified" — CLAUDE_NOT_FOUND is never raised, so the
+// CliMissingDialog never shows and the user is stuck. The fix validates the
+// persisted path before forwarding and clears the dead row.
+{
+  const ud = isolatedUserData('probe-cli-missing-stalebinpath');
+
+  // Pre-seed parameters: a path that points at a definitely-non-existent
+  // file. Using a Windows-style fake .cmd path mirrors the real-world repro
+  // (a leftover entry from a probe like Case A above).
+  const stalePath =
+    process.platform === 'win32'
+      ? path.join(ud.dir, 'gone', 'fake-claude.cmd')
+      : path.join(ud.dir, 'gone', 'fake-claude.sh');
+
+  // Sanitize HOME / USERPROFILE so the developer's ~/.claude skills do not
+  // leak into the spawned CLI's environment (per
+  // memory/project_probe_skill_injection.md — relevant for any probe that
+  // launches electron and may end up spawning the real CLI).
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-binpath-home-'));
+
+  const app2 = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: root,
+    env: {
+      ...process.env,
+      NODE_ENV: 'development',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+    },
+  });
+
+  // Empty PATH so resolveClaudeBinary throws ClaudeNotFoundError after the
+  // self-heal fires. Otherwise a real claude on PATH could mask the bug by
+  // succeeding through the resolver fall-through.
+  await app2.evaluate(async () => {
+    process.env.PATH = '';
+    process.env.path = '';
+    if (process.platform === 'win32') process.env.PATHEXT = '';
+    delete process.env.AGENTORY_CLAUDE_BIN;
+  });
+
+  const win2 = await appWindow(app2);
+  await win2.waitForLoadState('domcontentloaded');
+  await win2.waitForFunction(() => !!window.agentory?.agentStart, null, {
+    timeout: 10_000,
+  });
+
+  // Seed claudeBinPath via the same IPC the renderer uses for state writes.
+  // This mirrors how the production app would have ended up with a stale
+  // value (the first-run wizard's saveClaudeBinPath path under the hood
+  // routes through the same app_state row).
+  await win2.evaluate(async (p) => {
+    await window.agentory.saveState('claudeBinPath', p);
+  }, stalePath);
+
+  // Sanity: the seed actually landed.
+  const seeded = await win2.evaluate(async () => {
+    return await window.agentory.loadState('claudeBinPath');
+  });
+  if (seeded !== stalePath) {
+    await app2.close();
+    ud.cleanup();
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+    fail(`pre-seed failed: claudeBinPath read back as ${JSON.stringify(seeded)}`);
+  }
+
+  // Drive agent:start directly so we observe its return shape — this is
+  // exactly the path InputBar takes on first message send. We pass `cwd:
+  // root` (this repo) so the CWD existsSync guard is satisfied; the only
+  // thing under test is binaryPath validation + CLAUDE_NOT_FOUND surfacing.
+  const startResult = await win2.evaluate(async (cwd) => {
+    return await window.agentory.agentStart('probe-stale-binpath-session', { cwd });
+  }, root);
+
+  if (startResult.ok) {
+    await app2.close();
+    ud.cleanup();
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+    fail(
+      'agent:start unexpectedly succeeded with stale binPath + empty PATH; ' +
+        'expected ok:false errorCode:CLAUDE_NOT_FOUND'
+    );
+  }
+  if (startResult.errorCode !== 'CLAUDE_NOT_FOUND') {
+    await app2.close();
+    ud.cleanup();
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+    fail(
+      `agent:start returned the wrong errorCode for stale binPath. ` +
+        `Expected CLAUDE_NOT_FOUND, got ${JSON.stringify(startResult)}. ` +
+        `This is the P0 regression: stale binPath bypasses resolveClaudeBinary().`
+    );
+  }
+
+  // Self-heal assertion: the stale row must have been cleared from the DB so
+  // a subsequent launch falls cleanly into the resolver / first-run wizard
+  // instead of hitting the same dead path forever.
+  const after = await win2.evaluate(async () => {
+    return await window.agentory.loadState('claudeBinPath');
+  });
+  if (after !== null) {
+    await app2.close();
+    ud.cleanup();
+    try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+    fail(
+      `stale claudeBinPath was NOT self-healed after agent:start. ` +
+        `Read back: ${JSON.stringify(after)}`
+    );
+  }
+
+  await app2.close();
+  ud.cleanup();
+  try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
+
+  console.log('\n[probe-cli-missing] OK (case B: stale binPath)');
+  console.log('  agent:start: returned errorCode CLAUDE_NOT_FOUND as expected');
+  console.log('  self-heal:   stale claudeBinPath row cleared from DB');
 }
