@@ -12,7 +12,7 @@ Under this corrected definition, the original P0 finding ("claude.exe inherits `
 
 No other finding was materially affected by the corrected definition. No re-run was needed — all remaining findings are independent of the isolation question.
 
-Updated counts: **6 bugs (was 7) / 7 UX gaps**. Severity distribution: **0 P0, 7 P1, 6 P2**.
+Updated counts: **5 active bugs (Bug 2 rescinded) / 7 UX gaps**. Severity distribution across the 12 active findings: **0 P0, 6 P1, 6 P2**.
 
 ---
 
@@ -144,7 +144,7 @@ But there is NO visual indication of "press Esc to close popover" vs "press Esc 
 
 ---
 
-### Bug 5 — P2: Bash tool stdout stream is not visible until row is manually expanded; partial output may drop initial lines
+### Bug 5 — P2: Bash tool stdout stream is not visible until row is manually expanded (missing initial ticks observed once, not confirmed reproducible)
 
 **Repro:**
 1. Run `for i in $(seq 1 60); do echo "tick $i"; sleep 1; done`.
@@ -157,7 +157,7 @@ But there is NO visual indication of "press Esc to close popover" vs "press Esc 
 - Missing initial output lines is a real correctness hit if the user is debugging and only sees a partial transcript.
 - Compare raw CLI: shows tool stdout inline as it streams.
 
-**Severity:** P2 (UX) for the "click to expand", P1 if the missing initial lines are reproducible (I observed once — needs follow-up confirmation).
+**Severity:** P2 (UX) for the "click to expand" behavior. The missing-initial-lines observation was a single-occurrence anecdote and has not been reproduced, so it is not counted as a separate P1 finding; if a second repro lands, reopen as P1.
 
 **Files:** `19-bash-clicked.txt`.
 
@@ -213,7 +213,7 @@ A first-time user who has a Claude Code skill installed (e.g. `pua`) sees:
 
 Severity: P2 — UX discoverability improvement on top of correct inheritance behavior.
 
-### Gap 5 — P2: Tool elapsed timer + "still no result" notice gives wrong story (see bug #1) — UX side
+### Gap 5 — P1: Tool elapsed timer + "still no result" notice gives wrong story (see bug #1) — UX side
 
 User-facing language: a banner saying "Tool has been running 90s+ — still no result. **Cancel**" while the actual blocking action is the Allow click. Suggests user cancel, when in reality the user should click Allow. Bad nudge.
 
@@ -250,10 +250,10 @@ Reasons (in order of severity, post re-triage):
 2. Misleading "still no result" warning that fingers the *user* (not the unanswered permission prompt) makes the app feel slow (Bug #1).
 3. Onboarding wizard violates the no-SCREAMING-strings rule (Gap #1), and onboarding doesn't connect to a first-run empty state (Gap #2).
 
-Bug count by severity (post re-triage):
+Finding count by severity (post re-triage, across 5 active bugs + 7 UX gaps = 12 findings; Bug 2 rescinded, not counted):
 - P0: 0 (skill inheritance rescinded — correct product behavior)
-- P1: 3 bugs (counter timing, allow-always copy, missing initial bash output lines — the latter tracked under Bug #5 if reproducible) + 4 P1 gaps (screaming strings, missing welcome, hidden cwd, plus Bug-1 mirror Gap #5) → 7 P1 total
-- P2: 3 bugs (Esc multi-binding, bash stdout collapsed, duplicate "New session" naming) + 3 P2 gaps (skill-badge discoverability, new-session skips group, no continue-after-interrupt) → 6 P2 total
+- P1: 2 bugs (Bug 1 counter timing, Bug 3 allow-always copy) + 4 P1 gaps (Gap 1 screaming strings, Gap 2 missing welcome, Gap 3 hidden cwd, Gap 5 Bug-1 mirror) → 6 P1 total
+- P2: 3 bugs (Bug 4 Esc multi-binding, Bug 5 bash stdout collapsed, Bug 6 duplicate "New session" naming) + 3 P2 gaps (Gap 4 skill-badge discoverability, Gap 6 new-session skips group, Gap 7 no continue-after-interrupt) → 6 P2 total
 
 Bright spots: TTFR ~7s good. CDP works on prod build. Permission prompt UI is clear (Reject/Allow/Allow always). Tool calls collapsible into a clean transcript. Multi-session sidebar exists. Settings popover fast. `~/.claude` inheritance works as designed — skills, credentials, and MCP servers carry over from the user's Claude Code setup.
 
