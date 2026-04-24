@@ -316,7 +316,13 @@ const zh: EnCatalog = {
     allowAlwaysBtnFallback: '本会话始终允许此工具',
     allowAlwaysHint: '本次会话内的所有 {{tool}} 调用都将自动通过，应用退出后失效。',
     allowAlwaysHintFallback: '本次会话内对此工具的所有调用都将自动通过，应用退出后失效。',
-    rejectBtn: '拒绝 (N)'
+    rejectBtn: '拒绝 (N)',
+    selectAll: '全选',
+    selectNone: '全不选',
+    hunkLabel: '片段 {{n}}',
+    allowSelected: '允许所选 ({{selected}}/{{total}})',
+    rejectAll: '全部拒绝',
+    applying: '正在应用…'
   },
   questionBlock: {
     title: '等待你的回答',

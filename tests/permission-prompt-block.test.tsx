@@ -305,4 +305,207 @@ describe('<PermissionPromptBlock />', () => {
       expect(onAllowAlways).toHaveBeenCalledTimes(1);
     });
   });
+
+  // ---------- per-hunk partial-accept (#306) ----------
+  describe('per-hunk diff selection (Edit/Write/MultiEdit)', () => {
+    const multiEditInput = {
+      file_path: '/tmp/a.ts',
+      edits: [
+        { old_string: 'a-old', new_string: 'a-new' },
+        { old_string: 'b-old', new_string: 'b-new' },
+        { old_string: 'c-old', new_string: 'c-new' }
+      ]
+    };
+
+    it('renders one checkbox per hunk, all checked by default', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit /tmp/a.ts"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowPartial={() => {}}
+        />
+      );
+      await flush();
+      const boxes = document.querySelectorAll('[data-perm-hunk-checkbox]');
+      expect(boxes.length).toBe(3);
+      boxes.forEach((b) =>
+        expect(b.getAttribute('data-state')).toBe('checked')
+      );
+      // Primary button reflects 3/3 selected.
+      expect(screen.getByRole('button', { name: /Allow selected \(3\/3\)/ })).toBeInTheDocument();
+    });
+
+    it('with all hunks selected, primary click falls through to onAllow (legacy IPC)', async () => {
+      const onAllow = vi.fn();
+      const onAllowPartial = vi.fn();
+      const onReject = vi.fn();
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={onAllow}
+          onReject={onReject}
+          onAllowPartial={onAllowPartial}
+        />
+      );
+      await flush();
+      const allow = screen.getByRole('button', { name: /Allow selected \(3\/3\)/ });
+      fireEvent.click(allow);
+      expect(onAllow).toHaveBeenCalledTimes(1);
+      expect(onAllowPartial).not.toHaveBeenCalled();
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('toggling a checkbox switches primary to "Allow selected (N/M)" calling partial IPC', async () => {
+      const onAllow = vi.fn();
+      const onAllowPartial = vi.fn();
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={onAllow}
+          onReject={() => {}}
+          onAllowPartial={onAllowPartial}
+        />
+      );
+      await flush();
+      const boxes = document.querySelectorAll('[data-perm-hunk-checkbox]');
+      // Uncheck index 1 (middle hunk).
+      fireEvent.click(boxes[1]);
+      await flush();
+      const allow = screen.getByRole('button', { name: /Allow selected \(2\/3\)/ });
+      fireEvent.click(allow);
+      expect(onAllowPartial).toHaveBeenCalledTimes(1);
+      expect(onAllowPartial).toHaveBeenCalledWith([0, 2]);
+      expect(onAllow).not.toHaveBeenCalled();
+    });
+
+    it('"None" toolbar deselects everything; primary becomes "Reject all" and calls onReject', async () => {
+      const onAllow = vi.fn();
+      const onReject = vi.fn();
+      const onAllowPartial = vi.fn();
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={onAllow}
+          onReject={onReject}
+          onAllowPartial={onAllowPartial}
+        />
+      );
+      await flush();
+      const noneBtn = document.querySelector('[data-perm-select-none]') as HTMLButtonElement;
+      expect(noneBtn).toBeTruthy();
+      fireEvent.click(noneBtn);
+      await flush();
+      const primary = screen.getByRole('button', { name: /Reject all/ });
+      fireEvent.click(primary);
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onAllow).not.toHaveBeenCalled();
+      expect(onAllowPartial).not.toHaveBeenCalled();
+    });
+
+    it('"All" toolbar reselects everything after a partial deselect', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowPartial={() => {}}
+        />
+      );
+      await flush();
+      const boxes = document.querySelectorAll('[data-perm-hunk-checkbox]');
+      fireEvent.click(boxes[0]);
+      fireEvent.click(boxes[2]);
+      await flush();
+      expect(screen.getByRole('button', { name: /Allow selected \(1\/3\)/ })).toBeInTheDocument();
+      const allBtn = document.querySelector('[data-perm-select-all]') as HTMLButtonElement;
+      fireEvent.click(allBtn);
+      await flush();
+      expect(screen.getByRole('button', { name: /Allow selected \(3\/3\)/ })).toBeInTheDocument();
+    });
+
+    it('falls back to flat summary when no onAllowPartial wiring is provided', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={() => {}}
+          onReject={() => {}}
+        />
+      );
+      await flush();
+      // No diff/checkbox UI when partial IPC isn't wired in — old behavior.
+      expect(document.querySelectorAll('[data-perm-hunk-checkbox]').length).toBe(0);
+      expect(document.querySelector('[data-perm-diff]')).toBeNull();
+      expect(screen.getByRole('button', { name: /allow \(y\)/i })).toBeInTheDocument();
+    });
+
+    it('non-Edit/Write/MultiEdit tool keeps the legacy summary even when onAllowPartial is wired', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="Bash: ls"
+          toolName="Bash"
+          toolInput={{ command: 'ls -la' }}
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowPartial={() => {}}
+        />
+      );
+      await flush();
+      expect(document.querySelectorAll('[data-perm-hunk-checkbox]').length).toBe(0);
+      expect(screen.getByText('command')).toBeInTheDocument();
+    });
+
+    it('disables buttons and shows "Applying…" while resolving', async () => {
+      const onAllow = vi.fn();
+      render(
+        <PermissionPromptBlock
+          prompt="MultiEdit"
+          toolName="MultiEdit"
+          toolInput={multiEditInput}
+          onAllow={onAllow}
+          onReject={() => {}}
+          onAllowPartial={() => {}}
+        />
+      );
+      await flush();
+      const allow = screen.getByRole('button', { name: /Allow selected \(3\/3\)/ });
+      fireEvent.click(allow);
+      await flush();
+      // After click, button label switches to Applying… and is disabled.
+      expect(screen.getByText(/Applying/)).toBeInTheDocument();
+      const allowBtn = document.querySelector('[data-perm-action="allow"]') as HTMLButtonElement;
+      expect(allowBtn.disabled).toBe(true);
+      // Re-clicking is a no-op.
+      fireEvent.click(allowBtn);
+      expect(onAllow).toHaveBeenCalledTimes(1);
+    });
+
+    it('Edit (single hunk) also gets the per-hunk UI', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="Edit"
+          toolName="Edit"
+          toolInput={{ file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }}
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowPartial={() => {}}
+        />
+      );
+      await flush();
+      expect(document.querySelectorAll('[data-perm-hunk-checkbox]').length).toBe(1);
+      expect(screen.getByRole('button', { name: /Allow selected \(1\/1\)/ })).toBeInTheDocument();
+    });
+  });
 });
