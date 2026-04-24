@@ -205,6 +205,21 @@ const api = {
     body?: string;
     eventType?: 'permission' | 'question' | 'turn_done' | 'test';
     silent?: boolean;
+    extras?: {
+      toastId?: string;
+      sessionName?: string;
+      groupName?: string;
+      toolName?: string;
+      toolBrief?: string;
+      question?: string;
+      selectionKind?: 'single' | 'multi';
+      optionCount?: number;
+      lastUserMsg?: string;
+      lastAssistantMsg?: string;
+      elapsedMs?: number;
+      toolCount?: number;
+      cwd?: string;
+    };
   }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
   notifyAvailability: (): Promise<{ available: boolean; error: string | null }> =>
     ipcRenderer.invoke('notify:availability'),
@@ -212,6 +227,28 @@ const api = {
     const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
     ipcRenderer.on('notification:focusSession', wrap);
     return () => ipcRenderer.removeListener('notification:focusSession', wrap);
+  },
+  /**
+   * Wave 1D: notification of a Windows toast button activation routed back
+   * from the main process. The action `allow` / `allow-always` / `reject`
+   * mirrors the in-app PermissionPromptBlock buttons; the underlying agent
+   * permission resolution is performed in main BEFORE this fires, so the
+   * renderer just needs to update its store (clear the waiting block and,
+   * for `allow-always`, seed `allowAlwaysTools` with the tool name).
+   */
+  onNotifyToastAction: (
+    handler: (e: {
+      sessionId: string;
+      requestId: string;
+      action: 'allow' | 'allow-always' | 'reject' | 'focus';
+    }) => void,
+  ): (() => void) => {
+    const wrap = (
+      _e: IpcRendererEvent,
+      payload: { sessionId: string; requestId: string; action: 'allow' | 'allow-always' | 'reject' | 'focus' },
+    ) => handler(payload);
+    ipcRenderer.on('notify:toastAction', wrap);
+    return () => ipcRenderer.removeListener('notify:toastAction', wrap);
   },
 
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),

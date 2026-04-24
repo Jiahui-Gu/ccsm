@@ -77,6 +77,11 @@ import {
 import { loadImportableHistory } from './import-history';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import { probeNotifyAvailability, notifyLastError } from './notify';
+import {
+  bootstrapNotify,
+  lookupToastTarget,
+  consumeToastTarget,
+} from './notify-bootstrap';
 import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
@@ -438,6 +443,60 @@ app.whenReady().then(() => {
     app.setAppUserModelId('com.ccsm.app');
   }
   initDb();
+
+  // Wave 1D: bootstrap the optional `@ccsm/notify` Adaptive Toast pipeline.
+  // Wrapped in try/catch by the bootstrap helper itself; failure (missing
+  // native deps, unregistered AUMID, non-win32) leaves the app running with
+  // the legacy Electron Notification path. The router below routes toast
+  // button clicks (Allow / Allow always / Reject / Focus) back into the same
+  // code paths the in-app prompts use.
+  try {
+    bootstrapNotify((event) => {
+      const target = lookupToastTarget(event.toastId);
+      if (!target) return;
+      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+      if (target.kind === 'permission') {
+        // The toastId for permission events IS the requestId (see lifecycle.ts
+        // → permissionRequestToWaitingBlock). Resolve the underlying CLI
+        // permission gate and notify the renderer so it can update its
+        // waiting-block UI + (for `allow-always`) seed `allowAlwaysTools`.
+        const requestId = event.toastId;
+        if (event.action === 'allow' || event.action === 'allow-always') {
+          sessions.resolvePermission(target.sessionId, requestId, 'allow');
+        } else if (event.action === 'reject') {
+          sessions.resolvePermission(target.sessionId, requestId, 'deny');
+        }
+        if (win) {
+          win.webContents.send('notify:toastAction', {
+            sessionId: target.sessionId,
+            requestId,
+            action: event.action,
+          });
+        }
+        consumeToastTarget(event.toastId);
+      } else if (target.kind === 'question' || target.kind === 'turn_done') {
+        // Questions + turn_done only carry `focus`; other actions are no-ops
+        // here (the renderer drives the actual answer flow once focused).
+        consumeToastTarget(event.toastId);
+      }
+      // Always raise the window on any action — the user clicked the toast,
+      // they want to see ccsm. Mirrors the existing `notification:focusSession`
+      // path used by the legacy Electron Notification.
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        if (!win.isVisible()) win.show();
+        win.focus();
+        win.webContents.send('notification:focusSession', target.sessionId);
+      }
+    });
+  } catch (err) {
+    // bootstrapNotify already swallows internally; this is belt-and-suspenders
+    // so an unexpected throw still can't take down app startup.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[main] notify bootstrap threw: ${err instanceof Error ? err.message : err}`,
+    );
+  }
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   // Cap renderer-supplied state values. Mirrors the per-block cap in
@@ -1056,9 +1115,19 @@ app.whenReady().then(() => {
   // widen preload.ts's surface for a test-only affordance). Guarded behind
   // `!app.isPackaged` so prod bundles never expose it.
   if (!app.isPackaged) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const notifyMod = require('./notify') as typeof import('./notify');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const bootstrapMod = require('./notify-bootstrap') as typeof import('./notify-bootstrap');
     (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
       activeSessionPids: () => sessions.activeRunnerPids(),
       activeSessionCount: () => sessions.activeSessionCount(),
+      // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
+      // can swap the @ccsm/notify importer for a fake without resorting to
+      // `require` from inside `app.evaluate` (where it's not in scope).
+      notify: notifyMod,
+      notifyBootstrap: bootstrapMod,
+      sessions,
     };
   }
 

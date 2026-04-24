@@ -1,6 +1,48 @@
+import * as path from 'path';
 import { BrowserWindow, Notification } from 'electron';
+import {
+  notifyPermission,
+  notifyQuestion,
+  notifyDone,
+  notifyDismiss,
+  isNotifyAvailable,
+} from './notify';
+import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap';
 
 export type NotificationEventType = 'permission' | 'question' | 'turn_done' | 'test';
+
+/**
+ * Optional rich metadata callers (the renderer's `dispatchNotification`)
+ * provide so we can fire a `@ccsm/notify` Adaptive Toast in parallel with
+ * the basic `electron.Notification`. None of these fields are required — when
+ * absent, only the legacy toast fires.
+ */
+export interface NotifyExtras {
+  /** Stable id used by @ccsm/notify to dedupe + route activations. */
+  toastId?: string;
+  sessionName?: string;
+  groupName?: string;
+  /** Tool name for permission events (e.g. `Bash`, `Edit`). */
+  toolName?: string;
+  /** Single-line tool brief (e.g. `npm run build`). */
+  toolBrief?: string;
+  /** AskUserQuestion: the question text. */
+  question?: string;
+  /** AskUserQuestion: 'single' | 'multi'. */
+  selectionKind?: 'single' | 'multi';
+  /** AskUserQuestion: option count. */
+  optionCount?: number;
+  /** turn_done: last user message preview. */
+  lastUserMsg?: string;
+  /** turn_done: last assistant message preview. */
+  lastAssistantMsg?: string;
+  /** turn_done: turn duration. */
+  elapsedMs?: number;
+  /** turn_done: tool-use count for the turn. */
+  toolCount?: number;
+  /** Working directory path; basename is shown in the toast. */
+  cwd?: string;
+}
 
 export interface ShowNotificationPayload {
   sessionId: string;
@@ -8,17 +50,51 @@ export interface ShowNotificationPayload {
   body?: string;
   eventType?: NotificationEventType;
   silent?: boolean;
+  /** Optional rich metadata for the @ccsm/notify Adaptive Toast pipeline. */
+  extras?: NotifyExtras;
+}
+
+function cwdBasename(cwd: string | undefined): string {
+  if (!cwd) return '';
+  try {
+    return path.basename(cwd);
+  } catch {
+    return '';
+  }
 }
 
 // Show an OS-level notification. Click brings the window forward and asks the
 // renderer to navigate to the originating session. Returns whether a toast was
-// actually shown (false if the platform reports notifications unsupported).
-export function showNotification(payload: ShowNotificationPayload, win: BrowserWindow | null): boolean {
+// actually shown (false if the platform reports notifications unsupported, or
+// suppressed because the window is already focused).
+//
+// Wave 1D: in addition to the legacy Electron Notification, fan out to the
+// optional `@ccsm/notify` Adaptive Toast pipeline when extras are supplied
+// and the wrapper has loaded. Both fire in parallel with the in-app render —
+// failure of either path never blocks the other.
+export function showNotification(
+  payload: ShowNotificationPayload,
+  win: BrowserWindow | null,
+): boolean {
   if (!Notification.isSupported()) return false;
+
+  // Defensive doubled focus gate. The renderer-side dispatch already checks
+  // `document.hasFocus() && activeId === sessionId`, but `document.hasFocus`
+  // can lie under devtools / playwright, and a non-active session that's still
+  // in the focused window deserves a toast either way. Here in main, if any
+  // visible window is focused we suppress — paired with the renderer check
+  // this means: focused window AND active session → no toast (handled by
+  // renderer); focused window, different session → still no toast (handled
+  // here, since the user is already looking at the app and the sidebar pulse
+  // is sufficient). Test-only `eventType === 'test'` skips this.
+  if (payload.eventType !== 'test' && shouldSuppressForFocus()) {
+    return false;
+  }
+
   const n = new Notification({
     title: payload.title,
     body: payload.body ?? '',
-    silent: !!payload.silent
+    silent: !!payload.silent,
   });
   n.on('click', () => {
     const target = win && !win.isDestroyed() ? win : BrowserWindow.getAllWindows()[0];
@@ -29,5 +105,71 @@ export function showNotification(payload: ShowNotificationPayload, win: BrowserW
     target.webContents.send('notification:focusSession', payload.sessionId);
   });
   n.show();
+
+  // Fan out to @ccsm/notify if available + we have enough metadata. All four
+  // wrapper functions are async-no-throw; we fire-and-forget so the legacy
+  // toast (already shown) isn't blocked by a slow native call.
+  void emitAdaptiveToast(payload).catch(() => {
+    /* wrapper logs internally */
+  });
+
   return true;
+}
+
+async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void> {
+  if (!isNotifyAvailable()) return;
+  const e = payload.extras;
+  if (!e || !e.toastId) return;
+  const cwdBase = cwdBasename(e.cwd);
+  const sessionName = e.sessionName ?? '';
+  switch (payload.eventType) {
+    case 'permission': {
+      if (!e.toolName) return;
+      registerToastTarget(e.toastId, payload.sessionId, 'permission');
+      await notifyPermission({
+        toastId: e.toastId,
+        sessionName,
+        toolName: e.toolName,
+        toolBrief: e.toolBrief ?? '',
+        cwdBasename: cwdBase,
+      });
+      return;
+    }
+    case 'question': {
+      registerToastTarget(e.toastId, payload.sessionId, 'question');
+      await notifyQuestion({
+        toastId: e.toastId,
+        sessionName,
+        question: e.question ?? payload.body ?? '',
+        selectionKind: e.selectionKind ?? 'single',
+        optionCount: e.optionCount ?? 0,
+        cwdBasename: cwdBase,
+      });
+      return;
+    }
+    case 'turn_done': {
+      registerToastTarget(e.toastId, payload.sessionId, 'turn_done');
+      await notifyDone({
+        toastId: e.toastId,
+        groupName: e.groupName ?? '',
+        sessionName,
+        lastUserMsg: e.lastUserMsg ?? '',
+        lastAssistantMsg: e.lastAssistantMsg ?? payload.body ?? '',
+        elapsedMs: e.elapsedMs ?? 0,
+        toolCount: e.toolCount ?? 0,
+        cwdBasename: cwdBase,
+      });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/**
+ * Dismiss any live toast for `toastId`. Safe to call when the notify wrapper
+ * is unavailable (no-op) or when `toastId` was never registered.
+ */
+export async function dismissNotification(toastId: string): Promise<void> {
+  await notifyDismiss(toastId);
 }

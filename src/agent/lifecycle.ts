@@ -271,11 +271,41 @@ export function subscribeAgentEvents(): void {
           ? i18next.t('notifications.turnErrorTitle', { name: sessionName })
           : i18next.t('notifications.turnDoneTitle', { name: sessionName });
         const body = errored ? i18next.t('notifications.turnErrorBody') : undefined;
+        // Wave 1D: build extras for the @ccsm/notify Adaptive Toast pipeline.
+        // Last user / assistant message previews come from the in-store block
+        // history; we cap them to 200 chars to keep the toast body readable.
+        const blocks = useStore.getState().messagesBySession[e.sessionId] ?? [];
+        const lastUser = [...blocks].reverse().find((b) => b.kind === 'user');
+        const lastAssistant = [...blocks]
+          .reverse()
+          .find((b) => b.kind === 'assistant');
+        const truncate = (s: string, n = 200): string =>
+          s.length > n ? `${s.slice(0, n - 1)}…` : s;
+        const groupName = session
+          ? store.groups.find((g) => g.id === session.groupId)?.name ?? ''
+          : '';
+        const toolCount = blocks.filter((b) => b.kind === 'tool').length;
         void dispatchNotification({
           sessionId: e.sessionId,
           eventType: 'turn_done',
           title,
-          body
+          body,
+          extras: {
+            toastId: `done-${e.sessionId}-${Date.now().toString(36)}`,
+            sessionName,
+            groupName,
+            cwd: session?.cwd,
+            elapsedMs: durationMs,
+            toolCount,
+            lastUserMsg:
+              lastUser && 'text' in lastUser && typeof lastUser.text === 'string'
+                ? truncate(lastUser.text)
+                : '',
+            lastAssistantMsg:
+              lastAssistant && 'text' in lastAssistant && typeof lastAssistant.text === 'string'
+                ? truncate(lastAssistant.text)
+                : '',
+          },
         });
       }
     }
@@ -350,9 +380,57 @@ export function subscribeAgentEvents(): void {
       sessionId: req.sessionId,
       eventType,
       title,
-      body
+      body,
+      // Wave 1D: rich extras for the @ccsm/notify Adaptive Toast. The toastId
+      // for permission events is the requestId itself so the main-process
+      // action router can resolve back into the same agent permission gate.
+      // For question events we prefix with `q-` to mirror the in-app block id.
+      extras:
+        block.kind === 'question'
+          ? {
+              toastId: `q-${req.requestId}`,
+              sessionName,
+              cwd: session?.cwd,
+              question: block.questions[0]?.question ?? '',
+              selectionKind: block.questions[0]?.multiSelect ? 'multi' : 'single',
+              optionCount: block.questions[0]?.options.length ?? 0,
+            }
+          : {
+              toastId: req.requestId,
+              sessionName,
+              cwd: session?.cwd,
+              toolName: req.toolName,
+              toolBrief: typeof body === 'string' ? body : '',
+            },
     });
   });
 
   api.onNotificationFocus?.(handleNotificationFocus);
+
+  // Wave 1D: route Windows toast button activations back into the renderer
+  // store. Main has already called `sessions.resolvePermission()` (so the
+  // agent CLI is unblocked); we just need to clear the in-app waiting block
+  // and seed `allowAlwaysTools` for `allow-always` so the same tool doesn't
+  // re-prompt this session.
+  api.onNotifyToastAction?.((e) => {
+    const store = useStore.getState();
+    if (e.action === 'allow' || e.action === 'allow-always' || e.action === 'reject') {
+      const decision = e.action === 'reject' ? 'deny' : 'allow';
+      store.resolvePermission(e.sessionId, e.requestId, decision);
+      if (e.action === 'allow-always') {
+        // The waiting block carries the toolName; look it up from the live
+        // messages array. If it's already gone (race with the in-app prompt),
+        // skip the seed — the user clearly didn't need the persistence.
+        const blocks = store.messagesBySession[e.sessionId] ?? [];
+        const block = blocks.find(
+          (b) => b.kind === 'waiting' && b.requestId === e.requestId,
+        );
+        if (block && block.kind === 'waiting' && block.toolName) {
+          store.addAllowAlways(block.toolName);
+        }
+      }
+    }
+    // `focus` carries no decision — the click already raised the window via
+    // `notification:focusSession`, no further action needed here.
+  });
 }
