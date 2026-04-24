@@ -62,7 +62,7 @@ export const buttonVariants = cva(
           'disabled:bg-bg-elevated disabled:border-border-default disabled:text-fg-disabled disabled:shadow-none'
         ),
         danger: cn(
-          'text-state-error-text font-medium',
+          'text-state-error-fg font-medium',
           'border border-[oklch(0.50_0.20_25)]',
           'bg-[linear-gradient(to_bottom,oklch(0.68_0.22_25),oklch(0.56_0.22_25))]',
           'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.22),0_1px_0_0_oklch(0_0_0_/_0.18)]',
