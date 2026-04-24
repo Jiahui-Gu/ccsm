@@ -142,7 +142,7 @@ export function SettingsDialog({
                     'transition-[background-color,color] duration-150 ease-out',
                     'outline-none focus-ring',
                     isActive
-                      ? 'bg-bg-hover text-fg-primary font-medium'
+                      ? 'text-fg-primary font-medium'
                       : 'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary'
                   )}
                   style={{ width: 'calc(100% - 0.5rem)' }}
@@ -391,15 +391,17 @@ function NotificationsPane() {
   const Toggle = ({
     checked,
     onChange,
-    disabled
+    disabled,
+    ariaLabel
   }: {
     checked: boolean;
     onChange: (v: boolean) => void;
     disabled?: boolean;
+    ariaLabel?: string;
   }) => (
     <label
       className={cn(
-        'inline-flex items-center gap-2 select-none',
+        'inline-flex items-center select-none',
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
       )}
     >
@@ -407,12 +409,10 @@ function NotificationsPane() {
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-label={ariaLabel}
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 accent-accent"
       />
-      <span className="text-chrome text-fg-secondary">
-        {checked ? t('notifications.toggleOn') : t('notifications.toggleOff')}
-      </span>
     </label>
   );
 
@@ -464,6 +464,7 @@ function NotificationsPane() {
         <Toggle
           checked={settings.enabled}
           onChange={(v) => setNotificationSettings({ enabled: v })}
+          ariaLabel={t('notifications.enable')}
         />
       </Field>
       <Field label={t('notifications.permission')} hint={t('notifications.permissionHint')}>
@@ -471,6 +472,7 @@ function NotificationsPane() {
           checked={settings.permission}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ permission: v })}
+          ariaLabel={t('notifications.permission')}
         />
       </Field>
       <Field label={t('notifications.question')} hint={t('notifications.questionHint')}>
@@ -478,6 +480,7 @@ function NotificationsPane() {
           checked={settings.question}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ question: v })}
+          ariaLabel={t('notifications.question')}
         />
       </Field>
       <Field label={t('notifications.turnDone')} hint={t('notifications.turnDoneHint')}>
@@ -485,6 +488,7 @@ function NotificationsPane() {
           checked={settings.turnDone}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ turnDone: v })}
+          ariaLabel={t('notifications.turnDone')}
         />
       </Field>
       <Field label={t('notifications.sound')} hint={t('notifications.soundHint')}>
@@ -492,6 +496,7 @@ function NotificationsPane() {
           checked={settings.sound}
           disabled={disableChildren}
           onChange={(v) => setNotificationSettings({ sound: v })}
+          ariaLabel={t('notifications.sound')}
         />
       </Field>
       <div className="flex items-center gap-3">
