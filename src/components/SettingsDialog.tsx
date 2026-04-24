@@ -188,35 +188,6 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-function _Select<T extends string>({
-  value,
-  onChange,
-  options
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string }[];
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as T)}
-      className={cn(
-        'h-7 px-2 pr-6 rounded-sm bg-bg-elevated border border-border-default',
-        'text-chrome text-fg-primary outline-none cursor-pointer',
-        'hover:border-border-strong',
-        'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_var(--color-focus-ring)]'
-      )}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-
 function AppearancePane() {
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
