@@ -388,29 +388,19 @@ function buildTrayIcon() {
   return img;
 }
 
-function ensureTray() {
-  if (tray) return tray;
-  tray = new Tray(buildTrayIcon());
-  tray.setToolTip('CCSM');
-  const showWindow = () => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (!win) {
-      createWindow();
-      return;
-    }
-    if (win.isMinimized()) win.restore();
-    win.show();
-    win.focus();
-    if (process.platform === 'darwin') app.dock?.show?.();
-  };
-  tray.on('click', showWindow);
-  tray.on('double-click', showWindow);
+function applyTrayLocale() {
+  if (!tray) return;
+  // Local require keeps the import graph linear (see the longer comment
+  // near the `ccsm:set-language` handler below).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const i18n = require('./i18n') as typeof import('./i18n');
+  tray.setToolTip(i18n.tTray('tooltip'));
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Show CCSM', click: showWindow },
+      { label: i18n.tTray('show'), click: showTrayWindow },
       { type: 'separator' },
       {
-        label: 'Quit',
+        label: i18n.tTray('quit'),
         click: () => {
           isQuitting = true;
           app.quit();
@@ -418,6 +408,26 @@ function ensureTray() {
       }
     ])
   );
+}
+
+function showTrayWindow() {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (!win) {
+    createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  if (process.platform === 'darwin') app.dock?.show?.();
+}
+
+function ensureTray() {
+  if (tray) return tray;
+  tray = new Tray(buildTrayIcon());
+  tray.on('click', showTrayWindow);
+  tray.on('double-click', showTrayWindow);
+  applyTrayLocale();
   return tray;
 }
 
@@ -525,7 +535,12 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.on('ccsm:set-language', (_e, lang: unknown) => {
-    if (lang === 'en' || lang === 'zh') i18n.setMainLanguage(lang);
+    if (lang === 'en' || lang === 'zh') {
+      i18n.setMainLanguage(lang);
+      // Tray menu / tooltip are built once on app ready; rebuild so a
+      // language switch from Settings is reflected immediately.
+      applyTrayLocale();
+    }
   });
   // Seed the active language from the OS at boot, before any window is
   // created — first notification fires with the right copy even if the

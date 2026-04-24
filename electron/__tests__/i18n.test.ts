@@ -8,6 +8,7 @@ import {
   setMainLanguage,
   getMainLanguage,
   tNotification,
+  tTray,
   resolveSystemLanguage
 } from '../i18n';
 
@@ -45,5 +46,22 @@ describe('main process i18n', () => {
     expect(resolveSystemLanguage('en-US')).toBe('en');
     expect(resolveSystemLanguage(undefined)).toBe('en');
     expect(resolveSystemLanguage('fr-FR')).toBe('en');
+  });
+
+  it('localizes tray menu strings (en)', () => {
+    setMainLanguage('en');
+    expect(tTray('show')).toBe('Show CCSM');
+    expect(tTray('quit')).toBe('Quit');
+    expect(tTray('tooltip')).toBe('CCSM');
+  });
+
+  it('localizes tray menu strings (zh)', () => {
+    setMainLanguage('zh');
+    const labels = [tTray('show'), tTray('quit'), tTray('tooltip')];
+    // Spot-check Chinese characters appear in the localized menu so a
+    // future "oops, English literal slipped in" regression fails loud.
+    expect(labels.some((s) => /[\u4e00-\u9fff]/.test(s))).toBe(true);
+    expect(tTray('show')).toBe('显示 CCSM');
+    expect(tTray('quit')).toBe('退出');
   });
 });

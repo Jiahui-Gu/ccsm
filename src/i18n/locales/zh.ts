@@ -335,6 +335,11 @@ const zh: EnCatalog = {
     backgroundSessionFallback: '后台会话',
     backgroundWaitingToastTitle: '{{name}} 需要你的输入'
   },
+  tray: {
+    show: '显示 CCSM',
+    quit: '退出',
+    tooltip: 'CCSM'
+  },
   errors: {
     generic: '出错了。',
     network: '网络错误。请检查连接。',
