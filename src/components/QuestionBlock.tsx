@@ -116,7 +116,7 @@ export function QuestionBlock({ questions, onSubmit, autoFocus = true }: Questio
       onKeyDownCapture={onKeyDownCapture}
     >
       <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-waiting rounded-l-md" />
-      <div className="flex items-center gap-2 text-base text-fg-primary font-semibold">
+      <div className="flex items-center gap-2 text-heading text-fg-primary font-semibold">
         <StateGlyph state="waiting" size="sm" />
         <span>{t('questionBlock.title')}</span>
       </div>
@@ -170,7 +170,7 @@ function QuestionRow({ q, qi, picks, submitted, onToggle, isFirstQuestion }: Que
       {q.header && (
         <div className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">{q.header}</div>
       )}
-      <div className="text-sm text-fg-primary">{q.question}</div>
+      <div className="text-body text-fg-primary">{q.question}</div>
       {q.multiSelect ? (
         <MultiSelectGroup
           q={q}
@@ -244,9 +244,9 @@ function SingleSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, auto
               <RadioGroup.Indicator className="flex items-center justify-center h-full w-full relative after:content-[''] after:block after:h-1.5 after:w-1.5 after:rounded-full after:bg-state-waiting" />
             </RadioGroup.Item>
             <div className="min-w-0 flex-1">
-              <div className="text-sm text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
+              <div className="text-body text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
               {opt.description && (
-                <div className="text-xs text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
+                <div className="text-meta text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
               )}
             </div>
           </motion.label>
@@ -293,9 +293,9 @@ function MultiSelectGroup({ q, qi, picks, submitted, onToggle, labelClass, autoF
                 </Checkbox.Root>
               </RovingFocusGroup.Item>
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
+                <div className="text-body text-fg-primary break-words [overflow-wrap:anywhere]">{opt.label}</div>
                 {opt.description && (
-                  <div className="text-xs text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
+                  <div className="text-meta text-fg-tertiary mt-0.5 break-words [overflow-wrap:anywhere]">{opt.description}</div>
                 )}
               </div>
             </motion.label>

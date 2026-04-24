@@ -214,7 +214,7 @@ export function ClaudeCliMissingDialog() {
                   type="button"
                   onClick={closeDialog}
                   className={cn(
-                    'text-xs text-fg-tertiary hover:text-fg-secondary',
+                    'text-meta text-fg-tertiary hover:text-fg-secondary',
                     'transition-colors duration-150 outline-none',
                     'focus-visible:text-fg-primary'
                   )}
@@ -260,16 +260,16 @@ function Header({ searchedPaths }: { searchedPaths: string[] }) {
           <AlertTriangle size={16} className="stroke-[1.75]" />
         </div>
         <div className="flex-1 min-w-0">
-          <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
+          <RD.Title className="text-heading font-semibold text-fg-primary leading-tight">
             {t('cli.dialogTitle')}
           </RD.Title>
-          <RD.Description className="mt-1 text-sm text-fg-tertiary">
+          <RD.Description className="mt-1 text-chrome text-fg-tertiary">
             {t('cli.dialogDescriptionPrefix')}
             {' '}<code className="font-mono text-mono-md text-fg-secondary">claude</code>{' '}
             {t('cli.dialogDescriptionSuffix')}
           </RD.Description>
           {searchedPaths.length > 0 && (
-            <details className="mt-2 text-xs text-fg-disabled">
+            <details className="mt-2 text-meta text-fg-disabled">
               <summary className="cursor-pointer hover:text-fg-tertiary select-none">
                 {t('cli.whereWeLooked')}
               </summary>
@@ -301,7 +301,7 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
           aria-selected={tab === t.id}
           onClick={() => onChange(t.id)}
           className={cn(
-            'relative h-8 px-3 text-sm outline-none',
+            'relative h-8 px-3 text-chrome outline-none',
             'transition-colors duration-150',
             'focus-visible:text-fg-primary',
             tab === t.id ? 'text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'
@@ -331,14 +331,14 @@ function InstallPane({
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      <p className="text-xs text-fg-tertiary">
+      <p className="text-meta text-fg-tertiary">
         {t('cli.pasteHint')}{' '}
         <span className="text-fg-secondary">{t('cli.retryDetectInline')}</span>{' '}
         {t('cli.belowInline')}
       </p>
       <div className="space-y-2">
         {rows.length === 0 ? (
-          <div className="text-xs text-fg-disabled">{t('cli.loadingCommands')}</div>
+          <div className="text-meta text-fg-disabled">{t('cli.loadingCommands')}</div>
         ) : (
           rows.map((row) => <CommandRow key={row.id} row={row} />)
         )}
@@ -347,7 +347,7 @@ function InstallPane({
         type="button"
         onClick={onOpenDocs}
         className={cn(
-          'inline-flex items-center gap-1.5 text-xs text-fg-secondary',
+          'inline-flex items-center gap-1.5 text-meta text-fg-secondary',
           'hover:text-fg-primary transition-colors duration-150 outline-none',
           'focus-visible:text-fg-primary'
         )}
@@ -395,7 +395,7 @@ function CommandRow({ row }: { row: InstallRow }) {
         )}
       >
         <code
-          className="flex-1 min-w-0 truncate px-3 py-2 font-mono text-xs text-fg-primary select-all"
+          className="flex-1 min-w-0 truncate px-3 py-2 font-mono text-meta text-fg-primary select-all"
           data-testid={`cli-cmd-${row.id}`}
         >
           {row.command}
@@ -456,7 +456,7 @@ function HaveItPane({
   const { t } = useTranslation();
   return (
     <div className="space-y-3">
-      <p className="text-xs text-fg-tertiary">
+      <p className="text-meta text-fg-tertiary">
         {t('cli.haveItHint')}{' '}
         <code className="font-mono text-mono-md text-fg-secondary">claude</code> {t('cli.binaryLabel')}
         {' '}{t('cli.rememberHint')}
@@ -466,7 +466,7 @@ function HaveItPane({
         <span>{configuring ? t('cli.verifying') : t('cli.browseBinary')}</span>
       </Button>
       {error && (
-        <div className="text-xs text-state-error-text">
+        <div className="text-meta text-state-error-text">
           {error}
         </div>
       )}
@@ -503,7 +503,7 @@ function SuccessPane({
         <Check size={18} className="stroke-[2]" />
       </motion.div>
       <div className="flex-1 min-w-0">
-        <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
+        <RD.Title className="text-heading font-semibold text-fg-primary leading-tight">
           {t('cli.detected')}
         </RD.Title>
         {/* Radix requires a Description (or explicit aria-describedby) on
@@ -513,7 +513,7 @@ function SuccessPane({
         <RD.Description className="sr-only">
           {version ? t('cli.foundVersion') + ' ' + version : t('cli.foundBinaryUnknown')}
         </RD.Description>
-        <div className="mt-1 text-sm text-fg-tertiary">
+        <div className="mt-1 text-chrome text-fg-tertiary">
           {version ? (
             <>
               {t('cli.foundVersion')} <span className="text-fg-secondary font-mono">{version}</span>

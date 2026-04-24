@@ -6,7 +6,7 @@ export function TodoBlock({ todos }: { todos: TodoItem[] }) {
   const total = todos.length;
   const done = todos.filter((t) => t.status === 'completed').length;
   return (
-    <div className="my-1 pl-3 pr-2 font-mono text-sm">
+    <div className="my-1 pl-3 pr-2 font-mono text-chrome">
       <div className="flex items-baseline justify-between mb-1">
         <span className="font-mono text-mono-xs uppercase tracking-wider text-fg-tertiary">{t('chat.todoLabel')}</span>
         <span className="font-mono text-mono-xs text-fg-tertiary">
@@ -18,7 +18,7 @@ export function TodoBlock({ todos }: { todos: TodoItem[] }) {
           const inProgress = t.status === 'in_progress';
           const completed = t.status === 'completed';
           return (
-            <li key={i} className="flex items-start gap-2 text-sm">
+            <li key={i} className="flex items-start gap-2 text-chrome">
               <span
                 aria-hidden
                 className={

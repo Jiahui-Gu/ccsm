@@ -146,7 +146,7 @@ export function LongOutputView({
       <div className="mt-1">
         {toolbar}
         <pre
-          className={`ml-6 pl-3 border-l text-xs whitespace-pre-wrap font-mono ${colorCls}`}
+          className={`ml-6 pl-3 border-l text-meta whitespace-pre-wrap font-mono ${colorCls}`}
           data-testid="tool-output-pre"
         >
           {text}
@@ -163,7 +163,7 @@ export function LongOutputView({
     return (
       <div className="mt-1">
         {toolbar}
-        <div className={`ml-6 pl-3 border-l text-xs font-mono ${colorCls}`}>
+        <div className={`ml-6 pl-3 border-l text-meta font-mono ${colorCls}`}>
           <pre
             className="whitespace-pre-wrap"
             data-testid="tool-output-collapsed-head"
@@ -208,7 +208,7 @@ export function LongOutputView({
         ref={viewportRef}
         onScroll={onScroll}
         data-testid="tool-output-viewport"
-        className={`ml-6 pl-3 border-l text-xs font-mono overflow-auto ${colorCls}`}
+        className={`ml-6 pl-3 border-l text-meta font-mono overflow-auto ${colorCls}`}
         style={{ height: VIEWPORT_HEIGHT_PX, position: 'relative' }}
       >
         <div

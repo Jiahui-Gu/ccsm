@@ -29,7 +29,7 @@ export function SystemTraceBlock({
       role="status"
       data-system-trace="permission-resolved"
       data-decision={decision}
-      className="relative my-1 rounded-sm border border-border-subtle bg-bg-elevated/40 pl-3 pr-3 py-1 text-xs text-fg-tertiary font-mono"
+      className="relative my-1 rounded-sm border border-border-subtle bg-bg-elevated/40 pl-3 pr-3 py-1 text-meta text-fg-tertiary font-mono"
     >
       <span
         aria-hidden

@@ -48,7 +48,7 @@ export function CodeBlock({ code, language }: { code: string; language?: string 
   return (
     <Highlight theme={theme} code={code.replace(/\n$/, '')} language={lang}>
       {({ tokens, getLineProps, getTokenProps }) => (
-        <code className="font-mono text-sm whitespace-pre">
+        <code className="font-mono text-chrome whitespace-pre">
           {tokens.map((line, i) => {
             const { key: _lk, ...lineProps } = getLineProps({ line, key: i });
             return (

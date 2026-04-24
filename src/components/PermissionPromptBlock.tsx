@@ -207,7 +207,7 @@ export function PermissionPromptBlock({
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
-      className="relative my-1 pl-3 pr-2 py-1.5 font-mono text-sm"
+      className="relative my-1 pl-3 pr-2 py-1.5 font-mono text-chrome"
     >
       <span
         aria-hidden
@@ -227,11 +227,11 @@ export function PermissionPromptBlock({
           </span>
         )}
       </div>
-      <div id={descId} className="mt-1 font-mono text-sm text-fg-secondary whitespace-pre-wrap break-words">
+      <div id={descId} className="mt-1 font-mono text-chrome text-fg-secondary whitespace-pre-wrap break-words">
         {prompt}
       </div>
       {summary.length > 0 && (
-        <dl className="mt-1 border-l border-border-subtle pl-2 font-mono text-xs text-fg-secondary">
+        <dl className="mt-1 border-l border-border-subtle pl-2 font-mono text-meta text-fg-secondary">
           {summary.map(({ key, value }) => (
             <div key={key} className="flex gap-2 py-0.5">
               <dt className="text-fg-tertiary shrink-0">{key}</dt>

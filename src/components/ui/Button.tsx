@@ -73,9 +73,9 @@ export const buttonVariants = cva(
         )
       },
       size: {
-        xs: 'h-6 px-2 text-xs gap-1.5 has-[>svg]:px-1.5',
-        sm: 'h-6 px-2.5 text-xs gap-1.5 has-[>svg]:px-2',
-        md: 'h-7 px-3 text-sm gap-2 has-[>svg]:px-2.5',
+        xs: 'h-6 px-2 text-meta gap-1.5 has-[>svg]:px-1.5',
+        sm: 'h-6 px-2.5 text-meta gap-1.5 has-[>svg]:px-2',
+        md: 'h-7 px-3 text-chrome gap-2 has-[>svg]:px-2.5',
         lg: 'h-8 px-4 text-md gap-2 has-[>svg]:px-3'
       }
     },

@@ -226,7 +226,7 @@ export function ChatStream() {
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
             onClick={jumpToLatest}
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-elevated border border-border-strong text-sm text-fg-primary shadow-md hover:bg-bg-hover transition-colors duration-150 ease-out"
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-bg-elevated border border-border-strong text-chrome text-fg-primary shadow-md hover:bg-bg-hover transition-colors duration-150 ease-out"
             aria-label={t('chat.jumpToLatest')}
           >
             <ArrowDown size={14} />

@@ -68,7 +68,7 @@ function AttachmentChip({
         draggable={false}
       />
       <div className="min-w-0 flex flex-col">
-        <span className="text-xs text-fg-primary truncate max-w-[180px]" title={attachment.name}>
+        <span className="text-meta text-fg-primary truncate max-w-[180px]" title={attachment.name}>
           {attachment.name}
         </span>
         <span className="text-mono-xs text-fg-tertiary font-mono uppercase tracking-wider">
@@ -102,7 +102,7 @@ function DropOverlay({ show }: { show: boolean }) {
           aria-hidden
         >
           <ImagePlus size={28} className="text-accent" />
-          <span className="font-mono text-sm text-accent tracking-wide">{t('chat.dropImageHint')}</span>
+          <span className="font-mono text-chrome text-accent tracking-wide">{t('chat.dropImageHint')}</span>
           <span className="font-mono text-mono-xs uppercase tracking-wider text-accent/70">
             {t('chat.attachmentFormatsHint', { size: formatSize(MAX_IMAGE_BYTES) })}
           </span>
@@ -630,7 +630,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             exit={{ opacity: 0, y: -2 }}
             transition={{ duration: DURATION.standard, ease: EASING.standard }}
             role="alert"
-            className="mb-2 rounded-md border border-state-error/40 bg-state-error-soft/60 px-3 py-2 text-xs text-state-error-fg"
+            className="mb-2 rounded-md border border-state-error/40 bg-state-error-soft/60 px-3 py-2 text-meta text-state-error-fg"
           >
             <div className="flex items-start gap-2">
               <AlertCircle size={12} className="text-state-error mt-0.5 shrink-0" />
@@ -704,7 +704,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           rows={2}
           placeholder={running ? t('chat.runningPlaceholder') : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
           className={cn(
-            'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
+            'block w-full resize-none px-3 pt-2 pb-7 text-body leading-[22px]',
             'bg-transparent text-fg-primary placeholder:text-fg-tertiary',
             'transition-colors duration-150 ease-out',
             'overflow-y-auto'

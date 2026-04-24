@@ -24,7 +24,7 @@ export function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: (
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.22, ease: [0.32, 0.72, 0, 1] }}
-      className="relative my-1 pl-3 pr-2 py-1.5 font-mono text-sm"
+      className="relative my-1 pl-3 pr-2 py-1.5 font-mono text-chrome"
     >
       <span
         aria-hidden
@@ -35,7 +35,7 @@ export function PlanBlock({ plan, onAllow, onDeny }: { plan: string; onAllow?: (
         <span className="font-mono uppercase tracking-wider text-mono-xs text-state-waiting">{t('chat.planTitle')}</span>
       </div>
       <div className="mt-1 max-h-[420px] overflow-y-auto border-l border-border-subtle pl-2">
-        <div className="prose prose-invert prose-sm max-w-none font-mono text-sm text-fg-secondary [&_h1]:text-fg-primary [&_h2]:text-fg-primary [&_h3]:text-fg-primary [&_code]:text-fg-primary [&_pre]:bg-bg-elevated [&_pre]:rounded-sm">
+        <div className="prose prose-invert prose-sm max-w-none font-mono text-chrome text-fg-secondary [&_h1]:text-fg-primary [&_h2]:text-fg-primary [&_h3]:text-fg-primary [&_code]:text-fg-primary [&_pre]:bg-bg-elevated [&_pre]:rounded-sm">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{plan}</ReactMarkdown>
         </div>
       </div>
