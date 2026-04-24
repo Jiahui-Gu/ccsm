@@ -431,7 +431,10 @@ const zh: EnCatalog = {
     cmdToggleSidebar: '切换侧边栏',
     cmdImport: '从 Claude Code 导入…',
     cmdOpenSettings: '打开设置',
-    cmdSwitchTheme: '切换主题 \u2192 {{next}}'
+    cmdSwitchTheme: '切换主题 \u2192 {{next}}',
+    hintNavigate: '导航',
+    hintSelect: '选择',
+    hintClose: '关闭'
   },
   prDialog: {
     title: '创建 Pull Request',
