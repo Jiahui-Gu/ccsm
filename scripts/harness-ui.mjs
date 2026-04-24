@@ -71,8 +71,11 @@ async function caseNoSessionsLanding({ win, log }) {
   await win.waitForTimeout(300);
 
   const main = win.locator('main');
-  const newBtn = main.getByRole('button', { name: /^New Session$/ });
-  const importBtn = main.getByRole('button', { name: /^Import Session$/ });
+  // Task #329: empty-state CTA copy is sentence case ("New session" /
+  // "Import a CLI session"). The test stays anchored to the i18n strings
+  // surfaced under [data-testid="first-run-empty"].
+  const newBtn = main.getByRole('button', { name: /^New session$/ });
+  const importBtn = main.getByRole('button', { name: /^Import a CLI session$/ });
   await newBtn.waitFor({ state: 'visible', timeout: 5000 });
   await importBtn.waitFor({ state: 'visible', timeout: 5000 });
 
@@ -84,6 +87,14 @@ async function caseNoSessionsLanding({ win, log }) {
   // The old "No sessions yet" / "Create a session to start …" copy must be gone.
   const oldCopy = await win.getByText(/No sessions yet|Create a session to start|Import from Claude Code/i).count();
   if (oldCopy > 0) throw new Error('legacy no-sessions copy still present');
+
+  // Welcome line + tertiary group CTA + tip should all render (task #329).
+  const welcome = await win.getByText(/Welcome to ccsm\./i).count();
+  if (welcome === 0) throw new Error('first-run welcome line missing');
+  const groupCta = await win.getByRole('button', { name: /^Create a new group$/ }).count();
+  if (groupCta === 0) throw new Error('first-run "Create a new group" tertiary CTA missing');
+  const tip = await win.getByText(/groups organize sessions by task, not by repo/i).count();
+  if (tip === 0) throw new Error('first-run tip line missing');
 
   log(`both buttons ${a.width.toFixed(1)}x${a.height.toFixed(1)}`);
 }
