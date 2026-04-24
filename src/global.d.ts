@@ -25,8 +25,9 @@ type StartResult =
   | {
       ok: false;
       error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
+      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING' | 'CLI_SPAWN_FAILED';
       searchedPaths?: string[];
+      detail?: string;
     };
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };

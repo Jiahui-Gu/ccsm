@@ -58,8 +58,15 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   // Generic init failure — F7 banner handles this. Set the session-level
   // flag instead of appending an error block, so a retry can replace the
   // banner in-place without polluting chat history with repeated errors.
+  // For CLI_SPAWN_FAILED we tack the captured stderr tail onto the message
+  // so the banner shows *why* the CLI bailed (missing dependency, bad shim,
+  // ENOENT after spawn, etc.) rather than a bare "agent failed to start".
+  const errMessage =
+    res.errorCode === 'CLI_SPAWN_FAILED' && res.detail
+      ? `${res.error} — ${res.detail}`
+      : res.error;
   store.setSessionInitFailure(sessionId, {
-    error: res.error,
+    error: errMessage,
     errorCode: res.errorCode,
     searchedPaths: res.searchedPaths,
   });
