@@ -334,7 +334,13 @@ const en = {
     allowAlwaysBtnFallback: 'Always allow this tool this session',
     allowAlwaysHint: 'Skip the prompt for any {{tool}} call until you quit the app. Resets next launch.',
     allowAlwaysHintFallback: 'Skip the prompt for any call to this tool until you quit the app. Resets next launch.',
-    rejectBtn: 'Reject (N)'
+    rejectBtn: 'Reject (N)',
+    selectAll: 'All',
+    selectNone: 'None',
+    hunkLabel: 'Hunk {{n}}',
+    allowSelected: 'Allow selected ({{selected}}/{{total}})',
+    rejectAll: 'Reject all',
+    applying: 'Applying…'
   },
   questionBlock: {
     title: 'Question awaiting answer',

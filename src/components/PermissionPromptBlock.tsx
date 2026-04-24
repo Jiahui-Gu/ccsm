@@ -1,9 +1,11 @@
-import React, { useEffect, useId, useRef } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ShieldAlert } from 'lucide-react';
+import { Loader2, ShieldAlert } from 'lucide-react';
 import { Button } from './ui/Button';
 import { useTranslation } from '../i18n/useTranslation';
 import { DURATION_RAW, EASING } from '../lib/motion';
+import { DiffView } from './chat/DiffView';
+import { diffFromToolInput } from '../utils/diff';
 
 export interface PermissionPromptBlockProps {
   /** Short human description, e.g. "Bash: ls -la". Used as the fallback summary. */
@@ -16,6 +18,13 @@ export interface PermissionPromptBlockProps {
   onReject?: () => void;
   /** Third option: allow now AND remember for the rest of this app session. */
   onAllowAlways?: () => void;
+  /**
+   * Per-hunk partial accept (#306). Only invoked for Edit/Write/MultiEdit
+   * tool inputs that produce a parsable `DiffSpec`. Receives the array of
+   * hunk indices the user wants to apply (always non-empty when called —
+   * the empty selection short-circuits to `onReject`).
+   */
+  onAllowPartial?: (acceptedHunks: number[]) => void;
   /** When false, suppress the auto-focus-on-mount behaviour. */
   autoFocus?: boolean;
 }
@@ -72,6 +81,7 @@ export function PermissionPromptBlock({
   onAllow,
   onReject,
   onAllowAlways,
+  onAllowPartial,
   autoFocus = true
 }: PermissionPromptBlockProps) {
   const { t } = useTranslation();
@@ -82,6 +92,30 @@ export function PermissionPromptBlock({
   const allowRef = useRef<HTMLButtonElement>(null);
   const allowAlwaysRef = useRef<HTMLButtonElement>(null);
   const rejectRef = useRef<HTMLButtonElement>(null);
+
+  // Edit/Write/MultiEdit -> derive a DiffSpec so we can render per-hunk
+  // checkboxes (#306). For all other tools the spec stays null and we keep
+  // the legacy flat key/value summary path. `useMemo` so reference stays
+  // stable across re-renders driven by selection toggles.
+  const diffSpec = useMemo(
+    () => (toolName ? diffFromToolInput(toolName, toolInput) : null),
+    [toolName, toolInput]
+  );
+  const hunkCount = diffSpec?.hunks.length ?? 0;
+  const hasHunkSelection = hunkCount > 0 && !!onAllowPartial;
+  const [selection, setSelection] = useState<Set<number>>(() => {
+    // Default: all hunks selected. Matches today's whole-allow behavior on
+    // first interaction so a user who clicks Allow without touching the
+    // checkboxes gets the same outcome as before.
+    return new Set(Array.from({ length: hunkCount }, (_, i) => i));
+  });
+  // If the toolInput shape changes mid-prompt (rare but defensive), reseed
+  // selection to "all" so we don't leave stale indices.
+  useEffect(() => {
+    if (!hasHunkSelection) return;
+    setSelection(new Set(Array.from({ length: hunkCount }, (_, i) => i)));
+  }, [hasHunkSelection, hunkCount]);
+  const [resolving, setResolving] = useState(false);
 
   // Focus Reject on mount — safer default. Never steal focus away from any
   // text-entry surface the user is currently in (input / textarea /
@@ -129,6 +163,41 @@ export function PermissionPromptBlock({
     return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Resolve helpers — also flip the local `resolving` flag so the buttons
+  // turn into "Applying…" spinners. The wait block usually unmounts on the
+  // next render after the store mutation lands, so the spinner is mostly a
+  // belt-and-suspenders against double-clicks (and gives the user a beat of
+  // visual feedback if the IPC path is slow).
+  const guarded = (fn?: () => void) => () => {
+    if (!fn || resolving) return;
+    setResolving(true);
+    fn();
+  };
+  const handleAllowPartial = () => {
+    if (resolving || !onAllowPartial) return;
+    const indices = Array.from(selection).sort((a, b) => a - b);
+    if (indices.length === 0) {
+      // 0 selected → degrade to deny. Mirrors the IPC contract where
+      // acceptedHunks=[] means "deny", but using onReject keeps the trace
+      // text consistent with the user's intent.
+      if (onReject) {
+        setResolving(true);
+        onReject();
+      }
+      return;
+    }
+    if (indices.length === hunkCount && onAllow) {
+      // All hunks selected → fall through to the simpler whole-allow IPC.
+      // Saves the main-process `updatedInput` reconstruction for the common
+      // case where the user didn't actually deselect anything.
+      setResolving(true);
+      onAllow();
+      return;
+    }
+    setResolving(true);
+    onAllowPartial(indices);
+  };
 
   // Global-ish Y/N hotkeys, scoped to this prompt: we only listen while
   // mounted and only fire if the user isn't currently typing into an input /
@@ -185,7 +254,10 @@ export function PermissionPromptBlock({
       const key = e.key.toLowerCase();
       if (key === 'y') {
         e.preventDefault();
-        onAllow?.();
+        // Y honours the per-hunk selection: same path as clicking the
+        // primary button. Falls back to whole-allow when there's no diff.
+        if (hasHunkSelection) handleAllowPartial();
+        else onAllow?.();
       } else if (key === 'n') {
         e.preventDefault();
         onReject?.();
@@ -193,9 +265,21 @@ export function PermissionPromptBlock({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onAllow, onReject]);
+    // handleAllowPartial closes over selection/resolving — keep it out of
+    // the dep array intentionally (we rebuild on every keydown anyway via
+    // the latest closure). onAllow/onReject identity is the meaningful dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onAllow, onReject, hasHunkSelection]);
 
   const summary = formatToolInputSummary(toolInput);
+  const selectedCount = selection.size;
+  const allSelected = hasHunkSelection && selectedCount === hunkCount;
+  const noneSelected = hasHunkSelection && selectedCount === 0;
+  const primaryLabel = noneSelected
+    ? t('permissionPrompt.rejectAll')
+    : hasHunkSelection
+      ? t('permissionPrompt.allowSelected', { selected: selectedCount, total: hunkCount })
+      : t('permissionPrompt.allowBtn');
 
   return (
     <motion.div
@@ -230,17 +314,52 @@ export function PermissionPromptBlock({
       <div id={descId} className="mt-1 font-mono text-chrome text-fg-secondary whitespace-pre-wrap break-words">
         {prompt}
       </div>
-      {summary.length > 0 && (
-        <dl className="mt-1 border-l border-border-subtle pl-2 font-mono text-meta text-fg-secondary">
-          {summary.map(({ key, value }) => (
-            <div key={key} className="flex gap-2 py-0.5">
-              <dt className="text-fg-tertiary shrink-0">{key}</dt>
-              <dd className="min-w-0 break-words whitespace-pre-wrap text-fg-primary">
-                {value.length > 400 ? value.slice(0, 400) + '…' : value}
-              </dd>
-            </div>
-          ))}
-        </dl>
+      {hasHunkSelection && diffSpec ? (
+        <div className="mt-1" data-perm-diff="">
+          <div className="ml-6 mb-1 flex items-center gap-2 font-mono text-mono-xs text-fg-tertiary">
+            <span>{t('permissionPrompt.allowSelected', { selected: selectedCount, total: hunkCount })}</span>
+            <span aria-hidden className="text-fg-tertiary/60">·</span>
+            <button
+              type="button"
+              data-perm-select-all=""
+              disabled={resolving || allSelected}
+              onClick={() =>
+                setSelection(new Set(Array.from({ length: hunkCount }, (_, i) => i)))
+              }
+              className="px-1.5 py-0.5 rounded-sm border border-border-subtle hover:border-accent/60 hover:text-fg-secondary active:bg-bg-hover transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              {t('permissionPrompt.selectAll')}
+            </button>
+            <button
+              type="button"
+              data-perm-select-none=""
+              disabled={resolving || noneSelected}
+              onClick={() => setSelection(new Set())}
+              className="px-1.5 py-0.5 rounded-sm border border-border-subtle hover:border-accent/60 hover:text-fg-secondary active:bg-bg-hover transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              {t('permissionPrompt.selectNone')}
+            </button>
+          </div>
+          <DiffView
+            diff={diffSpec}
+            selection={selection}
+            onSelectionChange={setSelection}
+            disabled={resolving}
+          />
+        </div>
+      ) : (
+        summary.length > 0 && (
+          <dl className="mt-1 border-l border-border-subtle pl-2 font-mono text-meta text-fg-secondary">
+            {summary.map(({ key, value }) => (
+              <div key={key} className="flex gap-2 py-0.5">
+                <dt className="text-fg-tertiary shrink-0">{key}</dt>
+                <dd className="min-w-0 break-words whitespace-pre-wrap text-fg-primary">
+                  {value.length > 400 ? value.slice(0, 400) + '…' : value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        )
       )}
       <div className="mt-2 flex items-center justify-end gap-2">
         <Button
@@ -248,11 +367,12 @@ export function PermissionPromptBlock({
           variant="secondary"
           size="sm"
           data-perm-action="reject"
-          onClick={onReject}
+          disabled={resolving}
+          onClick={guarded(onReject)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              onReject?.();
+              guarded(onReject)();
             }
           }}
         >
@@ -272,11 +392,12 @@ export function PermissionPromptBlock({
                 ? t('permissionPrompt.allowAlwaysHint', { tool: toolName })
                 : t('permissionPrompt.allowAlwaysHintFallback')
             }
-            onClick={onAllowAlways}
+            disabled={resolving}
+            onClick={guarded(onAllowAlways)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
-                onAllowAlways?.();
+                guarded(onAllowAlways)();
               }
             }}
           >
@@ -290,15 +411,24 @@ export function PermissionPromptBlock({
           variant="primary"
           size="sm"
           data-perm-action="allow"
-          onClick={onAllow}
+          disabled={resolving}
+          onClick={hasHunkSelection ? handleAllowPartial : guarded(onAllow)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              onAllow?.();
+              if (hasHunkSelection) handleAllowPartial();
+              else guarded(onAllow)();
             }
           }}
         >
-          {t('permissionPrompt.allowBtn')}
+          {resolving ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2 size={12} className="animate-spin" aria-hidden />
+              {t('permissionPrompt.applying')}
+            </span>
+          ) : (
+            primaryLabel
+          )}
         </Button>
       </div>
     </motion.div>
