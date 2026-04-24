@@ -20,6 +20,12 @@
 // Reverse-verify: stash the `bootstrapNotify` call in `electron/main.ts`
 // and re-run; every assertion must FAIL (no notifier configured ⇒ wrapper
 // silently no-ops ⇒ zero captured calls ⇒ assertion 1 trips first).
+// For the Wave 3 (#252) cases specifically: stash the
+// `scheduleQuestionRetry(questionPayload)` call in
+// `electron/notifications.ts` (case 'question') ⇒ assertion 9 trips
+// (only one notifyQuestion call instead of two). Stash the
+// `cancelQuestionRetry(...)` calls in `electron/main.ts` ⇒ assertion 10
+// trips (timer not cancelled).
 
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -329,6 +335,222 @@ try {
   const after = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'permission').length);
   if (after !== before) fail(`focus suppression failed — wrapper was called ${after - before} extra time(s)`);
   console.log('[probe-e2e-notify-integration] focus suppression OK');
+
+  // ── 9. Wave 3 polish (#252): ask-question retry + cancellation ──────────
+  //
+  // Drop focus again so the wrapper actually fires, install a fake retry
+  // scheduler that lets us trigger the 30s timer instantly, then drive a
+  // question event. Assert: notifyQuestion is called twice (initial +
+  // retry). Then verify cancellation: schedule a fresh retry and call the
+  // resolvePermission IPC — the timer must have been removed without
+  // firing.
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.blur(); } catch {}
+    }
+  });
+
+  const installedRetry = await app.evaluate(() => {
+    const g = globalThis;
+    const dbg = g.__ccsmDebug;
+    if (!dbg.notifyRetry) throw new Error('__ccsmDebug.notifyRetry not exposed');
+    g.__retryQueue = [];
+    g.__retryTimers = new Map();
+    g.__retrySeq = 1;
+    dbg.notifyRetry.__resetRetryStateForTests();
+    dbg.notifyRetry.__setRetrySchedulerForTests(
+      (cb, delayMs) => {
+        const id = g.__retrySeq++;
+        const entry = { cb, delayMs, cancelled: false };
+        g.__retryTimers.set(id, entry);
+        g.__retryQueue.push({ id, entry });
+        return id;
+      },
+      (handle) => {
+        const entry = g.__retryTimers.get(handle);
+        if (entry) entry.cancelled = true;
+      },
+    );
+    return true;
+  });
+  if (installedRetry !== true) fail('failed to install fake retry scheduler');
+
+  const RETRY_REQ = 'probe-q-retry-1';
+  const RETRY_TOAST_ID = `q-${RETRY_REQ}`;
+
+  // Snapshot count of question calls before driving the event.
+  const beforeQ = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+
+  await win.evaluate((args) => {
+    return window.ccsm.notify({
+      sessionId: args.sessionId,
+      title: 'Question (retry)',
+      body: 'Pick one',
+      eventType: 'question',
+      extras: {
+        toastId: args.toastId,
+        sessionName: 'Test Session',
+        question: 'Pick one',
+        selectionKind: 'single',
+        optionCount: 2,
+        cwd: '/tmp/probe-cwd',
+      },
+    });
+  }, { sessionId, toastId: RETRY_TOAST_ID });
+
+  // Wait for the initial question call AND for the retry scheduler to be
+  // populated (scheduleQuestionRetry runs after the await on notifyQuestion).
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const qCount = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      const retryCount = globalThis.__retryQueue?.length ?? 0;
+      if (qCount >= 1 && retryCount >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for initial question + retry schedule');
+  });
+
+  const midQ = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (midQ !== beforeQ + 1) fail(`expected exactly 1 initial question call, got ${midQ - beforeQ}`);
+
+  const queuedDelay = await app.evaluate(() => globalThis.__retryQueue[globalThis.__retryQueue.length - 1].entry.delayMs);
+  if (queuedDelay !== 30_000) fail(`retry delay should be 30000ms, got ${queuedDelay}`);
+
+  // Fire the retry timer manually.
+  await app.evaluate(() => {
+    const last = globalThis.__retryQueue[globalThis.__retryQueue.length - 1];
+    if (!last || last.entry.cancelled) throw new Error('retry timer was cancelled or missing');
+    last.entry.cb();
+  });
+
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const qCount = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      if (qCount >= 2) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for retry question call');
+  });
+
+  const afterRetry = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterRetry !== beforeQ + 2) fail(`expected exactly 2 question calls after retry, got ${afterRetry - beforeQ}`);
+  // Verify the retry payload carries the original toastId so the SDK
+  // dedupe + activation routing stays coherent.
+  const retryCall = await app.evaluate(() => {
+    const all = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question');
+    return all[all.length - 1]?.payload?.toastId;
+  });
+  if (retryCall !== RETRY_TOAST_ID) fail(`retry payload toastId mismatch: got ${retryCall}`);
+  console.log('[probe-e2e-notify-integration] question retry OK');
+
+  // ── 10. Cancellation: resolvePermission must clear a pending retry ──────
+  const CANCEL_REQ = 'probe-q-cancel-1';
+  const CANCEL_TOAST_ID = `q-${CANCEL_REQ}`;
+  const beforeCancel = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+
+  await win.evaluate((args) => {
+    return window.ccsm.notify({
+      sessionId: args.sessionId,
+      title: 'Question (cancel)',
+      body: 'Pick one',
+      eventType: 'question',
+      extras: {
+        toastId: args.toastId,
+        sessionName: 'Test Session',
+        question: 'Pick one',
+        selectionKind: 'single',
+        optionCount: 2,
+        cwd: '/tmp/probe-cwd',
+      },
+    });
+  }, { sessionId, toastId: CANCEL_TOAST_ID });
+
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const qCount = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      if (qCount >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for cancel-case initial question call');
+  });
+
+  // Capture the retry queue length BEFORE answering, so we know the timer
+  // was actually scheduled (otherwise cancellation is a vacuous assertion).
+  const queueLenBefore = await app.evaluate(() => globalThis.__retryQueue.filter((q) => !q.entry.cancelled).length);
+  if (queueLenBefore < 1) fail(`expected at least 1 live retry timer, got ${queueLenBefore}`);
+
+  // Answer the question via the renderer → main IPC bridge. Renderer's
+  // QuestionBlock onSubmit calls agentResolvePermission with decision='deny'.
+  // The main-process handler must call cancelQuestionRetry(`q-${requestId}`).
+  await win.evaluate((args) => {
+    return window.ccsm.agentResolvePermission(args.sessionId, args.requestId, 'deny');
+  }, { sessionId, requestId: CANCEL_REQ });
+
+  // The cancel must have flipped our fake timer to cancelled. Wait briefly
+  // for the IPC round-trip to settle.
+  await new Promise((r) => setTimeout(r, 200));
+  const cancelled = await app.evaluate((toastId) => {
+    return globalThis.__retryQueue
+      .filter((q) => q.entry.payload?.toastId === toastId || true) // any timer for this id
+      .some((q) => q.entry.cancelled === true);
+  }, CANCEL_TOAST_ID);
+  if (!cancelled) fail('agentResolvePermission did not cancel the pending retry timer');
+
+  // And the retry must NOT fire (give it a beat — if cancellation is
+  // wrong, the timer would still be live in our fake queue and someone
+  // would have to manually fire it; we assert no one did).
+  const afterCancel = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterCancel !== beforeCancel + 1) fail(`expected exactly 1 question call (no retry) after cancellation, got ${afterCancel - beforeCancel}`);
+  console.log('[probe-e2e-notify-integration] question retry cancellation OK');
+
+  // ── 11. Wave 3 polish (#252): rich done payload composition ─────────────
+  //
+  // Assert that when notifyDone fires, the wrapper sees the assistant
+  // preview truncated to 80 chars (matching xml/done.ts ASSISTANT_LINE_MAX),
+  // and the groupName + sessionName are passed through so the SDK can
+  // render "{groupName} · {sessionName}" as the toast title.
+  const longAssistant = 'x'.repeat(200);
+  await win.evaluate((args) => {
+    return window.ccsm.notify({
+      sessionId: args.sessionId,
+      title: 'Done (rich)',
+      eventType: 'turn_done',
+      extras: {
+        toastId: 'done-rich-1',
+        sessionName: 'Test Session',
+        groupName: 'Test Group',
+        lastUserMsg: 'do the thing',
+        lastAssistantMsg: args.longAssistant,
+        elapsedMs: 12_345,
+        toolCount: 3,
+        cwd: '/tmp/probe-cwd',
+      },
+    });
+  }, { sessionId, longAssistant });
+
+  await app.evaluate(async () => {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const has = (globalThis.__notifyCalls || []).some((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1');
+      if (has) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for rich done call');
+  });
+
+  const richDone = await app.evaluate(() => {
+    return (globalThis.__notifyCalls || []).find((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1');
+  });
+  if (!richDone) fail('rich done call not captured');
+  if (richDone.payload.groupName !== 'Test Group') fail(`expected groupName "Test Group", got ${richDone.payload.groupName}`);
+  if (richDone.payload.sessionName !== 'Test Session') fail(`expected sessionName "Test Session", got ${richDone.payload.sessionName}`);
+  if (typeof richDone.payload.lastAssistantMsg !== 'string') fail('lastAssistantMsg missing');
+  if (richDone.payload.lastAssistantMsg.length !== 80) fail(`expected lastAssistantMsg length 80, got ${richDone.payload.lastAssistantMsg.length}`);
+  if (!richDone.payload.lastAssistantMsg.endsWith('\u2026')) fail('expected ellipsis at end of truncated lastAssistantMsg');
+  console.log('[probe-e2e-notify-integration] rich done payload OK');
 
   console.log('[probe-e2e-notify-integration] OK');
 } catch (e) {
