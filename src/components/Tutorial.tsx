@@ -53,7 +53,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
   const isFirst = stepIdx === 0;
 
   return (
-    <div className="relative flex h-full w-full flex-col">
+    <div className="relative flex h-full w-full flex-col" data-testid="tutorial">
       <button
         type="button"
         onClick={onSkip}
@@ -72,7 +72,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
               transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
               className="space-y-4"
             >
-              <div className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">
+              <div className="font-mono text-mono-sm text-fg-tertiary">
                 {t('tutorial.stepXofY', { current: stepIdx + 1, total: steps.length })}
               </div>
               <h1 className="text-display font-semibold text-fg-primary leading-tight">{step.title}</h1>
@@ -220,7 +220,7 @@ function GroupsVisual() {
           >
             <div className="flex items-center gap-2 mb-1.5">
               <FolderTree size={11} className="text-fg-tertiary" />
-              <span className="font-mono text-mono-sm uppercase tracking-wider text-fg-tertiary">
+              <span className="font-mono text-mono-sm text-fg-tertiary">
                 {g.name}
               </span>
             </div>

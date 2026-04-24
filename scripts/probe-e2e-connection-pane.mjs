@@ -125,6 +125,26 @@ try {
   const configured = await dialog.getByText(/^configured$/i).first().isVisible().catch(() => false);
   if (!configured) fail('expected "Configured" status for auth token');
 
+  // SCREAMING-strings guard (PR #248 Gap #1, task #315). Discovered-models
+  // source badges (`settings`, `cli-picker`, `fallback`) must NOT be
+  // CSS-uppercased. Walk every element inside the discovered-models list and
+  // assert computed `text-transform !== uppercase`.
+  const screamingBadges = await win.evaluate(() => {
+    const list = document.querySelector('[data-connection-models]');
+    if (!list) return [];
+    const offenders = [];
+    list.querySelectorAll('*').forEach((el) => {
+      const txt = (el.textContent || '').trim();
+      if (!txt || el.children.length > 0) return;
+      const tt = window.getComputedStyle(el).textTransform;
+      if (tt === 'uppercase') offenders.push(`${el.tagName}: ${txt.slice(0, 60)}`);
+    });
+    return offenders;
+  });
+  if (screamingBadges.length > 0) {
+    fail(`discovered-models list has CSS-uppercased text (forbidden):\n  ${screamingBadges.join('\n  ')}`);
+  }
+
   // CRITICAL: the literal token must NOT appear anywhere in the rendered DOM.
   const fullText = await win.evaluate(() => document.body.innerText);
   if (fullText.includes(FIXTURE_TOKEN)) {

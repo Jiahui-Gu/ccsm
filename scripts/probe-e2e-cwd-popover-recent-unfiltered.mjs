@@ -159,6 +159,19 @@ await win.waitForFunction(
   fail(`clearing input should restore all ${RECENT.length} options, got ${count}`);
 });
 
+// SCREAMING-strings guard (PR #248 Gap #1, task #315). The "Recent" header
+// must NOT be CSS-uppercased.
+const recentHeader = await dialog.locator('text=/^Recent$/').first();
+const recentOffender = await recentHeader.evaluate((el) => {
+  return window.getComputedStyle(el).textTransform === 'uppercase'
+    ? el.textContent
+    : null;
+});
+if (recentOffender) {
+  await app.close();
+  fail(`"Recent" header is CSS-uppercased — forbidden per feedback_no_uppercase_ui_strings.md`);
+}
+
 console.log('\n[probe-e2e-cwd-popover-recent-unfiltered] OK');
 console.log(`  open with active cwd "${ACTIVE_CWD}" → all ${RECENT.length} recent visible`);
 console.log('  type "bar" → filters to 1; clear → restores 3');
