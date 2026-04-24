@@ -74,6 +74,7 @@ import {
   deriveTopModel,
   type ScannableSession,
 } from './import-scanner';
+import { loadImportableHistory } from './import-history';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
@@ -761,6 +762,20 @@ app.whenReady().then(() => {
   ipcMain.handle('import:scan', () => getImportableSessions());
   ipcMain.handle('import:recentCwds', () => getRecentCwds());
   ipcMain.handle('import:topModel', () => getTopModel());
+  ipcMain.handle(
+    'import:loadHistory',
+    async (e, projectDir: unknown, sessionId: unknown) => {
+      if (!fromMainFrame(e)) return [];
+      if (typeof projectDir !== 'string' || typeof sessionId !== 'string') return [];
+      try {
+        return await loadImportableHistory(projectDir, sessionId);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[main] import:loadHistory failed', err);
+        return [];
+      }
+    }
+  );
 
   // Batched best-effort existence probe for arbitrary filesystem paths.
   // The renderer uses this on hydration to flag sessions whose persisted
