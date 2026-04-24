@@ -3,7 +3,7 @@ import { AlertOctagon, RotateCw, Settings } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useStore } from '../stores/store';
 import { startSessionAndReconcile } from '../agent/startSession';
-import { TopBanner, TopBannerPresence } from './chrome/TopBanner';
+import { TopBanner, TopBannerAction, TopBannerPresence } from './chrome/TopBanner';
 
 /**
  * Banner shown at the top of the right pane when `agent:start` failed for the
@@ -67,34 +67,23 @@ export function AgentInitFailedBanner({
           onDismiss={onDismiss}
           actions={
             <>
-              <button
-                type="button"
+              <TopBannerAction
+                tone="primary"
                 onClick={onRetry}
                 disabled={retrying}
                 data-agent-init-failed-retry
-                className={cn(
-                  'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
-                  'bg-black/25 hover:bg-black/35 active:bg-black/45 transition-colors duration-150',
-                  'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]',
-                  'disabled:opacity-60 disabled:cursor-not-allowed'
-                )}
               >
                 <RotateCw size={12} className={cn('stroke-[2]', retrying && 'animate-spin')} />
                 <span>{retrying ? 'Retrying…' : 'Retry'}</span>
-              </button>
-              <button
-                type="button"
+              </TopBannerAction>
+              <TopBannerAction
+                tone="secondary"
                 onClick={onRequestReconfigure}
                 data-agent-init-failed-reconfigure
-                className={cn(
-                  'shrink-0 h-7 px-2.5 rounded text-meta font-medium inline-flex items-center gap-1.5',
-                  'bg-black/10 hover:bg-black/25 active:bg-black/35 transition-colors duration-150',
-                  'outline-none focus-visible:shadow-[0_0_0_2px_oklch(1_0_0_/_0.18)]'
-                )}
               >
                 <Settings size={12} className="stroke-[2]" />
                 <span>Reconfigure</span>
-              </button>
+              </TopBannerAction>
             </>
           }
         />

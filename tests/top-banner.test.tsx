@@ -8,7 +8,7 @@ vi.mock('../src/agent/startSession', () => ({
   startSessionAndReconcile: vi.fn(async () => undefined),
 }));
 
-import { TopBanner } from '../src/components/chrome/TopBanner';
+import { TopBanner, TopBannerAction } from '../src/components/chrome/TopBanner';
 import { AgentInitFailedBanner } from '../src/components/AgentInitFailedBanner';
 import { AgentDiagnosticBanner } from '../src/components/AgentDiagnosticBanner';
 import { ClaudeCliMissingBanner } from '../src/components/ClaudeCliMissingBanner';
@@ -89,6 +89,76 @@ describe('<TopBanner />', () => {
       />
     );
     expect(screen.getByRole('button', { name: 'Dismiss diagnostic' })).toBeInTheDocument();
+  });
+});
+
+describe('<TopBannerAction />', () => {
+  // The shared action button is the canonical surface for every banner CTA
+  // (#273). These tests pin down the contract that previously lived as four
+  // duplicated inline impls — every variant must keep the same focus halo
+  // and forward-through behavior so the banners stay interchangeable.
+  it('renders as type="button" with the focus halo applied for every tone', () => {
+    const tones = ['primary', 'secondary', 'neutral', 'dismiss'] as const;
+    for (const tone of tones) {
+      cleanup();
+      render(
+        <TopBannerAction tone={tone} aria-label={`tone-${tone}`}>
+          go
+        </TopBannerAction>
+      );
+      const btn = screen.getByRole('button', { name: `tone-${tone}` });
+      expect(btn).toHaveAttribute('type', 'button');
+      // Focus halo class is the load-bearing piece that used to be
+      // duplicated four times — assert it's still present on the rendered
+      // node regardless of tone.
+      expect(btn.className).toContain('focus-visible:shadow-');
+    }
+  });
+
+  it('switches to a square icon-only footprint when shape="square"', () => {
+    render(
+      <TopBannerAction tone="dismiss" shape="square" aria-label="close">
+        x
+      </TopBannerAction>
+    );
+    const btn = screen.getByRole('button', { name: 'close' });
+    // Square shape collapses width to match height (icon-only dismiss
+    // button); pill shape would be `px-2.5` instead.
+    expect(btn.className).toContain('h-7');
+    expect(btn.className).toContain('w-7');
+    expect(btn.className).not.toContain('px-2.5');
+  });
+
+  it('forwards onClick, disabled, and arbitrary data attributes to the underlying button', () => {
+    const onClick = vi.fn();
+    render(
+      <TopBannerAction
+        tone="primary"
+        onClick={onClick}
+        disabled
+        data-test-action="retry"
+      >
+        Retry
+      </TopBannerAction>
+    );
+    const btn = screen.getByRole('button', { name: 'Retry' });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('data-test-action', 'retry');
+    fireEvent.click(btn);
+    // Disabled buttons swallow click events — the assertion proves the
+    // disabled prop actually reached the DOM, not just the className.
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('fires onClick when enabled', () => {
+    const onClick = vi.fn();
+    render(
+      <TopBannerAction tone="secondary" onClick={onClick}>
+        Reconfigure
+      </TopBannerAction>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Reconfigure' }));
+    expect(onClick).toHaveBeenCalledTimes(1);
   });
 });
 
