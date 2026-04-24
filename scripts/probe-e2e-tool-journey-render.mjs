@@ -497,15 +497,19 @@ try {
     await win.waitForTimeout(200);
     const probe = await win.evaluate(() => {
       const btns = Array.from(document.querySelectorAll('main button[aria-expanded]'));
-      // Find the button whose row contains our tokens.
+      // Find the button whose OWN ToolBlock root contains the token. The
+      // previous `find` walked up 6 ancestor levels and matched the first
+      // ancestor whose textContent contained the token — but with two tool
+      // blocks rendered as siblings under the chat stream, both buttons
+      // share an ancestor (the stream root) whose textContent contains
+      // BOTH tokens. That made `find('ok-auto')` resolve to whichever
+      // button was iterated first (the error block), masking real bugs.
+      // The precise anchor is the ToolBlock root (`div.font-mono.text-chrome`)
+      // — each block's root contains exactly its own brief + result body.
       function find(token) {
         for (const b of btns) {
-          // Walk up to the block container, then check its text body.
-          let cur = b.parentElement;
-          for (let i = 0; i < 6 && cur; i++) {
-            if (cur.textContent && cur.textContent.includes(token)) return b;
-            cur = cur.parentElement;
-          }
+          const root = b.closest('div.font-mono.text-chrome');
+          if (root && root.textContent && root.textContent.includes(token)) return b;
         }
         return null;
       }
@@ -647,23 +651,23 @@ try {
     // ChatStream already passes as `now` — set the system clock forward in
     // the store after seeding so the elapsedMs counter crosses the
     // escalation threshold.
-    await win.evaluate(() => {
-      const calls = [];
-      window.__ccsm = window.ccsm ?? {};
-      window.__cancelCalls = calls;
-      // Replace just the one method we want to observe; preserve the rest
-      // of the bridge so unrelated renderer code (notify, settings, etc.)
-      // still works.
-      window.ccsm = new Proxy(window.ccsm ?? {}, {
-        get(target, prop) {
-          if (prop === 'agentCancelToolUse') {
-            return (args) => {
-              calls.push(args);
-              return Promise.resolve({ ok: true });
-            };
-          }
-          return Reflect.get(target, prop);
-        },
+    // Stub the cancel IPC at the MAIN-process side, not on `window.ccsm`.
+    // The renderer bridge is exposed via `contextBridge.exposeInMainWorld`
+    // (`electron/preload.ts:366`), which makes `window.ccsm` non-writable
+    // and non-configurable. The previous probe stubbed it with
+    // `window.ccsm = new Proxy(...)` — that assignment silently no-ops in
+    // non-strict mode, so the original preload-bound `agentCancelToolUse`
+    // kept firing and the probe's `__cancelCalls` array stayed empty even
+    // though the click was reaching the bridge for real (proven by J9b
+    // passing). Overriding `ipcMain.handle('agent:cancelToolUse', ...)`
+    // from main bypasses the contextBridge guard entirely; same pattern
+    // already used by probe-e2e-askuserquestion-full.mjs.
+    await app.evaluate(({ ipcMain }) => {
+      const calls = (global.__cancelCalls = []);
+      try { ipcMain.removeHandler('agent:cancelToolUse'); } catch {}
+      ipcMain.handle('agent:cancelToolUse', (_e, args) => {
+        calls.push(args);
+        return { ok: true };
       });
     });
 
@@ -714,12 +718,14 @@ try {
       }
       await cancelEl.click();
       await win.waitForTimeout(150);
+      // The cancel-call list now lives in main (see app.evaluate stub above);
+      // text/aria are still renderer-side state on the same DOM node.
+      const calls = await app.evaluate(() => (global.__cancelCalls || []).slice());
       const observed = await win.evaluate(() => ({
-        calls: window.__cancelCalls.slice(),
         text: document.querySelector('[data-testid="tool-stall-cancel"]')?.textContent ?? null,
         aria: document.querySelector('[data-testid="tool-stall-cancel"]')?.getAttribute('aria-disabled') ?? null,
       }));
-      invokedWith = observed.calls[0] ?? null;
+      invokedWith = calls[0] ?? null;
       cancellingTextAfter = observed.text;
       ariaDisabledAfter = observed.aria;
     }
