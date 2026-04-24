@@ -78,9 +78,9 @@ export function initI18n(initialLanguage: SupportedLanguage = 'en') {
   });
   // Expose the singleton on window so E2E probes can introspect catalogs
   // (parity scans, protected-term checks). Mirrors the existing
-  // `window.__agentoryStore` debug affordance — same security trade-off.
+  // `window.__ccsmStore` debug affordance — same security trade-off.
   if (typeof window !== 'undefined') {
-    (window as unknown as { __agentoryI18n?: typeof i18next }).__agentoryI18n = i18next;
+    (window as unknown as { __ccsmI18n?: typeof i18next }).__ccsmI18n = i18next;
   }
   return i18next;
 }

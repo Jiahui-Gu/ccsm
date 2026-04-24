@@ -50,7 +50,7 @@ log(`START UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', AGENTORY_PROD_BUNDLE: '1' },
+  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
@@ -97,7 +97,7 @@ async function runCase({ caseName, files, prompt, toolName, expectedClicks }) {
   await win.waitForTimeout(1000);
 
   await win.evaluate((p) => {
-    const st = window.__agentoryStore?.getState?.();
+    const st = window.__ccsmStore?.getState?.();
     if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
   }, proj);
   await win.waitForTimeout(400);
@@ -138,7 +138,7 @@ async function runCase({ caseName, files, prompt, toolName, expectedClicks }) {
     await win.waitForTimeout(2000);
     snap = await win
       .evaluate((tn) => {
-        const st = window.__agentoryStore?.getState?.();
+        const st = window.__ccsmStore?.getState?.();
         const sid = st?.activeId;
         const blocks = st?.messagesBySession?.[sid] || [];
         const tools = blocks
@@ -256,7 +256,7 @@ const READ_PROMPT =
   await win.getByRole('button', { name: /new session/i }).first().click();
   await win.waitForTimeout(1000);
   await win.evaluate((p) => {
-    const st = window.__agentoryStore?.getState?.();
+    const st = window.__ccsmStore?.getState?.();
     if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
   }, proj);
   await win.waitForTimeout(400);
@@ -297,7 +297,7 @@ const READ_PROMPT =
     await win.waitForTimeout(2000);
     snap = await win
       .evaluate(() => {
-        const st = window.__agentoryStore?.getState?.();
+        const st = window.__ccsmStore?.getState?.();
         const sid = st?.activeId;
         const blocks = st?.messagesBySession?.[sid] || [];
         const reads = blocks

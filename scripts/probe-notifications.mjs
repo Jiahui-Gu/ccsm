@@ -11,7 +11,7 @@
 // re-run those in the live app — the renderer doesn't expose the dispatch
 // module on `window`, and the unit tests already pin the logic.
 //
-// Run: `AGENTORY_DEV_PORT=4182 npm run dev` in one terminal, then
+// Run: `CCSM_DEV_PORT=4182 npm run dev` in one terminal, then
 //      `node scripts/probe-notifications.mjs` in another.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -32,7 +32,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: process.env.AGENTORY_DEV_PORT ?? '4182'
+    CCSM_DEV_PORT: process.env.CCSM_DEV_PORT ?? '4182'
   }
 });
 
@@ -70,7 +70,7 @@ await win.evaluate(() => {
   /** @type {any} */
   const w = window;
   w.__probeFocusReceived = [];
-  if (w.agentory?.onNotificationFocus) {
+  if (w.ccsm?.onNotificationFocus) {
     w.agentory.onNotificationFocus((sessionId) => {
       w.__probeFocusReceived.push(sessionId);
     });
@@ -82,7 +82,7 @@ const drive = await win.evaluate(async () => {
   /** @type {any} */
   const w = window;
   if (!w.agentory || typeof w.agentory.notify !== 'function') {
-    return { ok: false, reason: 'window.agentory.notify missing' };
+    return { ok: false, reason: 'window.ccsm.notify missing' };
   }
   await w.agentory.notify({
     sessionId: 's-probe-1',

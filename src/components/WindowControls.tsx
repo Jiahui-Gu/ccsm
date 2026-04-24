@@ -122,7 +122,7 @@ function TitleButton({
 }
 
 export function WindowControls({ className }: { className?: string }) {
-  const api = window.agentory;
+  const api = window.ccsm;
   const platform = api?.window.platform ?? 'win32';
   const isMac = platform === 'darwin';
   const [isMax, setIsMax] = useState(false);
@@ -164,11 +164,11 @@ export function WindowControls({ className }: { className?: string }) {
 // Reserves the 78px the OS uses for traffic lights on macOS `hiddenInset`
 // windows. On other platforms, collapses to zero width.
 export function MacTrafficLightSpacer() {
-  const platform = window.agentory?.window.platform ?? 'win32';
+  const platform = window.ccsm?.window.platform ?? 'win32';
   if (platform !== 'darwin') return null;
   return <div aria-hidden className="w-[78px] shrink-0" />;
 }
 
 export function isMacPlatform(): boolean {
-  return (window.agentory?.window.platform ?? 'win32') === 'darwin';
+  return (window.ccsm?.window.platform ?? 'win32') === 'darwin';
 }

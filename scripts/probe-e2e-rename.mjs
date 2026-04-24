@@ -32,7 +32,7 @@ console.log(`[probe-e2e-rename] userData = ${ud.dir}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 const win = await appWindow(app);
 const errors = [];
@@ -64,13 +64,13 @@ async function bail(msg) {
 
 async function sessionName(id) {
   return await win.evaluate(
-    (sid) => window.__agentoryStore.getState().sessions.find((s) => s.id === sid)?.name ?? null,
+    (sid) => window.__ccsmStore.getState().sessions.find((s) => s.id === sid)?.name ?? null,
     id
   );
 }
 async function groupName(id) {
   return await win.evaluate(
-    (gid) => window.__agentoryStore.getState().groups.find((g) => g.id === gid)?.name ?? null,
+    (gid) => window.__ccsmStore.getState().groups.find((g) => g.id === gid)?.name ?? null,
     id
   );
 }

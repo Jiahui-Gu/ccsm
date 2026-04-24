@@ -6,11 +6,11 @@
 // with two synthetic sessions so we can click between them, then assert
 // `document.activeElement === textarea` after each click.
 //
-// Usage: AGENTORY_DEV_PORT=4181 npm run dev:web (background), then
+// Usage: CCSM_DEV_PORT=4181 npm run dev:web (background), then
 //   node scripts/probe-click-session-focus.mjs
 import { chromium } from 'playwright';
 
-const PORT = process.env.AGENTORY_DEV_PORT ?? '4181';
+const PORT = process.env.CCSM_DEV_PORT ?? '4181';
 const URL = `http://localhost:${PORT}/`;
 
 function fail(msg) {

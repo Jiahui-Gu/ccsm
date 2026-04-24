@@ -94,13 +94,13 @@ export async function runHarness(spec) {
   console.log(`[harness=${spec.name}] launching electron — ${filtered.length}/${spec.cases.length} case(s)`);
 
   const launchArgs = ['.', ...(spec.launch?.args ?? [])];
-  // AGENTORY_PROD_BUNDLE=1 forces electron/main.ts to loadFile from
+  // CCSM_PROD_BUNDLE=1 forces electron/main.ts to loadFile from
   // dist/renderer instead of expecting a dev server on localhost:4100.
   // Harness runs are CI-like by definition — no dev server is up.
   const launchEnv = {
     ...process.env,
     NODE_ENV: 'production',
-    AGENTORY_PROD_BUNDLE: '1',
+    CCSM_PROD_BUNDLE: '1',
     ...(spec.launch?.env ?? {})
   };
 
@@ -114,7 +114,7 @@ export async function runHarness(spec) {
   try {
     win = await appWindow(app);
     await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 20_000 });
+    await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
 
     if (spec.setup) {
       await spec.setup({ app, win });

@@ -13,7 +13,7 @@
 //
 //   2. Protected terms: walk the zh catalog. For every leaf string in the
 //      en catalog that contains a protected English proper noun (MCP, CLI,
-//      IPC, API, URL, JSON, JSONL, SDK, REST, Claude, Anthropic, Agentory,
+//      IPC, API, URL, JSON, JSONL, SDK, REST, Claude, Anthropic, CCSM,
 //      Electron, GitHub), the matching zh string MUST contain the same
 //      term verbatim. Catches transliteration regressions (e.g. someone
 //      "translates" "Claude Code CLI" to "克劳德代码命令行").
@@ -38,7 +38,7 @@ function fail(msg) {
 
 const PROTECTED_TERMS = [
   'MCP', 'CLI', 'IPC', 'API', 'URL', 'JSONL', 'JSON', 'SDK', 'REST',
-  'Claude', 'Anthropic', 'Agentory', 'Electron', 'GitHub'
+  'Claude', 'Anthropic', 'CCSM', 'Electron', 'GitHub'
 ];
 
 // Serve our freshly-built dist/renderer on a unique port — never trust
@@ -54,7 +54,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT),
+    CCSM_DEV_PORT: String(PORT),
     LANG: 'en_US.UTF-8'
   }
 });
@@ -63,7 +63,7 @@ let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
   await win.waitForTimeout(400);
 
   // Force English first (boot may resolve to system locale).
@@ -177,8 +177,8 @@ try {
   // Read both catalogs from the renderer (they're bundled into the i18next
   // resource bundle).
   const parity = await win.evaluate((terms) => {
-    const i18next = (window).__agentoryI18n;
-    if (!i18next || !i18next.store) return { error: 'i18next not exposed on window.__agentoryI18n' };
+    const i18next = (window).__ccsmI18n;
+    if (!i18next || !i18next.store) return { error: 'i18next not exposed on window.__ccsmI18n' };
     const enRes = i18next.store.data.en?.translation;
     const zhRes = i18next.store.data.zh?.translation;
     if (!enRes || !zhRes) return { error: 'translation namespace missing' };

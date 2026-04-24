@@ -467,7 +467,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       return;
     }
 
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api || !session) return;
 
     // Local echo: render the user's turn immediately. We skip the SDK's
@@ -514,7 +514,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
   async function stop() {
     if (!running) return;
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api) return;
     // Flag the session BEFORE the IPC call so the upcoming
     // `result { error_during_execution }` frame is rendered as a neutral

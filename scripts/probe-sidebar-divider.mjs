@@ -13,7 +13,7 @@ await win.waitForTimeout(2500);
 
 // Make sure sidebar is rendered and there is at least one session so main is mounted.
 await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (s.sessions.length === 0) s.createSession('C:\\Users\\jiahuigu\\projects\\agentory-next');
 });
 await win.waitForTimeout(600);

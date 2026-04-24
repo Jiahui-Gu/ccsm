@@ -141,7 +141,7 @@ export function initDb(): Database.Database {
   if (db) return db;
   const dir = app.getPath('userData');
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, 'agentory.db');
+  const file = path.join(dir, 'ccsm.db');
 
   let handle = new Database(file);
   handle = ensureHealthyDb(file, handle);
@@ -270,7 +270,7 @@ const CLAUDE_BIN_PATH_KEY = 'claudeBinPath';
 /**
  * Load the persisted user-picked claude binary path (the "Browse for binary"
  * flow in the first-run wizard). Returns `null` when the user has not picked
- * one; caller falls back to `AGENTORY_CLAUDE_BIN` env then PATH.
+ * one; caller falls back to `CCSM_CLAUDE_BIN` env then PATH.
  */
 export function loadClaudeBinPath(): string | null {
   return loadState(CLAUDE_BIN_PATH_KEY);

@@ -23,9 +23,9 @@ let writeTimer: ReturnType<typeof setTimeout> | null = null;
 export async function hydrateDrafts(): Promise<void> {
   if (hydrated) return;
   hydrated = true;
-  if (!window.agentory) return;
+  if (!window.ccsm) return;
   try {
-    const raw = await window.agentory.loadState(STATE_KEY);
+    const raw = await window.ccsm.loadState(STATE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as { version: 1; drafts: Record<string, string> };
     if (parsed.version !== 1 || !parsed.drafts) return;
@@ -75,13 +75,13 @@ export function deleteDrafts(sessionIds: string[]): void {
 }
 
 function schedulePersist(): void {
-  if (!window.agentory) return;
+  if (!window.ccsm) return;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
     const drafts: Record<string, string> = {};
     for (const [k, v] of cache.entries()) drafts[k] = v;
-    void window.agentory!.saveState(STATE_KEY, JSON.stringify({ version: 1, drafts })).catch(
+    void window.ccsm!.saveState(STATE_KEY, JSON.stringify({ version: 1, drafts })).catch(
       () => {
         /* persist failures are non-fatal; we'll retry on the next edit */
       }

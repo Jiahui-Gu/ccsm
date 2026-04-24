@@ -2,7 +2,7 @@
 
 Last updated: 2026-04-20 (after PR #18)
 
-This file is the reconciliation table for what's actually implemented in agentory-next. Every PR that lands MUST update this file so "done vs. not done" stays unambiguous.
+This file is the reconciliation table for what's actually implemented in CCSM. Every PR that lands MUST update this file so "done vs. not done" stays unambiguous.
 
 `docs/mvp-design.md` is the single source of truth for the design. This file is the implementation status. When the two conflict, the design wins (unless the design is being explicitly updated).
 

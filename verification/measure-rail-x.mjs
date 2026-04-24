@@ -32,7 +32,7 @@ const ud = isolatedUserData('agentory-verify-rail-x');
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');

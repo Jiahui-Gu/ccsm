@@ -54,7 +54,7 @@ type UpdateStatus =
 
 declare global {
   interface Window {
-    agentory?: {
+    ccsm?: {
       loadState: (key: string) => Promise<string | null>;
       saveState: (key: string, value: string) => Promise<void>;
       // i18n bridge mirrors the API surface exposed in electron/preload.ts.

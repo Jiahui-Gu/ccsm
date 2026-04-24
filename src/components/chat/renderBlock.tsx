@@ -60,7 +60,7 @@ export function renderBlock(
         <QuestionBlock
           questions={b.questions}
           onSubmit={(answersText) => {
-            const api = window.agentory;
+            const api = window.ccsm;
             if (!api) return;
             // Two flows land here:
             //  1. can_use_tool path (SDK-era / possible future): answers the

@@ -60,7 +60,7 @@ export function ClaudeCliMissingDialog() {
   useEffect(() => {
     if (!open) return;
     if (hints) return;
-    const api = window.agentory?.cli;
+    const api = window.ccsm?.cli;
     if (!api) return;
     void api.getInstallHints().then(setHints).catch(() => {});
   }, [open, hints]);
@@ -139,7 +139,7 @@ export function ClaudeCliMissingDialog() {
   }
 
   async function handleBrowse(): Promise<void> {
-    const api = window.agentory?.cli;
+    const api = window.ccsm?.cli;
     if (!api) return;
     setBrowseError(null);
     setConfiguring(true);
@@ -165,7 +165,7 @@ export function ClaudeCliMissingDialog() {
   }
 
   function handleDocs(): void {
-    void window.agentory?.cli?.openDocs();
+    void window.ccsm?.cli?.openDocs();
   }
 
   function onOpenChange(next: boolean): void {

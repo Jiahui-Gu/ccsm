@@ -45,7 +45,7 @@ const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
 // Strip CLAUDECODE so the spawned claude.exe doesn't refuse-to-launch with
 // "cannot run inside another Claude Code session". Probes that drive a real
 // CLI must do this — the dogfood guide called it out repeatedly.
-const env = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
+const env = { ...process.env, CCSM_PROD_BUNDLE: '1' };
 delete env.CLAUDECODE;
 delete env.CLAUDE_CODE_ENTRYPOINT;
 
@@ -74,8 +74,8 @@ await win.waitForTimeout(1500);
 // 1. Seed an active session in default permission mode + skip first-run UI.
 const seeded = await win.evaluate(
   async ({ sid, gid }) => {
-    const api = window.agentory;
-    if (!api) return { ok: false, err: 'no window.agentory' };
+    const api = window.ccsm;
+    if (!api) return { ok: false, err: 'no window.ccsm' };
     const state = {
       version: 1,
       sessions: [
@@ -123,7 +123,7 @@ await win2.waitForTimeout(3500);
 
 // Explicit selectSession in case the restored state didn't auto-activate.
 await win2.evaluate((sid) => {
-  const s = window.__agentoryStore?.getState();
+  const s = window.__ccsmStore?.getState();
   if (s && typeof s.selectSession === 'function' && s.activeId !== sid) {
     s.selectSession(sid);
   }
@@ -131,7 +131,7 @@ await win2.evaluate((sid) => {
 await win2.waitForTimeout(500);
 
 const verifyMode = await win2.evaluate(() => {
-  const s = window.__agentoryStore?.getState();
+  const s = window.__ccsmStore?.getState();
   return { permission: s?.permission, activeId: s?.activeId };
 });
 if (verifyMode.permission !== 'default') {
@@ -158,7 +158,7 @@ try {
 } catch {
   const snapshot = await win2.evaluate(() => {
     const main = document.querySelector('main');
-    const s = window.__agentoryStore?.getState();
+    const s = window.__ccsmStore?.getState();
     const id = s?.activeId;
     const blocks = id ? s?.messagesBySession?.[id] ?? [] : [];
     return {
@@ -217,7 +217,7 @@ const stoppedRunning = await (async () => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     const running = await win2.evaluate(() => {
-      const s = window.__agentoryStore?.getState();
+      const s = window.__ccsmStore?.getState();
       if (!s) return false;
       const id = s.activeId;
       return id ? !!s.runningSessions?.[id] : false;

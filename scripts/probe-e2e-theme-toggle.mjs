@@ -40,14 +40,14 @@ const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-theme-
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) }
 });
 
 let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
   await win.waitForTimeout(400);
 
   // Helper: parse rgb()/rgba() string to {r,g,b} ints.
@@ -102,7 +102,7 @@ try {
   // regardless of OS-level preference. We then exercise the user-facing
   // segmented control to flip to light and back.
   await win.evaluate(() => {
-    window.__agentoryStore.getState().setTheme('dark');
+    window.__ccsmStore.getState().setTheme('dark');
   });
   await win.waitForTimeout(150);
   const dark1 = await snapshot('initial-dark');

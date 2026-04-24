@@ -9,7 +9,7 @@
 //
 // We model the SDK's two-step interrupt:
 //   1. Renderer Esc handler calls stop() -> markInterrupted + clearQueue +
-//      window.agentory.agentInterrupt(sid).
+//      window.ccsm.agentInterrupt(sid).
 //   2. The SDK eventually emits a result frame that lifecycle.ts translates
 //      to a "status" block + setRunning(false). We synthesize step 2 by
 //      calling the same store mutators (consumeInterrupted + appendBlocks +
@@ -33,20 +33,20 @@ const ud = isolatedUserData('agentory-probe-stream-esc');
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
   // Wait for the CLI-detection success-flash dialog (if any) to settle so it
   // doesn't steal focus from the textarea via Radix's focus trap during the
   // post-interrupt focus assertion.
   await win.waitForFunction(
     () => {
-      const st = window.__agentoryStore?.getState();
+      const st = window.__ccsmStore?.getState();
       return st?.cliStatus?.state === 'found' || st?.cliStatus?.state === 'missing';
     },
     null,
@@ -58,7 +58,7 @@ try {
   const BLOCK_ID = 'msg-esc:0';
 
   await win.evaluate((sid) => {
-    window.__agentoryStore.setState({
+    window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{
         id: sid,
@@ -80,12 +80,12 @@ try {
 
   // Wait for the chat surface to mount for this session before injecting deltas.
   await win.waitForFunction((sid) => {
-    return window.__agentoryStore?.getState().activeId === sid && document.querySelector('textarea') !== null;
+    return window.__ccsmStore?.getState().activeId === sid && document.querySelector('textarea') !== null;
   }, SID, { timeout: 5000 });
 
   // Stream first 8 chunks before Esc.
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     for (let i = 0; i < 8; i++) st.streamAssistantText(sid, bid, `c${i} `, false);
   }, [SID, BLOCK_ID]);
   await win.waitForTimeout(150);
@@ -94,7 +94,7 @@ try {
   const caretMid = await win.locator('span.animate-pulse').count();
   if (caretMid < 1) {
     const dump = await win.evaluate(([sid, bid]) => {
-      const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+      const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
       const block = blocks.find((b) => b.id === bid);
       return {
         block,
@@ -108,7 +108,7 @@ try {
   await stopBtn.waitFor({ state: 'visible', timeout: 3000 }).catch(() => fail('Stop button not visible mid-stream', app));
 
   const midText = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid)?.text;
   }, [SID, BLOCK_ID]);
 
@@ -125,13 +125,13 @@ try {
   });
   await win.waitForTimeout(200);
 
-  const interrupted = await win.evaluate((sid) => !!window.__agentoryStore.getState().interruptedSessions[sid], SID);
+  const interrupted = await win.evaluate((sid) => !!window.__ccsmStore.getState().interruptedSessions[sid], SID);
   if (!interrupted) fail('interruptedSessions flag not set after Esc', app);
 
   // Now simulate the SDK delivering the post-interrupt result frame —
   // identical to lifecycle.ts's translation (see probe-e2e-interrupt-banner).
   await win.evaluate(([sid, bid]) => {
-    const st = window.__agentoryStore.getState();
+    const st = window.__ccsmStore.getState();
     if (!st.consumeInterrupted(sid)) throw new Error('flag not consumed');
     // Mark the in-flight block as no-longer-streaming. The product contract:
     // the lifecycle layer must finalize / clear the streaming flag for the
@@ -152,7 +152,7 @@ try {
 
   // The in-flight block's streaming flag must be false (block defined).
   const inflight = await win.evaluate(([sid, bid]) => {
-    const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
     return blocks.find((b) => b.id === bid);
   }, [SID, BLOCK_ID]);
   if (!inflight) fail('in-flight block disappeared after interrupt — should remain visible with partial text', app);

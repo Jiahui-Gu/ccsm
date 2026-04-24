@@ -153,7 +153,7 @@ jobs:
       - name: Upload artifacts to workflow run
         uses: actions/upload-artifact@v4
         with:
-          name: agentory-${{ matrix.platform }}
+          name: ccsm-${{ matrix.platform }}
           path: |
             release/*.exe
             release/*.dmg

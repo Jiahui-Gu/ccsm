@@ -31,7 +31,7 @@ function fail(msg) {
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-restore-q-'));
 console.log(`[probe-e2e-restore-journey-question] userData = ${userDataDir}`);
 
-const commonEnv = { ...process.env, AGENTORY_PROD_BUNDLE: '1' };
+const commonEnv = { ...process.env, CCSM_PROD_BUNDLE: '1' };
 const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
 
 const SESSION_ID = 's-restore-q-1';
@@ -70,8 +70,8 @@ const PRELUDE = [
 
   const seeded = await win.evaluate(
     async ({ sid, gid, blocks }) => {
-      const api = window.agentory;
-      if (!api) return { ok: false, err: 'no window.agentory' };
+      const api = window.ccsm;
+      if (!api) return { ok: false, err: 'no window.ccsm' };
       const state = {
         version: 1,
         sessions: [
@@ -192,7 +192,7 @@ const PRELUDE = [
   }
 
   // (4) Spy on main-side IPC handlers. contextBridge freezes the renderer
-  // proxy so we can't wrap `window.agentory` from the renderer; instead we
+  // proxy so we can't wrap `window.ccsm` from the renderer; instead we
   // re-register the relevant `ipcMain.handle()` channels on the main side
   // with a spy that records calls into a global, then delegates to the
   // original handler. We retrieve the recorded calls via a fresh ipcMain

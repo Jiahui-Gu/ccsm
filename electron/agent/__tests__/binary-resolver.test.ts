@@ -13,24 +13,24 @@ import {
 } from '../binary-resolver';
 
 // We test against the real `where` (Windows) / `which` (POSIX) command on
-// PATH. Tests that need a guaranteed hit use AGENTORY_CLAUDE_BIN with a
+// PATH. Tests that need a guaranteed hit use CCSM_CLAUDE_BIN with a
 // throwaway file in tmpdir.
 
-const ORIGINAL_OVERRIDE = process.env.AGENTORY_CLAUDE_BIN;
+const ORIGINAL_OVERRIDE = process.env.CCSM_CLAUDE_BIN;
 
 describe('resolveClaudeBinary', () => {
   let tmpDir: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'agentory-resolver-'));
-    delete process.env.AGENTORY_CLAUDE_BIN;
+    delete process.env.CCSM_CLAUDE_BIN;
   });
 
   afterEach(() => {
     if (ORIGINAL_OVERRIDE === undefined) {
-      delete process.env.AGENTORY_CLAUDE_BIN;
+      delete process.env.CCSM_CLAUDE_BIN;
     } else {
-      process.env.AGENTORY_CLAUDE_BIN = ORIGINAL_OVERRIDE;
+      process.env.CCSM_CLAUDE_BIN = ORIGINAL_OVERRIDE;
     }
     try {
       rmSync(tmpDir, { recursive: true, force: true });
@@ -39,20 +39,20 @@ describe('resolveClaudeBinary', () => {
     }
   });
 
-  it('returns the AGENTORY_CLAUDE_BIN override when it points at an existing file', async () => {
+  it('returns the CCSM_CLAUDE_BIN override when it points at an existing file', async () => {
     const fake = join(tmpDir, process.platform === 'win32' ? 'claude.cmd' : 'claude');
     writeFileSync(fake, '#!/bin/sh\necho fake');
-    process.env.AGENTORY_CLAUDE_BIN = fake;
+    process.env.CCSM_CLAUDE_BIN = fake;
 
     const got = await resolveClaudeBinary();
     expect(got).toBe(fake);
     expect(existsSync(got)).toBe(true);
   });
 
-  it('throws when AGENTORY_CLAUDE_BIN points at a non-existent path', async () => {
-    process.env.AGENTORY_CLAUDE_BIN = join(tmpDir, 'does-not-exist');
+  it('throws when CCSM_CLAUDE_BIN points at a non-existent path', async () => {
+    process.env.CCSM_CLAUDE_BIN = join(tmpDir, 'does-not-exist');
     await expect(resolveClaudeBinary()).rejects.toThrow(
-      /AGENTORY_CLAUDE_BIN/
+      /CCSM_CLAUDE_BIN/
     );
   });
 

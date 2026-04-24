@@ -30,7 +30,7 @@ const ud = isolatedUserData(PROBE);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -50,16 +50,16 @@ if (await newBtn.isVisible().catch(() => false)) {
 
 // Ensure a session exists.
 await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (!s.activeId) s.createSession?.(null);
 });
 await win.waitForTimeout(200);
 
 // Wrap the store action — see shortcut-scope probe for rationale (contextBridge
-// freezes window.agentory so property assignment is silently dropped).
+// freezes window.ccsm so property assignment is silently dropped).
 await win.evaluate(() => {
   window.__permCalls = [];
-  const store = window.__agentoryStore;
+  const store = window.__ccsmStore;
   const origAction = store.getState().resolvePermission;
   store.setState({
     resolvePermission: (sessionId, requestId, decision) => {
@@ -70,7 +70,7 @@ await win.evaluate(() => {
 });
 
 const sessionId = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   s.appendBlocks(s.activeId, [{
     kind: 'waiting',
     id: 'wait-PROBE-REJECT',

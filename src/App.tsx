@@ -39,12 +39,12 @@ subscribeAgentEvents();
 // NODE_ENV) because webpack production builds dead-strip the gated
 // branch — leaving probes that exercise a production-built renderer with
 // no way to seed state. The exposure is a debug affordance, not a
-// security boundary; same trade-off as `window.__agentoryI18n`.
+// security boundary; same trade-off as `window.__ccsmI18n`.
 if (typeof window !== 'undefined') {
-  (window as unknown as { __agentoryStore?: typeof useStore }).__agentoryStore = useStore;
+  (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
   (window as unknown as {
-    __agentoryMaybeAutoResolveAllowAlways?: typeof maybeAutoResolveAllowAlways;
-  }).__agentoryMaybeAutoResolveAllowAlways = maybeAutoResolveAllowAlways;
+    __ccsmMaybeAutoResolveAllowAlways?: typeof maybeAutoResolveAllowAlways;
+  }).__ccsmMaybeAutoResolveAllowAlways = maybeAutoResolveAllowAlways;
 }
 
 /**
@@ -144,7 +144,7 @@ export default function App() {
   const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
   useEffect(() => {
     let cancelled = false;
-    const bridge = window.agentory;
+    const bridge = window.ccsm;
     void (async () => {
       let locale: string | undefined;
       try {
@@ -162,7 +162,7 @@ export default function App() {
     };
   }, [hydrateSystemLocale]);
   useEffect(() => {
-    window.agentory?.i18n?.setLanguage(resolvedLanguage);
+    window.ccsm?.i18n?.setLanguage(resolvedLanguage);
   }, [resolvedLanguage]);
 
   // Exit animation (UI-10 / #213):
@@ -180,7 +180,7 @@ export default function App() {
   // while this approach is zero-DOM, zero-rerender, and survives when
   // React state is about to be torn down.
   useEffect(() => {
-    const bridge = window.agentory?.window;
+    const bridge = window.ccsm?.window;
     if (!bridge?.onBeforeHide || !bridge?.onAfterShow) return;
     const root = document.documentElement;
     const transition = `opacity ${DURATION.standard}s cubic-bezier(${EASING.exit.join(',')})`;
@@ -393,7 +393,7 @@ export default function App() {
                   pushRecentProject(p);
                 }}
                 onBrowseForCwd={async () => {
-                  const next = (await window.agentory?.pickDirectory()) ?? null;
+                  const next = (await window.ccsm?.pickDirectory()) ?? null;
                   if (!next) return;
                   changeCwd(next);
                   pushRecentProject(next);
@@ -462,7 +462,7 @@ function BackgroundWaitingBridge() {
   }, [push, selectSession]);
   // Subscribe to OS notification clicks → focus the session.
   useEffect(() => {
-    const off = window.agentory?.onNotificationFocus((sessionId) => {
+    const off = window.ccsm?.onNotificationFocus((sessionId) => {
       const exists = useStore.getState().sessions.some((s) => s.id === sessionId);
       if (exists) selectSession(sessionId);
     });
@@ -482,7 +482,7 @@ function UpdateDownloadedBridge() {
   const { push } = useToast();
   useEffect(() => {
     let shown = false;
-    const off = window.agentory?.onUpdateDownloaded((info) => {
+    const off = window.ccsm?.onUpdateDownloaded((info) => {
       if (shown) return;
       shown = true;
       push({
@@ -493,7 +493,7 @@ function UpdateDownloadedBridge() {
         action: {
           label: 'Restart',
           onClick: () => {
-            void window.agentory?.updatesInstall();
+            void window.ccsm?.updatesInstall();
           }
         }
       });

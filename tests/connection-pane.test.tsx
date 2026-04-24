@@ -12,7 +12,7 @@ function resetStore() {
 
 beforeEach(() => {
   resetStore();
-  (globalThis as { window: Window & typeof globalThis }).window.agentory = {
+  (globalThis as { window: Window & typeof globalThis }).window.ccsm = {
     connection: {
       read: vi.fn(async () => ({
         baseUrl: 'https://api.example.com/v1',
@@ -27,11 +27,11 @@ beforeEach(() => {
         { id: 'claude-sonnet-4-6', source: 'cli-picker' as const },
       ]),
     },
-  } as unknown as Window['agentory'];
+  } as unknown as Window['ccsm'];
 });
 
 afterEach(() => {
-  delete (window as { agentory?: unknown }).agentory;
+  delete (window as { ccsm?: unknown }).ccsm;
 });
 
 describe('ConnectionPane', () => {
@@ -58,7 +58,7 @@ describe('ConnectionPane', () => {
 
   it('renders an "Open settings.json" button that calls the IPC', async () => {
     const openFile = vi.fn(async () => ({ ok: true } as const));
-    (window.agentory as { connection: { openSettingsFile: typeof openFile } }).connection.openSettingsFile =
+    (window.ccsm as { connection: { openSettingsFile: typeof openFile } }).connection.openSettingsFile =
       openFile;
 
     await act(async () => {

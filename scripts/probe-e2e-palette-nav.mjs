@@ -9,7 +9,7 @@
 // the picker plumbing (App.tsx onSelectSession wiring).
 //
 // Pure black-box for the palette UI; the activeId assertion uses the
-// public __agentoryStore handle the app already exposes for E2E.
+// public __ccsmStore handle the app already exposes for E2E.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,13 +41,13 @@ win.on('console', (m) => {
 });
 
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 10_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10_000 });
 
 // Seed: TWO sessions whose names share the prefix "session" so the palette
 // produces ≥2 result rows when we type "session", letting us exercise both
 // ↓ and ↑.
 await win.evaluate(() => {
-  window.__agentoryStore.setState({
+  window.__ccsmStore.setState({
     sessions: [
       {
         id: 's-nav-A',
@@ -154,7 +154,7 @@ await win.waitForTimeout(400);
 
 // Palette should have closed AND activeId should be 's-nav-B'. Check activeId
 // first — that's the load-bearing assertion (the dialog close is incidental).
-const activeId = await win.evaluate(() => window.__agentoryStore.getState().activeId);
+const activeId = await win.evaluate(() => window.__ccsmStore.getState().activeId);
 if (activeId !== 's-nav-B') {
   const dump = await win.evaluate(() => ({
     listboxes: Array.from(document.querySelectorAll('[role="dialog"] [role="option"]')).map((el) => ({

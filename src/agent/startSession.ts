@@ -22,7 +22,7 @@ import { i18next } from '../i18n';
 export async function startSessionAndReconcile(sessionId: string): Promise<boolean> {
   const store = useStore.getState();
   const session = store.sessions.find((s) => s.id === sessionId);
-  const api = window.agentory;
+  const api = window.ccsm;
   if (!session || !api) return false;
 
   const res = await api.agentStart(sessionId, {

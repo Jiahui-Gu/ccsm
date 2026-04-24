@@ -38,18 +38,18 @@ export function resolveCwd(cwd: string): string {
 
 /**
  * claude.exe refuses to run without `CLAUDE_CONFIG_DIR` (claude-spawner enforces
- * this). Agentory deliberately points it at the user's real `~/.claude/` so we
+ * this). CCSM deliberately points it at the user's real `~/.claude/` so we
  * share state (login tokens, settings.json with relay-mode credentials, MCP
  * config) with the user's existing CLI install. Boundary: "if `claude` works in
- * your terminal, Agentory works." Sessions still register in Agentory's own DB —
+ * your terminal, CCSM works." Sessions still register in CCSM's own DB —
  * only the claude CLI config dir is shared.
  *
  * Callers may still pass an explicit `configDir` (e.g. tests) or override via
- * the `AGENTORY_CLAUDE_CONFIG_DIR` env var for special-case isolation.
+ * the `CCSM_CLAUDE_CONFIG_DIR` env var for special-case isolation.
  */
 function resolveClaudeConfigDir(explicit: string | undefined): string {
   if (explicit && explicit.trim().length > 0) return explicit;
-  const env = process.env.AGENTORY_CLAUDE_CONFIG_DIR;
+  const env = process.env.CCSM_CLAUDE_CONFIG_DIR;
   if (env && env.trim().length > 0) return env;
   return path.join(os.homedir(), '.claude');
 }
@@ -104,7 +104,7 @@ export type StartOptions = {
    */
   envOverrides?: Record<string, string>;
   /**
-   * Optional override for `CLAUDE_CONFIG_DIR`. When unset, Agentory uses the
+   * Optional override for `CLAUDE_CONFIG_DIR`. When unset, CCSM uses the
    * user's real `~/.claude/` so login state is shared with the CLI — see
    * resolveClaudeConfigDir() for the full fallback chain.
    */
@@ -143,7 +143,7 @@ export type DiagnosticHandler = (d: {
  * `hook_callback` request, letting our control-rpc dispatcher route the
  * call into the host permission UI.
  */
-const HOOK_PERMISSION_CALLBACK_ID = 'agentory-permission';
+const HOOK_PERMISSION_CALLBACK_ID = 'ccsm-permission';
 
 /**
  * Tools whose permission UX is already handled via the legacy `can_use_tool`

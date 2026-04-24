@@ -48,7 +48,7 @@ const app = await electron.launch({
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
 // Replace the IPC handler so `defaultLoadRecent` returns our fixture.
 await app.evaluate(async ({ ipcMain }, list) => {
@@ -58,7 +58,7 @@ await app.evaluate(async ({ ipcMain }, list) => {
 
 // Sanity-check the override took effect (renderer side).
 const ipcReturn = await win.evaluate(async () => {
-  return await window.agentory.recentCwds();
+  return await window.ccsm.recentCwds();
 });
 if (!Array.isArray(ipcReturn) || ipcReturn.length !== RECENT.length) {
   await app.close();

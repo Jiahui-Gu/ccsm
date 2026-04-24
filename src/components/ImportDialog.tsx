@@ -44,7 +44,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api) return;
     setLoading(true);
     setSelected(new Set());
@@ -96,7 +96,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
   };
 
   const doImport = async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api || selected.size === 0) return;
     setImporting(true);
     try {

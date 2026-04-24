@@ -18,7 +18,7 @@ function fail(msg, app) {
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: process.env.AGENTORY_DEV_PORT ?? '4102' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: process.env.CCSM_DEV_PORT ?? '4102' }
 });
 
 // Stub folder picker so we don't block on OS dialog.

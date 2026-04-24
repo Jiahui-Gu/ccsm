@@ -34,14 +34,14 @@ const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-shortc
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) }
 });
 
 let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
   await win.waitForTimeout(500);
 
   // The search input is the only <input> the CommandPalette renders. Its

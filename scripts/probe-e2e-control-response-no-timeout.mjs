@@ -35,7 +35,7 @@ import path from 'node:path';
 
 const NAME = 'probe-e2e-control-response-no-timeout';
 const HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
-const CONFIG_DIR = process.env.AGENTORY_CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
+const CONFIG_DIR = process.env.CCSM_CLAUDE_CONFIG_DIR || path.join(HOME, '.claude');
 const ROUND_TRIP_BUDGET_MS = 3000;
 const HARD_TIMEOUT_MS = 15_000;
 

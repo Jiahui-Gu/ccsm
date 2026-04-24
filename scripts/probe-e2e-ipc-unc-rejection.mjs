@@ -39,14 +39,14 @@ const app = await electron.launch({
   env: {
     ...process.env,
     NODE_ENV: 'development',
-    AGENTORY_DEV_PORT: String(PORT)
+    CCSM_DEV_PORT: String(PORT)
   }
 });
 
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.agentory, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
 
   // Pick a real existing absolute local path for the sanity check.
   // process.cwd() in the renderer probe is a node concern, not the renderer's;
@@ -58,9 +58,9 @@ try {
     const uncWin = '\\\\evil-host\\share\\probe';
     const uncPosix = '//evil-host/share/probe';
     const relativ = 'relative/path';
-    const pathsRes = await window.agentory.pathsExist([uncWin, uncPosix, relativ, benign]);
-    const cmdsUnc = await window.agentory.commands.list(uncWin);
-    const cmdsPosixUnc = await window.agentory.commands.list(uncPosix);
+    const pathsRes = await window.ccsm.pathsExist([uncWin, uncPosix, relativ, benign]);
+    const cmdsUnc = await window.ccsm.commands.list(uncWin);
+    const cmdsPosixUnc = await window.ccsm.commands.list(uncPosix);
     return { pathsRes, cmdsUnc, cmdsPosixUnc };
   }, { benign });
 

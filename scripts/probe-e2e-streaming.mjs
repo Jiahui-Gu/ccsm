@@ -24,21 +24,21 @@ const app = await electron.launch({
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
 
 // Make sure there's a session selected.
 const sessionId = await win.evaluate(() => {
-  const s = window.__agentoryStore.getState();
+  const s = window.__ccsmStore.getState();
   if (s.sessions.length === 0) {
     s.createSession('~/streaming-probe');
   }
-  return window.__agentoryStore.getState().activeId;
+  return window.__ccsmStore.getState().activeId;
 });
 if (!sessionId) fail('no active session id');
 
 // Simulate streaming: 3 deltas, then a finalize via appendBlocks.
 await win.evaluate((sid) => {
-  const st = window.__agentoryStore.getState();
+  const st = window.__ccsmStore.getState();
   st.streamAssistantText(sid, 'msg-probe:c0', 'Hel', false);
   st.streamAssistantText(sid, 'msg-probe:c0', 'lo, ', false);
   st.streamAssistantText(sid, 'msg-probe:c0', 'world!', false);
@@ -47,7 +47,7 @@ await win.evaluate((sid) => {
 await new Promise((r) => setTimeout(r, 200));
 
 const midState = await win.evaluate((sid) => {
-  const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+  const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
   return blocks.map((b) => ({ id: b.id, kind: b.kind, text: b.text, streaming: b.streaming }));
 }, sessionId);
 const streamingBlocks = midState.filter((b) => b.id === 'msg-probe:c0');
@@ -62,7 +62,7 @@ if (caretCount < 1) fail('streaming caret not rendered in DOM');
 
 // Finalize via appendBlocks with the same id.
 await win.evaluate((sid) => {
-  window.__agentoryStore.getState().appendBlocks(sid, [
+  window.__ccsmStore.getState().appendBlocks(sid, [
     { kind: 'assistant', id: 'msg-probe:c0', text: 'Final reply.' }
   ]);
 }, sessionId);
@@ -70,7 +70,7 @@ await win.evaluate((sid) => {
 await new Promise((r) => setTimeout(r, 200));
 
 const finalState = await win.evaluate((sid) => {
-  const blocks = window.__agentoryStore.getState().messagesBySession[sid] ?? [];
+  const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
   return blocks.filter((b) => b.id === 'msg-probe:c0').map((b) => ({
     text: b.text,
     streaming: b.streaming

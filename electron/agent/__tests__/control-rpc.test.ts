@@ -707,7 +707,7 @@ describe('ControlRpc — Bug L outbound envelope shape', () => {
       request_id: 'req_BugL_2',
       request: {
         subtype: 'hook_callback',
-        callback_id: 'agentory-permission',
+        callback_id: 'ccsm-permission',
         input: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: {}, permission_mode: 'default' },
       },
     } as ControlRequestFrame);

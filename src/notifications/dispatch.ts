@@ -61,7 +61,7 @@ export function resetDispatchState(): void {
 // interruption, so when in doubt we skip rather than spam. Returns a structured
 // result so callers (and tests) can see *why* something was suppressed.
 export async function dispatchNotification(input: DispatchInput): Promise<DispatchResult> {
-  const api = window.agentory;
+  const api = window.ccsm;
   if (!api) return { dispatched: false, reason: 'no-api' };
 
   const state = useStore.getState();

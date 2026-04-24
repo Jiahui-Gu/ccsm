@@ -33,7 +33,7 @@ function fail(msg) {
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
 await app.evaluate(async ({ dialog }, fakeCwd) => {

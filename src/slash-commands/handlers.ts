@@ -1,4 +1,4 @@
-// Client-side handler for the one built-in command Agentory owns.
+// Client-side handler for the one built-in command CCSM owns.
 //
 // `/clear` must reach into the renderer state machine to wipe the active
 // session's transcript / queue / resume id without removing the session
@@ -30,7 +30,7 @@ export function handleClear(ctx: SlashCommandContext): void {
   if (!session) return;
   const wasRunning = !!store.runningSessions[ctx.sessionId];
   if (wasRunning) {
-    void window.agentory?.agentClose?.(ctx.sessionId);
+    void window.ccsm?.agentClose?.(ctx.sessionId);
   }
   store.resetSessionContext(ctx.sessionId);
   store.appendBlocks(ctx.sessionId, [

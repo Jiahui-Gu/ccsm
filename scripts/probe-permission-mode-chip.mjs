@@ -5,11 +5,11 @@
 // chip label + tooltip match the target table. Finally screenshot the chip
 // in its default state for visual review.
 //
-// Usage: AGENTORY_DEV_PORT=4185 npm run dev:web (background), then
+// Usage: CCSM_DEV_PORT=4185 npm run dev:web (background), then
 //   node scripts/probe-permission-mode-chip.mjs
 import { chromium } from 'playwright';
 
-const PORT = process.env.AGENTORY_DEV_PORT ?? '4185';
+const PORT = process.env.CCSM_DEV_PORT ?? '4185';
 const URL = `http://localhost:${PORT}/`;
 
 const EXPECTED = [
@@ -48,7 +48,7 @@ await page.waitForTimeout(300);
 // table AND the chip's `primaryOf` rendering in one pass.
 for (const { value, primary, secondary } of EXPECTED) {
   await page.evaluate((v) => {
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     s.setPermission(v);
   }, value);
   await page.waitForTimeout(80);
@@ -102,7 +102,7 @@ for (const { value, primary, secondary } of EXPECTED) {
 
 // Verify the `bypassPermissions` chip gets the warn accent class.
 await page.evaluate(() => {
-  window.__agentoryStore.getState().setPermission('bypassPermissions');
+  window.__ccsmStore.getState().setPermission('bypassPermissions');
 });
 await page.waitForTimeout(80);
 const warnClassFound = await page.evaluate(() => {
@@ -120,7 +120,7 @@ console.log('  bypassPermissions chip wears the warn accent OK');
 
 // Confirm no UI references to the retired literals `standard` / `yolo` / `ask`
 // leak through. Scan the status bar + any open menus.
-await page.evaluate(() => window.__agentoryStore.getState().setPermission('default'));
+await page.evaluate(() => window.__ccsmStore.getState().setPermission('default'));
 await page.waitForTimeout(80);
 // Open the menu one last time to scan all four items at once.
 await page.locator('div.h-6.px-4 button').last().click();

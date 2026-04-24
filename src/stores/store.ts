@@ -193,7 +193,7 @@ type State = {
   /**
    * Recent cwds derived from CLI transcripts at boot — fallback for fresh
    * userData where `recentProjects` is empty. Not persisted; rederived each
-   * boot from `~/.claude/projects` via `window.agentory.recentCwds()`.
+   * boot from `~/.claude/projects` via `window.ccsm.recentCwds()`.
    */
   historyRecentCwds: string[];
   /**
@@ -877,8 +877,8 @@ export const useStore = create<State & Actions>((set, get) => ({
     // a follow-up. We need both `projectDir` (for the on-disk path) and the
     // resume sessionId; without `projectDir` we can't safely guess the
     // encoded directory, so we just leave the chat empty (graceful degrade).
-    if (projectDir && typeof window !== 'undefined' && window.agentory?.loadImportHistory) {
-      const api = window.agentory;
+    if (projectDir && typeof window !== 'undefined' && window.ccsm?.loadImportHistory) {
+      const api = window.ccsm;
       void (async () => {
         try {
           const frames = await api.loadImportHistory(projectDir, resumeSessionId);
@@ -932,7 +932,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     // signal has already fired by then. Guarded on `started || running` to
     // avoid a no-op round-trip for never-spawned sessions (restored ones).
     if (prev.startedSessions[id] || prev.runningSessions[id]) {
-      void window.agentory?.agentClose(id);
+      void window.ccsm?.agentClose(id);
     }
     // Drop the renderer-side streamer accumulator. Without this, a deleted
     // session's PartialAssistantStreamer lingers in the lifecycle module map
@@ -994,7 +994,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
     // Wipe the persisted rows so a deleted session can't resurrect its
     // history if a new session happens to reuse the id.
-    void window.agentory?.saveMessages(id, []);
+    void window.ccsm?.saveMessages(id, []);
     // Also drop any persisted draft for this session.
     deleteDrafts([id]);
     return snapshot;
@@ -1044,7 +1044,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     // conversation. Empty arrays are skipped — saveMessages([]) is the
     // wipe path used by deleteSession.
     if (snapshot.messages && snapshot.messages.length > 0) {
-      void window.agentory?.saveMessages(snapshot.session.id, snapshot.messages);
+      void window.ccsm?.saveMessages(snapshot.session.id, snapshot.messages);
     }
     restoreDraft(snapshot.session.id, snapshot.draft);
   },
@@ -1120,7 +1120,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x))
     }));
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api) return;
     if (get().startedSessions[sessionId]) {
       void api.agentSetModel(sessionId, model);
@@ -1128,7 +1128,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
   setPermission: (permission) => {
     set({ permission });
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api) return;
     // The enum value IS the CLI flag value — no translation needed.
     const started = Object.keys(get().startedSessions);
@@ -1222,7 +1222,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         delete nextRunning[did];
         delete nextInterrupted[did];
         delete nextQueues[did];
-        void window.agentory?.saveMessages(did, []);
+        void window.ccsm?.saveMessages(did, []);
       }
       return {
         groups: s.groups.filter((g) => g.id !== id),
@@ -1290,7 +1290,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     // Re-persist messages + drafts for each restored session.
     for (const snap of snapshot.sessions) {
       if (snap.messages && snap.messages.length > 0) {
-        void window.agentory?.saveMessages(snap.session.id, snap.messages);
+        void window.ccsm?.saveMessages(snap.session.id, snap.messages);
       }
       restoreDraft(snap.session.id, snap.draft);
     }
@@ -1471,7 +1471,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
     });
     // Wipe persisted transcript so a reload doesn't resurrect history.
-    void window.agentory?.saveMessages(sessionId, []);
+    void window.ccsm?.saveMessages(sessionId, []);
   },
 
   replaceMessages: (sessionId, blocks) => {
@@ -1499,7 +1499,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   loadMessages: async (sessionId) => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api || typeof api.loadMessages !== 'function') return;
     if (inFlightLoads.has(sessionId)) return;
     inFlightLoads.add(sessionId);
@@ -1706,7 +1706,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         focusInputNonce: hasPendingWait ? s.focusInputNonce : s.focusInputNonce + 1
       };
     });
-    void window.agentory?.agentResolvePermission(sessionId, requestId, decision);
+    void window.ccsm?.agentResolvePermission(sessionId, requestId, decision);
   },
 
   addAllowAlways: (toolName) => {
@@ -1730,7 +1730,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   loadModels: async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.models?.list) {
       set({ modelsLoaded: true });
       return;
@@ -1744,7 +1744,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   loadConnection: async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.connection?.read) return;
     try {
       const info = await api.connection.read();
@@ -1755,7 +1755,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   checkCli: async () => {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.cli) {
       // No IPC (e.g. unit test renderer without preload). Mark found to keep
       // the rest of the app usable.
@@ -1921,7 +1921,7 @@ export async function hydrateStore(): Promise<void> {
     const sessions = useStore.getState().sessions;
     const uniquePaths = Array.from(new Set(sessions.map((s) => s.cwd).filter(Boolean)));
     if (uniquePaths.length === 0) return;
-    const api = window.agentory;
+    const api = window.ccsm;
     if (!api?.pathsExist) return;
     let existence: Record<string, boolean>;
     try {
@@ -1945,7 +1945,7 @@ export async function hydrateStore(): Promise<void> {
   // the new-session picker falls back to `~` and the first endpoint's first
   // model regardless of what the user actually uses in the CLI.
   try {
-    const api = window.agentory;
+    const api = window.ccsm;
     if (api?.recentCwds && api?.topModel) {
       const [recentCwds, topModel] = await Promise.all([
         api.recentCwds(),

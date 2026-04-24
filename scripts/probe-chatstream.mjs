@@ -15,8 +15,8 @@ await page.waitForTimeout(1500);
 const result = await page.evaluate(async () => {
   const out = { steps: [], errors: [] };
   try {
-    const useStore = window.__agentoryStore;
-    if (!useStore) throw new Error('window.__agentoryStore missing — dev shim not loaded');
+    const useStore = window.__ccsmStore;
+    if (!useStore) throw new Error('window.__ccsmStore missing — dev shim not loaded');
     out.steps.push('store reachable');
 
     useStore.getState().createSession('~/probe-cwd');

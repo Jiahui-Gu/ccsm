@@ -21,7 +21,7 @@ const app = await electron.launch({
 });
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
 
 // Close → should hide, not quit. App must still be running and the window
 // must still exist (just hidden).

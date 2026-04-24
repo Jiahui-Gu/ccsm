@@ -23,18 +23,18 @@ const win = await appWindow(app);
 win.on('console', (m) => console.log(`[renderer:${m.type()}] ${m.text()}`));
 win.on('pageerror', (e) => console.log(`[pageerror] ${e.message}`));
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
 
 const sessionId = await win.evaluate(() => {
-  const st = window.__agentoryStore.getState();
+  const st = window.__ccsmStore.getState();
   // Dismiss tutorial if present (the landing page covers ChatStream).
   if (!st.tutorialSeen && st.setTutorialSeen) st.setTutorialSeen(true);
   const existing = st.sessions.find((s) => s.cwd === '~/terminal-probe');
   if (!existing) st.createSession('~/terminal-probe');
-  const st2 = window.__agentoryStore.getState();
+  const st2 = window.__ccsmStore.getState();
   const probe = st2.sessions.find((s) => s.cwd === '~/terminal-probe') ?? st2.sessions[st2.sessions.length - 1];
   if (probe && st2.activeId !== probe.id) st2.selectSession(probe.id);
-  return window.__agentoryStore.getState().activeId;
+  return window.__ccsmStore.getState().activeId;
 });
 console.log(`[probe-terminal] active session: ${sessionId}`);
 if (!sessionId) fail('no active session id');
@@ -43,7 +43,7 @@ if (!sessionId) fail('no active session id');
 await win.evaluate((sid) => {
   const ESC = String.fromCharCode(27);
   const ansi = `total 8\r\n${ESC}[32mdrwxr-xr-x${ESC}[0m 2 user user 4096 Apr 21 10:00 ${ESC}[34msrc${ESC}[0m\r\n-rw-r--r-- 1 user user  123 Apr 21 10:00 ${ESC}[31merror.log${ESC}[0m\r\n`;
-  window.__agentoryStore.getState().appendBlocks(sid, [
+  window.__ccsmStore.getState().appendBlocks(sid, [
     {
       kind: 'tool',
       id: 'tu-probe',
@@ -61,7 +61,7 @@ await new Promise((r) => setTimeout(r, 200));
 
 // Sanity: confirm the block landed in state under the active session.
 const blockSummary = await win.evaluate((sid) => {
-  const st = window.__agentoryStore.getState();
+  const st = window.__ccsmStore.getState();
   const blocks = st.messagesBySession[sid] ?? [];
   return blocks.map((b) => ({ kind: b.kind, id: b.id, name: b.name }));
 }, sessionId);

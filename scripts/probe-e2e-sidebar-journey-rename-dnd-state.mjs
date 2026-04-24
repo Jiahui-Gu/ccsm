@@ -29,7 +29,7 @@ console.log(`[${PROBE}] userData = ${ud.dir}`);
 let app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 let win = await appWindow(app);
 const errors = [];
@@ -54,7 +54,7 @@ async function bail(msg) {
   fail(msg);
 }
 
-const state = () => win.evaluate(() => window.__agentoryStore.getState());
+const state = () => win.evaluate(() => window.__ccsmStore.getState());
 
 // ────────────────────────────────────────────────────────────────────────
 // J8/J9 — Inline rename behavior (covered by probe-e2e-rename.mjs in
@@ -200,13 +200,13 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   // the persist subscriber fires. We then close and relaunch.
   await win.evaluate(() => {
     // No-op move so persist subscriber definitely fires after our previous DOM drag.
-    const s = window.__agentoryStore.getState();
+    const s = window.__ccsmStore.getState();
     s.moveSession('a2', 'gA', null);
   });
   await win.waitForTimeout(500);
   // capture pre-restart order
   const preOrder = await win.evaluate(() =>
-    window.__agentoryStore.getState().sessions.filter((s) => s.groupId === 'gA').map((s) => s.id)
+    window.__ccsmStore.getState().sessions.filter((s) => s.groupId === 'gA').map((s) => s.id)
   );
 
   await app.close();
@@ -214,20 +214,20 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   app = await electron.launch({
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: root,
-    env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+    env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
   });
   win = await appWindow(app);
   wireErrors(win);
   await win.waitForLoadState('domcontentloaded');
   // Wait for store hydration.
   await win.waitForFunction(
-    () => !!window.__agentoryStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
   await win.waitForTimeout(400);
   const postOrder = await win.evaluate(() =>
-    window.__agentoryStore.getState().sessions.filter((s) => s.groupId === 'gA').map((s) => s.id)
+    window.__ccsmStore.getState().sessions.filter((s) => s.groupId === 'gA').map((s) => s.id)
   );
   if (postOrder.join(',') !== preOrder.join(',')) {
     diverge('J12.persistence', `session order persists across restart (pre=[${preOrder.join(',')}])`, `post=[${postOrder.join(',')}] — order lost on relaunch`);
@@ -261,7 +261,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   // have fired during the brief hover. Check: gC.collapsed should be...
   // Actually, the moveSession itself doesn't change collapsed; only the
   // hover timer or explicit user action does. So check now.
-  const c = await win.evaluate(() => window.__agentoryStore.getState().groups.find((g) => g.id === 'gC')?.collapsed);
+  const c = await win.evaluate(() => window.__ccsmStore.getState().groups.find((g) => g.id === 'gC')?.collapsed);
   // EXPECTED: collapsed is still true (no auto-expand on quick hover).
   // But note: createSession into a collapsed group expands it; we're MOVING
   // not creating, so collapse should stick. If it's false here without
@@ -309,7 +309,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   } else {
     await dndDrag(win, 'li[data-session-id="e1"]', '[data-group-header-id="gArc"]');
     const e1Group = await win.evaluate(() =>
-      window.__agentoryStore.getState().sessions.find((s) => s.id === 'e1')?.groupId
+      window.__ccsmStore.getState().sessions.find((s) => s.id === 'e1')?.groupId
     );
     if (e1Group === 'gArc') {
       diverge('J14.rejectArchive', `dragging into archived group is rejected (live session stays in source)`, `e1 moved to "gArc" — live session was put into archive`);
@@ -337,26 +337,26 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
     activeId: 'p1',
     focusedGroupId: null
   });
-  await win.evaluate(() => window.__agentoryStore.getState().setGroupCollapsed('gP', true));
+  await win.evaluate(() => window.__ccsmStore.getState().setGroupCollapsed('gP', true));
   await win.waitForTimeout(500);
   await app.close();
   await new Promise((r) => setTimeout(r, 500));
   app = await electron.launch({
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: root,
-    env: { ...process.env, AGENTORY_PROD_BUNDLE: '1' }
+    env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
   });
   win = await appWindow(app);
   wireErrors(win);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(
-    () => !!window.__agentoryStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
   await win.waitForTimeout(400);
   const post = await win.evaluate(() =>
-    window.__agentoryStore.getState().groups.find((g) => g.id === 'gP')?.collapsed
+    window.__ccsmStore.getState().groups.find((g) => g.id === 'gP')?.collapsed
   );
   if (post !== true) {
     diverge('J15.collapsedPersist', `group collapsed=true survives restart`, `collapsed=${post}`);
@@ -396,7 +396,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   await archMenu.waitFor({ state: 'visible', timeout: 3000 });
   await archMenu.click();
   await win.waitForTimeout(250);
-  const k = await win.evaluate(() => window.__agentoryStore.getState().groups.find((g) => g.id === 'gAlive')?.kind);
+  const k = await win.evaluate(() => window.__ccsmStore.getState().groups.find((g) => g.id === 'gAlive')?.kind);
   if (k !== 'archive') {
     diverge('J16.kindArchive', `group.kind === 'archive' after Archive`, `kind="${k}"`);
   }
@@ -444,7 +444,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
   await unarchMenu.waitFor({ state: 'visible', timeout: 3000 });
   await unarchMenu.click();
   await win.waitForTimeout(250);
-  const k2 = await win.evaluate(() => window.__agentoryStore.getState().groups.find((g) => g.id === 'gAlive')?.kind);
+  const k2 = await win.evaluate(() => window.__ccsmStore.getState().groups.find((g) => g.id === 'gAlive')?.kind);
   if (k2 !== 'normal') {
     diverge('J16.unarchive', `unarchive restores kind='normal'`, `kind="${k2}"`);
   } else {
@@ -490,7 +490,7 @@ const state = () => win.evaluate(() => window.__agentoryStore.getState());
     diverge('J17.highlightAria', `active row has aria-selected="true"`, `aria-selected="${activeAria}"`);
   }
   // Now select the last one and assert scroll-into-view.
-  await win.evaluate(() => window.__agentoryStore.getState().selectSession('m49'));
+  await win.evaluate(() => window.__ccsmStore.getState().selectSession('m49'));
   await win.waitForTimeout(700);
   const visible = await win.evaluate(() => {
     const li = document.querySelector('li[data-session-id="m49"]');

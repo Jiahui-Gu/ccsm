@@ -132,7 +132,7 @@ describe('buildSpawnEnv', () => {
   it('injects CLAUDE_CONFIG_DIR and CLAUDE_CODE_ENTRYPOINT', () => {
     const env = buildSpawnEnv({ configDir: '/tmp/cfg' });
     expect(env.CLAUDE_CONFIG_DIR).toBe('/tmp/cfg');
-    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('agentory-desktop');
+    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('ccsm-desktop');
   });
 
   it('passes through envOverrides (auth / base url) and lets them win over baseline', () => {
@@ -142,13 +142,13 @@ describe('buildSpawnEnv', () => {
         ANTHROPIC_BASE_URL: 'https://gw.example.com',
         ANTHROPIC_AUTH_TOKEN: 'sk-test',
         CLAUDE_CODE_SKIP_AUTH_LOGIN: 'true',
-        CLAUDE_CODE_ENTRYPOINT: 'agentory-test',
+        CLAUDE_CODE_ENTRYPOINT: 'ccsm-test',
       },
     });
     expect(env.ANTHROPIC_BASE_URL).toBe('https://gw.example.com');
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-test');
     expect(env.CLAUDE_CODE_SKIP_AUTH_LOGIN).toBe('true');
-    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('agentory-test');
+    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('ccsm-test');
   });
 
   it('strips NODE_OPTIONS even if smuggled in via envOverrides', () => {

@@ -33,14 +33,14 @@ const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-settin
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${userDataDir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development', AGENTORY_DEV_PORT: String(PORT) }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) }
 });
 
 let exitCode = 0;
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.__agentoryStore, null, { timeout: 15000 });
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
   await win.waitForTimeout(500);
 
   // --- Helper: open the dialog via a given trigger, return its handle ----
