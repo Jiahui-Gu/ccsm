@@ -25,7 +25,7 @@ export interface TopBannerProps {
   /**
    * Short, sentence-case headline (e.g. "Agent failed to start").
    * Required because every banner needs a scannable label for the
-   * `role="alert"` announcement.
+   * live-region announcement (role derived from `variant`).
    */
   title: string;
   /**
@@ -81,12 +81,13 @@ const VARIANT_STYLES: Record<TopBannerVariant, string> = {
  * dismiss-button placement stay consistent.
  *
  * Accessibility:
- *   - `role="alert"` on the inner row so screen readers announce the
- *     contents when the banner appears, even though it's outside the
- *     focused element.
- *   - `aria-live="polite"` so a NEW banner replacing an existing one
- *     gets re-announced without interrupting whatever the user is
- *     currently typing/reading.
+ *   - ARIA role is derived from `variant` so screen readers don't
+ *     over-announce non-critical state:
+ *       error            → `role="alert"`   (assertive semantics; blocking failure)
+ *       warning | info   → `role="status"`  (advisory; politely announced)
+ *     Both roles pair with `aria-live="polite"` so a NEW banner
+ *     replacing an existing one gets re-announced without interrupting
+ *     whatever the user is currently typing/reading.
  *   - Dismiss button has an explicit `aria-label` (defaulting to
  *     "Dismiss") so it isn't announced as just "×".
  *
@@ -106,6 +107,12 @@ export function TopBanner({
   testId,
   className,
 }: TopBannerProps) {
+  // Match ARIA role to severity. `alert` is assertive and intended for
+  // blocking failures; warning/info are advisory and should use the
+  // gentler `status` role so screen readers don't treat them as
+  // interruptions. `aria-live="polite"` is kept for both so the queued
+  // announcement still happens.
+  const role = variant === 'error' ? 'alert' : 'status';
   return (
     <motion.div
       key={presenceKey}
@@ -119,7 +126,7 @@ export function TopBanner({
       data-testid={testId}
     >
       <div
-        role="alert"
+        role={role}
         aria-live="polite"
         className={cn(
           'flex items-center gap-2 px-3 py-2 border-b border-border-subtle',
