@@ -141,12 +141,32 @@ function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean
   );
 }
 
-// Threshold (ms) after which a still-running tool block shows a gentle
-// "taking longer than usual…" hint next to the elapsed counter. We don't yet
-// wire a cancel affordance here — that needs a per-tool-use IPC that we
-// don't have today. Stop button in StatusBar already interrupts the whole
-// turn, so the hint semantically routes users there. See A2-NEW-7.
+// Tiered stall thresholds for in-flight tool blocks (#181, #208).
+//
+//   STALL_HINT_AFTER_MS (30s, #181):
+//     Subtle italic hint "(taking longer than usual…)" next to the elapsed
+//     counter. Counter color stays neutral. Just an FYI — most tools at this
+//     point are still legitimately working.
+//
+//   STALL_ESCALATE_AFTER_MS (90s, #208):
+//     Louder warning. Elapsed-time chip flips to warning color and a Cancel
+//     link surfaces inline. The Cancel link does NOT yet wire to a real
+//     stop-tool IPC (no per-tool-use cancel exists today; the Stop button in
+//     StatusBar interrupts the whole turn). Today the link emits a
+//     `console.warn` with the tool name so developers can see the user
+//     intent in logs. TODO(#208-followup): wire to a real cancel-tool IPC
+//     once the agent SDK exposes one — tracked separately so this PR can
+//     ship the visual escalation without a backend change.
+//
+//   STALL_DROP_AFTER_MS (120s, documented but not implemented):
+//     Future "stalled — likely dropped" red-state. Spec'd here so the next
+//     person knows the intended ladder. Skipped this round because picking
+//     a correct cutoff and a correct recovery (drop the block? request the
+//     agent to retry? leave to user?) is non-trivial and out of #208 scope.
 const STALL_HINT_AFTER_MS = 30_000;
+const STALL_ESCALATE_AFTER_MS = 90_000;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- documented future tier, see comment above
+const STALL_DROP_AFTER_MS = 120_000;
 
 // Format `(now - startedAt)` as a short monospace string. <100s → "12.3s",
 // <100min → "2:34" (mm:ss), ≥100min → "1h23m" so the counter never grows
@@ -215,10 +235,20 @@ function ToolBlock({
     running && startedAtRef.current !== null
       ? Math.max(0, (now ?? Date.now()) - startedAtRef.current)
       : null;
-  // Stall hint (A2-NEW-7). Cancel-in-block would need new IPC so we show
-  // text only today; the Stop button in StatusBar still works. Flagged as
-  // follow-up in the PR body.
+  // Stall hint (A2-NEW-7 / #181). Cancel-in-block would need new IPC so we
+  // surface text only at 30s; the Stop button in StatusBar still works.
   const stalled = elapsedMs !== null && elapsedMs >= STALL_HINT_AFTER_MS;
+  // Escalation tier (#208). At 90s we get louder: the elapsed chip flips to
+  // warning color and a Cancel link appears. See STALL_ESCALATE_AFTER_MS
+  // banner comment for why the link is currently a console.warn stub.
+  const escalated = elapsedMs !== null && elapsedMs >= STALL_ESCALATE_AFTER_MS;
+  const onCancelStalled = () => {
+    // TODO(#208-followup): wire to a real per-tool-use cancel IPC once the
+    // agent SDK exposes one. Today the StatusBar Stop button is the only
+    // affordance that actually interrupts; this link is a UX placeholder.
+    // eslint-disable-next-line no-console
+    console.warn(`[stall-escalation] user clicked Cancel on stalled tool: ${name}`);
+  };
   const diff = diffFromToolInput(name, input);
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
@@ -286,19 +316,25 @@ function ToolBlock({
           {!hasResult && !isError && <span className="text-fg-tertiary text-xs ml-2">…</span>}
         </span>
         {/* Right-aligned cluster: elapsed counter (A2-NEW-5) + stall hint
-            (A2-NEW-7). Lives outside the truncating name+brief span so it
-            stays visible even when the brief is long. Only renders for
-            still-running blocks; freezes/clears once result lands. */}
+            (A2-NEW-7) + escalation tier (#208). Lives outside the truncating
+            name+brief span so it stays visible even when the brief is long.
+            Only renders for still-running blocks; freezes/clears once result
+            lands. At the 90s escalation threshold the chip flips to
+            warning color so it visually pops out from the rest of the row. */}
         {elapsedMs !== null && (
           <span
             data-testid="tool-elapsed"
-            className="ml-auto pl-3 font-mono text-mono-xs text-state-running/90 tabular-nums shrink-0"
+            data-escalated={escalated ? 'true' : undefined}
+            className={
+              'ml-auto pl-3 font-mono text-mono-xs tabular-nums shrink-0 transition-colors duration-150 ease-out ' +
+              (escalated ? 'text-state-warning-text font-semibold' : 'text-state-running/90')
+            }
             aria-label={`elapsed ${formatElapsed(elapsedMs)}`}
           >
             {formatElapsed(elapsedMs)}
           </span>
         )}
-        {stalled && (
+        {stalled && !escalated && (
           <span
             data-testid="tool-stalled"
             className={
@@ -307,6 +343,44 @@ function ToolBlock({
             }
           >
             {t('chat.toolTakingLonger')}
+          </span>
+        )}
+        {escalated && (
+          <span
+            data-testid="tool-stall-escalated"
+            className={
+              'font-mono text-mono-xs text-state-warning-text shrink-0 ' +
+              (elapsedMs !== null ? 'ml-2' : 'ml-auto pl-3')
+            }
+          >
+            {t('chat.toolStallEscalated')}
+          </span>
+        )}
+        {escalated && (
+          // Inline span used as a button because the parent collapse-row is
+          // already a <button>; nesting <button> would be invalid HTML and
+          // trigger a React hydration warning. role=button + Enter/Space
+          // handler keeps keyboard parity. stopPropagation prevents the row
+          // from collapsing/expanding when the user clicks Cancel.
+          <span
+            data-testid="tool-stall-cancel"
+            role="button"
+            tabIndex={0}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancelStalled();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.stopPropagation();
+                e.preventDefault();
+                onCancelStalled();
+              }
+            }}
+            className="ml-2 font-mono text-mono-xs text-state-warning-text underline-offset-2 hover:underline focus-ring rounded-sm px-1 cursor-pointer shrink-0"
+            aria-label={t('chat.toolStallCancelAria')}
+          >
+            {t('chat.toolStallCancel')}
           </span>
         )}
       </button>

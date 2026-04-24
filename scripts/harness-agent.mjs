@@ -634,6 +634,169 @@ async function caseToolBlockUx({ win, log }) {
   log('A2-NEW-5 counter ticking + clears on result; A2-NEW-6 "(no result)" renders on dropped only');
 }
 
+// ---------- tool-stall-escalation (#208) ----------
+// Verifies the tiered stall ladder on in-flight tool blocks:
+//   30s  -> subtle "(taking longer than usual…)" hint   (#181)
+//   90s  -> escalated warning + Cancel link              (#208 — this PR)
+//
+// We can't sleep for 90 real seconds in a probe, so we monkey-patch
+// `Date.now` in the renderer window BEFORE seeding the in-flight tool block
+// so the ToolBlock's startedAtRef captures a synthetic T-Δ. After the block
+// mounts we restore Date.now and let the existing 100ms ChatStream interval
+// (`setNow(Date.now())`) sample the real wall clock — at which point the
+// computed elapsedMs = realNow - (realNow - Δ) = Δ, flipping the right
+// thresholds. Both the 31s tier (hint only) and the 91s tier (escalation +
+// Cancel) are covered so we catch a regression that mistakenly shows the
+// escalation early or skips the hint entirely.
+async function caseToolStallEscalation({ win, log, registerDispose }) {
+  // Always restore Date.now even if the case throws midway, so other cases
+  // running in the same renderer aren't poisoned with a stale fake clock.
+  registerDispose(async () => {
+    await win.evaluate(() => {
+      // @ts-ignore
+      if (window.__realDateNow) {
+        // eslint-disable-next-line no-global-assign
+        Date.now = window.__realDateNow;
+        delete window.__realDateNow;
+      }
+    });
+  });
+
+  // ---- Tier 1: 31s — only the 30s hint, NOT the escalation ----
+  {
+    const sid = 's-stall-31';
+    await win.evaluate((offsetMs) => {
+      // @ts-ignore
+      window.__realDateNow = Date.now.bind(Date);
+      const fakeOrigin = window.__realDateNow() - offsetMs;
+      // Freeze a synthetic Date.now at "31 seconds ago" — when ToolBlock
+      // mounts, startedAtRef and the ChatStream `now` state both capture
+      // this value.
+      // eslint-disable-next-line no-global-assign
+      Date.now = () => fakeOrigin;
+    }, 31_000);
+
+    await win.evaluate((s) => {
+      window.__agentoryStore.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{ id: s, name: 'stall-31', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
+        activeId: s,
+        runningSessions: { [s]: true },
+        messagesBySession: {
+          [s]: [
+            { kind: 'user', id: 'u1', text: 'slow' },
+            { kind: 'tool', id: 't-31', name: 'Bash', brief: 'sleep 60', expanded: false, toolUseId: 'tu-31' }
+          ]
+        }
+      });
+    }, sid);
+    // Let ToolBlock mount and capture the fake startedAt.
+    await win.waitForTimeout(250);
+
+    // Restore Date.now; the ChatStream 100ms interval will sample real time
+    // on the next tick, so elapsedMs becomes ~31s.
+    await win.evaluate(() => {
+      // @ts-ignore
+      // eslint-disable-next-line no-global-assign
+      Date.now = window.__realDateNow;
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete window.__realDateNow;
+    });
+    await win.waitForTimeout(400);
+
+    const stalledCount = await win.locator('[data-testid="tool-stalled"]').count();
+    if (stalledCount !== 1) {
+      throw new Error(`#208 tier-1 (31s): expected 1 "taking longer" hint, got ${stalledCount}`);
+    }
+    const escalatedCount = await win.locator('[data-testid="tool-stall-escalated"]').count();
+    if (escalatedCount !== 0) {
+      throw new Error(`#208 tier-1 (31s): escalation should NOT be visible, got ${escalatedCount}`);
+    }
+    const cancelCount = await win.locator('[data-testid="tool-stall-cancel"]').count();
+    if (cancelCount !== 0) {
+      throw new Error(`#208 tier-1 (31s): Cancel link should NOT be visible, got ${cancelCount}`);
+    }
+    const elapsedTierEarly = await win.locator('[data-testid="tool-elapsed"]').first();
+    const earlyEscalatedAttr = await elapsedTierEarly.getAttribute('data-escalated');
+    if (earlyEscalatedAttr === 'true') {
+      throw new Error('#208 tier-1 (31s): elapsed chip should NOT carry data-escalated=true');
+    }
+  }
+
+  // ---- Tier 2: 91s — escalation visible (warning chip + Cancel link),
+  // and the 30s hint is suppressed because the louder tier supersedes it. ----
+  {
+    const sid = 's-stall-91';
+    await win.evaluate((offsetMs) => {
+      // @ts-ignore
+      window.__realDateNow = Date.now.bind(Date);
+      const fakeOrigin = window.__realDateNow() - offsetMs;
+      // eslint-disable-next-line no-global-assign
+      Date.now = () => fakeOrigin;
+    }, 91_000);
+
+    await win.evaluate((s) => {
+      window.__agentoryStore.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{ id: s, name: 'stall-91', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' }],
+        activeId: s,
+        runningSessions: { [s]: true },
+        messagesBySession: {
+          [s]: [
+            { kind: 'user', id: 'u1', text: 'really slow' },
+            { kind: 'tool', id: 't-91', name: 'Bash', brief: 'sleep 600', expanded: false, toolUseId: 'tu-91' }
+          ]
+        }
+      });
+    }, sid);
+    await win.waitForTimeout(250);
+
+    await win.evaluate(() => {
+      // @ts-ignore
+      // eslint-disable-next-line no-global-assign
+      Date.now = window.__realDateNow;
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+      delete window.__realDateNow;
+    });
+    await win.waitForTimeout(400);
+
+    const escalatedCount = await win.locator('[data-testid="tool-stall-escalated"]').count();
+    if (escalatedCount !== 1) {
+      throw new Error(`#208 tier-2 (91s): expected escalation badge to be visible, got ${escalatedCount}`);
+    }
+    const cancelCount = await win.locator('[data-testid="tool-stall-cancel"]').count();
+    if (cancelCount !== 1) {
+      throw new Error(`#208 tier-2 (91s): expected Cancel link to be visible, got ${cancelCount}`);
+    }
+    // Hint and escalation are mutually exclusive — once we cross the louder
+    // threshold the gentle hint should step aside so the row isn't
+    // double-noisy.
+    const stalledCount = await win.locator('[data-testid="tool-stalled"]').count();
+    if (stalledCount !== 0) {
+      throw new Error(`#208 tier-2 (91s): the 30s hint should be hidden once escalated, got ${stalledCount}`);
+    }
+    const elapsedChip = await win.locator('[data-testid="tool-elapsed"]').first();
+    const escalatedAttr = await elapsedChip.getAttribute('data-escalated');
+    if (escalatedAttr !== 'true') {
+      throw new Error(`#208 tier-2 (91s): elapsed chip should carry data-escalated=true, got ${escalatedAttr}`);
+    }
+
+    // Cancel click must NOT collapse/expand the parent row (we use
+    // stopPropagation). Capture initial expanded state, click Cancel,
+    // confirm aria-expanded unchanged.
+    const collapseBtn = win.locator('button[aria-expanded]').first();
+    const beforeExpanded = await collapseBtn.getAttribute('aria-expanded');
+    await win.locator('[data-testid="tool-stall-cancel"]').first().click();
+    await win.waitForTimeout(150);
+    const afterExpanded = await collapseBtn.getAttribute('aria-expanded');
+    if (beforeExpanded !== afterExpanded) {
+      throw new Error(`#208 tier-2 (91s): Cancel click leaked to parent collapse (aria-expanded ${beforeExpanded} -> ${afterExpanded})`);
+    }
+  }
+
+  log('tier-1 (31s): hint only, no escalation/cancel; tier-2 (91s): escalation badge + Cancel link, hint suppressed, click does not toggle row');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'agent',
@@ -654,6 +817,7 @@ await runHarness({
     { id: 'chat-copy', run: caseChatCopy },
     { id: 'input-placeholder', run: caseInputPlaceholder },
     { id: 'tool-block-ux', run: caseToolBlockUx },
+    { id: 'tool-stall-escalation', run: caseToolStallEscalation },
     { id: 'diagnostic-banner', run: caseDiagnosticBanner },
     { id: 'init-failure-banner', run: caseInitFailureBanner },
   ]
