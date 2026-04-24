@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useMemo, useRef, useStat
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '../../lib/cn';
 import { StateGlyph } from './StateGlyph';
+import { Button } from './Button';
 import { useTranslation } from '../../i18n/useTranslation';
 import { DURATION_RAW, EASING } from '../../lib/motion';
 
@@ -114,39 +115,27 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
                   {toast.body && <div className="mt-0.5 text-meta text-fg-tertiary">{toast.body}</div>}
                   {toast.action && (
                     <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
+                      <Button
+                        variant="secondary"
+                        size="xs"
                         onClick={(e) => {
                           e.stopPropagation();
                           toast.action!.onClick();
                           dismiss(toast.id);
                         }}
-                        className={cn(
-                          'text-meta font-medium px-2 py-1 rounded-sm',
-                          'bg-bg-app border border-border-default text-fg-primary',
-                          'hover:bg-bg-elevated hover:border-border-strong',
-                          'active:scale-[0.98]',
-                          'focus-ring',
-                          'transition-colors duration-150'
-                        )}
                       >
                         {toast.action.label}
-                      </button>
-                      <button
-                        type="button"
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
                         onClick={(e) => {
                           e.stopPropagation();
                           dismiss(toast.id);
                         }}
-                        className={cn(
-                          'text-meta px-2 py-1 rounded-sm text-fg-tertiary',
-                          'hover:text-fg-secondary hover:bg-bg-app',
-                          'focus-ring',
-                          'transition-colors duration-150'
-                        )}
                       >
                         {t('toast.dismiss')}
-                      </button>
+                      </Button>
                     </div>
                   )}
                 </div>
