@@ -98,6 +98,18 @@ const api = {
     ipcRenderer.invoke('agent:sendContent', sessionId, content),
   agentInterrupt: (sessionId: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:interrupt', sessionId),
+  /**
+   * (#239) Per-tool-use cancel. The renderer calls this when the user clicks
+   * the in-block "Cancel" link on a stalled tool. The main-side handler
+   * routes through SessionRunner.cancelToolUse which today FALLS BACK to a
+   * turn-level interrupt — see the WHY comment in
+   * electron/agent/sessions.ts. We pass `toolUseId` anyway so the fallback
+   * can be swapped for a true scoped cancel without a renderer change once
+   * the SDK exposes one.
+   */
+  agentCancelToolUse: (args: { sessionId: string; toolUseId: string }): Promise<
+    { ok: true } | { ok: false; error: string }
+  > => ipcRenderer.invoke('agent:cancelToolUse', args),
   agentSetPermissionMode: (
     sessionId: string,
     mode: PermissionMode

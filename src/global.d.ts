@@ -88,6 +88,14 @@ declare global {
       agentSend: (sessionId: string, text: string) => Promise<boolean>;
       agentSendContent: (sessionId: string, content: unknown[]) => Promise<boolean>;
       agentInterrupt: (sessionId: string) => Promise<boolean>;
+      /**
+       * (#239) Per-tool-use cancel. Today routes through a turn-level
+       * interrupt fallback inside SessionRunner; the {sessionId, toolUseId}
+       * payload is forward-compatible with a future scoped-cancel SDK API.
+       */
+      agentCancelToolUse: (args: { sessionId: string; toolUseId: string }) => Promise<
+        { ok: true } | { ok: false; error: string }
+      >;
       agentSetPermissionMode: (
         sessionId: string,
         mode: PermissionMode
