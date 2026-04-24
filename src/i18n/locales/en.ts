@@ -99,6 +99,8 @@ const en = {
     collapseString: 'collapse',
     longOutputCopy: 'Copy all',
     longOutputCopied: 'Copied',
+    codeBlockCopy: 'Copy code',
+    codeBlockCopied: 'Copied',
     longOutputSave: 'Save as .log',
     longOutputSaved: 'Saved',
     longOutputSaveFailed: 'Save failed',
