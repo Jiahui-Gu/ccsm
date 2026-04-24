@@ -11,6 +11,7 @@ import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
 import { useFocusRestore } from '../lib/useFocusRestore';
 import { DURATION_RAW, EASING } from '../lib/motion';
+import { useWindowTint, WINDOW_TINT_PRESETS, type WindowTint } from '../lib/windowTint';
 
 type LocalUpdateStatus =
   | { kind: 'idle' }
@@ -225,6 +226,7 @@ function AppearancePane() {
   const setDensity = useStore((s) => s.setDensity);
   const language = usePreferences((s) => s.language);
   const setLanguage = usePreferences((s) => s.setLanguage);
+  const [windowTint, setWindowTint] = useWindowTint();
   const { t } = useTranslation('settings');
 
   const sizeStops: Array<12 | 13 | 14 | 15 | 16> = [12, 13, 14, 15, 16];
@@ -284,7 +286,70 @@ function AppearancePane() {
           ]}
         />
       </Field>
+      <Field label={t('windowTint')} hint={t('windowTintHint')}>
+        <WindowTintPicker value={windowTint} onChange={setWindowTint} t={t} />
+      </Field>
     </>
+  );
+}
+
+// Tint picker — small horizontal swatch row. Each preset shows the actual
+// CSS var color so the user can preview before committing. The `none` slot
+// is rendered as a diagonal-stripe "no fill" affordance (Apple-style "none"
+// chip) rather than an empty box.
+function WindowTintPicker({
+  value,
+  onChange,
+  t,
+}: {
+  value: WindowTint;
+  onChange: (next: WindowTint) => void;
+  t: (key: string) => string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={t('windowTint')} className="inline-flex items-center gap-1.5">
+      {WINDOW_TINT_PRESETS.map((preset) => {
+        const active = preset === value;
+        const isNone = preset === 'none';
+        const label = t(`windowTintOptions.${preset}`);
+        return (
+          <button
+            key={preset}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={label}
+            title={label}
+            onClick={() => onChange(preset)}
+            data-tint-option={preset}
+            data-tint-active={active ? 'true' : 'false'}
+            className={cn(
+              'relative h-6 w-6 rounded-full',
+              'border border-border-default bg-bg-elevated',
+              'transition-[transform,box-shadow,border-color] duration-150 ease-out',
+              'outline-none focus-ring',
+              'hover:border-border-strong hover:scale-[1.06]',
+              active && 'border-accent shadow-[0_0_0_2px_var(--color-accent-soft)]'
+            )}
+          >
+            {/* Inner color disc. For `none` we draw a diagonal stripe so the
+                chip reads as "no fill" instead of an empty white circle. */}
+            <span
+              aria-hidden
+              className="absolute inset-0.5 rounded-full"
+              style={
+                isNone
+                  ? {
+                      background:
+                        'linear-gradient(135deg, transparent calc(50% - 0.5px), var(--color-fg-tertiary) calc(50% - 0.5px), var(--color-fg-tertiary) calc(50% + 0.5px), transparent calc(50% + 0.5px))',
+                    }
+                  : { background: `var(--color-tint-${preset})` }
+              }
+            />
+          </button>
+        );
+      })}
+    </div>
   );
 }
 

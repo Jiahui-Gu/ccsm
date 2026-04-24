@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Minus, Square, Copy, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useTranslation } from '../i18n/useTranslation';
+import { useWindowTint, tintCssVar } from '../lib/windowTint';
+import { DURATION, EASING } from '../lib/motion';
 
 // Cross-platform window chrome pieces.
 //
@@ -29,12 +31,48 @@ export function DragRegion({
   children?: React.ReactNode;
   style?: React.CSSProperties;
 }) {
+  // Per-window tint overlay (UI-10c). Sits underneath the children so window
+  // controls / icons are never washed out, and uses a CSS opacity transition
+  // tuned to the shared motion tokens (DURATION.standard / EASING.standard
+  // ≈ 180ms — the same fade timing used elsewhere for crossfades). When the
+  // tint is `none` the overlay collapses to opacity 0; the div stays mounted
+  // so the fade-out animates instead of popping. The `pointer-events: none`
+  // means the underlying `-webkit-app-region: drag` on the parent is still
+  // what receives drag input.
+  const [tint] = useWindowTint();
+  const tintBg = tintCssVar(tint);
+  const transitionMs = Math.round(DURATION.standard * 1000);
+  const easing = `cubic-bezier(${EASING.standard.join(',')})`;
+
   return (
     <div
       aria-hidden
-      className={cn('select-none', className)}
+      className={cn('select-none relative', className)}
       style={{ WebkitAppRegion: 'drag', ...style } as React.CSSProperties}
     >
+      <div
+        aria-hidden
+        data-window-tint={tint}
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: tintBg ?? 'transparent',
+          opacity: tintBg ? 1 : 0,
+          transition: `opacity ${transitionMs}ms ${easing}, background-color ${transitionMs}ms ${easing}`,
+        }}
+      />
+      {/* 2px accent rule at the very top of the strip — secondary cue that
+          the window has a tint applied. Same fade timing. Sits above the
+          wash so the line stays crisp against the rest of the chrome. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute top-0 left-0 right-0"
+        style={{
+          height: 2,
+          background: tintBg ?? 'transparent',
+          opacity: tintBg ? 1 : 0,
+          transition: `opacity ${transitionMs}ms ${easing}, background-color ${transitionMs}ms ${easing}`,
+        }}
+      />
       {children}
     </div>
   );
