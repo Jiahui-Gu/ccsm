@@ -22,7 +22,9 @@ export function ToolBlock({
   result,
   isError,
   input,
-  now
+  now,
+  sessionId,
+  toolUseId
 }: {
   name: string;
   brief: string;
@@ -34,9 +36,17 @@ export function ToolBlock({
   // timers on busy sessions. `undefined` (or stale) = block renders as-is
   // without a counter; safe fallback for tests and non-running blocks.
   now?: number;
+  // (#239) sessionId + toolUseId let the in-block Cancel link route a
+  // cancellation IPC back to main. Both are optional so legacy call-sites
+  // and snapshot tests that don't care about cancel keep rendering; when
+  // either is missing the Cancel link still appears (UX consistency) but
+  // the click falls back to the old console.warn stub.
+  sessionId?: string;
+  toolUseId?: string;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const hasResult = typeof result === 'string';
   // Dropped-tool surface (A2-NEW-6). When the tool_result was recorded as
   // an explicit empty string (Bug L historically; possible future drops)
@@ -73,10 +83,27 @@ export function ToolBlock({
   // banner comment for why the link is currently a console.warn stub.
   const escalated = elapsedMs !== null && elapsedMs >= STALL_ESCALATE_AFTER_MS;
   const onCancelStalled = () => {
-    // TODO(#208-followup): wire to a real per-tool-use cancel IPC once the
-    // agent SDK exposes one. Today the StatusBar Stop button is the only
-    // affordance that actually interrupts; this link is a UX placeholder.
-    // eslint-disable-next-line no-console
+    if (cancelling) return;
+    // (#239) Per-tool cancel IPC. The renderer can't reach the in-flight
+    // tool directly — the SDK / claude.exe spawn protocol exposes only a
+    // turn-level `interrupt` control_request, not a per-tool-use cancel.
+    // We send `{sessionId, toolUseId}` anyway so main can log/metric the
+    // intent and a future SDK upgrade can implement scoped cancel without
+    // a renderer change. Today the handler in main routes through
+    // SessionRunner.cancelToolUse which falls back to interrupt(); see
+    // electron/agent/sessions.ts for the WHY comment on that fallback.
+    setCancelling(true);
+    const api = typeof window !== 'undefined' ? window.ccsm : undefined;
+    if (api && typeof api.agentCancelToolUse === 'function' && sessionId && toolUseId) {
+      void api
+        .agentCancelToolUse({ sessionId, toolUseId })
+        .catch((err: unknown) => {
+          console.warn('[tool-cancel] IPC failed', err);
+        });
+      return;
+    }
+    // No bridge or missing identifiers — keep the legacy stub so dev mode
+    // / tests without a preload bridge don't crash silently.
     console.warn(`[stall-escalation] user clicked Cancel on stalled tool: ${name}`);
   };
   const diff = diffFromToolInput(name, input);
@@ -198,25 +225,37 @@ export function ToolBlock({
           // trigger a React hydration warning. role=button + Enter/Space
           // handler keeps keyboard parity. stopPropagation prevents the row
           // from collapsing/expanding when the user clicks Cancel.
+          // After click we flip to a disabled "Cancelling…" state until the
+          // next tool event lands (result/error) and React unmounts the
+          // escalated branch entirely. aria-disabled keeps assistive tech in
+          // the loop without losing the focus target.
           <span
             data-testid="tool-stall-cancel"
             role="button"
-            tabIndex={0}
+            tabIndex={cancelling ? -1 : 0}
+            aria-disabled={cancelling || undefined}
             onClick={(e) => {
               e.stopPropagation();
+              if (cancelling) return;
               onCancelStalled();
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.stopPropagation();
                 e.preventDefault();
+                if (cancelling) return;
                 onCancelStalled();
               }
             }}
-            className="ml-2 font-mono text-mono-xs text-state-warning-text underline-offset-2 hover:underline focus-ring rounded-sm px-1 cursor-pointer shrink-0"
+            className={
+              'ml-2 font-mono text-mono-xs underline-offset-2 focus-ring rounded-sm px-1 shrink-0 transition-colors duration-150 ease-out ' +
+              (cancelling
+                ? 'text-fg-tertiary italic cursor-default'
+                : 'text-state-warning-text hover:underline cursor-pointer')
+            }
             aria-label={t('chat.toolStallCancelAria')}
           >
-            {t('chat.toolStallCancel')}
+            {cancelling ? t('chat.toolStallCancelling') : t('chat.toolStallCancel')}
           </span>
         )}
       </button>

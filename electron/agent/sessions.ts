@@ -655,6 +655,39 @@ export class SessionRunner {
     }
   }
 
+  /**
+   * (#239) Per-tool-use cancel.
+   *
+   * WHY this delegates to interrupt(): the spawn-protocol contract we use
+   * with claude.exe (and the underlying @anthropic-ai/claude-code SDK)
+   * exposes only a turn-level `interrupt` control_request — there is no
+   * `cancel_tool_use` subtype today. Aborting one tool while letting the
+   * agent continue the rest of the turn would require either:
+   *   (a) a new SDK control subtype that targets a tool_use_id, or
+   *   (b) a renderer-side filter that drops the eventual tool_result and
+   *       fakes a cancellation back into the chat — fragile and racey.
+   *
+   * Until the SDK gains (a), we route a per-tool Cancel click to the same
+   * turn-level interrupt the StatusBar Stop button uses. The renderer
+   * already disables the Cancel link to "Cancelling…" so the user gets
+   * immediate feedback even though the underlying primitive is coarser
+   * than the UX promises. The `toolUseId` argument is logged but not
+   * otherwise used; it's kept on the call signature so the swap to a
+   * scoped cancel is a one-line change here when the SDK lands one.
+   */
+  async cancelToolUse(toolUseId: string): Promise<void> {
+    if (!this.rpc) return;
+    // Diagnostic so the renderer can surface a debug trail / metrics if it
+    // ever grows one. Keep level=warn so it shows in dogfood logs without
+    // polluting INFO.
+    this.onDiagnostic({
+      level: 'warn',
+      code: 'tool_cancel_fallback',
+      message: `Per-tool cancel for ${toolUseId} fell back to turn interrupt (SDK lacks scoped cancel).`,
+    });
+    await this.interrupt();
+  }
+
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     // Validate up front so a bogus mode is rejected even if the session
     // hasn't started yet (no rpc) — the IPC layer relies on the throw to

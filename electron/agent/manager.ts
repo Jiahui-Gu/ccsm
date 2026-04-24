@@ -136,6 +136,20 @@ class SessionsManager {
     return true;
   }
 
+  /**
+   * (#239) Per-tool-use cancel. Returns false when the session can't be
+   * found so the IPC layer can surface `{ok:false, error:'no_session'}`
+   * to the renderer (matches the existing setPermissionMode error shape).
+   * The toolUseId is forwarded to the runner where it's logged today and
+   * used for scoped cancel once the SDK supports it.
+   */
+  async cancelToolUse(sessionId: string, toolUseId: string): Promise<boolean> {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    await r.cancelToolUse(toolUseId);
+    return true;
+  }
+
   async setPermissionMode(sessionId: string, mode: PermissionMode): Promise<boolean> {
     const r = this.runners.get(sessionId);
     if (!r) return false;
