@@ -312,6 +312,11 @@ function createWindow() {
   // and routes their events at the live renderer.
   win.on('show', () => {
     if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
+    // Reset the renderer's fade-opacity in case the window was just
+    // restored after a fade-to-hide (see `window:beforeHide` below).
+    if (!win.webContents.isDestroyed()) {
+      win.webContents.send('window:afterShow');
+    }
   });
   win.webContents.on('did-finish-load', () => {
     if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
@@ -325,12 +330,40 @@ function createWindow() {
   // close button via window:close IPC) hides the window instead of quitting.
   // The user can still really quit via the tray menu's Quit item, the
   // app menu's Quit, or Cmd/Ctrl-Q.
+  //
+  // Fade-to-hide: before actually calling `win.hide()` we send a
+  // `window:beforeHide` event so the renderer can run a short opacity
+  // fade-out. `HIDE_FADE_MS` matches `DURATION.standard` (180ms) from the
+  // shared motion tokens — kept short so closing still feels responsive.
+  // Guarded by `fadePending` so repeated Cmd/Ctrl+W presses don't stack
+  // timers. On real quit (`isQuitting === true`) we skip the fade entirely
+  // so shutdown stays fast.
+  const HIDE_FADE_MS = 180;
+  let fadePending = false;
   win.on('close', (e) => {
     if (isQuitting) return;
     e.preventDefault();
-    win.hide();
-    if (process.platform === 'darwin') app.dock?.hide?.();
+    if (fadePending) return;
+    fadePending = true;
+    try {
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send('window:beforeHide', { durationMs: HIDE_FADE_MS });
+      }
+    } catch {
+      /* renderer unreachable — fall through to immediate hide */
+    }
+    setTimeout(() => {
+      fadePending = false;
+      if (win.isDestroyed()) return;
+      win.hide();
+      if (process.platform === 'darwin') app.dock?.hide?.();
+    }, HIDE_FADE_MS);
   });
+
+  // After the window is shown again (tray click, dock click on macOS) the
+  // renderer's opacity may still be 0 from the previous fade-out. The
+  // existing `win.on('show')` handler above dispatches `window:afterShow`
+  // to reset it.
 }
 
 let tray: Tray | null = null;
