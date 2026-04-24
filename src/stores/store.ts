@@ -274,6 +274,17 @@ type State = {
    */
   allowAlwaysTools: string[];
   /**
+   * Per-session pending diff comments (#303). Keyed by sessionId then by
+   * commentId. Each comment ties a free-text note to a specific
+   * `(filePath, line)` in a DiffView the user is reviewing. On the next
+   * `send()` from InputBar these are serialized as `<diff-feedback file=…
+   * line=…>…</diff-feedback>` blocks prepended to the user's prompt body
+   * and then cleared. Session-scoped + in-memory only — comments are lost
+   * on app reload by design (avoids the "old draft feedback resurfaces
+   * later in a new conversation" surprise).
+   */
+  pendingDiffComments: Record<string, Record<string, PendingDiffComment>>;
+  /**
    * Id of the currently-open popover/menu, or null when nothing is open. A
    * single global slot enforces mutual exclusion: opening any popover sets
    * the id (implicitly closing whatever was previously open), closing sets
@@ -285,6 +296,61 @@ type State = {
    */
   openPopoverId: string | null;
 };
+
+/**
+ * One pending per-line comment attached to a DiffView (#303). Created when
+ * the user opens the inline composer in a diff gutter and saves text. The
+ * `file` + `line` pair locate the comment for serialization on send; `id`
+ * is opaque (used as the React key + delete handle).
+ *
+ * `line` is the 1-based index of the changed line WITHIN the diff hunk's
+ * combined removed-then-added stream as rendered by DiffView (which is the
+ * unit the user sees and points at). It is NOT a source-file line number —
+ * the agent gets enough context from the surrounding diff in the same turn
+ * to map it back, and trying to compute real source-file line numbers from
+ * a non-Myers diff would be brittle for the typical Edit/Write/MultiEdit
+ * shape this app renders.
+ */
+export interface PendingDiffComment {
+  id: string;
+  file: string;
+  line: number;
+  text: string;
+  createdAt: number;
+}
+
+/**
+ * Serialize a session's pending diff comments into the structured prefix
+ * we prepend to the next user prompt body. Each comment becomes one
+ * `<diff-feedback file="…" line="N">text</diff-feedback>` block on its own
+ * line; comments are sorted by (file, line, createdAt) so the prefix is
+ * deterministic across renders. Returns '' when there are no comments,
+ * which lets callers append unconditionally without a length check.
+ */
+export function serializeDiffCommentsForPrompt(
+  comments: Record<string, PendingDiffComment> | undefined,
+): string {
+  if (!comments) return '';
+  const list = Object.values(comments);
+  if (list.length === 0) return '';
+  // Stable order: file path asc, then line asc, then createdAt asc. Keeps
+  // the serialized output identical across renders so test assertions on
+  // exact string output don't flap on Object.values insertion order.
+  list.sort((a, b) => {
+    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+    if (a.line !== b.line) return a.line - b.line;
+    return a.createdAt - b.createdAt;
+  });
+  return list
+    .map((c) => {
+      // Escape the attribute value so a path with `"` can't break out of
+      // the file= attribute. We don't need a full XML escape on the body —
+      // the agent receives it as plain text inside the structured tag.
+      const file = c.file.replace(/"/g, '&quot;');
+      return `<diff-feedback file="${file}" line="${c.line}">${c.text}</diff-feedback>`;
+    })
+    .join('\n');
+}
 
 export interface CreateSessionOptions {
   cwd?: string | null;
@@ -447,6 +513,24 @@ type Actions = {
    * superseded by another opener won't clobber the new owner's slot.
    */
   closePopover: (id: string) => void;
+
+  /**
+   * Add a per-line diff comment to `sessionId` (#303). Returns the new
+   * comment id so callers can immediately put the chip into edit mode if
+   * they want. Empty/whitespace text is rejected (no-op + returns '').
+   */
+  addDiffComment: (
+    sessionId: string,
+    args: { file: string; line: number; text: string },
+  ) => string;
+  /** Update an existing comment's text. No-op if the id is unknown.
+   *  Trimmed-empty text deletes the comment instead. */
+  updateDiffComment: (sessionId: string, commentId: string, text: string) => void;
+  /** Remove a single comment. No-op if the id is unknown. */
+  deleteDiffComment: (sessionId: string, commentId: string) => void;
+  /** Drop ALL pending comments for `sessionId`. Called from the send path
+   *  after a prompt has been consumed. */
+  clearDiffComments: (sessionId: string) => void;
 };
 
 function nextId(prefix: string): string {
@@ -761,6 +845,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   sessionInitFailures: {},
   allowAlwaysTools: [],
   openPopoverId: null,
+  pendingDiffComments: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -1782,6 +1867,87 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   closePopover: (id) => {
     set((s) => (s.openPopoverId === id ? { openPopoverId: null } : s));
+  },
+
+  // ─── #303 per-line diff comments ────────────────────────────────────────
+  // Storage shape: pendingDiffComments[sessionId][commentId] = comment.
+  // Per-session because multiple sessions can each have their own pending
+  // feedback; the InputBar.send path of the active session consumes only
+  // its own bucket. Comments survive session-switch (so the user can keep
+  // typing on session B then return to A and still see the chips), but not
+  // app reload (in-memory only — see State.pendingDiffComments doc).
+  addDiffComment: (sessionId, args) => {
+    const text = args.text.trim();
+    if (!sessionId || !text) return '';
+    const id = nextId('dfc');
+    set((s) => {
+      const prev = s.pendingDiffComments[sessionId] ?? {};
+      return {
+        pendingDiffComments: {
+          ...s.pendingDiffComments,
+          [sessionId]: {
+            ...prev,
+            [id]: {
+              id,
+              file: args.file,
+              line: args.line,
+              text,
+              createdAt: Date.now(),
+            },
+          },
+        },
+      };
+    });
+    return id;
+  },
+
+  updateDiffComment: (sessionId, commentId, text) => {
+    const trimmed = text.trim();
+    set((s) => {
+      const bucket = s.pendingDiffComments[sessionId];
+      if (!bucket || !bucket[commentId]) return s;
+      // Empty body = delete: matches the "trash icon" semantics of clearing
+      // the textarea and saving. Saves the user one extra click.
+      if (!trimmed) {
+        const nextBucket = { ...bucket };
+        delete nextBucket[commentId];
+        const nextAll = { ...s.pendingDiffComments };
+        if (Object.keys(nextBucket).length === 0) delete nextAll[sessionId];
+        else nextAll[sessionId] = nextBucket;
+        return { pendingDiffComments: nextAll };
+      }
+      return {
+        pendingDiffComments: {
+          ...s.pendingDiffComments,
+          [sessionId]: {
+            ...bucket,
+            [commentId]: { ...bucket[commentId], text: trimmed },
+          },
+        },
+      };
+    });
+  },
+
+  deleteDiffComment: (sessionId, commentId) => {
+    set((s) => {
+      const bucket = s.pendingDiffComments[sessionId];
+      if (!bucket || !bucket[commentId]) return s;
+      const nextBucket = { ...bucket };
+      delete nextBucket[commentId];
+      const nextAll = { ...s.pendingDiffComments };
+      if (Object.keys(nextBucket).length === 0) delete nextAll[sessionId];
+      else nextAll[sessionId] = nextBucket;
+      return { pendingDiffComments: nextAll };
+    });
+  },
+
+  clearDiffComments: (sessionId) => {
+    set((s) => {
+      if (!s.pendingDiffComments[sessionId]) return s;
+      const nextAll = { ...s.pendingDiffComments };
+      delete nextAll[sessionId];
+      return { pendingDiffComments: nextAll };
+    });
   },
 
   loadModels: async () => {

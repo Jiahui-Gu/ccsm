@@ -573,6 +573,15 @@ const zh: EnCatalog = {
       titleWarning: 'Agent 警告',
       dismiss: '关闭诊断信息'
     }
+  },
+  // task #303
+  task303: {
+    diffAddCommentAria: '在这一行给 agent 添加备注',
+    diffEditCommentAria: '编辑备注',
+    diffDeleteCommentAria: '删除备注',
+    diffCommentPlaceholder: '给 agent 留一条备注\u2026',
+    diffCommentSave: '保存',
+    diffCommentsPendingChip: '将随下条消息发送 {{count}} 条 diff 备注'
   }
 };
 
