@@ -20,13 +20,17 @@ type StartOpts = {
   resumeSessionId?: string;
 };
 
+// Mirror of `StartResult` from `electron/agent/start-result-types.ts` —
+// this `.d.ts` is consumed by the Vite renderer build which can't import
+// from the electron tree directly. Keep the union in sync.
 type StartResult =
   | { ok: true }
   | {
       ok: false;
       error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
+      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING' | 'CLI_SPAWN_FAILED';
       searchedPaths?: string[];
+      detail?: string;
     };
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };

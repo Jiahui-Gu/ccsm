@@ -1,6 +1,7 @@
 import '@sentry/electron/preload';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { PermissionMode, AgentMessage } from './agent/sessions';
+import type { StartResult } from './agent/start-result-types';
 import type {
   ConnectionInfo,
   OpenSettingsResult,
@@ -17,15 +18,6 @@ type StartOpts = {
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
 };
-
-type StartResult =
-  | { ok: true }
-  | {
-      ok: false;
-      error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING';
-      searchedPaths?: string[];
-    };
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
 type AgentExit = { sessionId: string; error?: string };

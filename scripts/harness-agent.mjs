@@ -142,7 +142,7 @@ async function caseInitFailureBanner({ win, log }) {
   const banner = win.locator('[data-agent-init-failed-banner]').first();
   await banner.waitFor({ state: 'visible', timeout: 3000 });
   const text = await banner.innerText();
-  if (!text.includes('Agent failed to start')) throw new Error(`missing title, got ${JSON.stringify(text)}`);
+  if (!text.includes('Failed to start Claude')) throw new Error(`missing title, got ${JSON.stringify(text)}`);
   if (!text.includes('EACCES')) throw new Error(`missing error body, got ${JSON.stringify(text)}`);
 
   // All three action buttons must render and be enabled.
