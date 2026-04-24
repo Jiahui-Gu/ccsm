@@ -16,7 +16,7 @@ export function renderBlock(
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
   bumpComposerFocus: () => void,
   addAllowAlways: (toolName: string) => void,
-  opts: { permissionAutoFocus?: boolean; now?: number } = {}
+  opts: { permissionAutoFocus?: boolean; now?: number; permissionPendingToolIds?: Set<string> } = {}
 ) {
   switch (b.kind) {
     case 'user':
@@ -24,7 +24,7 @@ export function renderBlock(
     case 'assistant':
       return <AssistantBlock text={b.text} streaming={b.streaming} />;
     case 'tool':
-      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} sessionId={activeId} toolUseId={b.toolUseId} />;
+      return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} sessionId={activeId} toolUseId={b.toolUseId} permissionPending={!!(b.toolUseId && opts.permissionPendingToolIds?.has(b.toolUseId))} />;
     case 'todo':
       return <TodoBlock todos={b.todos} />;
     case 'waiting':
