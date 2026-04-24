@@ -649,6 +649,156 @@ async function casePermissionA11y({ win, log }) {
   log('role=alertdialog + aria-modal=true + labelled/described; Esc dismisses; Tab cycles');
 }
 
+// ---------- permission-partial-accept (#306) ----------
+// Per-hunk diff selection wires into agentResolvePermissionPartial. Locks
+// down both the render contract (checkboxes per hunk) and the IPC payload
+// shape. Reverse-verify: stashing the per-hunk render path collapses the
+// flow back to a flat summary with no [data-perm-hunk-checkbox] elements
+// → this case fails on the first assertion.
+async function casePermissionPartialAccept({ win, log }) {
+  await seedSession(win);
+
+  // Spy on the STORE actions (not window.ccsm — direct assignment on the
+  // contextBridge proxy is a no-op, see casePermissionAllowAlways for the
+  // same pattern). The store action is the one-stop callsite that the
+  // preload IPC, so observing it is sufficient to lock down both the
+  // partial vs whole choice and the acceptedHunks payload.
+  await win.evaluate(() => {
+    window.__permIpcCalls = [];
+    const store = window.__ccsmStore;
+    const origPartial = store.getState().resolvePermissionPartial;
+    const origWhole = store.getState().resolvePermission;
+    store.setState({
+      resolvePermissionPartial: (sid, rid, acceptedHunks) => {
+        window.__permIpcCalls.push({ kind: 'partial', sid, rid, acceptedHunks: [...acceptedHunks] });
+        return origPartial(sid, rid, acceptedHunks);
+      },
+      resolvePermission: (sid, rid, decision) => {
+        window.__permIpcCalls.push({ kind: 'whole', sid, rid, decision });
+        return origWhole(sid, rid, decision);
+      }
+    });
+  });
+
+  await injectWaiting(win, {
+    id: 'wait-PROBE-PARTIAL',
+    requestId: 'PROBE-PARTIAL',
+    toolName: 'MultiEdit',
+    toolInput: {
+      file_path: '/tmp/probe-multi.ts',
+      edits: [
+        { old_string: 'old-1', new_string: 'new-1' },
+        { old_string: 'old-2', new_string: 'new-2' },
+        { old_string: 'old-3', new_string: 'new-3' }
+      ]
+    },
+    prompt: 'MultiEdit /tmp/probe-multi.ts'
+  });
+
+  const heading = win.locator('text=Permission required').first();
+  await heading.waitFor({ state: 'visible', timeout: 5_000 });
+
+  // Per-hunk render contract: 3 checkboxes, all checked, primary button
+  // shows "Allow selected (3/3)".
+  const initial = await win.evaluate(() => {
+    const boxes = Array.from(document.querySelectorAll('[data-perm-hunk-checkbox]'));
+    const allow = document.querySelector('[data-perm-action="allow"]');
+    return {
+      hunkCount: boxes.length,
+      allChecked: boxes.every((b) => b.getAttribute('data-state') === 'checked'),
+      primaryLabel: allow?.textContent?.trim() ?? null
+    };
+  });
+  if (initial.hunkCount !== 3) throw new Error(`expected 3 per-hunk checkboxes, got ${initial.hunkCount}`);
+  if (!initial.allChecked) throw new Error('expected all hunk checkboxes checked by default');
+  if (!/Allow selected \(3\/3\)/.test(initial.primaryLabel ?? '')) {
+    throw new Error(`expected primary "Allow selected (3/3)", got "${initial.primaryLabel}"`);
+  }
+
+  // Click the middle hunk's checkbox to deselect it.
+  await win.evaluate(() => {
+    const boxes = document.querySelectorAll('[data-perm-hunk-checkbox]');
+    boxes[1].click();
+  });
+  await win.waitForFunction(() => {
+    const allow = document.querySelector('[data-perm-action="allow"]');
+    return /Allow selected \(2\/3\)/.test(allow?.textContent ?? '');
+  }, null, { timeout: 2000 });
+
+  // Click primary -> partial IPC fires with [0, 2].
+  await win.evaluate(() => {
+    document.querySelector('[data-perm-action="allow"]').click();
+  });
+  await heading.waitFor({ state: 'detached', timeout: 3_000 });
+
+  const calls = await win.evaluate(() => window.__permIpcCalls);
+  const partial = calls.find((c) => c.kind === 'partial');
+  if (!partial) throw new Error(`expected partial IPC call; got ${JSON.stringify(calls)}`);
+  if (partial.rid !== 'PROBE-PARTIAL') throw new Error(`bad rid: ${partial.rid}`);
+  if (JSON.stringify(partial.acceptedHunks) !== JSON.stringify([0, 2])) {
+    throw new Error(`expected acceptedHunks=[0,2], got ${JSON.stringify(partial.acceptedHunks)}`);
+  }
+
+  // Second prompt: keep all hunks checked → fall through to whole-allow IPC
+  // (saves the main-process `updatedInput` reconstruction in the common case).
+  await win.evaluate(() => { window.__permIpcCalls = []; });
+  await injectWaiting(win, {
+    id: 'wait-PROBE-PARTIAL-2',
+    requestId: 'PROBE-PARTIAL-2',
+    toolName: 'MultiEdit',
+    toolInput: {
+      file_path: '/tmp/probe-multi.ts',
+      edits: [
+        { old_string: 'a', new_string: 'b' },
+        { old_string: 'c', new_string: 'd' }
+      ]
+    },
+    prompt: 'MultiEdit (all)'
+  });
+  await heading.waitFor({ state: 'visible', timeout: 5_000 });
+  await win.waitForFunction(() => {
+    return document.activeElement?.getAttribute?.('data-perm-action') === 'reject';
+  }, null, { timeout: 2000 });
+  await win.evaluate(() => {
+    document.querySelector('[data-perm-action="allow"]').click();
+  });
+  await heading.waitFor({ state: 'detached', timeout: 3_000 });
+  const calls2 = await win.evaluate(() => window.__permIpcCalls);
+  const whole = calls2.find((c) => c.kind === 'whole');
+  if (!whole) throw new Error(`expected whole-allow IPC; got ${JSON.stringify(calls2)}`);
+  if (whole.decision !== 'allow') throw new Error(`expected decision=allow, got ${whole.decision}`);
+  if (calls2.some((c) => c.kind === 'partial')) {
+    throw new Error(`unexpected partial IPC fired when all hunks selected: ${JSON.stringify(calls2)}`);
+  }
+
+  // Third prompt: deselect everything → primary becomes "Reject all" → whole-deny IPC.
+  await win.evaluate(() => { window.__permIpcCalls = []; });
+  await injectWaiting(win, {
+    id: 'wait-PROBE-PARTIAL-3',
+    requestId: 'PROBE-PARTIAL-3',
+    toolName: 'Edit',
+    toolInput: { file_path: '/tmp/probe.ts', old_string: 'x', new_string: 'y' },
+    prompt: 'Edit (none)'
+  });
+  await heading.waitFor({ state: 'visible', timeout: 5_000 });
+  await win.evaluate(() => {
+    document.querySelector('[data-perm-select-none]').click();
+  });
+  await win.waitForFunction(() => {
+    const allow = document.querySelector('[data-perm-action="allow"]');
+    return /Reject all/.test(allow?.textContent ?? '');
+  }, null, { timeout: 2000 });
+  await win.evaluate(() => {
+    document.querySelector('[data-perm-action="allow"]').click();
+  });
+  await heading.waitFor({ state: 'detached', timeout: 3_000 });
+  const calls3 = await win.evaluate(() => window.__permIpcCalls);
+  const deny = calls3.find((c) => c.kind === 'whole' && c.decision === 'deny');
+  if (!deny) throw new Error(`expected whole-deny IPC after Reject all; got ${JSON.stringify(calls3)}`);
+
+  log('per-hunk render OK; partial IPC=[0,2] OK; full-select fallthrough OK; Reject all OK');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -669,6 +819,7 @@ await runHarness({
     { id: 'permission-truncate-width', run: casePermissionTruncateWidth },
     { id: 'permission-sequential-focus', run: casePermissionSequentialFocus },
     { id: 'permission-allow-always', run: casePermissionAllowAlways },
-    { id: 'permission-a11y', run: casePermissionA11y }
+    { id: 'permission-a11y', run: casePermissionA11y },
+    { id: 'permission-partial-accept', run: casePermissionPartialAccept }
   ]
 });

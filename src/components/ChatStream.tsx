@@ -18,6 +18,7 @@ export function ChatStream() {
   const blocks = useStore((s) => s.messagesBySession[activeId] ?? EMPTY_BLOCKS);
   const running = useStore((s) => !!s.runningSessions[activeId]);
   const resolvePermission = useStore((s) => s.resolvePermission);
+  const resolvePermissionPartial = useStore((s) => s.resolvePermissionPartial);
   const bumpComposerFocus = useStore((s) => s.bumpComposerFocus);
   const addAllowAlways = useStore((s) => s.addAllowAlways);
   const loadMessages = useStore((s) => s.loadMessages);
@@ -228,7 +229,8 @@ export function ChatStream() {
                     {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, addAllowAlways, {
                       permissionAutoFocus: i === lastPermIdx,
                       now,
-                      permissionPendingToolIds
+                      permissionPendingToolIds,
+                      resolvePermissionPartial
                     })}
                   </div>
                 ));

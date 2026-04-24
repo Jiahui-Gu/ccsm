@@ -395,6 +395,13 @@ type Actions = {
   dequeueMessage: (sessionId: string) => QueuedMessage | undefined;
   clearQueue: (sessionId: string) => void;
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => void;
+  /** Per-hunk partial accept (#306, builds on the IPC landed in #242). The
+   *  Edit/Write/MultiEdit permission prompt surfaces a checkbox per diff
+   *  hunk; only the indices in `acceptedHunks` are forwarded to the agent
+   *  via `agent:resolvePermissionPartial`. The waiting block is replaced by
+   *  the same system trace as the whole-allow path so the chat retains a
+   *  scrollable record. Empty array effectively denies the whole tool call. */
+  resolvePermissionPartial: (sessionId: string, requestId: string, acceptedHunks: number[]) => void;
   /** Mark `toolName` as always-allowed for the rest of this app session. Future
    *  permission requests with the same `toolName` will auto-resolve Allow in
    *  `onAgentPermissionRequest` (see `agent/lifecycle.ts`). No-op if already
@@ -1717,6 +1724,44 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
     });
     void window.ccsm?.agentResolvePermission(sessionId, requestId, decision);
+  },
+
+  resolvePermissionPartial: (sessionId, requestId, acceptedHunks) => {
+    const waitId = `wait-${requestId}`;
+    set((s) => {
+      const prev = s.messagesBySession[sessionId];
+      if (!prev) return s;
+      const idx = prev.findIndex((b) => b.id === waitId);
+      if (idx === -1) return s;
+      const wait = prev[idx];
+      const toolName = wait.kind === 'waiting' ? (wait.toolName ?? 'tool') : 'tool';
+      const toolInput = wait.kind === 'waiting' ? wait.toolInput : undefined;
+      const toolInputSummary = summarizeInputForTrace(toolInput);
+      // Trace decision mirrors the whole-allow/deny shape; "allowed" when at
+      // least one hunk was accepted, "denied" when none were. The granular
+      // hunk indices live on the IPC, not in the trace — keep the chat
+      // readout simple.
+      const decision: 'allowed' | 'denied' = acceptedHunks.length > 0 ? 'allowed' : 'denied';
+      const trace: MessageBlock = {
+        kind: 'system',
+        id: `perm-resolved-${requestId}`,
+        subkind: 'permission-resolved',
+        toolName,
+        toolInputSummary,
+        decision,
+        timestamp: Date.now()
+      };
+      const next = prev.slice();
+      next[idx] = trace;
+      const hasPendingWait = next.some(
+        (b) => b.kind === 'waiting' || b.kind === 'question'
+      );
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next },
+        focusInputNonce: hasPendingWait ? s.focusInputNonce : s.focusInputNonce + 1
+      };
+    });
+    void window.ccsm?.agentResolvePermissionPartial(sessionId, requestId, acceptedHunks);
   },
 
   addAllowAlways: (toolName) => {

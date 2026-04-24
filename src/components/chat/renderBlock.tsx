@@ -16,7 +16,12 @@ export function renderBlock(
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
   bumpComposerFocus: () => void,
   addAllowAlways: (toolName: string) => void,
-  opts: { permissionAutoFocus?: boolean; now?: number; permissionPendingToolIds?: Set<string> } = {}
+  opts: {
+    permissionAutoFocus?: boolean;
+    now?: number;
+    permissionPendingToolIds?: Set<string>;
+    resolvePermissionPartial?: (sid: string, rid: string, acceptedHunks: number[]) => void;
+  } = {}
 ) {
   switch (b.kind) {
     case 'user':
@@ -45,6 +50,12 @@ export function renderBlock(
           autoFocus={opts.permissionAutoFocus ?? true}
           onAllow={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'allow') : undefined}
           onReject={b.requestId ? () => resolvePermission(activeId, b.requestId!, 'deny') : undefined}
+          onAllowPartial={
+            b.requestId && opts.resolvePermissionPartial
+              ? (acceptedHunks) =>
+                  opts.resolvePermissionPartial!(activeId, b.requestId!, acceptedHunks)
+              : undefined
+          }
           onAllowAlways={
             b.requestId && b.toolName
               ? () => {
