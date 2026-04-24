@@ -214,8 +214,8 @@ export function ClaudeCliMissingDialog() {
                   type="button"
                   onClick={closeDialog}
                   className={cn(
-                    'text-meta text-fg-tertiary hover:text-fg-secondary',
-                    'transition-colors duration-150 outline-none',
+                    'text-meta text-fg-tertiary hover:text-fg-secondary rounded-sm px-1 -mx-1',
+                    'transition-colors duration-150 outline-none focus-ring',
                     'focus-visible:text-fg-primary'
                   )}
                 >
@@ -301,7 +301,7 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
           aria-selected={tab === t.id}
           onClick={() => onChange(t.id)}
           className={cn(
-            'relative h-8 px-3 text-chrome outline-none',
+            'relative h-8 px-3 text-chrome rounded-sm outline-none focus-ring',
             'transition-colors duration-150',
             'focus-visible:text-fg-primary',
             tab === t.id ? 'text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary'
