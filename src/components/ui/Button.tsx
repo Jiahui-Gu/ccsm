@@ -31,7 +31,7 @@ export const buttonVariants = cva(
           'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18)]',
           'hover:bg-[linear-gradient(to_bottom,oklch(0.86_0.14_215),oklch(0.66_0.14_215))]',
           'active:bg-[linear-gradient(to_bottom,oklch(0.62_0.14_215),oklch(0.70_0.14_215))]',
-          'focus-visible:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18),0_0_0_3px_oklch(0.72_0.14_215_/_0.35)]',
+          'focus-visible:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18),0_0_0_3px_var(--color-focus-ring)]',
           'disabled:bg-bg-elevated disabled:bg-none disabled:shadow-none disabled:border-border-default disabled:text-fg-disabled'
         ),
         secondary: cn(

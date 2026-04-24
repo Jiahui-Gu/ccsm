@@ -232,8 +232,6 @@ const zh: EnCatalog = {
       turnDoneHint: '只在长时间（>15s）、出错或非聚焦的轮次触发，常规快速轮次会被跳过。',
       sound: '声音',
       soundHint: '播放系统默认通知声。',
-      toggleOn: '开',
-      toggleOff: '关',
       testButton: '发送测试通知',
       testTitle: 'CCSM 测试通知',
       testBody: '能看到这条消息说明系统通知正常工作。',
