@@ -83,6 +83,37 @@ npm run make:linux   # build AppImage / .deb / .rpm
 
 The architecture has a hard rule: **frontend code under `src/` may not import from `electron`**. The only backend entry point is `window.ccsm` (declared in `src/global.d.ts`), exposed via `electron/preload.ts`. This keeps the door open for a future remote daemon. See `docs/mvp-design.md` §15.
 
+## Notifications
+
+CCSM raises desktop notifications when a background session needs your
+attention or a long-running turn finishes:
+
+- `permission` — the agent is waiting on an Allow / Allow always / Reject
+  decision (e.g. `Bash`, `Edit`, `Write`).
+- `question` — the agent invoked `AskUserQuestion` and needs you to pick
+  an option.
+- `turn_done` — a turn finished, and either took longer than 15 seconds,
+  errored, or completed in a session that wasn't focused.
+
+On Windows, when the optional `@ccsm/notify` package is installed (it ships
+as an `optionalDependency`; see Wave 1B), CCSM uses Adaptive Toasts with
+inline buttons — clicking **Allow** / **Allow always** / **Reject** on the
+toast resolves the in-app permission prompt without bringing the window
+forward. On other platforms, or when the optional native module fails to
+load, CCSM falls back to plain Electron notifications (title + body, click
+to focus) — nothing crashes.
+
+**To disable**: open Settings → Notifications and toggle the master
+**Enable notifications** switch (or any of the per-event sub-toggles for
+`permission` / `question` / `turn done`). Per-session muting is also
+available from the session's context menu.
+
+**Focus suppression**: when CCSM has the OS focus, no toast fires — you'll
+see the in-app prompt or sidebar pulse instead. This is enforced both in
+the renderer (per-session focus check) and in the main process
+(`BrowserWindow.isFocused()`), so devtools / debuggers / playwright
+sessions can't bypass it.
+
 ## Status
 
 This is **MVP**. The author uses it daily as a personal driver. Public release pending.

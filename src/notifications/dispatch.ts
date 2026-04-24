@@ -7,6 +7,28 @@ export interface DispatchInput {
   eventType: NotificationEventType;
   title: string;
   body?: string;
+  /**
+   * Optional rich metadata forwarded to `@ccsm/notify` Adaptive Toasts in
+   * the main process (Wave 1D). Plain Electron Notification toasts ignore
+   * this — they only need `title` + `body`. Routing the action callback
+   * (Allow / Allow always / Reject) back to the renderer relies on
+   * `extras.toastId` matching the `requestId` used by PermissionPromptBlock.
+   */
+  extras?: {
+    toastId?: string;
+    sessionName?: string;
+    groupName?: string;
+    toolName?: string;
+    toolBrief?: string;
+    question?: string;
+    selectionKind?: 'single' | 'multi';
+    optionCount?: number;
+    lastUserMsg?: string;
+    lastAssistantMsg?: string;
+    elapsedMs?: number;
+    toolCount?: number;
+    cwd?: string;
+  };
 }
 
 export type DispatchSkipReason =
@@ -100,7 +122,8 @@ export async function dispatchNotification(input: DispatchInput): Promise<Dispat
     title: input.title,
     body: input.body,
     eventType: input.eventType,
-    silent: !settings.sound
+    silent: !settings.sound,
+    extras: input.extras,
   });
   return { dispatched: true };
 }
