@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Checkbox from '@radix-ui/react-checkbox';
-import { Check, ChevronRight } from 'lucide-react';
+import { Check, ChevronRight, MessageSquare, MessageSquarePlus, Trash2 } from 'lucide-react';
 import { useTranslation } from '../../i18n/useTranslation';
 import type { DiffSpec } from '../../utils/diff';
 import { HighlightedLine, languageFromPath } from '../CodeBlock';
+import { useStore } from '../../stores/store';
+import type { PendingDiffComment } from '../../stores/store';
 
 // Threshold above which multi-file diffs default to collapsed sections (#249).
 // Picked at 3 to keep the common Edit/Write/MultiEdit case (almost always
@@ -41,6 +43,76 @@ interface FileSectionProps {
   onSelectionChange?: (next: Set<number>) => void;
   /** Disable interaction (e.g. while the parent is resolving the IPC). */
   disabled?: boolean;
+}
+
+// Inline composer that opens below a diff line on "+" click (#303). Two-row
+// textarea, Enter to save, Esc to dismiss. Save is also exposed as a button
+// for mouse-only users / a11y. We deliberately don't autosize beyond two
+// rows — feedback to the agent is meant to be a sentence, not a thesis.
+function InlineCommentComposer({
+  initialText,
+  onSave,
+  onCancel,
+}: {
+  initialText: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const [value, setValue] = useState(initialText);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    // Defer focus a frame so the AnimatePresence height transition has
+    // started — focusing into a 0-height element scrolls jankily on Chromium.
+    const id = requestAnimationFrame(() => ref.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const trimmed = value.trim();
+  return (
+    <div
+      className="px-2 py-1.5 bg-bg-elevated border-t border-border-subtle"
+      data-diff-comment-composer=""
+      // Stop click bubbling so opening the composer doesn't also re-toggle
+      // the file section header (the entire FileSection sits inside an
+      // outer button-less div, but defensive against future refactors).
+      onClick={(e) => e.stopPropagation()}
+    >
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (trimmed) onSave(trimmed);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        rows={2}
+        placeholder={t('task303.diffCommentPlaceholder')}
+        className="block w-full resize-none rounded-sm border border-border-default bg-bg-app px-2 py-1 text-meta font-sans text-fg-primary placeholder:text-fg-tertiary outline-none focus-visible:border-accent transition-colors duration-150 ease-out"
+      />
+      <div className="mt-1 flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-2 py-0.5 rounded-sm text-mono-xs font-mono text-fg-tertiary hover:text-fg-secondary active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring"
+        >
+          {t('common.cancel')}
+        </button>
+        <button
+          type="button"
+          disabled={!trimmed}
+          onClick={() => trimmed && onSave(trimmed)}
+          className="px-2 py-0.5 rounded-sm border border-border-subtle text-mono-xs font-mono text-fg-tertiary hover:text-accent hover:border-accent/60 active:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring disabled:opacity-40 disabled:pointer-events-none"
+        >
+          {t('task303.diffCommentSave')}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // One file's worth of hunks. Header chip = chevron + path + +N/-M counts (#249);
@@ -82,6 +154,46 @@ function FileSection({
       next.add(idx);
     }
     onSelectionChange(next);
+  };
+
+  // ─── #303 per-line comments ─────────────────────────────────────────────
+  // Composer state is local to the FileSection (only one composer can be
+  // open per file at a time — opening a second one closes the first). The
+  // saved comments live in the global store, scoped to the active session.
+  // Keying by `lineIndex` (sequential within this FileSection across all
+  // hunks, removed-then-added, matching DiffView's render order) means the
+  // composer + chip stay attached to the line the user clicked, not to a
+  // shifting source-file line number.
+  const activeId = useStore((s) => s.activeId);
+  const sessionComments = useStore((s) => s.pendingDiffComments[activeId]);
+  const { addDiffComment, updateDiffComment, deleteDiffComment } = useStore.getState();
+  // Bucket the saved comments by lineIndex for O(1) per-row lookup. We
+  // recompute on every render — diff comment counts in a single file are
+  // tiny (typically 0–3) so the cost is irrelevant compared to the
+  // syntax-highlighting work happening on the same lines.
+  const commentsForFile: Record<number, PendingDiffComment> = {};
+  if (sessionComments) {
+    for (const c of Object.values(sessionComments)) {
+      // Encode `(file, line)` as the row key on save; here we just match
+      // back. lineIndex is stored as `line`; file path must match exactly.
+      if (c.file === spec.filePath) commentsForFile[c.line] = c;
+    }
+  }
+  // Composer opens on a specific lineIndex. `null` = no composer open.
+  // Note: opening the composer for a line that already has a comment puts
+  // the composer into edit mode (initialText preloaded from the comment).
+  const [composerLine, setComposerLine] = useState<number | null>(null);
+  const openComposer = (lineIndex: number) => {
+    setComposerLine((prev) => (prev === lineIndex ? null : lineIndex));
+  };
+  const commitComment = (lineIndex: number, text: string) => {
+    const existing = commentsForFile[lineIndex];
+    if (existing) {
+      updateDiffComment(activeId, existing.id, text);
+    } else if (activeId) {
+      addDiffComment(activeId, { file: spec.filePath, line: lineIndex, text });
+    }
+    setComposerLine(null);
   };
   return (
     <div className="border-b last:border-b-0 border-border-subtle">
@@ -128,7 +240,12 @@ function FileSection({
             className="overflow-hidden"
           >
             <div className="font-mono text-meta">
-              {spec.hunks.map((h, i) => {
+              {(() => {
+                // Sequential line counter across all hunks of this file —
+                // the unit we attach comments to. Reset per-FileSection so
+                // it never collides across files in a multi-file render.
+                let lineIndex = 0;
+                return spec.hunks.map((h, i) => {
                 const decision = decisions[i];
                 const isChecked = selectMode ? selection!.has(i) : false;
                 return (
@@ -155,28 +272,48 @@ function FileSection({
                         />
                       )}
                     </AnimatePresence>
-                    {h.removed.map((line, j) => (
-                      <div
-                        key={`r-${j}`}
-                        className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg"
-                      >
-                        <span aria-hidden className="pl-1 select-none text-state-error">-</span>
-                        <span className="pr-2 font-mono">
-                          {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
-                        </span>
-                      </div>
-                    ))}
-                    {h.added.map((line, j) => (
-                      <div
-                        key={`a-${j}`}
-                        className="grid grid-cols-[12px_1fr] bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary"
-                      >
-                        <span aria-hidden className="pl-1 select-none text-state-running">+</span>
-                        <span className="pr-2 font-mono">
-                          {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
-                        </span>
-                      </div>
-                    ))}
+                    {h.removed.map((line, j) => {
+                      const myLine = lineIndex++;
+                      const comment = commentsForFile[myLine];
+                      const composerOpen = composerLine === myLine;
+                      return (
+                        <DiffLineRow
+                          key={`r-${j}`}
+                          tone="removed"
+                          line={line}
+                          lang={lang}
+                          comment={comment}
+                          composerOpen={composerOpen}
+                          onOpenComposer={() => openComposer(myLine)}
+                          onSaveComment={(text) => commitComment(myLine, text)}
+                          onCancelComposer={() => setComposerLine(null)}
+                          onDeleteComment={() => {
+                            if (comment && activeId) deleteDiffComment(activeId, comment.id);
+                          }}
+                        />
+                      );
+                    })}
+                    {h.added.map((line, j) => {
+                      const myLine = lineIndex++;
+                      const comment = commentsForFile[myLine];
+                      const composerOpen = composerLine === myLine;
+                      return (
+                        <DiffLineRow
+                          key={`a-${j}`}
+                          tone="added"
+                          line={line}
+                          lang={lang}
+                          comment={comment}
+                          composerOpen={composerOpen}
+                          onOpenComposer={() => openComposer(myLine)}
+                          onSaveComment={(text) => commitComment(myLine, text)}
+                          onCancelComposer={() => setComposerLine(null)}
+                          onDeleteComment={() => {
+                            if (comment && activeId) deleteDiffComment(activeId, comment.id);
+                          }}
+                        />
+                      );
+                    })}
                     <div className="relative flex items-center justify-end gap-1.5 px-2 py-1 bg-bg-elevated/50 border-t border-border-subtle">
                       {selectMode ? (
                         <label
@@ -248,12 +385,140 @@ function FileSection({
                     </div>
                   </div>
                 );
-              })}
+              });
+              })()}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// One rendered diff line + its (optional) inline comment composer / chip
+// affordance (#303). Pulled out of FileSection so the +/chip/composer logic
+// lives next to the row markup it decorates, rather than ballooning the
+// hunk-loop inline.
+//
+// Layout per row: gutter (12px) + line content. The hover affordance lives
+// inside the gutter, absolutely positioned over the +/- glyph, so it doesn't
+// shift the line content when it appears. When a comment is saved we leave
+// the chip visible to the right of the line content; when the composer is
+// open we render it directly below the line.
+function DiffLineRow({
+  tone,
+  line,
+  lang,
+  comment,
+  composerOpen,
+  onOpenComposer,
+  onSaveComment,
+  onCancelComposer,
+  onDeleteComment,
+}: {
+  tone: 'removed' | 'added';
+  line: string;
+  lang: string;
+  comment: PendingDiffComment | undefined;
+  composerOpen: boolean;
+  onOpenComposer: () => void;
+  onSaveComment: (text: string) => void;
+  onCancelComposer: () => void;
+  onDeleteComment: () => void;
+}) {
+  const { t } = useTranslation();
+  const tonePalette =
+    tone === 'removed'
+      ? 'bg-[oklch(0.55_0.18_27_/_0.10)] text-state-error-fg'
+      : 'bg-[oklch(0.55_0.18_145_/_0.08)] text-fg-secondary';
+  const glyphTone = tone === 'removed' ? 'text-state-error' : 'text-state-running';
+  const glyph = tone === 'removed' ? '-' : '+';
+  return (
+    <>
+      <div
+        className={`group/row relative grid grid-cols-[12px_1fr_auto] items-center ${tonePalette}`}
+        data-diff-line=""
+        data-diff-line-tone={tone}
+      >
+        {/* Gutter: shows the diff sign by default; on row hover (or when
+            this row already owns a comment / composer), the +-comment
+            button overlays it. We keep both glyphs in the same 12px column
+            so the line content never shifts. */}
+        <span className="relative pl-1 select-none">
+          {/* Default sign — visually hidden when the action button is up. */}
+          <span
+            aria-hidden
+            className={`${glyphTone} ${composerOpen || comment ? 'opacity-0' : 'group-hover/row:opacity-0'} transition-opacity duration-150`}
+          >
+            {glyph}
+          </span>
+          <button
+            type="button"
+            onClick={onOpenComposer}
+            aria-label={
+              comment
+                ? t('task303.diffEditCommentAria')
+                : t('task303.diffAddCommentAria')
+            }
+            data-diff-add-comment=""
+            className={`absolute inset-0 inline-flex items-center justify-center text-fg-tertiary hover:text-accent transition-opacity duration-150 outline-none focus-visible:opacity-100 focus-ring rounded-sm ${
+              composerOpen || comment ? 'opacity-100' : 'opacity-0 group-hover/row:opacity-100'
+            }`}
+          >
+            <MessageSquarePlus size={10} className="stroke-[2]" />
+          </button>
+        </span>
+        <span className="pr-2 font-mono min-w-0 truncate">
+          {line ? <HighlightedLine code={line} language={lang} /> : '\u00A0'}
+        </span>
+        {/* Saved-comment chip. Click → reopen composer in edit mode (the
+            FileSection toggles composerLine on the same lineIndex). */}
+        {comment && !composerOpen && (
+          <button
+            type="button"
+            onClick={onOpenComposer}
+            data-diff-comment-chip=""
+            title={comment.text}
+            aria-label={t('task303.diffEditCommentAria')}
+            className="mr-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary hover:text-fg-secondary hover:border-border-default transition-colors duration-150 ease-out outline-none focus-ring text-mono-xs font-mono"
+          >
+            <MessageSquare size={10} className="stroke-[2]" />
+            <span className="max-w-[14ch] truncate">{comment.text}</span>
+          </button>
+        )}
+      </div>
+      <AnimatePresence initial={false}>
+        {composerOpen && (
+          <motion.div
+            key="composer"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.16, ease: [0, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="relative">
+              <InlineCommentComposer
+                initialText={comment?.text ?? ''}
+                onSave={onSaveComment}
+                onCancel={onCancelComposer}
+              />
+              {comment && (
+                <button
+                  type="button"
+                  onClick={onDeleteComment}
+                  data-diff-comment-delete=""
+                  aria-label={t('task303.diffDeleteCommentAria')}
+                  className="absolute right-2 top-1.5 inline-flex h-5 w-5 items-center justify-center rounded-sm text-fg-tertiary hover:text-state-error hover:bg-bg-hover transition-colors duration-150 ease-out outline-none focus-ring-destructive"
+                >
+                  <Trash2 size={11} className="stroke-[2]" />
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

@@ -596,6 +596,20 @@ const en = {
       titleWarning: 'Agent warning',
       dismiss: 'Dismiss diagnostic'
     }
+  },
+  // task #303 — per-line diff comment affordance.
+  // Comments queue locally on a DiffView line, then ride the next user
+  // prompt as `<diff-feedback file="…" line="N">…</diff-feedback>` blocks
+  // prepended to the prompt body. Kept as a separate top-level namespace
+  // (rather than added inline to `chat`) so the append site is at EOF and
+  // future task workers can see at a glance which strings #303 owns.
+  task303: {
+    diffAddCommentAria: 'Add a comment for the agent on this line',
+    diffEditCommentAria: 'Edit comment',
+    diffDeleteCommentAria: 'Delete comment',
+    diffCommentPlaceholder: 'Add a comment for the agent\u2026',
+    diffCommentSave: 'Save',
+    diffCommentsPendingChip: '{{count}} diff comments will be sent'
   }
 } as const;
 
