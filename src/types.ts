@@ -96,7 +96,29 @@ export interface SkillProvenance {
 export type MessageBlock =
   | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
   | { kind: 'assistant'; id: string; text: string; streaming?: boolean; viaSkill?: SkillProvenance }
-  | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; toolUseId?: string; result?: string; isError?: boolean; input?: unknown }
+  | {
+      kind: 'tool';
+      id: string;
+      name: string;
+      brief: string;
+      expanded: boolean;
+      toolUseId?: string;
+      result?: string;
+      isError?: boolean;
+      input?: unknown;
+      // (#336) When true, the tool block is a placeholder created from a
+      // partial assistant stream — `input_json_delta` chunks are still
+      // arriving and the canonical assistant `tool_use` event hasn't
+      // landed yet. ToolBlock uses this to render `bashPartialCommand`
+      // (see below) with a typing caret. Cleared (omitted) once the real
+      // assistant event coalesces over the placeholder via id.
+      streamingInput?: boolean;
+      // (#336) The in-flight Bash `command` arg as the model types it.
+      // Only populated for `name === 'Bash'` placeholder blocks during
+      // streaming. After finalize this lives in `input.command` like any
+      // other tool block.
+      bashPartialCommand?: string;
+    }
   | { kind: 'todo'; id: string; toolUseId?: string; todos: TodoItem[] }
   | {
       kind: 'waiting';

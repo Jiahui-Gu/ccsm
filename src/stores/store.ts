@@ -441,6 +441,20 @@ type Actions = {
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
   streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
+  // (#336) Stream the in-flight `command` arg of a Bash tool_use as the
+  // model types it. Creates a placeholder tool block on the first delta
+  // (kind=tool, name=Bash, streamingInput=true) and updates
+  // `bashPartialCommand` on subsequent deltas. The canonical assistant
+  // `tool_use` event coalesces over this placeholder via shared id once
+  // the input is fully formed; `done=true` only flips streamingInput off
+  // pre-emptively in case the assistant frame is delayed.
+  streamBashToolInput: (
+    sessionId: string,
+    toolBlockId: string,
+    toolUseId: string,
+    bashPartialCommand: string,
+    done: boolean
+  ) => void;
   setToolResult: (sessionId: string, toolUseId: string, result: string, isError: boolean) => void;
   clearMessages: (sessionId: string) => void;
   /** Wipe everything that pins a session to a specific claude.exe conversation
@@ -1501,6 +1515,46 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (existing.kind !== 'assistant') return s;
       const next = prev.slice();
       next[idx] = { ...existing, text: existing.text + appendText, streaming: !done };
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
+      };
+    });
+  },
+
+  streamBashToolInput: (sessionId, toolBlockId, toolUseId, bashPartialCommand, done) => {
+    set((s) => {
+      const prev = s.messagesBySession[sessionId] ?? [];
+      const idx = prev.findIndex((b) => b.id === toolBlockId);
+      if (idx === -1) {
+        // First delta — create a placeholder Bash tool block. `brief` is
+        // initialized to the partial command so the collapsed-row preview
+        // shows the typed text immediately; ToolBlock will additionally
+        // append a typing caret while `streamingInput` is true.
+        const placeholder: MessageBlock = {
+          kind: 'tool',
+          id: toolBlockId,
+          name: 'Bash',
+          brief: bashPartialCommand,
+          expanded: false,
+          toolUseId,
+          input: { command: bashPartialCommand },
+          bashPartialCommand,
+          streamingInput: !done
+        };
+        return {
+          messagesBySession: { ...s.messagesBySession, [sessionId]: [...prev, placeholder] }
+        };
+      }
+      const existing = prev[idx];
+      if (existing.kind !== 'tool') return s;
+      const next = prev.slice();
+      next[idx] = {
+        ...existing,
+        brief: bashPartialCommand,
+        bashPartialCommand,
+        streamingInput: !done,
+        input: { command: bashPartialCommand }
+      };
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: next }
       };

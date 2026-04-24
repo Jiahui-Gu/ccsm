@@ -33,47 +33,180 @@ export type StreamTranslation = {
 
 const EMPTY: StreamTranslation = { append: [], toolResults: [] };
 
-export type AssistantStreamPatch = {
-  blockId: string;
-  appendText: string;
-  done: boolean;
-};
+// Patch surface for partial assistant streaming. EITHER:
+//   - text path (existing): blockId + appendText + done, OR
+//   - bash tool input path (#336): toolBlockId + bashPartialCommand + done.
+// The two are mutually exclusive — we return at most one shape per event.
+export type AssistantStreamPatch =
+  | {
+      kind: 'text';
+      blockId: string;
+      appendText: string;
+      done: boolean;
+    }
+  | {
+      // Bash tool_use is having its `input` JSON streamed by the model.
+      // Until `done` is true, the canonical tool block hasn't landed yet —
+      // we surface the command-so-far so the UI can render a "typing" preview.
+      kind: 'bash-input';
+      // Stable id matching the eventual real ToolBlock id
+      // (`${messageId}:${toolUseId}`) so `appendBlocks` coalesces the
+      // finalized tool block on top of the streamed placeholder.
+      toolBlockId: string;
+      toolUseId: string;
+      bashPartialCommand: string;
+      done: boolean;
+    };
+
+// Tolerant extractor for the `command` field inside a partial JSON object
+// like `{"command":"npm ru` or `{"description":"x","command":"echo \"hi`.
+// We DO NOT pull a streaming-JSON parser dependency — the regex captures
+// everything up to (but not including) the next unescaped `"`, which gives
+// us the in-progress string content. JSON-escape sequences (`\"`, `\\`,
+// `\n`, etc.) are then minimally decoded so the preview reads naturally.
+// Returns null when there's no partial `command` field yet.
+export function extractPartialBashCommand(partialJson: string): string | null {
+  const m = /"command"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(partialJson);
+  if (!m) return null;
+  const raw = m[1];
+  // Decode the common JSON escapes we might see mid-stream. We deliberately
+  // ignore `\uXXXX` half-sequences (`\u00` mid-stream) — they'd render as
+  // a literal `\u00` for a few frames, which is fine for a preview.
+  return raw.replace(/\\(["\\/bfnrt])/g, (_, c) => {
+    switch (c) {
+      case 'n': return '\n';
+      case 't': return '\t';
+      case 'r': return '';
+      case 'b': return '';
+      case 'f': return '';
+      case '/': return '/';
+      case '"': return '"';
+      case '\\': return '\\';
+      default: return c;
+    }
+  });
+}
 
 // Mirrors the SDK-era streamer but consumes stream_event frames coming straight
-// from claude.exe stdout. The wire shape (message_start / content_block_delta /
-// content_block_stop) is identical between SDK and direct spawn — the SDK was a
-// pass-through for these — so the state machine is unchanged.
+// from claude.exe stdout. The wire shape (message_start / content_block_start /
+// content_block_delta / content_block_stop) is identical between SDK and
+// direct spawn — the SDK was a pass-through for these — so the state machine
+// is unchanged for text. For tool_use input we additionally accumulate
+// `input_json_delta` per content-block index so we can surface the in-flight
+// `command` arg of `Bash` tool calls (#336).
+type ToolUseAccum = {
+  id: string;
+  name: string;
+  partialJson: string;
+  // Last command string we surfaced — used to dedupe no-op deltas (the model
+  // can emit input_json_delta chunks that don't change the `command` field
+  // yet, e.g. while it's still typing the `description` arg).
+  lastCommand: string;
+};
+
 export class PartialAssistantStreamer {
   private currentMessageId: string | null = null;
+  // Per-message-id → per-content-block-index → accumulator. Cleared on
+  // message_stop. Keyed by index because a single assistant turn can contain
+  // multiple tool_use blocks (parallel batch), each with its own input stream.
+  private toolUseByIndex = new Map<number, ToolUseAccum>();
 
   consume(msg: unknown): AssistantStreamPatch | null {
     const event = (msg as { event?: unknown } | null)?.event as
-      | { type?: string; message?: { id?: unknown }; index?: number; delta?: { type?: string; text?: unknown } }
+      | {
+          type?: string;
+          message?: { id?: unknown };
+          index?: number;
+          delta?: { type?: string; text?: unknown; partial_json?: unknown };
+          content_block?: { type?: string; id?: unknown; name?: unknown };
+        }
       | undefined;
     if (!event || typeof event !== 'object') return null;
     if (event.type === 'message_start') {
       const id = event.message?.id;
       this.currentMessageId = typeof id === 'string' ? id : null;
+      this.toolUseByIndex.clear();
       return null;
     }
     if (event.type === 'message_stop') {
       this.currentMessageId = null;
+      this.toolUseByIndex.clear();
       return null;
     }
     if (!this.currentMessageId) return null;
+    if (event.type === 'content_block_start') {
+      const cb = event.content_block;
+      if (cb && cb.type === 'tool_use' && typeof event.index === 'number') {
+        const id = typeof cb.id === 'string' ? cb.id : '';
+        const name = typeof cb.name === 'string' ? cb.name : '';
+        if (id) {
+          this.toolUseByIndex.set(event.index, {
+            id,
+            name,
+            partialJson: '',
+            lastCommand: ''
+          });
+        }
+      }
+      return null;
+    }
     if (event.type === 'content_block_delta') {
       const d = event.delta;
-      if (!d || d.type !== 'text_delta') return null;
-      const text = typeof d.text === 'string' ? d.text : '';
-      if (!text) return null;
-      return {
-        blockId: `${this.currentMessageId}:c${event.index}`,
-        appendText: text,
-        done: false
-      };
+      if (!d) return null;
+      if (d.type === 'text_delta') {
+        const text = typeof d.text === 'string' ? d.text : '';
+        if (!text) return null;
+        return {
+          kind: 'text',
+          blockId: `${this.currentMessageId}:c${event.index}`,
+          appendText: text,
+          done: false
+        };
+      }
+      if (d.type === 'input_json_delta' && typeof event.index === 'number') {
+        const accum = this.toolUseByIndex.get(event.index);
+        if (!accum || accum.name !== 'Bash') return null;
+        const chunk = typeof d.partial_json === 'string' ? d.partial_json : '';
+        if (!chunk) return null;
+        accum.partialJson += chunk;
+        const cmd = extractPartialBashCommand(accum.partialJson);
+        if (cmd === null || cmd === accum.lastCommand) return null;
+        accum.lastCommand = cmd;
+        return {
+          kind: 'bash-input',
+          toolBlockId: `${this.currentMessageId}:${accum.id}`,
+          toolUseId: accum.id,
+          bashPartialCommand: cmd,
+          done: false
+        };
+      }
+      return null;
     }
     if (event.type === 'content_block_stop') {
+      // For tool_use blocks we drop the per-index accumulator. The text path
+      // continues to emit a `done` patch so the renderer can flip the
+      // streaming flag off; the bash-input path doesn't need a final patch
+      // because the canonical assistant event will land next and replace
+      // the placeholder with the finalized tool block via appendBlocks
+      // coalesce-by-id.
+      if (typeof event.index === 'number') {
+        const accum = this.toolUseByIndex.get(event.index);
+        if (accum) {
+          this.toolUseByIndex.delete(event.index);
+          if (accum.name === 'Bash' && accum.lastCommand) {
+            return {
+              kind: 'bash-input',
+              toolBlockId: `${this.currentMessageId}:${accum.id}`,
+              toolUseId: accum.id,
+              bashPartialCommand: accum.lastCommand,
+              done: true
+            };
+          }
+          return null;
+        }
+      }
       return {
+        kind: 'text',
         blockId: `${this.currentMessageId}:c${event.index}`,
         appendText: '',
         done: true
