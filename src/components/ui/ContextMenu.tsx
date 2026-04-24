@@ -21,7 +21,7 @@ export const ContextMenuContent = forwardRef<
         className={cn(
           'z-50 min-w-[180px] py-1 rounded-md border border-border-default bg-bg-elevated',
           'surface-highlight surface-elevated',
-          'text-sm text-fg-secondary outline-none',
+          'text-chrome text-fg-secondary outline-none',
           'data-[state=open]:animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]',
           'origin-[var(--radix-context-menu-content-transform-origin)]',
           className
@@ -89,7 +89,7 @@ export const ContextMenuSubContent = forwardRef<
         className={cn(
           'z-50 min-w-[180px] py-1 rounded-md border border-border-default bg-bg-elevated',
           'surface-highlight surface-elevated',
-          'text-sm text-fg-secondary outline-none',
+          'text-chrome text-fg-secondary outline-none',
           'data-[state=open]:animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]',
           'origin-[var(--radix-context-menu-content-transform-origin)]',
           className

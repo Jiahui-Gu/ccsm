@@ -27,7 +27,7 @@ export function DiffView({ diff }: { diff: DiffSpec }) {
       <div className="px-3 py-1 bg-bg-elevated/60 border-b border-border-subtle font-mono text-mono-sm text-fg-tertiary">
         {diff.filePath}
       </div>
-      <div className="font-mono text-xs">
+      <div className="font-mono text-meta">
         {diff.hunks.map((h, i) => {
           const decision = decisions[i];
           return (

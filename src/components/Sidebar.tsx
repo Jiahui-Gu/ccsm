@@ -188,11 +188,11 @@ function GroupRow({
                     setRenaming(false);
                   }}
                   onCancel={() => setRenaming(false)}
-                  inputClassName="text-sm font-semibold text-fg-primary"
+                  inputClassName="text-chrome font-semibold text-fg-primary"
                 />
               ) : (
                 <>
-                  <span className="truncate text-sm font-semibold text-fg-secondary">{group.nameKey ? t(group.nameKey) : group.name}</span>
+                  <span className="truncate text-chrome font-semibold text-fg-secondary">{group.nameKey ? t(group.nameKey) : group.name}</span>
                   {hasWaiting && (
                     <span
                       aria-label={t('sidebar.waitingForResponse')}
@@ -396,7 +396,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               : undefined
           }
           className={cn(
-            'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-base h-9',
+            'group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-chrome h-9',
             // Keep duration/easing in sync with the selection ring below and
             // with the right-pane content crossfade in ChatStream so clicking
             // a session reads as ONE coordinated motion across panes. See
@@ -434,7 +434,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
                   setRenaming(false);
                 }}
                 onCancel={() => setRenaming(false)}
-                inputClassName="text-base"
+                inputClassName="text-chrome"
               />
             ) : (
               <>
@@ -523,7 +523,7 @@ function NewSessionButton({ onCreateSession }: { onCreateSession?: () => void })
       variant="raised"
       size="md"
       onClick={() => onCreateSession?.()}
-      className="flex-1 h-8 text-xs gap-1.5"
+      className="flex-1 h-8 text-chrome gap-1.5"
     >
       <Plus size={14} className="stroke-[1.75]" />
       <span>{t('sidebar.newSession')}</span>
@@ -732,7 +732,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           </div>
           <nav className="flex-1 min-h-0 overflow-y-auto px-1.5 py-1">
             {normal.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-fg-tertiary">
+              <div className="px-2 py-1.5 text-meta text-fg-tertiary">
                 {t('sidebar.groupsEmptyHint')}
               </div>
             ) : null}
@@ -804,7 +804,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               variant="raised"
               size="md"
               onClick={onOpenSettings}
-              className="flex-1 h-8 text-xs gap-1.5"
+              className="flex-1 h-8 text-chrome gap-1.5"
             >
               <Settings size={13} className="stroke-[1.5]" />
               <span>{t('common.settings')}</span>
@@ -828,7 +828,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
       {draggingSession ? (
         <div
           className={cn(
-            'flex items-center gap-2.5 h-9 pl-3 pr-2 rounded-sm text-base',
+            'flex items-center gap-2.5 h-9 pl-3 pr-2 rounded-sm text-chrome',
             'bg-bg-active text-fg-primary font-medium',
             'shadow-[0_12px_32px_-8px_rgba(0,0,0,0.5),0_0_0_1px_oklch(1_0_0_/_0.08)]',
             'w-60'

@@ -58,7 +58,7 @@ export function AgentDiagnosticBanner() {
             role="status"
           >
             <AlertTriangle size={13} className="stroke-[2] shrink-0" />
-            <span className="flex-1 min-w-0 truncate text-xs font-mono">
+            <span className="flex-1 min-w-0 truncate text-meta font-mono">
               {latest.message}
             </span>
             <button

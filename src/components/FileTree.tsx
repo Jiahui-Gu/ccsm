@@ -33,7 +33,7 @@ export function FileTree({ source, defaultExpanded, onSelect }: FileTreeProps) {
 
   if (tree.length === 0) {
     return (
-      <div className="mt-1 ml-6 pl-3 border-l border-border-subtle font-mono text-xs text-fg-tertiary">
+      <div className="mt-1 ml-6 pl-3 border-l border-border-subtle font-mono text-meta text-fg-tertiary">
         {t('fileTree.noFiles')}
       </div>
     );
@@ -43,7 +43,7 @@ export function FileTree({ source, defaultExpanded, onSelect }: FileTreeProps) {
     <div
       role="tree"
       aria-label={t('fileTree.ariaLabel')}
-      className="mt-1 ml-6 pl-2 border-l border-border-subtle font-mono text-xs text-fg-secondary"
+      className="mt-1 ml-6 pl-2 border-l border-border-subtle font-mono text-meta text-fg-secondary"
     >
       {tree.map((node) => (
         <TreeRow

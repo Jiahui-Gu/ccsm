@@ -35,7 +35,7 @@ export function Tooltip({
               'z-50 px-2 py-1 rounded-md border',
               'border-border-default bg-bg-elevated text-fg-secondary',
               'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_2px_8px_oklch(0_0_0_/_0.35)]',
-              'text-xs select-none pointer-events-none',
+              'text-meta select-none pointer-events-none',
               'data-[state=delayed-open]:animate-[tooltipIn_140ms_cubic-bezier(0.32,0.72,0,1)]',
               'data-[state=closed]:opacity-0'
             )}
@@ -63,7 +63,7 @@ export const TooltipContent = forwardRef<
         'z-50 px-2 py-1 rounded-md border border-border-default bg-bg-elevated',
         'surface-highlight surface-elevated',
         'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_2px_8px_oklch(0_0_0_/_0.35)]',
-        'text-fg-secondary text-xs select-none pointer-events-none',
+        'text-fg-secondary text-meta select-none pointer-events-none',
         'data-[state=delayed-open]:animate-[tooltipIn_140ms_cubic-bezier(0.32,0.72,0,1)]',
         'data-[state=closed]:opacity-0',
         className

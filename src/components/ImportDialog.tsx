@@ -131,9 +131,9 @@ export function ImportDialog({ open, onOpenChange }: Props) {
       >
         <DialogBody>
           {loading ? (
-            <div className="font-mono text-xs text-fg-tertiary py-6 text-center">{t('importDialog.scanning')}</div>
+            <div className="font-mono text-chrome text-fg-tertiary py-6 text-center">{t('importDialog.scanning')}</div>
           ) : items.length === 0 ? (
-            <div className="font-mono text-xs text-fg-tertiary py-6 text-center">
+            <div className="font-mono text-chrome text-fg-tertiary py-6 text-center">
               {t('importDialog.noImportablePrefix')} <span className="text-fg-secondary">~/.claude/projects/</span>.
             </div>
           ) : (
@@ -142,11 +142,11 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                 <button
                   type="button"
                   onClick={toggleAll}
-                  className="font-mono text-xs text-fg-tertiary hover:text-fg-secondary"
+                  className="font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
                 >
                   {selected.size === items.length ? t('importDialog.deselectAll') : t('importDialog.selectAll')} ({items.length})
                 </button>
-                <span className="font-mono text-xs text-fg-tertiary">{t('importDialog.selected', { count: selected.size })}</span>
+                <span className="font-mono text-chrome text-fg-tertiary">{t('importDialog.selected', { count: selected.size })}</span>
               </div>
               <div className="max-h-[420px] overflow-y-auto rounded-sm border border-border-subtle">
                 {buckets.map((bucket, bIdx) => {
@@ -168,13 +168,13 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                         >
                           {isCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                         </button>
-                        <span className="font-mono text-xs text-fg-secondary flex-1">
+                        <span className="font-mono text-chrome text-fg-secondary flex-1">
                           {bucket.label} · {bucket.items.length}
                         </span>
                         <button
                           type="button"
                           onClick={() => toggleBucket(ids)}
-                          className="font-mono text-xs text-fg-tertiary hover:text-fg-secondary"
+                          className="font-mono text-chrome text-fg-tertiary hover:text-fg-secondary"
                         >
                           {allPicked ? t('importDialog.deselectGroup') : t('importDialog.selectGroup')}
                           {pickedCount > 0 && !allPicked && ` (${pickedCount}/${ids.length})`}
@@ -198,7 +198,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
                                   className="mt-0.5 accent-fg-primary"
                                 />
                                 <div className="min-w-0 flex-1">
-                                  <div className="font-mono text-xs text-fg-primary truncate">{it.title}</div>
+                                  <div className="font-mono text-chrome text-fg-primary truncate">{it.title}</div>
                                   <div className="font-mono text-mono-sm text-fg-tertiary truncate">
                                     {it.cwd} · {new Date(it.mtime).toLocaleString()}
                                   </div>

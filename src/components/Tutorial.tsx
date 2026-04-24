@@ -57,7 +57,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
       <button
         type="button"
         onClick={onSkip}
-        className="absolute right-4 top-3 z-10 font-mono text-xs text-fg-tertiary hover:text-fg-secondary transition-colors"
+        className="absolute right-4 top-3 z-10 font-mono text-meta text-fg-tertiary hover:text-fg-secondary transition-colors"
       >
         {t('tutorial.skip')}
       </button>
@@ -76,7 +76,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
                 {t('tutorial.stepXofY', { current: stepIdx + 1, total: steps.length })}
               </div>
               <h1 className="text-2xl font-semibold text-fg-primary leading-tight">{step.title}</h1>
-              <p className="text-sm text-fg-secondary leading-relaxed">{step.body}</p>
+              <p className="text-body text-fg-secondary leading-relaxed">{step.body}</p>
               {isLast && (
                 <div className="flex items-center gap-3 pt-4">
                   <Button variant="primary" size="md" onClick={onNewSession} className="w-44 justify-center">
@@ -191,7 +191,7 @@ function SessionsVisual() {
             className="flex items-center gap-2 rounded-md bg-bg-app/60 px-3 py-2 border border-border-subtle"
           >
             <span className={cn('h-1.5 w-1.5 rounded-full', dotColor(r.state))} />
-            <span className="font-mono text-xs text-fg-secondary truncate">{r.name}</span>
+            <span className="font-mono text-chrome text-fg-secondary truncate">{r.name}</span>
           </motion.div>
         ))}
       </div>

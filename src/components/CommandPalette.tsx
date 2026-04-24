@@ -214,20 +214,20 @@ export function CommandPalette({
               onChange={(e) => setQ(e.target.value)}
               placeholder={t('commandPalette.searchPlaceholder')}
               className={cn(
-                'flex-1 bg-transparent text-base text-fg-primary placeholder:text-fg-tertiary',
+                'flex-1 bg-transparent text-body text-fg-primary placeholder:text-fg-tertiary',
                 'outline-none'
               )}
             />
-            <kbd className="font-mono text-xs px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
+            <kbd className="font-mono text-meta px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
               {t('commandPalette.escKey')}
             </kbd>
           </div>
           <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
             {!hasQuery && (
-              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
+              <li className="px-4 py-6 text-center text-chrome text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
             )}
             {hasQuery && results.length === 0 && (
-              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">{t('commandPalette.noResultsFor', { query: q.trim() })}</li>
+              <li className="px-4 py-6 text-center text-chrome text-fg-tertiary">{t('commandPalette.noResultsFor', { query: q.trim() })}</li>
             )}
             {hasQuery &&
               results.map((r, i) => (
@@ -239,7 +239,7 @@ export function CommandPalette({
                   onClick={() => r.onPick()}
                   className={cn(
                     'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
-                    'text-sm',
+                    'text-chrome',
                     i === active
                       ? 'bg-bg-hover text-fg-primary surface-highlight'
                       : 'text-fg-secondary'
@@ -248,7 +248,7 @@ export function CommandPalette({
                   <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
                   <span className="flex-1 min-w-0 truncate">{r.label}</span>
                   {r.hint && (
-                    <span className="text-xs text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
+                    <span className="text-meta text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
                       {r.hint}
                     </span>
                   )}

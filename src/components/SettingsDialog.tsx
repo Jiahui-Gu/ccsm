@@ -138,7 +138,7 @@ export function SettingsDialog({
                   onClick={() => setTab(tabEntry.id)}
                   onKeyDown={(e) => onTabKeyDown(e, idx)}
                   className={cn(
-                    'relative flex w-full items-center h-7 px-3 text-sm rounded-sm mx-1',
+                    'relative flex w-full items-center h-7 px-3 text-chrome rounded-sm mx-1',
                     'transition-[background-color,color] duration-150 ease-out',
                     'outline-none focus-ring',
                     isActive
@@ -181,8 +181,8 @@ export function SettingsDialog({
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="mb-5">
-      <label className="block text-sm font-medium text-fg-primary mb-1">{label}</label>
-      {hint && <div className="text-xs text-fg-tertiary mb-1.5">{hint}</div>}
+      <label className="block text-chrome font-medium text-fg-primary mb-1">{label}</label>
+      {hint && <div className="text-meta text-fg-tertiary mb-1.5">{hint}</div>}
       {children}
     </div>
   );
@@ -203,7 +203,7 @@ function _Select<T extends string>({
       onChange={(e) => onChange(e.target.value as T)}
       className={cn(
         'h-7 px-2 pr-6 rounded-sm bg-bg-elevated border border-border-default',
-        'text-sm text-fg-primary outline-none cursor-pointer',
+        'text-chrome text-fg-primary outline-none cursor-pointer',
         'hover:border-border-strong',
         'focus-visible:border-border-strong focus-visible:shadow-[0_0_0_2px_var(--color-focus-ring)]'
       )}
@@ -272,7 +272,7 @@ function AppearancePane() {
             className="w-48 accent-accent cursor-pointer"
             aria-label={t('fontSizeAriaLabel')}
           />
-          <span className="text-xs font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
+          <span className="text-meta font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
         </div>
       </Field>
       <Field label={t('density')} hint={t('densityHint')}>
@@ -379,7 +379,7 @@ function Segmented<T extends string>({
             aria-checked={active}
             onClick={() => onChange(o.value)}
             className={cn(
-              'h-6 px-2.5 text-xs rounded-[3px] transition-[background-color,color,box-shadow] duration-150 ease-out',
+              'h-6 px-2.5 text-meta rounded-[3px] transition-[background-color,color,box-shadow] duration-150 ease-out',
               'outline-none focus-ring',
               active
                 ? 'bg-bg-app text-fg-primary font-medium shadow-[inset_0_0_0_1px_var(--color-border-default)]'
@@ -424,7 +424,7 @@ function NotificationsPane() {
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 accent-accent"
       />
-      <span className="text-sm text-fg-secondary">
+      <span className="text-chrome text-fg-secondary">
         {checked ? t('notifications.toggleOn') : t('notifications.toggleOff')}
       </span>
     </label>
@@ -452,7 +452,7 @@ function NotificationsPane() {
 
   return (
     <>
-      <div className="text-xs text-fg-tertiary mb-4">
+      <div className="text-meta text-fg-tertiary mb-4">
         {t('notifications.intro')}
       </div>
       <Field label={t('notifications.enable')}>
@@ -493,7 +493,7 @@ function NotificationsPane() {
         <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
           {t('notifications.testButton')}
         </Button>
-        {testStatus && <span className="text-xs text-fg-secondary">{testStatus}</span>}
+        {testStatus && <span className="text-meta text-fg-secondary">{testStatus}</span>}
       </div>
       <div className="mt-6 pt-5 border-t border-border-subtle">
         <CrashReportingField />
@@ -560,10 +560,10 @@ function CrashReportingField() {
         </Checkbox.Indicator>
       </Checkbox.Root>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-fg-primary">
+        <div className="text-chrome font-medium text-fg-primary">
           {t('crashReporting.label')}
         </div>
-        <div className="text-xs text-fg-tertiary mt-0.5">
+        <div className="text-meta text-fg-tertiary mt-0.5">
           {t('crashReporting.description')}
         </div>
       </div>
@@ -615,10 +615,10 @@ function UpdatesPane() {
   return (
     <>
       <Field label={t('updates.version')}>
-        <span className="text-sm text-fg-secondary font-mono">{version}</span>
+        <span className="text-chrome text-fg-secondary font-mono">{version}</span>
       </Field>
       <Field label={t('updates.status')}>
-        <span className="text-sm text-fg-secondary font-mono">{describeStatus(status, t)}</span>
+        <span className="text-chrome text-fg-secondary font-mono">{describeStatus(status, t)}</span>
       </Field>
       <Field label={t('updates.automaticChecks')} hint={t('updates.automaticChecksHint')}>
         <label className="inline-flex items-center gap-2 cursor-pointer select-none">
@@ -628,7 +628,7 @@ function UpdatesPane() {
             onChange={(e) => void onToggleAutoCheck(e.target.checked)}
             className="h-4 w-4 accent-accent"
           />
-          <span className="text-sm text-fg-secondary">{t('updates.automaticChecksToggle')}</span>
+          <span className="text-chrome text-fg-secondary">{t('updates.automaticChecksToggle')}</span>
         </label>
       </Field>
       <div className="flex gap-2">
@@ -716,14 +716,14 @@ function ConnectionPane() {
   return (
     <div data-connection-pane>
       <div
-        className="text-xs text-fg-tertiary mb-4 max-w-[520px] [&_code]:font-mono [&_code]:text-fg-secondary"
+        className="text-meta text-fg-tertiary mb-4 max-w-[520px] [&_code]:font-mono [&_code]:text-fg-secondary"
         dangerouslySetInnerHTML={{ __html: t('connection.intro') }}
       />
 
       <Field label={t('connection.baseUrl')}>
         <code
           data-connection-base-url
-          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
+          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
         >
           {baseUrl ?? t('connection.baseUrlDefault')}
         </code>
@@ -732,14 +732,14 @@ function ConnectionPane() {
       <Field label={t('connection.defaultModel')}>
         <code
           data-connection-model
-          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-xs text-fg-secondary font-mono break-all"
+          className="block px-2 py-1.5 rounded-sm bg-bg-elevated border border-border-subtle text-meta text-fg-secondary font-mono break-all"
         >
           {model ?? t('connection.modelUnset')}
         </code>
       </Field>
 
       <Field label={t('connection.authToken')}>
-        <span className="text-sm text-fg-secondary">
+        <span className="text-chrome text-fg-secondary">
           {hasAuth ? t('connection.authConfigured') : t('connection.authNotConfigured')}
         </span>
       </Field>
@@ -753,10 +753,10 @@ function ConnectionPane() {
         hint={t('connection.discoveredModelsHint')}
       >
         {!modelsLoaded ? (
-          <div className="text-sm text-fg-tertiary">{t('connection.modelsLoading')}</div>
+          <div className="text-chrome text-fg-tertiary">{t('connection.modelsLoading')}</div>
         ) : models.length === 0 ? (
           <div
-            className="text-sm text-fg-tertiary [&_code]:font-mono [&_code]:text-fg-secondary"
+            className="text-chrome text-fg-tertiary [&_code]:font-mono [&_code]:text-fg-secondary"
             dangerouslySetInnerHTML={{ __html: t('connection.modelsEmpty') }}
           />
         ) : (
@@ -767,7 +767,7 @@ function ConnectionPane() {
             {models.map((m) => (
               <li
                 key={m.id}
-                className="flex items-center justify-between px-3 py-1.5 text-xs"
+                className="flex items-center justify-between px-3 py-1.5 text-meta"
               >
                 <span className="font-mono text-fg-primary truncate">{m.id}</span>
                 <span className="text-mono-xs uppercase tracking-wide text-fg-tertiary ml-2 shrink-0">
@@ -790,7 +790,7 @@ function ConnectionPane() {
           {opening ? t('connection.opening') : t('connection.openSettingsFile')}
         </Button>
         {openError && (
-          <span className="text-xs text-state-error">{openError}</span>
+          <span className="text-meta text-state-error">{openError}</span>
         )}
       </div>
     </div>

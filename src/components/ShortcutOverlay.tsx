@@ -80,7 +80,7 @@ export function ShortcutOverlay({ open, onOpenChange }: ShortcutOverlayProps) {
               <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-tertiary mb-2">
                 {t(g.titleKey)}
               </h3>
-              <table className="w-full text-sm">
+              <table className="w-full text-chrome">
                 <thead className="sr-only">
                   <tr>
                     <th>{t('shortcuts.colShortcut')}</th>
@@ -129,7 +129,7 @@ function KeyChips({ combo }: { combo: string }) {
             {parts.map((p, pi) => (
               <React.Fragment key={pi}>
                 {pi > 0 && (
-                  <span aria-hidden="true" className="text-fg-tertiary text-xs">
+                  <span aria-hidden="true" className="text-fg-tertiary text-meta">
                     +
                   </span>
                 )}
