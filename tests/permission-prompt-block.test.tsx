@@ -242,4 +242,67 @@ describe('<PermissionPromptBlock />', () => {
     const truncated = screen.getByText(/^x+…$/);
     expect(truncated.textContent!.length).toBeLessThanOrEqual(401);
   });
+
+  describe('Allow always — scope-explicit copy (Task #321)', () => {
+    it('renders the per-tool, session-scoped label when toolName is known', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="Bash: ls -la"
+          toolName="Bash"
+          toolInput={{ command: 'ls -la' }}
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowAlways={() => {}}
+        />
+      );
+      await flush();
+      // Label must (a) name the tool, (b) signal session scope. The old
+      // copy ("Allow always") promised more than the implementation delivers
+      // — this test guards against regressing back to it.
+      const btn = screen.getByRole('button', { name: /always allow bash this session/i });
+      expect(btn).toBeInTheDocument();
+      // Tooltip spells out the lifetime + scope explicitly.
+      expect(btn.getAttribute('title')).toMatch(/any bash/i);
+      expect(btn.getAttribute('title')).toMatch(/quit the app/i);
+      // Negative: the old vague label is gone.
+      expect(
+        screen.queryByRole('button', { name: /^allow always$/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it('falls back to a tool-agnostic label when toolName is missing', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="opaque"
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowAlways={() => {}}
+        />
+      );
+      await flush();
+      const btn = screen.getByRole('button', {
+        name: /always allow this tool this session/i,
+      });
+      expect(btn).toBeInTheDocument();
+      expect(btn.getAttribute('title')).toMatch(/this tool/i);
+    });
+
+    it('clicking the button still fires onAllowAlways', async () => {
+      const onAllowAlways = vi.fn();
+      render(
+        <PermissionPromptBlock
+          prompt="Bash: rm -rf /"
+          toolName="Bash"
+          onAllow={() => {}}
+          onReject={() => {}}
+          onAllowAlways={onAllowAlways}
+        />
+      );
+      await flush();
+      fireEvent.click(
+        screen.getByRole('button', { name: /always allow bash this session/i })
+      );
+      expect(onAllowAlways).toHaveBeenCalledTimes(1);
+    });
+  });
 });
