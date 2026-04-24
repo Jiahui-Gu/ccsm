@@ -622,10 +622,21 @@ export class SessionRunner {
       this.pendingPerms.set(requestId, {
         resolve: (decision: CanUseToolDecision) => {
           if (decision.allow) {
+            // CLI 2.x routes Edit/Write/MultiEdit through the PreToolUse hook
+            // path, NOT the can_use_tool path, so the partial-accept rewrite
+            // (#251) only takes effect if the hook response forwards
+            // `updatedInput` here. Per the official hook protocol, a
+            // PreToolUse hookSpecificOutput may include `updatedInput` which
+            // replaces the entire tool_input before execution. Without this
+            // line a MultiEdit subset selection is silently dropped and the
+            // CLI runs ALL edits.
             resolve({
               hookSpecificOutput: {
                 hookEventName: 'PreToolUse',
                 permissionDecision: 'allow',
+                ...(decision.updatedInput !== undefined
+                  ? { updatedInput: decision.updatedInput }
+                  : {}),
               },
             });
           } else {

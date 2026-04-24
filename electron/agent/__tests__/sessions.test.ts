@@ -538,6 +538,153 @@ describe('SessionRunner PreToolUse hook permission', () => {
     expect(resp.response.response).toEqual({});
     runner.close();
   });
+
+  // Regression for the PR #242 reviewer-flagged bug: Edit/Write/MultiEdit in
+  // CLI 2.x route through the PreToolUse hook path, NOT can_use_tool. The
+  // hook resolver was emitting `permissionDecision: 'allow'` only and
+  // discarding `decision.updatedInput`, so a MultiEdit subset selection
+  // silently caused the CLI to run ALL edits.
+  it('forwards updatedInput on the hook response when resolvePermissionPartial picks a subset of MultiEdit hunks (PR #242 fix)', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    let captured = '';
+    const runner = new SessionRunner('s-hook-partial', () => {}, () => {}, (req) => {
+      captured = req.requestId;
+    });
+    await runner.start(baseOpts);
+
+    const originalEdits = [
+      { old_string: 'a', new_string: 'A' },
+      { old_string: 'b', new_string: 'B' },
+      { old_string: 'c', new_string: 'C' },
+    ];
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_partial',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'ccsm-permission',
+        input: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'MultiEdit',
+          tool_input: { file_path: '/x', edits: originalEdits },
+          permission_mode: 'default',
+        },
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(captured).not.toBe('');
+
+    // User accepts hunks 0 and 2, rejects hunk 1.
+    expect(runner.resolvePermissionPartial(captured, [0, 2])).toBe(true);
+    await new Promise((r) => setImmediate(r));
+
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_partial',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } } | undefined;
+    expect(resp).toBeDefined();
+    expect(resp!.response.subtype).toBe('success');
+    const out = resp!.response.response as {
+      hookSpecificOutput: {
+        hookEventName: string;
+        permissionDecision: string;
+        updatedInput?: { edits?: Array<Record<string, unknown>>; file_path?: string };
+      };
+    };
+    expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse');
+    expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
+    // The critical assertion: the hook response MUST include updatedInput
+    // so the CLI rewrites the tool call to the trimmed edits list.
+    expect(out.hookSpecificOutput.updatedInput).toBeDefined();
+    expect(out.hookSpecificOutput.updatedInput!.file_path).toBe('/x');
+    expect(out.hookSpecificOutput.updatedInput!.edits).toEqual([
+      originalEdits[0],
+      originalEdits[2],
+    ]);
+    runner.close();
+  });
+
+  // Integration: full path from a CLI-emitted PreToolUse hook_callback for
+  // MultiEdit through resolvePermissionPartial back to a control_response
+  // the SDK/CLI consumes. Reviewer flagged "no integration test covers the
+  // hook resolve path" — this is it. Asserts both the trimmed input AND
+  // that all unmodified peer fields (replace_all, etc.) are preserved.
+  it('integration: MultiEdit with 3 hunks + partial-accept (2 of 3) emits a hook control_response carrying the trimmed updatedInput (PR #242 fix)', async () => {
+    const proc = makeFakeProc();
+    mockSpawnClaude.mockResolvedValue(proc);
+    const seen: Array<{ requestId: string; toolName: string; input: Record<string, unknown> }> = [];
+    const runner = new SessionRunner(
+      's-hook-partial-int',
+      () => {},
+      () => {},
+      (req) => seen.push(req),
+    );
+    await runner.start(baseOpts);
+
+    const inputEdits = [
+      { old_string: 'foo', new_string: 'FOO', replace_all: false },
+      { old_string: 'bar', new_string: 'BAR', replace_all: true },
+      { old_string: 'baz', new_string: 'BAZ', replace_all: false },
+    ];
+    emitFrame(proc.stdout, {
+      type: 'control_request',
+      request_id: 'req_hk_int_partial',
+      request: {
+        subtype: 'hook_callback',
+        callback_id: 'ccsm-permission',
+        input: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'MultiEdit',
+          tool_input: { file_path: '/repo/file.ts', edits: inputEdits },
+          tool_use_id: 'tu_int',
+          permission_mode: 'default',
+        },
+        tool_use_id: 'tu_int',
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+
+    // The renderer sees a permission prompt with the full MultiEdit input.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].toolName).toBe('MultiEdit');
+    expect((seen[0].input.edits as unknown[])).toHaveLength(3);
+
+    // User picks hunks 0 and 2 (indices match DiffSpec ordering).
+    expect(runner.resolvePermissionPartial(seen[0].requestId, [0, 2])).toBe(true);
+    await new Promise((r) => setImmediate(r));
+
+    // Inspect what we wrote back to claude.exe stdin.
+    const lines = proc.__stdinLines() as Array<Record<string, unknown>>;
+    const resp = lines.find(
+      (l) =>
+        l.type === 'control_response' &&
+        (l.response as { request_id?: string } | undefined)?.request_id === 'req_hk_int_partial',
+    ) as { response: { subtype: string; request_id: string; response: Record<string, unknown> } } | undefined;
+    expect(resp).toBeDefined();
+    expect(resp!.response.subtype).toBe('success');
+
+    const out = resp!.response.response as {
+      hookSpecificOutput: {
+        hookEventName: string;
+        permissionDecision: string;
+        updatedInput?: { file_path?: string; edits?: Array<Record<string, unknown>> };
+      };
+    };
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+    });
+    // SDK/CLI must receive a trimmed input — exactly 2 edits, in original
+    // order, with all per-edit fields (replace_all etc.) preserved.
+    expect(out.hookSpecificOutput.updatedInput).toEqual({
+      file_path: '/repo/file.ts',
+      edits: [inputEdits[0], inputEdits[2]],
+    });
+    runner.close();
+  });
 });
 
 describe('SessionRunner outbound control', () => {
