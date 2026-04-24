@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { useStore } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
 import { TopBanner, TopBannerPresence } from './chrome/TopBanner';
 
 /**
@@ -16,6 +17,7 @@ import { TopBanner, TopBannerPresence } from './chrome/TopBanner';
  * just maps store state → variant + copy.
  */
 export function AgentDiagnosticBanner() {
+  const { t } = useTranslation();
   const diagnostics = useStore((s) => s.diagnostics);
   const activeId = useStore((s) => s.activeId);
   const dismiss = useStore((s) => s.dismissDiagnostic);
@@ -40,10 +42,10 @@ export function AgentDiagnosticBanner() {
           presenceKey={latest.id}
           testId="agent-diagnostic-banner"
           icon={<AlertTriangle size={13} className="stroke-[2]" />}
-          title={latest.level === 'error' ? 'Agent error' : 'Agent warning'}
+          title={latest.level === 'error' ? t('banner.agentDiagnostic.titleError') : t('banner.agentDiagnostic.titleWarning')}
           body={latest.message}
           onDismiss={() => dismiss(latest.id)}
-          dismissLabel="Dismiss diagnostic"
+          dismissLabel={t('banner.agentDiagnostic.dismiss')}
         />
       )}
     </TopBannerPresence>

@@ -537,6 +537,19 @@ const en = {
     actionShortcuts: 'Show this shortcuts overlay',
     colShortcut: 'Shortcut',
     colAction: 'Action'
+  },
+  banner: {
+    agentInitFailed: {
+      title: 'Failed to start Claude',
+      retry: 'Retry',
+      retrying: 'Retrying\u2026',
+      reconfigure: 'Reconfigure'
+    },
+    agentDiagnostic: {
+      titleError: 'Agent error',
+      titleWarning: 'Agent warning',
+      dismiss: 'Dismiss diagnostic'
+    }
   }
 } as const;
 
