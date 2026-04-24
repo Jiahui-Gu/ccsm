@@ -76,6 +76,7 @@ import {
 } from './import-scanner';
 import { loadImportableHistory } from './import-history';
 import { showNotification, type ShowNotificationPayload } from './notifications';
+import { probeNotifyAvailability, notifyLastError } from './notify';
 import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { ClaudeNotFoundError, detectClaudeVersion, resolveClaudeBinary } from './agent/binary-resolver';
@@ -1026,6 +1027,11 @@ app.whenReady().then(() => {
       return showNotification(payload, win);
     }
   );
+
+  ipcMain.handle('notify:availability', async () => {
+    const available = await probeNotifyAvailability();
+    return { available, error: notifyLastError() };
+  });
 
   installUpdaterIpc();
 

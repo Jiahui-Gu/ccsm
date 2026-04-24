@@ -164,6 +164,7 @@ declare global {
         eventType?: 'permission' | 'question' | 'turn_done' | 'test';
         silent?: boolean;
       }) => Promise<boolean>;
+      notifyAvailability: () => Promise<{ available: boolean; error: string | null }>;
       onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
 
       updatesStatus: () => Promise<UpdateStatus>;
