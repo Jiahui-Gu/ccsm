@@ -493,7 +493,15 @@ function NotificationsPane() {
         <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
           {t('notifications.testButton')}
         </Button>
-        {testStatus && <span className="text-meta text-fg-secondary">{testStatus}</span>}
+        <span
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-testid="notifications-test-status"
+          className="text-meta text-fg-secondary"
+        >
+          {testStatus ?? ''}
+        </span>
       </div>
       <div className="mt-6 pt-5 border-t border-border-subtle">
         <CrashReportingField />
