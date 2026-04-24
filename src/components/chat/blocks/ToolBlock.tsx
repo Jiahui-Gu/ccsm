@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, AlertCircle } from 'lucide-react';
 import { useTranslation } from '../../../i18n/useTranslation';
@@ -45,8 +45,24 @@ export function ToolBlock({
   toolUseId?: string;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<boolean>(!!isError);
   const [cancelling, setCancelling] = useState(false);
+  // Auto-expand precedence (#304): on transition into error or stall-escalation
+  // we open the block automatically so the user doesn't have to hunt for the
+  // chevron to see what failed / why it stalled. Once the user toggles the
+  // block themselves (collapse OR expand), we lock in their choice via this
+  // ref so subsequent auto-expand triggers don't override them.
+  const userToggledRef = useRef<boolean>(false);
+  const prevIsErrorRef = useRef<boolean>(!!isError);
+  // Track whether we've already auto-expanded in response to an
+  // error/escalation transition so re-renders (timer ticks, parent updates)
+  // don't keep slamming `open` back to true after the user collapses.
+  const autoExpandedForErrorRef = useRef<boolean>(!!isError);
+  const autoExpandedForEscalatedRef = useRef<boolean>(false);
+  const handleToggle = () => {
+    userToggledRef.current = true;
+    setOpen((prev) => !prev);
+  };
   const hasResult = typeof result === 'string';
   // Dropped-tool surface (A2-NEW-6). When the tool_result was recorded as
   // an explicit empty string (Bug L historically; possible future drops)
@@ -82,6 +98,29 @@ export function ToolBlock({
   // warning color and a Cancel link appears. See STALL_ESCALATE_AFTER_MS
   // banner comment for why the link is currently a console.warn stub.
   const escalated = elapsedMs !== null && elapsedMs >= STALL_ESCALATE_AFTER_MS;
+  // Auto-expand on transitions (#304). We only flip `open` to true on the
+  // *transition* into the error/escalated state, not on every render — and
+  // never if the user has already toggled the block themselves. This keeps
+  // the affordance helpful (you don't have to click to see what failed)
+  // without fighting users who deliberately collapse the block.
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    // Error transition (false -> true). Initial-mount-with-error is handled
+    // by useState's initializer; this branch only fires when a previously
+    // healthy tool block flips to error mid-stream.
+    if (isError && !prevIsErrorRef.current && !autoExpandedForErrorRef.current) {
+      autoExpandedForErrorRef.current = true;
+      setOpen(true);
+    }
+    prevIsErrorRef.current = !!isError;
+  }, [isError]);
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    if (escalated && !autoExpandedForEscalatedRef.current) {
+      autoExpandedForEscalatedRef.current = true;
+      setOpen(true);
+    }
+  }, [escalated]);
   const onCancelStalled = () => {
     if (cancelling) return;
     // (#239) Per-tool cancel IPC. The renderer can't reach the in-flight
@@ -123,7 +162,7 @@ export function ToolBlock({
         <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-state-error rounded-l-sm" />
       )}
       <button
-        onClick={() => setOpen(!open)}
+        onClick={handleToggle}
         aria-expanded={open}
         className="group flex items-baseline gap-3 w-full text-left text-fg-tertiary hover:text-fg-secondary transition-colors duration-150 ease-out outline-none rounded-sm focus-ring"
       >
