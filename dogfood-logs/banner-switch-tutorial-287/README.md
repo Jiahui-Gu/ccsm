@@ -27,9 +27,14 @@ primitive with track + thumb, announced as "switch".
 ## #293 — Tutorial raw oklch -> tokens
 
 Tutorial visuals previously hard-coded raw `oklch()` color literals (welcome
-gradient, session-row state dots, drop shadow). After: replaced with semantic
-tokens (`bg-accent`, `bg-state-running`, `bg-state-waiting`, `shadow-xl`)
-so light-theme overrides flow through automatically.
+gradient, session-row state dots, drop shadow). After: state dots ride the
+existing `--color-state-running` / `--color-state-waiting` tokens; the
+welcome icon's accent gradient and the visual-card drop shadow now resolve
+through two new ornamental tokens — `--gradient-tutorial-welcome` and
+`--shadow-tutorial-card` — defined in both the dark and light `@theme`
+blocks of `src/styles/global.css`. Visual parity with the pre-PR baseline
+is preserved (gradient cyan -> indigo, deep card shadow), and light-theme
+overrides flow through automatically.
 
 | Before | After |
 | --- | --- |

@@ -33,6 +33,10 @@ const TOKENS_CSS = `
     --color-accent: oklch(0.74 0.13 215);
     --color-state-running: oklch(0.78 0.13 155);
     --color-state-waiting: oklch(0.78 0.10 75);
+    /* #293 ornamental tokens — keep in sync with src/styles/global.css */
+    --gradient-tutorial-welcome:
+      linear-gradient(135deg, oklch(0.72 0.14 215) 0%, oklch(0.55 0.18 265) 100%);
+    --shadow-tutorial-card: 0 24px 48px -12px oklch(0 0 0 / 0.5);
   }
   html, body { margin: 0; padding: 0; background: var(--color-bg-app);
     color: var(--color-fg-primary);
@@ -85,12 +89,12 @@ const TOKENS_CSS = `
     background: color-mix(in oklch, var(--color-bg-elevated), transparent 40%);
     backdrop-filter: blur(6px); padding: 16px; }
   .tut-card.before { box-shadow: 0 24px 48px -12px oklch(0 0 0 / 0.5); }
-  .tut-card.after { box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25); }
+  .tut-card.after { box-shadow: var(--shadow-tutorial-card); }
   .tut-card-inner { display: flex; height: 100%; align-items: center; justify-content: center; }
   .welcome-square { display: flex; height: 64px; width: 64px; align-items: center;
     justify-content: center; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); }
   .welcome-square.before { background-image: linear-gradient(to bottom right, oklch(0.72 0.14 215), oklch(0.55 0.18 265)); }
-  .welcome-square.after  { background: var(--color-accent); }
+  .welcome-square.after  { background: var(--gradient-tutorial-welcome); }
   .row-list { display: flex; flex-direction: column; gap: 8px; }
   .row-item { display: flex; align-items: center; gap: 8px; border-radius: 6px;
     padding: 8px 12px; background: color-mix(in oklch, var(--color-bg-app), transparent 40%);
@@ -272,9 +276,14 @@ primitive with track + thumb, announced as "switch".
 ## #293 — Tutorial raw oklch -> tokens
 
 Tutorial visuals previously hard-coded raw \`oklch()\` color literals (welcome
-gradient, session-row state dots, drop shadow). After: replaced with semantic
-tokens (\`bg-accent\`, \`bg-state-running\`, \`bg-state-waiting\`, \`shadow-xl\`)
-so light-theme overrides flow through automatically.
+gradient, session-row state dots, drop shadow). After: state dots ride the
+existing \`--color-state-running\` / \`--color-state-waiting\` tokens; the
+welcome icon's accent gradient and the visual-card drop shadow now resolve
+through two new ornamental tokens — \`--gradient-tutorial-welcome\` and
+\`--shadow-tutorial-card\` — defined in both the dark and light \`@theme\`
+blocks of \`src/styles/global.css\`. Visual parity with the pre-PR baseline
+is preserved (gradient cyan -> indigo, deep card shadow), and light-theme
+overrides flow through automatically.
 
 | Before | After |
 | --- | --- |

@@ -148,7 +148,10 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
 
 function VisualCard({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative w-full max-w-sm aspect-[4/3] rounded-xl border border-border-subtle bg-bg-elevated/60 backdrop-blur p-4 shadow-xl">
+    <div
+      className="relative w-full max-w-sm aspect-[4/3] rounded-xl border border-border-subtle bg-bg-elevated/60 backdrop-blur p-4"
+      style={{ boxShadow: 'var(--shadow-tutorial-card)' }}
+    >
       {children}
     </div>
   );
@@ -162,7 +165,8 @@ function WelcomeVisual() {
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ delay: 0.15, duration: 0.4, ease: [0.32, 0.72, 0, 1] }}
-          className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent shadow-lg"
+          className="flex h-16 w-16 items-center justify-center rounded-2xl shadow-lg"
+          style={{ background: 'var(--gradient-tutorial-welcome)' }}
         >
           <MessageSquare size={28} className="text-white stroke-[1.5]" />
         </motion.div>
