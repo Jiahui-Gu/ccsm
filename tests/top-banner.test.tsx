@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe('<TopBanner />', () => {
-  it('renders title, body, actions, and dismiss with role="alert" + aria-live="polite"', () => {
+  it('renders title, body, actions, and dismiss with role="alert" + aria-live="polite" for error variant', () => {
     const onDismiss = vi.fn();
     const onAction = vi.fn();
     render(
@@ -55,6 +55,23 @@ describe('<TopBanner />', () => {
     const dismiss = screen.getByRole('button', { name: 'Dismiss' });
     fireEvent.click(dismiss);
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses role="status" (not "alert") for warning variant so screen readers do not over-announce', () => {
+    render(<TopBanner variant="warning" title="Heads up" />);
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveTextContent('Heads up');
+    // Warning must NOT register as an assertive alert.
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('uses role="status" (not "alert") for info variant so screen readers do not over-announce', () => {
+    render(<TopBanner variant="info" title="FYI" />);
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveTextContent('FYI');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('omits the dismiss button when onDismiss is not supplied', () => {
@@ -124,7 +141,7 @@ describe('banner trio integration', () => {
       true
     );
     render(<AgentDiagnosticBanner />);
-    const alert = screen.getByRole('alert');
+    const alert = screen.getByRole('status');
     expect(alert).toHaveAttribute('aria-live', 'polite');
     expect(document.querySelector('[data-top-banner]')).toHaveAttribute('data-variant', 'warning');
     expect(screen.getByText('Agent warning')).toBeInTheDocument();
@@ -168,7 +185,7 @@ describe('banner trio integration', () => {
       true
     );
     render(<ClaudeCliMissingBanner />);
-    const alert = screen.getByRole('alert');
+    const alert = screen.getByRole('status');
     expect(alert).toHaveAttribute('aria-live', 'polite');
     expect(document.querySelector('[data-top-banner]')).toHaveAttribute('data-variant', 'warning');
     // Set-up CTA exists; dismiss button does NOT (banner is state-driven, not user-dismissible).
