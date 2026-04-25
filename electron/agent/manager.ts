@@ -92,11 +92,30 @@ class SessionsManager {
 
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
+    // Race the SDK consumer's first signal (event = healthy, exit = early
+    // failure) against an ~800ms window so a CLI that spawns and immediately
+    // exits 1 (stale binPath, missing dep, bad shim) surfaces as a typed
+    // CLI_SPAWN_FAILED on the agent:start return instead of an unexplained
+    // ok:true followed by a silent agent:exit. Mirrors the legacy runner's
+    // detectEarlyFailure behaviour the renderer banner contract depends on.
+    let settled = false;
+    let earlyError: string | undefined;
+    let signalFirst: (() => void) | null = null;
+    const firstSignal = new Promise<void>((r) => { signalFirst = r; });
+    const wakeFirst = () => { if (signalFirst) { signalFirst(); signalFirst = null; } };
     try {
       const runner: Runner = new SdkSessionRunner(
         sessionId,
-        (msg: AgentMessage) => this.emit('agent:event', { sessionId, message: msg }),
+        (msg: AgentMessage) => {
+          if (!settled) wakeFirst();
+          this.emit('agent:event', { sessionId, message: msg });
+        },
         ({ error }) => {
+          if (!settled) {
+            earlyError = error ?? 'Claude CLI exited before producing output.';
+            wakeFirst();
+            return;
+          }
           this.emit('agent:exit', { sessionId, error });
           this.runners.delete(sessionId);
         },
@@ -110,9 +129,21 @@ class SessionsManager {
           } satisfies AgentDiagnostic)
       );
       await runner.start(opts);
+      await Promise.race([firstSignal, new Promise<void>((r) => setTimeout(r, 800))]);
+      settled = true;
+      if (earlyError !== undefined) {
+        try { runner.close(); } catch { /* ignore */ }
+        return {
+          ok: false,
+          error: 'Failed to start Claude',
+          errorCode: 'CLI_SPAWN_FAILED',
+          detail: earlyError,
+        };
+      }
       this.runners.set(sessionId, runner);
       return { ok: true };
     } catch (err) {
+      settled = true;
       if (err instanceof ClaudeNotFoundError) {
         return {
           ok: false,
@@ -121,7 +152,12 @@ class SessionsManager {
           searchedPaths: err.searchedPaths,
         };
       }
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false,
+        error: 'Failed to start Claude',
+        errorCode: 'CLI_SPAWN_FAILED',
+        detail: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 
