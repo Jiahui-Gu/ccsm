@@ -14,7 +14,7 @@
  *     so TypeScript can narrow.
  *   - `unknown` is preferred over `any` everywhere.
  *   - Many fields here are confirmed only from S2/M1 docs, not from a real recorded
- *     session. See fixtures/stream-json/SCHEMA-NOTES.md for the audit.
+ *     session.
  */
 
 import { z } from 'zod';
