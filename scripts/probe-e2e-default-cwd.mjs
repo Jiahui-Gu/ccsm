@@ -11,7 +11,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from './probe-utils.mjs';
+import { appWindow, isolatedUserData } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -21,13 +21,16 @@ function fail(msg) {
   process.exit(1);
 }
 
+const ud = isolatedUserData('agentory-probe-default-cwd');
 const app = await electron.launch({
-  args: ['.'],
+  args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
   env: { ...process.env, NODE_ENV: 'development', CCSM_PROD_BUNDLE: '1' }
 });
 
 try { // ccsm-probe-cleanup-wrap
+
+try {
 
 const win = await appWindow(app);
 const errors = [];
@@ -81,4 +84,7 @@ console.log('\n[probe-e2e-default-cwd] OK');
 console.log('  sending with default cwd "~" produced an assistant reply');
 
 await app.close();
+} finally {
+  ud.cleanup();
+}
 } finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap
