@@ -495,17 +495,22 @@ export class SdkSessionRunner {
     ctx: { signal: AbortSignal; toolUseID: string },
   ): Promise<import('@anthropic-ai/claude-agent-sdk').PermissionResult> {
     // Mirror the legacy runner's mode-driven shortcuts: bypass + acceptEdits
-    // never prompt; passthrough tools delegate to the renderer's own UI.
+    // + auto never prompt; passthrough tools delegate to the renderer's own UI.
+    // NOTE: every `behavior: 'allow'` MUST carry `updatedInput`. The SDK's TS
+    // type declares it `.optional()`, but the CLI's over-the-wire Zod schema
+    // rejects `updatedInput: undefined` (undefined-serialized-over-wire is
+    // distinct from missing-field). Echo `input` unchanged when there's no
+    // partial-accept payload. See Bug #169 / PR #313.
     if (
       this.permissionMode === 'bypassPermissions' ||
       this.permissionMode === 'yolo' ||
       this.permissionMode === 'acceptEdits' ||
       this.permissionMode === 'auto'
     ) {
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
     if (PASSTHROUGH_TOOLS.has(toolName)) {
-      return { behavior: 'allow' };
+      return { behavior: 'allow', updatedInput: input };
     }
 
     const decision = await new Promise<CanUseToolDecision>((resolve) => {
@@ -524,14 +529,14 @@ export class SdkSessionRunner {
     });
 
     if (decision.allow) {
-      // The claude binary's Zod schema requires `updatedInput` to ALWAYS
-      // be present on an `allow` response — even though the SDK's TypeScript
-      // type marks it optional. Reproduced via probe-e2e-permission-allow-*
-      // (Bug #169): `updatedInput: undefined` triggers
-      // `invalid_union / expected: "record", received: undefined`. When the
-      // user didn't supply a partial-accept payload, echo the original
-      // `input` back unchanged — this matches the on-the-wire shape the CLI
-      // expects and is semantically a no-op (allow with no replacement).
+      // The SDK's TypeScript type marks `updatedInput` optional, but the
+      // CLI's over-the-wire schema rejects `updatedInput: undefined` —
+      // undefined-serialized-over-wire is distinct from missing-field, and
+      // surfaces as `invalid_union / expected: "record", received: undefined`.
+      // Reproduced via probe-e2e-permission-allow-* (Bug #169). When the user
+      // didn't supply a partial-accept payload, echo the original `input` back
+      // unchanged — this matches the on-the-wire shape the CLI expects and
+      // is semantically a no-op (allow with no replacement).
       return {
         behavior: 'allow',
         updatedInput: (decision.updatedInput as Record<string, unknown> | undefined) ?? input,
