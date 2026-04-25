@@ -24,6 +24,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 
@@ -147,3 +149,4 @@ console.log(`  messages intact, running/interrupted correctly NOT restored`);
 
 await app.close();
 ud.cleanup();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

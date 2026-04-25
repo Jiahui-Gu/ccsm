@@ -36,6 +36,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 await app.evaluate(async ({ dialog }, fakeCwd) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
 }, FAKE_CWD);
@@ -118,3 +120,4 @@ console.log('  +1 queued chip:    visible during running turn');
 console.log('  drain after turn:  user echo rendered, second turn completed');
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

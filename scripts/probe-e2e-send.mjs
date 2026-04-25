@@ -34,6 +34,7 @@ const app = await electron.launch({
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
+try {
 // 1) Stub the native folder-picker dialog in the MAIN process so the UI's
 //    "Browse folder…" returns FAKE_CWD without opening a real OS dialog.
 await app.evaluate(async ({ dialog }, fakeCwd) => {
@@ -202,3 +203,4 @@ console.log('[probe-e2e-send] phase 3 (tricky chars) OK');
 
 console.log(`\n[probe-e2e-send] OK — 3/3 phases passed`);
 await app.close();
+} finally { try { await app.close(); } catch {} }

@@ -20,6 +20,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
@@ -69,3 +71,4 @@ console.log('  hero visible, no starter cards, no "Working in" line');
 console.log('  installerCorrupt flag stayed false on cold launch');
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

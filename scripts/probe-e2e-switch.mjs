@@ -36,6 +36,8 @@ const app = await electron.launch({
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 await app.evaluate(async ({ dialog }, fakeCwd) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
 }, root);
@@ -243,3 +245,4 @@ console.log('  focus returned to composer textarea');
 console.log(`  chat snapped to bottom (Δ=${scrollState.distanceFromBottom}px)`);
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

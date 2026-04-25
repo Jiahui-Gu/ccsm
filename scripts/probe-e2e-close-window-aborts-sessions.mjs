@@ -31,6 +31,7 @@ import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appWindow } from './probe-utils.mjs';
 
@@ -61,6 +62,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development', CCSM_PROD_BUNDLE: '1' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
@@ -69,7 +72,10 @@ try {
   });
 
   const cwd = root;
-  const sessionId = 's-close-probe';
+  // Real UUID required since PR-D (#274): the SDK now validates sessionId
+  // and emits `session_id_mismatch` warnings (creating mis-named JSONL
+  // transcripts) when given a non-UUID like the legacy `s-close-probe`.
+  const sessionId = randomUUID();
   await win.evaluate(
     ({ sid, cwd }) => {
       const store = window.__ccsmStore;
@@ -170,3 +176,4 @@ try {
 } finally {
   fs.rmSync(userDataDir, { recursive: true, force: true });
 }
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

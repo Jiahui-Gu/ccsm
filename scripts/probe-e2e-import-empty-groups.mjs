@@ -25,6 +25,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
@@ -143,3 +145,4 @@ console.log(`  imported session parented correctly + sidebar renders both`);
 
 await app.close();
 ud.cleanup();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

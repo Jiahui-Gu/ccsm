@@ -16,6 +16,8 @@ function fail(msg) {
 }
 
 const app = await electron.launch({ args: ['.'], cwd: root, env: { ...process.env, NODE_ENV: 'development' } });
+
+try { // ccsm-probe-cleanup-wrap
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
@@ -84,3 +86,4 @@ if (platform !== 'darwin') {
 console.log('\n[probe-e2e-titlebar] OK');
 console.log(`  platform=${platform} dragRegions=${dragRegions.length}`);
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap
