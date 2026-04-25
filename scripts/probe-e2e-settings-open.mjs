@@ -59,7 +59,7 @@ try {
     });
     // Confirm it's the Settings dialog by checking for the tab nav. We use
     // the i18n-stable 'Connection' tab name (English locale boots first).
-    const conn = dialog.getByRole('button', { name: /^connection$/i });
+    const conn = dialog.getByRole('tab', { name: /^connection$/i });
     await conn.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {
       fail(`${label}: Settings tabs not visible — wrong dialog opened?`);
     });
