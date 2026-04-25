@@ -1,8 +1,29 @@
 import type { WebContents } from 'electron';
-import { ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
+import type { StartOptions, PermissionMode, AgentMessage } from './sessions';
 import { ClaudeNotFoundError } from './binary-resolver';
 import type { StartResult } from './start-result-types';
-import { createRunner, type Runner } from '../agent-sdk/runner-factory';
+import { SdkSessionRunner } from '../agent-sdk/sessions';
+
+/**
+ * Runner contract used by SessionsManager. The hand-written legacy runner
+ * (`SessionRunner`) was removed in PR-C; `SdkSessionRunner` is now the only
+ * implementation. The interface is kept explicit so a future second runner
+ * (or a test fake) drops in without retouching the manager.
+ */
+interface Runner {
+  readonly id: string;
+  getPid(): number | undefined;
+  start(opts: StartOptions): Promise<void>;
+  send(text: string): void;
+  sendContent(content: readonly unknown[]): void;
+  interrupt(): Promise<void>;
+  cancelToolUse(toolUseId: string): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  setModel(model?: string): Promise<void>;
+  resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean;
+  resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean;
+  close(): void;
+}
 
 export type { StartErrorCode, StartResult } from './start-result-types';
 
@@ -71,11 +92,30 @@ class SessionsManager {
 
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
+    // Race the SDK consumer's first signal (event = healthy, exit = early
+    // failure) against an ~800ms window so a CLI that spawns and immediately
+    // exits 1 (stale binPath, missing dep, bad shim) surfaces as a typed
+    // CLI_SPAWN_FAILED on the agent:start return instead of an unexplained
+    // ok:true followed by a silent agent:exit. Mirrors the legacy runner's
+    // detectEarlyFailure behaviour the renderer banner contract depends on.
+    let settled = false;
+    let earlyError: string | undefined;
+    let signalFirst: (() => void) | null = null;
+    const firstSignal = new Promise<void>((r) => { signalFirst = r; });
+    const wakeFirst = () => { if (signalFirst) { signalFirst(); signalFirst = null; } };
     try {
-      const runner = createRunner(
+      const runner: Runner = new SdkSessionRunner(
         sessionId,
-        (msg: AgentMessage) => this.emit('agent:event', { sessionId, message: msg }),
+        (msg: AgentMessage) => {
+          if (!settled) wakeFirst();
+          this.emit('agent:event', { sessionId, message: msg });
+        },
         ({ error }) => {
+          if (!settled) {
+            earlyError = error ?? 'Claude CLI exited before producing output.';
+            wakeFirst();
+            return;
+          }
           this.emit('agent:exit', { sessionId, error });
           this.runners.delete(sessionId);
         },
@@ -89,9 +129,21 @@ class SessionsManager {
           } satisfies AgentDiagnostic)
       );
       await runner.start(opts);
+      await Promise.race([firstSignal, new Promise<void>((r) => setTimeout(r, 800))]);
+      settled = true;
+      if (earlyError !== undefined) {
+        try { runner.close(); } catch { /* ignore */ }
+        return {
+          ok: false,
+          error: 'Failed to start Claude',
+          errorCode: 'CLI_SPAWN_FAILED',
+          detail: earlyError,
+        };
+      }
       this.runners.set(sessionId, runner);
       return { ok: true };
     } catch (err) {
+      settled = true;
       if (err instanceof ClaudeNotFoundError) {
         return {
           ok: false,
@@ -100,15 +152,12 @@ class SessionsManager {
           searchedPaths: err.searchedPaths,
         };
       }
-      if (err instanceof ClaudeSpawnFailedError) {
-        return {
-          ok: false,
-          error: err.message,
-          errorCode: 'CLI_SPAWN_FAILED',
-          detail: err.detail,
-        };
-      }
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false,
+        error: 'Failed to start Claude',
+        errorCode: 'CLI_SPAWN_FAILED',
+        detail: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 

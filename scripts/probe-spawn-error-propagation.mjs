@@ -121,7 +121,7 @@ const app = await electron.launch({
     // Force-load the built renderer bundle (file://) instead of the dev
     // server. Without this, isDev=true in main.ts and Electron tries to
     // hit http://localhost:4100 which the probe never starts.
-    AGENTORY_PROD_BUNDLE: '1',
+    CCSM_PROD_BUNDLE: '1',
     NODE_ENV: 'production',
     HOME: fakeHome,
     USERPROFILE: fakeHome,
@@ -134,7 +134,7 @@ await app.evaluate(async () => {
   process.env.PATH = '';
   process.env.path = '';
   if (process.platform === 'win32') process.env.PATHEXT = '.CMD;.EXE';
-  delete process.env.AGENTORY_CLAUDE_BIN;
+  delete process.env.CCSM_CLAUDE_BIN;
 });
 
 const win = await appWindow(app);
@@ -145,18 +145,18 @@ win.on('console', (m) => {
 });
 
 await win.waitForLoadState('domcontentloaded');
-await win.waitForFunction(() => !!window.agentory?.agentStart, null, {
+await win.waitForFunction(() => !!window.ccsm?.agentStart, null, {
   timeout: 10_000,
 });
 
 // Seed claudeBinPath via the same IPC the wizard's "browse" flow uses.
 await win.evaluate(async (p) => {
-  await window.agentory.saveState('claudeBinPath', p);
+  await window.ccsm.saveState('claudeBinPath', p);
 }, fakeBin);
 
 // Sanity check the seed landed.
 const seeded = await win.evaluate(async () => {
-  return await window.agentory.loadState('claudeBinPath');
+  return await window.ccsm.loadState('claudeBinPath');
 });
 if (seeded !== fakeBin) {
   await app.close();
@@ -168,7 +168,7 @@ if (seeded !== fakeBin) {
 // Phase 1: agent:start IPC returns ok:false / CLI_SPAWN_FAILED / detail.
 // ─────────────────────────────────────────────────────────────────────────
 const startResult = await win.evaluate(async (cwd) => {
-  return await window.agentory.agentStart('probe-spawn-error-session', { cwd });
+  return await window.ccsm.agentStart('probe-spawn-error-session', { cwd });
 }, root);
 
 if (startResult.ok) {
@@ -215,13 +215,13 @@ console.log('  agent:start ok:false errorCode:CLI_SPAWN_FAILED detail contains s
 // never resolves on the alive binary, the timer wins, and elapsed >= 800ms.
 // ─────────────────────────────────────────────────────────────────────────
 await win.evaluate(async (p) => {
-  await window.agentory.saveState('claudeBinPath', p);
+  await window.ccsm.saveState('claudeBinPath', p);
 }, aliveBin);
 
 const SUCCESS_LATENCY_BUDGET_MS = 300;
 const t0 = Date.now();
 const aliveResult = await win.evaluate(async (cwd) => {
-  return await window.agentory.agentStart('probe-spawn-error-alive-session', { cwd });
+  return await window.ccsm.agentStart('probe-spawn-error-alive-session', { cwd });
 }, root);
 const elapsed = Date.now() - t0;
 
@@ -247,11 +247,11 @@ if (elapsed >= SUCCESS_LATENCY_BUDGET_MS) {
 
 // Tear the alive session down so it doesn't outlive the probe.
 await win.evaluate(async () => {
-  try { await window.agentory.agentClose('probe-spawn-error-alive-session'); } catch {}
+  try { await window.ccsm.agentClose('probe-spawn-error-alive-session'); } catch {}
 });
 // Restore the failing binary so phase 2 still drives the failure path.
 await win.evaluate(async (p) => {
-  await window.agentory.saveState('claudeBinPath', p);
+  await window.ccsm.saveState('claudeBinPath', p);
 }, fakeBin);
 
 console.log('[probe-spawn-error-propagation] phase 1.5 OK (success latency)');
@@ -265,8 +265,8 @@ console.log(`  agent:start success path resolved in ${elapsed}ms (budget ${SUCCE
 // The AgentInitFailedBanner observes sessionInitFailures and renders.
 // ─────────────────────────────────────────────────────────────────────────
 await win.evaluate(async (cwd) => {
-  const store = window.__agentoryStore;
-  if (!store) throw new Error('__agentoryStore missing on window');
+  const store = window.__ccsmStore;
+  if (!store) throw new Error('__ccsmStore missing on window');
   store.setState((s) => ({
     sessions: [
       ...s.sessions.filter((sess) => sess.id !== 'probe-spawn-error-banner'),
@@ -288,10 +288,10 @@ await win.evaluate(async (cwd) => {
 await win.waitForTimeout(150);
 
 await win.evaluate(async () => {
-  const session = window.__agentoryStore.getState().sessions.find(
+  const session = window.__ccsmStore.getState().sessions.find(
     (s) => s.id === 'probe-spawn-error-banner'
   );
-  const res = await window.agentory.agentStart('probe-spawn-error-banner', {
+  const res = await window.ccsm.agentStart('probe-spawn-error-banner', {
     cwd: session.cwd,
   });
   if (res.ok) return;
@@ -299,7 +299,7 @@ await win.evaluate(async () => {
     res.errorCode === 'CLI_SPAWN_FAILED' && res.detail
       ? `${res.error} — ${res.detail}`
       : res.error;
-  window.__agentoryStore.getState().setSessionInitFailure(
+  window.__ccsmStore.getState().setSessionInitFailure(
     'probe-spawn-error-banner',
     {
       error: errMessage,
