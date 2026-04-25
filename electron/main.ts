@@ -682,6 +682,62 @@ app.whenReady().then(() => {
     }
   );
 
+  // (#51 / P1-16) Open long tool output in the user's default text editor.
+  // Renderer pipes the full stdout text up; we drop it into a uniquely-named
+  // file under os.tmpdir() and ask the OS to open it via shell.openPath.
+  // The file lives until the OS cleans tmpdir — we do NOT auto-delete: a
+  // user may keep the editor window open for hours, and yanking the file
+  // out from under them would be a worse bug than a few stray temp files.
+  // Capped at the same 50 MB ceiling as saveFile so a runaway tool can't
+  // wedge the disk; legitimate "open this dump" cases live well under it.
+  const MAX_OPEN_IN_EDITOR_BYTES = 50 * 1024 * 1024;
+  ipcMain.handle(
+    'tool:open-in-editor',
+    async (
+      e,
+      args: { content: string }
+    ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      const content = typeof args?.content === 'string' ? args.content : '';
+      if (content.length > MAX_OPEN_IN_EDITOR_BYTES) {
+        return { ok: false, error: 'content_too_large' };
+      }
+      // High-resolution-ish unique name: ms timestamp + 6 random hex chars.
+      // ms alone is enough on a single click, but two parallel "Open in
+      // editor" clicks fired in the same tick would otherwise collide on
+      // the filename and one editor would silently re-open the other's
+      // file. Random suffix keeps them distinct without pulling in uuid.
+      const ts = Date.now();
+      const rand = Math.floor(Math.random() * 0xffffff)
+        .toString(16)
+        .padStart(6, '0');
+      const filePath = path.join(
+        os.tmpdir(),
+        `claude-tool-output-${ts}-${rand}.txt`
+      );
+      try {
+        await fs.promises.writeFile(filePath, content, 'utf8');
+        // Test/probe escape hatch: when CCSM_OPEN_IN_EDITOR_NOOP is set we
+        // write the file but don't actually launch the editor. Lets E2E
+        // probes verify the round-trip without spawning notepad/vim/etc.
+        // on the CI host. The renderer still sees `{ ok: true, path }`
+        // exactly as in production.
+        if (process.env.CCSM_OPEN_IN_EDITOR_NOOP) {
+          return { ok: true, path: filePath };
+        }
+        // shell.openPath returns an empty string on success, an error
+        // message string on failure. Treat empty as ok.
+        const openErr = await shell.openPath(filePath);
+        if (openErr) {
+          return { ok: false, error: openErr };
+        }
+        return { ok: true, path: filePath };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  );
+
   ipcMain.handle('window:minimize', (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
   });

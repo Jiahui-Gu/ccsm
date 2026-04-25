@@ -45,6 +45,18 @@ export const LINE_HEIGHT_PX = 18;
 export const VIEWPORT_HEIGHT_PX = 360;
 export const MAX_INLINE_BYTES = 10 * 1024 * 1024;
 
+// "Open in editor" affordance for long tool output (#51 / P1-16). When the
+// stdout for a non-shell tool result crosses EITHER threshold below, the
+// LongOutputView toolbar surfaces a hover-only "Open in editor" button.
+// Click writes the full output to an OS temp file and asks the platform's
+// default text-editor to open it via shell.openPath. Same threshold logic
+// applies in both axes — 50 lines covers Read-style line-oriented dumps,
+// 5 KB covers blob-style outputs (single huge JSON line, base64, etc.) so
+// the affordance shows up the moment the output stops fitting comfortably
+// in the chat row, not only when it tips over the COLLAPSED tier.
+export const OPEN_IN_EDITOR_LINE_THRESHOLD = 50;
+export const OPEN_IN_EDITOR_BYTE_THRESHOLD = 5 * 1024;
+
 // Auto-follow heuristic: consider the user "at the bottom" if they're within
 // this many pixels of the actual scrollHeight. Anything larger and we assume
 // they've scrolled up intentionally and stop following.

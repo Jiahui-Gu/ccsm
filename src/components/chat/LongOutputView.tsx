@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { Copy, Check, Download } from 'lucide-react';
+import { Copy, Check, Download, ExternalLink } from 'lucide-react';
 import { useTranslation } from '../../i18n/useTranslation';
 import {
   COLLAPSED_HEAD,
@@ -8,7 +8,9 @@ import {
   VIEWPORT_OVERSCAN,
   LINE_HEIGHT_PX,
   VIEWPORT_HEIGHT_PX,
-  MAX_INLINE_BYTES
+  MAX_INLINE_BYTES,
+  OPEN_IN_EDITOR_LINE_THRESHOLD,
+  OPEN_IN_EDITOR_BYTE_THRESHOLD
 } from './constants';
 import { formatBytes } from './utils';
 
@@ -48,13 +50,25 @@ export function LongOutputView({
   const byteLen = text.length; // approximation; chars≈bytes for ASCII tool output
   const tooLarge = byteLen > MAX_INLINE_BYTES;
   const small = total <= COLLAPSED_HEAD + COLLAPSED_TAIL;
+  // (#51 / P1-16) Hover-only "Open in editor" affordance. Surfaces once the
+  // output crosses EITHER axis: > 50 lines OR > 5 KB. We deliberately do
+  // NOT gate on `!small` (which is 100 lines) — even a 60-line dump is
+  // worth jumping to a real editor for, and a single huge 5 KB+ blob on
+  // one logical line should trip it too. Threshold logic is OR, not AND.
+  const openInEditorEligible =
+    total > OPEN_IN_EDITOR_LINE_THRESHOLD || byteLen > OPEN_IN_EDITOR_BYTE_THRESHOLD;
   // Toolbar is visual noise on tiny outputs (≤10 lines). Hide it — users can
   // still copy via native text selection; Save/Expand are meaningless here.
-  const toolbarHidden = total <= 10;
+  // Exception: if the output is *byte*-large (single 5 KB+ blob on one line)
+  // we keep the toolbar so the "Open in editor" affordance has somewhere to
+  // live; without this carve-out a giant single-line dump would have no way
+  // to escape into a real editor.
+  const toolbarHidden = total <= 10 && !openInEditorEligible;
 
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState<null | 'ok' | 'err'>(null);
   const [saved, setSaved] = useState<null | 'ok' | 'err'>(null);
+  const [opened, setOpened] = useState<null | 'ok' | 'err'>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
@@ -86,6 +100,19 @@ export function LongOutputView({
     setTimeout(() => setSaved(null), 1500);
   };
 
+  const onOpenInEditor = async () => {
+    const api = window.ccsm;
+    if (!api?.toolOpenInEditor) {
+      setOpened('err');
+      setTimeout(() => setOpened(null), 1500);
+      return;
+    }
+    const res = await api.toolOpenInEditor({ content: text });
+    if (res.ok) setOpened('ok');
+    else setOpened('err');
+    setTimeout(() => setOpened(null), 1500);
+  };
+
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     setScrollTop((e.target as HTMLDivElement).scrollTop);
   };
@@ -94,10 +121,31 @@ export function LongOutputView({
 
   // Toolbar (rendered unless the output is tiny — see `toolbarHidden`).
   const toolbar = toolbarHidden ? null : (
-    <div className="flex items-center justify-end gap-1.5 mb-1 ml-6">
+    <div className="group flex items-center justify-end gap-1.5 mb-1 ml-6">
       <span className="text-fg-tertiary text-mono-xs mr-auto font-mono">
         {t('chat.longOutputTooLargeBadge', { size: formatBytes(byteLen), lines: total })}
       </span>
+      {openInEditorEligible && (
+        // Hover-only affordance (#51): button is invisible by default and
+        // fades in when the toolbar row is hovered. We also reveal it on
+        // keyboard focus (focus-within / focus-visible) so it isn't a
+        // mouse-only feature — keyboard users can Tab to it.
+        <button
+          type="button"
+          onClick={onOpenInEditor}
+          title={t('chat.longOutputOpenInEditor')}
+          aria-label={t('chat.longOutputOpenInEditor')}
+          data-testid="tool-output-open-in-editor"
+          className="inline-flex items-center gap-1 px-1.5 py-px rounded-sm border border-border-subtle text-mono-xs text-fg-tertiary hover:text-fg-primary hover:border-border-strong active:bg-bg-hover transition-[opacity,color,background-color,border-color] duration-150 ease-out outline-none focus-ring opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        >
+          <ExternalLink size={10} />
+          {opened === 'ok'
+            ? t('chat.longOutputOpenedInEditor')
+            : opened === 'err'
+              ? t('chat.longOutputOpenInEditorFailed')
+              : t('chat.longOutputOpenInEditor')}
+        </button>
+      )}
       <button
         type="button"
         onClick={onCopy}
