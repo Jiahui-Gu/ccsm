@@ -128,7 +128,10 @@ const zh: EnCatalog = {
     runningPlaceholderBypass: '执行中… 跳过所有权限询问（Esc 中断，Enter 排队）',
     runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）',
     // task322: continue-after-interrupt
-    continueAfterInterruptHint: '按 Enter 继续，或输入新消息'
+    continueAfterInterruptHint: '按 Enter 继续，或输入新消息',
+    // task328: 当前会话没有工作目录时（无最近 CLI 记录可作默认、所在分组无历史 cwd）
+    // 在 cwd 标签处显示。此时弹层不会自动展开，仍可点击。
+    cwdChipNoneLabel: '（无）'
   },
   chatStream: {
     emptyHint: '输入消息后按'

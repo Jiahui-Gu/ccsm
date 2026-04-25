@@ -209,8 +209,10 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   // New sessions are created in-place — no modal. The store seeds `cwd`
-  // from `recentProjects[0]?.path ?? '~'`; users repick later via the
-  // StatusBar cwd chip in chat. See createSession() in stores/store.ts.
+  // from the per-group last-used cwd, falling through to
+  // `recentProjects[0]?.path ?? historyRecentCwds[0] ?? ''` (empty → chip
+  // renders the `(none)` placeholder). Users repick via the StatusBar cwd
+  // chip. See createSession() in stores/store.ts.
   const newSession = React.useCallback(() => {
     createSession(null);
   }, [createSession]);

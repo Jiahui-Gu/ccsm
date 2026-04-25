@@ -947,8 +947,18 @@ export const useStore = create<State & Actions>((set, get) => ({
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
     const id = nextId('s');
+    // task328: per-group cwd default — when the caller doesn't pin a cwd,
+    // prefer the most-recent session in the target group that has a usable
+    // cwd. `sessions` is ordered newest-first (createSession prepends), so
+    // the first match is the most recent. Falls through to the global
+    // recentProjects/historyRecentCwds defaults when the group is empty or
+    // none of its sessions have a cwd. `(none)` chip placeholder appears
+    // only when ALL of these resolve to empty.
+    const groupRecentCwd = sessions.find(
+      (x) => x.groupId === targetGroupId && !!x.cwd
+    )?.cwd;
     const defaultCwd =
-      recentProjects[0]?.path ?? historyRecentCwds[0] ?? '~';
+      groupRecentCwd ?? recentProjects[0]?.path ?? historyRecentCwds[0] ?? '';
     let initialModel = model;
     if (!initialModel) initialModel = historyTopModel ?? '';
     if (!initialModel) initialModel = connection?.model ?? '';
@@ -2298,8 +2308,9 @@ export async function hydrateStore(): Promise<void> {
 
   // Seed history-derived defaults from CLI transcripts. Fresh Electron
   // userData starts with empty `recentProjects` and no `model`; without this
-  // the new-session picker falls back to `~` and the first endpoint's first
-  // model regardless of what the user actually uses in the CLI.
+  // the new-session picker falls back to '' (chip `(none)` placeholder) and
+  // the first endpoint's first model regardless of what the user actually
+  // uses in the CLI.
   try {
     const api = window.ccsm;
     if (api?.recentCwds && api?.topModel) {
