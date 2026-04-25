@@ -101,6 +101,10 @@ declare global {
       }) => Promise<
         { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
       >;
+      // (#51) Open long tool output in the user's default text editor.
+      toolOpenInEditor: (args: {
+        content: string;
+      }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
 
       agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
       agentSend: (sessionId: string, text: string) => Promise<boolean>;
