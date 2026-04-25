@@ -12,10 +12,43 @@
 //
 // Run: `node scripts/run-all-e2e.mjs`
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/**
+ * Tree-kill a process by PID. The probes spawn `node`, which spawns Electron,
+ * which spawns GPU/utility/renderer helpers. Killing the top `node` (the only
+ * thing Node's `child.kill()` reaches) leaves the Electron helpers as orphans
+ * that accumulate across the 80+ probe run — repro: `tasklist | findstr
+ * electron.exe` shows 30+ leaked processes after a full run.
+ *
+ * Windows: `taskkill /T /F /PID` walks the process tree.
+ * POSIX: not currently exercised by this runner (Electron e2e is Windows-only
+ * dogfood), but support `process.kill(-pid)` if the child was spawned with
+ * `detached: true`. We don't detach here, so fall back to `child.kill('SIGKILL')`.
+ *
+ * @param {import('node:child_process').ChildProcess} child
+ */
+function treeKill(child) {
+  const pid = child.pid;
+  if (pid == null) return;
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+    }
+    return;
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch { /* ignore */ }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPTS_DIR = __dirname;
@@ -133,6 +166,11 @@ function runOne(scriptPath, timeoutMs) {
       shell: false,
       stdio: ['ignore', 'inherit', 'pipe'],
       env: process.env,
+      // Keep the child in our process group so `taskkill /T /PID <us>`
+      // would also reach it if the runner itself is killed. Explicit for
+      // clarity — also means we can't use `process.kill(-pid)` on POSIX.
+      detached: false,
+      windowsHide: true,
     });
 
     /** @type {string[]} */
@@ -151,16 +189,18 @@ function runOne(scriptPath, timeoutMs) {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        // SIGKILL: probes spawn Electron, which won't always honor SIGTERM in 30s.
-        child.kill('SIGKILL');
-      } catch {
-        /* ignore */
-      }
+      // Tree-kill: SIGKILL on the top `node` does NOT cascade to the Electron
+      // helpers it spawned. See `treeKill` for details.
+      treeKill(child);
     }, timeoutMs);
 
     child.on('exit', (code, signal) => {
       clearTimeout(timer);
+      // Belt-and-suspenders: even on clean exit, sweep the tree. If the probe
+      // forgot `app.close()` in some error path, the Electron helpers are
+      // still alive at this point — accumulate across 80+ probes and the
+      // machine is unusable. `taskkill` on a dead PID is a harmless no-op.
+      treeKill(child);
       const tail = stderrLines.slice(-5).join('\n');
       resolve({
         code: code ?? (signal ? 1 : 1),
@@ -171,6 +211,7 @@ function runOne(scriptPath, timeoutMs) {
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      treeKill(child);
       resolve({ code: 1, timedOut: false, stderrTail: `spawn error: ${err.message}` });
     });
   });
