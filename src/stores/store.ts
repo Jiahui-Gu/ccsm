@@ -317,6 +317,11 @@ export interface PendingDiffComment {
   line: number;
   text: string;
   createdAt: number;
+  // Bumped when an existing (file, line) comment is overwritten by a fresh
+  // addDiffComment call. Sort order still keys on createdAt so the prompt
+  // serialization stays deterministic across the replace; updatedAt is
+  // informational only.
+  updatedAt?: number;
 }
 
 /**
@@ -1933,6 +1938,33 @@ export const useStore = create<State & Actions>((set, get) => ({
   addDiffComment: (sessionId, args) => {
     const text = args.text.trim();
     if (!sessionId || !text) return '';
+    // Dedupe: at most one comment per (sessionId, file, line). A second
+    // addDiffComment for the same anchor REPLACES the existing entry
+    // (overwrite text, bump updatedAt, keep id + createdAt) instead of
+    // stacking. Reusing the id keeps DiffView's data-diff-comment-id DOM
+    // lookups stable across the replace.
+    const existing = get().pendingDiffComments[sessionId];
+    if (existing) {
+      const dup = Object.values(existing).find(
+        (c) => c.file === args.file && c.line === args.line,
+      );
+      if (dup) {
+        set((s) => {
+          const bucket = s.pendingDiffComments[sessionId];
+          if (!bucket || !bucket[dup.id]) return s;
+          return {
+            pendingDiffComments: {
+              ...s.pendingDiffComments,
+              [sessionId]: {
+                ...bucket,
+                [dup.id]: { ...bucket[dup.id], text, updatedAt: Date.now() },
+              },
+            },
+          };
+        });
+        return dup.id;
+      }
+    }
     const id = nextId('dfc');
     set((s) => {
       const prev = s.pendingDiffComments[sessionId] ?? {};
