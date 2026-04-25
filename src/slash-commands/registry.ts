@@ -18,7 +18,7 @@
 // raw `/foo` line, which is intentional: forward-compat with new commands
 // the CLI ships before we sync.
 
-import { Eraser, Minimize2, type LucideIcon } from 'lucide-react';
+import { Eraser, Minimize2, Settings, type LucideIcon } from 'lucide-react';
 import Fuse from 'fuse.js';
 
 // Six logical sources surfaced by the slash-command palette. Mirrors the
@@ -73,6 +73,13 @@ export const BUILT_IN_COMMANDS: SlashCommand[] = [
     icon: Minimize2,
     source: 'built-in',
     passThrough: true,
+  },
+  {
+    name: 'config',
+    description: 'Open the Settings dialog',
+    icon: Settings,
+    source: 'built-in',
+    passThrough: false,
   },
 ];
 
