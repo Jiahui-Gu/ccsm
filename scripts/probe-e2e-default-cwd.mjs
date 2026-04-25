@@ -49,7 +49,9 @@ await textarea.click();
 await textarea.fill('hi');
 await win.keyboard.press('Enter');
 
-const assistant = win.locator('div.flex.gap-3.text-base').filter({
+// Use the stable `data-type-scale-role` data-attr (assistant-body) — class-
+// based selectors break on every Tailwind/type-token refactor.
+const assistant = win.locator('[data-type-scale-role="assistant-body"]').filter({
   has: win.locator('span:has-text("●")')
 });
 
