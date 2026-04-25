@@ -69,7 +69,7 @@ try {
 
   // Helper: switch to a tab by its (now Chinese) label.
   async function switchTab(name) {
-    const tab = dialog.getByRole('button', { name });
+    const tab = dialog.getByRole('tab', { name });
     await tab.waitFor({ state: 'visible', timeout: 2000 });
     await tab.click();
     await win.waitForTimeout(150);
