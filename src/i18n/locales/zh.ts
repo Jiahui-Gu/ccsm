@@ -337,7 +337,16 @@ const zh: EnCatalog = {
   questionBlock: {
     title: '等待你的回答',
     submit: '提交回答',
-    submitted: '已提交'
+    submitted: '已提交',
+    cancel: '关闭',
+    other: '其他',
+    otherPlaceholder: '输入你的回答…',
+    pageHint: '第 {{current}} / {{total}} 题',
+    singleHint: '↑/↓ 切选项 · Enter 选中 · Esc 关闭',
+    tabFallback: '第 {{n}} 题',
+    timelineLabel: '已询问',
+    timelineAnswered: '你已回答',
+    timelineRejected: '未回答即关闭'
   },
   slashCommands: {
     pickerTitle: '斜杠命令',
