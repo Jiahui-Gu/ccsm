@@ -16,7 +16,7 @@
 //     hits agentSend). Splitting keeps each test honest about its scope.
 import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
 import { DiffView } from '../src/components/chat/DiffView';
 import type { DiffSpec } from '../src/utils/diff';
 import {
@@ -225,7 +225,7 @@ describe('<DiffView /> per-line comment affordance', () => {
     expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
   });
 
-  it('Enter on an empty composer cancels (no junk comment) and closes it (#340)', () => {
+  it('Enter on an empty composer cancels (no junk comment) and closes it (#340)', async () => {
     render(<DiffView diff={spec('/a/e.ts', [], ['LINE'])} />);
     fireEvent.click(addCommentButtonForLine(0));
     const composer = document.querySelector('[data-diff-comment-composer]') as HTMLElement;
@@ -236,11 +236,13 @@ describe('<DiffView /> per-line comment affordance', () => {
     fireEvent.keyDown(ta, { key: 'Enter' });
     // No comment persisted (addDiffComment / updateDiffComment never fired).
     expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
-    // Composer is dismissed — its wrapper is no longer in the DOM (the
-    // store is the source of truth for "is there a comment", and composer
-    // close is observable via composerLine being reset on the parent
-    // FileSection, which removes the wrapper synchronously up to the
-    // exit animation. Mirror the Esc test's contract: no persisted state.
+    // Composer is dismissed. This is the load-bearing assertion for #340 —
+    // before the fix, empty Enter was a silent no-op that left the composer
+    // hanging open. AnimatePresence exit may take a tick under jsdom, so
+    // waitFor handles the brief window before the wrapper unmounts.
+    await waitFor(() => {
+      expect(document.querySelector('[data-diff-comment-composer]')).toBeNull();
+    });
   });
 
   it('Enter on a non-empty composer still saves (regression guard for #340)', () => {
