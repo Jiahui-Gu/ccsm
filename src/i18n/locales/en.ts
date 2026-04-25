@@ -416,8 +416,7 @@ const en = {
     edit: '&Edit'
   },
   dialog: {
-    chooseCwd: 'Choose working directory',
-    selectClaude: 'Select claude binary'
+    chooseCwd: 'Choose working directory'
   },
   errors: {
     generic: 'Something went wrong.',
@@ -426,52 +425,9 @@ const en = {
     apiKeyMissing: 'Anthropic API key is missing.',
     cliMissing: 'Claude Code CLI is not installed.'
   },
-  cli: {
-    missingTitle: 'Claude Code CLI not found',
-    missingBody:
-      'CCSM needs the Claude Code CLI to run sessions. Install it and we will detect it automatically.',
-    installInstructionsHeader: 'Install instructions',
-    detectAgain: 'Detect again',
-    cliPathLabel: 'CLI path',
-    tutorialNextLabel: 'Next',
-    tutorialDoneLabel: "I'm ready",
-    dialogTitle: 'Claude CLI not found',
-    dialogDescriptionPrefix: 'CCSM wraps the Claude Code CLI. We couldn\u2019t find',
-    dialogDescriptionSuffix: 'on your system.',
-    whereWeLooked: 'Where we looked',
-    tabInstall: 'Install',
-    tabHaveIt: 'I already have it',
-    pasteHint: 'Paste one of these into your terminal, then click',
-    retryDetectInline: 'Retry detect',
-    belowInline: 'below.',
-    loadingCommands: 'Loading install commands…',
-    openDocs: 'Open installation docs',
-    haveItHint: 'Already installed Claude Code but we can\u2019t find it? Point us at the',
-    binaryLabel: 'binary',
-    rememberHint: 'and we\u2019ll remember it.',
-    browseBinary: 'Browse for binary…',
-    verifying: 'Verifying…',
-    verifyHint: 'We verify the pick by running',
-    versionFlag: '--version',
-    verifyHintSuffix: 'before saving it.',
-    minimizeBanner: 'Minimize to banner',
-    detecting: 'Detecting…',
-    retryDetect: 'Retry detect',
-    detected: 'Claude CLI detected',
-    foundVersion: 'Found version',
-    belowRecommended: '(below recommended {{min}} — some features may misbehave)',
-    foundBinaryUnknown: 'Found the binary. Version unknown, but it responded to --version.',
-    bannerNotConfigured: 'Claude CLI not configured — sessions won\u2019t start until you install or locate it.',
-    bannerSetUp: 'Set up',
-    rowHintNative: 'Recommended — installs the official native binary.',
-    rowHintNpm: 'Works anywhere Node.js is installed.',
-    rowLabelPowerShell: 'PowerShell',
-    rowLabelShell: 'Shell',
-    rowLabelWinget: 'winget',
-    rowLabelHomebrew: 'Homebrew',
-    rowLabelPackageManager: 'Package manager',
-    rowLabelNpm: 'npm',
-    copyAria: 'Copy {{label}} command'
+  installerCorrupt: {
+    title: 'Claude binary missing from this install',
+    body: 'CCSM ships the Claude binary inside the installer, but we couldn’t find it on disk. Please reinstall CCSM to repair the install — sessions can’t start until then.'
   },
   tutorial: {
     skip: 'Skip',

@@ -82,12 +82,9 @@ describe('main process i18n', () => {
   it('localizes native dialog titles (en + zh)', () => {
     setMainLanguage('en');
     expect(tDialog('chooseCwd')).toBe('Choose working directory');
-    expect(tDialog('selectClaude')).toBe('Select claude binary');
     setMainLanguage('zh');
     const zhCwd = tDialog('chooseCwd');
-    const zhClaude = tDialog('selectClaude');
     expect(/[\u4e00-\u9fff]/.test(zhCwd)).toBe(true);
-    expect(/[\u4e00-\u9fff]/.test(zhClaude)).toBe(true);
   });
 
   // E2E coverage for #295 (tray-menu i18n).

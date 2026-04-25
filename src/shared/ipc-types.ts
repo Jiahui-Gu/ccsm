@@ -32,25 +32,6 @@ export interface ConnectionInfo {
 
 export type OpenSettingsResult = { ok: true } | { ok: false; error: string };
 
-export interface CliInstallHints {
-  os: string;
-  arch: string;
-  commands: {
-    native?: string;
-    packageManager?: string;
-    npm: string;
-  };
-  docsUrl: string;
-}
-
-export type CliRetryResult =
-  | { found: true; path: string; version: string | null }
-  | { found: false; searchedPaths: string[] };
-
-export type CliSetBinaryResult =
-  | { ok: true; version: string | null }
-  | { ok: false; error: string };
-
 export type CommandSource = 'user' | 'project' | 'plugin' | 'skill' | 'agent';
 
 export interface LoadedCommand {

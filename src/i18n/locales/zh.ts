@@ -393,8 +393,7 @@ const zh: EnCatalog = {
     edit: '编辑(&E)'
   },
   dialog: {
-    chooseCwd: '选择工作目录',
-    selectClaude: '选择 claude 程序'
+    chooseCwd: '选择工作目录'
   },
   errors: {
     generic: '出错了。',
@@ -403,51 +402,9 @@ const zh: EnCatalog = {
     apiKeyMissing: '缺少 Anthropic API Key。',
     cliMissing: '未安装 Claude Code CLI。'
   },
-  cli: {
-    missingTitle: '未找到 Claude Code CLI',
-    missingBody: 'CCSM 需要 Claude Code CLI 才能运行会话。安装后我们会自动检测。',
-    installInstructionsHeader: '安装说明',
-    detectAgain: '重新检测',
-    cliPathLabel: 'CLI 路径',
-    tutorialNextLabel: '下一步',
-    tutorialDoneLabel: '我准备好了',
-    dialogTitle: '未找到 Claude CLI',
-    dialogDescriptionPrefix: 'CCSM 包装了 Claude Code CLI。我们没在系统中找到',
-    dialogDescriptionSuffix: '。',
-    whereWeLooked: '查找过的位置',
-    tabInstall: '安装',
-    tabHaveIt: '我已经安装了',
-    pasteHint: '把下面任一命令粘贴到终端运行，然后点',
-    retryDetectInline: '重新检测',
-    belowInline: '。',
-    loadingCommands: '加载安装命令…',
-    openDocs: '查看安装文档',
-    haveItHint: '已经安装好 Claude Code，但我们找不到？请指向',
-    binaryLabel: '可执行文件',
-    rememberHint: '我们会记住它。',
-    browseBinary: '选择可执行文件…',
-    verifying: '校验中…',
-    verifyHint: '我们会先运行',
-    versionFlag: '--version',
-    verifyHintSuffix: '验证，然后再保存。',
-    minimizeBanner: '最小化为顶栏提示',
-    detecting: '检测中…',
-    retryDetect: '重新检测',
-    detected: '已检测到 Claude CLI',
-    foundVersion: '版本',
-    belowRecommended: '（低于推荐版本 {{min}} — 部分功能可能异常）',
-    foundBinaryUnknown: '已找到可执行文件。版本未知，但 --version 有响应。',
-    bannerNotConfigured: 'Claude CLI 未配置 — 安装或定位之前会话无法启动。',
-    bannerSetUp: '去配置',
-    rowHintNative: '推荐 — 安装官方原生二进制。',
-    rowHintNpm: '只要装了 Node.js 都能用。',
-    rowLabelPowerShell: 'PowerShell',
-    rowLabelShell: 'Shell',
-    rowLabelWinget: 'winget',
-    rowLabelHomebrew: 'Homebrew',
-    rowLabelPackageManager: '包管理器',
-    rowLabelNpm: 'npm',
-    copyAria: '复制 {{label}} 命令'
+  installerCorrupt: {
+    title: '安装包内的 Claude 程序缺失',
+    body: 'CCSM 在安装包里附带了 Claude 程序，但在硬盘上找不到它。请重新安装 CCSM 以修复 — 修复之前会话无法启动。'
   },
   tutorial: {
     skip: '跳过',

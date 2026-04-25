@@ -35,8 +35,7 @@ const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
 await win.evaluate(() => {
-  window.__ccsmStore.setState({ cliStatus: { state: 'found', binaryPath: '<harness>', version: null } });
-});
+  });
 await win.waitForTimeout(300);
 
 // Sidebar + populated chat + tool block + assistant body.

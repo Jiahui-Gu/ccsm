@@ -34,7 +34,6 @@ type MenuCatalog = {
 
 type DialogCatalog = {
   chooseCwd: string;
-  selectClaude: string;
 };
 
 type NotificationKey = keyof NotificationCatalog;
@@ -96,12 +95,10 @@ const menuCatalogs: Record<SupportedLanguage, MenuCatalog> = {
 // catalog `dialog` namespace.
 const dialogCatalogs: Record<SupportedLanguage, DialogCatalog> = {
   en: {
-    chooseCwd: 'Choose working directory',
-    selectClaude: 'Select claude binary'
+    chooseCwd: 'Choose working directory'
   },
   zh: {
-    chooseCwd: '选择工作目录',
-    selectClaude: '选择 claude 程序'
+    chooseCwd: '选择工作目录'
   }
 };
 

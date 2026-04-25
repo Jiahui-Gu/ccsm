@@ -51,10 +51,9 @@ const MERGED_INTO_HARNESS = new Set([
   'a11y-focus-restore'
   // NOTE: 'empty-state-minimal' is only PARTIALLY absorbed into harness-ui.mjs.
   // The hero/no-starter-cards/no-"Working in" assertions are in the harness,
-  // but the "Claude CLI detected startup flash" guard needs a cold launch
-  // through the real startup pipeline (the harness sets cliStatus=found out of
-  // band in setup()). Kept as a per-file probe so that regression is still
-  // covered — do NOT add it here.
+  // but the cold-launch startup-pipeline assertions need a fresh process — kept
+  // as a per-file probe so that regression is still covered. Do NOT add it
+  // here.
 ]);
 
 const skipRaw = (process.env.E2E_SKIP || '').trim();

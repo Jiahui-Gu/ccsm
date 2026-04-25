@@ -41,17 +41,8 @@ try {
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
 
-  // Wait for the CLI-detection success-flash dialog (if any) to settle so it
-  // doesn't steal focus from the textarea via Radix's focus trap during the
-  // post-interrupt focus assertion.
-  await win.waitForFunction(
-    () => {
-      const st = window.__ccsmStore?.getState();
-      return st?.cliStatus?.state === 'found' || st?.cliStatus?.state === 'missing';
-    },
-    null,
-    { timeout: 10_000 }
-  ).catch(() => {});
+  // PR-I removed the first-run CLI dialog; the only modal we still need to
+  // wait out is whatever Tutorial / etc. might be open at boot.
   await win.waitForFunction(() => document.querySelector('[role="dialog"]') === null, null, { timeout: 5000 }).catch(() => {});
 
   const SID = 's-esc-stream';

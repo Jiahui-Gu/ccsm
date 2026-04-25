@@ -806,7 +806,6 @@ await runHarness({
     // directly), so claiming the CLI is found is a safe fixture.
     await win.evaluate(() => {
       window.__ccsmStore?.setState({
-        cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });
   },

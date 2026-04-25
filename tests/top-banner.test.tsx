@@ -11,7 +11,7 @@ vi.mock('../src/agent/startSession', () => ({
 import { TopBanner, TopBannerAction } from '../src/components/chrome/TopBanner';
 import { AgentInitFailedBanner } from '../src/components/AgentInitFailedBanner';
 import { AgentDiagnosticBanner } from '../src/components/AgentDiagnosticBanner';
-import { ClaudeCliMissingBanner } from '../src/components/ClaudeCliMissingBanner';
+import { InstallerCorruptBanner } from '../src/components/InstallerCorruptBanner';
 import { useStore } from '../src/stores/store';
 import { usePreferences } from '../src/store/preferences';
 
@@ -243,41 +243,21 @@ describe('banner trio integration', () => {
     expect(screen.getByText('Agent error')).toBeInTheDocument();
   });
 
-  it('ClaudeCliMissingBanner renders warning variant with set-up CTA and NO dismiss', () => {
-    useStore.setState(
-      {
-        ...initial,
-        cliStatus: {
-          state: 'missing',
-          searchedPaths: ['/usr/local/bin'],
-          dialogOpen: false,
-        },
-      },
-      true
-    );
-    render(<ClaudeCliMissingBanner />);
-    const alert = screen.getByRole('status');
-    expect(alert).toHaveAttribute('aria-live', 'polite');
-    expect(document.querySelector('[data-top-banner]')).toHaveAttribute('data-variant', 'warning');
-    // Set-up CTA exists; dismiss button does NOT (banner is state-driven, not user-dismissible).
-    expect(screen.getByRole('button', { name: /set up/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
-  });
+  it('InstallerCorruptBanner renders error variant when installerCorrupt=true and stays hidden otherwise', () => {
+    // Hidden by default.
+    useStore.setState({ ...initial, installerCorrupt: false }, true);
+    const r1 = render(<InstallerCorruptBanner />);
+    expect(r1.container.querySelector('[data-top-banner]')).toBeNull();
+    cleanup();
 
-  it('ClaudeCliMissingBanner stays hidden when dialog is open', () => {
-    useStore.setState(
-      {
-        ...initial,
-        cliStatus: {
-          state: 'missing',
-          searchedPaths: [],
-          dialogOpen: true,
-        },
-      },
-      true
-    );
-    const { container } = render(<ClaudeCliMissingBanner />);
-    expect(container.querySelector('[data-top-banner]')).toBeNull();
+    // Shown when the agent layer reports CLAUDE_NOT_FOUND. No dismiss button —
+    // banner is fully state-driven and disappears once the install is repaired.
+    useStore.setState({ ...initial, installerCorrupt: true }, true);
+    render(<InstallerCorruptBanner />);
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveAttribute('aria-live', 'polite');
+    expect(document.querySelector('[data-top-banner]')).toHaveAttribute('data-variant', 'error');
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
   });
 });
 
