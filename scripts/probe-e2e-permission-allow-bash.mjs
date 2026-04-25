@@ -23,10 +23,13 @@ fs.mkdirSync(UDD, { recursive: true });
 fs.mkdirSync(PROJ, { recursive: true });
 
 // Use a bash command unlikely to be in any default allowlist so the host
-// permission prompt definitely fires. `python --version` is harmless but
-// prompts unless `Bash(python:*)` is explicitly allowed in user settings.
+// permission prompt definitely fires. `node --version` is harmless and
+// universally available (this IS a Node project — node is required to
+// build/run ccsm), while `Bash(node:*)` is NOT in the upstream CLI's
+// default-allow list, so the permission prompt still fires. Avoids the
+// silent system-Python dependency the previous fixture had.
 const PROMPT =
-  "Run the bash command `python --version` (or `python3 --version` if python is not found) and tell me the version number.";
+  'Run the bash command `node --version` and tell me the version number.';
 
 function log(m) {
   process.stderr.write(`[probe-bugl-bash ${new Date().toISOString()}] ${m}\n`);
