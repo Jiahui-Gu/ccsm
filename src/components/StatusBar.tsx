@@ -14,14 +14,13 @@ import { useTranslation } from '../i18n/useTranslation';
 import { CwdPopover } from './CwdPopover';
 
 // Permission mode values match claude.exe's `--permission-mode` flag 1:1.
-// We intentionally use the official CLI names (title-cased for display)
-// rather than invented shortnames like `yolo` / `standard`. The CLI also
-// accepts `auto` (classifier-driven, research-preview, requires account
-// enablement) and `dontAsk` (legacy alias for `default`). We omit `auto`
-// from the chip to keep the picker simple and avoid exposing a mode most
-// users can't enable; we omit `dontAsk` because it's redundant with
+// We use the official CLI names (title-cased for display) rather than
+// invented shortnames like `yolo` / `standard`. `auto` is the
+// classifier-driven research-preview mode; we expose it in the picker and
+// fall back to `default` (with a toast) if the SDK rejects it for the
+// current account/model. `dontAsk` is omitted as a legacy alias of
 // `default`.
-type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
+type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto';
 
 const Chip = React.forwardRef<
   HTMLButtonElement,
@@ -311,6 +310,7 @@ export function StatusBar({
     { kind: 'item', value: 'plan', primary: t('statusBar.modePlanLabel'), secondary: t('statusBar.modePlanDesc') },
     { kind: 'item', value: 'default', primary: t('statusBar.modeDefaultLabel'), secondary: t('statusBar.modeDefaultDesc') },
     { kind: 'item', value: 'acceptEdits', primary: t('statusBar.modeAcceptEditsLabel'), secondary: t('statusBar.modeAcceptEditsDesc') },
+    { kind: 'item', value: 'auto', primary: t('statusBar.modeAutoLabel'), secondary: t('statusBar.modeAutoDesc') },
     { kind: 'item', value: 'bypassPermissions', primary: t('statusBar.modeBypassLabel'), secondary: t('statusBar.modeBypassDesc') }
   ];
 
@@ -318,6 +318,7 @@ export function StatusBar({
     plan: t('statusBar.modePlanTooltip'),
     default: t('statusBar.modeDefaultTooltip'),
     acceptEdits: t('statusBar.modeAcceptEditsTooltip'),
+    auto: t('statusBar.modeAutoTooltip'),
     bypassPermissions: t('statusBar.modeBypassTooltip')
   };
 

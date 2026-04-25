@@ -21,7 +21,7 @@ describe('<PermissionPromptBlock />', () => {
       />
     );
     await flush();
-    expect(screen.getByText(/Permission required/i)).toBeInTheDocument();
+    expect(screen.getByText(/Allow this bash command\?/i)).toBeInTheDocument();
     expect(screen.getByText('Bash')).toBeInTheDocument();
     // The summary dl shows the command directly — no expand step.
     expect(screen.getByText('command')).toBeInTheDocument();
@@ -506,6 +506,58 @@ describe('<PermissionPromptBlock />', () => {
       await flush();
       expect(document.querySelectorAll('[data-perm-hunk-checkbox]').length).toBe(1);
       expect(screen.getByRole('button', { name: /Allow selected \(1\/1\)/ })).toBeInTheDocument();
+    });
+  });
+
+  // ---------- per-tool title ----------
+  describe('per-tool title (titleByTool)', () => {
+    const cases: Array<[string, RegExp]> = [
+      ['Bash', /Allow this bash command\?/i],
+      ['WebFetch', /Allow fetching this URL\?/i],
+      ['WebSearch', /Allow searching for this query\?/i],
+      ['Edit', /Allow editing this file\?/i],
+      ['Write', /Allow editing this file\?/i],
+      ['NotebookEdit', /Allow editing this file\?/i],
+      ['Skill', /Allow running this skill\?/i],
+    ];
+    for (const [tool, expected] of cases) {
+      it(`renders the ${tool} title`, async () => {
+        render(
+          <PermissionPromptBlock
+            prompt={`${tool}: x`}
+            toolName={tool}
+            onAllow={() => {}}
+            onReject={() => {}}
+          />
+        );
+        await flush();
+        expect(screen.getByText(expected)).toBeInTheDocument();
+      });
+    }
+
+    it('falls back to the generic title for unknown tools', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="something"
+          toolName="MysterySdkTool"
+          onAllow={() => {}}
+          onReject={() => {}}
+        />
+      );
+      await flush();
+      expect(screen.getByText(/Permission required/i)).toBeInTheDocument();
+    });
+
+    it('falls back to the generic title when no toolName is provided', async () => {
+      render(
+        <PermissionPromptBlock
+          prompt="opaque"
+          onAllow={() => {}}
+          onReject={() => {}}
+        />
+      );
+      await flush();
+      expect(screen.getByText(/Permission required/i)).toBeInTheDocument();
     });
   });
 });

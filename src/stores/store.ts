@@ -37,13 +37,12 @@ export interface QueuedMessage {
 
 export type ModelId = string;
 // Values match the CLI's `--permission-mode` flag 1:1 so we can pass the enum
-// value straight through to claude.exe without a translation table. The CLI
-// also accepts `auto` (classifier-driven research-preview, gated on
-// Sonnet 4.6+ / account flag) and `dontAsk` (legacy alias for `default`). We
-// intentionally do NOT expose either here: `auto` requires capabilities users
-// can't self-enable today and would collide with our old UI value of the same
-// name; `dontAsk` is legacy and redundant.
-export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions';
+// value straight through to claude.exe without a translation table. `auto` is
+// a research-preview classifier mode gated on Sonnet 4.6+ / account flag; we
+// surface it in the picker and fall back to 'default' (with a toast) if the
+// SDK rejects it for the current account/model. `dontAsk` (legacy alias for
+// `default`) stays unsurfaced — it's redundant.
+export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto';
 export type Theme = 'system' | 'light' | 'dark';
 /**
  * Legacy categorical font size (`sm`/`md`/`lg`) — kept for persistence back-
@@ -1370,6 +1369,33 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (!api) return;
     // The enum value IS the CLI flag value — no translation needed.
     const started = Object.keys(get().startedSessions);
+    if (started.length === 0) return;
+    // For 'auto' we await the IPC so we can fall back to 'default' with a
+    // toast if the SDK rejects (account/model gating). For other modes we
+    // fire-and-forget — same behavior as before. We poll the first started
+    // session's response since `auto` capability is account/model wide.
+    if (permission === 'auto') {
+      const probe = started[0];
+      void Promise.resolve(api.agentSetPermissionMode(probe, permission)).then((res) => {
+        if (res && res.ok === false) {
+          set({ permission: 'default' });
+          // Best-effort: tell remaining sessions to revert too.
+          for (const id of started.slice(1)) void api.agentSetPermissionMode(id, 'default');
+          const toast = (window as unknown as {
+            __ccsmToast?: { push: (t: { kind: 'error'; title: string; body?: string }) => string };
+          }).__ccsmToast;
+          toast?.push({
+            kind: 'error',
+            title: i18next.t('permissions.autoUnsupportedTitle'),
+            body: i18next.t('permissions.autoUnsupportedBody'),
+          });
+          return;
+        }
+        // Apply auto to remaining started sessions if the probe accepted.
+        for (const id of started.slice(1)) void api.agentSetPermissionMode(id, permission);
+      });
+      return;
+    }
     for (const id of started) void api.agentSetPermissionMode(id, permission);
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
