@@ -802,6 +802,14 @@ async function casePermissionPartialAccept({ win, log }) {
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
+  // Opt out of CCSM_E2E_HIDDEN: permission-prompt asserts that Reject
+  // is focused immediately on mount via Radix's autoFocus + a rAF
+  // callback. With show:true off-screen the rAF fires before Radix's
+  // focus-trap commits in some Chromium versions, so the synchronous
+  // snapshot at line 88 sees no focused button. Visible window
+  // restores deterministic focus delivery; the other 9 cases in this
+  // harness still pass either way. ~2s window pop during run-all-e2e.
+  launch: { env: { CCSM_E2E_HIDDEN: '0' } },
   setup: async ({ win }) => {
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {

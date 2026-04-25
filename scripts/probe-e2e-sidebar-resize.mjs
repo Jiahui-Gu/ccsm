@@ -29,7 +29,13 @@ const ud = isolatedUserData('agentory-probe-sidebar-resize');
 console.log(`[probe-e2e-sidebar-resize] userData = ${ud.dir}`);
 
 const commonArgs = ['.', `--user-data-dir=${ud.dir}`];
-const commonEnv = { ...process.env, CCSM_PROD_BUNDLE: '1' };
+// Opt out of CCSM_E2E_HIDDEN: this probe's drag-readback assertion
+// (aside DOM width must track storeWidth in lockstep) needs the
+// resize observer + layout pipeline to run synchronously with the
+// pointermove dispatch. With show:true off-screen the layout
+// occasionally lags by a frame and the readback comparison flakes.
+// Visible window restores it. ~2s window pop during run-all-e2e.
+const commonEnv = { ...process.env, CCSM_PROD_BUNDLE: '1', CCSM_E2E_HIDDEN: '0' };
 
 async function asideWidth(win) {
   return await win.evaluate(() => {
