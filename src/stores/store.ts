@@ -256,6 +256,13 @@ type State = {
    * by `<InstallerCorruptBanner />` as a non-dismissible top banner.
    */
   installerCorrupt: boolean;
+  /** Bumped by `injectComposerText` to ask the InputBar to overwrite its draft
+   *  with `composerInjectText`. Same nonce-pull pattern as `focusInputNonce`
+   *  (skip-first-observation, ref-tracked) so app mount doesn't clobber a
+   *  user's persisted draft. Used by the user-message hover menu's "Edit and
+   *  resend" action. */
+  composerInjectNonce: number;
+  composerInjectText: string;
   /** Recent agent diagnostics (newest last). Capped at 20 in-memory; the
    *  renderer only surfaces the latest non-dismissed one. Not persisted —
    *  these are ephemeral run-time signals. */
@@ -494,6 +501,14 @@ type Actions = {
    *  the CLI's `/clear` does. The Session entity (id, name, group, cwd) is
    *  preserved so the sidebar count is unchanged. */
   resetSessionContext: (sessionId: string) => void;
+  /** Truncate the conversation to (but not including) `blockId`, dropping every
+   *  message at or after that block. Also clears `resumeSessionId`, started/
+   *  running/interrupted flags, and the queue, so the next send respawns a
+   *  fresh `claude.exe` with no prior context. The agent's running process is
+   *  closed via `agentClose` (best-effort). Used by the user-message hover
+   *  menu's "Rewind from here" action — until the SDK exposes a server-side
+   *  conversation rewind RPC, this is the safest local approximation. */
+  rewindToBlock: (sessionId: string, blockId: string) => void;
   replaceMessages: (sessionId: string, blocks: MessageBlock[]) => void;
   loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
@@ -522,6 +537,9 @@ type Actions = {
    *  composer (question submit, etc.). Permission/plan paths bump implicitly
    *  via `resolvePermission`. */
   bumpComposerFocus: () => void;
+  /** Replace the composer text for the active session. See
+   *  `composerInjectNonce` / `composerInjectText` for the pull-side mechanics. */
+  injectComposerText: (text: string) => void;
   addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
   /** Replace the last-turn context-usage snapshot for `sessionId`. Pass a
    *  fresh object — we do NOT merge with prior state because each `result`
@@ -928,6 +946,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   connection: null,
   focusInputNonce: 0,
   installerCorrupt: false,
+  composerInjectNonce: 0,
+  composerInjectText: '',
   diagnostics: [],
   sessionInitFailures: {},
   allowAlwaysTools: [],
@@ -1750,6 +1770,47 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
   },
 
+  rewindToBlock: (sessionId, blockId) => {
+    set((s) => {
+      const prev = s.messagesBySession[sessionId];
+      if (!prev) return s;
+      const idx = prev.findIndex((b) => b.id === blockId);
+      if (idx < 0) return s;
+      const truncated = prev.slice(0, idx);
+      // Drop every flag that pins this session to the now-orphaned claude.exe
+      // conversation: started, running, interrupted, queue, resumeSessionId.
+      // Stats are intentionally preserved — they're the user's lifetime spend
+      // for this session, not bound to a single conversation turn.
+      const nextStarted = { ...s.startedSessions };
+      delete nextStarted[sessionId];
+      const nextRunning = { ...s.runningSessions };
+      delete nextRunning[sessionId];
+      const nextInterrupted = { ...s.interruptedSessions };
+      delete nextInterrupted[sessionId];
+      const nextQueues = { ...s.messageQueues };
+      delete nextQueues[sessionId];
+      const nextSessions = s.sessions.map((x) => {
+        if (x.id !== sessionId) return x;
+        const cleaned = x.resumeSessionId === undefined ? x : (() => {
+          const { resumeSessionId: _drop, ...rest } = x;
+          return rest as typeof x;
+        })();
+        return cleaned.state === 'idle' ? cleaned : { ...cleaned, state: 'idle' as const };
+      });
+      return {
+        sessions: nextSessions,
+        messagesBySession: { ...s.messagesBySession, [sessionId]: truncated },
+        startedSessions: nextStarted,
+        runningSessions: nextRunning,
+        interruptedSessions: nextInterrupted,
+        messageQueues: nextQueues
+      };
+    });
+    // Best-effort: close the running agent so the next send respawns. If it's
+    // already gone (or there was no agent yet), the IPC just no-ops.
+    void window.ccsm?.agentClose(sessionId);
+  },
+
   addSessionStats: (sessionId, delta) => {
     set((s) => {
       const prev = s.statsBySession[sessionId] ?? EMPTY_SESSION_STATS;
@@ -2095,6 +2156,20 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   bumpComposerFocus: () => {
     set((s) => ({ focusInputNonce: s.focusInputNonce + 1 }));
+  },
+
+  /** Inject text into the composer for the active session and focus it.
+   *  Used by the user-message hover menu's Edit action. The InputBar watches
+   *  `composerInjectNonce` and, when it ticks, replaces its value with the
+   *  current `composerInjectText`. We bump the focus nonce too so the textarea
+   *  ends up focused with the cursor at the end (matches the "edit and resend"
+   *  expectation: drop the user back into the composer ready to tweak + send). */
+  injectComposerText: (text: string) => {
+    set((s) => ({
+      composerInjectText: text,
+      composerInjectNonce: s.composerInjectNonce + 1,
+      focusInputNonce: s.focusInputNonce + 1
+    }));
   },
 
   openPopover: (id) => {
