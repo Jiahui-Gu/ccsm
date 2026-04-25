@@ -86,7 +86,7 @@ describe('<UserBlock /> hover menu', () => {
     expect(screen.getByRole('button', { name: /edit and resend/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^retry$/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /copy message/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /rewind from here/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /truncate from here/i })).toBeInTheDocument();
   });
 
   it('Copy: writes the message text to the clipboard and flips to "Copied"', async () => {
@@ -134,7 +134,7 @@ describe('<UserBlock /> hover menu', () => {
     expect(useStore.getState().runningSessions['s1']).toBe(true);
   });
 
-  it('Rewind from here: truncates the conversation to before this block, drops resumeSessionId, calls agentClose', () => {
+  it('Truncate from here: truncates the conversation to before this block, drops resumeSessionId, calls agentClose', () => {
     const blocks = [
       { kind: 'assistant' as const, id: 'a0', text: 'previous reply' },
       { kind: 'user' as const, id: 'u1', text: 'this one' },
@@ -151,7 +151,7 @@ describe('<UserBlock /> hover menu', () => {
     const api = stubCCSM();
     render(<UserBlock id="u1" text="this one" sessionId="s1" />);
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: /rewind from here/i }));
+      fireEvent.click(screen.getByRole('button', { name: /truncate from here/i }));
     });
     const after = useStore.getState();
     expect(after.messagesBySession['s1']).toHaveLength(1);
@@ -160,5 +160,60 @@ describe('<UserBlock /> hover menu', () => {
     expect(sess?.resumeSessionId).toBeUndefined();
     expect(after.startedSessions['s1']).toBeFalsy();
     expect(api.agentClose).toHaveBeenCalledWith('s1');
+  });
+
+  // Reviewer Fix #2: truncation only mutated `messagesBySession` in memory.
+  // After a ccsm restart, `loadMessages` re-projected the JSONL and brought
+  // the truncated turns back, silently undoing the user's action. We now
+  // persist a `{ blockId }` marker via `truncationSet` and re-apply it in
+  // `loadMessages` after the JSONL projection. This case stubs the IPC pair
+  // and asserts the cut survives a fresh hydrate.
+  it('Truncate from here persists across reload: loadMessages re-applies the marker', async () => {
+    const sessionId = 's1';
+    const cwd = '/tmp/proj';
+    // Pretend we already had this session (so loadMessages can find cwd).
+    useStore.setState(
+      {
+        ...initial,
+        sessions: [
+          {
+            id: sessionId,
+            name: sessionId,
+            state: 'idle',
+            cwd,
+            model: 'claude',
+            groupId: 'g-default',
+            agentType: 'claude-code'
+          }
+        ],
+        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        activeId: sessionId,
+        messagesBySession: {}
+      },
+      true
+    );
+    // Three user frames in the JSONL — `framesToBlocks` will project these
+    // to `u-<uuid>` ids that match the marker.
+    const frames = [
+      { type: 'user', uuid: 'one', message: { content: 'first' } },
+      { type: 'user', uuid: 'two', message: { content: 'second' } },
+      { type: 'user', uuid: 'three', message: { content: 'third' } }
+    ];
+    const api = stubCCSM({
+      loadHistory: vi.fn().mockResolvedValue({ ok: true, frames }),
+      // Marker says: cut at the SECOND user message, so only the first
+      // should remain.
+      truncationGet: vi.fn().mockResolvedValue({ blockId: 'u-two', truncatedAt: 1 }),
+      truncationSet: vi.fn().mockResolvedValue({ ok: true })
+    });
+    await act(async () => {
+      await useStore.getState().loadMessages(sessionId);
+    });
+    const blocks = useStore.getState().messagesBySession[sessionId] ?? [];
+    const userBlocks = blocks.filter((b) => b.kind === 'user');
+    expect(api.loadHistory).toHaveBeenCalled();
+    expect(api.truncationGet).toHaveBeenCalledWith(sessionId);
+    // Only the first user message survives. The second/third are cut.
+    expect(userBlocks.map((b) => b.text)).toEqual(['first']);
   });
 });

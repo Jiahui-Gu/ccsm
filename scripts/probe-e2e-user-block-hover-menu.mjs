@@ -1,10 +1,21 @@
 // E2E: hover over a user message block → the four action buttons (Edit /
-// Retry / Copy / Rewind from here) become visible; clicking Copy lands the
-// message text in the clipboard; clicking Rewind truncates every block at
+// Retry / Copy / Truncate from here) become visible; clicking Copy lands the
+// message text in the clipboard; clicking Truncate truncates every block at
 // or after the user message AND drops `resumeSessionId` so the next send
 // respawns claude.exe. Verifies the hover-only opacity transition isn't
 // broken by jsdom's lack of group-hover (which is why the unit tests assert
 // only DOM presence, not visibility).
+//
+// HOW TO RUN
+// ──────────
+// MUST be invoked from the main repo checkout
+// (`C:\Users\jiahuigu\ccsm-research\ccsm`), NOT from a git worktree. The
+// electron native binding (`better-sqlite3.node`) is built once into the
+// main checkout's `node_modules` and the worktree-relative require path
+// can't find it. Running the probe from a worktree fails on app spawn
+// before the renderer ever loads.
+//   $ cd C:\Users\jiahuigu\ccsm-research\ccsm
+//   $ node scripts/probe-e2e-user-block-hover-menu.mjs
 //
 // We seed the store directly via window.__ccsmStore — this is a UX probe,
 // not an end-to-end agent probe. The Edit/Retry actions touch the network
@@ -80,7 +91,7 @@ if (opacity !== '1') {
 }
 
 // All four buttons present and reachable.
-const labels = ['Edit and resend', 'Retry', 'Copy message', 'Rewind from here'];
+const labels = ['Edit and resend', 'Retry', 'Copy message', 'Truncate from here'];
 for (const label of labels) {
   const btn = actions.locator(`button[aria-label="${label}"]`);
   if ((await btn.count()) !== 1) {
@@ -100,9 +111,9 @@ if (!clip.includes('PROBE_USER_TEXT')) {
   fail(`clipboard missing user text after Copy click (clip=${JSON.stringify(clip.slice(0, 80))})`);
 }
 
-// Rewind → truncate. After click: only the prior assistant block remains,
+// Truncate → cut. After click: only the prior assistant block remains,
 // and the session's resumeSessionId is gone.
-await actions.locator('button[aria-label="Rewind from here"]').click();
+await actions.locator('button[aria-label="Truncate from here"]').click();
 await win.waitForTimeout(300);
 
 const after = await win.evaluate(() => {
@@ -117,17 +128,17 @@ const after = await win.evaluate(() => {
 });
 if (after.blockIds.length !== 1 || after.blockIds[0] !== 'a0') {
   await app.close();
-  fail(`expected blocks=[a0] after Rewind, got ${JSON.stringify(after.blockIds)}`);
+  fail(`expected blocks=[a0] after Truncate, got ${JSON.stringify(after.blockIds)}`);
 }
 if (after.resume !== null) {
   await app.close();
-  fail(`expected resumeSessionId=null after Rewind, got ${JSON.stringify(after.resume)}`);
+  fail(`expected resumeSessionId=null after Truncate, got ${JSON.stringify(after.resume)}`);
 }
 if (after.started) {
   await app.close();
-  fail(`expected startedSessions.s1=false after Rewind, got true`);
+  fail(`expected startedSessions.s1=false after Truncate, got true`);
 }
 
 console.log('\n[probe-e2e-user-block-hover-menu] OK');
-console.log('  hover reveals 4 actions, Copy → clipboard, Rewind → truncate + clear resume');
+console.log('  hover reveals 4 actions, Copy → clipboard, Truncate → cut + clear resume');
 await app.close();

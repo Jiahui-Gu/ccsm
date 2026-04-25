@@ -538,6 +538,64 @@ app.whenReady().then(() => {
     }
   );
 
+  // Truncation marker (PR `feat/user-block-hover-menu`). Stored in app_state
+  // under key `truncation:<sessionId>` as JSON `{ blockId, truncatedAt }`.
+  // The renderer reads it after re-hydrating from JSONL and slices the
+  // projected MessageBlock[] at the recorded user-block id. Survives ccsm
+  // restart so the user-visible truncation isn't lost the moment we go to
+  // re-hydrate from disk.
+  function truncationKey(sessionId: string): string {
+    return `truncation:${sessionId}`;
+  }
+  ipcMain.handle('truncation:get', (e, sessionId: unknown) => {
+    if (!fromMainFrame(e)) return null;
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    try {
+      const raw = loadState(truncationKey(sessionId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof (parsed as { blockId?: unknown }).blockId === 'string' &&
+        typeof (parsed as { truncatedAt?: unknown }).truncatedAt === 'number'
+      ) {
+        return parsed as { blockId: string; truncatedAt: number };
+      }
+      return null;
+    } catch (err) {
+      console.warn('[main] truncation:get failed', err);
+      return null;
+    }
+  });
+  ipcMain.handle('truncation:set', (e, sessionId: unknown, marker: unknown) => {
+    if (!fromMainFrame(e)) return { ok: false as const, error: 'rejected' };
+    if (typeof sessionId !== 'string' || !sessionId) {
+      return { ok: false as const, error: 'invalid_args' };
+    }
+    try {
+      if (marker == null) {
+        // Clear by writing empty string — saveState upserts; reading back
+        // returns '' which the loader will treat as no-marker after the
+        // JSON.parse path below. Simpler: just store empty JSON object.
+        saveState(truncationKey(sessionId), '');
+        return { ok: true as const };
+      }
+      if (
+        typeof marker !== 'object' ||
+        typeof (marker as { blockId?: unknown }).blockId !== 'string' ||
+        typeof (marker as { truncatedAt?: unknown }).truncatedAt !== 'number'
+      ) {
+        return { ok: false as const, error: 'invalid_args' };
+      }
+      saveState(truncationKey(sessionId), JSON.stringify(marker));
+      return { ok: true as const };
+    } catch (err) {
+      console.warn('[main] truncation:set failed', err);
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   // i18n: renderer mirrors the resolved UI language to main so OS
   // notifications use it. Renderer also asks main for the OS locale at
   // boot to seed the "system" preference. Imports at the top of the file

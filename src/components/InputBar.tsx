@@ -148,6 +148,17 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     useShallow((s) => {
       const blocks = s.messagesBySession[sessionId] ?? [];
       const out: string[] = [];
+      // Stashed drafts come first — these are recent in-flight composer
+      // contents that the user-message hover menu's Edit action would
+      // otherwise have silently overwritten. Surfacing them ahead of the
+      // sent-prompt history matches "↑ recalls the most recent thing I
+      // was typing", which is what the user actually wants.
+      const stashed = s.stashedDrafts[sessionId];
+      if (stashed) {
+        for (const text of stashed) {
+          if (text && text.trim()) out.push(text);
+        }
+      }
       for (let i = blocks.length - 1; i >= 0; i--) {
         const b = blocks[i];
         if (b.kind !== 'user') continue;

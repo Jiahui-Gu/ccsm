@@ -263,6 +263,13 @@ type State = {
    *  resend" action. */
   composerInjectNonce: number;
   composerInjectText: string;
+  /** Per-session "draft was about to be overwritten" stash. The user-message
+   *  hover menu's Edit action would otherwise silently replace whatever the
+   *  user was typing in the composer. Instead we stash the live draft into
+   *  this list (newest first) so the InputBar's ↑/↓ recall surfaces it as
+   *  if it were a sent prompt. Not persisted — same rationale as drafts:
+   *  this is ephemeral recall sugar, not history of record. */
+  stashedDrafts: Record<string, string[]>;
   /** Recent agent diagnostics (newest last). Capped at 20 in-memory; the
    *  renderer only surfaces the latest non-dismissed one. Not persisted —
    *  these are ephemeral run-time signals. */
@@ -540,6 +547,11 @@ type Actions = {
   /** Replace the composer text for the active session. See
    *  `composerInjectNonce` / `composerInjectText` for the pull-side mechanics. */
   injectComposerText: (text: string) => void;
+  /** Push a draft string to the head of `stashedDrafts[sessionId]`, deduping
+   *  against the current head. Used by the user-message hover menu's Edit
+   *  action so a non-empty composer draft becomes ↑/↓ recallable instead of
+   *  being silently overwritten by the injected message. */
+  pushStashedDraft: (sessionId: string, text: string) => void;
   addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
   /** Replace the last-turn context-usage snapshot for `sessionId`. Pass a
    *  fresh object — we do NOT merge with prior state because each `result`
@@ -948,6 +960,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   installerCorrupt: false,
   composerInjectNonce: 0,
   composerInjectText: '',
+  stashedDrafts: {},
   diagnostics: [],
   sessionInitFailures: {},
   allowAlwaysTools: [],
@@ -1809,6 +1822,19 @@ export const useStore = create<State & Actions>((set, get) => ({
     // Best-effort: close the running agent so the next send respawns. If it's
     // already gone (or there was no agent yet), the IPC just no-ops.
     void window.ccsm?.agentClose(sessionId);
+    // Persist the truncation marker so an app restart re-applies the cut
+    // after re-hydrating the JSONL. We only persist `u-<uuid>` ids — those
+    // come from `framesToBlocks` projecting a real CLI-written JSONL line
+    // and are stable across reloads. Local-echo ids (`local-…`) are never
+    // written to disk, so a stale local-echo block can't be the rewind
+    // target on next boot anyway; skipping the persist for those keeps the
+    // marker honest.
+    if (blockId.startsWith('u-')) {
+      void window.ccsm?.truncationSet?.(sessionId, {
+        blockId,
+        truncatedAt: Date.now()
+      });
+    }
   },
 
   addSessionStats: (sessionId, delta) => {
@@ -1919,11 +1945,29 @@ export const useStore = create<State & Actions>((set, get) => ({
       // Sanitize: a streaming=true assistant block inside the JSONL means
       // a previous run crashed mid-stream. Drop the flag so the UI doesn't
       // show a perpetual pulse on restore.
-      const sanitized: MessageBlock[] = projected.map((r) =>
+      let sanitized: MessageBlock[] = projected.map((r) =>
         r.kind === 'assistant' && (r as { streaming?: boolean }).streaming
           ? { ...r, streaming: false }
           : r
       );
+      // Truncation marker (PR `feat/user-block-hover-menu`): the in-app
+      // "Truncate from here" hover-menu action persists a `{ blockId,
+      // truncatedAt }` record. Re-apply it here so a ccsm restart doesn't
+      // resurrect everything the user truncated. Marker by id is stable
+      // because `framesToBlocks` derives `u-<uuid>` from the JSONL line.
+      // A stale marker (id no longer present — JSONL was rewritten by a
+      // different tool) is silently ignored, NOT cleared, since a future
+      // re-import could legitimately bring the id back.
+      try {
+        const marker = await window.ccsm?.truncationGet?.(sessionId);
+        if (marker && marker.blockId) {
+          const cut = sanitized.findIndex((b) => b.id === marker.blockId);
+          if (cut >= 0) sanitized = sanitized.slice(0, cut);
+        }
+      } catch (err) {
+        // truncationGet is best-effort; a failure leaves history intact.
+        console.warn(`[store] truncationGet(${sessionId}) failed:`, err);
+      }
       set((s) => {
         const existing = s.messagesBySession[sessionId];
         if (!existing) {
@@ -2170,6 +2214,19 @@ export const useStore = create<State & Actions>((set, get) => ({
       composerInjectNonce: s.composerInjectNonce + 1,
       focusInputNonce: s.focusInputNonce + 1
     }));
+  },
+
+  pushStashedDraft: (sessionId: string, text: string) => {
+    if (!text || !text.trim()) return;
+    set((s) => {
+      const prev = s.stashedDrafts[sessionId] ?? [];
+      // Dedupe against the head — repeatedly hitting Edit on the same draft
+      // shouldn't fill the recall list with copies.
+      if (prev[0] === text) return s;
+      // Cap at 20 entries to bound memory; oldest fall off the tail.
+      const next = [text, ...prev].slice(0, 20);
+      return { stashedDrafts: { ...s.stashedDrafts, [sessionId]: next } };
+    });
   },
 
   openPopover: (id) => {
