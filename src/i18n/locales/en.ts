@@ -565,7 +565,12 @@ const en = {
     modePlanTooltip: 'Plan mode \u2014 read-only analysis; no file edits or shell until you approve.',
     modeDefaultTooltip: 'Default \u2014 auto-approve reads; ask before edits and shell.',
     modeAcceptEditsTooltip: 'Accept Edits \u2014 auto-approve reads and file edits; ask before shell.',
-    modeBypassTooltip: 'Bypass Permissions \u2014 every tool call runs without asking. Use with care.'
+    modeBypassTooltip: 'Bypass Permissions \u2014 every tool call runs without asking. Use with care.',
+    contextLabel: 'Context',
+    // Mirrors the official VS Code Claude extension's auto-compact tooltip
+    // wording so users who switch between surfaces see the same prompt.
+    contextTooltip: '{{percent}}% used ({{used}} / {{limit}} tokens). Click to /compact.',
+    contextAriaLabel: '{{percent}}% of context window used. Click to compact.'
   },
   cwdPopover: {
     placeholder: 'Type to filter or paste a path…',
