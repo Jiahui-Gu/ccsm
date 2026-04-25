@@ -7,6 +7,8 @@ import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { disposeStreamer } from '../agent/lifecycle';
 import { streamEventToTranslation } from '../agent/stream-to-blocks';
+import { getMaxThinkingTokensForModel, type ThinkingLevel } from '../agent/thinking';
+export type { ThinkingLevel };
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -195,6 +197,20 @@ type State = {
   focusedGroupId: string | null;
   model: ModelId;
   permission: PermissionMode;
+  /**
+   * Global default extended-thinking level applied to NEW sessions and to
+   * any session without a per-session override in `thinkingLevelBySession`.
+   * Two values only — matches upstream's Switch (off vs default_on). The
+   * resolved `max_thinking_tokens` is computed from this + model id via
+   * `src/agent/thinking.ts:getMaxThinkingTokensForModel`.
+   */
+  globalThinkingDefault: ThinkingLevel;
+  /**
+   * Per-session thinking level. Absent ⇒ inherit `globalThinkingDefault`.
+   * Persisted alongside permission so a relaunch picks up the same toggle
+   * the user left each session in.
+   */
+  thinkingLevelBySession: Record<string, ThinkingLevel>;
   sidebarCollapsed: boolean;
   /**
    * Sidebar width in pixels. Persisted as px (not %) — for a fixed-content
@@ -451,6 +467,19 @@ type Actions = {
    *  default. */
   setSessionModel: (sessionId: string, model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
+  /**
+   * Update the GLOBAL default thinking level. Does not retroactively touch
+   * any session that already has a per-session override; new sessions inherit
+   * this value at launch time. Persisted.
+   */
+  setGlobalThinkingDefault: (level: ThinkingLevel) => void;
+  /**
+   * Update one session's thinking level and (if the session is started)
+   * push the resolved `max_thinking_tokens` value through IPC. Mirrors
+   * `setSessionModel` — local-only when the session hasn't started yet, IPC
+   * round-trip otherwise.
+   */
+  setThinkingLevel: (sessionId: string, level: ThinkingLevel) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
@@ -684,6 +713,22 @@ export function migratePermission(raw: unknown): PermissionMode {
     default:
       return 'default';
   }
+}
+
+/**
+ * Coerce a persisted per-session thinking-level map back into the strict
+ * `'off' | 'default_on'` union. Strips entries with malformed values rather
+ * than throwing — a legacy snapshot with stray keys shouldn't block boot.
+ */
+export function sanitizeThinkingLevelMap(
+  raw: unknown,
+): Record<string, ThinkingLevel> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Record<string, ThinkingLevel> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (v === 'off' || v === 'default_on') out[k] = v;
+  }
+  return out;
 }
 
 function firstUsableGroupId(groups: Group[]): string | null {
@@ -936,6 +981,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusedGroupId: null,
   model: '',
   permission: 'default',
+  globalThinkingDefault: 'off',
+  thinkingLevelBySession: {},
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   theme: 'system',
@@ -1397,6 +1444,23 @@ export const useStore = create<State & Actions>((set, get) => ({
       return;
     }
     for (const id of started) void api.agentSetPermissionMode(id, permission);
+  },
+  setGlobalThinkingDefault: (level) => {
+    set({ globalThinkingDefault: level });
+    // Per design: global change does NOT retroactively rewrite per-session
+    // overrides. Existing sessions keep whatever the user last toggled them
+    // to; only fresh sessions inherit the new default at launch.
+  },
+  setThinkingLevel: (sessionId, level) => {
+    set((s) => ({
+      thinkingLevelBySession: { ...s.thinkingLevelBySession, [sessionId]: level },
+    }));
+    const api = window.ccsm;
+    if (!api) return;
+    if (!get().startedSessions[sessionId]) return;
+    const session = get().sessions.find((x) => x.id === sessionId);
+    const tokens = getMaxThinkingTokensForModel(session?.model || undefined, level);
+    void api.agentSetMaxThinkingTokens(sessionId, tokens);
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -2495,7 +2559,10 @@ export async function hydrateStore(): Promise<void> {
       notificationSettings: {
         ...DEFAULT_NOTIFICATION_SETTINGS,
         ...(persisted.notificationSettings ?? {})
-      }
+      },
+      globalThinkingDefault:
+        persisted.globalThinkingDefault === 'default_on' ? 'default_on' : 'off',
+      thinkingLevelBySession: sanitizeThinkingLevelMap(persisted.thinkingLevelBySession)
     });
   }
   hydrated = true;

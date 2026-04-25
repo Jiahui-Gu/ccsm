@@ -20,6 +20,7 @@ interface Runner {
   cancelToolUse(toolUseId: string): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): Promise<void>;
+  setMaxThinkingTokens(tokens: number): Promise<void>;
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean;
   resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean;
   close(): void;
@@ -211,6 +212,18 @@ class SessionsManager {
     const r = this.runners.get(sessionId);
     if (!r) return false;
     await r.setModel(model);
+    return true;
+  }
+
+  /**
+   * Push the resolved `max_thinking_tokens` value into the running SDK
+   * session. Returns false when the session is gone so the IPC handler can
+   * surface `{ok:false, error:'no_session'}` (matches setPermissionMode).
+   */
+  async setMaxThinkingTokens(sessionId: string, tokens: number): Promise<boolean> {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    await r.setMaxThinkingTokens(tokens);
     return true;
   }
 

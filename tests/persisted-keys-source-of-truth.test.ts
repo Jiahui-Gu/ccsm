@@ -71,6 +71,8 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         "recentProjects",
         "tutorialSeen",
         "notificationSettings",
+        "globalThinkingDefault",
+        "thinkingLevelBySession",
       ]
     `);
     // Structural invariants that any future key must satisfy. Catches a
@@ -145,7 +147,9 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         question: false,
         turnDone: false,
         sound: false
-      }
+      },
+      globalThinkingDefault: 'default_on',
+      thinkingLevelBySession: { 's-test': 'default_on' }
     };
 
     for (const k of PERSISTED_KEYS) {

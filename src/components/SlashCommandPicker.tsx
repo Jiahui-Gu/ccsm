@@ -8,6 +8,7 @@ import {
 } from '../slash-commands/registry';
 import { useTranslation } from '../i18n/useTranslation';
 import { MetaLabel } from './ui/MetaLabel';
+import { useStore } from '../stores/store';
 
 type Props = {
   open: boolean;
@@ -50,6 +51,20 @@ export function SlashCommandPicker({
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const rowsRef = useRef<Array<HTMLButtonElement | null>>([]);
+
+  // Snapshot the current session's thinking state so the `/think` row's
+  // trailing Switch reflects the live toggle (off vs default_on). Read here
+  // rather than threaded through props so the picker stays a self-contained
+  // listbox the caller can drop in without rewiring on every store-shape
+  // change. Selectors are narrow so unrelated store updates don't re-render
+  // the picker.
+  const activeSessionId = useStore((s) => s.activeId);
+  const thinkingLevel = useStore(
+    (s) => s.thinkingLevelBySession[s.activeId] ?? s.globalThinkingDefault,
+  );
+  // Suppress unused-var warning — kept around so future trailing slots can
+  // key off the active session id without re-plumbing a selector.
+  void activeSessionId;
 
   const filtered = useMemo(
     () => filterSlashCommands(commands, query),
@@ -178,6 +193,62 @@ export function SlashCommandPicker({
                         {cmd.description}
                       </span>
                     ) : null}
+                    {(() => {
+                      // Trailing slot: renders right-aligned. Built-in
+                      // `/think` gets a live Switch reflecting the current
+                      // session's thinking level (off vs default_on).
+                      // Mirrors upstream extension v2.1.120's "Thinking"
+                      // Command Palette row, which uses the same Switch
+                      // affordance. The Switch is purely indicative — Enter
+                      // / click selects the row, which dispatches the toggle
+                      // through the same path as keyboard activation.
+                      // pointer-events disabled so a click on the thumb
+                      // still bubbles to the row's onMouseDown.
+                      const isThink =
+                        cmd.source === 'built-in' && cmd.name === 'think';
+                      // Visual-only Switch facsimile. We can't drop the real
+                      // <Switch> (Radix renders a <button>) inside the row
+                      // <button> — invalid DOM nesting trips React's
+                      // validateDOMNesting in strict-mode and breaks
+                      // hit-testing on real browsers. The matching aria
+                      // semantics live on the row itself (selecting the row
+                      // toggles the level), so the trailing slot is purely
+                      // an indicator. Sized to match `<Switch>` (h-4 w-7
+                      // track, h-3 w-3 thumb) so the look is identical.
+                      const isOn = thinkingLevel === 'default_on';
+                      const trailing = isThink ? (
+                        <span
+                          aria-hidden="true"
+                          data-testid="slash-think-switch"
+                          data-state={isOn ? 'checked' : 'unchecked'}
+                          className={cn(
+                            'relative inline-flex h-4 w-7 shrink-0 items-center rounded-full',
+                            'transition-colors duration-150',
+                            isOn ? 'bg-accent' : 'bg-border-strong'
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'block h-3 w-3 rounded-full bg-white shadow-sm',
+                              'transition-transform duration-150 ease-out',
+                              isOn ? 'translate-x-[14px]' : 'translate-x-0.5'
+                            )}
+                          />
+                        </span>
+                      ) : (
+                        cmd.trailingComponent ?? null
+                      );
+                      return trailing ? (
+                        <span
+                          className={cn(
+                            'shrink-0 flex items-center',
+                            !cmd.argumentHint && 'ml-auto'
+                          )}
+                        >
+                          {trailing}
+                        </span>
+                      ) : null;
+                    })()}
                     {cmd.argumentHint ? (
                       <span
                         className="ml-auto shrink-0 text-mono-xs uppercase tracking-wider text-fg-tertiary px-1.5 py-0.5 rounded-sm border border-border-subtle font-mono"
