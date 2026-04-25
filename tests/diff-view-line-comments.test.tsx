@@ -16,7 +16,7 @@
 //     hits agentSend). Splitting keeps each test honest about its scope.
 import React from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
 import { DiffView } from '../src/components/chat/DiffView';
 import type { DiffSpec } from '../src/utils/diff';
 import {
@@ -223,5 +223,39 @@ describe('<DiffView /> per-line comment affordance', () => {
     // hold the composer wrapper in the DOM under jsdom. The actual contract
     // is "no comment was persisted", which is observable on the store.
     expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
+  });
+
+  it('Enter on an empty composer cancels (no junk comment) and closes it (#340)', async () => {
+    render(<DiffView diff={spec('/a/e.ts', [], ['LINE'])} />);
+    fireEvent.click(addCommentButtonForLine(0));
+    const composer = document.querySelector('[data-diff-comment-composer]') as HTMLElement;
+    expect(composer).not.toBeNull();
+    const ta = within(composer).getByPlaceholderText(/add a comment/i) as HTMLTextAreaElement;
+    // Whitespace-only counts as empty.
+    fireEvent.change(ta, { target: { value: '   ' } });
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    // No comment persisted (addDiffComment / updateDiffComment never fired).
+    expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
+    // Composer is dismissed. This is the load-bearing assertion for #340 —
+    // before the fix, empty Enter was a silent no-op that left the composer
+    // hanging open. AnimatePresence exit may take a tick under jsdom, so
+    // waitFor handles the brief window before the wrapper unmounts.
+    await waitFor(() => {
+      expect(document.querySelector('[data-diff-comment-composer]')).toBeNull();
+    });
+  });
+
+  it('Enter on a non-empty composer still saves (regression guard for #340)', () => {
+    render(<DiffView diff={spec('/a/n.ts', [], ['LINE'])} />);
+    fireEvent.click(addCommentButtonForLine(0));
+    const composer = document.querySelector('[data-diff-comment-composer]') as HTMLElement;
+    const ta = within(composer).getByPlaceholderText(/add a comment/i) as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: 'real feedback' } });
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    const bucket = useStore.getState().pendingDiffComments[SID];
+    expect(bucket).toBeDefined();
+    const list = Object.values(bucket!);
+    expect(list).toHaveLength(1);
+    expect(list[0].text).toBe('real feedback');
   });
 });
