@@ -59,17 +59,12 @@ async function newWin(extraEnv = {}, extraArgs = []) {
   return { app, win, ud, errors };
 }
 
-// Helper to locate the QuestionBlock's Submit button. The label is
-// translated ("Submit answer" in en, "提交答案" in zh) and other surfaces
-// may also use the word "Submit", so we scope to a button INSIDE a question
-// container. The question container is identified by the presence of a
-// `[data-question-option]` descendant.
+// Helper to locate the QuestionBlock's Submit button. The component
+// exposes a stable [data-testid="question-submit"] handle; older
+// "last-button-in-the-card" heuristics break now that the chip-tab
+// nav bar has its own buttons.
 function questionSubmitButton(win) {
-  return win
-    .locator('div.relative', { has: win.locator('[data-question-option]') })
-    .last()
-    .locator('button')
-    .last();
+  return win.locator('[data-testid="question-submit"]').last();
 }
 
 // Module-level app handle so journeys can call into main without each one
@@ -225,14 +220,23 @@ async function journey1_singleSelect_doesNotStealTextarea(win) {
 
   const focusedValue = await win.evaluate(() => {
     const el = document.activeElement;
-    return el ? { role: el.getAttribute('role'), value: el.getAttribute('value') } : null;
+    return el ? { role: el.getAttribute('role'), label: el.getAttribute('data-question-label') } : null;
   });
-  if (focusedValue?.role !== 'radio' || focusedValue?.value !== '1') {
-    record('J1', false, `after ↓↓↑ expected radio value=1 focused, got ${JSON.stringify(focusedValue)}`);
+  if (focusedValue?.role !== 'radio' || focusedValue?.label !== 'TypeScript') {
+    record('J1', false, `after ↓↓↑ expected radio data-question-label=TypeScript focused, got ${JSON.stringify(focusedValue)}`);
     return;
   }
 
+  // Enter on the focused option toggles selection (single-question call →
+  // no auto-advance and no auto-submit). Click Submit explicitly.
   await win.keyboard.press('Enter');
+  await win.waitForTimeout(120);
+  const submit = questionSubmitButton(win);
+  if (await submit.isDisabled()) {
+    record('J1', false, 'Submit disabled after picking TypeScript via Enter');
+    return;
+  }
+  await submit.click();
   await win.waitForTimeout(300);
 
   const sent = await getCapturedSends();
@@ -358,37 +362,42 @@ async function journey3_threeQuestions_latestPicks(win) {
   await win.waitForSelector('[data-question-option]', { timeout: 5000 });
   await win.waitForTimeout(150);
 
-  // Click A2 (Q1 idx 1), then B1 (Q2 idx 1), then A3 (Q1 idx 2).
-  // Q3 stays on its default (C0).
-  const opts = await win.evaluate(() => {
-    const all = Array.from(document.querySelectorAll('[data-question-option]'));
-    return all.map((n, i) => ({
-      i,
-      role: n.getAttribute('role'),
-      value: n.getAttribute('value'),
-      labelText: n.parentElement?.textContent?.trim().slice(0, 30),
-    }));
-  });
-  // Sanity check: 3+3+2 = 8 options total.
-  if (opts.length !== 8) {
-    record('J3', false, `expected 8 total options, got ${opts.length}`);
+  // Current QuestionBlock is paged (one question at a time, navigated via
+  // top chip-tabs). Verify the tab bar lists all 3 questions, then walk
+  // through each tab making picks. The Q3 default-pre-selected expectation
+  // from the older RadioGroup version is gone — every question requires
+  // an explicit pick before Submit enables.
+  const tabCount = await win.evaluate(() => document.querySelectorAll('[data-testid^="question-tab-"]').length);
+  if (tabCount !== 3) {
+    record('J3', false, `expected 3 question tabs, got ${tabCount}`);
     return;
   }
 
-  // We can't trivially identify "Q1 idx 1" by data-question-first alone,
-  // but we know the order: first 3 options belong to Q1, next 3 to Q2, next 2 to Q3.
-  const allOptions = win.locator('[data-question-option]');
-  await allOptions.nth(1).click(); // Q1 → A2
-  await win.waitForTimeout(60);
-  await allOptions.nth(4).click(); // Q2 → B1
-  await win.waitForTimeout(60);
-  await allOptions.nth(2).click(); // Q1 → A3 (revise)
+  // Q1 (active by default): pick A2 then revise to A3.
+  await win.locator('[data-question-option][data-question-label="A2"]').first().click();
+  // Single-select fires a 300ms auto-advance to next question; wait past
+  // that then jump back to Q1 via the tab to revise the pick.
+  await win.waitForTimeout(400);
+  await win.locator('[data-testid="question-tab-0"]').click();
   await win.waitForTimeout(120);
+  await win.locator('[data-question-option][data-question-label="A3"]').first().click();
+  await win.waitForTimeout(400);
 
-  // All answered; submit.
+  // Q2: pick B1 (auto-advance fires here too, drop us into Q3 — fine).
+  await win.locator('[data-testid="question-tab-1"]').click();
+  await win.waitForTimeout(120);
+  await win.locator('[data-question-option][data-question-label="B1"]').first().click();
+  await win.waitForTimeout(400);
+
+  // Q3: pick C0 (last question, no auto-advance).
+  await win.locator('[data-testid="question-tab-2"]').click();
+  await win.waitForTimeout(120);
+  await win.locator('[data-question-option][data-question-label="C0"]').first().click();
+  await win.waitForTimeout(150);
+
   const submit = questionSubmitButton(win);
   if (await submit.isDisabled()) {
-    record('J3', false, 'Submit disabled despite all 3 questions answered (Q3 default-pre-selected)');
+    record('J3', false, 'Submit disabled despite all 3 questions answered');
     return;
   }
   await submit.click();
@@ -405,15 +414,15 @@ async function journey3_threeQuestions_latestPicks(win) {
     record('J3', false, `payload still contains stale pick A2 — picks not refreshed. payload=${JSON.stringify(text)}`);
     return;
   }
-  if (!/\bA3\b/.test(text) || !/\bB1\b/.test(text)) {
-    record('J3', false, `expected A3 and B1 in payload, got=${JSON.stringify(text)}`);
+  if (!/\bA3\b/.test(text) || !/\bB1\b/.test(text) || !/\bC0\b/.test(text)) {
+    record('J3', false, `expected A3, B1 and C0 in payload, got=${JSON.stringify(text)}`);
     return;
   }
   await win.evaluate((sid) => {
     window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
-  record('J3', true, `revised picks captured (A3+B1+C0 default), no stale A2`);
+  record('J3', true, `revised picks captured (A3+B1+C0), no stale A2`);
 }
 
 // ── J4 ────────────────────────────────────────────────────────────────────
@@ -427,40 +436,78 @@ async function journey4_twelveOptions_wrapAndSubmit(win) {
   await win.waitForSelector('[data-question-option]', { timeout: 5000 });
   await win.waitForTimeout(150);
 
+  // Component appends a synthetic "Other" option after the model's options
+  // (label localized via questionBlock.other). Probe walks via
+  // data-question-label, not the older RadioGroup `value` attribute.
+  const totalOpts = await win.evaluate(() =>
+    document.querySelectorAll('[data-question-option]').length
+  );
+  if (totalOpts !== 13) {
+    record('J4', false, `expected 13 options (12 + synthetic Other), got ${totalOpts}`);
+    return;
+  }
+
   // Focus first option.
   await win.locator('[data-question-option]').first().focus();
   await win.waitForTimeout(60);
 
-  // ↓ x11 → land on Opt-12 (value="11"). Then ↓ once more → wrap to value="0".
+  const labelOf = () =>
+    win.evaluate(() => document.activeElement?.getAttribute('data-question-label'));
+
+  // ↓ x11 → land on Opt-12 (last model option, before Other).
   for (let i = 0; i < 11; i++) {
     await win.keyboard.press('ArrowDown');
     await win.waitForTimeout(20);
   }
-  let val = await win.evaluate(() => document.activeElement?.getAttribute('value'));
-  if (val !== '11') {
-    record('J4', false, `after ↓x11 expected value=11 (Opt-12), got ${val}`);
+  let lbl = await labelOf();
+  if (lbl !== 'Opt-12') {
+    record('J4', false, `after ↓x11 expected Opt-12, got ${lbl}`);
     return;
   }
-  await win.keyboard.press('ArrowDown'); // wrap
+  // ↓ once more → Other (synthetic, label="Other").
+  await win.keyboard.press('ArrowDown');
   await win.waitForTimeout(40);
-  val = await win.evaluate(() => document.activeElement?.getAttribute('value'));
-  if (val !== '0') {
-    record('J4', false, `expected wrap to value=0 after passing the end; got ${val}`);
+  lbl = await labelOf();
+  if (lbl !== 'Other') {
+    record('J4', false, `after ↓ from Opt-12 expected Other, got ${lbl}`);
+    return;
+  }
+  // ↓ once more → wrap to Opt-01.
+  await win.keyboard.press('ArrowDown');
+  await win.waitForTimeout(40);
+  lbl = await labelOf();
+  if (lbl !== 'Opt-01') {
+    record('J4', false, `expected wrap to Opt-01 from Other, got ${lbl}`);
     return;
   }
 
-  // Now navigate back to the LAST option and Enter to submit it.
-  // From value=0, pressing ArrowUp should wrap UP to last (value=11). Test that too.
+  // ArrowUp from Opt-01 should wrap UP to Other (synthetic last).
   await win.keyboard.press('ArrowUp');
   await win.waitForTimeout(40);
-  val = await win.evaluate(() => document.activeElement?.getAttribute('value'));
-  if (val !== '11') {
-    record('J4', false, `expected ArrowUp from first to wrap to last (value=11), got ${val}`);
+  lbl = await labelOf();
+  if (lbl !== 'Other') {
+    record('J4', false, `expected ArrowUp wrap to Other, got ${lbl}`);
+    return;
+  }
+  // ArrowUp once more → Opt-12.
+  await win.keyboard.press('ArrowUp');
+  await win.waitForTimeout(40);
+  lbl = await labelOf();
+  if (lbl !== 'Opt-12') {
+    record('J4', false, `expected ArrowUp from Other to Opt-12, got ${lbl}`);
     return;
   }
 
-  // Submit via Enter on the focused option (last).
+  // Pick Opt-12 via Enter, then click Submit (this is the only question
+  // in J4's call so there is no auto-advance side effect).
   await win.keyboard.press('Enter');
+  await win.waitForTimeout(120);
+  const submit = questionSubmitButton(win);
+  if (await submit.isDisabled()) {
+    record('J4', false, 'Submit disabled after picking Opt-12');
+    return;
+  }
+  await submit.click();
   await win.waitForTimeout(300);
 
   const sent = await getCapturedSends();
@@ -472,7 +519,7 @@ async function journey4_twelveOptions_wrapAndSubmit(win) {
     window.__ccsmStore.getState().clearMessages(sid);
   }, sessionId);
   await clearCaptured();
-  record('J4', true, 'down wraps to first, up wraps to last, last option submits via Enter');
+  record('J4', true, 'down/up wraps through 12+Other, last model option submits');
 }
 
 // ── J5 ────────────────────────────────────────────────────────────────────
@@ -654,7 +701,10 @@ async function journey6_twoSessions_answerRouting(win) {
   await win.waitForSelector('[data-question-option]', { timeout: 5000 });
   await win.waitForTimeout(150);
 
-  // Submit B (default-picked first option).
+  // Submit B — the current QuestionBlock has no default pre-pick; click
+  // B-Yes first, then submit.
+  await win.locator('[data-question-option][data-question-label="B-Yes"]').first().click();
+  await win.waitForTimeout(120);
   await questionSubmitButton(win).click();
   await win.waitForTimeout(300);
 
@@ -691,7 +741,9 @@ async function journey6_twoSessions_answerRouting(win) {
     return;
   }
 
-  // Submit A.
+  // Submit A — also no default pre-pick.
+  await win.locator('[data-question-option][data-question-label="A-Yes"]').first().click();
+  await win.waitForTimeout(120);
   await questionSubmitButton(win).click();
   await win.waitForTimeout(300);
   sent = await getCapturedSends();
