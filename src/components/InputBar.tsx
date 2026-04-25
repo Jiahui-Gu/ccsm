@@ -139,6 +139,31 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // Perf: subscribe to all reactive per-session signals via useShallow so this
   // component only re-renders when one of these specific values changes
   // (instead of once per any store mutation, like an appendBlocks chunk).
+  // PR-N: ↑/↓ history recall. Subscribe to a derived array of user-prompt
+  // texts (newest first) via useShallow so the component only re-renders when
+  // the recall list itself changes — not on every per-token assistant chunk.
+  // The selector skips slash-command echoes and image-only turns since those
+  // can't be re-sent through the textarea anyway.
+  const userPromptHistory = useStore(
+    useShallow((s) => {
+      const blocks = s.messagesBySession[sessionId] ?? [];
+      const out: string[] = [];
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind !== 'user') continue;
+        if (!b.text || !b.text.trim()) continue;
+        out.push(b.text);
+      }
+      return out;
+    })
+  );
+  // recallIndex semantics:
+  //   0       → idle (composer reflects the user's own draft / empty)
+  //   1..N    → recall mode, value === userPromptHistory[index - 1]
+  // Reset on session switch (the sessionId effect below) and on any user edit
+  // that diverges from the recalled prompt.
+  const [recallIndex, setRecallIndex] = useState(0);
+
   const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount, lastTurnEnd } = useStore(
     useShallow((s) => ({
       session: s.sessions.find((x) => x.id === sessionId),
@@ -239,6 +264,9 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setValue(getDraft(sessionId));
     setAttachments(attachmentCache.get(sessionId) ?? []);
     setRejections([]);
+    // PR-N: history recall is per-session — wipe the index when switching so
+    // ↑ on a fresh session always starts at the most recent prompt.
+    setRecallIndex(0);
   }, [sessionId]);
 
   // task322: continue-after-interrupt — show a one-line hint above the
@@ -293,6 +321,14 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
   function update(next: string) {
     setValue(next);
+    // PR-N: any user-initiated edit that diverges from the recalled prompt
+    // exits recall mode. Compare against the prompt at the current index so
+    // a programmatic recall fill (which routes through setValue directly,
+    // not update()) doesn't accidentally trip this guard.
+    if (recallIndex > 0) {
+      const recalled = userPromptHistory[recallIndex - 1];
+      if (next !== recalled) setRecallIndex(0);
+    }
     // task322: any keystroke (even one that lands an empty string back —
     // e.g. paste-then-undo) counts as user activity that dismisses the
     // continue-after-interrupt hint. We only flip the latch when the value
@@ -658,6 +694,60 @@ export function InputBar({ sessionId }: { sessionId: string }) {
         return;
       }
       send();
+      return;
+    }
+
+    // PR-N: ↑/↓ history recall. Strict guard so we never steal arrow keys
+    // from in-textarea caret movement during multi-line editing.
+    //   ↑ triggers iff value is exactly '' (idle) OR we're already in recall
+    //     mode (so ↑ keeps walking backwards through history).
+    //   ↓ triggers iff we're already in recall mode (idle ↓ is a no-op).
+    // Once a key is intercepted we preventDefault so the textarea doesn't
+    // also move the caret — relevant when value === '' (caret at 0 anyway,
+    // but the browser would still scroll the empty textarea to its top edge).
+    if (e.key === 'ArrowUp') {
+      const inRecall = recallIndex > 0;
+      if (value !== '' && !inRecall) return;
+      if (userPromptHistory.length === 0) return;
+      // Already at the oldest prompt — stop walking, swallow the keystroke
+      // so the textarea doesn't try to move the caret either.
+      if (recallIndex >= userPromptHistory.length) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      const nextIndex = recallIndex + 1;
+      const recalled = userPromptHistory[nextIndex - 1];
+      setRecallIndex(nextIndex);
+      setValue(recalled);
+      setCaret(recalled.length);
+      // Place caret at the end after React commits the new value.
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.setSelectionRange(recalled.length, recalled.length);
+      });
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      if (recallIndex === 0) return; // idle — let textarea handle it
+      e.preventDefault();
+      const nextIndex = recallIndex - 1;
+      setRecallIndex(nextIndex);
+      if (nextIndex === 0) {
+        setValue('');
+        setCaret(0);
+      } else {
+        const recalled = userPromptHistory[nextIndex - 1];
+        setValue(recalled);
+        setCaret(recalled.length);
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (!el) return;
+          el.setSelectionRange(recalled.length, recalled.length);
+        });
+      }
+      return;
     }
   }
 
