@@ -504,11 +504,15 @@ try {
       // share an ancestor (the stream root) whose textContent contains
       // BOTH tokens. That made `find('ok-auto')` resolve to whichever
       // button was iterated first (the error block), masking real bugs.
-      // The precise anchor is the ToolBlock root (`div.font-mono.text-chrome`)
-      // — each block's root contains exactly its own brief + result body.
+      // The precise anchor is the ToolBlock root carrying
+      // `data-testid="tool-block-root"` (#341) — each block's root contains
+      // exactly its own brief + result body. Previously we matched the
+      // Tailwind class string `div.font-mono.text-chrome`, but that coupled
+      // the probe to styling decisions that change frequently; the testid is
+      // the stable contract.
       function find(token) {
         for (const b of btns) {
-          const root = b.closest('div.font-mono.text-chrome');
+          const root = b.closest('[data-testid="tool-block-root"]');
           if (root && root.textContent && root.textContent.includes(token)) return b;
         }
         return null;
