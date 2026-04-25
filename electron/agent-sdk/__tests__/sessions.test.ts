@@ -190,7 +190,7 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
-  it('cancelToolUse() emits diagnostic and falls back to interrupt', async () => {
+  it('cancelToolUse() silently falls back to turn-level interrupt without diagnostic', async () => {
     const diags: Array<{ code: string }> = [];
     const runner = new SdkSessionRunner(
       's8',
@@ -201,7 +201,7 @@ describe('agent-sdk/SdkSessionRunner', () => {
     );
     await runner.start(baseStart);
     await runner.cancelToolUse('toolUse-42');
-    expect(diags.some((d) => d.code === 'tool_cancel_fallback')).toBe(true);
+    expect(diags.some((d) => d.code === 'tool_cancel_fallback')).toBe(false);
     expect(fake.interrupt).toHaveBeenCalled();
     runner.close();
   });
