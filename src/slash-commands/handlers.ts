@@ -78,6 +78,17 @@ export function blocksToTranscript(blocks: MessageBlock[]): string {
   return lines.join('\n');
 }
 
+// ---------- /config ----------
+// Open the Settings dialog. We can't import App-level React state here, so
+// we dispatch a window CustomEvent that App.tsx listens for. This mirrors
+// the upstream CLI's `/config` (which pops its inline config view) — in our
+// Electron UI the analogous surface is the Radix Settings dialog. Defaults
+// to the first tab; users can navigate from there.
+export function handleConfig(_ctx: SlashCommandContext): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('ccsm:open-settings'));
+}
+
 // Attach the local handler as a module side-effect, same as before.
 function attach(name: string, handler: (ctx: SlashCommandContext) => void | Promise<void>): void {
   const entry = BUILT_IN_COMMANDS.find((c) => c.name === name);
@@ -85,3 +96,4 @@ function attach(name: string, handler: (ctx: SlashCommandContext) => void | Prom
 }
 
 attach('clear', handleClear);
+attach('config', handleConfig);

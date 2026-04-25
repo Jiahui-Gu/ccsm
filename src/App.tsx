@@ -267,6 +267,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [createGroup, focusGroup, toggleSidebar, newSession]);
 
+  // `/config` slash command opens the Settings dialog. The slash dispatcher
+  // lives in src/slash-commands/handlers.ts and can't reach App-level React
+  // state, so it fires a window CustomEvent that we listen for here.
+  useEffect(() => {
+    const onOpenSettings = () => setSettingsOpen(true);
+    window.addEventListener('ccsm:open-settings', onOpenSettings);
+    return () => window.removeEventListener('ccsm:open-settings', onOpenSettings);
+  }, []);
+
   if (!active) {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>

@@ -6,7 +6,7 @@ import {
   parseSlashInvocation,
   findSlashCommand,
 } from '../src/slash-commands/registry';
-import { handleClear, blocksToTranscript } from '../src/slash-commands/handlers';
+import { handleClear, handleConfig, blocksToTranscript } from '../src/slash-commands/handlers';
 
 const initial = useStore.getState();
 
@@ -106,16 +106,19 @@ describe('dispatchSlashCommand', () => {
 });
 
 describe('registry shape', () => {
-  it('exposes exactly /clear and /compact as built-ins', () => {
-    expect(BUILT_IN_COMMANDS.map((c) => c.name)).toEqual(['clear', 'compact']);
+  it('exposes /clear, /compact, /config as built-ins', () => {
+    expect(BUILT_IN_COMMANDS.map((c) => c.name)).toEqual(['clear', 'compact', 'config']);
   });
-  it('/clear has a client handler, /compact does not', () => {
+  it('/clear has a client handler, /compact does not, /config does', () => {
     const clear = findSlashCommand(BUILT_IN_COMMANDS, 'clear');
     const compact = findSlashCommand(BUILT_IN_COMMANDS, 'compact');
+    const config = findSlashCommand(BUILT_IN_COMMANDS, 'config');
     expect(clear?.passThrough).toBe(false);
     expect(typeof clear?.clientHandler).toBe('function');
     expect(compact?.passThrough).toBe(true);
     expect(compact?.clientHandler).toBeUndefined();
+    expect(config?.passThrough).toBe(false);
+    expect(typeof config?.clientHandler).toBe('function');
   });
 });
 
@@ -150,6 +153,22 @@ describe('/clear', () => {
     expect(blocks[0].kind).toBe('status');
     if (blocks[0].kind === 'status') {
       expect(blocks[0].title).toBe('Context cleared');
+    }
+  });
+});
+
+describe('/config', () => {
+  it('dispatches the ccsm:open-settings window event', () => {
+    let fired = 0;
+    const listener = () => {
+      fired += 1;
+    };
+    window.addEventListener('ccsm:open-settings', listener);
+    try {
+      handleConfig({ sessionId: 's1', args: '' });
+      expect(fired).toBe(1);
+    } finally {
+      window.removeEventListener('ccsm:open-settings', listener);
     }
   });
 });
