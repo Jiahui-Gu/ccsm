@@ -541,7 +541,10 @@ const zh: EnCatalog = {
     modePlanTooltip: '规划模式 \u2014 只读分析；不编辑文件、不执行 shell，除非你批准。',
     modeDefaultTooltip: '默认 \u2014 自动批准读取；编辑和 shell 先询问。',
     modeAcceptEditsTooltip: '接受编辑 \u2014 自动批准读取与文件编辑；shell 先询问。',
-    modeBypassTooltip: '跳过校验 \u2014 所有工具调用直接放行。请谨慎使用。'
+    modeBypassTooltip: '跳过校验 \u2014 所有工具调用直接放行。请谨慎使用。',
+    contextLabel: '上下文',
+    contextTooltip: '已用 {{percent}}%（{{used}} / {{limit}} 个 token）。点击执行 /compact。',
+    contextAriaLabel: '上下文窗口已使用 {{percent}}%。点击触发压缩。'
   },
   cwdPopover: {
     placeholder: '输入筛选或粘贴路径…',

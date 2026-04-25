@@ -147,9 +147,134 @@ function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string
   return value;
 }
 
+// =====================================================================
+// ContextPieChip — StatusBar chip showing live context-window fill.
+//
+// Visibility rule mirrors the official VS Code Claude extension: hidden
+// below 50% to keep the bar quiet during normal turns, surfaces only when
+// /compact starts becoming a relevant action. Color buckets:
+//   50–79%  neutral (text-fg-tertiary)
+//   80–94%  amber  (text-state-warning)
+//   ≥95%    red    (text-state-error)
+// Click sends "/compact" through the same agentSend path the InputBar
+// slash-command flow uses (claude.exe handles /compact natively).
+//
+// SVG: a 12×12 ring drawn with `stroke-dasharray`. circumference = 2πr;
+// the visible-arc dash is `pct * circumference`, gap fills the rest. We
+// rotate −90° so the arc starts at 12-o'clock instead of 3-o'clock, which
+// matches every other "fuel gauge" pie users have seen.
+// =====================================================================
+
+const PIE_RADIUS = 4.5;
+const PIE_CIRCUMFERENCE = 2 * Math.PI * PIE_RADIUS;
+
+function pieToneClass(percent: number): string {
+  if (percent >= 95) return 'text-state-error';
+  if (percent >= 80) return 'text-state-warning';
+  return 'text-fg-tertiary';
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function ContextPieChip({ sessionId }: { sessionId: string }) {
+  const { t } = useTranslation();
+  const usage = useStore((s) => s.contextUsageBySession[sessionId]);
+
+  // Need both a snapshot and a model-reported window. Without the window
+  // we can't compute a meaningful percentage and would have to either
+  // hardcode 200_000 (forbidden) or guess — better to stay hidden.
+  if (!usage || !usage.contextWindow || usage.contextWindow <= 0) return null;
+
+  const rawPct = (usage.totalTokens / usage.contextWindow) * 100;
+  // Visibility threshold matches the upstream extension's auto-compact
+  // chip: under 50% the bar stays clean.
+  if (rawPct < 50) return null;
+
+  // Clamp display to [0, 100] so a 110%-overflow turn (rare but possible
+  // when the CLI reports a stale contextWindow) doesn't break the SVG.
+  const percent = Math.min(100, Math.max(0, rawPct));
+  const rounded = Math.round(percent);
+  const dash = (percent / 100) * PIE_CIRCUMFERENCE;
+  const tone = pieToneClass(percent);
+
+  const tokenLabel = `${formatTokens(usage.totalTokens)} / ${formatTokens(usage.contextWindow)}`;
+  const tooltip = t('statusBar.contextTooltip', {
+    percent: rounded,
+    used: formatTokens(usage.totalTokens),
+    limit: formatTokens(usage.contextWindow)
+  });
+  const aria = t('statusBar.contextAriaLabel', { percent: rounded });
+
+  const onClick = () => {
+    const api = window.ccsm;
+    if (!api) return;
+    void api.agentSend(sessionId, '/compact');
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={tooltip}
+      aria-label={aria}
+      data-testid="context-pie-chip"
+      data-percent={rounded}
+      data-tone={percent >= 95 ? 'error' : percent >= 80 ? 'warning' : 'neutral'}
+      className={cn(
+        'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
+        tone,
+        'hover:bg-bg-hover',
+        'outline-none focus-ring',
+        'transition-colors duration-120 ease-out'
+      )}
+    >
+      <svg
+        width={12}
+        height={12}
+        viewBox="0 0 12 12"
+        aria-hidden
+        // Rotate so the arc grows clockwise from 12-o'clock.
+        style={{ transform: 'rotate(-90deg)' }}
+      >
+        {/* Background ring — keeps the empty portion legible against any
+            StatusBar bg. Uses currentColor at low alpha. */}
+        <circle
+          cx={6}
+          cy={6}
+          r={PIE_RADIUS}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          opacity={0.25}
+        />
+        {/* Foreground arc */}
+        <circle
+          cx={6}
+          cy={6}
+          r={PIE_RADIUS}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeDasharray={`${dash} ${PIE_CIRCUMFERENCE}`}
+          strokeLinecap="butt"
+        />
+      </svg>
+      <span className="font-mono tabular-nums">{rounded}%</span>
+      {/* Hidden token-count for tests + screen readers without overloading
+          the visible label. */}
+      <span className="sr-only">{tokenLabel}</span>
+    </button>
+  );
+}
+
 export type StatusBarProps = {
   cwd: string;
   cwdMissing?: boolean;
+  sessionId: string;
   model: string;
   permission: PermissionMode;
   onChangeCwdToPath: (cwd: string) => void;
@@ -161,6 +286,7 @@ export type StatusBarProps = {
 export function StatusBar({
   cwd,
   cwdMissing,
+  sessionId,
   model,
   permission,
   onChangeCwdToPath,
@@ -171,6 +297,12 @@ export function StatusBar({
   const { t } = useTranslation();
   const models = useStore((s) => s.models);
   const modelsLoaded = useStore((s) => s.modelsLoaded);
+  const contextUsage = useStore((s) => s.contextUsageBySession[sessionId]);
+  const contextChipVisible = (() => {
+    if (!contextUsage || !contextUsage.contextWindow) return false;
+    const pct = (contextUsage.totalTokens / contextUsage.contextWindow) * 100;
+    return pct >= 50;
+  })();
 
   // Labels describe what claude.exe actually does per mode. The underlying
   // VALUES (default / acceptEdits / plan / bypassPermissions) are CLI argv
@@ -236,6 +368,9 @@ export function StatusBar({
       onSelect={onChangePermission}
     />
   ];
+  if (contextChipVisible) {
+    chips.push(<ContextPieChip key="context" sessionId={sessionId} />);
+  }
 
   return (
     <div data-type-scale-role="status-bar" className="h-6 px-4 pt-0.5 flex items-center gap-1 font-mono text-meta">

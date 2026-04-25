@@ -251,6 +251,15 @@ export function subscribeAgentEvents(): void {
           cache_creation_input_tokens?: number;
           cache_read_input_tokens?: number;
         };
+        // SDK surface name from claude-agent-sdk's `SDKResultSuccess`. We
+        // don't depend on the SDK at the renderer layer (raw stream-json
+        // is parsed by `electron/agent/stream-json-types.ts` and survives
+        // unknown fields via .passthrough()), so this is a structural cast
+        // rather than an import. Each entry's `contextWindow` is the
+        // model-aware token cap (e.g. 200_000 for sonnet/opus) — we use it
+        // to size the StatusBar context-pie chip without hardcoding a per-
+        // model map.
+        modelUsage?: Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; contextWindow?: number }>;
       };
       const usage = r.usage ?? {};
       store.addSessionStats(e.sessionId, {
@@ -261,6 +270,35 @@ export function subscribeAgentEvents(): void {
           (usage.cache_read_input_tokens ?? 0),
         outputTokens: usage.output_tokens ?? 0,
         costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0
+      });
+      // Snapshot LATEST-turn context-window usage for the StatusBar pie chip.
+      // Note: SessionStats sums every turn's usage (cumulative API spend),
+      // which can exceed contextWindow once cache_read accumulates over a
+      // long conversation. The pie chip needs the absolute current prompt
+      // size — that's exactly what `result.usage` reports for the just-
+      // finished turn, so we snapshot rather than accumulate.
+      const turnTotalTokens =
+        (usage.input_tokens ?? 0) +
+        (usage.cache_creation_input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0);
+      let contextWindow: number | null = null;
+      let modelId: string | null = null;
+      if (r.modelUsage && typeof r.modelUsage === 'object') {
+        // Pick whichever model entry actually carries a contextWindow. With
+        // a single primary model the map has one entry; sub-agents may add
+        // more, but the parent turn's window is what governs the chip.
+        for (const [m, mu] of Object.entries(r.modelUsage)) {
+          if (mu && typeof mu.contextWindow === 'number' && mu.contextWindow > 0) {
+            contextWindow = mu.contextWindow;
+            modelId = m;
+            break;
+          }
+        }
+      }
+      store.setSessionContextUsage(e.sessionId, {
+        totalTokens: turnTotalTokens,
+        contextWindow,
+        model: modelId
       });
       // PR-H: ccsm no longer persists message history. The CLI / Agent SDK
       // already writes every frame to ~/.claude/projects/<key>/<sid>.jsonl
