@@ -25,11 +25,27 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   const api = window.ccsm;
   if (!session || !api) return false;
 
+  // Pass `sessionId` so the SDK uses ccsm's id as the CLI session_id —
+  // keeps the on-disk JSONL filename identical to what ccsm shows. We omit
+  // it when `resumeSessionId` is set: the SDK rejects passing both at once
+  // (it would conflict with which conversation to load), and on resume the
+  // SDK allocates a new sid for the resumed branch which we'll capture
+  // server-side and surface back via a future hook.
+  //
+  // Legacy persisted sessions whose id starts with `s-` (pre-PR-D format)
+  // also skip the sessionId option: the SDK validates UUID shape and would
+  // reject the prefixed string. They keep the legacy behaviour of getting
+  // an SDK-allocated sid, matching their pre-upgrade state.
+  const isUuidShaped = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    sessionId,
+  );
   const res = await api.agentStart(sessionId, {
     cwd: session.cwd,
     model: session.model || undefined,
     permissionMode: store.permission,
     resumeSessionId: session.resumeSessionId,
+    sessionId:
+      session.resumeSessionId == null && isUuidShaped ? sessionId : undefined,
   });
 
   if (res.ok) {

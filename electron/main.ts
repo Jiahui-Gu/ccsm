@@ -731,6 +731,10 @@ app.whenReady().then(() => {
         model?: string;
         permissionMode?: PermissionMode;
         resumeSessionId?: string;
+        // Pre-allocated CLI session UUID. Forwarded to the SDK runner via
+        // StartOptions; the legacy hand-written runner ignores it. See
+        // `src/stores/store.ts` newSessionId() for the unification rationale.
+        sessionId?: string;
       }
     ) => {
       if (!fromMainFrame(e)) {
