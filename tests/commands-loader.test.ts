@@ -220,4 +220,94 @@ describe('loadCommands', () => {
     const cmds = loadCommands({ homeDir: tmpHome, cwd: 'relative/path' });
     expect(cmds.map((c) => c.name)).toEqual(['a']);
   });
+
+  // ─── agents loading (PR-E shipped this; PR-L adds the missing tests) ───
+  //
+  // The loader scans both ~/.claude/agents and <cwd>/.claude/agents and tags
+  // each entry with source: 'agent'. When the same name appears in both, the
+  // project-level definition shadows the user-level one (last write wins on
+  // the same priority bucket). These tests pin that behaviour so a future
+  // refactor can't silently drop one of the two scan sites.
+
+  it('loads user-level agents from ~/.claude/agents', () => {
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'foo.md'),
+      `---\ndescription: a foo agent\n---\nbody`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.map((c) => ({ name: c.name, source: c.source }))).toEqual([
+      { name: 'foo', source: 'agent' },
+    ]);
+    expect(cmds[0].description).toBe('a foo agent');
+  });
+
+  it('loads project-level agents from <cwd>/.claude/agents', () => {
+    write(
+      path.join(tmpCwd, '.claude', 'agents', 'bar.md'),
+      `---\ndescription: project bar\n---\nbody`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.map((c) => ({ name: c.name, source: c.source }))).toEqual([
+      { name: 'bar', source: 'agent' },
+    ]);
+    expect(cmds[0].description).toBe('project bar');
+  });
+
+  it('dedupes user vs project agents of the same name to a single entry', () => {
+    // Both ~/.claude/agents/qux.md and <cwd>/.claude/agents/qux.md exist.
+    // The conflict resolver collapses them to ONE entry — there must never
+    // be two `qux` rows in the picker.
+    //
+    // NOTE on shadow direction: the source comment at the top of
+    // commands-loader.ts claims "a project agent shadows a user agent of
+    // the same name", but the conflict resolver uses `entry.priority <
+    // existing.priority` (strict less-than), so on a priority TIE (both
+    // agents are bucket 4) the FIRST-pushed entry wins — and the loader
+    // pushes the user-level scan before the project-level scan. Net effect:
+    // the user-level agent currently wins on ties. This test pins the
+    // CURRENT behaviour so a refactor doesn't accidentally change it; if
+    // the comment-stated intent ("project wins") is the desired contract,
+    // that is a separate fix to the loader (PR-L is test-only).
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'qux.md'),
+      `---\ndescription: from-user\n---\n`
+    );
+    write(
+      path.join(tmpCwd, '.claude', 'agents', 'qux.md'),
+      `---\ndescription: from-project\n---\n`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const qux = cmds.filter((c) => c.name === 'qux');
+    expect(qux).toHaveLength(1);
+    expect(qux[0].source).toBe('agent');
+    expect(qux[0].description).toBe('from-user');
+  });
+
+  it('tolerates missing agents directories on both sides', () => {
+    // Neither ~/.claude/agents nor <cwd>/.claude/agents exists.
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'plain.md'),
+      `---\n---\n`
+    );
+    expect(() => loadCommands({ homeDir: tmpHome, cwd: tmpCwd })).not.toThrow();
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.find((c) => c.source === 'agent')).toBeUndefined();
+  });
+
+  it('skips agents with empty frontmatter by falling back to filename', () => {
+    // Empty frontmatter is fine — name falls back to the .md basename. The
+    // case we explicitly reject is an invalid basename like "a b.md".
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'empty.md'),
+      `---\n---\nno fields at all`
+    );
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'bad name.md'),
+      `---\n---\n`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const agents = cmds.filter((c) => c.source === 'agent');
+    expect(agents.map((c) => c.name)).toEqual(['empty']);
+    expect(agents[0].description).toBeUndefined();
+  });
 });
