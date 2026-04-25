@@ -104,6 +104,18 @@ const en = {
     longOutputCopied: 'Copied',
     codeBlockCopy: 'Copy code',
     codeBlockCopied: 'Copied',
+    userMsgCopy: 'Copy message',
+    userMsgCopied: 'Copied',
+    userMsgEdit: 'Edit and resend',
+    userMsgEditDraftStashed: 'Draft saved to history',
+    userMsgRetry: 'Retry',
+    userMsgRetryQueued: 'Queued',
+    // Renamed from "Rewind from here" — "rewind" collides with the upstream
+    // SDK control RPC `canRewind` (which actually reverts file edits). This
+    // action only truncates the in-memory transcript + drops resumeSessionId
+    // so the next send starts a fresh CLI session; it does NOT roll files
+    // back. Use "Truncate" to set the right expectation. See UserBlock.tsx.
+    userMsgRewind: 'Truncate from here',
     longOutputSave: 'Save as .log',
     longOutputSaved: 'Saved',
     longOutputSaveFailed: 'Save failed',
