@@ -146,6 +146,68 @@ export function isolatedUserData(prefix) {
   };
 }
 
+// Allocate an isolated `CLAUDE_CONFIG_DIR` for a probe that asserts on
+// permission-prompt behavior.
+//
+// Why this exists: the dev's real `~/.claude/settings.json` may contain
+// `Bash(*)`, `Write(*)`, etc. in `permissions.allow`. With those rules the
+// upstream CLI silently auto-allows the tool calls these probes use as
+// triggers, the renderer never receives a `can_use_tool`/`hook_callback`
+// request, no Allow button ever appears, and the probe's `waitFor(allowSel)`
+// times out — OR worse, the probe asserts the wrong thing and false-greens.
+// Probes that EXIST to verify "the permission prompt fires" must spawn the
+// CLI against a config dir whose allowlist is empty.
+//
+// Returned shape mirrors `isolatedUserData`. The settings.json seeded inside
+// is the minimum the CLI needs to boot with no allowlist. Pass the resulting
+// `dir` as `CCSM_CLAUDE_CONFIG_DIR` in the electron launch env — ccsm's
+// `resolveClaudeConfigDir` (electron/agent-sdk/sessions.ts) will pick it up
+// and the spawned CLI will see it as `CLAUDE_CONFIG_DIR`.
+//
+// CRITICAL: the user's real `~/.claude/.credentials.json` is NOT copied —
+// these probes rely on the user being logged in to talk to the model. We
+// symlink (or copy if symlinks aren't allowed) just `.credentials.json`
+// from the real config dir so login persists, while leaving every other
+// file (settings.json, projects/, agents/, etc.) absent.
+export function isolatedClaudeConfigDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix + '-cfg-'));
+  // Inherit only the `env` block from the user's real settings.json — that's
+  // where ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / model overrides live
+  // and the CLI needs them to actually talk to a backend. Drop `permissions`
+  // (and everything else) so no auto-allow rules carry over and every tool
+  // call must hit the permission-prompt path.
+  const sandboxSettings = { permissions: { allow: [], deny: [] } };
+  try {
+    const realSettings = path.join(os.homedir(), '.claude', 'settings.json');
+    if (fs.existsSync(realSettings)) {
+      const raw = JSON.parse(fs.readFileSync(realSettings, 'utf8'));
+      if (raw && typeof raw === 'object' && raw.env && typeof raw.env === 'object') {
+        sandboxSettings.env = raw.env;
+      }
+    }
+  } catch {}
+  fs.writeFileSync(
+    path.join(dir, 'settings.json'),
+    JSON.stringify(sandboxSettings, null, 2),
+    'utf8'
+  );
+  // Inherit credentials so the spawned CLI can authenticate.
+  const realCreds = path.join(os.homedir(), '.claude', '.credentials.json');
+  if (fs.existsSync(realCreds)) {
+    try {
+      fs.copyFileSync(realCreds, path.join(dir, '.credentials.json'));
+    } catch {}
+  }
+  return {
+    dir,
+    cleanup() {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {}
+    }
+  };
+}
+
 // Switch the renderer's theme deterministically and wait for the swap to
 // take visual effect.
 //

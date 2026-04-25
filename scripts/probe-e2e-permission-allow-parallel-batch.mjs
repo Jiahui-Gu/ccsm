@@ -29,6 +29,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { isolatedClaudeConfigDir } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -36,12 +37,18 @@ const TS = new Date().toISOString().replace(/[:.]/g, '-');
 const UDD = path.join(os.tmpdir(), `agentory-bugl-par-${TS}`);
 fs.mkdirSync(UDD, { recursive: true });
 
+// Sandbox CLAUDE_CONFIG_DIR so the dev's real `~/.claude/settings.json`
+// can't auto-allow Bash/Read calls before the prompts fire — see
+// probe-e2e-permission-allow-bash.mjs for rationale.
+const cfg = isolatedClaudeConfigDir('agentory-bugl-par');
+
 function log(m) {
   process.stderr.write(`[probe-bugl-parallel ${new Date().toISOString()}] ${m}\n`);
 }
 function fail(msg, app) {
   console.error(`[probe-bugl-parallel] FAIL: ${msg}`);
   if (app) app.close().catch(() => {});
+  cfg.cleanup();
   process.exit(1);
 }
 
@@ -50,7 +57,12 @@ log(`START UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
+  env: {
+    ...process.env,
+    NODE_ENV: 'production',
+    CCSM_PROD_BUNDLE: '1',
+    CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
+  },
 });
 
 try { // ccsm-probe-cleanup-wrap
@@ -379,5 +391,6 @@ console.log(
   `[probe-bugl-parallel] OK: parallel-bash-N4 + parallel-read-N5 both pass with strict equality (clicks === results).`,
 );
 await app.close();
+cfg.cleanup();
 process.exit(0);
 } finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

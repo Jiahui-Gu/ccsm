@@ -25,6 +25,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { isolatedClaudeConfigDir } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -33,6 +34,12 @@ const UDD = path.join(os.tmpdir(), `agentory-bugl-write-${TS}`);
 const PROJ = path.join(os.tmpdir(), `agentory-bugl-write-proj-${TS}`);
 fs.mkdirSync(UDD, { recursive: true });
 fs.mkdirSync(PROJ, { recursive: true });
+
+// Sandbox CLAUDE_CONFIG_DIR so the dev's real `~/.claude/settings.json`
+// (which may have `Write(*)` allowlisted) cannot auto-allow the Write call
+// before the permission prompt fires. See probe-e2e-permission-allow-bash.mjs
+// for the same rationale.
+const cfg = isolatedClaudeConfigDir('agentory-bugl-write');
 
 // Anchor the model on the Write tool explicitly. Earlier wording
 // ("Write a file called ...") let the model occasionally pick Edit /
@@ -49,6 +56,7 @@ function log(m) {
 function fail(msg, app) {
   console.error(`[probe-bugl-write] FAIL: ${msg}`);
   if (app) app.close().catch(() => {});
+  cfg.cleanup();
   process.exit(1);
 }
 
@@ -57,7 +65,12 @@ log(`START PROJ=${PROJ} UDD=${UDD}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${UDD}`],
   cwd: ROOT,
-  env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
+  env: {
+    ...process.env,
+    NODE_ENV: 'production',
+    CCSM_PROD_BUNDLE: '1',
+    CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
+  },
 });
 
 try { // ccsm-probe-cleanup-wrap
@@ -368,5 +381,6 @@ if (!domHit) log('WARN: DOM signal missed (non-fatal — fs+store assertion is a
 
 console.log('[probe-bugl-write] OK: file written, tool_result delivered, store updated');
 await app.close();
+cfg.cleanup();
 process.exit(0);
 } finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap
