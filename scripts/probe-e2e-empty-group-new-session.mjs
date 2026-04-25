@@ -30,7 +30,7 @@ function fail(msg) {
 const app = await electron.launch({
   args: ['.'],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development' }
+  env: { ...process.env, NODE_ENV: 'development', CCSM_PROD_BUNDLE: '1' }
 });
 
 try { // ccsm-probe-cleanup-wrap

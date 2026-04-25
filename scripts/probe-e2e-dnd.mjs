@@ -44,7 +44,14 @@ console.log(`[probe-e2e-dnd] userData = ${ud.dir}`);
 const app = await electron.launch({
   args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
+  // Opt out of CCSM_E2E_HIDDEN: dnd-kit's collision detection and
+  // hover-to-expand timer rely on Chromium-level pointer hit-testing
+  // and full-rate rAF. Even with show:true off-screen + backgroundThrottling
+  // off, the leftover DragOverlay element from one drag intermittently
+  // intercepts pointer events for the next drag in hidden mode. This probe
+  // therefore launches with a visible window (~2s pop). The other ~62
+  // probes stay hidden during run-all-e2e batches.
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1', CCSM_E2E_HIDDEN: '0' }
 });
 
 try { // ccsm-probe-cleanup-wrap

@@ -245,11 +245,39 @@ function installContextMenu(win: BrowserWindow) {
 }
 
 function createWindow() {
+  // E2E hidden mode: when CCSM_E2E_HIDDEN=1 the window is created
+  // at position (-32000, -32000) — far outside any monitor's visible
+  // area on every common multi-monitor layout. The window IS shown
+  // (show:true) so Chromium runs at full speed: rAF at 60Hz (no
+  // background throttling), full layout/paint, focus delivery, and
+  // CSS transitions all behave identically to a normal visible
+  // window. Probes that exercise hover / drag / autoFocus / drop
+  // animations all pass without per-probe opt-outs.
+  //
+  // Why not show:false: Chromium aggressively throttles offscreen
+  // renderers down to ~1Hz rAF even with paintWhenInitiallyHidden
+  // and webContents.setBackgroundThrottling(false). dnd-kit's
+  // 150ms dropAnimation never completes; the DragOverlay sticks
+  // in the DOM after pointerup; subsequent drags hit the orphaned
+  // overlay instead of their real target. Off-screen-positioned
+  // windows ARE Chromium-visible and therefore fully active.
+  //
+  // Devs running a single probe by hand without the env still get
+  // a normal centered visible window for debugging.
+  const hiddenForE2E = process.env.CCSM_E2E_HIDDEN === '1';
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    x: hiddenForE2E ? -32000 : undefined,
+    y: hiddenForE2E ? -32000 : undefined,
+    show: true,
+    // Hide from Windows taskbar / Alt-Tab when running e2e so the
+    // user can't see a "ccsm" entry while a probe batch is in
+    // flight. Doesn't affect Chromium's "is the window active"
+    // signal, so rAF / focus / animations stay un-throttled.
+    skipTaskbar: hiddenForE2E,
     // Solid app background — we deliver depth via layered surfaces in CSS,
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
@@ -268,6 +296,19 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // Hidden-mode animation correctness: Chromium throttles rAF
+      // for offscreen / hidden windows down to ~1Hz. dnd-kit's
+      // dropAnimation (150ms) and other CSS transitions then never
+      // complete, the DragOverlay element stays in the DOM after
+      // pointerup, and subsequent drags hit the leftover overlay
+      // instead of their real target. backgroundThrottling:false
+      // forces Chromium to run rAF at full speed even when the
+      // BrowserWindow is hidden.
+      backgroundThrottling: false,
+      // CCSM_E2E_HIDDEN=1 also strips the DevTools surface entirely so
+      // probes cannot accidentally pop a DevTools window (any explicit
+      // openDevTools() call below is a no-op once this is false).
+      devTools: !hiddenForE2E,
       // sandbox:true is the recommended Electron baseline (forces the
       // preload into a Chromium sandbox where Node built-ins are
       // unavailable), but our preload's `require('@sentry/electron/preload')`
@@ -313,11 +354,25 @@ function createWindow() {
   if (isDev) {
     const port = process.env.CCSM_DEV_PORT || '4100';
     win.loadURL(`http://localhost:${port}`);
-    win.webContents.openDevTools({ mode: 'detach' });
+    if (!hiddenForE2E) win.webContents.openDevTools({ mode: 'detach' });
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
+  // Hidden-mode focus priming: a window with show:false never receives
+  // OS focus, so document.hasFocus() in the renderer would stay false
+  // and autoFocus on freshly-mounted alertdialog buttons would no-op.
+  // Calling webContents.focus() sets Chromium-level focus on the
+  // renderer regardless of the OS surface state — the renderer then
+  // observes focused === true and autoFocus / focus-trap behaviors
+  // match a normal visible window. We also disable background
+  // throttling at the webContents level (belt-and-suspenders alongside
+  // webPreferences.backgroundThrottling:false above) so rAF runs at
+  // full speed and CSS transitions / dnd-kit drop animations complete.
+  if (hiddenForE2E) {
+    try { win.webContents.focus(); } catch { /* ignore */ }
+    try { win.webContents.setBackgroundThrottling(false); } catch { /* ignore */ }
+  }
   installContextMenu(win);
   sessions.bindSender(win.webContents);
 

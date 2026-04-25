@@ -92,7 +92,7 @@ try {
   const dialog = win.getByRole('dialog');
   await dialog.waitFor({ state: 'visible', timeout: 3000 });
 
-  const connectionTab = dialog.getByRole('button', { name: /^connection$/i });
+  const connectionTab = dialog.getByRole('tab', { name: /^connection$/i });
   await connectionTab.click();
   // The pane mounts and runs `loadConnection` / `loadModels` on mount.
   const pane = win.locator('[data-connection-pane]');
