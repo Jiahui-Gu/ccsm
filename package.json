@@ -113,11 +113,15 @@
     "copyright": "Copyright (c) 2026 Jiahui Gu",
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**"
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
     ],
+    "afterPack": "scripts/after-pack.cjs",
     "files": [
       "dist/**/*",
       "package.json",
+      "node_modules/@anthropic-ai/claude-agent-sdk/**",
+      "node_modules/@anthropic-ai/claude-agent-sdk-*/**",
       "!**/*.map",
       "!**/*.ts",
       "!**/__tests__/**",
@@ -139,8 +143,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
