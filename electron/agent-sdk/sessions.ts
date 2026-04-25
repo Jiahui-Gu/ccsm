@@ -23,8 +23,10 @@
  *     SDK control surface has no scoped cancel today (mirrors the rationale
  *     in sessions.ts cancelToolUse).
  *   - Explicit sessionId management (UUID v4 via SDK's `sessionId` option):
- *     deferred to a follow-up task. PR-A keeps the implicit cliSessionId
- *     captured from the first system frame, matching the legacy flow.
+ *     PR-D wires this up — the renderer pre-allocates a UUID at session
+ *     create time and passes it through StartOptions.sessionId so the SDK
+ *     uses it as the CLI's `session_id`. The captured cliSessionId from the
+ *     first system init frame is asserted to match (diagnostic on drift).
  *   - Bundled binary: PR-A still resolves the user's system claude binary
  *     via binary-resolver and passes it through `pathToClaudeCodeExecutable`.
  *     PR-B will swap in the SDK-bundled binary.
@@ -296,6 +298,32 @@ export class SdkSessionRunner {
     this.permissionMode = opts.permissionMode ?? 'default';
     this.abort = new AbortController();
 
+    // Pre-allocated CLI session UUID forwarded by the renderer (see
+    // `src/agent/startSession.ts`). Type-cast through unknown because
+    // `StartOptions` lives in `electron/agent/sessions.ts` (the legacy
+    // runner's contract) — extending that file is out of scope for PR-D
+    // (it's slated for deletion by PR-C). The field is optional and only
+    // honoured by the SDK runner; the legacy runner sees it as a stray
+    // property and ignores it. SDK rejects combining `sessionId` with
+    // `resume`, so we drop it when resuming.
+    const presetSessionId = (() => {
+      const raw = (opts as unknown as { sessionId?: unknown }).sessionId;
+      if (typeof raw !== 'string') return undefined;
+      if (opts.resumeSessionId) return undefined;
+      // Defence-in-depth UUID shape check. The SDK validates this too and
+      // throws on bad input; we'd rather emit a diagnostic than crash the
+      // session for a malformed renderer payload.
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) {
+        this.onDiagnostic({
+          level: 'warn',
+          code: 'preset_session_id_invalid',
+          message: `Ignoring non-UUID sessionId from renderer: ${raw}`,
+        });
+        return undefined;
+      }
+      return raw;
+    })();
+
     // Resolve the user's system claude binary up front (PR-A scope: PR-B
     // will swap in the SDK-bundled binary). Throws ClaudeNotFoundError
     // surfaced by manager.ts as `{ ok: false, errorCode: 'CLAUDE_NOT_FOUND' }`.
@@ -332,6 +360,7 @@ export class SdkSessionRunner {
         permissionMode: sdkPermissionMode,
         allowDangerouslySkipPermissions: sdkPermissionMode === 'bypassPermissions' ? true : undefined,
         resume: opts.resumeSessionId,
+        sessionId: presetSessionId,
         pathToClaudeCodeExecutable: binaryPath,
         canUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
         // Match the legacy spawner: we want partial-message streaming so
@@ -348,13 +377,25 @@ export class SdkSessionRunner {
       try {
         for await (const msg of query) {
           if (this.disposed) break;
-          // Capture cliSessionId from the first system init frame so a
-          // future #22 task that pins explicit session IDs has a known
-          // value to thread through.
+          // Capture cliSessionId from the first system init frame and
+          // diagnose when it differs from ccsm's runner id. With PR-D's
+          // pre-allocated sessionId option the two should always match
+          // for fresh spawns; a mismatch is informative — either the SDK
+          // ignored our sessionId, or this is a resume path where the
+          // SDK allocated a fresh sid for the resumed branch.
           const m = msg as SdkMessageLike;
           if (m.type === 'system' && m.subtype === 'init' && !this.cliSessionId) {
             const sid = (m as { session_id?: unknown }).session_id;
-            if (typeof sid === 'string') this.cliSessionId = sid;
+            if (typeof sid === 'string') {
+              this.cliSessionId = sid;
+              if (sid !== this.id) {
+                this.onDiagnostic({
+                  level: 'warn',
+                  code: 'session_id_mismatch',
+                  message: `SDK assigned session_id ${sid} but ccsm runner id is ${this.id}. JSONL transcript will not match in-app id.`,
+                });
+              }
+            }
           }
           const translated = translateSdkMessage(m);
           if (translated) this.onEvent(translated);

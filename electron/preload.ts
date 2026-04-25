@@ -17,6 +17,13 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
+  /**
+   * Pre-allocated session UUID forwarded as the SDK's `sessionId` option so
+   * the JSONL transcript filename matches ccsm's internal id. See
+   * `src/stores/store.ts` newSessionId() for the rationale and the
+   * "no migration for old users" decision.
+   */
+  sessionId?: string;
 };
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
