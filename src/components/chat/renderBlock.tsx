@@ -25,7 +25,7 @@ export function renderBlock(
 ) {
   switch (b.kind) {
     case 'user':
-      return <UserBlock text={b.text} images={b.images} />;
+      return <UserBlock id={b.id} text={b.text} images={b.images} sessionId={activeId} />;
     case 'assistant':
       return <AssistantBlock text={b.text} streaming={b.streaming} viaSkill={b.viaSkill} />;
     case 'tool':

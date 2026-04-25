@@ -148,6 +148,17 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     useShallow((s) => {
       const blocks = s.messagesBySession[sessionId] ?? [];
       const out: string[] = [];
+      // Stashed drafts come first — these are recent in-flight composer
+      // contents that the user-message hover menu's Edit action would
+      // otherwise have silently overwritten. Surfacing them ahead of the
+      // sent-prompt history matches "↑ recalls the most recent thing I
+      // was typing", which is what the user actually wants.
+      const stashed = s.stashedDrafts[sessionId];
+      if (stashed) {
+        for (const text of stashed) {
+          if (text && text.trim()) out.push(text);
+        }
+      }
       for (let i = blocks.length - 1; i >= 0; i--) {
         const b = blocks[i];
         if (b.kind !== 'user') continue;
@@ -164,7 +175,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // that diverges from the recalled prompt.
   const [recallIndex, setRecallIndex] = useState(0);
 
-  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount, lastTurnEnd } = useStore(
+  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount, lastTurnEnd, composerInjectNonce, composerInjectText } = useStore(
     useShallow((s) => ({
       session: s.sessions.find((x) => x.id === sessionId),
       started: !!s.startedSessions[sessionId],
@@ -191,6 +202,8 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       // task322: 'interrupted' iff the last turn for this session ended via
       // user-initiated stop. Drives the continue-hint affordance below.
       lastTurnEnd: s.lastTurnEnd[sessionId] ?? null,
+      composerInjectNonce: s.composerInjectNonce,
+      composerInjectText: s.composerInjectText,
     }))
   );
   // Action references are stable across renders in Zustand v5, so reading them
@@ -323,6 +336,34 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     }
     textareaRef.current?.focus();
   }, [focusInputNonce, hasPendingWaiting]);
+
+  // Composer-injection: the user-message hover menu's "Edit and resend" action
+  // bumps `composerInjectNonce` after writing the original message text into
+  // `composerInjectText`. Mirror the focus-nonce skip-first-observation pattern
+  // so hot-reload / mount doesn't clobber the persisted draft.
+  const injectNonceSeenRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (injectNonceSeenRef.current === null) {
+      injectNonceSeenRef.current = composerInjectNonce;
+      return;
+    }
+    if (injectNonceSeenRef.current === composerInjectNonce) return;
+    injectNonceSeenRef.current = composerInjectNonce;
+    setValue(composerInjectText);
+    setDraft(sessionId, composerInjectText);
+    // Cursor at end of text after React paints. queueMicrotask isn't on the
+    // shared lint env globals; Promise.resolve().then() is the portable form.
+    void Promise.resolve().then(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const end = composerInjectText.length;
+      try {
+        ta.setSelectionRange(end, end);
+      } catch {
+        /* setSelectionRange throws on some non-textarea inputs */
+      }
+    });
+  }, [composerInjectNonce, composerInjectText, sessionId]);
 
   function update(next: string) {
     setValue(next);

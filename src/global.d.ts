@@ -90,6 +90,19 @@ declare global {
         | { ok: true; frames: unknown[] }
         | { ok: false; error: string; detail?: string }
       >;
+      /**
+       * Truncation marker persistence — see preload.ts for full rationale.
+       * The user-message hover-menu's "Truncate from here" stores the chosen
+       * user-block id so a ccsm restart re-applies the truncation after
+       * re-hydrating from the CLI's JSONL.
+       */
+      truncationGet: (
+        sessionId: string
+      ) => Promise<{ blockId: string; truncatedAt: number } | null>;
+      truncationSet: (
+        sessionId: string,
+        marker: { blockId: string; truncatedAt: number } | null
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
       saveFile: (args: {
