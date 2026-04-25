@@ -102,6 +102,25 @@ describe('loadCommands', () => {
     expect(sources).toEqual({ usercmd: 'user', projcmd: 'project' });
   });
 
+  it('project commands shadow user commands of the same name', () => {
+    // Same bare name in ~/.claude/commands and <cwd>/.claude/commands.
+    // Per-project config overrides user-global config (matches upstream
+    // Claude CLI). The single surviving entry is the project one.
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'shared.md'),
+      `---\ndescription: from-user\n---\n`
+    );
+    write(
+      path.join(tmpCwd, '.claude', 'commands', 'shared.md'),
+      `---\ndescription: from-project\n---\n`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const shared = cmds.filter((c) => c.name === 'shared');
+    expect(shared).toHaveLength(1);
+    expect(shared[0].source).toBe('project');
+    expect(shared[0].description).toBe('from-project');
+  });
+
   it('namespaces plugin commands and resolves conflicts by priority', () => {
     // Same basename in user-level and plugin: user wins.
     write(
@@ -256,18 +275,9 @@ describe('loadCommands', () => {
   it('dedupes user vs project agents of the same name to a single entry', () => {
     // Both ~/.claude/agents/qux.md and <cwd>/.claude/agents/qux.md exist.
     // The conflict resolver collapses them to ONE entry — there must never
-    // be two `qux` rows in the picker.
-    //
-    // NOTE on shadow direction: the source comment at the top of
-    // commands-loader.ts claims "a project agent shadows a user agent of
-    // the same name", but the conflict resolver uses `entry.priority <
-    // existing.priority` (strict less-than), so on a priority TIE (both
-    // agents are bucket 4) the FIRST-pushed entry wins — and the loader
-    // pushes the user-level scan before the project-level scan. Net effect:
-    // the user-level agent currently wins on ties. This test pins the
-    // CURRENT behaviour so a refactor doesn't accidentally change it; if
-    // the comment-stated intent ("project wins") is the desired contract,
-    // that is a separate fix to the loader (PR-L is test-only).
+    // be two `qux` rows in the picker. The PROJECT-level agent wins,
+    // matching the upstream Claude CLI behavior where per-project config
+    // overrides user-global config.
     write(
       path.join(tmpHome, '.claude', 'agents', 'qux.md'),
       `---\ndescription: from-user\n---\n`
@@ -280,7 +290,7 @@ describe('loadCommands', () => {
     const qux = cmds.filter((c) => c.name === 'qux');
     expect(qux).toHaveLength(1);
     expect(qux[0].source).toBe('agent');
-    expect(qux[0].description).toBe('from-user');
+    expect(qux[0].description).toBe('from-project');
   });
 
   it('tolerates missing agents directories on both sides', () => {

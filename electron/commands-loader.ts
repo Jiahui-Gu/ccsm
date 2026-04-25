@@ -5,16 +5,19 @@
 // only DISCOVERS — execution is always pass-through to claude.exe (the
 // renderer types `/<name> <args>` and the CLI handles it).
 //
-// Scan order (lower index = higher priority for conflict resolution):
+// Conflict resolution order (lower priority number = wins):
+//   0. <cwd>/.claude/commands/*.md                      (source: 'project')
 //   1. ~/.claude/commands/*.md                          (source: 'user')
-//   2. <cwd>/.claude/commands/*.md                      (source: 'project')
-//   3. ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md
+//   2. ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md
 //      (source: 'plugin', name namespaced as `<plugin>:<basename>`)
-//   4. ~/.claude/skills/*.md                            (source: 'skill', tolerated if absent)
-//   5. ~/.claude/agents/*.md, <cwd>/.claude/agents/*.md (source: 'agent', tolerated if absent)
+//   3. ~/.claude/skills/*.md                            (source: 'skill', tolerated if absent)
+//   4. <cwd>/.claude/agents/*.md                        (source: 'agent', project-level, tolerated if absent)
+//   5. ~/.claude/agents/*.md                            (source: 'agent', user-level, tolerated if absent)
 //
-// Same name wins by priority; lower-priority duplicates are dropped with a
-// console.warn so the user can debug.
+// Project-level entries shadow user-level entries of the same name — this
+// matches the upstream Claude CLI's behavior where a per-project override
+// takes precedence over the user's global config. Lower-priority duplicates
+// are dropped with a console.warn so the user can debug.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -224,15 +227,15 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
   const claudeRoot = path.join(home, '.claude');
   const all: RawEntry[] = [];
 
-  // 1. user
+  // 1. user (priority 1 — shadowed by project)
   for (const file of listMdFiles(path.join(claudeRoot, 'commands'))) {
-    const e = readEntry(file, 'user', 0);
+    const e = readEntry(file, 'user', 1);
     if (e) all.push(e);
   }
-  // 2. project
+  // 2. project (priority 0 — wins over user, matching upstream CLI)
   if (cwd && path.isAbsolute(cwd)) {
     for (const file of listMdFiles(path.join(cwd, '.claude', 'commands'))) {
-      const e = readEntry(file, 'project', 1);
+      const e = readEntry(file, 'project', 0);
       if (e) all.push(e);
     }
   }
@@ -243,10 +246,10 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
     const e = readEntry(file, 'skill', 3);
     if (e) all.push(e);
   }
-  // 5. agents (user-level, then project-level — same priority bucket so a
-  //    project agent shadows a user agent of the same name).
+  // 5. agents — user (priority 5) then project (priority 4) so the project
+  //    agent shadows the user agent of the same name.
   for (const file of listMdFiles(path.join(claudeRoot, 'agents'))) {
-    const e = readEntry(file, 'agent', 4);
+    const e = readEntry(file, 'agent', 5);
     if (e) all.push(e);
   }
   if (cwd && path.isAbsolute(cwd)) {
