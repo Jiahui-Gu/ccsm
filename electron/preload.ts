@@ -260,6 +260,18 @@ const api = {
       ipcRenderer.invoke('commands:list', cwd),
   },
 
+  files: {
+    /**
+     * Workspace files relative to the session cwd, used by the InputBar's
+     * @file mention picker. Returns POSIX-style relative paths so the
+     * mention literal stays portable. Heavy directories (node_modules,
+     * .git, dist, build, .venv, target, etc.) and hidden entries are
+     * pruned in main. See main.ts for caps (5000 entries / depth 12).
+     */
+    list: (cwd: string | null | undefined): Promise<{ path: string; name: string }[]> =>
+      ipcRenderer.invoke('files:list', cwd),
+  },
+
   openExternal: (url: string): Promise<boolean> =>
     ipcRenderer.invoke('shell:openExternal', url),
 
