@@ -1,21 +1,26 @@
 // Regression probe for Worker D finding #1 (subprocess lifecycle):
-// deleting a session while its claude.exe child is live must kill the child.
+// deleting a session while its agent is live must tear down the runner.
 // Before the fix, `deleteSession()` in the store cleared renderer state but
 // never dispatched `agent:close`, so the spawned process kept running (and
 // burning tokens) as a zombie until the app quit.
+//
+// Liveness signal:
+//   The legacy probe polled the OS pid via `process.kill(pid, 0)`. After
+//   PR #271/#273 the agent runs through the SDK transport and the main
+//   process no longer holds a child pid (`getPid()` returns undefined by
+//   design). Instead we use `sessions.activeSessionCount()` exposed via the
+//   `globalThis.__ccsmDebug` backdoor in main.ts as the liveness signal:
+//   before delete the count must be > 0; after delete it must drop to 0.
 //
 // Strategy:
 //   - Launch Electron with an isolated userData dir + a real CLI present on
 //     the machine (resolved through CCSM_CLAUDE_BIN / PATH by main).
 //   - Seed a session and trigger agentStart through the live IPC bridge.
-//     claude.exe sits at the stdio prompt waiting for a `user` frame — it
-//     doesn't need a real prompt or network to exist as a process.
-//   - Snapshot the pid via the dev-only `globalThis.__ccsmDebug` backdoor
-//     installed in electron/main.ts (guarded by !app.isPackaged).
-//   - Call the store's deleteSession action and then poll
-//     `process.kill(pid, 0)` from the probe's node runtime — on Windows this
-//     uses OpenProcess under the hood, and throws ESRCH once the child is
-//     gone. If it still responds after 3 seconds we fail.
+//     The SDK runner sits at the stdio prompt waiting for a `user` frame —
+//     it doesn't need a real prompt or network to exist.
+//   - Assert `activeSessionCount() > 0` via the debug backdoor.
+//   - Call the store's deleteSession action and poll the backdoor until
+//     the count drops to 0 (or we time out).
 //
 // If claude.exe is not installed/resolvable in this environment we exit 0
 // with a SKIP banner — running this probe in CI without the binary should
@@ -39,18 +44,6 @@ function fail(msg, app) {
 function skip(msg) {
   console.log(`\n[probe-e2e-delete-session-kills-process] SKIP: ${msg}`);
   process.exit(0);
-}
-
-function isPidAlive(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    // Signal 0 is a liveness check on POSIX; on Windows Node maps it to
-    // OpenProcess + check status. Throws on dead / missing process.
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-delete-'));
@@ -126,64 +119,55 @@ try {
     st.setRunning(sid, true);
   }, sessionId);
 
-  // Grab the child pid via the main-process debug backdoor. Poll briefly
-  // because claude.exe's spawn-through-cmd-shim path on Windows has a tiny
-  // lag between agentStart resolving and the pid becoming readable.
-  let pid = null;
+  // Confirm the runner registered in the main-process map. agentStart only
+  // resolves ok:true after start() pushes the runner into the map, but a
+  // tiny micro-task tail can still leave the count at 0 for a tick.
+  let countBefore = 0;
   for (let i = 0; i < 30; i++) {
-    const pids = await app.evaluate(() => {
+    countBefore = await app.evaluate(() => {
       const dbg = globalThis.__ccsmDebug;
-      return dbg ? dbg.activeSessionPids() : null;
+      return dbg ? dbg.activeSessionCount() : -1;
     });
-    if (!pids) fail('globalThis.__ccsmDebug missing in main process', app);
-    const row = pids.find((r) => r.sessionId === sessionId);
-    if (row && typeof row.pid === 'number') {
-      pid = row.pid;
-      break;
-    }
+    if (countBefore === -1) fail('globalThis.__ccsmDebug missing in main process', app);
+    if (countBefore > 0) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!pid) fail('never observed a pid for the spawned session', app);
-  console.log(`[probe-e2e-delete-session-kills-process] live pid = ${pid}`);
-
-  if (!isPidAlive(pid)) {
-    fail(`reported pid ${pid} was already dead before delete — spawner smoke failed`, app);
+  if (countBefore <= 0) {
+    fail(`activeSessionCount=${countBefore} after agentStart; expected > 0`, app);
   }
+  console.log(
+    `[probe-e2e-delete-session-kills-process] activeSessionCount before delete = ${countBefore}`
+  );
 
   // Trigger the store's deleteSession — the path under test. This should
-  // dispatch window.ccsm.agentClose(sid) as a side effect.
+  // dispatch window.ccsm.agentClose(sid) as a side effect, which calls
+  // sessions.close(sid) in the manager and removes the runner from the map.
   await win.evaluate((sid) => {
     window.__ccsmStore.getState().deleteSession(sid);
   }, sessionId);
 
-  // Poll for the pid to go away. The spawner escalates SIGTERM → SIGKILL
-  // after killGracePeriodMs (default 5s), but a soft interrupt usually lands
-  // within a second.
-  const deadline = Date.now() + 8_000;
-  let dead = false;
+  // Poll for activeSessionCount to drop to 0. The IPC round-trip + SDK
+  // transport teardown usually lands within a few hundred ms; 5s is a
+  // generous ceiling.
+  const deadline = Date.now() + 5_000;
+  let countAfter = countBefore;
   while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) {
-      dead = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 150));
+    countAfter = await app.evaluate(() => {
+      const dbg = globalThis.__ccsmDebug;
+      return dbg ? dbg.activeSessionCount() : -1;
+    });
+    if (countAfter === 0) break;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  if (!dead) {
-    fail(`pid ${pid} still alive 8s after deleteSession — zombie regression`, app);
-  }
-
-  // Double-check the main-process map also forgot the runner.
-  const remaining = await app.evaluate(() => {
-    const dbg = globalThis.__ccsmDebug;
-    return dbg ? dbg.activeSessionCount() : -1;
-  });
-  if (remaining !== 0) {
-    fail(`activeSessionCount=${remaining} after deleteSession; expected 0`, app);
+  if (countAfter !== 0) {
+    fail(
+      `activeSessionCount=${countAfter} 5s after deleteSession; expected 0 — zombie regression`,
+      app
+    );
   }
 
   console.log('\n[probe-e2e-delete-session-kills-process] OK');
-  console.log(`  spawned claude pid=${pid} killed within 8s of deleteSession`);
-  console.log('  activeSessionCount went to 0');
+  console.log(`  activeSessionCount went ${countBefore} -> 0 within 5s of deleteSession`);
 
   await app.close();
 } catch (err) {
