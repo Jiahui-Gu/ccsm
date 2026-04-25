@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from './probe-utils.mjs';
+import { appWindow, isolatedClaudeConfigDir } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -45,11 +45,25 @@ const GROUP_ID = 'g-default';
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-perm-default-'));
 console.log(`[${NAME}] userData = ${userDataDir}`);
 
+// Sandbox CLAUDE_CONFIG_DIR. THIS PROBE IS THE WHOLE POINT of the sandbox
+// fix: it asserts "permission prompt UI appears for `echo MARKER`". If the
+// dev's real `~/.claude/settings.json` has `Bash(*)` or even `Bash(echo:*)`
+// allowlisted, the upstream CLI auto-allows the call, no `can_use_tool` /
+// hook_callback fires, no prompt UI renders, and this probe times out OR
+// false-greens on a stale assertion. Empty-allowlist config dir restores
+// the prompt path.
+const cfg = isolatedClaudeConfigDir(`${NAME}`);
+console.log(`[${NAME}] sandboxed CLAUDE_CONFIG_DIR = ${cfg.dir}`);
+
 const commonArgs = ['.', `--user-data-dir=${userDataDir}`];
 // Strip CLAUDECODE so the spawned claude.exe doesn't refuse-to-launch with
 // "cannot run inside another Claude Code session". Probes that drive a real
 // CLI must do this — the dogfood guide called it out repeatedly.
-const env = { ...process.env, CCSM_PROD_BUNDLE: '1' };
+const env = {
+  ...process.env,
+  CCSM_PROD_BUNDLE: '1',
+  CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
+};
 delete env.CLAUDECODE;
 delete env.CLAUDE_CODE_ENTRYPOINT;
 
@@ -58,6 +72,7 @@ function fail(msg, extra) {
   console.error(`\n[${NAME}] FAIL: ${msg}`);
   if (extra) console.error(extra);
   if (appRef) appRef.close().catch(() => {});
+  cfg.cleanup();
   process.exit(1);
 }
 
@@ -239,4 +254,5 @@ console.log(`\n[${NAME}] OK`);
 console.log(`  - permission prompt rendered, allow clicked, marker "${MARKER}" appeared in chat`);
 
 await app2.close();
+cfg.cleanup();
 } finally { try { await appRef?.close(); } catch {} } // ccsm-probe-cleanup-wrap
