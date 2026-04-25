@@ -515,9 +515,17 @@ export class SdkSessionRunner {
     });
 
     if (decision.allow) {
+      // The claude binary's Zod schema requires `updatedInput` to ALWAYS
+      // be present on an `allow` response — even though the SDK's TypeScript
+      // type marks it optional. Reproduced via probe-e2e-permission-allow-*
+      // (Bug #169): `updatedInput: undefined` triggers
+      // `invalid_union / expected: "record", received: undefined`. When the
+      // user didn't supply a partial-accept payload, echo the original
+      // `input` back unchanged — this matches the on-the-wire shape the CLI
+      // expects and is semantically a no-op (allow with no replacement).
       return {
         behavior: 'allow',
-        updatedInput: decision.updatedInput as Record<string, unknown> | undefined,
+        updatedInput: (decision.updatedInput as Record<string, unknown> | undefined) ?? input,
       };
     }
     return {
