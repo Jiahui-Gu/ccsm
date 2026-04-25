@@ -387,6 +387,15 @@ const zh: EnCatalog = {
     groupSkill: 'Skills',
     groupAgent: 'Agents'
   },
+  mentions: {
+    pickerTitle: '文件引用',
+    empty: '当前工作区暂无文件',
+    noMatch: '没有匹配 “{{query}}” 的文件',
+    navigate: '上下移动',
+    select: '选择',
+    close: '关闭',
+    activeAnnouncement: '第 {{index}} / {{total}} 项：{{name}}'
+  },
   notifications: {
     sessionWaitingTitle: '会话等待中',
     sessionWaitingBody: '{{name}} 需要你的输入',

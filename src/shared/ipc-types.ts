@@ -41,3 +41,13 @@ export interface LoadedCommand {
   source: CommandSource;
   pluginId?: string;
 }
+
+// Workspace file entry surfaced by the @mention picker. `path` is the
+// POSIX-style path relative to the session cwd (forward slashes even on
+// Windows so the mention text the model sees stays portable). `name` is
+// the basename, pre-extracted so the picker can weight name matches
+// without re-splitting on every keystroke.
+export interface WorkspaceFile {
+  path: string;
+  name: string;
+}
