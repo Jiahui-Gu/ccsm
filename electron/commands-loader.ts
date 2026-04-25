@@ -10,7 +10,8 @@
 //   2. <cwd>/.claude/commands/*.md                      (source: 'project')
 //   3. ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md
 //      (source: 'plugin', name namespaced as `<plugin>:<basename>`)
-//   4. ~/.claude/skills/*.md                            (source: 'user', tolerated if absent)
+//   4. ~/.claude/skills/*.md                            (source: 'skill', tolerated if absent)
+//   5. ~/.claude/agents/*.md, <cwd>/.claude/agents/*.md (source: 'agent', tolerated if absent)
 //
 // Same name wins by priority; lower-priority duplicates are dropped with a
 // console.warn so the user can debug.
@@ -19,7 +20,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-export type CommandSource = 'user' | 'project' | 'plugin';
+// Six logical sources surfaced by the slash-command palette. `skill` and
+// `agent` were previously folded into `user`; splitting them lets the picker
+// show a six-section UI matching the official VS Code extension's grouping.
+export type CommandSource = 'user' | 'project' | 'plugin' | 'skill' | 'agent';
 
 export type LoadedCommand = {
   name: string;
@@ -234,10 +238,22 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
   }
   // 3. plugins
   all.push(...collectPluginEntries(path.join(claudeRoot, 'plugins'), 2));
-  // 4. skills (treated as user-level commands when present)
+  // 4. skills (own bucket so the picker can render a "Skills" section)
   for (const file of listMdFiles(path.join(claudeRoot, 'skills'))) {
-    const e = readEntry(file, 'user', 0);
+    const e = readEntry(file, 'skill', 3);
     if (e) all.push(e);
+  }
+  // 5. agents (user-level, then project-level — same priority bucket so a
+  //    project agent shadows a user agent of the same name).
+  for (const file of listMdFiles(path.join(claudeRoot, 'agents'))) {
+    const e = readEntry(file, 'agent', 4);
+    if (e) all.push(e);
+  }
+  if (cwd && path.isAbsolute(cwd)) {
+    for (const file of listMdFiles(path.join(cwd, '.claude', 'agents'))) {
+      const e = readEntry(file, 'agent', 4);
+      if (e) all.push(e);
+    }
   }
 
   // Conflict resolution: keep the lowest-priority entry per name, drop the
@@ -261,11 +277,13 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
     }
   }
 
-  // Stable order: user → project → plugin, then alphabetical.
+  // Stable order: user → project → plugin → skill → agent, then alphabetical.
   const sourceOrder: Record<CommandSource, number> = {
     user: 0,
     project: 1,
     plugin: 2,
+    skill: 3,
+    agent: 4,
   };
   return Array.from(byName.values())
     .sort((a, b) => {
