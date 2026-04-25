@@ -194,7 +194,13 @@ const PASSTHROUGH_TOOLS: ReadonlySet<string> = new Set([
 let sdkModulePromise: Promise<typeof import('@anthropic-ai/claude-agent-sdk')> | null = null;
 function loadSdk(): Promise<typeof import('@anthropic-ai/claude-agent-sdk')> {
   if (!sdkModulePromise) {
-    sdkModulePromise = import('@anthropic-ai/claude-agent-sdk');
+    // Use Function-eval so TS's CommonJS down-level doesn't rewrite this
+    // dynamic `import()` into `require()` — the SDK ships ESM-only and
+    // Electron 33 (Node 20) lacks require(esm) support, so the require()
+    // form throws ERR_REQUIRE_ESM at runtime. Same pattern as electron/notify.ts.
+    sdkModulePromise = (
+      Function('m', 'return import(m)') as (m: string) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>
+    )('@anthropic-ai/claude-agent-sdk');
   }
   return sdkModulePromise;
 }
