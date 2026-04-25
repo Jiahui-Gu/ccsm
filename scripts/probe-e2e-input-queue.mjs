@@ -62,7 +62,7 @@ const textarea = win.locator('textarea');
 await textarea.waitFor({ state: 'visible', timeout: 5000 }).catch(() => fail('textarea did not appear'));
 
 // Pick a cwd so agent:start has a valid working dir.
-const cwdChip = win.locator('[title="~"]').first();
+const cwdChip = win.locator('[data-cwd-chip]').first();
 await cwdChip.waitFor({ state: 'visible', timeout: 5000 }).catch(() => fail('cwd chip not found'));
 await cwdChip.click();
 const browseItem = win.getByText('Browse folder…').first();
