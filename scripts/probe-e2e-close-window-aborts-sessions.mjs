@@ -1,20 +1,29 @@
 // Regression probe for Worker D finding #3 (subprocess lifecycle):
 // closing the app window (the real-quit path, not minimize-to-tray) must
-// tear down every live claude.exe child before the Electron process exits.
+// tear down every live agent session before the Electron process exits.
 // Before the fix, `app.before-quit` only flipped `isQuitting=true`; cleanup
 // happened inside `window-all-closed`, which could miss the tray→Quit path
 // (windows hidden, not closed). The fix pulls `sessions.closeAll()` forward
 // into `before-quit` as a belt-and-suspenders guarantee.
 //
+// Liveness signal:
+//   The legacy probe polled the OS pid via `process.kill(pid, 0)`. After
+//   PR #271/#273 the agent runs through the SDK transport and the main
+//   process no longer holds a child pid (`getPid()` returns undefined by
+//   design). Instead we use `sessions.activeSessionCount()` exposed via the
+//   `globalThis.__ccsmDebug` backdoor in main.ts as the liveness signal:
+//   before triggering shutdown the count must be > 0; after the
+//   `before-quit` handler runs it must be 0.
+//
 // Strategy:
 //   - Launch Electron with an isolated userData dir.
-//   - Spawn a real claude.exe via agentStart; capture pid through the
-//     `globalThis.__ccsmDebug` backdoor.
-//   - Set `isQuitting=true` equivalent by calling `app.quit()` on the main
-//     process — this bypasses the minimize-to-tray window.close hook and
-//     drives the real shutdown path.
-//   - After `app.close()` resolves, the probe's own node runtime polls
-//     `process.kill(pid, 0)` until the child is gone or we time out.
+//   - Spawn a real agent session via agentStart; assert active count > 0
+//     through the debug backdoor.
+//   - Drive the real-quit cleanup path by emitting `before-quit` on the
+//     main-process app object (the same hook that fires on tray→Quit /
+//     Cmd-Q). We don't call `app.quit()` because that would tear down the
+//     Electron process and leave the probe with no surface to assert on.
+//   - Poll `activeSessionCount()` until it goes to 0 or we time out.
 //
 // Falls back to SKIP if claude isn't resolvable on this host (same policy as
 // the companion delete-session probe).
@@ -37,16 +46,6 @@ function fail(msg, app) {
 function skip(msg) {
   console.log(`\n[probe-e2e-close-window-aborts-sessions] SKIP: ${msg}`);
   process.exit(0);
-}
-
-function isPidAlive(pid) {
-  if (!pid || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-probe-close-'));
@@ -108,63 +107,62 @@ try {
     fail(`agentStart failed: ${JSON.stringify(startRes)}`, app);
   }
 
-  // Wait for a real pid to appear in the main-process map.
-  let pid = null;
+  // Confirm the runner registered in the main-process map. agentStart only
+  // resolves ok:true after start() pushes the runner into `sessions.runners`,
+  // but a tiny micro-task tail can still leave the count at 0 for a tick.
+  let countBefore = 0;
   for (let i = 0; i < 30; i++) {
-    const pids = await app.evaluate(() => {
+    countBefore = await app.evaluate(() => {
       const dbg = globalThis.__ccsmDebug;
-      return dbg ? dbg.activeSessionPids() : null;
+      return dbg ? dbg.activeSessionCount() : -1;
     });
-    if (!pids) fail('globalThis.__ccsmDebug missing in main process', app);
-    const row = pids.find((r) => r.sessionId === sessionId);
-    if (row && typeof row.pid === 'number') {
-      pid = row.pid;
-      break;
-    }
+    if (countBefore === -1) fail('globalThis.__ccsmDebug missing in main process', app);
+    if (countBefore > 0) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (!pid) fail('never observed a pid for the spawned session', app);
-  console.log(`[probe-e2e-close-window-aborts-sessions] live pid = ${pid}`);
-  if (!isPidAlive(pid)) {
-    fail(`reported pid ${pid} was already dead before quit — spawner smoke failed`, app);
+  if (countBefore <= 0) {
+    fail(`activeSessionCount=${countBefore} after agentStart; expected > 0`, app);
   }
+  console.log(
+    `[probe-e2e-close-window-aborts-sessions] activeSessionCount before quit = ${countBefore}`
+  );
 
-  // Drive the real-quit path. app.quit() emits `before-quit` → our hook
-  // fires `sessions.closeAll()`, then window-all-closed + closeDb + actual
-  // process exit. This mirrors the tray menu's Quit item, not a plain
-  // window close (which minimize-to-tray would intercept).
+  // Drive the real-quit cleanup path. Emitting `before-quit` synchronously
+  // runs the same handler the tray menu's Quit item triggers:
+  //   isQuitting = true; sessions.closeAll();
+  // We deliberately do NOT call app.quit() here — that would tear down the
+  // Electron process and leave us with no surface to verify against. The
+  // cleanup itself is what we're testing; the actual exit is exercised by
+  // every other e2e probe that calls `app.close()`.
   await app.evaluate(({ app: a }) => {
-    a.quit();
+    a.emit('before-quit', { preventDefault() {}, defaultPrevented: false });
   });
 
-  // Let playwright's wrapper observe the electron process exit.
-  await app.close().catch(() => {});
-
-  // Poll from the probe's own runtime — claude.exe is a grandchild of this
-  // process, so it outlives app.close() only if the parent leaked it. Give
-  // the kernel up to 8s to reap on Windows (WMI reaping can be slow).
-  const deadline = Date.now() + 8_000;
-  let dead = false;
+  // Poll for activeSessionCount to drop to 0. closeAll() is synchronous in
+  // the manager (it calls runner.close() and clears the map), so this
+  // usually lands on the first read; allow up to 5s for the SDK transport's
+  // own teardown to settle the runner-side abort.
+  const deadline = Date.now() + 5_000;
+  let countAfter = countBefore;
   while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) {
-      dead = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 200));
+    countAfter = await app.evaluate(() => {
+      const dbg = globalThis.__ccsmDebug;
+      return dbg ? dbg.activeSessionCount() : -1;
+    });
+    if (countAfter === 0) break;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  if (!dead) {
-    // Best-effort cleanup before failing so we don't leave a token-burning
-    // zombie behind after a regression.
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      /* ignore */
-    }
-    fail(`pid ${pid} still alive 8s after app.quit() — orphan claude.exe regression`);
+  if (countAfter !== 0) {
+    fail(
+      `activeSessionCount=${countAfter} 5s after before-quit; expected 0 — closeAll regression`,
+      app
+    );
   }
 
   console.log('\n[probe-e2e-close-window-aborts-sessions] OK');
-  console.log(`  spawned claude pid=${pid} died within 8s of app.quit()`);
+  console.log(`  activeSessionCount went ${countBefore} -> 0 within 5s of before-quit`);
+
+  await app.close();
 } catch (err) {
   console.error('[probe-e2e-close-window-aborts-sessions] threw:', err);
   await app.close().catch(() => {});
