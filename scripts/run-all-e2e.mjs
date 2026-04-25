@@ -9,10 +9,6 @@
 // - Prints a final table; exit code = max child exit code (0 if all green).
 // - Skip list via `E2E_SKIP=name1,name2` (matches the suffix after
 //   `probe-e2e-` and before `.mjs`, e.g. `E2E_SKIP=streaming,tray`).
-// - Probes whose suffix is listed in `MERGED_INTO_HARNESS` are skipped here
-//   because their cases now live inside a `harness-*.mjs`. Keep the source
-//   files around as breadcrumbs (top of file says where they moved); delete
-//   them in a follow-up once the harness has stabilised.
 //
 // Run: `node scripts/run-all-e2e.mjs`
 
@@ -27,34 +23,6 @@ const PROBE_TIMEOUT_MS = 30_000;
 const HARNESS_TIMEOUT_MS = 5 * 60_000;
 const PROBE_PREFIX = 'probe-e2e-';
 const HARNESS_PREFIX = 'harness-';
-
-// Cases now living inside a themed harness — their per-file probe is a
-// breadcrumb only. Keep this list in sync with the harness `cases:` arrays.
-const MERGED_INTO_HARNESS = new Set([
-  // harness-agent.mjs (Phase-2 pilot)
-  'streaming',
-  'streaming-journey-caret-lifecycle',
-  'inputbar-visible',
-  'chat-copy',
-  'input-placeholder',
-  // harness-perm.mjs (Phase-3)
-  'permission-prompt',
-  'permission-mode-strict',
-  'permission-focus-not-stolen',
-  'permission-shortcut-scope',
-  'permission-nested-input',
-  'permission-truncate-width',
-  'permission-sequential-focus',
-  // harness-ui.mjs (Phase-3)
-  'sidebar-align',
-  'no-sessions-landing',
-  'a11y-focus-restore'
-  // NOTE: 'empty-state-minimal' is only PARTIALLY absorbed into harness-ui.mjs.
-  // The hero/no-starter-cards/no-"Working in" assertions are in the harness,
-  // but the cold-launch startup-pipeline assertions need a fresh process — kept
-  // as a per-file probe so that regression is still covered. Do NOT add it
-  // here.
-]);
 
 const skipRaw = (process.env.E2E_SKIP || '').trim();
 const skipSet = new Set(
@@ -89,9 +57,6 @@ console.log(`[run-all-e2e] discovered ${harnessFiles.length} harness(es) + ${pro
 if (skipSet.size > 0) {
   console.log(`[run-all-e2e] skipping (E2E_SKIP): ${[...skipSet].join(', ')}`);
 }
-if (MERGED_INTO_HARNESS.size > 0) {
-  console.log(`[run-all-e2e] skipping (merged into harness): ${[...MERGED_INTO_HARNESS].join(', ')}`);
-}
 
 /** @type {Array<{name: string, status: 'passed'|'failed'|'skipped'|'timeout', code: number, ms: number, stderrTail: string}>} */
 const results = [];
@@ -99,8 +64,7 @@ const results = [];
 for (const file of allFiles) {
   const name = probeName(file);
   const isHarness = file.startsWith(HARNESS_PREFIX);
-  const probeSuffix = isHarness ? null : file.slice(PROBE_PREFIX.length, -'.mjs'.length);
-  if (skipSet.has(name) || (probeSuffix && MERGED_INTO_HARNESS.has(probeSuffix))) {
+  if (skipSet.has(name)) {
     results.push({ name, status: 'skipped', code: 0, ms: 0, stderrTail: '' });
     console.log(`\n[run-all-e2e] SKIP  ${name}`);
     continue;
