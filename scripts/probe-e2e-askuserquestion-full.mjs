@@ -1,16 +1,20 @@
-// E2E: AskUserQuestion full interaction surface (7 user journeys).
+// E2E: AskUserQuestion full interaction surface (6 user journeys).
 //
 // Strategy: bypass real claude.exe by directly seeding `kind: 'question'`
 // blocks into the renderer's zustand store via `appendBlocks`. This isolates
 // the rendering / interaction contract from agent-spawn flakiness and lets
-// us assert the journeys deterministically. We ALSO stub `window.ccsm`
-// IPC functions (`agentSend`, `agentResolvePermission`, `saveMessages`,
-// `loadMessages`) so we can capture what the QuestionBlock would have sent
-// and so seeded data round-trips through restart.
+// us assert the journeys deterministically. We ALSO stub the main-side
+// IPC handlers (`agent:send`, `agent:sendContent`, `agent:resolvePermission`)
+// so we can capture what the QuestionBlock would have sent.
 //
-// Each journey is implemented as a small async function. They share a single
-// Electron launch where possible to keep total runtime under the 30s probe
-// budget; J7 needs its own launch pair because it tests app restart.
+// All 6 journeys share a single Electron launch.
+//
+// History note: a 7th journey covered "persisted question block re-renders
+// and stays interactive after app restart". PR-H removed the SQLite
+// `messages` table — `kind:'question'` is a runtime-only block type, never
+// emitted by `framesToBlocks` from the CLI's JSONL transcript, so question
+// state cannot survive an app restart by design now. The journey was
+// deleted with PR-H's stale-probe sweep rather than rewritten.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -710,181 +714,6 @@ async function journey6_twoSessions_answerRouting(win) {
   record('J6', true, 'answers routed to correct sessions; no question leakage on switch');
 }
 
-// ── J7 (separate launch pair) ────────────────────────────────────────────
-async function journey7_restartInteractive() {
-  const ud = isolatedUserData('agentory-probe-aq-restart');
-  const args = ['.', `--user-data-dir=${ud.dir}`];
-  const env = { ...process.env, CCSM_PROD_BUNDLE: '1' };
-
-  const SESSION_ID = 's-aq-restart';
-  const QUESTION_BLOCK_ID = 'q-restart';
-
-  // Launch #1: seed a session + persisted question block + activeId.
-  {
-    const app = await electron.launch({ args, cwd: root, env });
-    const win = await appWindow(app);
-    await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
-
-    const seeded = await win.evaluate(
-      async ({ sid, qid }) => {
-        const api = window.ccsm;
-        if (!api) return { ok: false, err: 'no ccsm' };
-        const state = {
-          version: 1,
-          sessions: [
-            {
-              id: sid,
-              name: 'Restart probe',
-              state: 'idle',
-              cwd: '~',
-              model: 'claude-opus-4',
-              groupId: 'g-default',
-              agentType: 'claude-code',
-            },
-          ],
-          groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-          activeId: sid,
-          model: 'claude-opus-4',
-          permission: 'default',
-          sidebarCollapsed: false,
-          theme: 'system',
-          fontSize: 'md',
-          recentProjects: [],
-          tutorialSeen: true,
-        };
-        await api.saveState('main', JSON.stringify(state));
-        const block = {
-          kind: 'question',
-          id: qid,
-          questions: [
-            { question: 'After restart still alive?', options: [{ label: 'Alive' }, { label: 'Frozen' }] },
-          ],
-        };
-        await api.saveMessages(sid, [block]);
-        const back = await api.loadMessages(sid);
-        return { ok: true, backLen: back.length, backKind: back[0]?.kind };
-      },
-      { sid: SESSION_ID, qid: QUESTION_BLOCK_ID }
-    );
-    if (!seeded.ok) {
-      await app.close();
-      record('J7', false, `seed failed: ${seeded.err}`);
-      ud.cleanup();
-      return;
-    }
-    if (seeded.backLen !== 1 || seeded.backKind !== 'question') {
-      await app.close();
-      record('J7', false, `db roundtrip wrong: len=${seeded.backLen} kind=${seeded.backKind}`);
-      ud.cleanup();
-      return;
-    }
-    await app.close();
-  }
-
-  // Launch #2: assert the question block re-renders AND is still interactive.
-  {
-    const app = await electron.launch({ args, cwd: root, env });
-    currentApp = app;
-    const win = await appWindow(app);
-    const errors = [];
-    win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
-    win.on('console', (m) => {
-      if (m.type() === 'error') errors.push(`[console.error] ${m.text()}`);
-    });
-    await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.ccsm && !!window.__ccsmStore, null, { timeout: 20_000 });
-    await win.waitForTimeout(1000);
-    // Suppress the CLI-missing first-run dialog so it doesn't trap focus.
-    await win.evaluate(() => {
-      window.__ccsmStore.setState({
-      });
-    });
-    await win.waitForTimeout(150);
-
-    // Hydrate has already run + loaded messages for activeId. Wait briefly
-    // for the question block to mount.
-    let rendered = false;
-    for (let i = 0; i < 30; i++) {
-      const present = await win.evaluate(() => !!document.querySelector('[data-question-option]'));
-      if (present) {
-        rendered = true;
-        break;
-      }
-      await win.waitForTimeout(200);
-    }
-    if (!rendered) {
-      const dump = await win.evaluate(() => {
-        const main = document.querySelector('main');
-        return main ? main.innerText.slice(0, 1500) : '<no main>';
-      });
-      console.error('--- main after restart ---\n' + dump);
-      console.error('--- errors ---\n' + errors.slice(-10).join('\n'));
-      await app.close();
-      record('J7', false, 'question block did not re-render after restart');
-      ud.cleanup();
-      return;
-    }
-
-    // Stub agentSend so we can detect interactive submission without a real agent.
-    await installAgentSendCapture(win);
-
-    // Try to interact: focus an option, press Enter (single-select default-picked).
-    const opt = win.locator('[data-question-option]').first();
-    await opt.focus();
-    await win.waitForTimeout(80);
-
-    const submitBtn = questionSubmitButton(win);
-    const submitDisabled = await submitBtn.isDisabled().catch(() => true);
-    if (submitDisabled) {
-      // If implementation chose to render restored questions as read-only
-      // history, this is the discrepancy we must report — not a probe bug.
-      const meta = await win.evaluate(() => {
-        const opt = document.querySelector('[data-question-option]');
-        return opt
-          ? {
-              tag: opt.tagName,
-              disabled: opt.hasAttribute('disabled'),
-              dataDisabled: opt.getAttribute('data-disabled'),
-              dataState: opt.getAttribute('data-state'),
-            }
-          : null;
-      });
-      await app.close();
-      record(
-        'J7',
-        false,
-        `EXPECTED interactive after restart, but Submit is disabled. Implementation appears to render restored question as read-only / pre-submitted. opt meta=${JSON.stringify(meta)}`
-      );
-      ud.cleanup();
-      return;
-    }
-
-    await submitBtn.click();
-    await win.waitForTimeout(400);
-    const sent = await getCapturedSends();
-    if (sent.length !== 1) {
-      await app.close();
-      record('J7', false, `expected 1 send after restart-Submit, got ${sent.length}`);
-      ud.cleanup();
-      return;
-    }
-    if (sent[0].sessionId !== SESSION_ID || !/Alive/.test(sent[0].text)) {
-      await app.close();
-      record(
-        'J7',
-        false,
-        `restart-submit routed wrong: ${JSON.stringify(sent[0])} (expected sessionId=${SESSION_ID} containing Alive)`
-      );
-      ud.cleanup();
-      return;
-    }
-    await app.close();
-    record('J7', true, 'persisted question block re-rendered and remained interactive across restart');
-    ud.cleanup();
-  }
-}
-
 // ── runner ────────────────────────────────────────────────────────────────
 const { app, win, ud } = await newWin();
 async function safeRun(name, fn) {
@@ -915,11 +744,6 @@ try {
   ud.cleanup();
 }
 
-try {
-  await journey7_restartInteractive();
-} catch (e) {
-  record('J7', false, `unhandled exception: ${e.message?.slice(0, 200)}`);
-}
 
 console.log('\n=== AskUserQuestion journey summary ===');
 if (failures.length === 0) {
