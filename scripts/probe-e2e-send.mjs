@@ -90,7 +90,10 @@ await win.waitForTimeout(400);
 // at least one *new* assistant block are visible. We keep a running count of
 // assistant blocks so subsequent phases don't false-positive on phase 1's
 // reply still being on screen.
-const assistantSelector = 'div.flex.gap-3.text-base';
+// Use the stable `data-type-scale-role` data-attr exposed by AssistantBlock.tsx.
+// Class-based selectors (e.g. `div.flex.gap-3.text-base`) break on every
+// type-token / Tailwind refactor — the data-attr is the contract.
+const assistantSelector = '[data-type-scale-role="assistant-body"]';
 async function countAssistantBlocks() {
   return await win.evaluate((sel) => {
     return document.querySelectorAll(sel).length;

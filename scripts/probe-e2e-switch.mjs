@@ -77,7 +77,9 @@ async function sendPrompt(text) {
   await textarea.fill(text);
   await win.keyboard.press('Enter');
   // Wait for SOME assistant block to render visible body text.
-  const assistant = win.locator('div.flex.gap-3.text-base').filter({
+  // Use the stable `data-type-scale-role` data-attr (assistant-body) — class-
+  // based selectors break on every Tailwind/type-token refactor.
+  const assistant = win.locator('[data-type-scale-role="assistant-body"]').filter({
     has: win.locator('span:has-text("●")')
   });
   await assistant.first().waitFor({ state: 'visible', timeout: 30_000 });
@@ -126,6 +128,11 @@ if (draftBefore !== DRAFT_A) {
 // === Session B (this also forces sidebar to have ≥2 sessions to click
 //     between, AND triggers another temp→real id swap once B starts) ===
 await clickNewSession();
+// ChatStream wraps content in AnimatePresence(mode="wait") — old session's
+// blocks animate OUT before new session's empty state animates IN. The
+// transition is ~180ms. Wait past it so the assertion sees a quiesced DOM
+// instead of a mid-flight exit.
+await win.waitForTimeout(500);
 // session B is now active; A's chat should be off-screen
 const aGoneFromMain = !(await win.getByText(PROMPT_A).first().isVisible().catch(() => false));
 if (!aGoneFromMain) {
@@ -163,7 +170,7 @@ if (!snapshotA_after.includes(PROMPT_A)) {
 }
 // Also check assistant body still rendered (not just user echo).
 const assistantStillThere = await win
-  .locator('div.flex.gap-3.text-base')
+  .locator('[data-type-scale-role="assistant-body"]')
   .filter({ has: win.locator('span:has-text("●")') })
   .first()
   .isVisible()
