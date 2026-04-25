@@ -19,8 +19,18 @@
 // the CLI ships before we sync.
 
 import { Eraser, Minimize2, type LucideIcon } from 'lucide-react';
+import Fuse from 'fuse.js';
 
-export type SlashCommandSource = 'built-in' | 'user' | 'project' | 'plugin';
+// Six logical sources surfaced by the slash-command palette. Mirrors the
+// CLI's own categorization so the picker reads the way users expect after
+// using the official VS Code extension.
+export type SlashCommandSource =
+  | 'built-in'
+  | 'user'
+  | 'project'
+  | 'plugin'
+  | 'skill'
+  | 'agent';
 
 export type SlashCommandContext = {
   sessionId: string;
@@ -121,30 +131,55 @@ export async function dispatchSlashCommand(
   return cmd.passThrough ? 'pass-through' : 'handled';
 }
 
-// Pure filter used by the picker and unit tests. Matches a substring
-// against both `name` and `description` (case-insensitive). Ranking puts
-// exact name matches first, then prefix, then substring, then description
-// hits — same scheme as before. `pluginId` is checked so typing a plugin
-// prefix narrows the list correctly.
+// Pure filter used by the picker and unit tests. Powered by Fuse.js so the
+// match tolerates typos and word-order swaps — important now that the
+// palette can list 30+ entries across six sections (built-in / user /
+// project / plugin / skill / agent). Keys are weighted so the command name
+// dominates; description is a tie-breaker when the name doesn't match.
+//
+// Exact-name and prefix matches are pinned to the top *before* Fuse runs,
+// so muscle-memory typing (`/cle` → `/clear`) never gets reranked behind a
+// fuzzier candidate. Fuse fills in the remaining matches.
+//
+// Empty query short-circuits to the full list in original order, matching
+// the renderer's expectation that an unfiltered open shows every command.
 export function filterSlashCommands(all: SlashCommand[], query: string): SlashCommand[] {
   const q = query.trim().toLowerCase();
   if (!q) return all;
-  type Ranked = { cmd: SlashCommand; rank: number; index: number };
-  const ranked: Ranked[] = [];
-  for (let i = 0; i < all.length; i++) {
-    const c = all[i];
-    const name = c.name.toLowerCase();
-    const desc = (c.description ?? '').toLowerCase();
-    let rank: number;
-    if (name === q) rank = 0;
-    else if (name.startsWith(q)) rank = 1;
-    else if (name.includes(q)) rank = 2;
-    else if (desc.includes(q)) rank = 3;
-    else continue;
-    ranked.push({ cmd: c, rank, index: i });
+
+  // Pin exact + prefix matches first, in input order.
+  const pinned: SlashCommand[] = [];
+  const pinnedSet = new Set<SlashCommand>();
+  // Two passes so an exact match always precedes a mere prefix match.
+  for (const c of all) {
+    if (c.name.toLowerCase() === q) {
+      pinned.push(c);
+      pinnedSet.add(c);
+    }
   }
-  ranked.sort((a, b) => (a.rank - b.rank) || (a.index - b.index));
-  return ranked.map((r) => r.cmd);
+  for (const c of all) {
+    if (pinnedSet.has(c)) continue;
+    if (c.name.toLowerCase().startsWith(q)) {
+      pinned.push(c);
+      pinnedSet.add(c);
+    }
+  }
+
+  // Fuse over the remainder. Threshold tuned to forgive a single typo
+  // (e.g. "thnk" still matches "/think") without producing wild noise.
+  const remainder = all.filter((c) => !pinnedSet.has(c));
+  const fuse = new Fuse(remainder, {
+    includeScore: true,
+    threshold: 0.4,
+    ignoreLocation: true,
+    keys: [
+      { name: 'name', weight: 3 },
+      { name: 'description', weight: 0.5 },
+    ],
+  });
+  const fuzzy = fuse.search(q).map((r) => r.item);
+
+  return [...pinned, ...fuzzy];
 }
 
 // Detects whether the textarea content is currently "typing a slash
@@ -176,7 +211,7 @@ export type DynamicCommand = {
   name: string;
   description?: string;
   argumentHint?: string;
-  source: 'user' | 'project' | 'plugin';
+  source: 'user' | 'project' | 'plugin' | 'skill' | 'agent';
   pluginId?: string;
 };
 
@@ -203,14 +238,22 @@ export async function loadDynamicCommands(
 }
 
 // Group commands for the picker. Stable order: built-in first, then user,
-// project, plugin. Within each group preserves the input order.
+// project, plugin, skill, agent. Within each group preserves the input
+// order so an exact-name pin from `filterSlashCommands` keeps its spot.
 export type SlashCommandGroup = {
   source: SlashCommandSource;
   commands: SlashCommand[];
 };
 
 export function groupSlashCommands(all: SlashCommand[]): SlashCommandGroup[] {
-  const order: SlashCommandSource[] = ['built-in', 'user', 'project', 'plugin'];
+  const order: SlashCommandSource[] = [
+    'built-in',
+    'user',
+    'project',
+    'plugin',
+    'skill',
+    'agent',
+  ];
   const buckets = new Map<SlashCommandSource, SlashCommand[]>();
   for (const src of order) buckets.set(src, []);
   for (const cmd of all) {

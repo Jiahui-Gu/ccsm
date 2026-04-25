@@ -31,6 +31,8 @@ const GROUP_LABEL_KEY: Record<SlashCommandSource, string> = {
   user: 'slashCommands.groupUser',
   project: 'slashCommands.groupProject',
   plugin: 'slashCommands.groupPlugin',
+  skill: 'slashCommands.groupSkill',
+  agent: 'slashCommands.groupAgent',
 };
 
 // In-chat slash-command picker. Anchored visually above the InputBar by

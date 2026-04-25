@@ -353,7 +353,9 @@ const zh: EnCatalog = {
     groupBuiltIn: '内置',
     groupUser: '用户 Commands',
     groupProject: '项目 Commands',
-    groupPlugin: 'Plugin Commands'
+    groupPlugin: 'Plugin Commands',
+    groupSkill: 'Skills',
+    groupAgent: 'Agents'
   },
   notifications: {
     sessionWaitingTitle: '会话等待中',

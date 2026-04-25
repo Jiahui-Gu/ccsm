@@ -376,7 +376,9 @@ const en = {
     groupBuiltIn: 'Built-in',
     groupUser: 'User commands',
     groupProject: 'Project commands',
-    groupPlugin: 'Plugin commands'
+    groupPlugin: 'Plugin commands',
+    groupSkill: 'Skills',
+    groupAgent: 'Agents'
   },
   notifications: {
     sessionWaitingTitle: 'Session waiting',

@@ -51,7 +51,7 @@ export type CliSetBinaryResult =
   | { ok: true; version: string | null }
   | { ok: false; error: string };
 
-export type CommandSource = 'user' | 'project' | 'plugin';
+export type CommandSource = 'user' | 'project' | 'plugin' | 'skill' | 'agent';
 
 export interface LoadedCommand {
   name: string;
