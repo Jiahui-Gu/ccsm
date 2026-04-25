@@ -24,8 +24,7 @@ async function freshStore(saveState: ReturnType<typeof vi.fn>) {
     ccsm: {
       saveState,
       loadState: vi.fn().mockResolvedValue(null),
-      saveMessages: vi.fn().mockResolvedValue(undefined),
-      loadMessages: vi.fn().mockResolvedValue([]),
+      loadHistory: vi.fn().mockResolvedValue({ ok: true, frames: [] }),
       pathsExist: vi.fn().mockResolvedValue({}),
       recentCwds: vi.fn().mockResolvedValue([]),
       topModel: vi.fn().mockResolvedValue(null),

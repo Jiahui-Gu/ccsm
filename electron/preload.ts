@@ -78,13 +78,23 @@ const api = {
       ipcRenderer.send('ccsm:set-language', lang);
     }
   },
-  loadMessages: (sessionId: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('db:loadMessages', sessionId),
-  saveMessages: (
-    sessionId: string,
-    blocks: Array<{ id: string; kind: string }>
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('db:saveMessages', sessionId, blocks),
+  /**
+   * Load a session's message history from the CLI's on-disk JSONL transcript
+   * (`~/.claude/projects/<key>/<sid>.jsonl`). Returns a tagged result so the
+   * renderer can distinguish "no transcript yet" (e.g. fresh session before
+   * the first frame lands) from a real read error. The renderer projects
+   * the raw frames through `framesToBlocks` to get its MessageBlock[].
+   * Replaces the previous `db:loadMessages` / `db:saveMessages` round-trip
+   * which mirrored CLI's transcript into ccsm's SQLite (PR-H removed that
+   * redundant copy).
+   */
+  loadHistory: (
+    cwd: string,
+    sessionId: string
+  ): Promise<
+    | { ok: true; frames: unknown[] }
+    | { ok: false; error: string; detail?: string }
+  > => ipcRenderer.invoke('agent:load-history', cwd, sessionId),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
   saveFile: (

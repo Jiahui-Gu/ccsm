@@ -79,11 +79,20 @@ declare global {
         getSystemLocale: () => Promise<string | undefined>;
         setLanguage: (l: 'en' | 'zh') => void;
       };
-      loadMessages: (sessionId: string) => Promise<unknown[]>;
-      saveMessages: (
-        sessionId: string,
-        blocks: Array<{ id: string; kind: string }>
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
+      /**
+       * Load a session's message history from the CLI's JSONL transcript at
+       * `~/.claude/projects/<projectKey(cwd)>/<sessionId>.jsonl`. The
+       * renderer projects the returned frames through `framesToBlocks`. PR-H
+       * removed the previous SQLite-backed `loadMessages`/`saveMessages`
+       * pair — ccsm no longer maintains a redundant secondary copy.
+       */
+      loadHistory: (
+        cwd: string,
+        sessionId: string
+      ) => Promise<
+        | { ok: true; frames: unknown[] }
+        | { ok: false; error: string; detail?: string }
+      >;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
       saveFile: (args: {

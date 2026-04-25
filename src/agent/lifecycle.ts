@@ -262,13 +262,11 @@ export function subscribeAgentEvents(): void {
         outputTokens: usage.output_tokens ?? 0,
         costUsd: typeof r.total_cost_usd === 'number' ? r.total_cost_usd : 0
       });
-      // Persist the finalized turn so reloading the app restores history.
-      // Saving on `result` rather than on every delta avoids writing partial
-      // streaming blocks; the bulk DELETE+INSERT is idempotent.
-      const blocks = useStore.getState().messagesBySession[e.sessionId];
-      if (blocks && blocks.length > 0 && typeof window.ccsm?.saveMessages === 'function') {
-        void window.ccsm.saveMessages(e.sessionId, blocks);
-      }
+      // PR-H: ccsm no longer persists message history. The CLI / Agent SDK
+      // already writes every frame to ~/.claude/projects/<key>/<sid>.jsonl
+      // as it streams; we just read from there on load. The previous
+      // `saveMessages` call here was a redundant secondary write that
+      // mirrored the SDK's own transcript into ccsm's SQLite.
       // `turn_done` notification policy: only ping when the turn meaningfully
       // consumed the user's patience — long (>15s), or errored, or this
       // session isn't the one being watched. Fast, successful, focused turns

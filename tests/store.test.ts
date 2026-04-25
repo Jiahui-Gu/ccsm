@@ -474,91 +474,117 @@ describe('store: streamAssistantText + appendBlocks coalesce', () => {
 });
 
 describe('store: loadMessages + selectSession autoload (session restore)', () => {
+  // Helper: seed a session with the given id + cwd so the store's
+  // loadMessages action can derive the JSONL path.
+  function seedSession(id: string, cwd = '/tmp/x') {
+    useStore.setState({
+      sessions: [
+        { id, name: id, state: 'idle', cwd, model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+  }
+
   it('loadMessages pulls from the IPC bridge and writes to messagesBySession', async () => {
-    const persisted = [
-      { kind: 'user', id: 'u1', text: 'hi' },
-      { kind: 'assistant', id: 'a1', text: 'hello there' }
+    // PR-H: the IPC now returns raw CLI frames, which framesToBlocks
+    // projects into MessageBlock[]. We feed user/assistant frames so the
+    // projection produces the expected blocks.
+    const frames = [
+      { type: 'user', uuid: 'u1', message: { content: 'hi' } },
+      {
+        type: 'assistant',
+        message: { id: 'msg-load-1', content: [{ type: 'text', text: 'hello there' }] }
+      }
     ];
-    const load = vi.fn().mockResolvedValue(persisted);
+    const load = vi.fn().mockResolvedValue({ ok: true, frames });
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load }
+      ccsm: { loadHistory: load }
     };
+    seedSession('s-ghost');
 
     await useStore.getState().loadMessages('s-ghost');
-    expect(load).toHaveBeenCalledWith('s-ghost');
-    expect(useStore.getState().messagesBySession['s-ghost']).toEqual(persisted);
+    expect(load).toHaveBeenCalledWith('/tmp/x', 's-ghost');
+    const blocks = useStore.getState().messagesBySession['s-ghost'];
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ id: 'u-u1', kind: 'user' });
+    expect(blocks[1]).toMatchObject({ kind: 'assistant' });
   });
 
-  it('loadMessages merges persisted blocks (by id) with mid-flight streaming', async () => {
-    let resolve!: (v: unknown[]) => void;
+  it('loadMessages merges streamed blocks (by id) with persisted history', async () => {
+    let resolve!: (v: unknown) => void;
     const load = vi.fn(
-      () => new Promise<unknown[]>((r) => { resolve = r; })
+      () => new Promise<unknown>((r) => { resolve = r; })
     );
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load }
+      ccsm: { loadHistory: load }
     };
+    seedSession('s-race');
 
     const promise = useStore.getState().loadMessages('s-race');
-    // Simulate a streaming block landing before the db fetch resolves.
+    // Simulate a streaming block landing before the disk read resolves.
     useStore.getState().appendBlocks('s-race', [
       { kind: 'assistant', id: 'live-1', text: 'streaming' }
     ]);
-    // Persisted history has a block with a different id (real history) — it
-    // should be prepended. The previous "skip entirely" guard dropped this
-    // valid history; the new merge keeps both.
-    resolve([{ kind: 'user', id: 'persisted-1', text: 'older turn' }]);
+    // Persisted history (different id) should be prepended.
+    resolve({
+      ok: true,
+      frames: [{ type: 'user', uuid: 'persisted-1', message: { content: 'older turn' } }]
+    });
     await promise;
 
     const blocks = useStore.getState().messagesBySession['s-race'];
     expect(blocks).toHaveLength(2);
-    expect(blocks[0]).toMatchObject({ id: 'persisted-1' });
+    expect(blocks[0]).toMatchObject({ id: 'u-persisted-1' });
     expect(blocks[1]).toMatchObject({ id: 'live-1' });
   });
 
   it('loadMessages dedupes persisted blocks whose id already streamed in', async () => {
-    let resolve!: (v: unknown[]) => void;
+    let resolve!: (v: unknown) => void;
     const load = vi.fn(
-      () => new Promise<unknown[]>((r) => { resolve = r; })
+      () => new Promise<unknown>((r) => { resolve = r; })
     );
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load }
+      ccsm: { loadHistory: load }
     };
+    seedSession('s-dup');
 
     const promise = useStore.getState().loadMessages('s-dup');
     useStore.getState().appendBlocks('s-dup', [
-      { kind: 'assistant', id: 'dup-1', text: 'fresh' }
+      { kind: 'user', id: 'u-dup-1', text: 'fresh' }
     ]);
-    resolve([{ kind: 'assistant', id: 'dup-1', text: 'stale' }]);
+    resolve({
+      ok: true,
+      frames: [{ type: 'user', uuid: 'dup-1', message: { content: 'stale' } }]
+    });
     await promise;
 
     const blocks = useStore.getState().messagesBySession['s-dup'];
     expect(blocks).toHaveLength(1);
     // The streaming version wins (stays put at the end of the array).
-    expect(blocks[0]).toMatchObject({ id: 'dup-1', text: 'fresh' });
+    expect(blocks[0]).toMatchObject({ id: 'u-dup-1', text: 'fresh' });
   });
 
   it('selectSession triggers loadMessages when history is missing', () => {
-    const load = vi.fn().mockResolvedValue([]);
+    const load = vi.fn().mockResolvedValue({ ok: true, frames: [] });
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load }
+      ccsm: { loadHistory: load }
     };
     useStore.setState({
       sessions: [
-        { id: 's-x', name: 's-x', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
+        { id: 's-x', name: 's-x', state: 'idle', cwd: '/tmp/x', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
       ]
     });
     useStore.getState().selectSession('s-x');
-    expect(load).toHaveBeenCalledWith('s-x');
+    expect(load).toHaveBeenCalledWith('/tmp/x', 's-x');
   });
 
   it('selectSession skips the load when messagesBySession already has an entry', () => {
-    const load = vi.fn().mockResolvedValue([]);
+    const load = vi.fn().mockResolvedValue({ ok: true, frames: [] });
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load }
+      ccsm: { loadHistory: load }
     };
     useStore.setState({
       sessions: [
-        { id: 's-y', name: 's-y', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
+        { id: 's-y', name: 's-y', state: 'idle', cwd: '/tmp/y', model: 'claude-opus-4', groupId: 'g-default', agentType: 'claude-code' }
       ],
       messagesBySession: { 's-y': [] }
     });
@@ -1184,15 +1210,15 @@ describe('store: setGlobalModel / setSessionModel split', () => {
 
 describe('store: loadMessages failure seeds [] and clears in-flight', () => {
   it('IPC reject leaves an empty array and the next selectSession does not retry', async () => {
-    const load = vi.fn().mockRejectedValue(new Error('db locked'));
+    const load = vi.fn().mockRejectedValue(new Error('preload missing'));
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { loadMessages: load, saveMessages: vi.fn() }
+      ccsm: { loadHistory: load }
     };
     // Suppress the expected console.warn in test output.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     useStore.setState({
       sessions: [
-        { id: 's-fail', name: '?', state: 'idle', cwd: '~', model: '', groupId: 'g-default', agentType: 'claude-code' }
+        { id: 's-fail', name: '?', state: 'idle', cwd: '/tmp/fail', model: '', groupId: 'g-default', agentType: 'claude-code' }
       ]
     });
 
@@ -1210,6 +1236,38 @@ describe('store: loadMessages failure seeds [] and clears in-flight', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(load).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('read_error result surfaces an inline error banner', async () => {
+    const load = vi.fn().mockResolvedValue({ ok: false, error: 'read_error', detail: 'EACCES' });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadHistory: load }
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    useStore.setState({
+      sessions: [
+        { id: 's-perm', name: '?', state: 'idle', cwd: '/tmp/perm', model: '', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+    await useStore.getState().loadMessages('s-perm');
+    expect(useStore.getState().messagesBySession['s-perm']).toEqual([]);
+    expect(useStore.getState().loadMessageErrors['s-perm']).toContain('read_error');
+    warn.mockRestore();
+  });
+
+  it('not_found result is treated as empty (no error banner)', async () => {
+    const load = vi.fn().mockResolvedValue({ ok: false, error: 'not_found' });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { loadHistory: load }
+    };
+    useStore.setState({
+      sessions: [
+        { id: 's-new', name: '?', state: 'idle', cwd: '/tmp/new', model: '', groupId: 'g-default', agentType: 'claude-code' }
+      ]
+    });
+    await useStore.getState().loadMessages('s-new');
+    expect(useStore.getState().messagesBySession['s-new']).toEqual([]);
+    expect(useStore.getState().loadMessageErrors['s-new']).toBeUndefined();
   });
 });
 
