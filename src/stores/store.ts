@@ -583,6 +583,41 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
+/**
+ * Mint a session id using the same raw UUID format the Claude Code CLI uses
+ * for its `~/.claude/projects/<project>/<sid>.jsonl` filenames. ccsm passes
+ * this id to the SDK's `sessionId` option at spawn time, so the JSONL
+ * transcript file name is identical to the in-app session id — no two
+ * separate ids to reconcile, no mapping table.
+ *
+ * Why not `nextId('s')`: the legacy `s-<uuid>` form isn't a valid UUID
+ * accepted by the SDK's `sessionId` option, and it forces every external
+ * tooling integration (jsonl reader, share/export, dogfood `tail`) to
+ * strip the prefix or maintain a side-table.
+ *
+ * Existing persisted sessions keep their `s-<uuid>` ids (per the
+ * "no schema migration for old users" decision); they continue to work
+ * because the CLI accepts any string as a session id when a fresh spawn
+ * is allocated by the SDK rather than passed in. Newly-created sessions
+ * after this change use raw UUIDs end-to-end.
+ */
+function newSessionId(): string {
+  const g: { crypto?: { randomUUID?: () => string } } =
+    (typeof globalThis !== 'undefined' ? (globalThis as unknown as { crypto?: { randomUUID?: () => string } }) : {}) ?? {};
+  if (g.crypto && typeof g.crypto.randomUUID === 'function') {
+    return g.crypto.randomUUID();
+  }
+  // Fallback: synthesize a UUID-shaped string. The SDK validates the field
+  // is a UUID, so we follow the v4 layout (xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx)
+  // even when crypto is unavailable (Node < 14.17 / locked-down sandbox).
+  // This branch is effectively dead in production but keeps tests under jsdom
+  // happy when randomUUID is shimmed away.
+  const hex = (n: number) =>
+    Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const y = ['8', '9', 'a', 'b'][Math.floor(Math.random() * 4)];
+  return `${hex(8)}-${hex(4)}-4${hex(3)}-${y}${hex(3)}-${hex(12)}`;
+}
+
 // One-shot migration for persisted permission values. Legacy builds wrote
 // `standard` / `ask` / `auto` / `yolo` into the JSON blob; map them to the
 // official CLI names so no user sees an "undefined" permission chip after
@@ -946,7 +981,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     const ensured = ensureUsableGroup(groups, preferred);
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
-    const id = nextId('s');
+    const id = newSessionId();
     // task328: per-group cwd default — when the caller doesn't pin a cwd,
     // prefer the most-recent session in the target group that has a usable
     // cwd. `sessions` is ordered newest-first (createSession prepends), so
@@ -998,7 +1033,13 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   importSession: ({ name, cwd, groupId, resumeSessionId, projectDir }) => {
     const { sessions, groups, model, models, connection } = get();
-    const id = nextId('s');
+    // Imported sessions get a fresh local UUID (not the JSONL filename UUID)
+    // so importing the same transcript twice doesn't collide. The original
+    // CLI sid lives on as `resumeSessionId` and is forwarded to the SDK on
+    // first send; the SDK is free to allocate a fresh sid for the resumed
+    // conversation, which we then capture and pass back as our session id
+    // on subsequent spawns (see startSession.ts).
+    const id = newSessionId();
     let initialModel = model;
     if (!initialModel) initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';

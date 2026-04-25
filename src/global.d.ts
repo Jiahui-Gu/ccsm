@@ -18,6 +18,15 @@ type StartOpts = {
   model?: string;
   permissionMode?: PermissionMode;
   resumeSessionId?: string;
+  /**
+   * Pre-allocated session UUID. When set, the SDK uses this as the
+   * conversation's `session_id` instead of auto-generating one — so the
+   * `~/.claude/projects/<key>/<sid>.jsonl` file the CLI writes is named
+   * with the same id ccsm uses internally. Must be a valid UUID; ignored
+   * by the legacy (non-SDK) runner. Cannot be combined with
+   * `resumeSessionId` per SDK constraints.
+   */
+  sessionId?: string;
 };
 
 // Mirror of `StartResult` from `electron/agent/start-result-types.ts` —
