@@ -1,7 +1,8 @@
 import type { WebContents } from 'electron';
-import { SessionRunner, ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
+import { ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
 import { ClaudeNotFoundError } from './binary-resolver';
 import type { StartResult } from './start-result-types';
+import { createRunner, type Runner } from '../agent-sdk/runner-factory';
 
 export type { StartErrorCode, StartResult } from './start-result-types';
 
@@ -21,7 +22,7 @@ export type AgentDiagnostic = {
 };
 
 class SessionsManager {
-  private runners = new Map<string, SessionRunner>();
+  private runners = new Map<string, Runner>();
   private sender: Sender | null = null;
 
   bindSender(wc: WebContents): void {
@@ -71,7 +72,7 @@ class SessionsManager {
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
     try {
-      const runner = new SessionRunner(
+      const runner = createRunner(
         sessionId,
         (msg: AgentMessage) => this.emit('agent:event', { sessionId, message: msg }),
         ({ error }) => {
