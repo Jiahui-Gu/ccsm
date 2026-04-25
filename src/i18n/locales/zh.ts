@@ -325,11 +325,22 @@ const zh: EnCatalog = {
       default: '默认',
       acceptEdits: '自动接受编辑',
       plan: '规划',
-      bypassPermissions: '跳过校验'
-    }
+      bypassPermissions: '跳过校验',
+      auto: '自动'
+    },
+    autoUnsupportedTitle: '自动模式不可用',
+    autoUnsupportedBody: '当前账号或模型暂不支持自动模式，已回退到默认。'
   },
   permissionPrompt: {
     title: '需要授权',
+    titleByTool: {
+      bash: '允许执行此 bash 命令?',
+      webFetch: '允许获取此 URL?',
+      webSearch: '允许搜索此查询?',
+      edit: '允许编辑此文件?',
+      skill: '允许运行此技能?',
+      fallback: '需要授权'
+    },
     allowBtn: '允许 (Y)',
     // 显式标注作用域：只针对该工具名（不是单条命令），且仅本次会话内有效。
     allowAlwaysBtn: '本会话始终允许 {{tool}}',
@@ -501,14 +512,17 @@ const zh: EnCatalog = {
     modeDefaultLabel: '默认',
     modeAcceptEditsLabel: '接受编辑',
     modeBypassLabel: '跳过校验',
+    modeAutoLabel: '自动',
     modePlanDesc: '只读分析。不编辑文件，不执行 shell。',
     modeDefaultDesc: '自动批准读取。编辑和 shell 需先询问。',
     modeAcceptEditsDesc: '自动批准读取与编辑。shell 需先询问。',
     modeBypassDesc: '所有操作自动批准。请谨慎使用。',
+    modeAutoDesc: '由分类器决定批准。研究预览，需 Sonnet 4.6+。',
     modePlanTooltip: '规划模式 \u2014 只读分析；不编辑文件、不执行 shell，除非你批准。',
     modeDefaultTooltip: '默认 \u2014 自动批准读取；编辑和 shell 先询问。',
     modeAcceptEditsTooltip: '接受编辑 \u2014 自动批准读取与文件编辑；shell 先询问。',
     modeBypassTooltip: '跳过校验 \u2014 所有工具调用直接放行。请谨慎使用。',
+    modeAutoTooltip: '自动 — 研究预览，需 Sonnet 4.6+。当前账号或模型不支持时会回退到默认。',
     contextLabel: '上下文',
     contextTooltip: '已用 {{percent}}%（{{used}} / {{limit}} 个 token）。点击执行 /compact。',
     contextAriaLabel: '上下文窗口已使用 {{percent}}%。点击触发压缩。'
