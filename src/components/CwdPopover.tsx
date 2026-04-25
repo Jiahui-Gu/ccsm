@@ -103,10 +103,15 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     if (hoverHintShown) return;
     setHoverHintShown(true);
     setHoverHintActive(true);
-    // Pulse duration matches the menuIn ease (~600ms). After it expires we
-    // detach the class so subsequent renders are clean.
-    window.setTimeout(() => setHoverHintActive(false), 600);
   }, [hoverHintShown]);
+  // Pulse duration matches the menuIn ease (~600ms). Driven from an effect so
+  // the timer is cleared on unmount (or if the popover opens and we retire
+  // the hint early), avoiding a setState-after-unmount warning in tests.
+  useEffect(() => {
+    if (!hoverHintActive) return;
+    const id = window.setTimeout(() => setHoverHintActive(false), 600);
+    return () => window.clearTimeout(id);
+  }, [hoverHintActive]);
   // Opening the popover (via click, keyboard, whatever) also retires the
   // hint — the user has discovered the chip.
   useEffect(() => {

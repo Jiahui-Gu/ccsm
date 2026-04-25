@@ -2308,8 +2308,9 @@ export async function hydrateStore(): Promise<void> {
 
   // Seed history-derived defaults from CLI transcripts. Fresh Electron
   // userData starts with empty `recentProjects` and no `model`; without this
-  // the new-session picker falls back to `~` and the first endpoint's first
-  // model regardless of what the user actually uses in the CLI.
+  // the new-session picker falls back to '' (chip `(none)` placeholder) and
+  // the first endpoint's first model regardless of what the user actually
+  // uses in the CLI.
   try {
     const api = window.ccsm;
     if (api?.recentCwds && api?.topModel) {
