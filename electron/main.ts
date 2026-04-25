@@ -1091,6 +1091,88 @@ app.whenReady().then(() => {
     return loadCommands({ cwd: cwd ?? null });
   });
 
+  // ─────────────────────── @mention file listing ──────────────────────────
+  //
+  // Powers the InputBar's @file picker. Walks the session cwd recursively,
+  // skipping the usual heavy directories (node_modules, .git, dist, build,
+  // .next, .venv, target). Returns POSIX-style relative paths so the mention
+  // literal we splice into the composer (`@src/foo.ts`) stays portable
+  // across platforms — claude.exe on Windows happily accepts forward
+  // slashes too.
+  //
+  // Caps:
+  //   - max 5000 files (after which we bail; the picker fuzzy-search is
+  //     plenty accurate at that size, and walking >5k entries on every focus
+  //     is wasteful)
+  //   - max 12 directory depth (defense against symlink loops)
+  //
+  // Per-call, not cached: cwd swaps + on-disk edits should reflect quickly,
+  // and the renderer only invokes this on focus / @ trigger.
+  const FILE_LIST_MAX = 5000;
+  const FILE_LIST_MAX_DEPTH = 12;
+  const FILE_LIST_SKIP_DIRS = new Set([
+    'node_modules',
+    '.git',
+    '.svn',
+    '.hg',
+    'dist',
+    'build',
+    'out',
+    '.next',
+    '.nuxt',
+    '.turbo',
+    '.cache',
+    '.venv',
+    'venv',
+    '__pycache__',
+    'target',
+    '.idea',
+    '.vscode',
+  ]);
+
+  ipcMain.handle('files:list', async (e, cwd: string | null | undefined) => {
+    if (!fromMainFrame(e)) return [];
+    if (cwd == null || !isSafePath(cwd)) return [];
+    let rootStat: fs.Stats;
+    try {
+      rootStat = await fs.promises.stat(cwd);
+    } catch {
+      return [];
+    }
+    if (!rootStat.isDirectory()) return [];
+
+    const out: { path: string; name: string }[] = [];
+    async function walk(dir: string, rel: string, depth: number): Promise<void> {
+      if (out.length >= FILE_LIST_MAX) return;
+      if (depth > FILE_LIST_MAX_DEPTH) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of entries) {
+        if (out.length >= FILE_LIST_MAX) return;
+        // Skip hidden + heavy build dirs to keep the picker snappy.
+        if (ent.name.startsWith('.') && ent.name !== '.env' && ent.name !== '.env.local') {
+          if (ent.isDirectory()) continue;
+          // hidden file: skip too — usually noise (.DS_Store, .gitignore)
+          continue;
+        }
+        if (ent.isDirectory() && FILE_LIST_SKIP_DIRS.has(ent.name)) continue;
+        const childAbs = path.join(dir, ent.name);
+        const childRel = rel ? `${rel}/${ent.name}` : ent.name;
+        if (ent.isDirectory()) {
+          await walk(childAbs, childRel, depth + 1);
+        } else if (ent.isFile()) {
+          out.push({ path: childRel, name: ent.name });
+        }
+      }
+    }
+    await walk(cwd, '', 0);
+    return out;
+  });
+
   ipcMain.handle('shell:openExternal', async (e, url: string) => {
     if (!fromMainFrame(e)) return false;
     // Only http(s). Everything else is a potential shell hijack.

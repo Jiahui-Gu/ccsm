@@ -9,6 +9,7 @@ import { serializeDiffCommentsForPrompt } from '../stores/store';
 import { DURATION, EASING } from '../lib/motion';
 import { useShallow } from 'zustand/react/shallow';
 import { SlashCommandPicker } from './SlashCommandPicker';
+import { MentionPicker } from './MentionPicker';
 import {
   BUILT_IN_COMMANDS,
   detectSlashTrigger,
@@ -18,6 +19,12 @@ import {
   nextSectionIndex,
   type SlashCommand
 } from '../slash-commands/registry';
+import {
+  commitMention,
+  detectAtTrigger,
+  filterMentionFiles,
+} from '../mentions/registry';
+import type { WorkspaceFile } from '../shared/ipc-types';
 import type { ImageAttachment } from '../types';
 import {
   attachmentToDataUrl,
@@ -260,6 +267,42 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (activeIndex >= filtered.length) setActiveIndex(Math.max(0, filtered.length - 1));
   }, [pickerOpen, filtered.length, activeIndex]);
 
+  // --- @file mention picker state -------------------------------------
+  // Same trigger/dismiss/active-index pattern as the slash picker, but the
+  // file list is loaded async via IPC. We only fetch once per cwd (and on
+  // textarea focus, so a freshly-`touch`-ed file shows up without a reload).
+  const [mentionFiles, setMentionFiles] = useState<WorkspaceFile[]>([]);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const refreshMentionFiles = useCallback(async () => {
+    const bridge = typeof window !== 'undefined' ? window.ccsm : undefined;
+    if (!bridge?.files?.list) {
+      setMentionFiles([]);
+      return;
+    }
+    try {
+      const next = await bridge.files.list(cwd ?? null);
+      setMentionFiles(next);
+    } catch {
+      setMentionFiles([]);
+    }
+  }, [cwd]);
+  useEffect(() => {
+    void refreshMentionFiles();
+  }, [refreshMentionFiles]);
+
+  const atTrigger = useMemo(() => detectAtTrigger(value, caret), [value, caret]);
+  const filteredFiles = useMemo<WorkspaceFile[]>(
+    () => (atTrigger.active ? filterMentionFiles(mentionFiles, atTrigger.query) : []),
+    [atTrigger, mentionFiles]
+  );
+  const mentionOpen = atTrigger.active && !mentionDismissed;
+  useEffect(() => {
+    if (!mentionOpen) return;
+    if (mentionActiveIndex >= filteredFiles.length)
+      setMentionActiveIndex(Math.max(0, filteredFiles.length - 1));
+  }, [mentionOpen, filteredFiles.length, mentionActiveIndex]);
+
   // Wire the slash picker into the global popover mutex (id: 'slash'). When
   // the user opens any other popover (cwd / model chip / permission chip),
   // openPopoverId moves off 'slash' and we dismiss the picker so it can't
@@ -277,6 +320,17 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       setPickerDismissed(true);
     }
   }, [openPopoverId, pickerOpen]);
+  // Mention picker shares the global popover mutex (id: 'mention'). Same
+  // semantics as the slash picker — opening any sibling popover dismisses.
+  useEffect(() => {
+    if (mentionOpen) openPopover('mention');
+    else closePopover('mention');
+  }, [mentionOpen, openPopover, closePopover]);
+  useEffect(() => {
+    if (mentionOpen && openPopoverId !== null && openPopoverId !== 'mention') {
+      setMentionDismissed(true);
+    }
+  }, [openPopoverId, mentionOpen]);
 
   useEffect(() => {
     setValue(getDraft(sessionId));
@@ -385,6 +439,10 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // keep typing to reopen it if they're still in the `/...` prefix).
     setPickerDismissed(false);
     setActiveIndex(0);
+    // Same for the @ mention picker — re-arm on every edit so Esc-then-type
+    // reopens it. Reset highlight to row 0.
+    setMentionDismissed(false);
+    setMentionActiveIndex(0);
     // Keep caret in sync with the edit — textarea may not have fired
     // onSelect/onKeyUp yet when onChange lands (and programmatic fills
     // from Playwright skip those entirely).
@@ -440,6 +498,30 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setAttachments(next);
     if (next.length > 0) attachmentCache.set(sessionId, next);
     else attachmentCache.delete(sessionId);
+  }
+
+  // Commit a chosen file from the @ mention picker. Splices `@<path> ` into
+  // the textarea at the trigger location, advances the caret past the
+  // inserted token + trailing space, dismisses the picker, and persists the
+  // updated draft. Mirrors `commitSlashCommand` for the / picker.
+  function commitMentionFile(file: WorkspaceFile) {
+    if (!atTrigger.active) return;
+    const { next, caret: nextCaret } = commitMention(value, atTrigger, file.path);
+    setValue(next);
+    setDraft(sessionId, next);
+    setCaret(nextCaret);
+    setMentionDismissed(true);
+    setMentionActiveIndex(0);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        /* setSelectionRange can throw on detached nodes during teardown */
+      }
+    });
   }
 
   const intake = useCallback(
@@ -517,7 +599,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       if (document.querySelector('[role="dialog"]')) return;
       const ae = document.activeElement as HTMLElement | null;
       // Defer to the picker's own dismissal when it's the active surface.
-      if (ae === textareaRef.current && pickerOpen) return;
+      if (ae === textareaRef.current && (pickerOpen || mentionOpen)) return;
       e.preventDefault();
       void stop();
     }
@@ -526,7 +608,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // `stop` closes over running + sessionId; both are dependencies via
     // `running` and the implicit re-render when sessionId changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, pickerOpen, sessionId]);
+  }, [running, pickerOpen, mentionOpen, sessionId]);
 
   async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const items = e.clipboardData?.items;
@@ -694,6 +776,43 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // Skip Enter handling while IME composition is active — otherwise CJK
     // candidate selection accidentally sends the message.
     if (e.nativeEvent.isComposing || (e.nativeEvent as { keyCode?: number }).keyCode === 229) return;
+
+    // Mention picker navigation takes precedence when open. Same key set as
+    // the slash picker (↑/↓/Enter/Esc) — no Tab section-jump because the
+    // mention list has no sections.
+    if (mentionOpen && filteredFiles.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i + 1) % filteredFiles.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionActiveIndex(
+          (i) => (i - 1 + filteredFiles.length) % filteredFiles.length
+        );
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const f = filteredFiles[mentionActiveIndex];
+        if (f) commitMentionFile(f);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+    }
+    // Mention picker is open but has zero results — Esc still dismisses it
+    // so the user isn't trapped with an empty picker hovering above the
+    // composer.
+    if (mentionOpen && e.key === 'Escape') {
+      e.preventDefault();
+      setMentionDismissed(true);
+      return;
+    }
 
     // Slash picker navigation takes precedence when open.
     if (pickerOpen && filtered.length > 0) {
@@ -895,6 +1014,14 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           onActiveIndexChange={setActiveIndex}
           onSelect={commitSlashCommand}
         />
+        <MentionPicker
+          open={mentionOpen}
+          query={atTrigger.active ? atTrigger.query : ''}
+          files={filteredFiles}
+          activeIndex={mentionActiveIndex}
+          onActiveIndexChange={setMentionActiveIndex}
+          onSelect={commitMentionFile}
+        />
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-2 pt-2">
             <AnimatePresence initial={false}>
@@ -921,6 +1048,9 @@ export function InputBar({ sessionId }: { sessionId: string }) {
             // Re-scan disk commands on focus so newly-dropped .md files
             // surface in the picker without reloading the app.
             void refreshDynamic();
+            // Same for the @ mention file list — pick up freshly-created
+            // files without making the user reload the app.
+            void refreshMentionFiles();
           }}
           onPaste={onPaste}
           rows={2}
@@ -1007,41 +1137,67 @@ export function InputBar({ sessionId }: { sessionId: string }) {
               {t('chat.queueChip', { count: queueLength })}
             </MetaLabel>
           )}
-          {running ? (
-            <>
-              {!sendDisabled && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  aria-label={t('chat.queueAria')}
-                  onClick={() => void send()}
-                >
-                  <ArrowUp size={10} className="stroke-[2.25]" />
-                  <span>{t('chat.queueButton')}</span>
-                </Button>
-              )}
-              <Button
-                variant="danger"
-                size="sm"
-                aria-label={t('chat.stopAria')}
-                onClick={stop}
-              >
-                <Square size={10} className="stroke-[2.25]" />
-                <span>{t('chat.stopBtn')}</span>
-              </Button>
-            </>
-          ) : (
+          {running && !sendDisabled && (
             <Button
-              variant="primary"
+              variant="secondary"
               size="sm"
-              aria-label={t('chat.sendMessage')}
-              disabled={sendDisabled}
+              aria-label={t('chat.queueAria')}
               onClick={() => void send()}
             >
               <ArrowUp size={10} className="stroke-[2.25]" />
-              <span>{t('chat.sendButton')}</span>
+              <span>{t('chat.queueButton')}</span>
             </Button>
           )}
+          {/*
+            Morph button. Same DOM slot in both states; only the icon, label,
+            variant, aria-label, and onClick swap. Mirrors the upstream
+            Anthropic Claude Code VS Code extension pattern (webview/index.js):
+              `if (busy && !X) <StopIcon/> else <SendIcon/>`
+            — same button instance, conditional inner SVG. AnimatePresence
+            cross-fades the icon at 230ms tween so the swap reads as one
+            control changing role rather than two buttons toggling display.
+            The variant flip (primary → danger) uses the existing CSS
+            transition on background-color, so no extra Framer wrapper for
+            the chrome — only the icon is animated.
+          */}
+          <Button
+            data-morph-state={running ? 'stop' : 'send'}
+            variant={running ? 'danger' : 'primary'}
+            size="sm"
+            aria-label={running ? t('chat.stopAria') : t('chat.sendMessage')}
+            title={running ? t('chat.stopBtn') : t('chat.sendButton')}
+            disabled={running ? false : sendDisabled}
+            onClick={running ? stop : () => void send()}
+          >
+            <span className="relative inline-flex items-center justify-center w-2.5 h-2.5">
+              <AnimatePresence initial={false} mode="wait">
+                {running ? (
+                  <motion.span
+                    key="stop-icon"
+                    initial={{ opacity: 0, scale: 0.7, rotate: -8 }}
+                    animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                    exit={{ opacity: 0, scale: 0.7, rotate: 8 }}
+                    transition={{ duration: 0.23, ease: EASING.standard }}
+                    className="absolute inset-0 inline-flex items-center justify-center"
+                  >
+                    <Square size={10} className="stroke-[2.25]" />
+                  </motion.span>
+                ) : (
+                  <motion.span
+                    key="send-icon"
+                    initial={{ opacity: 0, scale: 0.7, rotate: 8 }}
+                    animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                    exit={{ opacity: 0, scale: 0.7, rotate: -8 }}
+                    transition={{ duration: 0.23, ease: EASING.standard }}
+                    className="absolute inset-0 inline-flex items-center justify-center"
+                  >
+                    <ArrowUp size={10} className="stroke-[2.25]" />
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </span>
+            <span>{running ? t('chat.stopBtn') : t('chat.sendButton')}</span>
+          </Button>
         </div>
       </div>
 

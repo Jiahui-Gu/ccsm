@@ -404,6 +404,14 @@ const en = {
     groupSkill: 'Skills',
     groupAgent: 'Agents'
   },
+  mentions: {
+    pickerTitle: 'File mentions',
+    empty: 'No files in this workspace',
+    noMatch: 'No files match "{{query}}"',
+    navigate: 'navigate',
+    select: 'select',
+    close: 'close'
+  },
   notifications: {
     sessionWaitingTitle: 'Session waiting',
     sessionWaitingBody: '{{name}} needs your input',
