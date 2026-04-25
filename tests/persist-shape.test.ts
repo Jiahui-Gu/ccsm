@@ -74,7 +74,7 @@ describe('persist: curated snapshot payload', () => {
         'messageQueues',
         'statsBySession',
         'focusInputNonce',
-        'cliStatus',
+        'installerCorrupt',
         'models',
         'connection'
       ];

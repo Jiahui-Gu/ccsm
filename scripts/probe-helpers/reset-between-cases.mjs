@@ -71,9 +71,6 @@ export async function resetBetweenCases(app, win, opts = {}) {
   //    "resetAll()" because the store doesn't expose one — but setState with
   //    explicit empty maps is sufficient for the keys cases actually exercise.
   //    Settings keys (theme/language/font) are deliberately not touched.
-  //    cliStatus is forced to `found` so the "Claude CLI not found" modal
-  //    doesn't bleed into the next case in CI environments where claude.exe
-  //    isn't on PATH.
   await win.evaluate(() => {
     const store = window.__ccsmStore;
     if (!store) return;
@@ -92,7 +89,6 @@ export async function resetBetweenCases(app, win, opts = {}) {
       paletteOpen: false,
       dialogOpen: null,
       recentProjects: [],
-      cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
     });
   }).catch(() => {});
 

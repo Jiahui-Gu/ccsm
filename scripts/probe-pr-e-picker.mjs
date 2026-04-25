@@ -103,10 +103,6 @@ await page.addInitScript(() => {
     saveState: asyncNoop,
     recentCwds: async () => [],
     listModels: async () => [],
-    listClaudeBinaries: async () => [],
-    pickClaudeBinary: async () => null,
-    saveClaudeBinPath: asyncNoop,
-    getClaudeBinPath: async () => null,
     notifyAvailability: async () => ({ available: false, error: null }),
     loadImportHistory: async () => [],
   };

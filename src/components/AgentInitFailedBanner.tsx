@@ -9,7 +9,7 @@ import { TopBanner, TopBannerAction, TopBannerPresence } from './chrome/TopBanne
 /**
  * Banner shown at the top of the right pane when `agent:start` failed for the
  * active session with an error code that doesn't have bespoke UX elsewhere
- * (F7). CLAUDE_NOT_FOUND → CLI wizard; CWD_MISSING → inline error + StatusBar
+ * (F7). CLAUDE_NOT_FOUND → installer-corrupt banner; CWD_MISSING → inline error + StatusBar
  * cwd chip; every OTHER failure lands here so the session isn't stranded on
  * "starting…" with no explanation.
  *

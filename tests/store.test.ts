@@ -624,91 +624,54 @@ describe('store: selectSession bumps focusInputNonce', () => {
   });
 });
 
-describe('store: checkCli / CLI missing flow', () => {
-  beforeEach(() => {
-    // Every test in this suite stubs the cli API on window.ccsm; reset
-    // to a known baseline each run.
-    (globalThis as { window?: unknown }).window = (globalThis as { window?: unknown }).window ?? {};
-    (window as unknown as { ccsm?: unknown }).ccsm = undefined;
-    useStore.setState({ cliStatus: { state: 'checking' } });
+describe('store: installerCorrupt flag', () => {
+  it('setInstallerCorrupt(true) flips the flag, setInstallerCorrupt(false) clears it', () => {
+    expect(useStore.getState().installerCorrupt).toBe(false);
+    useStore.getState().setInstallerCorrupt(true);
+    expect(useStore.getState().installerCorrupt).toBe(true);
+    useStore.getState().setInstallerCorrupt(false);
+    expect(useStore.getState().installerCorrupt).toBe(false);
   });
 
-  it('missing → user picks binary → found', async () => {
-    const retryDetect = vi
-      .fn()
-      .mockResolvedValueOnce({ found: false, searchedPaths: ['where claude (PATH)'] })
-      .mockResolvedValueOnce({ found: true, path: '/opt/claude', version: '2.1.5' });
-    const setBinaryPath = vi.fn().mockResolvedValue({ ok: true, version: '2.1.5' });
-    const browseBinary = vi.fn().mockResolvedValue('/opt/claude');
-    (window as unknown as { ccsm: unknown }).ccsm = {
-      cli: {
-        getInstallHints: vi.fn(),
-        browseBinary,
-        setBinaryPath,
-        openDocs: vi.fn(),
-        retryDetect,
-      },
+  it('startSessionAndReconcile clears installerCorrupt on a successful start', async () => {
+    // Simulate the recovery flow: a previous start failed with
+    // CLAUDE_NOT_FOUND (banner up), the user reinstalled, then the next
+    // start succeeds. The success path must lower the banner — without the
+    // reset it stays visible until app restart.
+    useStore.getState().createSession('~/x');
+    const sid = useStore.getState().sessions[0].id;
+    useStore.getState().setInstallerCorrupt(true);
+    expect(useStore.getState().installerCorrupt).toBe(true);
+
+    const agentStart = vi.fn().mockResolvedValue({ ok: true });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentStart }
     };
 
-    await useStore.getState().checkCli();
-    let s = useStore.getState().cliStatus;
-    expect(s.state).toBe('missing');
-    if (s.state === 'missing') {
-      expect(s.dialogOpen).toBe(true);
-      expect(s.searchedPaths).toEqual(['where claude (PATH)']);
-    }
-
-    // Simulate the "I already have it → Browse" flow: UI calls setBinaryPath
-    // then re-runs checkCli.
-    const picked = await (
-      window as unknown as {
-        ccsm: { cli: { browseBinary: () => Promise<string | null> } };
-      }
-    ).ccsm.cli.browseBinary();
-    expect(picked).toBe('/opt/claude');
-    const res = await (
-      window as unknown as {
-        ccsm: {
-          cli: { setBinaryPath: (p: string) => Promise<{ ok: boolean }> };
-        };
-      }
-    ).ccsm.cli.setBinaryPath(picked as string);
-    expect(res.ok).toBe(true);
-
-    await useStore.getState().checkCli();
-    s = useStore.getState().cliStatus;
-    expect(s.state).toBe('found');
-    if (s.state === 'found') {
-      expect(s.binaryPath).toBe('/opt/claude');
-      expect(s.version).toBe('2.1.5');
-    }
+    const { startSessionAndReconcile } = await import('../src/agent/startSession');
+    const ok = await startSessionAndReconcile(sid);
+    expect(ok).toBe(true);
+    expect(useStore.getState().installerCorrupt).toBe(false);
   });
 
-  it('setCliMissing / openCliDialog / closeCliDialog toggle dialogOpen', () => {
-    useStore.getState().setCliMissing(['where claude (PATH)']);
-    let s = useStore.getState().cliStatus;
-    if (s.state !== 'missing') throw new Error('expected missing');
-    expect(s.dialogOpen).toBe(true);
+  it('startSessionAndReconcile leaves installerCorrupt true when start fails with CLAUDE_NOT_FOUND', async () => {
+    useStore.getState().createSession('~/x');
+    const sid = useStore.getState().sessions[0].id;
+    expect(useStore.getState().installerCorrupt).toBe(false);
 
-    useStore.getState().closeCliDialog();
-    s = useStore.getState().cliStatus;
-    if (s.state !== 'missing') throw new Error('expected missing');
-    expect(s.dialogOpen).toBe(false);
+    const agentStart = vi
+      .fn()
+      .mockResolvedValue({ ok: false, errorCode: 'CLAUDE_NOT_FOUND', error: 'not found' });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentStart }
+    };
 
-    useStore.getState().openCliDialog();
-    s = useStore.getState().cliStatus;
-    if (s.state !== 'missing') throw new Error('expected missing');
-    expect(s.dialogOpen).toBe(true);
-  });
-
-  it('checkCli without preload API marks status found (keeps app usable in tests)', async () => {
-    (window as unknown as { ccsm?: unknown }).ccsm = undefined;
-    await useStore.getState().checkCli();
-    const s = useStore.getState().cliStatus;
-    expect(s.state).toBe('found');
+    const { startSessionAndReconcile } = await import('../src/agent/startSession');
+    const ok = await startSessionAndReconcile(sid);
+    expect(ok).toBe(false);
+    expect(useStore.getState().installerCorrupt).toBe(true);
   });
 });
-
 describe('store: composer focus orchestration', () => {
   it('bumpComposerFocus increments focusInputNonce', () => {
     const start = useStore.getState().focusInputNonce;

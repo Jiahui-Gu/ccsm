@@ -101,16 +101,10 @@ async function caseNoSessionsLanding({ win, log }) {
 
 // ---------- empty-state-minimal ----------
 async function caseEmptyStateMinimal({ win, log }) {
-  // Note: the source probe additionally asserts that the "Claude CLI detected"
-  // flash doesn't leak on automatic startup when cliStatus==='found'. In the
-  // harness environment the reset between cases unconditionally sets
-  // cliStatus to {state:'found', binaryPath:'<harness>'} WITHOUT going through
-  // the startup detection pipeline that produces the flash — so the CLI flash
-  // assertion degenerates to "startup flow never ran", which is always true
-  // here and therefore not a meaningful guard. The one-per-file probe remains
-  // the canonical guard for that specific regression; see the SKIPPED note in
-  // run-all-e2e.mjs. The minimal-empty-state (hero + no starter cards + no
-  // "Working in" line) contract IS absorbed here.
+  // The minimal-empty-state (hero + no starter cards + no "Working in" line)
+  // contract is absorbed here. The cold-launch-only assertions in the per-file
+  // probe (e.g. installerCorrupt staying false on boot) remain a separate
+  // probe — see the SKIPPED note in run-all-e2e.mjs.
 
   await win.evaluate(() => {
     window.__ccsmStore.setState({
@@ -689,7 +683,6 @@ await runHarness({
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {
       window.__ccsmStore?.setState({
-        cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });
   },

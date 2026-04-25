@@ -26,7 +26,6 @@ await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 // Seed session so the chat stream has a home to live in.
 await win.evaluate(() => {
   window.__ccsmStore.setState({
-    cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
   });
 });
 

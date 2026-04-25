@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,6 @@ import {
   classifyInvocation,
   quoteCmdArg,
   ClaudeNotFoundError,
-  detectClaudeVersion,
 } from '../binary-resolver';
 
 // We test against the real `where` (Windows) / `which` (POSIX) command on
@@ -269,71 +268,5 @@ describe('quoteCmdArg', () => {
     // `foo\` inside `"..."` would normally end the quoted region badly; we
     // double the trailing backslashes before the closing quote.
     expect(quoteCmdArg('foo\\')).toBe('"foo\\\\"');
-  });
-});
-
-describe('detectClaudeVersion', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'agentory-version-'));
-  });
-  afterEach(() => {
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  });
-
-  // We build fake "binaries" that emit a fixed stdout. On Windows we use a
-  // .cmd script (detectClaudeVersion uses shell: true on Windows); on POSIX
-  // we use a chmod +x shell script.
-  function writeFakeBinary(stdout: string, exitCode: number = 0): string {
-    if (process.platform === 'win32') {
-      const p = join(tmpDir, 'fake.cmd');
-      // `echo` in cmd prints the literal string; use multiple lines if needed.
-      const lines = stdout.split('\n');
-      const body = [
-        '@echo off',
-        ...lines.map((l) => `echo ${l}`),
-        `exit /b ${exitCode}`,
-      ].join('\r\n');
-      writeFileSync(p, body);
-      return p;
-    }
-    const p = join(tmpDir, 'fake.sh');
-    writeFileSync(p, `#!/bin/sh\nprintf '%s\\n' "${stdout.replace(/"/g, '\\"')}"\nexit ${exitCode}\n`);
-    chmodSync(p, 0o755);
-    return p;
-  }
-
-  it('parses a well-formed "2.1.3" output', async () => {
-    const p = writeFakeBinary('2.1.3 (Claude Code)');
-    const got = await detectClaudeVersion(p);
-    expect(got).toBe('2.1.3');
-  });
-
-  it('parses a version embedded in a longer banner', async () => {
-    const p = writeFakeBinary('claude-code v1.0.12 — build abc123');
-    const got = await detectClaudeVersion(p);
-    expect(got).toBe('1.0.12');
-  });
-
-  it('returns null when --version output has no semver token', async () => {
-    const p = writeFakeBinary('hello world, no version here');
-    const got = await detectClaudeVersion(p);
-    expect(got).toBeNull();
-  });
-
-  it('returns null when the binary exits non-zero', async () => {
-    const p = writeFakeBinary('2.0.0', 1);
-    const got = await detectClaudeVersion(p);
-    expect(got).toBeNull();
-  });
-
-  it('returns null for a non-existent path', async () => {
-    const got = await detectClaudeVersion(join(tmpDir, 'does-not-exist'));
-    expect(got).toBeNull();
   });
 });

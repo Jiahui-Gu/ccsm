@@ -39,7 +39,6 @@ await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
 
 await win.evaluate(() => {
   window.__ccsmStore.setState({
-    cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
   });
 });
 

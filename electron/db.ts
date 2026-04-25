@@ -211,25 +211,8 @@ export function closeDb(): void {
   resetStmts();
 }
 
-const CLAUDE_BIN_PATH_KEY = 'claudeBinPath';
-
-/**
- * Load the persisted user-picked claude binary path (the "Browse for binary"
- * flow in the first-run wizard). Returns `null` when the user has not picked
- * one; caller falls back to `CCSM_CLAUDE_BIN` env then PATH.
- */
-export function loadClaudeBinPath(): string | null {
-  return loadState(CLAUDE_BIN_PATH_KEY);
-}
-
-export function saveClaudeBinPath(value: string | null): void {
-  if (value == null || value.length === 0) {
-    const d = initDb();
-    if (!stmts.deleteState) {
-      stmts.deleteState = d.prepare('DELETE FROM app_state WHERE key = ?');
-    }
-    stmts.deleteState.run(CLAUDE_BIN_PATH_KEY);
-    return;
-  }
-  saveState(CLAUDE_BIN_PATH_KEY, value);
-}
+// `claudeBinPath` was previously persisted in `app_state` so users could
+// "browse for a claude binary" via the now-deleted first-run wizard (PR-I).
+// CCSM ships the binary inside the installer (PR-B) so the renderer never
+// needs to override it; the load/save helpers + the row are gone, but the
+// `app_state` table itself stays for other keys (crashReportingOptOut etc.).

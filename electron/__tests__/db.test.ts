@@ -24,25 +24,15 @@ beforeEach(async () => {
   await freshDb();
 });
 
-describe('db: claudeBinPath', () => {
-  it('returns null when unset', async () => {
-    const { loadClaudeBinPath } = await freshDb();
-    expect(loadClaudeBinPath()).toBeNull();
-  });
-
-  it('roundtrips a saved path', async () => {
-    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
-    saveClaudeBinPath('/opt/claude/bin/claude');
-    expect(loadClaudeBinPath()).toBe('/opt/claude/bin/claude');
-  });
-
-  it('clears when passed null / empty string', async () => {
-    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
-    saveClaudeBinPath('/tmp/claude');
-    saveClaudeBinPath(null);
-    expect(loadClaudeBinPath()).toBeNull();
-    saveClaudeBinPath('/tmp/claude');
-    saveClaudeBinPath('');
-    expect(loadClaudeBinPath()).toBeNull();
+describe('db: surface', () => {
+  // Both the `messages` table (PR-H, replaced by JSONL loader) and the
+  // `claudeBinPath` helpers (PR-I, the wizard that wrote them is gone)
+  // were deleted, taking their bespoke test suites with them. The
+  // remaining `loadState` / `saveState` + integrity-check + schema
+  // versioning are exercised by `db-hardening.test.ts`. We keep a
+  // placeholder here so the test runner still discovers the file and
+  // future db features have an obvious place to land.
+  it('placeholder', () => {
+    expect(true).toBe(true);
   });
 });

@@ -15,8 +15,7 @@ import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
-import { ClaudeCliMissingDialog } from './components/ClaudeCliMissingDialog';
-import { ClaudeCliMissingBanner } from './components/ClaudeCliMissingBanner';
+import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { AgentDiagnosticBanner } from './components/AgentDiagnosticBanner';
 import { AgentInitFailedBanner } from './components/AgentInitFailedBanner';
 import { TopBannerStack } from './components/chrome/TopBanner';
@@ -94,11 +93,6 @@ export default function App() {
   const density = useStore((s) => s.density);
   const tutorialSeen = useStore((s) => s.tutorialSeen);
   const markTutorialSeen = useStore((s) => s.markTutorialSeen);
-  const checkCli = useStore((s) => s.checkCli);
-
-  useEffect(() => {
-    void checkCli();
-  }, [checkCli]);
 
   // Theme application — reactive to both the user's explicit choice AND, when
   // the choice is `system`, the OS theme. We set BOTH `.dark` (historical,
@@ -300,7 +294,7 @@ export default function App() {
                 <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
                   <WindowControls />
                 </DragRegion>
-                <ClaudeCliMissingBanner />
+                <InstallerCorruptBanner />
                 <div className="flex-1 flex items-center justify-center min-h-0">
                   {tutorialSeen ? (
                     // First-run / no-active-session empty state. Task #329 — we
@@ -370,7 +364,6 @@ export default function App() {
           />
           <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
           <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-          <ClaudeCliMissingDialog />
           <CommandPalette
             open={paletteOpen}
             onOpenChange={setPaletteOpen}
@@ -413,7 +406,7 @@ export default function App() {
                 <WindowControls />
               </DragRegion>
               <TopBannerStack>
-                <ClaudeCliMissingBanner />
+                <InstallerCorruptBanner />
                 <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
                 <AgentDiagnosticBanner />
               </TopBannerStack>
@@ -445,7 +438,6 @@ export default function App() {
         />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-        <ClaudeCliMissingDialog />
         <CommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}

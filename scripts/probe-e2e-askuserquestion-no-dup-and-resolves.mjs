@@ -69,7 +69,6 @@ try {
   // Suppress the "Claude CLI missing" first-run dialog so it can't trap focus.
   await win.evaluate(() => {
     window.__ccsmStore.setState({
-      cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
     });
   });
   await win.waitForTimeout(150);

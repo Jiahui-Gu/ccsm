@@ -50,17 +50,6 @@ async function newWin(extraEnv = {}, extraArgs = []) {
     null,
     { timeout: 20_000 }
   );
-  // Force-close the "Claude CLI missing" first-run dialog. Test environments
-  // rarely have claude.exe in a discoverable location, so the dialog opens
-  // and steals focus, which would invalidate every focus assertion below.
-  // We override cliStatus to a synthetic 'found' so the rest of the app
-  // behaves as if the binary existed.
-  await win.evaluate(() => {
-    const store = window.__ccsmStore;
-    store.setState({
-      cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
-    });
-  });
   await win.waitForTimeout(150);
   currentApp = app;
   return { app, win, ud, errors };
@@ -809,7 +798,6 @@ async function journey7_restartInteractive() {
     // Suppress the CLI-missing first-run dialog so it doesn't trap focus.
     await win.evaluate(() => {
       window.__ccsmStore.setState({
-        cliStatus: { state: 'found', binaryPath: '<probe-stub>', version: '2.1.0' },
       });
     });
     await win.waitForTimeout(150);

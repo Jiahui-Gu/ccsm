@@ -29,8 +29,7 @@ async function freshStore(saveState: ReturnType<typeof vi.fn>) {
       recentCwds: vi.fn().mockResolvedValue([]),
       topModel: vi.fn().mockResolvedValue(null),
       models: { list: vi.fn().mockResolvedValue([]) },
-      connection: { read: vi.fn().mockResolvedValue(null) },
-      cli: { retryDetect: vi.fn().mockResolvedValue({ found: true, path: '/x', version: '2.1.0' }) }
+      connection: { read: vi.fn().mockResolvedValue(null) }
     }
   };
   const storeMod = await import('../src/stores/store');

@@ -56,7 +56,6 @@ try {
 
   await win.evaluate(() => {
     window.__ccsmStore.setState({
-      cliStatus: { state: 'found', binaryPath: '<screenshot>', version: null },
       groups: [{ id: 'g1', name: 'Group A', collapsed: false, kind: 'normal' }],
       sessions: [
         { id: 's1', name: 'sample-session', state: 'idle', cwd: '~/projects/sample', model: 'claude-opus-4-7', groupId: 'g1', agentType: 'claude-code' },

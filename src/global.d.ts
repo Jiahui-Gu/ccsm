@@ -4,9 +4,6 @@ import type {
   ConnectionInfo,
   OpenSettingsResult,
   DiscoveredModel,
-  CliInstallHints,
-  CliRetryResult,
-  CliSetBinaryResult,
   LoadedCommand,
 } from './shared/ipc-types';
 
@@ -258,14 +255,6 @@ declare global {
 
       models: {
         list: () => Promise<DiscoveredModel[]>;
-      };
-
-      cli: {
-        getInstallHints: () => Promise<CliInstallHints>;
-        browseBinary: () => Promise<string | null>;
-        setBinaryPath: (p: string) => Promise<CliSetBinaryResult>;
-        openDocs: () => Promise<boolean>;
-        retryDetect: () => Promise<CliRetryResult>;
       };
     };
   }
