@@ -6,6 +6,7 @@ import {
   parseSlashInvocation,
   findSlashCommand,
   groupSlashCommands,
+  nextSectionIndex,
   type SlashCommand,
 } from '../src/slash-commands/registry';
 
@@ -163,5 +164,78 @@ describe('filterSlashCommands fuzzy matching', () => {
     ];
     const r = filterSlashCommands(merged, 'clear');
     expect(r[0].name).toBe('clear');
+  });
+});
+
+describe('nextSectionIndex', () => {
+  // Two built-ins (clear, compact), then user, project, plugin sections.
+  // Flat layout:
+  //   [0] clear           built-in
+  //   [1] compact         built-in
+  //   [2] u1              user
+  //   [3] u2              user
+  //   [4] p1              project
+  //   [5] pl1             plugin
+  //   [6] pl2             plugin
+  const fixture: SlashCommand[] = [
+    ...BUILT_IN_COMMANDS,
+    mkDynamic('u1', 'user'),
+    mkDynamic('u2', 'user'),
+    mkDynamic('p1', 'project'),
+    mkDynamic('pl1', 'plugin'),
+    mkDynamic('pl2', 'plugin'),
+  ];
+
+  it('Tab from inside built-in jumps to first row of next section (user)', () => {
+    expect(nextSectionIndex(fixture, 0, 1)).toBe(2);
+    expect(nextSectionIndex(fixture, 1, 1)).toBe(2);
+  });
+
+  it('Tab from inside user jumps to first row of project', () => {
+    expect(nextSectionIndex(fixture, 2, 1)).toBe(4);
+    expect(nextSectionIndex(fixture, 3, 1)).toBe(4);
+  });
+
+  it('Tab from the last section wraps to the first section', () => {
+    // Plugin is the last group in fixture; wrap → built-in (idx 0).
+    expect(nextSectionIndex(fixture, 5, 1)).toBe(0);
+    expect(nextSectionIndex(fixture, 6, 1)).toBe(0);
+  });
+
+  it('Shift+Tab from inside a section jumps to the start of the previous section', () => {
+    // From plugin → project.
+    expect(nextSectionIndex(fixture, 6, -1)).toBe(4);
+    // From project → user.
+    expect(nextSectionIndex(fixture, 4, -1)).toBe(2);
+    // From user → built-in.
+    expect(nextSectionIndex(fixture, 2, -1)).toBe(0);
+  });
+
+  it('Shift+Tab from the first section wraps to the last section', () => {
+    expect(nextSectionIndex(fixture, 0, -1)).toBe(5);
+    expect(nextSectionIndex(fixture, 1, -1)).toBe(5);
+  });
+
+  it('skips groups that are empty after filtering', () => {
+    // Filter so only built-in (clear) and plugin (pl1) survive — user /
+    // project / pl2 are gone. Tab from clear (idx 0) should jump straight
+    // to pl1 (idx 1 in the filtered flat list), bypassing the dropped
+    // user / project sections entirely.
+    const filtered = filterSlashCommands(fixture, 'clear').concat(
+      mkDynamic('pl1', 'plugin')
+    );
+    // Sanity: only built-in + plugin remain after groupSlashCommands drops
+    // empty buckets.
+    const groups = groupSlashCommands(filtered);
+    expect(groups.map((g) => g.source)).toEqual(['built-in', 'plugin']);
+    expect(nextSectionIndex(filtered, 0, 1)).toBe(1);
+    expect(nextSectionIndex(filtered, 1, 1)).toBe(0);
+  });
+
+  it('returns the input index when fewer than two sections are visible', () => {
+    const onlyBuiltIn = [...BUILT_IN_COMMANDS];
+    expect(nextSectionIndex(onlyBuiltIn, 0, 1)).toBe(0);
+    expect(nextSectionIndex(onlyBuiltIn, 1, -1)).toBe(1);
+    expect(nextSectionIndex([], 0, 1)).toBe(0);
   });
 });

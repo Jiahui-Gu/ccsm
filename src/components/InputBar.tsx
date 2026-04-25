@@ -15,6 +15,7 @@ import {
   dispatchSlashCommand,
   filterSlashCommands,
   loadDynamicCommands,
+  nextSectionIndex,
   type SlashCommand
 } from '../slash-commands/registry';
 import type { ImageAttachment } from '../types';
@@ -626,20 +627,12 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       }
       if (e.key === 'Tab') {
         e.preventDefault();
-        const cmd = filtered[activeIndex];
-        if (cmd) {
-          // Tab = complete-in-place, keep picker open so user can keep
-          // browsing. Insert `/<name>` without trailing space.
-          const next = `/${cmd.name}`;
-          setValue(next);
-          setDraft(sessionId, next);
-          setCaret(next.length);
-          requestAnimationFrame(() => {
-            const el = textareaRef.current;
-            if (!el) return;
-            el.setSelectionRange(next.length, next.length);
-          });
-        }
+        // Tab / Shift+Tab = jump to first row of the next / previous
+        // non-empty section. Wraps at the ends. With ≤1 visible section
+        // the helper returns the current index unchanged.
+        setActiveIndex((i) =>
+          nextSectionIndex(filtered, i, e.shiftKey ? -1 : 1)
+        );
         return;
       }
       if (e.key === 'Enter') {

@@ -369,7 +369,7 @@ const en = {
     noneHint: 'No matching commands — press Enter to send as a regular message.',
     navigate: 'navigate',
     select: 'select',
-    complete: 'complete',
+    section: 'section',
     close: 'close',
     runsLocally: 'Runs locally — not forwarded to claude.exe',
     clientTag: 'client',

@@ -264,3 +264,46 @@ export function groupSlashCommands(all: SlashCommand[]): SlashCommandGroup[] {
     .map((source) => ({ source, commands: buckets.get(source) ?? [] }))
     .filter((g) => g.commands.length > 0);
 }
+
+// Cross-section keyboard navigation. Given the current flat highlighted
+// index into `filtered` (the same array fed to `groupSlashCommands`),
+// return the flat index of the FIRST item in the next (`direction: 1`) or
+// previous (`direction: -1`) non-empty group, with wraparound at the ends.
+//
+// Used by Tab / Shift+Tab in the picker so users can hop between the six
+// source sections (built-in / user / project / plugin / skill / agent)
+// without ↓-spamming through dozens of rows. Empty groups are already
+// dropped by `groupSlashCommands`, so wraparound math doesn't need to skip
+// anything beyond what's returned.
+//
+// Returns the input index unchanged when there are 0 or 1 visible groups —
+// nothing to jump to.
+export function nextSectionIndex(
+  filtered: SlashCommand[],
+  currentIndex: number,
+  direction: 1 | -1
+): number {
+  if (filtered.length === 0) return currentIndex;
+  const groups = groupSlashCommands(filtered);
+  if (groups.length <= 1) return currentIndex;
+
+  // Compute the [start, end) flat range of each group, in display order.
+  const ranges: { source: SlashCommandSource; start: number }[] = [];
+  let cursor = 0;
+  for (const g of groups) {
+    ranges.push({ source: g.source, start: cursor });
+    cursor += g.commands.length;
+  }
+
+  // Find which group the current index belongs to.
+  let currentGroup = 0;
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    if (currentIndex >= ranges[i].start) {
+      currentGroup = i;
+      break;
+    }
+  }
+
+  const nextGroup = (currentGroup + direction + ranges.length) % ranges.length;
+  return ranges[nextGroup].start;
+}
