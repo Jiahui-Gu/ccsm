@@ -147,9 +147,14 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       hasMessages: (s.messagesBySession[sessionId]?.length ?? 0) > 0,
       // True iff there's a pending permission/plan/question prompt for this
       // session — those blocks auto-focus their own primary control (see the
-      // setTimeout(..., 150) in WaitingBlock/PlanBlock/QuestionBlock). We let
-      // them win and skip stealing focus into the textarea.
-      hasPendingWaiting: (s.messagesBySession[sessionId] ?? []).some((b) => b.kind === 'waiting'),
+      // setTimeout(..., 150) in WaitingBlock/PlanBlock, plus the sticky
+      // <QuestionStickyHost /> for AskUserQuestion). We let them win and
+      // skip stealing focus into the textarea. Unanswered `question` blocks
+      // count too — even though they no longer render in the timeline, the
+      // sticky widget owns focus until the user submits or dismisses it.
+      hasPendingWaiting: (s.messagesBySession[sessionId] ?? []).some(
+        (b) => b.kind === 'waiting' || (b.kind === 'question' && !b.answered)
+      ),
       permission: s.permission,
       focusInputNonce: s.focusInputNonce,
       // Count of pending per-line diff comments queued up to ride the next

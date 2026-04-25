@@ -130,7 +130,24 @@ export type MessageBlock =
       toolName?: string;
       toolInput?: Record<string, unknown>;
     }
-  | { kind: 'question'; id: string; requestId?: string; toolUseId?: string; questions: QuestionSpec[] }
+  | {
+      kind: 'question';
+      id: string;
+      requestId?: string;
+      toolUseId?: string;
+      questions: QuestionSpec[];
+      // Set true once the user submits or rejects via Esc. The sticky
+      // widget hides and the timeline renders a compact summary row in
+      // place of the live card. Mirrors upstream's "card 出队, timeline 留
+      // result row" behavior.
+      answered?: boolean;
+      // Per-question answers as a Q→A map (Other replaced with the typed
+      // text, multi-select labels joined by `"\n "`). Absent when the user
+      // rejected via Esc.
+      answers?: Record<string, string>;
+      // True when the user dismissed the prompt via Esc / X with no answer.
+      rejected?: boolean;
+    }
   | { kind: 'status'; id: string; tone: 'info' | 'warn'; title: string; detail?: string }
   | {
       kind: 'system';

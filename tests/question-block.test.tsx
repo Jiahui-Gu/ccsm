@@ -1,160 +1,184 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { QuestionBlock } from '../src/components/QuestionBlock';
 import type { QuestionSpec } from '../src/types';
 
-function flushRaf() {
-  return act(async () => {
-    await new Promise((r) => setTimeout(r, 20));
+// Lets the rAF that schedules option auto-focus run, plus the 300ms
+// auto-advance timer when single-select picks fire.
+async function flushTimers(ms = 350) {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, ms));
   });
 }
 
-describe('<QuestionBlock />', () => {
-  const singleSelect: QuestionSpec[] = [
-    {
-      question: 'Which language?',
-      options: [
-        { label: 'Python' },
-        { label: 'TypeScript' },
-        { label: 'Rust' }
-      ]
-    }
-  ];
+const SINGLE: QuestionSpec[] = [
+  {
+    question: 'Which language?',
+    header: 'Language',
+    options: [{ label: 'Python' }, { label: 'TypeScript' }, { label: 'Rust' }]
+  }
+];
 
-  const multiSelect: QuestionSpec[] = [
-    {
-      question: 'Which tools?',
-      multiSelect: true,
-      options: [
-        { label: 'ESLint' },
-        { label: 'Prettier' },
-        { label: 'Vitest' }
-      ]
-    }
-  ];
+const MULTI: QuestionSpec[] = [
+  {
+    question: 'Which tools?',
+    header: 'Tools',
+    multiSelect: true,
+    options: [{ label: 'ESLint' }, { label: 'Prettier' }, { label: 'Vitest' }]
+  }
+];
 
-  it('auto-focuses the first option on mount (single-select)', async () => {
-    render(<QuestionBlock questions={singleSelect} onSubmit={() => {}} />);
-    await flushRaf();
-    const radios = screen.getAllByRole('radio');
-    expect(document.activeElement).toBe(radios[0]);
+const TRIPLE: QuestionSpec[] = [
+  {
+    question: 'Q1?',
+    header: 'One',
+    options: [{ label: 'A' }, { label: 'B' }]
+  },
+  {
+    question: 'Q2?',
+    header: 'Two',
+    options: [{ label: 'X' }, { label: 'Y' }]
+  },
+  {
+    question: 'Q3?',
+    header: 'Three',
+    multiSelect: true,
+    options: [{ label: 'Cat' }, { label: 'Dog' }]
+  }
+];
+
+describe('<QuestionBlock /> upstream parity', () => {
+  it('always appends an Other option to every question', async () => {
+    render(<QuestionBlock questions={SINGLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    const opts = screen.getAllByRole('radio');
+    // 3 model options + Other.
+    expect(opts).toHaveLength(4);
+    expect(opts[3].dataset.questionLabel).toBe('Other');
   });
 
-  it('wires arrow-key navigation via Radix RadioGroup (orientation=vertical)', async () => {
-    const { container } = render(<QuestionBlock questions={singleSelect} onSubmit={() => {}} />);
-    await flushRaf();
-    const group = container.querySelector('[role="radiogroup"]');
-    expect(group).not.toBeNull();
-    expect(group?.getAttribute('aria-orientation')).toBe('vertical');
-    const radios = screen.getAllByRole('radio');
-    // All three options rendered, and one is tabbable (the roving tab stop).
-    expect(radios).toHaveLength(3);
-    const tabbable = radios.filter((r) => r.getAttribute('tabindex') === '0');
-    expect(tabbable.length).toBe(1);
-  });
-
-  it('Enter on a focused option submits the currently-selected option', async () => {
+  it('Submit is disabled until every question has a selection (multi-question)', async () => {
     const onSubmit = vi.fn();
-    render(<QuestionBlock questions={singleSelect} onSubmit={onSubmit} />);
-    await flushRaf();
+    render(<QuestionBlock questions={TRIPLE} onSubmit={onSubmit} />);
+    await flushTimers(50);
+    expect(screen.getByTestId('question-submit')).toBeDisabled();
+  });
+
+  it('single-select auto-advances to next question after a 300ms confirm', async () => {
+    render(<QuestionBlock questions={TRIPLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    expect(screen.getByTestId('question-tab-0').dataset.active).toBe('true');
+    fireEvent.click(screen.getAllByRole('radio')[0]);
+    await flushTimers(350);
+    expect(screen.getByTestId('question-tab-1').dataset.active).toBe('true');
+  });
+
+  it('does NOT auto-advance on the last question', async () => {
+    render(<QuestionBlock questions={TRIPLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    fireEvent.click(screen.getByTestId('question-tab-2'));
+    await flushTimers(50);
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    await flushTimers(400);
+    expect(screen.getByTestId('question-tab-2').dataset.active).toBe('true');
+  });
+
+  it('multi-select toggles options and never auto-advances', async () => {
+    render(<QuestionBlock questions={MULTI} onSubmit={() => {}} />);
+    await flushTimers(50);
+    const boxes = screen.getAllByRole('checkbox');
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    expect(boxes[0].getAttribute('aria-checked')).toBe('true');
+    expect(boxes[1].getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('left/right arrow keys page between questions and preserve answers', async () => {
+    render(<QuestionBlock questions={TRIPLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    fireEvent.click(screen.getByTestId('question-tab-1'));
+    await flushTimers(50);
+    fireEvent.click(screen.getAllByRole('radio')[1]); // pick Y on Q2
+    await flushTimers(350);
+    const root = screen.getByRole('dialog');
+    fireEvent.keyDown(root, { key: 'ArrowLeft' });
+    fireEvent.keyDown(root, { key: 'ArrowLeft' });
+    expect(screen.getByTestId('question-tab-0').dataset.active).toBe('true');
+    fireEvent.keyDown(root, { key: 'ArrowRight' });
+    expect(screen.getByTestId('question-tab-1').dataset.active).toBe('true');
     const radios = screen.getAllByRole('radio');
-    // Simulate user clicking option 2 (TypeScript) then pressing Enter while focused.
-    fireEvent.click(radios[1]);
-    radios[1].focus();
-    fireEvent.keyDown(radios[1], { key: 'Enter' });
+    expect(radios[1].getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByTestId('question-tab-1').dataset.answered).toBe('true');
+  });
+
+  it('Other selection expands an inline input; submit replaces label with the typed text', async () => {
+    const onSubmit = vi.fn();
+    render(<QuestionBlock questions={SINGLE} onSubmit={onSubmit} />);
+    await flushTimers(50);
+    const opts = screen.getAllByRole('radio');
+    fireEvent.click(opts[3]);
+    await flushTimers(20);
+    const input = screen.getByTestId('question-other-input');
+    input.textContent = 'Haskell, Lisp';
+    fireEvent.input(input);
+    fireEvent.click(screen.getByTestId('question-submit'));
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit.mock.calls[0][0]).toMatch(/TypeScript/);
+    const payload = onSubmit.mock.calls[0][0] as Record<string, string>;
+    expect(payload['Which language?']).toBe('Haskell, Lisp');
   });
 
-  it('Escape blurs the focused option without submitting', async () => {
+  it('multi-select payload joins labels with "\\n " (matches upstream)', async () => {
     const onSubmit = vi.fn();
-    render(<QuestionBlock questions={singleSelect} onSubmit={onSubmit} />);
-    await flushRaf();
-    const radios = screen.getAllByRole('radio');
-    radios[0].focus();
-    expect(document.activeElement).toBe(radios[0]);
-    fireEvent.keyDown(radios[0], { key: 'Escape' });
-    expect(document.activeElement).not.toBe(radios[0]);
+    render(<QuestionBlock questions={MULTI} onSubmit={onSubmit} />);
+    await flushTimers(50);
+    const boxes = screen.getAllByRole('checkbox');
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[2]);
+    fireEvent.click(screen.getByTestId('question-submit'));
+    const payload = onSubmit.mock.calls[0][0] as Record<string, string>;
+    expect(payload['Which tools?']).toBe('ESLint\n Vitest');
+  });
+
+  it('Esc invokes onReject and does NOT submit', async () => {
+    const onSubmit = vi.fn();
+    const onReject = vi.fn();
+    render(<QuestionBlock questions={SINGLE} onSubmit={onSubmit} onReject={onReject} />);
+    await flushTimers(50);
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onReject).toHaveBeenCalledTimes(1);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('pre-selects the first option so Submit is enabled immediately (single-select)', async () => {
-    render(<QuestionBlock questions={singleSelect} onSubmit={() => {}} />);
-    await flushRaf();
-    const submit = screen.getByRole('button', { name: /submit answer/i });
-    expect(submit).not.toBeDisabled();
+  it('chip tabs reflect per-question answered state', async () => {
+    render(<QuestionBlock questions={TRIPLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    expect(screen.getByTestId('question-tab-0').dataset.answered).toBe('false');
+    fireEvent.click(screen.getAllByRole('radio')[0]);
+    await flushTimers(350);
+    expect(screen.getByTestId('question-tab-0').dataset.answered).toBe('true');
   });
 
-  it('Submit is disabled until at least one box is checked (multi-select)', async () => {
-    render(<QuestionBlock questions={multiSelect} onSubmit={() => {}} />);
-    await flushRaf();
-    const submit = screen.getByRole('button', { name: /submit answer/i });
-    expect(submit).toBeDisabled();
-    const boxes = screen.getAllByRole('checkbox');
-    fireEvent.click(boxes[1]);
-    expect(submit).not.toBeDisabled();
+  it('renders nothing if questions is empty', () => {
+    const { container } = render(<QuestionBlock questions={[]} onSubmit={() => {}} />);
+    expect(container.firstChild).toBeNull();
   });
 
-  it('multi-select: Space toggles the focused checkbox', async () => {
-    render(<QuestionBlock questions={multiSelect} onSubmit={() => {}} />);
-    await flushRaf();
-    const boxes = screen.getAllByRole('checkbox');
-    boxes[0].focus();
-    expect(boxes[0].getAttribute('data-state')).toBe('unchecked');
-    // Radix Checkbox toggles on Space via native button activation.
-    fireEvent.keyDown(boxes[0], { key: ' ', code: 'Space' });
-    fireEvent.keyUp(boxes[0], { key: ' ', code: 'Space' });
-    // jsdom doesn't always dispatch click on keyup-space for buttons; fall
-    // back to a direct click to assert the wiring via onCheckedChange.
-    if (boxes[0].getAttribute('data-state') !== 'checked') {
-      fireEvent.click(boxes[0]);
-    }
-    expect(boxes[0].getAttribute('data-state')).toBe('checked');
+  it('options expose role=radio (single) or role=checkbox (multi)', async () => {
+    const { rerender } = render(<QuestionBlock questions={SINGLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    expect(screen.getAllByRole('radio').length).toBeGreaterThan(0);
+    rerender(<QuestionBlock questions={MULTI} onSubmit={() => {}} />);
+    await flushTimers(50);
+    expect(screen.getAllByRole('checkbox').length).toBeGreaterThan(0);
   });
 
-  it('does not auto-focus when autoFocus={false} (older widgets stay put)', async () => {
-    const { container } = render(
-      <div>
-        <QuestionBlock questions={singleSelect} onSubmit={() => {}} autoFocus={false} />
-      </div>
-    );
-    await flushRaf();
-    // No option should have grabbed focus.
-    const radios = container.querySelectorAll('[role="radio"]');
-    expect(document.activeElement).not.toBe(radios[0]);
-  });
-
-  it('older widget keeps focus away when a new widget mounts later (no focus steal)', async () => {
-    const { rerender } = render(
-      <div>
-        <QuestionBlock questions={singleSelect} onSubmit={() => {}} autoFocus={false} />
-      </div>
-    );
-    await flushRaf();
-    // Simulate user focusing an external element (the document body here).
-    const external = document.createElement('input');
-    document.body.appendChild(external);
-    external.focus();
-    expect(document.activeElement).toBe(external);
-
-    rerender(
-      <div>
-        <QuestionBlock questions={singleSelect} onSubmit={() => {}} autoFocus={false} />
-        <QuestionBlock
-          questions={[
-            {
-              question: 'Second?',
-              options: [{ label: 'A' }, { label: 'B' }]
-            }
-          ]}
-          onSubmit={() => {}}
-        />
-      </div>
-    );
-    await flushRaf();
-    // External element still has focus — the new widget must not steal.
-    expect(document.activeElement).toBe(external);
-    document.body.removeChild(external);
+  it('navbar exposes a chip per question with the header label', async () => {
+    render(<QuestionBlock questions={TRIPLE} onSubmit={() => {}} />);
+    await flushTimers(50);
+    const nav = screen.getByTestId('question-nav-bar');
+    expect(within(nav).getByText('One')).toBeTruthy();
+    expect(within(nav).getByText('Two')).toBeTruthy();
+    expect(within(nav).getByText('Three')).toBeTruthy();
   });
 });

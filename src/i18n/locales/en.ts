@@ -360,7 +360,16 @@ const en = {
   questionBlock: {
     title: 'Question awaiting answer',
     submit: 'Submit answer',
-    submitted: 'Submitted'
+    submitted: 'Submitted',
+    cancel: 'Dismiss',
+    other: 'Other',
+    otherPlaceholder: 'Type your answer…',
+    pageHint: 'Question {{current}} of {{total}}',
+    singleHint: '↑/↓ option · Enter select · Esc dismiss',
+    tabFallback: 'Q{{n}}',
+    timelineLabel: 'Asked',
+    timelineAnswered: 'You answered',
+    timelineRejected: 'Dismissed without answer'
   },
   slashCommands: {
     pickerTitle: 'Slash commands',

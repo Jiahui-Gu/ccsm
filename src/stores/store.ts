@@ -459,6 +459,16 @@ type Actions = {
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
+  /** Mark a `kind: 'question'` block as answered (or rejected via Esc). The
+   *  sticky AskUserQuestion widget hides for this block once `answered`
+   *  flips true; the timeline keeps the block in place but renders a
+   *  compact summary row instead of the live card. Mirrors upstream's
+   *  "card 出队 / timeline 留 result row" behavior. */
+  markQuestionAnswered: (
+    sessionId: string,
+    blockId: string,
+    payload: { answers: Record<string, string>; rejected: boolean }
+  ) => void;
   streamAssistantText: (sessionId: string, blockId: string, appendText: string, done: boolean) => void;
   // (#336) Stream the in-flight `command` arg of a Bash tool_use as the
   // model types it. Creates a placeholder tool block on the first delta
@@ -1567,6 +1577,28 @@ export const useStore = create<State & Actions>((set, get) => ({
       const finalNext = toAppend.length > 0 ? next.concat(toAppend) : next;
       return {
         messagesBySession: { ...s.messagesBySession, [sessionId]: finalNext }
+      };
+    });
+  },
+
+  markQuestionAnswered: (sessionId, blockId, payload) => {
+    set((s) => {
+      const prev = s.messagesBySession[sessionId] ?? [];
+      const idx = prev.findIndex((b) => b.id === blockId);
+      if (idx === -1) return s;
+      const existing = prev[idx];
+      if (existing.kind !== 'question') return s;
+      // Idempotent: ignore double-submit (StrictMode, race with re-render).
+      if (existing.answered) return s;
+      const next = prev.slice();
+      next[idx] = {
+        ...existing,
+        answered: true,
+        answers: payload.answers,
+        rejected: payload.rejected
+      };
+      return {
+        messagesBySession: { ...s.messagesBySession, [sessionId]: next }
       };
     });
   },
