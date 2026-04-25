@@ -420,6 +420,7 @@ export default function App() {
                 <AgentDiagnosticBanner />
               </TopBannerStack>
               <ChatStream />
+              <QuestionStickyHost sessionId={active.id} />
               <StatusBar
                 cwd={active.cwd}
                 cwdMissing={active.cwdMissing}
@@ -440,7 +441,6 @@ export default function App() {
                 onChangeModel={(m) => setSessionModel(active.id, m)}
                 onChangePermission={setPermission}
               />
-              <QuestionStickyHost sessionId={active.id} />
               <InputBar sessionId={active.id} />
             </main>
           }

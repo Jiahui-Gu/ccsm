@@ -250,7 +250,6 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
   return (
     <motion.div
       ref={rootRef}
-      data-question-sticky
       role="dialog"
       aria-label={t('questionBlock.title')}
       initial={{ opacity: 0, y: 8 }}
