@@ -604,7 +604,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (!started) {
       const ok = await startSessionAndReconcile(sessionId);
       if (!ok) {
-        // All failure branches (CLAUDE_NOT_FOUND → CLI wizard,
+        // All failure branches (CLAUDE_NOT_FOUND → installer-corrupt banner,
         // CWD_MISSING → inline error + sidebar dim, generic →
         // sessionInitFailures banner) are reconciled inside the helper.
         // We just flip running off and bail out of the send path.

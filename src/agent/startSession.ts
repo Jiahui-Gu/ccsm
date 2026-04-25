@@ -51,6 +51,11 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   if (res.ok) {
     store.clearSessionInitFailure(sessionId);
     store.markStarted(sessionId);
+    // Any successful start proves the bundled CLI binary is reachable, so
+    // clear the installer-corrupt banner. Idempotent: harmless when the flag
+    // is already false. Without this reset the banner stayed visible until
+    // app restart even after the user reinstalled and a session launched OK.
+    store.setInstallerCorrupt(false);
     return true;
   }
 

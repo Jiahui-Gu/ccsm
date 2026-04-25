@@ -138,7 +138,7 @@ export interface DiagnosticEntry {
 /**
  * Per-session init-failure flag. Populated by InputBar when `agent:start`
  * returns `!ok` with an error code other than the ones with bespoke UX
- * (CLAUDE_NOT_FOUND → CLI wizard; CWD_MISSING → inline error block + StatusBar
+ * (CLAUDE_NOT_FOUND → installer-corrupt banner; CWD_MISSING → inline error block + StatusBar
  * hint). Cleared on successful retry or when the user repicks the cwd/model.
  *
  * The UI surfaces this as an actionable banner ("Failed to start Claude — Retry

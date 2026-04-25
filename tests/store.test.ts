@@ -632,6 +632,45 @@ describe('store: installerCorrupt flag', () => {
     useStore.getState().setInstallerCorrupt(false);
     expect(useStore.getState().installerCorrupt).toBe(false);
   });
+
+  it('startSessionAndReconcile clears installerCorrupt on a successful start', async () => {
+    // Simulate the recovery flow: a previous start failed with
+    // CLAUDE_NOT_FOUND (banner up), the user reinstalled, then the next
+    // start succeeds. The success path must lower the banner — without the
+    // reset it stays visible until app restart.
+    useStore.getState().createSession('~/x');
+    const sid = useStore.getState().sessions[0].id;
+    useStore.getState().setInstallerCorrupt(true);
+    expect(useStore.getState().installerCorrupt).toBe(true);
+
+    const agentStart = vi.fn().mockResolvedValue({ ok: true });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentStart }
+    };
+
+    const { startSessionAndReconcile } = await import('../src/agent/startSession');
+    const ok = await startSessionAndReconcile(sid);
+    expect(ok).toBe(true);
+    expect(useStore.getState().installerCorrupt).toBe(false);
+  });
+
+  it('startSessionAndReconcile leaves installerCorrupt true when start fails with CLAUDE_NOT_FOUND', async () => {
+    useStore.getState().createSession('~/x');
+    const sid = useStore.getState().sessions[0].id;
+    expect(useStore.getState().installerCorrupt).toBe(false);
+
+    const agentStart = vi
+      .fn()
+      .mockResolvedValue({ ok: false, errorCode: 'CLAUDE_NOT_FOUND', error: 'not found' });
+    (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
+      ccsm: { agentStart }
+    };
+
+    const { startSessionAndReconcile } = await import('../src/agent/startSession');
+    const ok = await startSessionAndReconcile(sid);
+    expect(ok).toBe(false);
+    expect(useStore.getState().installerCorrupt).toBe(true);
+  });
 });
 describe('store: composer focus orchestration', () => {
   it('bumpComposerFocus increments focusInputNonce', () => {

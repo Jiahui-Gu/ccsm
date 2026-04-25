@@ -2,7 +2,8 @@
 //
 // Visual probe for the banner trio refactor (#237). Renders each of the
 // three banners — AgentInitFailedBanner, AgentDiagnosticBanner,
-// ClaudeCliMissingBanner — twice: once with the BEFORE markup (each banner
+// ClaudeCliMissingBanner (removed in PR-I; this probe is a historical
+// artifact of #237) — twice: once with the BEFORE markup (each banner
 // owning its own layout / a11y attrs) and once with the AFTER markup
 // produced by the unified <TopBanner /> wrapper.
 //
