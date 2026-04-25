@@ -1,8 +1,29 @@
 import type { WebContents } from 'electron';
-import { ClaudeSpawnFailedError, type StartOptions, type PermissionMode, type AgentMessage } from './sessions';
+import type { StartOptions, PermissionMode, AgentMessage } from './sessions';
 import { ClaudeNotFoundError } from './binary-resolver';
 import type { StartResult } from './start-result-types';
-import { createRunner, type Runner } from '../agent-sdk/runner-factory';
+import { SdkSessionRunner } from '../agent-sdk/sessions';
+
+/**
+ * Runner contract used by SessionsManager. The hand-written legacy runner
+ * (`SessionRunner`) was removed in PR-C; `SdkSessionRunner` is now the only
+ * implementation. The interface is kept explicit so a future second runner
+ * (or a test fake) drops in without retouching the manager.
+ */
+interface Runner {
+  readonly id: string;
+  getPid(): number | undefined;
+  start(opts: StartOptions): Promise<void>;
+  send(text: string): void;
+  sendContent(content: readonly unknown[]): void;
+  interrupt(): Promise<void>;
+  cancelToolUse(toolUseId: string): Promise<void>;
+  setPermissionMode(mode: PermissionMode): Promise<void>;
+  setModel(model?: string): Promise<void>;
+  resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean;
+  resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean;
+  close(): void;
+}
 
 export type { StartErrorCode, StartResult } from './start-result-types';
 
@@ -72,7 +93,7 @@ class SessionsManager {
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
     try {
-      const runner = createRunner(
+      const runner: Runner = new SdkSessionRunner(
         sessionId,
         (msg: AgentMessage) => this.emit('agent:event', { sessionId, message: msg }),
         ({ error }) => {
@@ -98,14 +119,6 @@ class SessionsManager {
           error: err.message,
           errorCode: 'CLAUDE_NOT_FOUND',
           searchedPaths: err.searchedPaths,
-        };
-      }
-      if (err instanceof ClaudeSpawnFailedError) {
-        return {
-          ok: false,
-          error: err.message,
-          errorCode: 'CLI_SPAWN_FAILED',
-          detail: err.detail,
         };
       }
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
