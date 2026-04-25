@@ -346,7 +346,7 @@ const zh: EnCatalog = {
     noneHint: '没有匹配的命令 — 按 Enter 作为普通消息发送。',
     navigate: '上下移动',
     select: '选择',
-    complete: '补全',
+    section: '切换分组',
     close: '关闭',
     runsLocally: '本地运行 — 不会转发给 claude.exe',
     clientTag: '本地',

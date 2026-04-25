@@ -201,7 +201,7 @@ export function SlashCommandPicker({
           <kbd className="font-mono">Enter</kbd> {t('slashCommands.select')}
         </span>
         <span>
-          <kbd className="font-mono">Tab</kbd> {t('slashCommands.complete')}
+          <kbd className="font-mono">Tab</kbd> {t('slashCommands.section')}
         </span>
         <span>
           <kbd className="font-mono">Esc</kbd> {t('slashCommands.close')}
