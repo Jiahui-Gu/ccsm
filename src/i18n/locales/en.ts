@@ -342,20 +342,31 @@ const en = {
     promptTitle: 'Permission requested',
     allow: 'Allow',
     deny: 'Deny',
-    // Display labels for the four official permission modes. The underlying
-    // VALUES (default / acceptEdits / plan / bypassPermissions) are CLI argv
-    // and remain in English everywhere — only these human-readable labels
-    // are localized.
+    // Display labels for the official permission modes. The underlying
+    // VALUES (default / acceptEdits / plan / bypassPermissions / auto) are
+    // CLI argv and remain in English everywhere — only these human-readable
+    // labels are localized.
     modeLabel: 'Permission mode',
     modes: {
       default: 'default',
       acceptEdits: 'accept edits',
       plan: 'plan',
-      bypassPermissions: 'bypass'
-    }
+      bypassPermissions: 'bypass',
+      auto: 'auto'
+    },
+    autoUnsupportedTitle: 'Auto mode unavailable',
+    autoUnsupportedBody: 'This account or model does not support auto mode yet. Reverted to default.'
   },
   permissionPrompt: {
     title: 'Permission required',
+    titleByTool: {
+      bash: 'Allow this bash command?',
+      webFetch: 'Allow fetching this URL?',
+      webSearch: 'Allow searching for this query?',
+      edit: 'Allow editing this file?',
+      skill: 'Allow running this skill?',
+      fallback: 'Permission required'
+    },
     allowBtn: 'Allow (Y)',
     // Scope-explicit copy. The fast-path keys off toolName only, and the
     // allowlist lives in the in-memory store — so the truth is "all uses of
@@ -529,14 +540,17 @@ const en = {
     modeDefaultLabel: 'Default',
     modeAcceptEditsLabel: 'Accept Edits',
     modeBypassLabel: 'Bypass Permissions',
+    modeAutoLabel: 'Auto',
     modePlanDesc: 'Read-only analysis. No edits, no shell.',
     modeDefaultDesc: 'Auto-approve reads. Ask before edits and shell.',
     modeAcceptEditsDesc: 'Auto-approve reads and edits. Ask before shell.',
     modeBypassDesc: 'Auto-approve everything. Use with care.',
+    modeAutoDesc: 'Classifier-driven approvals. Research preview, requires Sonnet 4.6+.',
     modePlanTooltip: 'Plan mode \u2014 read-only analysis; no file edits or shell until you approve.',
     modeDefaultTooltip: 'Default \u2014 auto-approve reads; ask before edits and shell.',
     modeAcceptEditsTooltip: 'Accept Edits \u2014 auto-approve reads and file edits; ask before shell.',
     modeBypassTooltip: 'Bypass Permissions \u2014 every tool call runs without asking. Use with care.',
+    modeAutoTooltip: 'Auto \u2014 research preview, requires Sonnet 4.6+. Falls back to Default if your account or model is not eligible.',
     contextLabel: 'Context',
     // Mirrors the official VS Code Claude extension's auto-compact tooltip
     // wording so users who switch between surfaces see the same prompt.

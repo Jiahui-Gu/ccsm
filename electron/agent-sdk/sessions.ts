@@ -86,9 +86,13 @@ function resolveClaudeConfigDir(explicit: string | undefined): string {
 
 /**
  * Coerce ccsm's superset of permission modes (which still carries legacy UI
- * aliases like 'yolo' / 'ask') into the strict 4-value SDK mode. Throws on
+ * aliases like 'yolo' / 'ask') into the strict SDK mode. Throws on
  * unknown values — the manager.ts catch translates that into `unknown_mode`
  * for the renderer.
+ *
+ * `auto` is passed through to the SDK (research-preview; the SDK will reject
+ * with an error if the current account/model doesn't support it — the
+ * renderer catches `{ ok:false }` and falls back to `default`).
  */
 function toSdkPermissionMode(
   mode: PermissionMode | undefined,
@@ -105,7 +109,12 @@ function toSdkPermissionMode(
     case 'dontAsk':
       return 'default';
     case 'auto':
-      return 'acceptEdits';
+      // Forward 'auto' to the SDK as-is. The SDK's PermissionMode type is
+      // narrower than the CLI's `--permission-mode` flag (which accepts
+      // 'auto'); cast through unknown rather than widening the return type
+      // so the rest of this module keeps the strict 4-value contract for
+      // the SessionStartOptions path.
+      return 'auto' as unknown as 'acceptEdits';
     case 'yolo':
       return 'bypassPermissions';
     default:
@@ -570,12 +579,21 @@ export class SdkSessionRunner {
     try {
       await this.query.setPermissionMode(sdkMode);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Distinguish hard SDK rejection (unsupported mode for this
+      // account/model — typically `auto` research-preview gating) from a
+      // transient timeout. Hard rejections are re-thrown so manager.ts /
+      // main.ts can surface `{ ok: false, error }` to the renderer, which
+      // falls back to 'default' with a toast. Timeouts stay as
+      // diagnostics — the user already sees session-level "unresponsive"
+      // affordances and we don't want to flap the picker on a slow turn.
+      if (/unsupported|not supported|requires|capability|gated|forbidden|denied/i.test(msg)) {
+        throw err;
+      }
       this.onDiagnostic({
         level: 'warn',
         code: 'set_permission_mode_timeout',
-        message: `Agent unresponsive to permission-mode change (${
-          err instanceof Error ? err.message : String(err)
-        }).`,
+        message: `Agent unresponsive to permission-mode change (${msg}).`,
       });
     }
   }

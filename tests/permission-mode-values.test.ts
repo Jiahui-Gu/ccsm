@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 import en from '../src/i18n/locales/en';
 import zh from '../src/i18n/locales/zh';
 
-const PERMISSION_MODE_VALUES = ['default', 'acceptEdits', 'plan', 'bypassPermissions'] as const;
+const PERMISSION_MODE_VALUES = ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'auto'] as const;
 
 describe('permission mode values', () => {
   it('en catalog exposes every official mode key', () => {
