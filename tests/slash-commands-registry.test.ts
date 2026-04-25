@@ -11,7 +11,7 @@ import {
 
 function mkDynamic(
   name: string,
-  source: 'user' | 'project' | 'plugin',
+  source: 'user' | 'project' | 'plugin' | 'skill' | 'agent',
   description?: string,
   pluginId?: string
 ): SlashCommand {
@@ -110,24 +110,58 @@ describe('parseSlashInvocation extras', () => {
 });
 
 describe('groupSlashCommands', () => {
-  it('groups by source in built-in → user → project → plugin order', () => {
+  it('groups by source in built-in → user → project → plugin → skill → agent order', () => {
     const merged: SlashCommand[] = [
       ...BUILT_IN_COMMANDS,
       mkDynamic('plug-cmd', 'plugin', 'p', 'sp'),
       mkDynamic('user-cmd', 'user', 'u'),
       mkDynamic('proj-cmd', 'project', 'pj'),
+      mkDynamic('skill-cmd', 'skill', 's'),
+      mkDynamic('agent-cmd', 'agent', 'a'),
     ];
     const groups = groupSlashCommands(merged);
-    expect(groups.map((g) => g.source)).toEqual(['built-in', 'user', 'project', 'plugin']);
+    expect(groups.map((g) => g.source)).toEqual([
+      'built-in',
+      'user',
+      'project',
+      'plugin',
+      'skill',
+      'agent',
+    ]);
     expect(groups[0].commands.map((c) => c.name)).toEqual(['clear', 'compact']);
     expect(groups[1].commands.map((c) => c.name)).toEqual(['user-cmd']);
     expect(groups[2].commands.map((c) => c.name)).toEqual(['proj-cmd']);
     expect(groups[3].commands.map((c) => c.name)).toEqual(['plug-cmd']);
+    expect(groups[4].commands.map((c) => c.name)).toEqual(['skill-cmd']);
+    expect(groups[5].commands.map((c) => c.name)).toEqual(['agent-cmd']);
   });
 
   it('omits empty groups', () => {
     const groups = groupSlashCommands(BUILT_IN_COMMANDS);
     expect(groups).toHaveLength(1);
     expect(groups[0].source).toBe('built-in');
+  });
+});
+
+describe('filterSlashCommands fuzzy matching', () => {
+  it('tolerates a single typo in the command name', () => {
+    const merged = [
+      ...BUILT_IN_COMMANDS,
+      mkDynamic('think', 'user', 'extended thinking'),
+    ];
+    // "thnk" is a one-letter deletion — strict substring matchers reject
+    // it, but Fuse should still surface /think.
+    const r = filterSlashCommands(merged, 'thnk');
+    expect(r.some((c) => c.name === 'think')).toBe(true);
+  });
+
+  it('still pins exact-name matches above fuzzier candidates', () => {
+    const merged = [
+      ...BUILT_IN_COMMANDS,
+      mkDynamic('clearance', 'user', 'unrelated'),
+      mkDynamic('declare', 'user', 'something with clear inside'),
+    ];
+    const r = filterSlashCommands(merged, 'clear');
+    expect(r[0].name).toBe('clear');
   });
 });
