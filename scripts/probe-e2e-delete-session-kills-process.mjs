@@ -12,6 +12,15 @@
 //   `globalThis.__ccsmDebug` backdoor in main.ts as the liveness signal:
 //   before delete the count must be > 0; after delete it must drop to 0.
 //
+// False-pass guard (#77 A1): `count → 0` could also be satisfied by the CLI
+// self-crashing during the 5s poll (the manager's onExit callback also
+// removes the runner from the map). To distinguish handler-driven teardown
+// from incidental CLI death, we baseline `__ccsmDebug.selfExitCount()`
+// before deleteSession and assert it didn't move during the poll. The
+// counter only increments when onExit fires while the runner is still in
+// the map — close() deletes first, so handler-driven teardown leaves the
+// counter unchanged.
+//
 // Strategy:
 //   - Launch Electron with an isolated userData dir + a real CLI present on
 //     the machine (resolved through CCSM_CLAUDE_BIN / PATH by main).
@@ -145,6 +154,15 @@ try {
     `[probe-e2e-delete-session-kills-process] activeSessionCount before delete = ${countBefore}`
   );
 
+  // Baseline self-exit counter for the false-pass guard (see header).
+  const selfExitsBefore = await app.evaluate(() => {
+    const dbg = globalThis.__ccsmDebug;
+    return dbg && dbg.selfExitCount ? dbg.selfExitCount() : -1;
+  });
+  if (selfExitsBefore < 0) {
+    fail('__ccsmDebug.selfExitCount missing — main.ts backdoor stale', app);
+  }
+
   // Trigger the store's deleteSession — the path under test. This should
   // dispatch window.ccsm.agentClose(sid) as a side effect, which calls
   // sessions.close(sid) in the manager and removes the runner from the map.
@@ -168,6 +186,22 @@ try {
   if (countAfter !== 0) {
     fail(
       `activeSessionCount=${countAfter} 5s after deleteSession; expected 0 — zombie regression`,
+      app
+    );
+  }
+
+  // False-pass guard: a CLI self-crash during the poll would also drive the
+  // count to 0 without deleteSession's IPC round-trip ever firing.
+  const selfExitsAfter = await app.evaluate(() => {
+    const dbg = globalThis.__ccsmDebug;
+    return dbg ? dbg.selfExitCount() : -1;
+  });
+  if (selfExitsAfter !== selfExitsBefore) {
+    fail(
+      `selfExitCount went ${selfExitsBefore} -> ${selfExitsAfter} during the ` +
+        `deleteSession poll window. The CLI self-exited; the close path may ` +
+        `not have run. Cannot distinguish handler-driven teardown from ` +
+        `incidental CLI death — false pass.`,
       app
     );
   }
