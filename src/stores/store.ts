@@ -295,6 +295,12 @@ type State = {
    * the user on a randomly-open menu after restart).
    */
   openPopoverId: string | null;
+  // task322: continue-after-interrupt — per-session record of how the most
+  // recent turn ended. 'interrupted' triggers the InputBar continue-hint;
+  // 'ok' / missing = no hint. Set in `markInterrupted`, cleared in
+  // `setRunning(id, true)` when a fresh turn begins. Not persisted — a hint
+  // surviving an app reload would feel stale.
+  lastTurnEnd: Record<string, 'ok' | 'interrupted'>;
 };
 
 /**
@@ -545,6 +551,10 @@ type Actions = {
   /** Drop ALL pending comments for `sessionId`. Called from the send path
    *  after a prompt has been consumed. */
   clearDiffComments: (sessionId: string) => void;
+  // task322: continue-after-interrupt — explicit clear used when the user
+  // sends any message (continue or otherwise) so the hint dismisses
+  // immediately, before the round-trip that would clear it via setRunning.
+  clearLastTurnEnd: (sessionId: string) => void;
 };
 
 function nextId(prefix: string): string {
@@ -859,6 +869,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   sessionInitFailures: {},
   allowAlwaysTools: [],
   openPopoverId: null,
+  // task322: continue-after-interrupt
+  lastTurnEnd: {},
   pendingDiffComments: {},
 
   selectSession: (id) => {
@@ -1743,7 +1755,17 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = { ...s.runningSessions };
       if (running) next[sessionId] = true;
       else delete next[sessionId];
-      return { runningSessions: next };
+      // task322: a fresh turn starting clears any prior interrupt-hint state
+      // for this session. The hint is meant to bridge the gap between Stop
+      // and the next user keystroke — once a turn is back in flight, it's
+      // stale by definition.
+      const patch: Partial<State> = { runningSessions: next };
+      if (running && s.lastTurnEnd[sessionId]) {
+        const nextLte = { ...s.lastTurnEnd };
+        delete nextLte[sessionId];
+        patch.lastTurnEnd = nextLte;
+      }
+      return patch;
     });
   },
 
@@ -1760,11 +1782,19 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   markInterrupted: (sessionId) => {
-    set((s) =>
-      s.interruptedSessions[sessionId]
-        ? s
-        : { interruptedSessions: { ...s.interruptedSessions, [sessionId]: true } }
-    );
+    set((s) => {
+      const patch: Partial<State> = {};
+      if (!s.interruptedSessions[sessionId]) {
+        patch.interruptedSessions = { ...s.interruptedSessions, [sessionId]: true };
+      }
+      // task322: record interrupt as the turn-end disposition so the InputBar
+      // can offer a "press Enter to continue" hint. Survives the imminent
+      // result-frame which only consumes `interruptedSessions`.
+      if (s.lastTurnEnd[sessionId] !== 'interrupted') {
+        patch.lastTurnEnd = { ...s.lastTurnEnd, [sessionId]: 'interrupted' };
+      }
+      return Object.keys(patch).length === 0 ? s : patch;
+    });
   },
 
   consumeInterrupted: (sessionId) => {
@@ -2129,6 +2159,17 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = { ...s.sessionInitFailures };
       delete next[sessionId];
       return { sessionInitFailures: next };
+    });
+  },
+  // task322: continue-after-interrupt — explicit clear used when the user
+  // sends any message so the hint dismisses without waiting for the next
+  // turn to start (which is when setRunning(true) would otherwise wipe it).
+  clearLastTurnEnd: (sessionId) => {
+    set((s) => {
+      if (!s.lastTurnEnd[sessionId]) return s;
+      const next = { ...s.lastTurnEnd };
+      delete next[sessionId];
+      return { lastTurnEnd: next };
     });
   },
 }));

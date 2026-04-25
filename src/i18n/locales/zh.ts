@@ -126,7 +126,9 @@ const zh: EnCatalog = {
     runningPlaceholderDefault: '执行中… 工具调用前会询问权限（Esc 中断，Enter 排队）',
     runningPlaceholderAcceptEdits: '执行中… 自动接受编辑（Esc 中断，Enter 排队）',
     runningPlaceholderBypass: '执行中… 跳过所有权限询问（Esc 中断，Enter 排队）',
-    runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）'
+    runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）',
+    // task322: continue-after-interrupt
+    continueAfterInterruptHint: '按 Enter 继续，或输入新消息'
   },
   chatStream: {
     emptyHint: '输入消息后按'

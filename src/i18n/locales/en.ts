@@ -131,7 +131,9 @@ const en = {
     runningPlaceholderDefault: 'Running… will ask for permission on tool use (Esc to interrupt, Enter to queue)',
     runningPlaceholderAcceptEdits: 'Running… auto-accepting edits (Esc to interrupt, Enter to queue)',
     runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
-    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)'
+    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)',
+    // task322: continue-after-interrupt
+    continueAfterInterruptHint: 'Press Enter to continue, or type a new message'
   },
   chatStream: {
     emptyHint: 'Type a message and press'

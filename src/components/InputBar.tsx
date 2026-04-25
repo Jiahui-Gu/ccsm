@@ -138,7 +138,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // Perf: subscribe to all reactive per-session signals via useShallow so this
   // component only re-renders when one of these specific values changes
   // (instead of once per any store mutation, like an appendBlocks chunk).
-  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount } = useStore(
+  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount, lastTurnEnd } = useStore(
     useShallow((s) => ({
       session: s.sessions.find((x) => x.id === sessionId),
       started: !!s.startedSessions[sessionId],
@@ -157,11 +157,14 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       // comments will be sent" indicator + lets the send path skip the
       // serialization round-trip when there are none.
       pendingDiffCommentsCount: Object.keys(s.pendingDiffComments[sessionId] ?? {}).length,
+      // task322: 'interrupted' iff the last turn for this session ended via
+      // user-initiated stop. Drives the continue-hint affordance below.
+      lastTurnEnd: s.lastTurnEnd[sessionId] ?? null,
     }))
   );
   // Action references are stable across renders in Zustand v5, so reading them
   // via getState() avoids registering listeners that would never fire anyway.
-  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments } =
+  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments, clearLastTurnEnd } =
     useStore.getState();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -237,6 +240,36 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     setRejections([]);
   }, [sessionId]);
 
+  // task322: continue-after-interrupt — show a one-line hint above the
+  // composer after the user stops a turn, telling them they can press Enter
+  // (with empty composer) to send the literal `continue`. Gate conditions:
+  //   (a) last turn ended via interrupt (store: lastTurnEnd === 'interrupted')
+  //   (b) composer is empty (no draft, no attachments)
+  //   (c) user hasn't typed anything since the interrupt (typedSinceInterrupt
+  //       latches true on the first keystroke, resets on a fresh interrupt)
+  //   (d) agent is not currently running
+  // The hint dismisses when any of (b)/(c)/(d) flips, when the user sends a
+  // message (clearLastTurnEnd in `send()`), or when a new turn starts
+  // (setRunning(true) clears lastTurnEnd in the store).
+  const [typedSinceInterrupt, setTypedSinceInterrupt] = useState(false);
+  // Reset the typed-since-interrupt latch every time we observe a new
+  // 'interrupted' transition. The session-id change effect above also resets
+  // this implicitly (component unmount/remount), but session switches reuse
+  // the same component instance — so we re-arm explicitly here.
+  const lastSeenInterruptRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${sessionId}:${lastTurnEnd ?? 'none'}`;
+    if (lastSeenInterruptRef.current === key) return;
+    lastSeenInterruptRef.current = key;
+    if (lastTurnEnd === 'interrupted') setTypedSinceInterrupt(false);
+  }, [sessionId, lastTurnEnd]);
+  const showContinueHint =
+    lastTurnEnd === 'interrupted' &&
+    !running &&
+    value === '' &&
+    attachments.length === 0 &&
+    !typedSinceInterrupt;
+
   useEffect(() => {
     if (focusNonceSeenRef.current === null) {
       focusNonceSeenRef.current = focusInputNonce;
@@ -259,6 +292,12 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
   function update(next: string) {
     setValue(next);
+    // task322: any keystroke (even one that lands an empty string back —
+    // e.g. paste-then-undo) counts as user activity that dismisses the
+    // continue-after-interrupt hint. We only flip the latch when the value
+    // actually has content; pure deletions back to "" leave the hint armed
+    // (the user might still hit Enter to continue).
+    if (next !== '') setTypedSinceInterrupt(true);
     // Any edit re-arms the picker (so the user can dismiss with Esc, then
     // keep typing to reopen it if they're still in the `/...` prefix).
     setPickerDismissed(false);
@@ -442,6 +481,11 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // Valid turns: text with or without images, OR images with no text. Empty
     // text + no images is a no-op (same as before).
     if (!text && imgs.length === 0) return;
+    // task322: any send dismisses the continue-after-interrupt hint
+    // synchronously. setRunning(true) below would also clear it via the
+    // store, but doing it here covers the queued-while-running branch (which
+    // doesn't flip running) and avoids a one-frame flash of the hint.
+    clearLastTurnEnd(sessionId);
 
     // Slash-command fast path: if the whole message is `/<name> [args]` and
     // a client-side handler is registered, run it locally and return. This
@@ -613,6 +657,13 @@ export function InputBar({ sessionId }: { sessionId: string }) {
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // task322: empty composer + active continue-hint → send literal
+      // 'continue' through the normal send path. This is the affordance the
+      // hint advertises; without it, empty-Enter would no-op as before.
+      if (showContinueHint) {
+        void send('continue');
+        return;
+      }
       send();
     }
   }
@@ -683,6 +734,18 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* task322: continue-after-interrupt hint. One-line muted row above
+          the composer; empty-Enter while it's visible sends `continue`. */}
+      {showContinueHint && (
+        <div
+          data-testid="continue-after-interrupt-hint"
+          className="mb-1 px-1 text-meta text-fg-tertiary select-none"
+          aria-live="polite"
+        >
+          {t('chat.continueAfterInterruptHint')}
+        </div>
+      )}
 
       <div
         className={cn(
