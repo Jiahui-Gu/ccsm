@@ -36,6 +36,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: String(PORT) }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 try {
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
@@ -193,3 +195,4 @@ try {
   closeServer();
   ud.cleanup();
 }
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

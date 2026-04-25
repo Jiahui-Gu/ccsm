@@ -19,6 +19,8 @@ const app = await electron.launch({
   cwd: root,
   env: { ...process.env, NODE_ENV: 'development' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
@@ -54,3 +56,4 @@ console.log(`  hide-on-close=true restore-via-show=true`);
 
 // Set isQuitting via app menu/tray would be ideal; instead just force-kill.
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

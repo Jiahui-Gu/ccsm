@@ -57,6 +57,8 @@ const app = await electron.launch({
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 // Surface main-process stderr so a crash inside initDb shows up here
 // instead of silently timing out the renderer wait below.
 app.process().stderr?.on('data', (b) => {
@@ -119,3 +121,4 @@ try {
 console.log('\n[probe-e2e-db-corruption-recovery] OK');
 console.log(`  pre-corrupted ${dbFile} (256 random bytes)`);
 console.log(`  app booted, backup created (${backups.join(', ')}), fresh db is valid SQLite`);
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

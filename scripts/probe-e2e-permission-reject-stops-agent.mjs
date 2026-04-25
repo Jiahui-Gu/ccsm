@@ -32,6 +32,8 @@ const app = await electron.launch({
   cwd: root,
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 await app.evaluate(async ({ dialog }, fakeCwd) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
@@ -128,3 +130,4 @@ if (!hasDeniedTrace) {
 console.log(`\n[${PROBE}] OK: deny IPC fired once, no retry, chat retained denial trace`);
 await app.close();
 ud.cleanup();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

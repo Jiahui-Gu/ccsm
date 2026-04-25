@@ -52,6 +52,8 @@ const app = await electron.launch({
   cwd: ROOT,
   env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
+
+try { // ccsm-probe-cleanup-wrap
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
 let win;
@@ -378,3 +380,4 @@ console.log(
 );
 await app.close();
 process.exit(0);
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

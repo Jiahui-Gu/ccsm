@@ -59,9 +59,15 @@ async function constants(win) {
 
 let chosenWidth;
 
+// Top-level tracker so the outer try/finally can close whichever scoped app
+// happens to be live if the body throws. ccsm-probe-cleanup-wrap.
+let __ccsmCurrentApp = null;
+try { // ccsm-probe-cleanup-wrap
+
 // ---------- Launch #1: drag, verify, double-click reset, drag again ----------
 {
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
+  __ccsmCurrentApp = app;
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!window.__ccsmStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
@@ -182,6 +188,7 @@ let chosenWidth;
 // ---------- Launch #2: same userData → width restores to chosenWidth ----------
 {
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
+  __ccsmCurrentApp = app;
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForFunction(() => !!window.__ccsmStore && document.querySelector('aside') !== null, null, { timeout: 20_000 });
@@ -208,3 +215,4 @@ console.log('  double-click resets to the default');
 console.log('  width persists across app restart');
 
 ud.cleanup();
+} finally { try { await __ccsmCurrentApp?.close(); } catch {} } // ccsm-probe-cleanup-wrap

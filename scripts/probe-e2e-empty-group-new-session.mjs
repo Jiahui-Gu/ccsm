@@ -32,6 +32,8 @@ const app = await electron.launch({
   cwd: root,
   env: { ...process.env, NODE_ENV: 'development' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
@@ -136,3 +138,4 @@ console.log('\n[probe-e2e-empty-group-new-session] OK');
 console.log('  A: zero groups  → 1 normal group + 1 session, activated, composer visible');
 console.log('  B: only archive → archive preserved, new normal group + session, composer visible');
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

@@ -59,6 +59,8 @@ const app = await electron.launch({
   cwd: ROOT,
   env: { ...process.env, NODE_ENV: 'production', CCSM_PROD_BUNDLE: '1' },
 });
+
+try { // ccsm-probe-cleanup-wrap
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
 let win;
@@ -367,3 +369,4 @@ if (!domHit) log('WARN: DOM signal missed (non-fatal — fs+store assertion is a
 console.log('[probe-bugl-write] OK: file written, tool_result delivered, store updated');
 await app.close();
 process.exit(0);
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

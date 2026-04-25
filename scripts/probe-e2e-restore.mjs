@@ -113,9 +113,15 @@ const JSONL_PATH = path.join(PROJECT_DIR, `${SESSION_ID}.jsonl`);
 fs.writeFileSync(JSONL_PATH, FRAMES.map((f) => JSON.stringify(f)).join('\n') + '\n');
 console.log(`[probe-e2e-restore] planted fixture jsonl = ${JSONL_PATH}`);
 
+// Top-level tracker so the outer try/finally can close whichever scoped app
+// happens to be live if the body throws. ccsm-probe-cleanup-wrap.
+let __ccsmCurrentApp = null;
+try { // ccsm-probe-cleanup-wrap
+
 // ---------- Launch #1: seed app_state via IPC ----------
 {
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
+  __ccsmCurrentApp = app;
   const win = await appWindow(app);
   await win.waitForLoadState('domcontentloaded');
   await win.waitForTimeout(1500);
@@ -198,6 +204,7 @@ console.log(`[probe-e2e-restore] planted fixture jsonl = ${JSONL_PATH}`);
 // ---------- Launch #2: assert restoration ----------
 {
   const app = await electron.launch({ args: commonArgs, cwd: root, env: commonEnv });
+  __ccsmCurrentApp = app;
   const win = await appWindow(app);
   const errors = [];
   win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -282,3 +289,4 @@ console.log(`[probe-e2e-restore] planted fixture jsonl = ${JSONL_PATH}`);
 try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(FIXTURE_CWD_PARENT, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(PROJECT_DIR, { recursive: true, force: true }); } catch {}
+} finally { try { await __ccsmCurrentApp?.close(); } catch {} } // ccsm-probe-cleanup-wrap

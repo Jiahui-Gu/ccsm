@@ -42,6 +42,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' },
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 const errors = [];
 win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -109,3 +111,4 @@ console.log(finalDump.slice(0, 2000));
 console.log('  ---- end ----');
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

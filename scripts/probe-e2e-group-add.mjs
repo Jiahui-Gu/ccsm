@@ -29,6 +29,8 @@ const app = await electron.launch({
   cwd: root,
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 const win = await appWindow(app);
 const errors = [];
 win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -93,3 +95,4 @@ console.log('  archived group has no + button');
 
 await app.close();
 ud.cleanup();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap
