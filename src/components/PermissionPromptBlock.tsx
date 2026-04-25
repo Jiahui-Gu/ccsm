@@ -281,6 +281,23 @@ export function PermissionPromptBlock({
       ? t('permissionPrompt.allowSelected', { selected: selectedCount, total: hunkCount })
       : t('permissionPrompt.allowBtn');
 
+  // Per-tool title — mirrors the upstream CLI's wording so users get a
+  // concrete question instead of a generic "Permission required". Falls
+  // back to the legacy generic title for tools we haven't enumerated yet
+  // (anything outside the small set below: Bash / WebFetch / WebSearch /
+  // Edit-family / Skill).
+  const titleByTool = (() => {
+    const name = (toolName ?? '').toLowerCase();
+    if (name === 'bash') return t('permissionPrompt.titleByTool.bash');
+    if (name === 'webfetch') return t('permissionPrompt.titleByTool.webFetch');
+    if (name === 'websearch') return t('permissionPrompt.titleByTool.webSearch');
+    if (name === 'edit' || name === 'write' || name === 'multiedit' || name === 'notebookedit') {
+      return t('permissionPrompt.titleByTool.edit');
+    }
+    if (name === 'skill') return t('permissionPrompt.titleByTool.skill');
+    return t('permissionPrompt.titleByTool.fallback');
+  })();
+
   return (
     <motion.div
       ref={rootRef}
@@ -302,8 +319,8 @@ export function PermissionPromptBlock({
         className="flex items-baseline gap-2"
       >
         <ShieldAlert size={12} className="text-accent self-center shrink-0" aria-hidden />
-        <span className="font-mono uppercase tracking-wider text-mono-xs text-accent">
-          {t('permissionPrompt.title')}
+        <span className="font-mono tracking-wider text-mono-xs text-accent">
+          {titleByTool}
         </span>
         {toolName && (
           <span className="font-mono text-mono-xs text-fg-tertiary">

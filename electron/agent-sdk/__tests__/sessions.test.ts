@@ -265,13 +265,42 @@ describe('agent-sdk/SdkSessionRunner', () => {
 
     const canUseTool = (fake.getOptions()?.options as { canUseTool?: (toolName: string, input: unknown, ctx: { signal: AbortSignal; toolUseID: string }) => Promise<unknown> }).canUseTool!;
     const ac = new AbortController();
-    const decision = (await canUseTool('Bash', {}, { signal: ac.signal, toolUseID: 't3' })) as {
+    const input = { command: 'ls -la' };
+    const decision = (await canUseTool('Bash', input, { signal: ac.signal, toolUseID: 't3' })) as {
       behavior: string;
+      updatedInput?: unknown;
     };
     expect(decision.behavior).toBe('allow');
+    // Bug #169 / PR #313: every allow path must echo `updatedInput` so the
+    // CLI's over-the-wire schema accepts the response.
+    expect(decision.updatedInput).toBe(input);
     expect(onPerm).not.toHaveBeenCalled();
     runner.close();
   });
+
+  it.each([
+    ['bypassPermissions', 's11a'],
+    ['acceptEdits', 's11b'],
+    ['auto', 's11c'],
+  ] as const)(
+    'canUseTool early-return in %s mode echoes updatedInput=input (Bug #169)',
+    async (mode, id) => {
+      const onPerm = vi.fn();
+      const runner = new SdkSessionRunner(id, noop, noop, onPerm, noop);
+      await runner.start({ ...baseStart, permissionMode: mode });
+      const canUseTool = (fake.getOptions()?.options as { canUseTool?: (toolName: string, input: unknown, ctx: { signal: AbortSignal; toolUseID: string }) => Promise<unknown> }).canUseTool!;
+      const ac = new AbortController();
+      const input = { file_path: '/tmp/x', content: 'hi' };
+      const decision = (await canUseTool('Write', input, { signal: ac.signal, toolUseID: `tu-${id}` })) as {
+        behavior: string;
+        updatedInput?: unknown;
+      };
+      expect(decision.behavior).toBe('allow');
+      expect(decision.updatedInput).toBe(input);
+      expect(onPerm).not.toHaveBeenCalled();
+      runner.close();
+    },
+  );
 
   it('canUseTool short-circuits AskUserQuestion (passthrough tool)', async () => {
     const onPerm = vi.fn();
@@ -280,12 +309,15 @@ describe('agent-sdk/SdkSessionRunner', () => {
 
     const canUseTool = (fake.getOptions()?.options as { canUseTool?: (toolName: string, input: unknown, ctx: { signal: AbortSignal; toolUseID: string }) => Promise<unknown> }).canUseTool!;
     const ac = new AbortController();
+    const input = { question: 'y/n?' };
     const decision = (await canUseTool(
       'AskUserQuestion',
-      {},
+      input,
       { signal: ac.signal, toolUseID: 't4' },
-    )) as { behavior: string };
+    )) as { behavior: string; updatedInput?: unknown };
     expect(decision.behavior).toBe('allow');
+    // PASSTHROUGH_TOOLS allow path also requires `updatedInput` (Bug #169).
+    expect(decision.updatedInput).toBe(input);
     expect(onPerm).not.toHaveBeenCalled();
     runner.close();
   });
