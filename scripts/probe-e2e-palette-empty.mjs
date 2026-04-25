@@ -32,6 +32,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const errors = [];
 const win = await appWindow(app);
 win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -187,3 +189,4 @@ console.log('  Esc closes palette');
 await app.close();
 
 try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

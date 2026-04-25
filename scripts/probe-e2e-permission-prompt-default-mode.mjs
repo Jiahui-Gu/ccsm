@@ -27,6 +27,7 @@ import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appWindow } from './probe-utils.mjs';
 
@@ -35,7 +36,10 @@ const root = path.resolve(__dirname, '..');
 
 const MARKER = 'permhook-perm-test-91827';
 const NAME = 'probe-e2e-permission-prompt-default-mode';
-const SESSION_ID = 's-perm-default-1';
+// Real UUID required since PR-D (#274): the SDK now validates sessionId
+// and emits `session_id_mismatch` warnings (creating mis-named JSONL
+// transcripts) when given a non-UUID like the legacy `s-perm-default-1`.
+const SESSION_ID = randomUUID();
 const GROUP_ID = 'g-default';
 
 const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-perm-default-'));
@@ -59,6 +63,8 @@ function fail(msg, extra) {
 
 const app = await electron.launch({ args: commonArgs, cwd: root, env });
 appRef = app;
+
+try { // ccsm-probe-cleanup-wrap
 app.process().stderr?.on('data', (d) => process.stderr.write(`[electron-stderr] ${d}`));
 
 const win = await appWindow(app, { timeout: 30_000 });
@@ -233,3 +239,4 @@ console.log(`\n[${NAME}] OK`);
 console.log(`  - permission prompt rendered, allow clicked, marker "${MARKER}" appeared in chat`);
 
 await app2.close();
+} finally { try { await appRef?.close(); } catch {} } // ccsm-probe-cleanup-wrap

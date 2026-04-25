@@ -27,6 +27,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 const errors = [];
 win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -79,3 +81,4 @@ console.log('\n[probe-e2e-default-cwd] OK');
 console.log('  sending with default cwd "~" produced an assistant reply');
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

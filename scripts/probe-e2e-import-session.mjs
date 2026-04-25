@@ -148,6 +148,8 @@ const app = await electron.launch({
   }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const errors = [];
 const win = await appWindow(app);
 win.on('pageerror', (e) => errors.push(`[pageerror] ${e.message}`));
@@ -281,3 +283,4 @@ await app.close();
 
 try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {}
 try { fs.rmSync(ud.dir, { recursive: true, force: true }); } catch {}
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

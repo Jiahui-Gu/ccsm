@@ -46,6 +46,8 @@ const app = await electron.launch({
   cwd: root,
   env: { ...process.env, NODE_ENV: 'development' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15_000 });
@@ -177,3 +179,4 @@ console.log(`  open with active cwd "${ACTIVE_CWD}" → all ${RECENT.length} rec
 console.log('  type "bar" → filters to 1; clear → restores 3');
 console.log('  input value empty on open; placeholder surfaces current cwd');
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

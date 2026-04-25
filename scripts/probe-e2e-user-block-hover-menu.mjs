@@ -39,6 +39,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForTimeout(1500);
@@ -142,3 +144,4 @@ if (after.started) {
 console.log('\n[probe-e2e-user-block-hover-menu] OK');
 console.log('  hover reveals 4 actions, Copy → clipboard, Truncate → cut + clear resume');
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

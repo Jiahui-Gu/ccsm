@@ -21,6 +21,8 @@ const app = await electron.launch({
   env: { ...process.env, NODE_ENV: 'development', CCSM_DEV_PORT: process.env.CCSM_DEV_PORT ?? '4102' }
 });
 
+try { // ccsm-probe-cleanup-wrap
+
 // Stub folder picker so we don't block on OS dialog.
 await app.evaluate(async ({ dialog }, fakeCwd) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
@@ -144,3 +146,4 @@ console.log(afterText.slice(0, 1400));
 console.log('\n[probe-e2e-askuserquestion] OK  submit=ok  ackSeen=' + ackSeen);
 
 await app.close();
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap

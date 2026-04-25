@@ -31,6 +31,8 @@ let app = await electron.launch({
   cwd: root,
   env: { ...process.env, CCSM_PROD_BUNDLE: '1' }
 });
+
+try { // ccsm-probe-cleanup-wrap
 let win = await appWindow(app);
 const errors = [];
 function wireErrors(w) {
@@ -532,3 +534,4 @@ if (divergences.length > 0) {
   process.exit(2);
 }
 console.log(`\n[${PROBE}] OK`);
+} finally { try { await app.close(); } catch {} } // ccsm-probe-cleanup-wrap
