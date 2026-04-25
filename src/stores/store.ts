@@ -355,10 +355,18 @@ export function serializeDiffCommentsForPrompt(
   return list
     .map((c) => {
       // Escape the attribute value so a path with `"` can't break out of
-      // the file= attribute. We don't need a full XML escape on the body —
-      // the agent receives it as plain text inside the structured tag.
+      // the file= attribute.
       const file = c.file.replace(/"/g, '&quot;');
-      return `<diff-feedback file="${file}" line="${c.line}">${c.text}</diff-feedback>`;
+      // Escape XML metacharacters in the body so user-typed text containing
+      // `<`, `&`, or even a literal `</diff-feedback>` can't break out of
+      // the envelope or confuse the agent's tag parser. Order matters:
+      // `&` must be replaced first, otherwise we'd double-escape the `&`
+      // introduced by the subsequent `<` → `&lt;` substitution.
+      const text = c.text
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+      return `<diff-feedback file="${file}" line="${c.line}">${text}</diff-feedback>`;
     })
     .join('\n');
 }
