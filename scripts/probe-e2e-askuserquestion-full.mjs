@@ -799,7 +799,7 @@ try {
 
 console.log('\n=== AskUserQuestion journey summary ===');
 if (failures.length === 0) {
-  console.log('[askuserquestion] all 7 journeys matched expected behavior');
+  console.log('[askuserquestion] all 6 journeys matched expected behavior');
   process.exit(0);
 } else {
   console.log(`[askuserquestion] ${failures.length} discrepancy / failure(s):`);
