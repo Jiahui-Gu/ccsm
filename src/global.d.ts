@@ -5,6 +5,7 @@ import type {
   OpenSettingsResult,
   DiscoveredModel,
   LoadedCommand,
+  WorkspaceFile,
 } from './shared/ipc-types';
 
 type PermissionMode = CliPermissionMode;
@@ -198,6 +199,15 @@ declare global {
 
       commands: {
         list: (cwd: string | null | undefined) => Promise<LoadedCommand[]>;
+      };
+
+      files: {
+        /**
+         * List workspace files relative to the session cwd for the
+         * InputBar's @file mention picker. Returns POSIX-style relative
+         * paths so the literal we splice into the composer is portable.
+         */
+        list: (cwd: string | null | undefined) => Promise<WorkspaceFile[]>;
       };
 
       openExternal: (url: string) => Promise<boolean>;
