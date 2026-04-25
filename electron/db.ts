@@ -19,32 +19,22 @@ const SCHEMA_VERSION = 1;
 // ── Cached prepared statements ───────────────────────────────────────────────
 // better-sqlite3 caches compiled SQL inside each Statement object, but the
 // JavaScript-side allocation/lookup still costs ~10 microseconds per call.
-// For hot paths (loadMessages on session switch, saveState on every keystroke
-// in the composer draft persister) that adds up. Cache the Statement once
-// per process lifetime; reset to null when the underlying db closes so the
-// next initDb() rebuilds them.
+// For hot paths (saveState on every keystroke in the composer draft persister)
+// that adds up. Cache the Statement once per process lifetime; reset to null
+// when the underlying db closes so the next initDb() rebuilds them.
 type PreparedCache = {
-  loadMessages: Database.Statement<[string]> | null;
-  deleteMessagesForSession: Database.Statement<[string]> | null;
-  insertMessage: Database.Statement<[string, string, string, string, number]> | null;
   loadState: Database.Statement<[string]> | null;
   upsertState: Database.Statement<[string, string, number]> | null;
   deleteState: Database.Statement<[string]> | null;
 };
 
 const stmts: PreparedCache = {
-  loadMessages: null,
-  deleteMessagesForSession: null,
-  insertMessage: null,
   loadState: null,
   upsertState: null,
   deleteState: null
 };
 
 function resetStmts(): void {
-  stmts.loadMessages = null;
-  stmts.deleteMessagesForSession = null;
-  stmts.insertMessage = null;
   stmts.loadState = null;
   stmts.upsertState = null;
   stmts.deleteState = null;
@@ -56,14 +46,6 @@ const SCHEMA_SQL = `
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    sessionId TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    content TEXT NOT NULL,
-    createdAt INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(sessionId);
 `;
 
 /**
@@ -165,64 +147,28 @@ export function initDb(): Database.Database {
     );
   }
 
-  // Drop legacy endpoints tables if they exist from a pre-refactor install.
-  // The app no longer reads them — connection config now comes from
-  // ~/.claude/settings.json. Cheap to issue at every boot; SQLite ignores
-  // missing tables.
+  // Drop legacy tables that earlier ccsm versions wrote but the app no
+  // longer reads:
+  //   - `endpoints` / `endpoint_models`: connection config now comes from
+  //     ~/.claude/settings.json.
+  //   - `messages`: session history now reads from CLI's
+  //     ~/.claude/projects/<key>/<sid>.jsonl (PR-H). The SQLite copy was a
+  //     redundant secondary write. We deliberately do NOT migrate the old
+  //     rows — for users who never persisted via ccsm pre-rename, JSONL
+  //     already has the canonical history; for users who somehow have rows
+  //     in `messages` but missing JSONL, a one-line fallback isn't worth
+  //     the migration footprint (per project decision: "no migration for
+  //     old users").
+  // Cheap to issue at every boot; SQLite ignores missing tables.
   handle.exec(`
     DROP TABLE IF EXISTS endpoint_models;
     DROP TABLE IF EXISTS endpoints;
+    DROP INDEX IF EXISTS idx_messages_session;
+    DROP TABLE IF EXISTS messages;
   `);
 
   db = handle;
   return db;
-}
-
-export function loadMessages(sessionId: string): unknown[] {
-  const d = initDb();
-  if (!stmts.loadMessages) {
-    stmts.loadMessages = d.prepare(
-      'SELECT id, content FROM messages WHERE sessionId = ? ORDER BY createdAt ASC'
-    );
-  }
-  const rows = stmts.loadMessages.all(sessionId) as Array<{ id: string; content: string }>;
-  // A corrupt or hand-edited row should not crash the entire session load —
-  // skip the offender and surface a console warning so we can grep logs
-  // post-mortem. The user sees a session with N-1 messages, not a blank
-  // pane and a stuck "Loading…" spinner.
-  const out: unknown[] = [];
-  for (const r of rows) {
-    try {
-      out.push(JSON.parse(r.content));
-    } catch {
-      console.warn('[db] corrupt message row sessionId=%s id=%s', sessionId, r.id);
-    }
-  }
-  return out;
-}
-
-export function saveMessages(sessionId: string, blocks: Array<{ id: string; kind: string }>): void {
-  const d = initDb();
-  if (!stmts.deleteMessagesForSession) {
-    stmts.deleteMessagesForSession = d.prepare('DELETE FROM messages WHERE sessionId = ?');
-  }
-  if (!stmts.insertMessage) {
-    stmts.insertMessage = d.prepare(
-      'INSERT INTO messages (id, sessionId, kind, content, createdAt) VALUES (?, ?, ?, ?, ?)'
-    );
-  }
-  const del = stmts.deleteMessagesForSession;
-  const ins = stmts.insertMessage;
-  const tx = d.transaction(() => {
-    del.run(sessionId);
-    const now = Date.now();
-    blocks.forEach((block, i) => {
-      // Use index-based createdAt tiebreaker so ordering is stable even when
-      // many blocks land in the same millisecond.
-      ins.run(block.id, sessionId, block.kind, JSON.stringify(block), now + i);
-    });
-  });
-  tx();
 }
 
 // Test-only: swap in an in-memory database. Never call from app code.

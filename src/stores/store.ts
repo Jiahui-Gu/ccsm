@@ -1083,12 +1083,10 @@ export const useStore = create<State & Actions>((set, get) => ({
               [id]: blocks
             }
           }));
-          // Persist to our DB so subsequent loads come from sqlite without
-          // re-parsing the .jsonl. saveMessages is a bulk DELETE+INSERT and
-          // is idempotent.
-          if (typeof api.saveMessages === 'function') {
-            void api.saveMessages(id, blocks);
-          }
+          // PR-H: ccsm no longer mirrors history into SQLite, so on import
+          // we just hydrate the in-memory store. Subsequent loads come
+          // straight from the CLI's JSONL via `loadHistory`, which is the
+          // same source we just read from.
         } catch (err) {
           // eslint-disable-next-line no-console
           console.warn('[store] importSession history load failed', err);
@@ -1184,9 +1182,12 @@ export const useStore = create<State & Actions>((set, get) => ({
         messageQueues: nextQueues
       };
     });
-    // Wipe the persisted rows so a deleted session can't resurrect its
-    // history if a new session happens to reuse the id.
-    void window.ccsm?.saveMessages(id, []);
+    // PR-H: ccsm no longer persists message history. The CLI's JSONL at
+    // ~/.claude/projects/<key>/<sid>.jsonl is the canonical record and we
+    // intentionally don't delete it here — losing the user's CLI-side
+    // transcript when they remove a session from ccsm's UI would be a
+    // surprising, lossy side-effect. The session is gone from ccsm's view,
+    // which is what the user asked for.
     // Also drop any persisted draft for this session.
     deleteDrafts([id]);
     return snapshot;
@@ -1232,12 +1233,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         statsBySession
       };
     });
-    // Restore persisted history so a restart after undo retains the
-    // conversation. Empty arrays are skipped — saveMessages([]) is the
-    // wipe path used by deleteSession.
-    if (snapshot.messages && snapshot.messages.length > 0) {
-      void window.ccsm?.saveMessages(snapshot.session.id, snapshot.messages);
-    }
+    // PR-H: history lives in the CLI's JSONL; restore is a no-op for it.
+    // The in-memory reseed above is what makes undo instant; on a future
+    // page reload, history reloads from the JSONL like any other session.
     restoreDraft(snapshot.session.id, snapshot.draft);
   },
 
@@ -1414,7 +1412,8 @@ export const useStore = create<State & Actions>((set, get) => ({
         delete nextRunning[did];
         delete nextInterrupted[did];
         delete nextQueues[did];
-        void window.ccsm?.saveMessages(did, []);
+        // PR-H: ccsm no longer persists per-session history; nothing to wipe.
+        // The CLI's JSONL stays on disk, mirroring deleteSession's policy.
       }
       return {
         groups: s.groups.filter((g) => g.id !== id),
@@ -1479,11 +1478,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         statsBySession
       };
     });
-    // Re-persist messages + drafts for each restored session.
+    // PR-H: snapshot.messages is in-memory state; the JSONL on disk is
+    // unchanged and remains the source of truth for future reloads.
     for (const snap of snapshot.sessions) {
-      if (snap.messages && snap.messages.length > 0) {
-        void window.ccsm?.saveMessages(snap.session.id, snap.messages);
-      }
       restoreDraft(snap.session.id, snap.draft);
     }
   },
@@ -1702,8 +1699,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         statsBySession: nextStats
       };
     });
-    // Wipe persisted transcript so a reload doesn't resurrect history.
-    void window.ccsm?.saveMessages(sessionId, []);
+    // PR-H: ccsm no longer persists message history. The CLI's JSONL stays
+    // on disk untouched — a reset clears ccsm's view but doesn't delete the
+    // user's CLI-side transcript.
   },
 
   replaceMessages: (sessionId, blocks) => {
@@ -1732,8 +1730,29 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   loadMessages: async (sessionId) => {
     const api = window.ccsm;
-    if (!api || typeof api.loadMessages !== 'function') return;
+    if (!api || typeof api.loadHistory !== 'function') return;
     if (inFlightLoads.has(sessionId)) return;
+    // Look up the session so we can derive the on-disk JSONL location.
+    // CLI writes to ~/.claude/projects/<slug(cwd)>/<sid>.jsonl; we need
+    // both cwd and the right sid (resumed imports keep the original CLI
+    // sid in `resumeSessionId`; fresh sessions use ccsm's local id which
+    // we forwarded to the SDK as its `sessionId`, so the filenames match).
+    const session = get().sessions.find((s) => s.id === sessionId);
+    if (!session) return;
+    const cwd = session.cwd ?? '';
+    const sidOnDisk = session.resumeSessionId || session.id;
+    if (!cwd) {
+      // No cwd → no project key → can't locate the JSONL. Treat as empty
+      // (don't surface an error; cwd-less sessions are a transient state
+      // during creation and the renderer handles `[]` gracefully).
+      set((s) => ({
+        messagesBySession:
+          sessionId in s.messagesBySession
+            ? s.messagesBySession
+            : { ...s.messagesBySession, [sessionId]: [] }
+      }));
+      return;
+    }
     inFlightLoads.add(sessionId);
     // Clear any stale load error for this session before attempting.
     set((s) => {
@@ -1743,18 +1762,14 @@ export const useStore = create<State & Actions>((set, get) => ({
       return { loadMessageErrors: next };
     });
     try {
-      let rows: MessageBlock[] = [];
+      let result: Awaited<ReturnType<typeof api.loadHistory>>;
       try {
-        rows = (await api.loadMessages(sessionId)) as MessageBlock[];
+        result = await api.loadHistory(cwd, sidOnDisk);
       } catch (err) {
-        // IPC failure (db locked, disk full, schema mismatch). Without a
-        // sentinel write, every subsequent selectSession would re-trigger
-        // the load — an infinite retry loop on a permanent failure. Seed
-        // an empty array so the key is "known" and we leave a breadcrumb
-        // for the user / Sentry instead of failing silently. Also surface
-        // the failure as an inline error so the user sees "Failed to load
-        // history — Retry" in the chat scroll (UI-17).
-        console.warn(`[store] loadMessages(${sessionId}) failed:`, err);
+        // IPC-layer failure (preload missing, channel unregistered). Seed
+        // a sentinel so we don't infinite-retry, and surface the error so
+        // the user sees the inline retry banner instead of a stuck pane.
+        console.warn(`[store] loadHistory(${sessionId}) IPC failed:`, err);
         const message = err instanceof Error ? err.message : String(err);
         set((s) => ({
           messagesBySession:
@@ -1765,10 +1780,36 @@ export const useStore = create<State & Actions>((set, get) => ({
         }));
         return;
       }
-      // Sanitize: a row persisted with streaming=true means the previous run
-      // crashed/quit mid-stream. On restore, the stream is no longer active,
-      // so clear the flag to prevent the UI from showing a perpetual pulse.
-      const sanitized: MessageBlock[] = rows.map((r) =>
+      let frames: unknown[] = [];
+      if (result.ok) {
+        frames = result.frames;
+      } else if (result.error === 'not_found') {
+        // No JSONL on disk yet — fresh session that hasn't received its
+        // first frame, or one that was never run via the CLI. Empty array
+        // is the right answer; not an error.
+        frames = [];
+      } else {
+        // Real read error (permission, malformed path, fs failure).
+        const detail = 'detail' in result && result.detail ? `: ${result.detail}` : '';
+        const message = `${result.error}${detail}`;
+        console.warn(`[store] loadHistory(${sessionId}) failed: ${message}`);
+        set((s) => ({
+          messagesBySession:
+            sessionId in s.messagesBySession
+              ? s.messagesBySession
+              : { ...s.messagesBySession, [sessionId]: [] },
+          loadMessageErrors: { ...s.loadMessageErrors, [sessionId]: message }
+        }));
+        return;
+      }
+      // Project raw CLI frames into MessageBlock[] using the same reducer
+      // the import path uses. JSONL is the canonical persistence format
+      // now (PR-H), so we always go through this projection.
+      const projected = framesToBlocks(frames);
+      // Sanitize: a streaming=true assistant block inside the JSONL means
+      // a previous run crashed mid-stream. Drop the flag so the UI doesn't
+      // show a perpetual pulse on restore.
+      const sanitized: MessageBlock[] = projected.map((r) =>
         r.kind === 'assistant' && (r as { streaming?: boolean }).streaming
           ? { ...r, streaming: false }
           : r
@@ -1785,10 +1826,8 @@ export const useStore = create<State & Actions>((set, get) => ({
           };
         }
         // Merge path: streaming may have appended blocks while we awaited
-        // the db round-trip. The previous "skip if already set" guard
-        // dropped the persisted history entirely in that race. Instead,
-        // prepend the persisted blocks whose ids aren't already present —
-        // every MessageBlock variant carries an id, so de-duping is exact.
+        // the disk round-trip. Prepend persisted blocks whose ids aren't
+        // already present — every MessageBlock variant carries an id.
         const existingIds = new Set(existing.map((b) => b.id));
         const additions = sanitized.filter((b) => !existingIds.has(b.id));
         if (additions.length === 0) return s;

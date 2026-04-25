@@ -59,7 +59,7 @@ function stubCCSM(overrides: Partial<Record<string, unknown>> = {}) {
     agentSend: vi.fn().mockResolvedValue(true),
     agentSendContent: vi.fn().mockResolvedValue(true),
     agentStart: vi.fn().mockResolvedValue({ ok: true }),
-    saveMessages: vi.fn().mockResolvedValue(undefined),
+    loadHistory: vi.fn().mockResolvedValue({ ok: true, frames: [] }),
     ...overrides,
   };
   (globalThis as unknown as { window: Window & { ccsm?: unknown } }).window.ccsm = api;
