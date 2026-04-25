@@ -142,7 +142,11 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       const target = root.querySelector<HTMLElement>('[data-question-option]');
       if (!target) return;
       const ae = document.activeElement as HTMLElement | null;
-      if (ae && ae !== document.body && ae.tagName === 'INPUT') return;
+      // Don't steal focus from a text-entry surface the user is actively
+      // typing in. The composer (TEXTAREA) and any INPUT/contenteditable
+      // are excluded — sticky widget appears alongside the composer, not
+      // on top of it.
+      if (ae && ae !== document.body && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
       if (ae && ae.isContentEditable && ae !== target) return;
       target.focus({ preventScroll: true });
     });
