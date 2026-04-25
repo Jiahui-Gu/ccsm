@@ -1,11 +1,6 @@
 // Verifies the minimal empty state: "Ready when you are." is visible and the
 // four starter prompt cards are GONE (regression guard against reintroducing
 // them). A fresh session shouldn't tell the user what to do — they know.
-//
-// Also guards: on automatic startup detection of Claude CLI, the success
-// flash "Claude CLI detected" must NOT appear. That modal blip on every
-// launch was noise — the success pane is reserved for in-dialog Retry/Browse
-// feedback when the CLI was previously missing.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,29 +23,17 @@ const app = await electron.launch({
 const win = await appWindow(app);
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10000 });
-
-// Wait for the startup CLI check to settle (state leaves 'checking'). If the
-// regression returns, the success flash pops here — give it a real chance to
-// appear before we assert absence.
-await win.waitForFunction(
-  () => window.__ccsmStore.getState().cliStatus.state !== 'checking',
-  null,
-  { timeout: 10000 }
-).catch(() => { /* fall through — assertion below will catch a stuck state if relevant */ });
 await win.waitForTimeout(800);
 
-const cliState = await win.evaluate(() => window.__ccsmStore.getState().cliStatus.state);
-if (cliState === 'found') {
-  // Only assert absence when CLI was actually detected — if CLI is genuinely
-  // missing on this machine, the wizard is supposed to be visible and we
-  // should not flag that as a regression.
-  for (const phrase of ['Claude CLI detected', '已检测到 Claude CLI']) {
-    const n = await win.getByText(phrase, { exact: false }).count();
-    if (n > 0) {
-      await app.close();
-      fail(`startup success flash "${phrase}" leaked on automatic launch (count=${n}) — should only show after manual Retry/Browse from missing dialog`);
-    }
-  }
+// PR-I removed the first-run binary picker. The installer-corrupt banner is
+// the only failure surface left; on a healthy install it stays hidden, which
+// is what we assert below.
+const installerCorrupt = await win.evaluate(
+  () => window.__ccsmStore.getState().installerCorrupt
+);
+if (installerCorrupt) {
+  await app.close();
+  fail('installerCorrupt flag was set on cold launch — install pipeline is broken');
 }
 
 await win.evaluate(() => {
@@ -83,6 +66,6 @@ if (workingIn > 0) { await app.close(); fail('old "Working in …" line still re
 
 console.log('\n[probe-e2e-empty-state-minimal] OK');
 console.log('  hero visible, no starter cards, no "Working in" line');
-console.log('  no startup "Claude CLI detected" flash');
+console.log('  installerCorrupt flag stayed false on cold launch');
 
 await app.close();

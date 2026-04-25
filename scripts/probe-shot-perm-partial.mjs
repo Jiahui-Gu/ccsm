@@ -78,7 +78,6 @@ try {
     const store = window.__ccsmStore;
     const patch = {
       tutorialSeen: true,
-      cliStatus: { state: 'found', binaryPath: '<harness>', version: null },
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's-shot', name: 'shot', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's-shot',

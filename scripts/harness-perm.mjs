@@ -806,7 +806,6 @@ await runHarness({
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {
       window.__ccsmStore?.setState({
-        cliStatus: { state: 'found', binaryPath: '<harness>', version: null }
       });
     });
   },

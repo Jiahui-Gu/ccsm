@@ -24,7 +24,6 @@ try {
   // Suppress CLI-missing dialog.
   await win.evaluate(() => {
     window.__ccsmStore.setState({
-      cliStatus: { state: 'found', binaryPath: '<screenshot>', version: null },
     });
   });
 

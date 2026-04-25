@@ -27,8 +27,8 @@ export const STATE_KEY = 'main';
  * writes always populate `sidebarWidth` (px) instead.
  *
  * runningSessions, interruptedSessions, messageQueues, messagesBySession,
- * statsBySession, focusInputNonce, models, connection, cliStatus etc. are
- * intentionally NOT persisted — they're runtime state tied to the current
+ * statsBySession, focusInputNonce, models, connection, installerCorrupt etc.
+ * are intentionally NOT persisted — they're runtime state tied to the current
  * agent process / IPC layer. Restoring them would block recovery on next
  * launch. See PR #156.
  */

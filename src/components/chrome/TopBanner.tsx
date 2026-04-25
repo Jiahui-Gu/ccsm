@@ -281,7 +281,7 @@ export function TopBannerPresence({ children }: { children: React.ReactNode }) {
  * Problem it solves: every TopBanner renders its own `border-b` separator
  * so that, when only one banner is showing, there is a single 1px line
  * between the strip and the content beneath it. When TWO banners stack
- * (e.g. AgentInitFailed + ClaudeCliMissing both visible), each banner
+ * (e.g. AgentInitFailed + InstallerCorrupt both visible), each banner
  * draws its own `border-b`, producing TWO horizontal hairlines back-to-back
  * — readable as a doubled / heavier divider that other UI surfaces never
  * use, and visually noisy.
@@ -297,7 +297,7 @@ export function TopBannerPresence({ children }: { children: React.ReactNode }) {
  * Usage at call site (App.tsx):
  *
  *   <TopBannerStack>
- *     <ClaudeCliMissingBanner />
+ *     <InstallerCorruptBanner />
  *     <AgentInitFailedBanner ... />
  *     <AgentDiagnosticBanner />
  *   </TopBannerStack>

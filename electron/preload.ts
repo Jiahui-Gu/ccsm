@@ -6,9 +6,6 @@ import type {
   ConnectionInfo,
   OpenSettingsResult,
   DiscoveredModel,
-  CliInstallHints,
-  CliRetryResult,
-  CliSetBinaryResult,
   LoadedCommand,
 } from '../src/shared/ipc-types';
 
@@ -368,15 +365,6 @@ const api = {
 
   models: {
     list: (): Promise<DiscoveredModel[]> => ipcRenderer.invoke('models:list'),
-  },
-
-  cli: {
-    getInstallHints: (): Promise<CliInstallHints> => ipcRenderer.invoke('cli:getInstallHints'),
-    browseBinary: (): Promise<string | null> => ipcRenderer.invoke('cli:browseBinary'),
-    setBinaryPath: (p: string): Promise<CliSetBinaryResult> =>
-      ipcRenderer.invoke('cli:setBinaryPath', p),
-    openDocs: (): Promise<boolean> => ipcRenderer.invoke('cli:openDocs'),
-    retryDetect: (): Promise<CliRetryResult> => ipcRenderer.invoke('cli:retryDetect'),
   },
 };
 

@@ -10,14 +10,14 @@ import { i18next } from '../i18n';
  *
  * Returns `true` if the start succeeded; `false` otherwise. On failure, the
  * store is populated with the appropriate flag (sessionInitFailures entry,
- * cliStatus missing flip, cwdMissing marker) so the renderer surfaces the
- * right UX without the caller having to duplicate the branching logic.
+ * installerCorrupt flag for CLAUDE_NOT_FOUND, cwdMissing marker) so the
+ * renderer surfaces the right UX without the caller having to duplicate
+ * the branching logic.
  *
  * The CLAUDE_NOT_FOUND and CWD_MISSING branches still have bespoke UX
- * elsewhere (CLI wizard + StatusBar cwd chip). We surface the generic
- * failed-to-start banner only for OTHER failures — typically a spawn
- * EACCES, a missing binary that slipped past the wizard, or a kernel-level
- * process-creation error.
+ * elsewhere (installer-corrupt banner + StatusBar cwd chip). We surface the
+ * generic failed-to-start banner only for OTHER failures — typically a spawn
+ * EACCES, or a kernel-level process-creation error.
  */
 export async function startSessionAndReconcile(sessionId: string): Promise<boolean> {
   const store = useStore.getState();
@@ -56,7 +56,11 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
 
   // Route to the right surface based on errorCode.
   if (res.errorCode === 'CLAUDE_NOT_FOUND') {
-    store.setCliMissing(res.searchedPaths ?? []);
+    // CCSM ships the binary inside the installer (PR-B) — reaching this
+    // means the installer payload is corrupt or partially uninstalled. Show
+    // the persistent installer-corrupt banner; no per-session retry path
+    // since the user must reinstall before sessions can start.
+    store.setInstallerCorrupt(true);
     return false;
   }
   if (res.errorCode === 'CWD_MISSING') {

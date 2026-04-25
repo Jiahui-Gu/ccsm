@@ -24,25 +24,46 @@ beforeEach(async () => {
   await freshDb();
 });
 
-describe('db: claudeBinPath', () => {
-  it('returns null when unset', async () => {
-    const { loadClaudeBinPath } = await freshDb();
-    expect(loadClaudeBinPath()).toBeNull();
+describe('db: messages table', () => {
+  it('returns [] for an unknown session', async () => {
+    const { loadMessages } = await freshDb();
+    expect(loadMessages('s-none')).toEqual([]);
   });
 
-  it('roundtrips a saved path', async () => {
-    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
-    saveClaudeBinPath('/opt/claude/bin/claude');
-    expect(loadClaudeBinPath()).toBe('/opt/claude/bin/claude');
+  it('roundtrips blocks in insertion order', async () => {
+    const { loadMessages, saveMessages } = await freshDb();
+    const blocks = [
+      { id: 'b1', kind: 'user', text: 'hello' },
+      { id: 'b2', kind: 'assistant', text: 'hi' },
+      { id: 'b3', kind: 'tool', name: 'Bash', brief: 'ls' }
+    ];
+    saveMessages('s-1', blocks);
+    expect(loadMessages('s-1')).toEqual(blocks);
   });
 
-  it('clears when passed null / empty string', async () => {
-    const { loadClaudeBinPath, saveClaudeBinPath } = await freshDb();
-    saveClaudeBinPath('/tmp/claude');
-    saveClaudeBinPath(null);
-    expect(loadClaudeBinPath()).toBeNull();
-    saveClaudeBinPath('/tmp/claude');
-    saveClaudeBinPath('');
-    expect(loadClaudeBinPath()).toBeNull();
+  it('bulk-save replaces prior rows for that session', async () => {
+    const { loadMessages, saveMessages } = await freshDb();
+    saveMessages('s-1', [{ id: 'a', kind: 'user', text: 'first' }]);
+    saveMessages('s-1', [
+      { id: 'b', kind: 'user', text: 'second' },
+      { id: 'c', kind: 'assistant', text: 'reply' }
+    ]);
+    const rows = loadMessages('s-1') as Array<{ id: string }>;
+    expect(rows.map((r) => r.id)).toEqual(['b', 'c']);
+  });
+
+  it('isolates rows by sessionId', async () => {
+    const { loadMessages, saveMessages } = await freshDb();
+    saveMessages('s-A', [{ id: 'x', kind: 'user', text: 'A' }]);
+    saveMessages('s-B', [{ id: 'y', kind: 'user', text: 'B' }]);
+    expect((loadMessages('s-A') as Array<{ id: string }>).map((r) => r.id)).toEqual(['x']);
+    expect((loadMessages('s-B') as Array<{ id: string }>).map((r) => r.id)).toEqual(['y']);
+  });
+
+  it('saving [] clears existing rows (used on delete)', async () => {
+    const { loadMessages, saveMessages } = await freshDb();
+    saveMessages('s-1', [{ id: 'a', kind: 'user', text: 'hi' }]);
+    saveMessages('s-1', []);
+    expect(loadMessages('s-1')).toEqual([]);
   });
 });

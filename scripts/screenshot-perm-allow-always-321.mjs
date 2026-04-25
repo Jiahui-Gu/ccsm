@@ -52,7 +52,6 @@ try {
   // "always allow this exact destructive command".
   await win.evaluate(() => {
     window.__ccsmStore.setState({
-      cliStatus: { state: 'found', binaryPath: '<screenshot>', version: null },
       groups: [{ id: 'g1', name: 'Group A', collapsed: false, kind: 'normal' }],
       sessions: [
         {

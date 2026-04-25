@@ -117,16 +117,6 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   sound: true
 };
 
-// First-run gate: we block session spawn until we've confirmed the Claude CLI
-// exists on the user's machine. The dialog is non-dismissable but can be
-// "canceled" into a persistent banner; both re-open via the same store action.
-export type CliStatus =
-  | { state: 'checking' }
-  | { state: 'found'; binaryPath: string; version: string | null }
-  | { state: 'missing'; searchedPaths: string[]; dialogOpen: boolean };
-
-const DEFAULT_CLI_STATUS: CliStatus = { state: 'checking' };
-
 /**
  * Transient diagnostic surfaced from the agent subsystem (initialize handshake
  * failed, control_request timed out, etc). Originates in
@@ -162,29 +152,12 @@ export interface SessionInitFailure {
   timestamp: number;
 }
 
-// Soft minimum — we log a console warning below this and surface it in the
-// wizard, but we do NOT block the user. Tested locally with claude 2.0.x
-// through 2.1.x; anything older than this should still spawn fine but has
-// observable stream-json quirks.
-export const CLI_MIN_VERSION_SOFT = '2.1.0';
-
-function parseSemver(v: string | null | undefined): [number, number, number] | null {
-  if (!v) return null;
-  const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
-}
-
-export function isVersionBelow(actual: string | null, floor: string): boolean {
-  const a = parseSemver(actual);
-  const f = parseSemver(floor);
-  if (!a || !f) return false;
-  for (let i = 0; i < 3; i++) {
-    if (a[i] < f[i]) return true;
-    if (a[i] > f[i]) return false;
-  }
-  return false;
-}
+// Soft minimum was previously surfaced to the user via the now-deleted
+// first-run wizard. CCSM ships a fixed binary version inside the installer
+// (PR-B), so the renderer no longer needs to know about CLI version floors.
+//
+// `parseSemver` / `isVersionBelow` were only consumed by the wizard and are
+// removed alongside it; the SDK enforces its own version compatibility.
 
 type State = {
   sessions: Session[];
@@ -254,7 +227,14 @@ type State = {
   // trivial — InputBar skips the first observation to avoid stealing focus
   // on app mount. Don't bump from background/system events; only user clicks.
   focusInputNonce: number;
-  cliStatus: CliStatus;
+  /**
+   * Set when `agent:start` returns errorCode === 'CLAUDE_NOT_FOUND'. CCSM
+   * bundles the Claude binary in the installer (PR-B) so this should never
+   * fire on a healthy install — when it does, the installer payload is
+   * corrupt or partially uninstalled and the user must reinstall. Surfaced
+   * by `<InstallerCorruptBanner />` as a non-dismissible top banner.
+   */
+  installerCorrupt: boolean;
   /** Recent agent diagnostics (newest last). Capped at 20 in-memory; the
    *  renderer only surfaces the latest non-dismissed one. Not persisted —
    *  these are ephemeral run-time signals. */
@@ -526,10 +506,9 @@ type Actions = {
   loadModels: () => Promise<void>;
   loadConnection: () => Promise<void>;
 
-  checkCli: () => Promise<void>;
-  setCliMissing: (searchedPaths: string[]) => void;
-  openCliDialog: () => void;
-  closeCliDialog: () => void;
+  /** Flip the `installerCorrupt` banner on (true) or off (false). Called
+   *  from `startSession` on `CLAUDE_NOT_FOUND`. */
+  setInstallerCorrupt: (corrupt: boolean) => void;
 
   /** Push an agent-layer diagnostic (emitted by electron `agent:diagnostic`
    *  IPC). Caps at 20 entries; oldest trimmed. */
@@ -922,7 +901,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   modelsLoaded: false,
   connection: null,
   focusInputNonce: 0,
-  cliStatus: DEFAULT_CLI_STATUS,
+  installerCorrupt: false,
   diagnostics: [],
   sessionInitFailures: {},
   allowAlwaysTools: [],
@@ -2221,67 +2200,8 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
   },
 
-  checkCli: async () => {
-    const api = window.ccsm;
-    if (!api?.cli) {
-      // No IPC (e.g. unit test renderer without preload). Mark found to keep
-      // the rest of the app usable.
-      set({ cliStatus: { state: 'found', binaryPath: '<no-ipc>', version: null } });
-      return;
-    }
-    set({ cliStatus: { state: 'checking' } });
-    try {
-      const res = await api.cli.retryDetect();
-      if (res.found) {
-        if (isVersionBelow(res.version, CLI_MIN_VERSION_SOFT)) {
-          // Non-blocking: log and keep going.
-          console.warn(
-            `[cli] Claude CLI ${res.version} is older than the recommended ${CLI_MIN_VERSION_SOFT}. Some features may misbehave.`
-          );
-        }
-        set({
-          cliStatus: {
-            state: 'found',
-            binaryPath: res.path,
-            version: res.version,
-          },
-        });
-      } else {
-        set({
-          cliStatus: {
-            state: 'missing',
-            searchedPaths: res.searchedPaths,
-            dialogOpen: true,
-          },
-        });
-      }
-    } catch (err) {
-      set({
-        cliStatus: {
-          state: 'missing',
-          searchedPaths: [err instanceof Error ? err.message : String(err)],
-          dialogOpen: true,
-        },
-      });
-    }
-  },
-
-  setCliMissing: (searchedPaths) => {
-    set({ cliStatus: { state: 'missing', searchedPaths, dialogOpen: true } });
-  },
-
-  openCliDialog: () => {
-    set((s) => {
-      if (s.cliStatus.state !== 'missing') return s;
-      return { cliStatus: { ...s.cliStatus, dialogOpen: true } };
-    });
-  },
-
-  closeCliDialog: () => {
-    set((s) => {
-      if (s.cliStatus.state !== 'missing') return s;
-      return { cliStatus: { ...s.cliStatus, dialogOpen: false } };
-    });
+  setInstallerCorrupt: (corrupt) => {
+    set({ installerCorrupt: corrupt });
   },
 
   pushDiagnostic: (entry) => {
