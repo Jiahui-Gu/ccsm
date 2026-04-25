@@ -176,6 +176,7 @@ export function ToolBlock({
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
   return (
     <div
+      data-testid="tool-block-root"
       className={
         'font-mono text-chrome ' +
         (isError
