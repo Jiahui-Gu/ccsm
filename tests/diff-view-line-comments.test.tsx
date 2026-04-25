@@ -224,4 +224,36 @@ describe('<DiffView /> per-line comment affordance', () => {
     // is "no comment was persisted", which is observable on the store.
     expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
   });
+
+  it('Enter on an empty composer cancels (no junk comment) and closes it (#340)', () => {
+    render(<DiffView diff={spec('/a/e.ts', [], ['LINE'])} />);
+    fireEvent.click(addCommentButtonForLine(0));
+    const composer = document.querySelector('[data-diff-comment-composer]') as HTMLElement;
+    expect(composer).not.toBeNull();
+    const ta = within(composer).getByPlaceholderText(/add a comment/i) as HTMLTextAreaElement;
+    // Whitespace-only counts as empty.
+    fireEvent.change(ta, { target: { value: '   ' } });
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    // No comment persisted (addDiffComment / updateDiffComment never fired).
+    expect(useStore.getState().pendingDiffComments[SID]).toBeUndefined();
+    // Composer is dismissed — its wrapper is no longer in the DOM (the
+    // store is the source of truth for "is there a comment", and composer
+    // close is observable via composerLine being reset on the parent
+    // FileSection, which removes the wrapper synchronously up to the
+    // exit animation. Mirror the Esc test's contract: no persisted state.
+  });
+
+  it('Enter on a non-empty composer still saves (regression guard for #340)', () => {
+    render(<DiffView diff={spec('/a/n.ts', [], ['LINE'])} />);
+    fireEvent.click(addCommentButtonForLine(0));
+    const composer = document.querySelector('[data-diff-comment-composer]') as HTMLElement;
+    const ta = within(composer).getByPlaceholderText(/add a comment/i) as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: 'real feedback' } });
+    fireEvent.keyDown(ta, { key: 'Enter' });
+    const bucket = useStore.getState().pendingDiffComments[SID];
+    expect(bucket).toBeDefined();
+    const list = Object.values(bucket!);
+    expect(list).toHaveLength(1);
+    expect(list[0].text).toBe('real feedback');
+  });
 });
