@@ -67,9 +67,12 @@ describe('store: createSession', () => {
     expect(useStore.getState().sessions[0].cwd).toBe('C:/Users/me/projects/alpha');
   });
 
-  it('falls back to ~ when recentProjects is empty', () => {
+  it('falls back to empty cwd (chip renders `(none)` placeholder) when recentProjects + historyRecentCwds are both empty', () => {
+    // task328: previously fell back to '~'. Per T4.b, an unset cwd is now an
+    // explicit empty string so the cwd chip renders the `(none)` placeholder
+    // and the popover does NOT auto-open — the user picks deliberately.
     useStore.getState().createSession(null);
-    expect(useStore.getState().sessions[0].cwd).toBe('~');
+    expect(useStore.getState().sessions[0].cwd).toBe('');
   });
 
   it('explicit cwd argument wins over recentProjects default', () => {
@@ -1307,5 +1310,80 @@ describe('store: openPopover / closePopover (global popover mutex)', () => {
     const after = useStore.getState();
     expect(after).toBe(before);
     expect(after.openPopoverId).toBeNull();
+  });
+});
+
+// task328: per-group cwd default — when the user creates a new session in a
+// group, prefill the chip with the most-recent prior cwd from that group.
+// Empty group → fall through to the existing global default chain.
+describe('store: createSession — per-group cwd default (task328)', () => {
+  it('prefills new session cwd with the most-recent session cwd in the same group', () => {
+    const gid = useStore.getState().createGroup('Repo A');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/a');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/a/sub');
+    // Newest-first ordering: index 0 should be the latest, index 1 the
+    // earlier '/repo/a'. Now create a third session in the same group with
+    // no explicit cwd — it should pick up '/repo/a/sub'.
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession(null);
+    const created = useStore.getState().sessions[0];
+    expect(created.groupId).toBe(gid);
+    expect(created.cwd).toBe('/repo/a/sub');
+  });
+
+  it('does not bleed cwd across groups', () => {
+    const gA = useStore.getState().createGroup('A');
+    const gB = useStore.getState().createGroup('B');
+    useStore.getState().focusGroup(gA);
+    useStore.getState().createSession('/repo/a');
+    useStore.getState().focusGroup(gB);
+    useStore.getState().createSession(null);
+    // Group B has no prior sessions and no recentProjects — should fall
+    // through to '' (chip renders `(none)` placeholder), NOT '/repo/a'.
+    const created = useStore.getState().sessions[0];
+    expect(created.groupId).toBe(gB);
+    expect(created.cwd).toBe('');
+  });
+
+  it('explicit cwd argument still wins over per-group default', () => {
+    const gid = useStore.getState().createGroup('A');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/a');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/explicit/path');
+    expect(useStore.getState().sessions[0].cwd).toBe('/explicit/path');
+  });
+
+  it('per-group default loses to recentProjects only when group is empty', () => {
+    useStore.getState().pushRecentProject('/recent/proj');
+    const gid = useStore.getState().createGroup('Fresh');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession(null);
+    // No prior sessions in 'Fresh' → recentProjects[0] wins.
+    expect(useStore.getState().sessions[0].cwd).toBe('/recent/proj');
+    // Now create a second session in the same group; per-group default
+    // should now win over recentProjects.
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/inside-group');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession(null);
+    expect(useStore.getState().sessions[0].cwd).toBe('/repo/inside-group');
+  });
+
+  it('skips sessions with empty cwd when scanning the group', () => {
+    const gid = useStore.getState().createGroup('Mixed');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/has-cwd');
+    useStore.getState().focusGroup(gid);
+    // Force an empty-cwd session into the group — simulates a previous
+    // `(none)`-state session.
+    useStore.getState().createSession('');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession(null);
+    // The most-recent (index 0) session has empty cwd; we should skip it
+    // and pick up '/repo/has-cwd'.
+    expect(useStore.getState().sessions[0].cwd).toBe('/repo/has-cwd');
   });
 });

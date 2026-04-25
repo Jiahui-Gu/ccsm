@@ -171,4 +171,53 @@ describe('<CwdPopover />', () => {
     // The trigger gains the warning aria-label on its inner glyph.
     expect(screen.getByLabelText(/missing/i)).toBeInTheDocument();
   });
+
+  // task328: discoverability + (none) fallback ----------------------------
+
+  it('renders `(none)` placeholder label when cwd is empty (task328)', () => {
+    renderPopover({ cwd: '' });
+    // The trigger should now read the i18n placeholder, not the lastSegment
+    // of an empty string. We assert by querying the chip via its data attr
+    // since `getByRole('button', { name: /none/i })` is locale-coupled.
+    const chip = document.querySelector('[data-cwd-chip]') as HTMLElement;
+    expect(chip).toBeTruthy();
+    expect(chip.textContent).toMatch(/\(none\)/);
+    // Spec T4.b: do NOT auto-open the popover in the empty-cwd state.
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does NOT auto-open popover on hover when cwd is empty (task328)', () => {
+    renderPopover({ cwd: '' });
+    const chip = document.querySelector('[data-cwd-chip]') as HTMLElement;
+    fireEvent.mouseEnter(chip);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('flashes a first-hover accent ring on the chip after mount, then retires (task328)', async () => {
+    vi.useFakeTimers();
+    try {
+      renderPopover();
+      const chip = document.querySelector('[data-cwd-chip]') as HTMLElement;
+      // Before any hover: no hint marker.
+      expect(chip.getAttribute('data-hover-hint')).toBeNull();
+      // First hover: hint flag goes on.
+      act(() => {
+        fireEvent.mouseEnter(chip);
+      });
+      expect(chip.getAttribute('data-hover-hint')).toBe('on');
+      // After ~600ms the pulse retires.
+      act(() => {
+        vi.advanceTimersByTime(700);
+      });
+      expect(chip.getAttribute('data-hover-hint')).toBeNull();
+      // Subsequent hovers do NOT replay the hint (sticky-once).
+      act(() => {
+        fireEvent.mouseLeave(chip);
+        fireEvent.mouseEnter(chip);
+      });
+      expect(chip.getAttribute('data-hover-hint')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

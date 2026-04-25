@@ -92,6 +92,35 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
   const popRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // task328: discoverability — pulse a faint accent ring on the FIRST hover
+  // after mount so brand-new users notice the chip is interactive. Sticky:
+  // once shown (or once the popover is opened by any path), we never replay
+  // for the lifetime of this mount. Keyed off mount, not session id, so
+  // switching between sessions in the same lifetime doesn't re-pulse.
+  const [hoverHintShown, setHoverHintShown] = useState(false);
+  const [hoverHintActive, setHoverHintActive] = useState(false);
+  const triggerOnHoverHint = useCallback(() => {
+    if (hoverHintShown) return;
+    setHoverHintShown(true);
+    setHoverHintActive(true);
+  }, [hoverHintShown]);
+  // Pulse duration matches the menuIn ease (~600ms). Driven from an effect so
+  // the timer is cleared on unmount (or if the popover opens and we retire
+  // the hint early), avoiding a setState-after-unmount warning in tests.
+  useEffect(() => {
+    if (!hoverHintActive) return;
+    const id = window.setTimeout(() => setHoverHintActive(false), 600);
+    return () => window.clearTimeout(id);
+  }, [hoverHintActive]);
+  // Opening the popover (via click, keyboard, whatever) also retires the
+  // hint — the user has discovered the chip.
+  useEffect(() => {
+    if (open && !hoverHintShown) {
+      setHoverHintShown(true);
+      setHoverHintActive(false);
+    }
+  }, [open, hoverHintShown]);
+
   // Reset query each time we re-open so the Recent list shows in full;
   // the current cwd is surfaced as the input placeholder instead.
   useEffect(() => {
@@ -178,7 +207,12 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     }
   };
 
-  const triggerLabel = lastSegment(cwd);
+  // task328: when the active session has no cwd (empty string), surface a
+  // muted `(none)` placeholder instead of letting `lastSegment('')` fall back
+  // to the raw input — and skip auto-opening the popover (corner case: only
+  // happens when there's no CLI history AND no per-group prior cwd).
+  const hasCwd = !!cwd;
+  const triggerLabel = hasCwd ? lastSegment(cwd) : t('chat.cwdChipNoneLabel');
 
   return (
     <span className="relative inline-flex">
@@ -186,16 +220,25 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
         ref={triggerRef}
         type="button"
         data-cwd-chip
-        title={cwdMissing ? t('cwdPopover.cwdMissingTooltip', { cwd }) : cwd}
+        data-hover-hint={hoverHintActive ? 'on' : undefined}
+        title={cwdMissing ? t('cwdPopover.cwdMissingTooltip', { cwd }) : (hasCwd ? cwd : undefined)}
         onClick={() => (open ? closePopover(POPOVER_ID) : openPopover(POPOVER_ID))}
+        onMouseEnter={triggerOnHoverHint}
+        onFocus={triggerOnHoverHint}
         aria-haspopup="dialog"
         aria-expanded={open}
         className={cn(
           'inline-flex items-center gap-1 h-5 px-1.5 rounded-sm',
           cwdMissing
             ? 'text-state-warning hover:text-state-warning-text hover:bg-state-warning-soft'
+            : !hasCwd
+            ? 'text-fg-tertiary italic hover:text-fg-secondary hover:bg-bg-hover'
             : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
           'outline-none focus-ring',
+          // task328: first-hover discoverability pulse. Uses the existing
+          // --color-focus-ring token so we don't introduce a new color.
+          hoverHintActive &&
+            'shadow-[0_0_0_2px_var(--color-focus-ring)] transition-shadow duration-300',
           'transition-colors duration-120 ease-out'
         )}
       >

@@ -133,7 +133,11 @@ const en = {
     runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
     runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)',
     // task322: continue-after-interrupt
-    continueAfterInterruptHint: 'Press Enter to continue, or type a new message'
+    continueAfterInterruptHint: 'Press Enter to continue, or type a new message',
+    // task328: shown in the cwd chip when the active session has no cwd set
+    // (no recent CLI history to default from, no per-group prior cwd). The
+    // popover does NOT auto-open in this state — the chip stays clickable.
+    cwdChipNoneLabel: '(none)'
   },
   chatStream: {
     emptyHint: 'Type a message and press'
