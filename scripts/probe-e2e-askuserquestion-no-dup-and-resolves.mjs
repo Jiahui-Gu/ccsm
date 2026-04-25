@@ -165,14 +165,14 @@ try {
   }
 
   // ── Submit + verify resolve routing ────────────────────────────────────
-  // Default-pick is index 0 (TypeScript); click the SUBMIT button.
-  const submitBtn = win
-    .locator('div.relative', { has: win.locator('[data-question-option]') })
-    .last()
-    .locator('button')
-    .last();
+  // The current QuestionBlock does NOT pre-pick the first option; the user
+  // must click one before Submit becomes enabled. Click TypeScript, then
+  // Submit.
+  await win.locator('[data-question-option][data-question-label="TypeScript"]').first().click();
+  await win.waitForTimeout(120);
+  const submitBtn = win.locator('[data-testid="question-submit"]');
   if (await submitBtn.isDisabled()) {
-    fail('J1', 'Submit button disabled — block was rendered as read-only/duplicate');
+    fail('J1', 'Submit button disabled after picking TypeScript — block was rendered as read-only/duplicate');
   } else {
     await submitBtn.click();
     await win.waitForTimeout(400);
