@@ -84,7 +84,11 @@ function InlineCommentComposer({
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
+            // Empty Enter dismisses the composer (#340) — previously it was a
+            // silent no-op that left a blank composer hanging open. Aligns
+            // with Esc so blank Enter no longer feels broken.
             if (trimmed) onSave(trimmed);
+            else onCancel();
           } else if (e.key === 'Escape') {
             e.preventDefault();
             onCancel();
