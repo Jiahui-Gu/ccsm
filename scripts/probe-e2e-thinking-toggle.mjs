@@ -1,25 +1,28 @@
 // E2E: extended-thinking toggle through the slash-command palette.
 //
-// Asserts the user-visible flow end-to-end:
-//   1. Open the slash picker (`/`), find the built-in `/think` row.
-//   2. Confirm the trailing Switch starts in the OFF visual state
-//      (data-state="unchecked"), matching the global default of 'off'
-//      on a fresh user-data dir.
-//   3. Trigger the row's clientHandler via the same path the picker uses
-//      (mouseDown), then re-render the picker and confirm the Switch
-//      flipped to ON ("checked").
-//   4. Toggle once more and confirm it returns to OFF.
+// Drives the LIVE user flow end-to-end:
+//   1. Boot app, install ipcMain spy on `agent:setMaxThinkingTokens`
+//      (renderer-side `window.ccsm.agent.setMaxThinkingTokens` is bound by
+//      contextBridge and not replaceable from the renderer; the spy must
+//      live in the main process).
+//   2. Seed an active session via `__ccsmStore.getState().createSession`.
+//   3. Focus the InputBar textarea, type `/think` so the live picker opens
+//      with the `/think` row visible.
+//   4. Read the trailing `[data-testid="slash-think-switch"]` data-state —
+//      proves the picker is rendering the current thinking-off state.
+//   5. Capture pre-store state, click the switch (its pointer-events are
+//      none, so the click bubbles to the row's onMouseDown which calls
+//      `commitSlashCommand` → `clientHandler` → `setThinkingLevel`).
+//   6. Wait for store to flip to default_on; the picker closed itself, so
+//      re-type `/think` and verify the switch now reads "checked".
+//   7. Click the row again (toggle off), verify reverts to off.
+//   8. Verify the ipcMain spy received both toggle calls — proves the
+//      `setMaxThinkingTokens` IPC actually fires from store.ts's fan-out.
 //
-// We poke the registered command's clientHandler directly (rather than
-// driving keystrokes through the InputBar) because:
-//   - the picker is mounted only when InputBar's textarea has a `/` prefix,
-//     and the renderer's controlled-input wiring there isn't reachable by
-//     this probe without simulating focus / IME events that other probes
-//     have proven to be flaky;
-//   - the assertion we care about is "the picker's trailing slot reflects
-//     store state and the handler toggles store state" — both halves are
-//     reachable through window.ccsm + the registry export without driving
-//     the textarea, and that keeps the probe deterministic.
+// All previous source-imports (`page.evaluate(import('/src/...'))`) were
+// removed: `startBundleServer` only serves `dist/renderer/`, so dynamic TS
+// imports 404. Vitest covers registry-presence assertions
+// (tests/thinking.test.ts); this probe owns the live UI flow.
 
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
@@ -49,51 +52,154 @@ const app = await electron.launch({
 
 try {
   const win = await appWindow(app);
+  win.on('pageerror', (e) => console.error(`[pageerror] ${e.message}`));
   await win.waitForLoadState('domcontentloaded');
-  await win.waitForFunction(() => !!window.ccsm, null, { timeout: 15_000 });
+  await win.waitForFunction(() => !!window.ccsm && !!window.__ccsmStore, null, {
+    timeout: 20_000,
+  });
 
-  // Step 1: ensure /think exists as a built-in with a clientHandler.
-  const built = await win.evaluate(async () => {
-    const mod = await import('/src/slash-commands/registry.ts');
-    // Side-effect import to attach the /think handler.
-    await import('/src/slash-commands/handlers.ts');
-    const t = mod.BUILT_IN_COMMANDS.find((c) => c.name === 'think');
+  // Step 1: install ipcMain spy. Renderer-side window.ccsm methods are
+  // contextBridge-bound and non-writable; spying must happen in main. We
+  // remove + reinstall the existing handler to capture every call while
+  // still echoing the upstream success shape.
+  await app.evaluate(({ ipcMain }) => {
+    const calls = (global.__thinkingIpcCalls = []);
+    try {
+      ipcMain.removeHandler('agent:setMaxThinkingTokens');
+    } catch {}
+    ipcMain.handle('agent:setMaxThinkingTokens', (_e, sessionId, tokens) => {
+      calls.push({ sessionId, tokens });
+      return { ok: true };
+    });
+  });
+
+  // Step 2: seed a session. App.tsx renders an empty-state when sessions=[];
+  // the InputBar lives inside ChatPane which is only mounted when there's an
+  // active session, so we must createSession first. We also flip
+  // `startedSessions[sid] = true` so store.ts:setThinkingLevel actually
+  // dispatches the IPC fan-out (it short-circuits for un-started sessions
+  // since otherwise there's no SDK Query handle to push the cap into).
+  // Marking the session "started" without spawning the CLI is safe — the
+  // ipcMain spy intercepts the call before it reaches the SDK.
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    const s = store.getState();
+    if (s.sessions.length === 0) s.createSession('~');
+    const sid = store.getState().activeId;
+    store.setState((prev) => ({
+      startedSessions: { ...prev.startedSessions, [sid]: true },
+    }));
+  });
+
+  // Wait for the InputBar textarea to mount.
+  const textarea = win.locator('textarea[data-input-bar]');
+  await textarea.waitFor({ state: 'visible', timeout: 10_000 });
+
+  // Step 3: type `/think` so the live picker opens.
+  await textarea.click();
+  await textarea.fill('/think');
+
+  // Step 4: live `/think` row should appear with the trailing switch in the
+  // unchecked (off) state. Selector matches SlashCommandPicker.tsx:222.
+  const switchEl = win.locator('[data-testid="slash-think-switch"]');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateBefore = await switchEl.getAttribute('data-state');
+  if (stateBefore !== 'unchecked') {
+    fail(`switch initial state expected 'unchecked', got '${stateBefore}'`);
+  }
+
+  // Capture pre-toggle store state.
+  const pre = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const sid = s.activeId;
     return {
-      present: !!t,
-      passThrough: t?.passThrough,
-      hasHandler: typeof t?.clientHandler === 'function',
+      sid,
+      level: s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault,
     };
   });
-  if (!built.present) fail('/think missing from BUILT_IN_COMMANDS');
-  if (built.passThrough !== false) fail(`/think passThrough expected false, got ${built.passThrough}`);
-  if (!built.hasHandler) fail('/think clientHandler not attached');
+  if (pre.level !== 'off') fail(`pre store level expected 'off', got '${pre.level}'`);
 
-  // Step 2: drive the same renderer path the picker uses (clientHandler) and
-  // assert the store + IPC fan-out behaviour.
-  const result = await win.evaluate(async () => {
-    const reg = await import('/src/slash-commands/registry.ts');
-    await import('/src/slash-commands/handlers.ts');
-    const storeMod = await import('/src/stores/store.ts');
-    const store = storeMod.useStore.getState();
-    // Make sure we have a session to toggle on.
-    if (store.sessions.length === 0) store.createSession('~');
-    const sid = storeMod.useStore.getState().sessions[0].id;
-    const think = reg.BUILT_IN_COMMANDS.find((c) => c.name === 'think');
-    const before = storeMod.useStore.getState().thinkingLevelBySession[sid] ??
-      storeMod.useStore.getState().globalThinkingDefault;
-    await think.clientHandler({ sessionId: sid, args: '' });
-    const after1 = storeMod.useStore.getState().thinkingLevelBySession[sid];
-    await think.clientHandler({ sessionId: sid, args: '' });
-    const after2 = storeMod.useStore.getState().thinkingLevelBySession[sid];
-    return { before, after1, after2 };
-  });
+  // Step 5: click the switch. Inside SlashCommandPicker.tsx the trailing
+  // <span> is `aria-hidden` with no pointer-events override on the inner
+  // children — Playwright's .click() dispatches at the element center which
+  // bubbles up to the row <button>'s onMouseDown handler (the row uses
+  // onMouseDown, not onClick, but Playwright's click sequence includes a
+  // pointerdown/mousedown that React routes through onMouseDown).
+  await switchEl.click();
 
-  if (result.before !== 'off') fail(`expected initial level 'off', got ${result.before}`);
-  if (result.after1 !== 'default_on') fail(`first toggle expected 'default_on', got ${result.after1}`);
-  if (result.after2 !== 'off') fail(`second toggle expected 'off', got ${result.after2}`);
+  // Wait for the store to reflect the toggle. The picker closes after the
+  // commit (commitSlashCommand clears the textarea), so we read the store
+  // directly.
+  await win.waitForFunction(
+    (sid) => {
+      const s = window.__ccsmStore.getState();
+      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
+      return lvl === 'default_on';
+    },
+    pre.sid,
+    { timeout: 5_000 },
+  );
+
+  // Re-open picker and verify the switch reflects the new state.
+  await textarea.click();
+  await textarea.fill('/think');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateAfterOn = await switchEl.getAttribute('data-state');
+  if (stateAfterOn !== 'checked') {
+    fail(`after toggle-on switch state expected 'checked', got '${stateAfterOn}'`);
+  }
+
+  // Step 7: toggle off again.
+  await switchEl.click();
+  await win.waitForFunction(
+    (sid) => {
+      const s = window.__ccsmStore.getState();
+      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
+      return lvl === 'off';
+    },
+    pre.sid,
+    { timeout: 5_000 },
+  );
+
+  // Re-open and verify reverted to unchecked.
+  await textarea.click();
+  await textarea.fill('/think');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateAfterOff = await switchEl.getAttribute('data-state');
+  if (stateAfterOff !== 'unchecked') {
+    fail(`after toggle-off switch state expected 'unchecked', got '${stateAfterOff}'`);
+  }
+
+  // Step 8: verify ipcMain spy captured BOTH toggle IPC calls. The store's
+  // setThinkingLevel fan-out (store.ts:1463) dispatches
+  // agentSetMaxThinkingTokens; main's preload forwards to ipcMain. If the
+  // store's IPC dispatch is broken, calls.length === 0.
+  const ipcCalls = await app.evaluate(() => (global.__thinkingIpcCalls || []).slice());
+  if (ipcCalls.length < 2) {
+    fail(
+      `expected >=2 setMaxThinkingTokens IPC calls (one per toggle), got ${ipcCalls.length}: ${JSON.stringify(ipcCalls)}`,
+    );
+  }
+  // First call: turn ON → tokens > 0. Second: turn OFF → tokens === 0.
+  // (Resolved value comes from getMaxThinkingTokensForModel in the store.)
+  const onCall = ipcCalls[0];
+  const offCall = ipcCalls[1];
+  if (!(onCall.tokens > 0)) {
+    fail(`first IPC call (toggle on) expected tokens > 0, got ${JSON.stringify(onCall)}`);
+  }
+  if (offCall.tokens !== 0) {
+    fail(`second IPC call (toggle off) expected tokens === 0, got ${JSON.stringify(offCall)}`);
+  }
+  if (onCall.sessionId !== pre.sid || offCall.sessionId !== pre.sid) {
+    fail(
+      `IPC sessionId mismatch — expected ${pre.sid}, got on=${onCall.sessionId} off=${offCall.sessionId}`,
+    );
+  }
 
   console.log('\n[probe-e2e-thinking-toggle] OK');
-  console.log('  /think built-in toggles per-session level off ↔ default_on');
+  console.log('  /think live row toggles store off ↔ default_on');
+  console.log('  Switch facsimile reflects state (unchecked ↔ checked)');
+  console.log(`  setMaxThinkingTokens IPC fired: on tokens=${onCall.tokens}, off tokens=${offCall.tokens}`);
 } finally {
   await app.close();
   closeServer();
