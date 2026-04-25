@@ -245,11 +245,17 @@ function installContextMenu(win: BrowserWindow) {
 }
 
 function createWindow() {
+  // E2E hidden mode: when CCSM_E2E_HIDDEN=1 the window stays off-screen for
+  // the entire run. Probes still drive the renderer over IPC; only the OS
+  // surface is suppressed. Devs running a single probe by hand without this
+  // env var still get a visible window so they can watch and debug.
+  const hiddenForE2E = process.env.CCSM_E2E_HIDDEN === '1';
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    show: !hiddenForE2E,
     // Solid app background — we deliver depth via layered surfaces in CSS,
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.

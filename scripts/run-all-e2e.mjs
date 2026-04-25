@@ -165,7 +165,11 @@ function runOne(scriptPath, timeoutMs) {
     const child = spawn(process.execPath, [scriptPath], {
       shell: false,
       stdio: ['ignore', 'inherit', 'pipe'],
-      env: process.env,
+      // Default probes to hidden-window mode so a 64-probe run doesn't
+      // strobe focus stealing across the user's desktop. Individual
+      // probes can still launch electron directly with their own env
+      // when run by hand for debugging (no CCSM_E2E_HIDDEN set).
+      env: { ...process.env, CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1' },
       // Keep the child in our process group so `taskkill /T /PID <us>`
       // would also reach it if the runner itself is killed. Explicit for
       // clarity — also means we can't use `process.kill(-pid)` on POSIX.
