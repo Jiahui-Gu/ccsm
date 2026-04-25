@@ -102,6 +102,12 @@ const api = {
   ): Promise<
     { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
   > => ipcRenderer.invoke('dialog:saveFile', args),
+  // (#51) Drop tool stdout into an OS temp file and open it in the user's
+  // default text editor via shell.openPath.
+  toolOpenInEditor: (
+    args: { content: string }
+  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('tool:open-in-editor', args),
 
   agentStart: (sessionId: string, opts: StartOpts): Promise<StartResult> =>
     ipcRenderer.invoke('agent:start', sessionId, opts),
