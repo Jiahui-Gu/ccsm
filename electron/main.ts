@@ -7,12 +7,11 @@ import {
   initDb,
   loadState,
   saveState,
-  loadMessages,
-  saveMessages,
   closeDb,
   loadClaudeBinPath,
   saveClaudeBinPath,
 } from './db';
+import { loadHistoryFromJsonl } from './jsonl-loader';
 import { validateSaveStateInput } from './db-validate';
 
 // Reads the user's opt-out preference for crash reporting from app_state.
@@ -515,51 +514,30 @@ app.whenReady().then(() => {
       return { ok: true };
     }
   );
-  ipcMain.handle('db:loadMessages', (e, sessionId: string) => {
-    if (!fromMainFrame(e)) return [];
-    return loadMessages(sessionId);
-  });
-  // Cap renderer-supplied message payloads. The DB column is unbounded TEXT,
-  // so a buggy or malicious renderer could otherwise pin the WAL with
-  // gigabytes of JSON and balloon `~/.config/.../ccsm.db` past disk
-  // budget. The caps below are well above any legitimate session:
-  //   - 64 chars per sessionId (sessions are uuid-ish ~36 chars)
-  //   - 50_000 blocks per session (current cap on history retention)
-  //   - 1 MB per individual block JSON (a single block this large is a bug)
-  const MAX_SESSION_ID_LEN = 64;
-  const MAX_BLOCKS = 50_000;
-  const MAX_BLOCK_BYTES = 1_000_000;
+  // Session message history is no longer persisted by ccsm — the CLI/Agent
+  // SDK already writes every frame to `~/.claude/projects/<key>/<sid>.jsonl`,
+  // and ccsm now reads from there via `agent:load-history`. The previous
+  // `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages` table were
+  // a redundant secondary copy.
   ipcMain.handle(
-    'db:saveMessages',
-    (
-      e,
-      sessionId: string,
-      blocks: Array<{ id: string; kind: string }>
-    ): { ok: true } | { ok: false; error: string } => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (typeof sessionId !== 'string' || sessionId.length > MAX_SESSION_ID_LEN) {
-        return { ok: false, error: 'payload_too_large' };
+    'agent:load-history',
+    async (e, cwd: unknown, sessionId: unknown) => {
+      if (!fromMainFrame(e)) {
+        return { ok: false, error: 'rejected' as const };
       }
-      if (!Array.isArray(blocks) || blocks.length > MAX_BLOCKS) {
-        return { ok: false, error: 'payload_too_large' };
+      if (typeof cwd !== 'string' || typeof sessionId !== 'string') {
+        return { ok: false, error: 'invalid_args' as const };
       }
-      const filtered: Array<{ id: string; kind: string }> = [];
-      for (const b of blocks) {
-        try {
-          const json = JSON.stringify(b);
-          if (json.length > MAX_BLOCK_BYTES) {
-            console.warn(
-              `[main] db:saveMessages dropping oversized block (${json.length} bytes) for session=${sessionId}`
-            );
-            continue;
-          }
-          filtered.push(b);
-        } catch {
-          console.warn('[main] db:saveMessages dropping unserializable block');
-        }
+      try {
+        return await loadHistoryFromJsonl(cwd, sessionId);
+      } catch (err) {
+        console.warn('[main] agent:load-history failed', err);
+        return {
+          ok: false as const,
+          error: 'read_error' as const,
+          detail: err instanceof Error ? err.message : String(err)
+        };
       }
-      saveMessages(sessionId, filtered);
-      return { ok: true };
     }
   );
 
