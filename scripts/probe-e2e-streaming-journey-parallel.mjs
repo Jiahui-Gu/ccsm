@@ -113,7 +113,16 @@ try {
 
   // Switch view to A so we can confirm caret state for A is gone.
   await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), A);
-  await win.waitForTimeout(120);
+  // Wait for A's chat surface to mount before sampling caret.
+  await win.waitForFunction(
+    (text) => document.body.textContent?.includes(text) ?? false,
+    'Aa Ab Ac',
+    { timeout: 3000 }
+  ).catch(() => fail('A view never mounted after switch', app));
+  // Caret on A should be gone (block was finalized). Allow a short
+  // settle window for React to commit the streaming=false transition.
+  await win.waitForFunction(() => document.querySelectorAll('span.animate-pulse').length === 0, null, { timeout: 2000 })
+    .catch(() => {});
   const caretAfterA = await win.locator('span.animate-pulse').count();
   if (caretAfterA !== 0) fail(`A's caret should be gone after finalize, found ${caretAfterA}`, app);
 
@@ -124,7 +133,16 @@ try {
   }, B);
   if (!bStillStreaming) fail('B should still be streaming after only A was finalized', app);
   await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), B);
-  await win.waitForTimeout(150);
+  // Wait for B's chat surface to mount (its assistant text becomes visible)
+  // before sampling caret. Switching activeId triggers a re-render and the
+  // 150ms hard-coded wait is racy on slower CI / hidden-window runs.
+  await win.waitForFunction(
+    (text) => document.body.textContent?.includes(text) ?? false,
+    'Bp Bq Br',
+    { timeout: 3000 }
+  ).catch(() => fail('B view never mounted after switch', app));
+  await win.locator('span.animate-pulse').first().waitFor({ state: 'visible', timeout: 3000 })
+    .catch(() => fail('B should still show caret', app));
   const caretOnB = await win.locator('span.animate-pulse').count();
   if (caretOnB < 1) fail('B should still show caret', app);
 
@@ -133,7 +151,8 @@ try {
     window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
     window.__ccsmStore.getState().setRunning(sid, false);
   }, [B, BID_B, wantB]);
-  await win.waitForTimeout(150);
+  await win.waitForFunction(() => document.querySelectorAll('span.animate-pulse').length === 0, null, { timeout: 3000 })
+    .catch(() => {});
   const caretFinal = await win.locator('span.animate-pulse').count();
   if (caretFinal !== 0) fail(`caret should be 0 after both finalize, got ${caretFinal}`, app);
 
