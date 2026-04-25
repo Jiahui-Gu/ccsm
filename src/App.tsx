@@ -7,6 +7,7 @@ import { Sidebar } from './components/Sidebar';
 import { AppShell } from './components/AppShell';
 import { ChatStream } from './components/ChatStream';
 import { InputBar } from './components/InputBar';
+import { QuestionStickyHost } from './components/QuestionStickyHost';
 import { StatusBar } from './components/StatusBar';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
@@ -436,6 +437,7 @@ export default function App() {
                 onChangeModel={(m) => setSessionModel(active.id, m)}
                 onChangePermission={setPermission}
               />
+              <QuestionStickyHost sessionId={active.id} />
               <InputBar sessionId={active.id} />
             </main>
           }

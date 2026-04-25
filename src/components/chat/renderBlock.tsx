@@ -1,6 +1,5 @@
 import type { MessageBlock } from '../../types';
 import { PermissionPromptBlock } from '../PermissionPromptBlock';
-import { QuestionBlock } from '../QuestionBlock';
 import { UserBlock } from './blocks/UserBlock';
 import { AssistantBlock } from './blocks/AssistantBlock';
 import { ToolBlock } from './blocks/ToolBlock';
@@ -9,12 +8,13 @@ import { PlanBlock } from './blocks/PlanBlock';
 import { StatusBanner } from './blocks/StatusBanner';
 import { SystemTraceBlock } from './blocks/SystemTraceBlock';
 import { ErrorBlock } from './blocks/ErrorBlock';
+import { QuestionAnsweredRow } from './blocks/QuestionAnsweredRow';
 
 export function renderBlock(
   b: MessageBlock,
   activeId: string,
   resolvePermission: (sid: string, rid: string, d: 'allow' | 'deny') => void,
-  bumpComposerFocus: () => void,
+  _bumpComposerFocus: () => void,
   addAllowAlways: (toolName: string) => void,
   opts: {
     permissionAutoFocus?: boolean;
@@ -67,29 +67,17 @@ export function renderBlock(
         />
       );
     case 'question':
-      return (
-        <QuestionBlock
-          questions={b.questions}
-          onSubmit={(answersText) => {
-            const api = window.ccsm;
-            if (!api) return;
-            // Two flows land here:
-            //  1. can_use_tool path (SDK-era / possible future): answers the
-            //     pending permission with "deny" and sends the answer as a
-            //     fresh user message — slightly lossy but unblocks the turn.
-            //  2. tool_use path (current claude.exe spawn): no requestId, the
-            //     bogus tool_result has already landed, agent is waiting on
-            //     the next user turn. Just send the answer text.
-            if (b.requestId) {
-              void api.agentResolvePermission(activeId, b.requestId, 'deny');
-            }
-            void api.agentSend(activeId, answersText);
-            // Return focus to the composer so the user's next keystroke types
-            // into chat instead of being eaten by the now-disabled options.
-            bumpComposerFocus();
-          }}
-        />
-      );
+      // Live (unanswered) question cards no longer render in the timeline —
+      // they're handled by the sticky `<QuestionStickyHost />` above the
+      // composer, mirroring the upstream Claude VS Code extension's
+      // permission-request placement (webview/index.js → permissionsContainer
+      // host between the messages list and the inputContainer). Once the
+      // user submits or rejects, we leave a compact summary row in the
+      // timeline so the chat retains a scrollable record of the prompt and
+      // the answer that was sent — matches upstream's "card 出队 / timeline
+      // 留 ToolBlock result row" outcome.
+      if (!b.answered) return null;
+      return <QuestionAnsweredRow questions={b.questions} answers={b.answers} rejected={!!b.rejected} />;
     case 'status':
       return <StatusBanner tone={b.tone} title={b.title} detail={b.detail} />;
     case 'system':
