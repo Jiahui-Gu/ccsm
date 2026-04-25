@@ -75,15 +75,15 @@ const chatRendered = await win.evaluate(() => {
   // or a list of blocks inside a max-w-[1100px] container.
   const ready = !!document.body.innerText?.includes('Ready when you are.');
   const hasList = !!document.querySelector('.max-w-\\[1100px\\]');
-  const toolButtons = document.querySelectorAll('.font-mono.text-sm button[aria-expanded]').length;
+  const toolButtons = document.querySelectorAll('[data-testid="tool-block-root"] button[aria-expanded]').length;
   return { ready, hasList, toolButtons };
 });
 console.log('[probe-terminal] chat render state:', JSON.stringify(chatRendered));
 
-// Expand the Bash tool row — target the chat-stream ToolBlock specifically.
-// ChatStream ToolBlock is wrapped in `.font-mono.text-sm` so that class
-// combo uniquely disambiguates from sidebar group-header expand buttons.
-const candidates = win.locator('.font-mono.text-sm button[aria-expanded]');
+// Expand the Bash tool row — target the chat-stream ToolBlock specifically
+// via its data-testid (durable across the type-token rename that turned
+// `font-mono text-sm` into `font-mono text-chrome`).
+const candidates = win.locator('[data-testid="tool-block-root"] button[aria-expanded]');
 const btnCount = await candidates.count();
 console.log(`[probe-terminal] chat tool expand buttons: ${btnCount}`);
 if (btnCount === 0) fail('no ChatStream ToolBlock button found');
@@ -94,7 +94,7 @@ await new Promise((r) => setTimeout(r, 500));
 const hostCount = await win.locator('[data-testid="terminal-host"]').count();
 if (hostCount !== 1) {
   const summary = await win.evaluate(() => {
-    const toolButtons = Array.from(document.querySelectorAll('.font-mono.text-sm button[aria-expanded]'));
+    const toolButtons = Array.from(document.querySelectorAll('[data-testid="tool-block-root"] button[aria-expanded]'));
     return toolButtons.map((b) => ({
       aria: b.getAttribute('aria-expanded'),
       outer: b.outerHTML.slice(0, 300),
