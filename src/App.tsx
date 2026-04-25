@@ -421,6 +421,7 @@ export default function App() {
               <StatusBar
                 cwd={active.cwd}
                 cwdMissing={active.cwdMissing}
+                sessionId={active.id}
                 model={active.model || model}
                 permission={permission}
                 onChangeCwdToPath={(p) => {

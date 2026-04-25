@@ -89,6 +89,23 @@ export const EMPTY_SESSION_STATS: SessionStats = {
   costUsd: 0
 };
 
+// Snapshot of the last completed turn's context-window usage. Updated from
+// the latest `result` frame's `usage` (current prompt size, NOT the
+// cumulative API tokens that `SessionStats` tracks) and the model-aware
+// `contextWindow` reported in `modelUsage[model].contextWindow`. Drives the
+// StatusBar context-usage pie chip. Ephemeral — not persisted; the chip just
+// stays hidden until the first turn after reload.
+export interface SessionContextUsage {
+  /** Latest turn's prompt size: input + cache_creation + cache_read tokens.
+   *  This is the live "how full is the context window" number. */
+  totalTokens: number;
+  /** Model-reported context window for that turn (e.g. 200_000 for sonnet/opus).
+   *  Null when claude.exe didn't report `modelUsage` (older CLI / error frame). */
+  contextWindow: number | null;
+  /** Model id from the same `modelUsage` entry, kept for tooltip display. */
+  model: string | null;
+}
+
 export interface DiscoveredModel {
   id: string;
   source: ModelSource;
@@ -232,6 +249,10 @@ type State = {
   startedSessions: Record<string, true>;
   runningSessions: Record<string, true>;
   statsBySession: Record<string, SessionStats>;
+  /** Last-turn context-usage snapshot per session, updated from `result`
+   *  frames. Used by StatusBar's context-pie chip. Cleared on session
+   *  delete and on `/clear`-style transcript wipes. */
+  contextUsageBySession: Record<string, SessionContextUsage>;
   // Marks sessions where the user clicked Stop. Consumed when the next
   // `result { error_during_execution }` frame arrives so we can render a
   // neutral "Interrupted" banner instead of an error block.
@@ -522,6 +543,10 @@ type Actions = {
    *  via `resolvePermission`. */
   bumpComposerFocus: () => void;
   addSessionStats: (sessionId: string, delta: Partial<SessionStats>) => void;
+  /** Replace the last-turn context-usage snapshot for `sessionId`. Pass a
+   *  fresh object — we do NOT merge with prior state because each `result`
+   *  frame already carries the absolute current-prompt size. */
+  setSessionContextUsage: (sessionId: string, usage: SessionContextUsage) => void;
 
   loadModels: () => Promise<void>;
   loadConnection: () => Promise<void>;
@@ -916,6 +941,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   startedSessions: {},
   runningSessions: {},
   statsBySession: {},
+  contextUsageBySession: {},
   interruptedSessions: {},
   messageQueues: {},
   models: [],
@@ -1708,6 +1734,8 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete nextQueues[sessionId];
       const nextStats = { ...s.statsBySession };
       delete nextStats[sessionId];
+      const nextContextUsage = { ...s.contextUsageBySession };
+      delete nextContextUsage[sessionId];
       // Drop resumeSessionId so the next agentStart spawns a fresh
       // claude.exe conversation rather than continuing the old one. Also
       // reset state to 'idle' — clearing the context while the row is
@@ -1728,7 +1756,8 @@ export const useStore = create<State & Actions>((set, get) => ({
         runningSessions: nextRunning,
         interruptedSessions: nextInterrupted,
         messageQueues: nextQueues,
-        statsBySession: nextStats
+        statsBySession: nextStats,
+        contextUsageBySession: nextContextUsage
       };
     });
     // PR-H: ccsm no longer persists message history. The CLI's JSONL stays
@@ -1758,6 +1787,15 @@ export const useStore = create<State & Actions>((set, get) => ({
       };
       return { statsBySession: { ...s.statsBySession, [sessionId]: next } };
     });
+  },
+
+  setSessionContextUsage: (sessionId, usage) => {
+    set((s) => ({
+      contextUsageBySession: {
+        ...s.contextUsageBySession,
+        [sessionId]: usage
+      }
+    }));
   },
 
   loadMessages: async (sessionId) => {
