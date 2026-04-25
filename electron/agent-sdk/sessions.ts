@@ -546,13 +546,12 @@ export class SdkSessionRunner {
   async cancelToolUse(toolUseId: string): Promise<void> {
     if (!this.query) return;
     // Same fallback as the legacy runner: SDK has no per-tool cancel today,
-    // so a per-tool Cancel falls back to a turn-level interrupt. The
-    // diagnostic is emitted so the per-tool fallback shows in dogfood logs.
-    this.onDiagnostic({
-      level: 'warn',
-      code: 'tool_cancel_fallback',
-      message: `Per-tool cancel for ${toolUseId} fell back to turn interrupt (SDK lacks scoped cancel).`,
-    });
+    // so a per-tool Cancel falls back to a turn-level interrupt. Per-tool
+    // Cancel is a normal user action, so we log to stdout (for ccsm-side
+    // debugging) instead of emitting a user-facing diagnostic banner.
+    console.warn(
+      `[ccsm] tool cancel falling back to turn-level interrupt: SDK lacks scoped cancel API (toolUseId=${toolUseId})`,
+    );
     await this.interrupt();
   }
 
