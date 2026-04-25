@@ -83,6 +83,21 @@ npm run make:linux   # build AppImage / .deb / .rpm
 
 The architecture has a hard rule: **frontend code under `src/` may not import from `electron`**. The only backend entry point is `window.ccsm` (declared in `src/global.d.ts`), exposed via `electron/preload.ts`. This keeps the door open for a future remote daemon. See `docs/mvp-design.md` §15.
 
+### Windows: `gyp ERR! find Python` on `npm install`
+
+`better-sqlite3`'s native rebuild uses `node-gyp`, which on Windows often
+picks up the `WindowsApps\python.exe` Microsoft Store launcher stub instead
+of a real interpreter and fails. If you see `gyp ERR! find Python`, point
+node-gyp at a real Python 3.x in your **user-level** `~/.npmrc` (not the
+repo's `.npmrc` — the path is machine-specific):
+
+```ini
+python=C:/Users/<you>/AppData/Local/Programs/Python/Python312/python.exe
+```
+
+Any installed Python 3.8+ works. Re-run `npm install` and the rebuild
+will pick up the override automatically.
+
 ## Notifications
 
 CCSM raises desktop notifications when a background session needs your
