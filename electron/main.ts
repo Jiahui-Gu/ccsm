@@ -274,6 +274,10 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // CCSM_E2E_HIDDEN=1 also strips the DevTools surface entirely so
+      // probes cannot accidentally pop a DevTools window (any explicit
+      // openDevTools() call below is a no-op once this is false).
+      devTools: !hiddenForE2E,
       // sandbox:true is the recommended Electron baseline (forces the
       // preload into a Chromium sandbox where Node built-ins are
       // unavailable), but our preload's `require('@sentry/electron/preload')`
@@ -319,7 +323,7 @@ function createWindow() {
   if (isDev) {
     const port = process.env.CCSM_DEV_PORT || '4100';
     win.loadURL(`http://localhost:${port}`);
-    win.webContents.openDevTools({ mode: 'detach' });
+    if (!hiddenForE2E) win.webContents.openDevTools({ mode: 'detach' });
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
