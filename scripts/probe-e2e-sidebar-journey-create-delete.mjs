@@ -405,6 +405,18 @@ await seedStore(win, {
     activeId: 'a1',
     focusedGroupId: null
   });
+  // Dismiss any lingering toasts from earlier journeys (J4's session-undo
+  // toast can still be in DOM if its 3s TTL hasn't elapsed) so the locator
+  // below resolves to J7's group-undo toast unambiguously.
+  await win.evaluate(() => {
+    const t = window.__ccsmToast;
+    if (!t) return;
+    document.querySelectorAll('[data-toast-id]').forEach((el) => {
+      const id = el.getAttribute('data-toast-id');
+      if (id) t.dismiss(id);
+    });
+  });
+  await win.waitForTimeout(150);
   const header = win.locator('[data-group-header-id="gA"]').first();
   await header.click({ button: 'right' });
   const delMenu = win.getByRole('menuitem').filter({ hasText: /Delete group/ }).first();
