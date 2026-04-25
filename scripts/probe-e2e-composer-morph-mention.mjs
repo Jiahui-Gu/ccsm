@@ -5,7 +5,7 @@
 //      `runningSessions[id]` flips true. Same DOM slot, swapped variant.
 //   2. Typing `@` in the textarea opens the mention picker (listbox role
 //      "File mentions"); Esc dismisses it without altering the textarea.
-//   3. Stubbing window.ccsm.files.list with a known file list, picking
+//   3. Stubbing the `files:list` IPC handler with a known file list, picking
 //      a row via Enter splices `@<path> ` into the textarea.
 //
 // Mirrors the harness pattern in `probe-e2e-inputbar-visible.mjs` —
@@ -14,7 +14,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from './probe-utils.mjs';
+import { appWindow, isolatedUserData } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -25,10 +25,14 @@ function fail(msg, app) {
   process.exit(1);
 }
 
+// Isolated userData so persisted drafts from a prior probe run can't bleed in
+// (a stale `@@@@hello`-style draft would corrupt the mention-trigger asserts).
+const ud = isolatedUserData('ccsm-probe-composer-morph');
+
 const app = await electron.launch({
-  args: ['.'],
+  args: ['.', `--user-data-dir=${ud.dir}`],
   cwd: root,
-  env: { ...process.env, NODE_ENV: 'development' },
+  env: { ...process.env, CCSM_PROD_BUNDLE: '1' },
 });
 
 const win = await appWindow(app);
@@ -37,23 +41,34 @@ await win.waitForTimeout(1500);
 
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 10_000 });
 
-// Stub window.ccsm.files.list BEFORE we mount a session so the InputBar's
+// Stub the @file mention bridge BEFORE we mount a session so the InputBar's
 // initial refreshMentionFiles() picks up the fake file list.
-await win.evaluate(() => {
-  const w = /** @type {any} */ (window);
-  // Preserve any real bridge methods (we only override files.list).
-  const realCcsm = w.ccsm ?? {};
-  w.ccsm = {
-    ...realCcsm,
-    files: {
-      list: async () => [
-        { path: 'src/components/InputBar.tsx', name: 'InputBar.tsx' },
-        { path: 'src/components/MentionPicker.tsx', name: 'MentionPicker.tsx' },
-        { path: 'README.md', name: 'README.md' },
-      ],
-    },
-  };
+//
+// IMPORTANT: contextBridge.exposeInMainWorld locks both `window.ccsm` and its
+// nested objects/methods — neither `window.ccsm = ...`, `window.ccsm.files = ...`,
+// nor `window.ccsm.files.list = ...` sticks. We have to intercept on the MAIN
+// process side by re-registering the `files:list` IPC handler. Without this
+// the bridge silently returns the real (empty, since userData cwd is empty)
+// list and the picker opens with zero options — Enter then correctly falls
+// through to send(), which looks like a product bug but is actually probe
+// fixture failure. Don't repeat that mistake.
+await app.evaluate(async ({ ipcMain }) => {
+  ipcMain.removeHandler('files:list');
+  ipcMain.handle('files:list', async () => [
+    { path: 'src/components/InputBar.tsx', name: 'InputBar.tsx' },
+    { path: 'src/components/MentionPicker.tsx', name: 'MentionPicker.tsx' },
+    { path: 'README.md', name: 'README.md' },
+  ]);
 });
+const stubCheck = await win.evaluate(async () => {
+  const list = window.ccsm?.files?.list;
+  if (typeof list !== 'function') return { ok: false, why: 'list not function' };
+  const r = await list(null);
+  return { ok: true, count: Array.isArray(r) ? r.length : -1 };
+});
+if (!stubCheck.ok || stubCheck.count !== 3) {
+  fail(`bridge stub failed: ${JSON.stringify(stubCheck)} — IPC override didn't take`, app);
+}
 
 // Seed a single idle session so the InputBar mounts.
 await win.evaluate(() => {
@@ -171,3 +186,4 @@ console.log('  morph button: idle=send/primary -> running=stop/danger');
 console.log('  @mention picker: open / Esc-dismiss / Enter-commit all verified');
 
 await app.close();
+ud.cleanup();

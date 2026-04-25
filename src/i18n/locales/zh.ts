@@ -382,7 +382,8 @@ const zh: EnCatalog = {
     noMatch: '没有匹配 “{{query}}” 的文件',
     navigate: '上下移动',
     select: '选择',
-    close: '关闭'
+    close: '关闭',
+    activeAnnouncement: '第 {{index}} / {{total}} 项：{{name}}'
   },
   notifications: {
     sessionWaitingTitle: '会话等待中',

@@ -410,7 +410,8 @@ const en = {
     noMatch: 'No files match "{{query}}"',
     navigate: 'navigate',
     select: 'select',
-    close: 'close'
+    close: 'close',
+    activeAnnouncement: 'Result {{index}} of {{total}}: {{name}}'
   },
   notifications: {
     sessionWaitingTitle: 'Session waiting',

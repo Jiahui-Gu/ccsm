@@ -11,6 +11,7 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { InputBar } from '../src/components/InputBar';
 import { useStore } from '../src/stores/store';
 
@@ -159,5 +160,41 @@ describe('InputBar: @file mention picker', () => {
     expect(ta.value).toBe('@src/InputBar.tsx ');
     // Picker auto-dismisses after selection.
     expect(screen.queryByRole('listbox', { name: /file mentions/i })).not.toBeInTheDocument();
+  });
+
+  // Reproduces the keystroke timing the e2e probe was hitting (PR #287
+  // request-changes round): re-arm the picker by typing+deleting a char
+  // AFTER an Esc dismissal, then press Enter. fireEvent batches everything
+  // synchronously so it can mask closure / event-ordering bugs in the
+  // textarea keydown handler — userEvent dispatches one keystroke per
+  // microtask, going through the real input → onChange → render → onKeyDown
+  // cycle. If the keydown handler's mention guard ever closes over stale
+  // `mentionOpen` / `filteredFiles` again, this test will fail (Enter would
+  // fall through to send() and clear the textarea).
+  it('Enter commits highlighted mention after Esc-then-edit re-arm (real keystroke timing)', async () => {
+    const user = userEvent.setup();
+    freshStoreWithSession('s-at-rearm', { running: false, started: true });
+    stubCCSM();
+    render(<InputBar sessionId="s-at-rearm" />);
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    await user.click(ta);
+    await user.keyboard('@');
+    await waitFor(() => screen.getByRole('listbox', { name: /file mentions/i }));
+
+    // Dismiss with Esc — same path the probe exercises.
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox', { name: /file mentions/i })).not.toBeInTheDocument();
+    expect(ta.value).toBe('@');
+
+    // Re-arm: type a char then delete it. update() resets mentionDismissed
+    // so the picker reopens once atTrigger.active is true again.
+    await user.keyboard(' {Backspace}');
+    await waitFor(() => screen.getByRole('listbox', { name: /file mentions/i }));
+
+    await user.keyboard('{Enter}');
+
+    // Enter must commit the highlighted row, NOT fall through to send().
+    expect(ta.value).toBe('@src/InputBar.tsx ');
   });
 });
