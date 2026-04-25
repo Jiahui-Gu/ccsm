@@ -1942,14 +1942,15 @@ export const useStore = create<State & Actions>((set, get) => ({
       // the import path uses. JSONL is the canonical persistence format
       // now (PR-H), so we always go through this projection.
       const projected = framesToBlocks(frames);
-      // Sanitize: a streaming=true assistant block inside the JSONL means
-      // a previous run crashed mid-stream. Drop the flag so the UI doesn't
-      // show a perpetual pulse on restore.
-      let sanitized: MessageBlock[] = projected.map((r) =>
-        r.kind === 'assistant' && (r as { streaming?: boolean }).streaming
-          ? { ...r, streaming: false }
-          : r
-      );
+      // Defensive sanitize previously lived here for `streaming: true`
+      // assistant blocks coming out of `framesToBlocks`. Reverse-verify
+      // (PR #307 review) showed it was dead code: nothing in the JSONL →
+      // `framesToBlocks` → `assistantBlocks` path ever sets the streaming
+      // flag (only the runtime `streamAssistantText` does, and that path
+      // never persists to JSONL). Removed alongside its tautological
+      // probe in the same commit so the codebase doesn't keep a phantom
+      // invariant nobody can hit.
+      let sanitized: MessageBlock[] = projected;
       // Truncation marker (PR `feat/user-block-hover-menu`): the in-app
       // "Truncate from here" hover-menu action persists a `{ blockId,
       // truncatedAt }` record. Re-apply it here so a ccsm restart doesn't
