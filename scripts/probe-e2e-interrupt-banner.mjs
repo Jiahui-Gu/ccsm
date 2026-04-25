@@ -32,8 +32,27 @@ const win = await appWindow(app, { timeout: 45000 });
 await win.waitForLoadState('domcontentloaded');
 await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
 
-// EmptyState check: with no session, the "Ready when you are." line must be
-// selectable. Grab its computed user-select.
+// Create a session first. With zero sessions on boot, ChatStream renders the
+// onboarding "Welcome to ccsm." CTA (post-#262) — not EmptyState. EmptyState
+// only renders for an active session whose messagesBySession is empty, so
+// we need an active session in the store before asserting on it.
+const sessionId = await win.evaluate(() => {
+  const st = window.__ccsmStore.getState();
+  st.createSession('~/interrupt-probe');
+  return window.__ccsmStore.getState().activeId;
+});
+if (!sessionId) fail('no active session id after createSession');
+
+// EmptyState check: now that a session exists with no messages, the
+// "Ready when you are." line must render and be selectable.
+await win.waitForFunction(
+  () =>
+    Array.from(document.querySelectorAll('div')).some(
+      (d) => d.textContent === 'Ready when you are.'
+    ),
+  null,
+  { timeout: 5000 }
+).catch(() => fail('EmptyState "Ready when you are." not rendered after createSession'));
 const emptyStateSelectable = await win.evaluate(() => {
   const el = Array.from(document.querySelectorAll('div')).find(
     (d) => d.textContent === 'Ready when you are.'
@@ -46,11 +65,9 @@ if (!emptyStateSelectable.found) fail('EmptyState "Ready when you are." not rend
 if (emptyStateSelectable.userSelect === 'none')
   fail(`EmptyState user-select is 'none' — text unselectable`);
 
-// Create a session and simulate the interrupt flow.
-const sessionId = await win.evaluate(() => {
+// Now seed the session for the interrupt flow.
+await win.evaluate((id) => {
   const st = window.__ccsmStore.getState();
-  st.createSession('~/interrupt-probe');
-  const id = window.__ccsmStore.getState().activeId;
   // Put it in running + add a partial assistant reply so the Stop path is
   // plausible even though we never actually spawn claude.exe.
   st.setRunning(id, true);
@@ -58,9 +75,7 @@ const sessionId = await win.evaluate(() => {
     { kind: 'user', id: 'u-probe', text: 'count slowly from 1 to 100' },
     { kind: 'assistant', id: 'a-probe', text: '1\n2\n3\n' }
   ]);
-  return id;
-});
-if (!sessionId) fail('no active session id');
+}, sessionId);
 
 // Simulate the Stop button: mark interrupted, then consume it on the next
 // "result" frame — same sequence lifecycle.ts uses.
@@ -85,8 +100,18 @@ const statusBlock = await win.evaluate((sid) => {
 if (!statusBlock.ok) fail(`interrupt flag not consumed: ${statusBlock.reason}`);
 
 // The banner is now in the DOM; make sure it's neutral (role="status") and
-// carries the word "Interrupted", and that it is user-selectable.
-await win.waitForSelector('[role="status"]', { timeout: 5000 });
+// carries the word "Interrupted", and that it is user-selectable. Several
+// `[role="status"]` regions exist on the page (toast viewport, etc.) so
+// we wait for the SPECIFIC one carrying "Interrupted" rather than the
+// first match.
+await win.waitForFunction(
+  () =>
+    Array.from(document.querySelectorAll('[role="status"]')).some((n) =>
+      n.textContent?.includes('Interrupted')
+    ),
+  null,
+  { timeout: 5000 }
+).catch(() => fail('Interrupted banner not rendered'));
 const banner = await win.evaluate(() => {
   const nodes = Array.from(document.querySelectorAll('[role="status"]'));
   const el = nodes.find((n) => n.textContent?.includes('Interrupted'));
