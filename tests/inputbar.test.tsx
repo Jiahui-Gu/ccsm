@@ -12,8 +12,20 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { InputBar } from '../src/components/InputBar';
 import { useStore } from '../src/stores/store';
+import { ToastProvider } from '../src/components/ui/Toast';
 
 const initial = useStore.getState();
+
+// PR #359 added a `useToast()` call in InputBar; component renders now
+// require a ToastProvider in the tree. Wrap once here so individual cases
+// can keep using bare <InputBar /> JSX.
+function renderWithProviders(sessionId: string) {
+  return render(
+    <ToastProvider>
+      <InputBar sessionId={sessionId} />
+    </ToastProvider>
+  );
+}
 
 function freshStoreWithSession(sessionId: string, opts: { running?: boolean; started?: boolean } = {}) {
   useStore.setState(
@@ -63,7 +75,7 @@ describe('InputBar: Esc to interrupt running turn', () => {
   it('Esc fires agentInterrupt when the session is running', () => {
     freshStoreWithSession('s-esc', { running: true, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-esc" />);
+    renderWithProviders("s-esc");
     act(() => {
       fireEvent.keyDown(document, { key: 'Escape' });
     });
@@ -75,21 +87,25 @@ describe('InputBar: Esc to interrupt running turn', () => {
   it('Esc is a no-op when the session is NOT running', () => {
     freshStoreWithSession('s-idle', { running: false, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-idle" />);
+    renderWithProviders("s-idle");
     act(() => {
       fireEvent.keyDown(document, { key: 'Escape' });
     });
     expect(api.agentInterrupt).not.toHaveBeenCalled();
   });
 
-  it('Esc yields to an open Radix dialog (lets the dialog close itself)', () => {
+  it('Esc yields to an open modal dialog (lets the dialog close itself)', () => {
     freshStoreWithSession('s-modal', { running: true, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-modal" />);
-    // Inject a fake dialog element — the global handler must back off when one
-    // is present so settings/command-palette Esc-to-close still works.
+    renderWithProviders("s-modal");
+    // Inject a fake modal dialog — the global handler must back off when one
+    // is present so settings/command-palette Esc-to-close still works. Inline
+    // widgets that use `role="dialog"` for a11y (AskUserQuestion sticky,
+    // CwdPopover) are explicitly NOT modal — they lack `data-modal-dialog`
+    // and must not block the global Esc-to-stop shortcut.
     const fakeDialog = document.createElement('div');
     fakeDialog.setAttribute('role', 'dialog');
+    fakeDialog.setAttribute('data-modal-dialog', '');
     document.body.appendChild(fakeDialog);
     try {
       act(() => {
@@ -100,13 +116,80 @@ describe('InputBar: Esc to interrupt running turn', () => {
       fakeDialog.remove();
     }
   });
+
+  it('Esc still interrupts when an inline role="dialog" widget is present (e.g. AskUserQuestion sticky)', () => {
+    // Regression: before this fix, ANY [role="dialog"] in the DOM blocked
+    // the global Esc-to-stop. AskUserQuestion sticky and CwdPopover both
+    // legitimately use role="dialog" for a11y but are NOT modal — Esc must
+    // still interrupt the running turn even when one is mounted.
+    freshStoreWithSession('s-inline', { running: true, started: true });
+    const api = stubCCSM();
+    renderWithProviders("s-inline");
+    const fakeInlineDialog = document.createElement('div');
+    fakeInlineDialog.setAttribute('role', 'dialog');
+    // No data-modal-dialog marker — this is the inline-widget shape.
+    document.body.appendChild(fakeInlineDialog);
+    try {
+      act(() => {
+        fireEvent.keyDown(document, { key: 'Escape' });
+      });
+      expect(api.agentInterrupt).toHaveBeenCalledWith('s-inline');
+    } finally {
+      fakeInlineDialog.remove();
+    }
+  });
+
+  it('Esc fires interrupt when textarea has focus (no picker, no modal)', () => {
+    // Regression for the report "焦点在 textarea 时按 Esc 无法 interrupt".
+    // Doc-level handler must still fire because the textarea's own onKeyDown
+    // does not consume Esc when no picker / mention / modal is open.
+    freshStoreWithSession('s-ta', { running: true, started: true });
+    const api = stubCCSM();
+    renderWithProviders("s-ta");
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
+    ta.focus();
+    expect(document.activeElement).toBe(ta);
+    act(() => {
+      fireEvent.keyDown(document, { key: 'Escape' });
+    });
+    expect(api.agentInterrupt).toHaveBeenCalledWith('s-ta');
+  });
+
+  it('interrupt clears unanswered AskUserQuestion sticky for the session', () => {
+    // Regression: before this fix, the sticky AskUserQuestion card would
+    // persist after Esc / Stop because the question block stayed unanswered
+    // in the store, even though the agent had been interrupted.
+    const sessionId = 's-q-clear';
+    freshStoreWithSession(sessionId, { running: true, started: true });
+    useStore.setState({
+      messagesBySession: {
+        [sessionId]: [
+          {
+            kind: 'question',
+            id: 'q-1',
+            questions: [{ question: 'Pick one', options: [{ label: 'A' }] }]
+          }
+        ]
+      }
+    });
+    const api = stubCCSM();
+    renderWithProviders(sessionId);
+    act(() => {
+      fireEvent.keyDown(document, { key: 'Escape' });
+    });
+    expect(api.agentInterrupt).toHaveBeenCalledWith(sessionId);
+    const blocks = useStore.getState().messagesBySession[sessionId] ?? [];
+    const q = blocks.find((b) => b.id === 'q-1');
+    expect(q && q.kind === 'question' && q.answered).toBe(true);
+    expect(q && q.kind === 'question' && q.rejected).toBe(true);
+  });
 });
 
 describe('InputBar: send-while-running enqueues into FIFO', () => {
   it('typing + Send while running enqueues instead of calling agentSend', () => {
     freshStoreWithSession('s-q', { running: true, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-q" />);
+    renderWithProviders("s-q");
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: 'queued thought' } });
     // Press Enter to submit (existing send keybind).
@@ -126,14 +209,14 @@ describe('InputBar: send-while-running enqueues into FIFO', () => {
       useStore.getState().enqueueMessage('s-chip', { text: 'first', attachments: [] });
       useStore.getState().enqueueMessage('s-chip', { text: 'second', attachments: [] });
     });
-    render(<InputBar sessionId="s-chip" />);
+    renderWithProviders("s-chip");
     expect(screen.getByText('+2 queued')).toBeInTheDocument();
   });
 
   it('Stop clears the queue (CLI Ctrl+C behavior)', async () => {
     freshStoreWithSession('s-stop', { running: true, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-stop" />);
+    renderWithProviders("s-stop");
     act(() => {
       useStore.getState().enqueueMessage('s-stop', { text: 'pending', attachments: [] });
     });
@@ -152,7 +235,7 @@ describe('InputBar: textarea remains editable while running', () => {
   it('does not set the disabled attribute on the textarea during a running turn', () => {
     freshStoreWithSession('s-edit', { running: true, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-edit" />);
+    renderWithProviders("s-edit");
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     expect(ta.disabled).toBe(false);
     fireEvent.change(ta, { target: { value: 'still typing' } });

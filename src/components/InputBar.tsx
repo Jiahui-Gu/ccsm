@@ -218,7 +218,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   );
   // Action references are stable across renders in Zustand v5, so reading them
   // via getState() avoids registering listeners that would never fire anyway.
-  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments, clearLastTurnEnd } =
+  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments, clearLastTurnEnd, markQuestionAnswered } =
     useStore.getState();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -590,16 +590,19 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   // Global Esc → stop running turn. Intentionally listens at the document
   // level so the shortcut works regardless of which surface has focus
   // (composer, chat scroll area, sidebar). Yields to:
-  //   - Open Radix dialogs (settings, command palette, CLI-missing) — they
-  //     manage their own Esc-to-close inside `[role="dialog"]`.
+  //   - Open Radix modal dialogs (settings, command palette, CLI-missing) —
+  //     they manage their own Esc-to-close. We discriminate true modals via
+  //     `[data-modal-dialog]` (set by our DialogContent + CommandPalette
+  //     wrappers) so inline widgets that also use `role="dialog"` for a11y
+  //     (AskUserQuestion sticky, CwdPopover) do NOT block Esc-to-stop.
   //   - The slash-command picker when it's open and the textarea has focus —
   //     the inline Esc handler in `onKeyDown` dismisses the picker first.
   useEffect(() => {
     function onDocKeyDown(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
       if (!running) return;
-      // Some other modal owns Escape right now.
-      if (document.querySelector('[role="dialog"]')) return;
+      // Only true modal dialogs (Radix-portaled, focus-trapped) own Esc.
+      if (document.querySelector('[data-modal-dialog]')) return;
       const ae = document.activeElement as HTMLElement | null;
       // Defer to the picker's own dismissal when it's the active surface.
       if (ae === textareaRef.current && (pickerOpen || mentionOpen)) return;
@@ -781,6 +784,25 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     // queued during this turn. Otherwise the next turn would auto-send work
     // the user just decided to abandon.
     clearQueue(sessionId);
+    // Dismiss any unanswered AskUserQuestion sticky for this session — the
+    // agent is being stopped, so there's no one to receive an answer. Without
+    // this the question card would stay sticky after interrupt with no path
+    // to close it (Bug: AskUserQuestion sticky doesn't disappear on stop).
+    // We mark every unanswered question block as rejected; the per-block
+    // permission deny (if any requestId) is best-effort via the same path
+    // QuestionBlock takes when the user clicks the Cancel chip.
+    {
+      const state = useStore.getState();
+      const blocks = state.messagesBySession[sessionId] ?? [];
+      for (const b of blocks) {
+        if (b.kind === 'question' && !b.answered) {
+          if (b.requestId) {
+            void api.agentResolvePermission(sessionId, b.requestId, 'deny');
+          }
+          markQuestionAnswered(sessionId, b.id, { answers: {}, rejected: true });
+        }
+      }
+    }
     await api.agentInterrupt(sessionId);
     // Return focus to the composer so the user can type immediately
     // (matches CLI Ctrl+C behavior). The InputBar focus useEffect picks

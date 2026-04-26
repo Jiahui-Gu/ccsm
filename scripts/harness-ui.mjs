@@ -2064,6 +2064,110 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
 // `window.ccsm.notify` IPC is NEVER fired. Drives `__ccsmDispatchNotification`
 // (debug seam in App.tsx) directly so the test doesn't need a real agent
 // permission request — pure renderer flow.
+// ---------- sidebar-active-row-no-pulse ----------
+// Regression for #289 (PR #365): when the agent finishes a turn for the
+// CURRENTLY ACTIVE session, the sidebar row must NOT flip to state='waiting'
+// (which drives the pulse glyph) — even when the OS-level window focus has
+// been lost (alt-tab away). Pre-fix lifecycle.ts gated the pulse on
+// `isActive && document.hasFocus()`, so alt-tabbing away while a turn was
+// in flight made the active row pulse on result, which is visual noise for
+// the row the user is already looking at. Post-fix: active session = no
+// pulse, period; background sessions still pulse.
+//
+// We exercise the production lifecycle.ts onAgentEvent handler by sending
+// the same `agent:event` IPC frame that the SDK runner emits in production
+// (electron/agent-sdk routing -> webContents.send('agent:event', ...)).
+// Pure renderer-IPC contract — no real claude.exe needed.
+async function caseSidebarActiveRowNoPulse({ app, win, log }) {
+  // Two sessions: 'sA' (active), 'sB' (background). Both started+running
+  // so the result frame's setRunning(false) actually flips state.
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 'sA', name: 'active-session', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+        { id: 'sB', name: 'background-session', state: 'idle', cwd: 'C:/y', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+      ],
+      activeId: 'sA',
+      messagesBySession: { sA: [], sB: [] },
+      startedSessions: { sA: true, sB: true },
+      runningSessions: { sA: true, sB: true },
+    });
+  });
+  await win.waitForTimeout(120);
+
+  // Force document.hasFocus() to return false so we exercise exactly the
+  // alt-tabbed-away scenario. This is the path that pre-fix would have
+  // pulsed the active row.
+  await win.evaluate(() => {
+    Object.defineProperty(document, 'hasFocus', {
+      configurable: true,
+      value: () => false,
+    });
+  });
+
+  // Sanity: pre-event state must NOT already be 'waiting' (otherwise we
+  // can't tell whether the no-pulse contract held).
+  const before = await win.evaluate(() => {
+    const sA = window.__ccsmStore.getState().sessions.find((s) => s.id === 'sA');
+    const sB = window.__ccsmStore.getState().sessions.find((s) => s.id === 'sB');
+    return { sA: sA?.state, sB: sB?.state };
+  });
+  if (before.sA === 'waiting' || before.sB === 'waiting') {
+    throw new Error(`pre-event: expected both sessions !waiting, got sA=${before.sA} sB=${before.sB}`);
+  }
+
+  // Dispatch a result frame for the ACTIVE session (sA). Lifecycle's
+  // onAgentEvent handler runs in the renderer; with !isActive guard the
+  // active row must NOT flip to 'waiting'. All result-frame fields beyond
+  // `type` are optional (lifecycle.ts:243-260 reads them with `?`).
+  await app.evaluate(({ BrowserWindow }, payload) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.webContents.isDestroyed()) w.webContents.send('agent:event', payload);
+    }
+  }, {
+    sessionId: 'sA',
+    message: { type: 'result', subtype: 'success', usage: {}, modelUsage: {} },
+  });
+  await win.waitForTimeout(250);
+
+  const afterActive = await win.evaluate(() => {
+    const sA = window.__ccsmStore.getState().sessions.find((s) => s.id === 'sA');
+    return { state: sA?.state, running: !!window.__ccsmStore.getState().runningSessions['sA'] };
+  });
+  // Lifecycle's setRunning(false) must have run (proves the event reached
+  // the renderer); state must NOT be 'waiting' for the active session.
+  if (afterActive.running) {
+    throw new Error('result frame did not reach renderer — runningSessions[sA] still true');
+  }
+  if (afterActive.state === 'waiting') {
+    throw new Error(`#289 regression: active session pulsed on turn_done (state='waiting') even though it's the focused row — alt-tab unfocus path leaked back in`);
+  }
+
+  // Counter-positive: background session SHOULD still pulse. This guards
+  // the fix from over-correcting (e.g. dropping the pulse for everyone).
+  await app.evaluate(({ BrowserWindow }, payload) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.webContents.isDestroyed()) w.webContents.send('agent:event', payload);
+    }
+  }, {
+    sessionId: 'sB',
+    message: { type: 'result', subtype: 'success', usage: {}, modelUsage: {} },
+  });
+  await win.waitForTimeout(250);
+
+  const afterBackground = await win.evaluate(() => {
+    const sB = window.__ccsmStore.getState().sessions.find((s) => s.id === 'sB');
+    return { state: sB?.state };
+  });
+  if (afterBackground.state !== 'waiting') {
+    throw new Error(`background session expected state='waiting' (pulse signal preserved), got '${afterBackground.state}' — fix over-corrected`);
+  }
+
+  log('#289 — active row stays !waiting on turn_done; background row still pulses');
+}
+
 async function caseNotifDisabledSuppress({ app, win, log }) {
   // Replace the main-process `notification:show` handler with a recorder so a
   // regression that DOES dispatch lands somewhere we can observe.
@@ -2932,6 +3036,11 @@ await runHarness({
     // spy on agent:setEffort. Pure UI, single launch, fits harness-ui.
     { id: 'effort-chip-toggle', run: caseEffortChipToggle },
     { id: 'dead-ui-cleanup', run: caseDeadUiCleanup },
+    // sidebar-active-row-no-pulse: regression for #289 (PR #365). Active
+    // session must NOT pulse on turn_done even when window focus is lost
+    // (alt-tabbed away). Pure renderer-IPC: dispatches `agent:event` from
+    // main into the renderer's lifecycle handler, no claude.exe needed.
+    { id: 'sidebar-active-row-no-pulse', run: caseSidebarActiveRowNoPulse },
     // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
     // contract — enabled=false → dispatched:false, reason:'global-disabled',
     // zero notification:show IPC. Re-enabling proves recorder is wired.

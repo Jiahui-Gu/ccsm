@@ -1490,6 +1490,98 @@ async function caseEscInterrupt({ win, log }) {
   }
 
   log('Esc -> stop() ran (interrupted+queue cleared); Interrupted status block; textarea usable');
+
+  // ── J2 ────────────────────────────────────────────────────────────────
+  // Regression for #286 (PR #365): Esc must interrupt while textarea has
+  // focus AND when an inline `role="dialog"` widget (AskUserQuestion sticky,
+  // CwdPopover) is mounted. Before the fix, the doc-level handler returned
+  // early on `[role="dialog"]` — any inline a11y dialog silently disabled
+  // Esc-to-stop, including from the composer.
+  //
+  // Sub-case A: textarea-focus + inline role="dialog" (no data-modal-dialog).
+  // Asserts interrupt still fires.
+  // Sub-case B: textarea-focus + role="dialog" + data-modal-dialog.
+  // Asserts interrupt is suppressed (real Radix modals own Esc).
+  const SID2 = 's-esc-int-j2';
+  await win.evaluate((sid) => {
+    const store = window.__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 'esc-textarea', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: sid,
+      messagesBySession: { [sid]: [] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+      interruptedSessions: {},
+    });
+  }, SID2);
+  await win.waitForTimeout(150);
+
+  // Sub-case A: inline role="dialog" must NOT block doc-level Esc handler.
+  await win.evaluate(() => {
+    // Remove any leftover from sub-case set up below on retries.
+    document.querySelectorAll('[data-harness-injected-dialog]').forEach((n) => n.remove());
+    const inline = document.createElement('div');
+    inline.setAttribute('role', 'dialog');
+    inline.setAttribute('aria-label', 'inline a11y widget (no aria-modal)');
+    inline.setAttribute('data-harness-injected-dialog', 'inline');
+    // No data-modal-dialog marker — this is the inline-widget shape that
+    // QuestionBlock + CwdPopover use.
+    document.body.appendChild(inline);
+  });
+  // Real textarea focus — that's the regression scenario.
+  const ta2A = win.locator('textarea').first();
+  await ta2A.waitFor({ state: 'visible', timeout: 5000 });
+  await ta2A.click();
+  const focusedA = await win.evaluate(() => document.activeElement?.tagName);
+  if (focusedA !== 'TEXTAREA') throw new Error(`J2-A: expected textarea focus, got activeElement=${focusedA}`);
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(200);
+  const interruptedA = await win.evaluate((sid) => !!window.__ccsmStore.getState().interruptedSessions[sid], SID2);
+  if (!interruptedA) {
+    throw new Error('J2-A regression: textarea-focus Esc did NOT interrupt while inline role="dialog" was mounted — the global selector is over-matching');
+  }
+  // Reset for sub-case B.
+  await win.evaluate((sid) => {
+    document.querySelectorAll('[data-harness-injected-dialog]').forEach((n) => n.remove());
+    const st = window.__ccsmStore.getState();
+    st.consumeInterrupted(sid);
+    st.setRunning(sid, true);
+  }, SID2);
+  await win.waitForTimeout(120);
+
+  // Sub-case B: data-modal-dialog (real Radix modal shape) MUST suppress.
+  await win.evaluate(() => {
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('data-modal-dialog', '');
+    modal.setAttribute('data-harness-injected-dialog', 'modal');
+    document.body.appendChild(modal);
+  });
+  const ta2B = win.locator('textarea').first();
+  await ta2B.click();
+  const focusedB = await win.evaluate(() => document.activeElement?.tagName);
+  if (focusedB !== 'TEXTAREA') throw new Error(`J2-B: expected textarea focus, got activeElement=${focusedB}`);
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(200);
+  const interruptedB = await win.evaluate((sid) => !!window.__ccsmStore.getState().interruptedSessions[sid], SID2);
+  if (interruptedB) {
+    throw new Error('J2-B contract broken: data-modal-dialog should suppress global Esc-to-stop (real Radix modals own Esc), but interrupt fired anyway');
+  }
+  // Cleanup so later cases see a clean DOM.
+  await win.evaluate(() => {
+    document.querySelectorAll('[data-harness-injected-dialog]').forEach((n) => n.remove());
+  });
+
+  log('J2 — textarea-focus Esc passes through inline role="dialog" (#286), suppressed by data-modal-dialog');
 }
 
 // ---------- composer-morph-mention ----------

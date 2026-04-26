@@ -18,6 +18,7 @@ import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { InputBar } from '../src/components/InputBar';
+import { ToastProvider } from '../src/components/ui/Toast';
 import { useStore } from '../src/stores/store';
 
 const initial = useStore.getState();
@@ -76,7 +77,7 @@ describe('InputBar: diff-comment prepend on send', () => {
   it('forwards the raw text unchanged when there are no pending comments', async () => {
     freshStoreWithSession(SID, { started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = screen.getByRole('textbox');
     fireEvent.change(ta, { target: { value: 'hello' } });
     await act(async () => {
@@ -95,7 +96,7 @@ describe('InputBar: diff-comment prepend on send', () => {
       useStore.getState().addDiffComment(SID, { file: '/a/x.ts', line: 3, text: 'rename Y' });
     });
     const api = stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = screen.getByRole('textbox');
     fireEvent.change(ta, { target: { value: 'fix it' } });
     await act(async () => {
@@ -122,7 +123,7 @@ describe('InputBar: diff-comment prepend on send', () => {
       useStore.getState().addDiffComment(SID, { file: '/q.ts', line: 1, text: 'less code' });
     });
     const api = stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = screen.getByRole('textbox');
     fireEvent.change(ta, { target: { value: 'follow-up' } });
     act(() => {
@@ -149,7 +150,7 @@ describe('InputBar: diff-comment prepend on send', () => {
       useStore.getState().addDiffComment(SID, { file: '/a.ts', line: 2, text: 'c' });
     });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     expect(screen.getByText(/3 diff comments will be sent/i)).toBeInTheDocument();
     const ta = screen.getByRole('textbox');
     fireEvent.change(ta, { target: { value: 'go' } });
@@ -196,7 +197,7 @@ describe('InputBar: diff-comment prepend on send', () => {
     firstEl.scrollIntoView = scrollSpy as unknown as Element['scrollIntoView'];
 
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const indicator = screen.getByText(/3 diff comments will be sent/i);
     fireEvent.click(indicator);
     expect(scrollSpy).toHaveBeenCalledTimes(1);

@@ -17,8 +17,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { InputBar } from '../src/components/InputBar';
 import { useStore } from '../src/stores/store';
+import { ToastProvider } from '../src/components/ui/Toast';
 
 const initial = useStore.getState();
+
+// PR #359 added a `useToast()` call in InputBar; renders need ToastProvider.
+function renderInputBar(sessionId: string) {
+  return render(
+    <ToastProvider>
+      <InputBar sessionId={sessionId} />
+    </ToastProvider>
+  );
+}
 
 function freshStoreWithSession(
   sessionId: string,
@@ -78,14 +88,14 @@ describe('InputBar: continue-after-interrupt hint (#322)', () => {
   it('does not show the hint when the last turn has not been interrupted', () => {
     freshStoreWithSession(SID, { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     expect(screen.queryByTestId(HINT_TID)).toBeNull();
   });
 
   it('shows the hint after markInterrupted while composer is empty + agent idle', () => {
     freshStoreWithSession(SID, { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     act(() => {
       useStore.getState().markInterrupted(SID);
     });
@@ -97,7 +107,7 @@ describe('InputBar: continue-after-interrupt hint (#322)', () => {
   it('hides the hint as soon as the user types a character', () => {
     freshStoreWithSession(SID, { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     act(() => {
       useStore.getState().markInterrupted(SID);
     });
@@ -114,7 +124,7 @@ describe('InputBar: continue-after-interrupt hint (#322)', () => {
   it('sends the literal `continue` when the hint is visible and Enter is pressed on empty composer', async () => {
     freshStoreWithSession(SID, { started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     act(() => {
       useStore.getState().markInterrupted(SID);
     });
@@ -134,7 +144,7 @@ describe('InputBar: continue-after-interrupt hint (#322)', () => {
   it('does not show the hint when the agent is currently running', () => {
     freshStoreWithSession(SID, { started: true, running: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     // Even if some prior turn was marked interrupted, a running session is
     // not an "interrupted, awaiting continue" state.
     act(() => {
@@ -146,7 +156,7 @@ describe('InputBar: continue-after-interrupt hint (#322)', () => {
   it('re-arms after a fresh interrupt following a normal send', async () => {
     freshStoreWithSession(SID, { started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    renderInputBar(SID);
     act(() => {
       useStore.getState().markInterrupted(SID);
     });

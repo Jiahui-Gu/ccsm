@@ -1705,6 +1705,272 @@ async function caseAskUserQuestionRoutesViaPermissionRequest({ app, win, log }) 
   log('AskUserQuestion permission-request frame mounts a question card');
 }
 
+// ---------- auq-single-select-auto-advance ----------
+// Regression for #287 (PR #365 review feedback): single-choice auto-advance
+// on AskUserQuestion silently broke in production builds because togglePick
+// read a `let didSelectFresh` flag set INSIDE the setPicks state-updater
+// callback. React state updaters run during the next render commit, not
+// synchronously when set is called — so the immediate `if (didSelectFresh)`
+// check below the setPicks call always observed `false` and the auto-
+// advance never fired. Vitest masked this because RTL's fireEvent flushes
+// updaters synchronously inside `act`; harness uses real Playwright clicks
+// dispatched into a real Electron renderer (no act-wrapping), so it
+// reproduces the bug exactly as the user sees it.
+async function caseAuqSingleSelectAutoAdvance({ win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+    s.createSession({ name: 'auq-advance-probe' });
+    return window.__ccsmStore.getState().activeId;
+  });
+  await win.evaluate((sid) => window.__ccsmStore.getState().setRunning(sid, true), sessionId);
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+
+  // Three single-select questions — exercises the auto-advance path twice
+  // (Q1 → Q2 → Q3, then no advance from Q3 since it's the last).
+  const QUESTIONS = [
+    { question: 'Which language?', options: [{ label: 'Python' }, { label: 'TypeScript' }, { label: 'Rust' }] },
+    { question: 'Which build tool?', options: [{ label: 'esbuild' }, { label: 'rollup' }, { label: 'webpack' }] },
+    { question: 'Which DB?', options: [{ label: 'sqlite' }, { label: 'postgres' }] },
+  ];
+  await win.evaluate(({ sid, q }) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [
+      { kind: 'question', id: 'q-auto-advance', questions: q },
+    ]);
+  }, { sid: sessionId, q: QUESTIONS });
+  await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+  await win.waitForTimeout(150);
+
+  // Initial state: Q1 active, no answers yet.
+  let activeTab = await win.evaluate(() => {
+    const tabs = document.querySelectorAll('[data-testid^="question-tab-"]');
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i].dataset.active === 'true') return i;
+    }
+    return -1;
+  });
+  if (activeTab !== 0) throw new Error(`expected Q1 active before any pick, got tab index ${activeTab}`);
+
+  // Click first option of Q1. Pre-fix: stays on Q1 forever. Post-fix:
+  // 300ms confirm flash, then auto-advance to Q2.
+  await win.locator('[data-question-option][data-question-label="Python"]').first().click();
+  // The advance is scheduled with setTimeout(300). Wait > 300ms with
+  // generous slack for renderer scheduling under Electron load.
+  await win.waitForTimeout(600);
+
+  activeTab = await win.evaluate(() => {
+    const tabs = document.querySelectorAll('[data-testid^="question-tab-"]');
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i].dataset.active === 'true') return i;
+    }
+    return -1;
+  });
+  if (activeTab !== 1) {
+    throw new Error(`#287 regression: after clicking Python (Q1 single-select), expected auto-advance to Q2 (tab index 1), got ${activeTab} — togglePick's didSelectFresh closure read the stale value`);
+  }
+
+  // Verify Q1's pick persisted across the page change (not blown away by
+  // setPicks updater running after the auto-advance setTimeout).
+  const q1State = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
+    const qb = blocks.find((b) => b.id === 'q-auto-advance');
+    return { hasBlock: !!qb, answered: qb?.answered ?? false };
+  }, sessionId);
+  if (!q1State.hasBlock) throw new Error('question block disappeared from store');
+  if (q1State.answered) throw new Error('question block flipped to answered after one pick — should still be open until Submit');
+
+  // Click Q2's first option — auto-advance to Q3.
+  await win.locator('[data-question-option][data-question-label="esbuild"]').first().click();
+  await win.waitForTimeout(600);
+  activeTab = await win.evaluate(() => {
+    const tabs = document.querySelectorAll('[data-testid^="question-tab-"]');
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i].dataset.active === 'true') return i;
+    }
+    return -1;
+  });
+  if (activeTab !== 2) {
+    throw new Error(`after clicking esbuild (Q2 single-select), expected auto-advance to Q3 (tab index 2), got ${activeTab}`);
+  }
+
+  // Click Q3's first option. Q3 is the last question — no advance.
+  await win.locator('[data-question-option][data-question-label="sqlite"]').first().click();
+  await win.waitForTimeout(600);
+  activeTab = await win.evaluate(() => {
+    const tabs = document.querySelectorAll('[data-testid^="question-tab-"]');
+    for (let i = 0; i < tabs.length; i++) {
+      if (tabs[i].dataset.active === 'true') return i;
+    }
+    return -1;
+  });
+  if (activeTab !== 2) {
+    throw new Error(`Q3 is the last question, expected to stay on tab 2, got ${activeTab}`);
+  }
+
+  // Submit must be enabled now (all 3 answered) — sanity check that the
+  // visible state reached the same place as upstream's tab-click flow.
+  const submit = win.locator('[data-testid="question-submit"]');
+  if (await submit.isDisabled()) {
+    throw new Error('Submit disabled after all 3 questions answered via auto-advance — picks state lost across advances');
+  }
+
+  log('#287 — single-choice auto-advance fires from Q1→Q2→Q3, last question stays put');
+}
+
+// ---------- auq-stop-dismisses-question ----------
+// Regression for PR #365 bug 2: when the agent is interrupted via Esc / Stop
+// while waiting on an AskUserQuestion, the sticky question card must be
+// auto-dismissed (no one will answer it now). Pre-fix the card stayed sticky
+// forever with no way to close it. The fix iterates session blocks in stop()
+// and marks every unanswered question as rejected.
+async function caseAuqStopDismissesQuestion({ win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+    s.createSession({ name: 'auq-stop-probe' });
+    return window.__ccsmStore.getState().activeId;
+  });
+
+  // Seed unanswered question + running session.
+  await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    st.clearMessages(sid);
+    st.setRunning(sid, true);
+    st.appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-stop-dismiss',
+        questions: [{ question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] }],
+      },
+    ]);
+  }, sessionId);
+  await win.waitForSelector('[data-question-sticky] [data-question-option]', { timeout: 5000 });
+
+  // Sanity: question is unanswered and visible.
+  const before = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
+    const qb = blocks.find((b) => b.id === 'q-stop-dismiss');
+    return {
+      answered: qb?.answered ?? null,
+      stickyVisible: !!document.querySelector('[data-question-sticky]'),
+    };
+  }, sessionId);
+  if (before.answered) {
+    throw new Error(`pre-stop: expected unanswered question, got answered=${before.answered}`);
+  }
+  if (!before.stickyVisible) throw new Error('pre-stop: sticky question card not visible');
+
+  // Press Esc with focus on the textarea (real-world flow). The doc-level
+  // Esc handler must fire stop() because the question is an inline
+  // role="dialog" (no data-modal-dialog) and must not block the shortcut.
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  await textarea.click();
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(300);
+
+  const after = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
+    const qb = blocks.find((b) => b.id === 'q-stop-dismiss');
+    return {
+      interrupted: !!window.__ccsmStore.getState().interruptedSessions[sid],
+      answered: qb?.answered ?? false,
+      rejected: qb?.rejected ?? false,
+      stickyVisible: !!document.querySelector('[data-question-sticky]'),
+    };
+  }, sessionId);
+
+  if (!after.interrupted) throw new Error('post-stop: interruptedSessions flag not set — stop() did not run');
+  if (!after.answered) {
+    throw new Error('regression: unanswered question still answered=false after Esc/stop — sticky card would persist forever');
+  }
+  if (!after.rejected) {
+    throw new Error('regression: question marked answered but not rejected — should be rejected (no answer was sent)');
+  }
+  // Sticky host renders on `unanswered` predicate; once flipped to answered
+  // it should unmount on the next render.
+  if (after.stickyVisible) {
+    throw new Error('post-stop: question sticky card still in DOM after answered=true — QuestionStickyHost did not re-render');
+  }
+
+  log('PR#365 bug 2 — Esc/stop dismisses unanswered AskUserQuestion sticky');
+}
+
+// ---------- question-dismisses-on-stop-button ----------
+// Sibling to caseAuqStopDismissesQuestion: same contract, but driven by a
+// real click on the visible Stop button instead of a synthesised Esc
+// keydown. The Stop button's onClick at InputBar.tsx:1210 wires to the
+// same `stop()` function as Esc, so the markQuestionAnswered fix should
+// cover both paths — but the user reported this bug separately, so we
+// pin the contract with an explicit case to prevent any future divergence
+// (e.g. someone introducing a parallel button-only handler that bypasses
+// the question-dismiss block).
+async function caseQuestionDismissesOnStopButton({ win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+    s.createSession({ name: 'auq-stop-btn-probe' });
+    return window.__ccsmStore.getState().activeId;
+  });
+
+  // Pin English so the Stop button name resolves.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+
+  await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    st.clearMessages(sid);
+    st.setRunning(sid, true);
+    st.appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: 'q-stop-btn',
+        questions: [{ question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] }],
+      },
+    ]);
+  }, sessionId);
+  await win.waitForSelector('[data-question-sticky] [data-question-option]', { timeout: 5000 });
+
+  // The morph button reads "Stop" while running. Same button as InputBar
+  // covers via Esc — verify the click path lands on the same stop() flow
+  // and dismisses the unanswered question.
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
+    throw new Error('Stop button not visible — running state did not flip the morph button');
+  });
+  await stopBtn.click();
+  await win.waitForTimeout(300);
+
+  const after = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
+    const qb = blocks.find((b) => b.id === 'q-stop-btn');
+    return {
+      interrupted: !!window.__ccsmStore.getState().interruptedSessions[sid],
+      answered: qb?.answered ?? false,
+      rejected: qb?.rejected ?? false,
+      stickyVisible: !!document.querySelector('[data-question-sticky]'),
+    };
+  }, sessionId);
+
+  if (!after.interrupted) {
+    throw new Error('Stop-button click did not run stop() — interruptedSessions flag not set');
+  }
+  if (!after.answered) {
+    throw new Error('regression: clicking Stop did not dismiss the unanswered question — Stop-button onClick path bypasses markQuestionAnswered');
+  }
+  if (!after.rejected) {
+    throw new Error('Stop-button dismiss: question marked answered but not rejected — should be rejected (no answer was sent)');
+  }
+  if (after.stickyVisible) {
+    throw new Error('Stop-button click: question sticky still in DOM after answered=true — QuestionStickyHost did not re-render');
+  }
+
+  log('PR#365 — Stop button click also dismisses unanswered AskUserQuestion sticky (same path as Esc)');
+}
+
 // ---------- env-passthrough ----------
 // Was: probe-e2e-env-passthrough.mjs.
 // Auth env (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN) flows through
@@ -1924,6 +2190,24 @@ await runHarness({
       userDataDir: 'fresh',
       run: caseAskUserQuestionRoutesViaPermissionRequest,
     },
+    // auq-single-select-auto-advance: regression for #287 (PR #365). Vitest
+    // can't catch this — RTL fireEvent flushes state updaters synchronously
+    // inside `act`, but real Playwright clicks dispatch into the Electron
+    // renderer without that wrapper, exposing the closure-vs-updater race.
+    // Pure-renderer case: no claude.exe needed.
+    { id: 'auq-single-select-auto-advance', run: caseAuqSingleSelectAutoAdvance },
+    // auq-stop-dismisses-question: regression for PR #365 bug 2. Tests the
+    // stop()-path question dismissal end-to-end — keypress dispatches at
+    // the document level, hits InputBar's doc handler, runs through the
+    // real markQuestionAnswered store action, and QuestionStickyHost must
+    // unmount the card on the resulting re-render.
+    { id: 'auq-stop-dismisses-question', run: caseAuqStopDismissesQuestion },
+    // question-dismisses-on-stop-button: sibling case driven by clicking
+    // the visible Stop morph button (same stop() path, but a different
+    // entry edge from the user's perspective). User reported this as a
+    // separate bug; pin the contract explicitly so a future patch
+    // splitting the onClick wiring can't silently break it.
+    { id: 'question-dismisses-on-stop-button', run: caseQuestionDismissesOnStopButton },
     // permission-allow-bash: requires real claude.exe to round-trip the
     // nested control_response envelope (Bug L). Fresh udd so the renderer's
     // allowAlwaysTools allow-list state from earlier cases can't auto-allow

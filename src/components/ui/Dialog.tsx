@@ -48,6 +48,11 @@ export const DialogContent = forwardRef<
       <DialogOverlay />
       <RD.Content
         ref={ref}
+        // Marker used by InputBar's global Esc handler to back off. Inline
+        // sticky widgets (AskUserQuestion, CwdPopover) also use role="dialog"
+        // for a11y but are NOT modal — they should not consume Esc-to-stop.
+        data-modal-dialog=""
+        aria-modal="true"
         className={cn(
           'fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2',
           'rounded-lg border border-border-default bg-bg-panel',
