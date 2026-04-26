@@ -12,6 +12,8 @@ import type {
   QuestionPayload,
 } from './types';
 import { type PlatformAdapter, WindowsAdapter } from './platform/windows';
+import { DarwinAdapter } from './platform/darwin';
+import { LinuxAdapter } from './platform/linux';
 
 const UNSUPPORTED_PLATFORM = (p: string): string =>
   `ccsm/notify: platform "${p}" is not supported (Windows only).`;
@@ -46,10 +48,20 @@ export class Notifier {
    */
   static async create(options: NotifierOptions): Promise<Notifier> {
     const platform = process.platform;
-    if (platform !== 'win32') {
-      throw new Error(UNSUPPORTED_PLATFORM(platform));
+    let adapter: PlatformAdapter;
+    switch (platform) {
+      case 'win32':
+        adapter = new WindowsAdapter(options);
+        break;
+      case 'darwin':
+        adapter = new DarwinAdapter(options);
+        break;
+      case 'linux':
+        adapter = new LinuxAdapter(options);
+        break;
+      default:
+        throw new Error(UNSUPPORTED_PLATFORM(platform));
     }
-    const adapter = new WindowsAdapter(options);
     return new Notifier(adapter, options);
   }
 

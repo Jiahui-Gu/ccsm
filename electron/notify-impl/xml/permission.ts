@@ -4,7 +4,7 @@
 //   title:        "Permission needed · {sessionName}"
 //   text 1:       "{toolName} · {toolBrief}"   (truncated ~60 chars)
 //   attribution:  "cwd: {cwdBasename}"
-//   actions:      Allow / Allow always / Reject
+//   actions:      none — body click focuses the app
 
 import type { PermissionPayload } from '../types';
 import { truncate } from '../util/truncate';
@@ -37,19 +37,6 @@ export function buildPermissionXml(
     action: 'focus',
     toastId: payload.toastId,
   });
-  const allowArgs = buildActionArgs({
-    action: 'allow',
-    toastId: payload.toastId,
-  });
-  const allowAlwaysArgs = buildActionArgs({
-    action: 'allow-always',
-    toastId: payload.toastId,
-    tool: payload.toolName,
-  });
-  const rejectArgs = buildActionArgs({
-    action: 'reject',
-    toastId: payload.toastId,
-  });
 
   return [
     `<toast launch="${xmlEscape(launchArgs)}" activationType="foreground">`,
@@ -61,11 +48,6 @@ export function buildPermissionXml(
     appLogoElement(opts.iconPath),
     '</binding>',
     '</visual>',
-    '<actions>',
-    `<action content="Allow" arguments="${xmlEscape(allowArgs)}" activationType="background"/>`,
-    `<action content="Allow always" arguments="${xmlEscape(allowAlwaysArgs)}" activationType="background"/>`,
-    `<action content="Reject" arguments="${xmlEscape(rejectArgs)}" activationType="foreground"/>`,
-    '</actions>',
     audioElement(opts.silent),
     '</toast>',
   ].join('');
