@@ -44,7 +44,14 @@ export function QuestionStickyHost({ sessionId }: { sessionId: string }) {
       <QuestionBlock
         key={block.id}
         questions={block.questions}
-        autoFocus={false}
+        // autoFocus defaults to true: when the agent asks a question the
+        // sticky widget takes focus even if the user was mid-typing in the
+        // composer. The composer draft is a controlled state and isn't lost.
+        // Reverses PR #305's "no focus theft" choice — task #291 user testing
+        // showed leaving focus on the textarea breaks the ↑/↓ + Enter flow
+        // (the keystrokes go into the composer instead of navigating
+        // options) which is the dominant interaction the question card is
+        // designed for.
         onSubmit={(answersByQuestion) => {
           const api = window.ccsm;
           if (!api) return;

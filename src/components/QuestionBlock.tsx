@@ -134,6 +134,14 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
 
   // Auto-focus first option of the active question on mount + on every page
   // change. Mirrors upstream's "切题自动 focus 第一个" behavior.
+  //
+  // Task #291 — we DO steal focus from the composer textarea on mount. The
+  // question card is the dominant interaction surface once it appears; the
+  // composer draft is a controlled value, so taking focus doesn't lose what
+  // the user typed. The only thing we still respect is focus already living
+  // INSIDE the question (e.g. a freshly-mounted "Other" contenteditable)
+  // because re-running on `active` change shouldn't yank focus off something
+  // the user is currently typing into.
   useEffect(() => {
     if (!autoFocus || submitted) return;
     const root = optionsRef.current;
@@ -142,12 +150,11 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       const target = root.querySelector<HTMLElement>('[data-question-option]');
       if (!target) return;
       const ae = document.activeElement as HTMLElement | null;
-      // Don't steal focus from a text-entry surface the user is actively
-      // typing in. The composer (TEXTAREA) and any INPUT/contenteditable
-      // are excluded — sticky widget appears alongside the composer, not
-      // on top of it.
-      if (ae && ae !== document.body && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
-      if (ae && ae.isContentEditable && ae !== target) return;
+      // Don't steal focus from an element already inside the options group —
+      // covers the inline "Other" contenteditable that a previous interaction
+      // moved focus to. Composer textarea / external inputs are NOT exempt:
+      // when the question mounts, it takes over.
+      if (ae && root.contains(ae) && ae !== target) return;
       target.focus({ preventScroll: true });
     });
     return () => cancelAnimationFrame(id);
