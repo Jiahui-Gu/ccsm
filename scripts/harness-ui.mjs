@@ -3069,6 +3069,92 @@ async function caseSidebarVerticalSymmetry({ win, log }) {
   );
 }
 
+// ---------- sidebar-spacing-canon ----------
+// UX audit Group A follow-up. Pins the spacing constraints below the
+// NewSession row, sourced from the LIVE measured x = window.top → NewSession.top
+// (== window.bottom → Settings.bottom by Group A invariant):
+//   1. NewSession.bottom → divider1.top   === x
+//   2. divider1.bottom   → GroupsLabel.top === x
+//   3. archivedDivider.top (archive collapsed) === InputBar wrapper.top
+// Hard-coding 12 would couple this to DragRegion math; instead we measure x
+// at runtime and let one mismatched class fail the case loudly.
+async function caseSidebarSpacingCanon({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        {
+          id: 's-spacing-1', name: 's', state: 'idle', cwd: 'C:/x',
+          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+        }
+      ],
+      activeId: 's-spacing-1',
+      messagesBySession: { 's-spacing-1': [] }
+    });
+  });
+  await win.waitForTimeout(300);
+
+  const m = await win.evaluate(() => {
+    const aside = document.querySelector('aside');
+    if (!aside) return { err: 'no aside' };
+    const newSessionBtn = Array.from(aside.querySelectorAll('button'))
+      .find((b) => /^New Session$/i.test(b.textContent?.trim() ?? ''));
+    const settingsBtn = Array.from(aside.querySelectorAll('button'))
+      .find((b) => /^Settings$/i.test(b.textContent?.trim() ?? ''));
+    const divider1 = aside.querySelector('[data-testid="sidebar-divider-groups"]');
+    const groupsLabel = aside.querySelector('[data-testid="sidebar-groups-label"]');
+    const archivedDivider = aside.querySelector('[data-testid="sidebar-divider-archived"]');
+    const inputWrapper = document.querySelector('[data-input-bar-wrapper]');
+    if (!newSessionBtn || !settingsBtn) return { err: 'missing NewSession or Settings' };
+    if (!divider1 || !groupsLabel || !archivedDivider) return { err: 'missing testid markers' };
+    if (!inputWrapper) return { err: 'missing input wrapper' };
+    const body = document.body.getBoundingClientRect();
+    const ns = newSessionBtn.getBoundingClientRect();
+    const st = settingsBtn.getBoundingClientRect();
+    const d1 = divider1.getBoundingClientRect();
+    // gap2 = whitespace between divider1.bottom and Groups header content
+    // edge. Wrapper top sits flush with divider bottom; the wrapper's pt-*
+    // IS the gap. Measure padding via computed style so font line-height
+    // halo doesn't pollute the bbox-based result.
+    const gl = groupsLabel.getBoundingClientRect();
+    const glPadTop = parseFloat(getComputedStyle(groupsLabel).paddingTop) || 0;
+    const ad = archivedDivider.getBoundingClientRect();
+    const iw = inputWrapper.getBoundingClientRect();
+    return {
+      top_x: ns.top - body.top,
+      bottom_x: body.bottom - st.bottom,
+      gap1: d1.top - ns.bottom,
+      gap2: (gl.top - d1.bottom) + glPadTop,
+      archivedDividerY: ad.top,
+      inputBarTopY: iw.top,
+    };
+  });
+  if (m.err) throw new Error(m.err);
+
+  const TOL = 1;
+  const fails = [];
+  if (Math.abs(m.top_x - m.bottom_x) > TOL) {
+    fails.push(`Group A invariant broken: top_x=${m.top_x.toFixed(1)} bottom_x=${m.bottom_x.toFixed(1)}`);
+  }
+  const x = m.top_x;
+  if (Math.abs(m.gap1 - x) > TOL) {
+    fails.push(`gap1 (NewSession.bottom→divider1.top)=${m.gap1.toFixed(1)} expected x=${x.toFixed(1)}`);
+  }
+  if (Math.abs(m.gap2 - x) > TOL) {
+    fails.push(`gap2 (divider1.bottom→GroupsLabel.top)=${m.gap2.toFixed(1)} expected x=${x.toFixed(1)}`);
+  }
+  if (Math.abs(m.archivedDividerY - m.inputBarTopY) > TOL) {
+    fails.push(`archivedDividerY=${m.archivedDividerY.toFixed(1)} inputBarTopY=${m.inputBarTopY.toFixed(1)} delta=${(m.archivedDividerY - m.inputBarTopY).toFixed(1)}`);
+  }
+  if (fails.length > 0) {
+    throw new Error(`sidebar spacing canon violations:\n  - ${fails.join('\n  - ')}`);
+  }
+  log(
+    `x=${x.toFixed(1)} gap1=${m.gap1.toFixed(1)} gap2=${m.gap2.toFixed(1)} ` +
+    `archivedDividerY=${m.archivedDividerY.toFixed(1)} inputBarTopY=${m.inputBarTopY.toFixed(1)}`
+  );
+}
+
 // ---------- icon-size-canon ----------
 // UX audit Group D — pin lucide icon sizes in Sidebar (collapsed rail +
 // expanded top/bottom action buttons) and StatusBar chip chevron to the
@@ -3378,6 +3464,7 @@ await runHarness({
     // (2) Sidebar internal top/bottom symmetry.
     { id: 'sidebar-inputbar-bottom-align', run: caseSidebarInputbarBottomAlign },
     { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
+    { id: 'sidebar-spacing-canon', run: caseSidebarSpacingCanon },
     // UX audit Group D — task #310. Pin lucide icon sizes (Sidebar collapsed
     // rail + expanded action buttons + StatusBar chip chevron) to canonical
     // 14px so 13/10 mismatches don't sneak back in.
