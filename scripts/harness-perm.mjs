@@ -2,12 +2,10 @@
 //
 // Per docs/e2e/single-harness-brainstorm.md §8 (option B + C). Each case
 // below is the de-duplicated body of one of the per-file probes in
-// scripts/probe-e2e-*.mjs. The original probe files have been left in
-// place with a `// MERGED INTO harness-perm.mjs` marker on line 1 and are
-// excluded from the per-file runner via scripts/run-all-e2e.mjs's
-// MERGED_INTO_HARNESS skip list.
+// scripts/probe-e2e-*.mjs. Absorbed probe files have been deleted (#72
+// no-skipped-e2e rule — no breadcrumb files).
 //
-// Scope (7 cases — all pure-store / no real claude.exe required):
+// Scope (12 cases — all pure-store / no real claude.exe required):
 //   - permission-prompt              (probe-e2e-permission-prompt)
 //   - permission-mode-strict         (probe-e2e-permission-mode-strict)
 //   - permission-focus-not-stolen    (probe-e2e-permission-focus-not-stolen)
@@ -15,11 +13,15 @@
 //   - permission-nested-input        (probe-e2e-permission-nested-input)
 //   - permission-truncate-width      (probe-e2e-permission-truncate-width)
 //   - permission-sequential-focus    (probe-e2e-permission-sequential-focus)
+//   - permission-allow-always        (probe-e2e-permission-allow-always)
+//   - permission-a11y                (probe-e2e-permission-a11y)
+//   - permission-partial-accept      (probe-e2e-permission-partial-accept)
+//   - permission-auto-and-titles     (probe-e2e-permission-auto-and-titles)
+//   - permission-reject-stops-agent  (probe-e2e-permission-reject-stops-agent)
 //
 // Probes intentionally NOT merged (require real claude.exe subprocess):
 //   - permission-allow-write, permission-allow-bash,
-//     permission-allow-parallel-batch, permission-reject-stops-agent,
-//     permission-prompt-default-mode
+//     permission-allow-parallel-batch, permission-prompt-default-mode
 //
 // Run: `node scripts/harness-perm.mjs`
 // Run one case: `node scripts/harness-perm.mjs --only=permission-prompt`
@@ -66,7 +68,7 @@ async function casePermissionPrompt({ win, log }) {
     prompt: 'Bash: rm -rf /tmp/probe'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5_000 });
 
   const snapshot = await win.evaluate(() => {
@@ -165,7 +167,7 @@ async function casePermissionFocusNotStolen({ win, log }) {
     prompt: 'Bash: docker rmi xxx'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
   await win.waitForTimeout(250);
 
@@ -218,7 +220,7 @@ async function casePermissionShortcutScope({ win, log }) {
     toolInput: { command: 'echo a' },
     prompt: 'Bash A'
   });
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
 
   await win.evaluate(() => {
@@ -280,15 +282,12 @@ async function casePermissionNestedInput({ win, log }) {
     prompt: 'Bash ls'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
   await win.waitForTimeout(300);
 
   const inspect = await win.evaluate(() => {
-    const heading = Array.from(document.querySelectorAll('*')).find(
-      (n) => n.textContent?.trim() === 'Permission required'
-    );
-    const container = heading?.closest('[role="alertdialog"]');
+    const container = document.querySelector('[role="alertdialog"]');
     if (!container) return { ok: false };
     const text = container.textContent ?? '';
     return {
@@ -332,15 +331,12 @@ async function casePermissionTruncateWidth({ win, log }) {
     prompt: 'Bash: long sql'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
   await win.waitForTimeout(300);
 
   const measure = await win.evaluate(({ marker, padded }) => {
-    const heading = Array.from(document.querySelectorAll('*')).find(
-      (n) => n.textContent?.trim() === 'Permission required'
-    );
-    const container = heading?.closest('[role="alertdialog"]');
+    const container = document.querySelector('[role="alertdialog"]');
     if (!container) return { ok: false };
     const rect = container.getBoundingClientRect();
     const text = container.textContent ?? '';
@@ -392,7 +388,7 @@ async function casePermissionSequentialFocus({ win, log }) {
     prompt: 'Bash 1'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
   await win.waitForTimeout(200);
 
@@ -480,7 +476,7 @@ async function casePermissionAllowAlways({ win, log }) {
     prompt: 'Bash: echo first'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
 
   const allowAlwaysBtn = win.locator('[data-perm-action="allow-always"]').first();
@@ -575,14 +571,11 @@ async function casePermissionA11y({ win, log }) {
     prompt: 'Bash a11y'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5000 });
 
   const attrs = await win.evaluate(() => {
-    const heading = Array.from(document.querySelectorAll('*')).find(
-      (n) => n.textContent?.trim() === 'Permission required'
-    );
-    const container = heading?.closest('[role="alertdialog"]');
+    const container = document.querySelector('[role="alertdialog"]');
     if (!container) return null;
     const labelId = container.getAttribute('aria-labelledby');
     const descId = container.getAttribute('aria-describedby');
@@ -695,7 +688,7 @@ async function casePermissionPartialAccept({ win, log }) {
     prompt: 'MultiEdit /tmp/probe-multi.ts'
   });
 
-  const heading = win.locator('text=Permission required').first();
+  const heading = win.locator('[role="alertdialog"]').first();
   await heading.waitFor({ state: 'visible', timeout: 5_000 });
 
   // Per-hunk render contract: 3 checkboxes, all checked, primary button
@@ -799,6 +792,173 @@ async function casePermissionPartialAccept({ win, log }) {
   log('per-hunk render OK; partial IPC=[0,2] OK; full-select fallthrough OK; Reject all OK');
 }
 
+// ---------- permission-auto-and-titles ----------
+// Was: probe-e2e-permission-auto-and-titles.mjs (PR #288).
+// Locks down: store accepts setPermission('auto'); main-process IPC
+// validation accepts 'auto' as a known mode; i18n keys for the per-tool
+// permission prompt titles + Auto chip copy resolve to the spec text.
+// Pure-store/IPC/i18n — no real claude.exe.
+async function casePermissionAutoAndTitles({ win, log }) {
+  // Make sure the store is in a clean baseline (a previous case may have
+  // poisoned `permission` to 'auto' or left state behind). seedSession
+  // resets the relevant slices.
+  await seedSession(win);
+
+  // Pin English so the i18n assertions below are deterministic regardless
+  // of OS locale or earlier case mutations.
+  await win.evaluate(async () => {
+    if (window.__ccsmI18n?.changeLanguage) {
+      await window.__ccsmI18n.changeLanguage('en');
+    }
+  });
+
+  // 1. Store accepts setPermission('auto').
+  const stateAfter = await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    const before = store.getState().permission;
+    store.getState().setPermission('auto');
+    return { before, after: store.getState().permission };
+  });
+  if (stateAfter.after !== 'auto') {
+    throw new Error(`expected store.permission='auto', got ${stateAfter.after}`);
+  }
+
+  // 2. i18n keys for chip copy + per-tool titles + auto-unsupported toast.
+  const i18nText = await win.evaluate(() => {
+    const t = window.__ccsmI18n.t.bind(window.__ccsmI18n);
+    return {
+      autoLabel: t('statusBar.modeAutoLabel'),
+      autoTooltip: t('statusBar.modeAutoTooltip'),
+      autoDesc: t('statusBar.modeAutoDesc'),
+      bashTitle: t('permissionPrompt.titleByTool.bash'),
+      webFetchTitle: t('permissionPrompt.titleByTool.webFetch'),
+      editTitle: t('permissionPrompt.titleByTool.edit'),
+      skillTitle: t('permissionPrompt.titleByTool.skill'),
+      fallbackTitle: t('permissionPrompt.titleByTool.fallback'),
+      autoUnsupportedTitle: t('permissions.autoUnsupportedTitle')
+    };
+  });
+  if (i18nText.autoLabel !== 'Auto') throw new Error(`autoLabel expected "Auto", got ${i18nText.autoLabel}`);
+  if (!/sonnet 4\.6\+/i.test(i18nText.autoTooltip)) {
+    throw new Error(`autoTooltip should mention "Sonnet 4.6+", got ${JSON.stringify(i18nText.autoTooltip)}`);
+  }
+  if (!/research preview/i.test(i18nText.autoDesc)) {
+    throw new Error(`autoDesc should mention "research preview", got ${JSON.stringify(i18nText.autoDesc)}`);
+  }
+  if (!/allow this bash command/i.test(i18nText.bashTitle)) {
+    throw new Error(`bashTitle wrong: ${JSON.stringify(i18nText.bashTitle)}`);
+  }
+  if (!/allow fetching this url/i.test(i18nText.webFetchTitle)) {
+    throw new Error(`webFetchTitle wrong: ${JSON.stringify(i18nText.webFetchTitle)}`);
+  }
+  if (!/allow editing this file/i.test(i18nText.editTitle)) {
+    throw new Error(`editTitle wrong: ${JSON.stringify(i18nText.editTitle)}`);
+  }
+  if (!/allow running this skill/i.test(i18nText.skillTitle)) {
+    throw new Error(`skillTitle wrong: ${JSON.stringify(i18nText.skillTitle)}`);
+  }
+  if (!/permission required/i.test(i18nText.fallbackTitle)) {
+    throw new Error(`fallbackTitle wrong: ${JSON.stringify(i18nText.fallbackTitle)}`);
+  }
+  if (!/auto mode unavailable/i.test(i18nText.autoUnsupportedTitle)) {
+    throw new Error(`autoUnsupportedTitle wrong: ${JSON.stringify(i18nText.autoUnsupportedTitle)}`);
+  }
+
+  // 3. Main-process IPC validation accepts 'auto'. Session does not exist
+  // (manager.setPermissionMode no-ops cleanly), so handler returns ok:true
+  // proving 'auto' is in the KNOWN_MODES allowlist (sister to
+  // permission-mode-strict's 'default' assertion).
+  const ipc = await win.evaluate(async () => {
+    return await window.ccsm.agentSetPermissionMode('s-nonexistent-auto', 'auto');
+  });
+  if (!ipc || ipc.ok !== true) {
+    throw new Error(`expected IPC to accept 'auto' for nonexistent session (ok:true), got ${JSON.stringify(ipc)}`);
+  }
+
+  // Restore default permission so subsequent cases (esp. allow-always
+  // fast-path) don't see a stale 'auto' setting.
+  await win.evaluate(() => {
+    window.__ccsmStore.getState().setPermission('default');
+  });
+
+  log('auto mode wired through store + i18n + IPC; per-tool titles localized');
+}
+
+// ---------- permission-reject-stops-agent ----------
+// Was: probe-e2e-permission-reject-stops-agent.mjs (Journey 5).
+// Locks down: pressing N on a permission prompt fires
+// agentResolvePermission(deny) EXACTLY once (no retry), and the chat
+// retains a visible "denied"/"rejected" trace so the user can scroll
+// back. Pure-store — no real claude.exe.
+async function casePermissionRejectStopsAgent({ win, log }) {
+  const sid = await seedSession(win, { sid: 's-perm-reject' });
+
+  // Spy on the store action — see permission-shortcut-scope for the
+  // contextBridge-freeze rationale.
+  await win.evaluate(() => {
+    window.__permRejectCalls = [];
+    const store = window.__ccsmStore;
+    const origAction = store.getState().resolvePermission;
+    store.setState({
+      resolvePermission: (sessionId, requestId, decision) => {
+        window.__permRejectCalls.push({ sessionId, requestId, decision, at: Date.now() });
+        return origAction(sessionId, requestId, decision);
+      }
+    });
+  });
+
+  await injectWaiting(win, {
+    id: 'wait-PROBE-REJECT',
+    requestId: 'PROBE-REJECT',
+    toolName: 'Bash',
+    toolInput: { command: 'rm -rf /tmp/danger' },
+    prompt: 'Bash dangerous'
+  });
+
+  const heading = win.locator('[role="alertdialog"]').first();
+  await heading.waitFor({ state: 'visible', timeout: 5000 });
+
+  // Move focus off textarea so 'n' triggers the hotkey.
+  await win.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    document.body.focus?.();
+  });
+  await win.waitForTimeout(150);
+
+  await win.keyboard.press('n');
+
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3000 });
+  } catch {
+    throw new Error('block still visible after pressing N');
+  }
+  await win.waitForTimeout(300);
+
+  // CONTRACT 1: agentResolvePermission called exactly once with 'deny'.
+  const calls = await win.evaluate(() => window.__permRejectCalls.slice());
+  if (calls.length !== 1) {
+    throw new Error(`expected exactly 1 IPC call, got ${calls.length}: ${JSON.stringify(calls)}`);
+  }
+  if (calls[0].requestId !== 'PROBE-REJECT' || calls[0].decision !== 'deny' || calls[0].sessionId !== sid) {
+    throw new Error(`wrong IPC payload: ${JSON.stringify(calls[0])}`);
+  }
+
+  // Wait a beat then re-check no retry IPC fires (silent re-attempt).
+  await win.waitForTimeout(800);
+  const callsLater = await win.evaluate(() => window.__permRejectCalls.slice());
+  if (callsLater.length !== 1) {
+    throw new Error(`renderer retried IPC after deny: ${JSON.stringify(callsLater)}`);
+  }
+
+  // CONTRACT 2: chat retains a visible "denied"/"rejected" trace.
+  const chatText = await win.evaluate(() => document.body.innerText);
+  if (!/permission denied|rejected|denied/i.test(chatText)) {
+    throw new Error(`no visible "denied"/"rejected" trace remains in chat after rejection. Body excerpt: ${chatText.slice(0, 800)}`);
+  }
+
+  log('deny IPC fired exactly once, no retry, chat retained denial trace');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -827,6 +987,8 @@ await runHarness({
     { id: 'permission-sequential-focus', run: casePermissionSequentialFocus },
     { id: 'permission-allow-always', run: casePermissionAllowAlways },
     { id: 'permission-a11y', run: casePermissionA11y },
-    { id: 'permission-partial-accept', run: casePermissionPartialAccept }
+    { id: 'permission-partial-accept', run: casePermissionPartialAccept },
+    { id: 'permission-auto-and-titles', run: casePermissionAutoAndTitles },
+    { id: 'permission-reject-stops-agent', run: casePermissionRejectStopsAgent }
   ]
 });
