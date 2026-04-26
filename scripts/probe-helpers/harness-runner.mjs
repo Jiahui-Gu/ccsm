@@ -322,7 +322,17 @@ function buildLaunchOpts(spec, userDataDirOverride) {
     // same mechanism CCSM_USER_DATA_DIR-style overrides ultimately land on.
     args.push(`--user-data-dir=${userDataDirOverride}`);
   }
+  // Default CCSM_E2E_HIDDEN=1 so direct `node scripts/harness-*.mjs` runs
+  // (e.g. background workers, or a single-case iteration) don't pop a window
+  // onto the user's desktop and steal focus. run-all-e2e.mjs already sets
+  // this; this default makes the same behavior apply when a harness is
+  // invoked standalone. Visible-mode harnesses (dnd, perm, restore's
+  // sidebar-resize) explicitly opt out via `spec.launch.env.CCSM_E2E_HIDDEN
+  // = '0'`, which still wins because `spec.launch.env` is spread last. Users
+  // debugging can also opt out by exporting `CCSM_E2E_HIDDEN=0` before the
+  // run — `process.env` is spread after the default, so an explicit env wins.
   const env = {
+    CCSM_E2E_HIDDEN: '1',
     ...process.env,
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
