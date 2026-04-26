@@ -1168,13 +1168,22 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   importSession: ({ name, cwd, groupId, resumeSessionId, projectDir }) => {
     const { sessions, groups, model, models, connection } = get();
-    // Imported sessions get a fresh local UUID (not the JSONL filename UUID)
-    // so importing the same transcript twice doesn't collide. The original
-    // CLI sid lives on as `resumeSessionId` and is forwarded to the SDK on
-    // first send; the SDK is free to allocate a fresh sid for the resumed
-    // conversation, which we then capture and pass back as our session id
-    // on subsequent spawns (see startSession.ts).
-    const id = newSessionId();
+    // Re-importing the same transcript: just re-select the existing row.
+    // The JSONL UUID uniquely identifies the conversation, and our session
+    // record already holds it as `id` (see below), so a duplicate import
+    // becomes a no-op that focuses the session the user already has.
+    const existing = sessions.find((s) => s.id === resumeSessionId);
+    if (existing) {
+      set({ activeId: existing.id, focusedGroupId: null });
+      return existing.id;
+    }
+    // Imported sessions adopt the JSONL filename UUID as the ccsm runner id
+    // (same invariant fresh sessions follow: ccsm id == CLI session UUID ==
+    // JSONL filename UUID). This keeps the SDK's reported session_id, the
+    // on-disk transcript path, and our in-app id in lockstep — without it
+    // `electron/agent-sdk/sessions.ts` fires a `session_id_mismatch`
+    // diagnostic on the first SDK init frame after resume.
+    const id = resumeSessionId;
     let initialModel = model;
     if (!initialModel) initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';

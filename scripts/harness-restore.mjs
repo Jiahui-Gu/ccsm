@@ -1101,7 +1101,23 @@ async function caseImportSession({ log, registerDispose }) {
     if (!hasUser || !hasAssistant) {
       throw new Error(`Bug A: hydrated blocks missing expected text (user=${hasUser}, assistant=${hasAssistant}); blocks=${JSON.stringify(hydrated.blocks)}`);
     }
-    log(`imported clean session; sub-agent + sidechain + ccsm-temp correctly filtered; ${hydrated.blocks.length} blocks hydrated`);
+
+    // Task #292: ccsm session.id must equal the JSONL filename UUID. Without
+    // this, the SDK's first init frame fires a `session_id_mismatch`
+    // diagnostic on resume and the in-app id forever drifts from the
+    // on-disk transcript path. Assert both: the id matches the planted
+    // sid, and no mismatch diagnostic was pushed during import.
+    if (hydrated.sid !== CLEAN_SID) {
+      throw new Error(`Task #292 regression: ccsm session.id (${hydrated.sid}) != JSONL filename UUID (${CLEAN_SID})`);
+    }
+    const mismatchDiagnostics = await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return (s.diagnostics ?? []).filter((d) => d.code === 'session_id_mismatch');
+    });
+    if (mismatchDiagnostics.length > 0) {
+      throw new Error(`Task #292 regression: session_id_mismatch diagnostic fired during import: ${JSON.stringify(mismatchDiagnostics)}`);
+    }
+    log(`imported clean session; sub-agent + sidechain + ccsm-temp correctly filtered; ${hydrated.blocks.length} blocks hydrated; ccsm.id == JSONL UUID; no session_id_mismatch`);
   } finally {
     closed = true;
     try { await app.close(); } catch {}
