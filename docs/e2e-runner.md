@@ -44,30 +44,40 @@ a top-of-file `// MERGED INTO scripts/harness-…mjs` marker.
 
 ## Harness-author gotchas
 
-### `app.evaluate()` cannot `require()` / `import()` inside the callback
+### `app.evaluate()` callbacks lose their closure scope
 
 The function passed to `app.evaluate(async ({ ipcMain, ... }) => { ... })`
-runs in the Electron main process, which is already in-context — a dynamic
-`require()` or `await import()` inside the callback hangs (the loader is
-re-entrant against itself). Symptom: the case stalls until the harness
-timeout, no error.
+is `String(pageFunction)`-ed and shipped over IPC, then `eval`-ed in the
+Electron main process (see `playwright-core/lib/client/electron.js:127`).
+Native `require()` and dynamic `import()` work fine inside — they're plain
+Node calls in the main process (e.g.
+`scripts/probe-helpers/reset-between-cases.mjs` requires `node:path`,
+`better-sqlite3`, and `electron` from inside `app.evaluate`; `harness-runner`
+does `await import('./electron/notify.js')`). What does **not** survive is
+the closure: any variable captured from the harness Node-side scope is
+`undefined` after stringify. Symptom: `ReferenceError: foo is not defined`,
+or silently `undefined` reads.
 
-Pass any node-module data through the second arg (Playwright serializes it
-to the main process):
+Pass closure data through the second arg — Playwright serializes it to the
+main process and binds it as the second parameter:
 
 ```js
-// Bad — hangs.
+const token = computeAuthToken();
+
+// Bad — `token` is captured from outer scope, gone after stringify.
 await app.evaluate(async () => {
-  const fs = require("fs");
-  return fs.readFileSync("/etc/hosts", "utf8");
+  return fetch("https://example/", { headers: { authorization: token } });
 });
 
-// Good — read on the Node side, pass as closure arg.
-const hosts = require("fs").readFileSync("/etc/hosts", "utf8");
-await app.evaluate(async (_ctx, { hosts }) => {
-  // use `hosts` directly
-}, { hosts });
+// Good — pass via second arg; `token` arrives serialized.
+await app.evaluate(async (_ctx, { token }) => {
+  return fetch("https://example/", { headers: { authorization: token } });
+}, { token });
 ```
+
+The second arg must be JSON-serializable (no functions, no class instances).
+For node-module data, you can either compute it Node-side and pass it in,
+or just `require()` inside the callback — both work.
 
 ### `os.homedir()` ignores `HOME` / `USERPROFILE`
 
