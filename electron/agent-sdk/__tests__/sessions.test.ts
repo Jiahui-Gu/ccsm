@@ -20,6 +20,7 @@ import type { StartOptions } from '../../agent/sessions';
 function makeFakeSdk() {
   let lastOptions: unknown = null;
   let queueResolve: ((v: IteratorResult<unknown>) => void) | null = null;
+  let queueReject: ((err: unknown) => void) | null = null;
   const buffer: unknown[] = [];
   let closed = false;
 
@@ -38,8 +39,9 @@ function makeFakeSdk() {
           next(): Promise<IteratorResult<unknown>> {
             if (buffer.length > 0) return Promise.resolve({ value: buffer.shift(), done: false });
             if (closed) return Promise.resolve({ value: undefined, done: true });
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
               queueResolve = resolve;
+              queueReject = reject;
             });
           },
         };
@@ -70,7 +72,17 @@ function makeFakeSdk() {
       if (queueResolve) {
         const r = queueResolve;
         queueResolve = null;
+        queueReject = null;
         r({ value: undefined, done: true });
+      }
+    },
+    fail(err: unknown) {
+      closed = true;
+      if (queueReject) {
+        const r = queueReject;
+        queueResolve = null;
+        queueReject = null;
+        r(err);
       }
     },
     getOptions: () => lastOptions as { options?: Record<string, unknown> } | null,
@@ -187,6 +199,67 @@ describe('agent-sdk/SdkSessionRunner', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(exits).toHaveLength(1);
     expect(exits[0].error).toBeUndefined();
+  });
+
+  it('passes stderr callback to SDK and accumulates chunks into getStderrTail()', async () => {
+    // Task #288: previously the SDK ran with `stderr: 'ignore'`, dropping the
+    // claude.exe diagnostic that explained why a respawn died with code 1.
+    // The runner now wires `options.stderr` through to a bounded buffer.
+    const diagnostics: Array<{ code: string; message: string }> = [];
+    const runner = new SdkSessionRunner(
+      's-stderr',
+      noop,
+      noop,
+      noop,
+      (d) => diagnostics.push({ code: d.code, message: d.message }),
+    );
+    await runner.start(baseStart);
+    const opts = fake.getOptions()?.options as { stderr?: (chunk: string) => void } | undefined;
+    expect(typeof opts?.stderr).toBe('function');
+
+    opts!.stderr!('Error: missing config\n');
+    opts!.stderr!('Error: missing config\n'); // duplicate to verify accumulation
+
+    expect(runner.getStderrTail()).toContain('Error: missing config');
+    // Each chunk forwards as a diagnostic with code='cli_stderr'.
+    expect(diagnostics.filter((d) => d.code === 'cli_stderr')).toHaveLength(2);
+    runner.close();
+  });
+
+  it('runtime exit error appends stderr tail so the user sees why claude.exe died', async () => {
+    // Reverse-verifies the consumer-loop catch path's stderr-tail append.
+    // Without this, "Claude Code process exited with code 1" lands in the
+    // banner with no clue what went wrong.
+    const exits: Array<{ error?: string }> = [];
+    const runner = new SdkSessionRunner('s-stderr-exit', noop, (info) => exits.push(info), noop, noop);
+    await runner.start(baseStart);
+    const opts = fake.getOptions()?.options as { stderr?: (chunk: string) => void } | undefined;
+    opts!.stderr!('fatal: cannot read settings.json: ENOENT\n');
+    // Force the consumer iterator to throw (simulating a non-graceful CLI exit).
+    fake.fail(new Error('Claude Code process exited with code 1'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(exits).toHaveLength(1);
+    expect(exits[0].error).toContain('exited with code 1');
+    expect(exits[0].error).toContain('stderr');
+    expect(exits[0].error).toContain('settings.json');
+  });
+
+  it('awaitClosed() resolves once the consumer settles after close()', async () => {
+    // Task #288 close-then-respawn race fix relies on this contract:
+    // SessionsManager awaits this before spawning the next runner with the
+    // same sessionId, so Windows file-lock semantics on the JSONL don't
+    // race the new claude.exe to exit code 1.
+    const runner = new SdkSessionRunner('s-await', noop, noop, noop, noop);
+    await runner.start(baseStart);
+    let resolved = false;
+    const awaitClosedPromise = runner.awaitClosed().then(() => { resolved = true; });
+    // Before close: consumer is still running, awaitClosed must not resolve.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(resolved).toBe(false);
+    runner.close();
+    fake.finish();
+    await awaitClosedPromise;
+    expect(resolved).toBe(true);
   });
 
   it('interrupt() delegates to Query.interrupt()', async () => {

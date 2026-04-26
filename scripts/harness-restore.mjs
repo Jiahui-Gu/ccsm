@@ -1654,6 +1654,193 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// CASE: truncate-then-resend
+// Single-launch (multi-launch fixture isn't needed) but lives here because
+// it relies on plantJsonlFixture + sandboxed CLAUDE_CONFIG_DIR. Plants a
+// JSONL with 4 frames (user/asst/user/asst), seeds the store with a
+// session whose resumeSessionId matches, drives the "Truncate from here"
+// hover-menu action on the second user message, then sends a fresh
+// prompt and asserts the agent respawns cleanly — NO "Failed to start
+// Claude" banner, an assistant frame eventually arrives.
+//
+// Bug surfaced as task #288: user reported "Failed to start Claude —
+// Claude Code process exited with code 1" after truncate→resend. Root
+// cause turned out to be a close→respawn race on Windows: the renderer
+// fired `agentClose(sid)` fire-and-forget from rewindToBlock, then the
+// user typed and hit Send milliseconds later; the new claude.exe spawned
+// while the old one still held the JSONL file handle and exited 1 with
+// no diagnosable stderr (ccsm dropped CLI stderr on the floor). The fix
+// gates `manager.start()` on the previous runner's `awaitClosed()` AND
+// captures stderr via the SDK's `options.stderr` callback.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseTruncateThenResend({ log, registerDispose }) {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-truncate-'));
+  registerDispose(() => { try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {} });
+
+  // Sandbox CLAUDE_CONFIG_DIR — without this, the dev's real settings
+  // could inject hooks/agents that perturb the timing of init.
+  const cfg = isolatedClaudeConfigDir('ccsm-harness-truncate');
+  registerDispose(cfg.cleanup);
+
+  const SESSION_ID = 'a1b1c1d1-0000-4000-8000-000000000288';
+  const GROUP_ID = 'g-default';
+
+  // Use a real cwd under tmp so the jsonl-loader can resolve it.
+  const fixtureCwdParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-truncate-cwd-'));
+  registerDispose(() => { try { fs.rmSync(fixtureCwdParent, { recursive: true, force: true }); } catch {} });
+  const fixtureCwd = path.join(fixtureCwdParent, 'project');
+  fs.mkdirSync(fixtureCwd, { recursive: true });
+
+  const TS = new Date().toISOString();
+  const fixture = plantJsonlFixture({
+    cwd: fixtureCwd,
+    sessionId: SESSION_ID,
+    frames: [
+      { type: 'user', parentUuid: null, isSidechain: false, uuid: 'u-truncate-1',
+        cwd: fixtureCwd, sessionId: SESSION_ID, timestamp: TS,
+        message: { role: 'user', content: [{ type: 'text', text: 'first prompt' }] } },
+      { type: 'assistant', session_id: SESSION_ID, parentUuid: 'u-truncate-1', isSidechain: false,
+        uuid: 'a-truncate-1', cwd: fixtureCwd, timestamp: TS,
+        message: { id: 'msg-1', role: 'assistant', model: 'claude-opus-4',
+          content: [{ type: 'text', text: 'first reply' }] } },
+      { type: 'user', parentUuid: 'a-truncate-1', isSidechain: false, uuid: 'u-truncate-2',
+        cwd: fixtureCwd, sessionId: SESSION_ID, timestamp: TS,
+        message: { role: 'user', content: [{ type: 'text', text: 'second prompt' }] } },
+      { type: 'assistant', session_id: SESSION_ID, parentUuid: 'u-truncate-2', isSidechain: false,
+        uuid: 'a-truncate-2', cwd: fixtureCwd, timestamp: TS,
+        message: { id: 'msg-2', role: 'assistant', model: 'claude-opus-4',
+          content: [{ type: 'text', text: 'second reply' }] } }
+    ]
+  });
+  registerDispose(fixture.cleanup);
+  log(`planted JSONL fixture at ${fixture.jsonlPath}`);
+
+  const env = {
+    ...process.env,
+    CCSM_PROD_BUNDLE: '1',
+    CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
+  };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${userDataDir}`],
+    cwd: ROOT,
+    env,
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+    // Pin English so aria-label assertions match.
+    await win.evaluate(async () => {
+      try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+    });
+    await win.waitForTimeout(500);
+
+    // Seed store with session pointing at our planted JSONL. resumeSessionId
+    // = SESSION_ID so loadHistory hydrates from the planted file.
+    await win.evaluate(({ sid, gid, cwd }) => {
+      window.__ccsmStore.setState({
+        groups: [{ id: gid, name: 'Sessions', collapsed: false, kind: 'normal' }],
+        sessions: [{
+          id: sid, name: 'truncate probe', state: 'idle', cwd, model: 'claude-opus-4',
+          groupId: gid, agentType: 'claude-code', resumeSessionId: sid
+        }],
+        activeId: sid,
+        startedSessions: { [sid]: true },
+        runningSessions: {}
+      });
+    }, { sid: SESSION_ID, gid: GROUP_ID, cwd: fixtureCwd });
+
+    // Wait for the loaded history to render — second user prompt should be
+    // visible so we can hover-Truncate on it. framesToBlocks prefixes the
+    // raw frame uuid with `u-`, so jsonl uuid 'u-truncate-2' surfaces as
+    // block id 'u-u-truncate-2'.
+    const userRow = win.locator('[data-user-block-id="u-u-truncate-2"]');
+    try {
+      await userRow.waitFor({ state: 'visible', timeout: 10_000 });
+    } catch {
+      const dump = await win.evaluate(() => {
+        const blocks = window.__ccsmStore?.getState().messagesBySession ?? {};
+        const main = document.querySelector('main');
+        return { blocks, main: main ? main.innerText.slice(0, 600) : '<no main>' };
+      });
+      throw new Error(`u-u-truncate-2 not rendered. dump=${JSON.stringify(dump).slice(0, 800)}`);
+    }
+    log('JSONL hydrated; second user message rendered');
+
+    // Drive the truncate action.
+    await userRow.hover();
+    await win.waitForTimeout(250);
+    const actions = userRow.locator('[data-testid="user-block-actions"]');
+    await actions.locator('button[aria-label="Truncate from here"]').click();
+    await win.waitForTimeout(300);
+
+    // Assert in-memory cut + cleared resume.
+    const afterTruncate = await win.evaluate((sid) => {
+      const s = window.__ccsmStore.getState();
+      const blocks = s.messagesBySession[sid] ?? [];
+      const sess = s.sessions.find((x) => x.id === sid);
+      return {
+        blockIds: blocks.map((b) => b.id),
+        resume: sess?.resumeSessionId ?? null,
+        started: !!s.startedSessions[sid],
+      };
+    }, SESSION_ID);
+    if (afterTruncate.started) throw new Error('expected startedSessions cleared after Truncate');
+    if (afterTruncate.resume !== null) throw new Error(`expected resumeSessionId=null, got ${JSON.stringify(afterTruncate.resume)}`);
+    log(`truncate cut to blocks=${JSON.stringify(afterTruncate.blockIds)}; resume cleared`);
+
+    // Send a fresh prompt — this is the codepath that previously crashed.
+    const textarea = win.locator('textarea').first();
+    await textarea.waitFor({ state: 'visible', timeout: 5_000 });
+    await textarea.click();
+    await textarea.fill('say hello back');
+    await win.keyboard.press('Enter');
+
+    // Assert we DON'T get a sessionInitFailures banner within a reasonable
+    // window — this is the bug we're fixing.
+    const failure = await (async () => {
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline) {
+        const f = await win.evaluate((sid) => {
+          const s = window.__ccsmStore.getState();
+          return s.sessionInitFailures[sid] ?? null;
+        }, SESSION_ID);
+        if (f) return f;
+        // Bail out early on success: agent reached running state OR an
+        // assistant frame appeared.
+        const ok = await win.evaluate((sid) => {
+          const s = window.__ccsmStore.getState();
+          const blocks = s.messagesBySession[sid] ?? [];
+          const hasAsst = blocks.some((b) => b.kind === 'assistant');
+          const running = !!s.runningSessions[sid];
+          return hasAsst || running;
+        }, SESSION_ID);
+        if (ok) return null;
+        await win.waitForTimeout(250);
+      }
+      return null;
+    })();
+
+    if (failure) {
+      throw new Error(
+        `expected respawn to succeed after truncate, but sessionInitFailures fired:\n` +
+        `  errorCode=${failure.errorCode}\n` +
+        `  error=${failure.error}\n` +
+        `(task #288 regression — manager close→start sequencing or stderr capture broke)`
+      );
+    }
+    log('truncate→resend respawned cleanly (no init-failure banner)');
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Harness spec.
 // ──────────────────────────────────────────────────────────────────────────
 await runHarness({
@@ -1675,6 +1862,11 @@ await runHarness({
     // permission-prompt-default-mode: 2-launch (seed → close → relaunch)
     // with sandboxed CLAUDE_CONFIG_DIR + real claude.exe Bash invocation.
     // 桶 3 worker classified as restore-fits-the-multi-launch pattern.
-    { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode }
+    { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode },
+    // task #288 — truncate (rewindToBlock) followed by sending a fresh
+    // prompt must respawn cleanly. Real claude.exe required: the bug was
+    // a Windows file-lock race during respawn that no fake runner could
+    // reproduce.
+    { id: 'truncate-then-resend',     skipLaunch: true, requiresClaudeBin: true, run: caseTruncateThenResend }
   ]
 });
