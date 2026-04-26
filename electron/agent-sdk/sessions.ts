@@ -272,6 +272,22 @@ export class SdkSessionRunner {
    * `canUseTool` callback awaits the matching entry's resolve(); the
    * renderer settles it via resolvePermission / resolvePermissionPartial.
    */
+  /**
+   * Tail of stderr emitted by the spawned claude.exe. The SDK only forwards
+   * stderr to us if `options.stderr` is set (see sdk.mjs ProcessTransport),
+   * so we wire this callback up unconditionally on launch and accumulate
+   * into a bounded ring. Surfaces three places:
+   *   - per-chunk via `onDiagnostic({code:'cli_stderr'})` so the renderer
+   *     can log it (devtools / future banner)
+   *   - tail appended to the manager's CLI_SPAWN_FAILED `detail` field via
+   *     `getStderrTail()` when the early-exit window catches an exit-1
+   *   - tail appended to the runtime exit error via `onExit({error: ...})`
+   * Without this, "Claude Code process exited with code 1" gave the user
+   * (and us) zero clue why claude.exe died — see task #288 dogfood report.
+   */
+  private stderrTail = '';
+  private static readonly STDERR_TAIL_MAX = 4096;
+
   private pendingPerms = new Map<
     string,
     {
@@ -415,6 +431,14 @@ export class SdkSessionRunner {
         resume: opts.resumeSessionId,
         sessionId: presetSessionId,
         pathToClaudeCodeExecutable: binaryPath,
+        // Capture stderr from the spawned claude.exe. Without `options.stderr`
+        // the SDK pipes `stderr: 'ignore'`, dropping diagnostic output —
+        // which is precisely what made task #288 ("Failed to start Claude —
+        // Claude Code process exited with code 1") undebuggable. We append
+        // chunks to a bounded ring; manager.ts reads `getStderrTail()` when
+        // surfacing CLI_SPAWN_FAILED and the consumer loop appends it to
+        // any non-graceful runtime exit error.
+        stderr: (chunk: string) => this.appendStderr(chunk),
         // 6-tier effort+thinking chip → SDK options. `thinking: 'disabled'`
         // when the chip is Off, `'adaptive'` (Claude decides budget) for
         // every other tier. `effort` carries the actual tier label and is
@@ -537,7 +561,10 @@ export class SdkSessionRunner {
         if (isAbort && this.disposed) {
           this.onExit({ error: undefined });
         } else {
-          this.onExit({ error: err instanceof Error ? err.message : String(err) });
+          const base = err instanceof Error ? err.message : String(err);
+          const tail = this.stderrTail.trim();
+          const message = tail ? `${base} — stderr: ${tail.slice(-512)}` : base;
+          this.onExit({ error: message });
         }
       } finally {
         this.cleanupAfterExit();
@@ -914,6 +941,51 @@ export class SdkSessionRunner {
       this.query?.close();
     } catch {
       /* ignore — close() may throw if abort already tore the query down */
+    }
+  }
+
+  /**
+   * Resolves once the consumer iterator settles — i.e. claude.exe has fully
+   * exited and the SDK released the JSONL handle. Used by SessionsManager
+   * to sequence close-then-respawn for the same `sessionId` so a fast
+   * truncate→resend doesn't race the new claude.exe into the same JSONL
+   * while the old one is still draining (Windows file-lock semantics make
+   * this fatal: the new process exits 1 with EBUSY-style stderr). See
+   * task #288.
+   */
+  async awaitClosed(): Promise<void> {
+    try {
+      await this.consumer;
+    } catch {
+      /* exit errors already surfaced via onExit; we just need the wait */
+    }
+  }
+
+  /**
+   * Tail of stderr captured during this runner's lifetime. Empty when the
+   * SDK's stderr callback never fired (clean spawn that produced no
+   * diagnostics). Bounded by `STDERR_TAIL_MAX`.
+   */
+  getStderrTail(): string {
+    return this.stderrTail;
+  }
+
+  private appendStderr(chunk: string): void {
+    if (!chunk) return;
+    // Stream-forward to manager so renderer can log + future UI surface.
+    // Trim any embedded ANSI/control sequences would be nice but isn't
+    // worth the dependency — the manager just stuffs this into a banner
+    // detail anyway, and most CLI errors are plain text.
+    this.onDiagnostic({
+      level: 'warn',
+      code: 'cli_stderr',
+      message: chunk.length > 512 ? `${chunk.slice(0, 512)}…` : chunk,
+    });
+    this.stderrTail += chunk;
+    if (this.stderrTail.length > SdkSessionRunner.STDERR_TAIL_MAX) {
+      // Keep last STDERR_TAIL_MAX chars — newest stderr is most relevant
+      // to a spawn failure (the dying CLI's last gasp).
+      this.stderrTail = this.stderrTail.slice(-SdkSessionRunner.STDERR_TAIL_MAX);
     }
   }
 

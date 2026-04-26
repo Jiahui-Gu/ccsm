@@ -30,6 +30,18 @@ interface Runner {
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean;
   resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean;
   close(): void;
+  /**
+   * Resolves once the underlying claude.exe has exited and released its
+   * JSONL handle. Called by SessionsManager to sequence close-then-respawn
+   * for the same sessionId — see task #288.
+   */
+  awaitClosed(): Promise<void>;
+  /**
+   * Tail of stderr captured during this runner's lifetime. Empty when the
+   * spawn produced no stderr. Read by the manager when surfacing
+   * CLI_SPAWN_FAILED so the user sees *why* the CLI bailed.
+   */
+  getStderrTail(): string;
 }
 
 export type { StartErrorCode, StartResult } from './start-result-types';
@@ -65,6 +77,17 @@ export type AgentModelInfoEvent = {
 
 class SessionsManager {
   private runners = new Map<string, Runner>();
+  /**
+   * Per-sessionId in-flight teardown promises. When close() fires we kick
+   * off the runner's awaitClosed() and stash the promise here so the next
+   * start() for the SAME sessionId can sequence after it. Without this
+   * gate, a fast truncate→resend respawned a new claude.exe while the old
+   * one still held the JSONL handle (Windows file-lock semantics) — the
+   * new process exited 1 with no diagnosable error and the user got
+   * "Failed to start Claude — Claude Code process exited with code 1".
+   * See task #288. Entries are removed once the await resolves.
+   */
+  private closing = new Map<string, Promise<void>>();
   private sender: Sender | null = null;
   // Test-only counter incremented when a runner's onExit callback fires
   // *before* close()/closeAll() removed it from the map — i.e. the CLI
@@ -132,6 +155,16 @@ class SessionsManager {
 
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
+    // Sequence after any in-flight teardown for the SAME sessionId. Without
+    // this, a fast truncate→resend (close fires fire-and-forget from the
+    // renderer's rewindToBlock action, the user types and clicks Send
+    // milliseconds later) would respawn claude.exe while the previous
+    // process was still draining its stdio + JSONL handles. On Windows
+    // the new process loses the file race and exits 1 — see task #288.
+    const inFlightClose = this.closing.get(sessionId);
+    if (inFlightClose) {
+      await inFlightClose;
+    }
     // Race the SDK consumer's first signal (event = healthy, exit = early
     // failure) against an ~800ms window so a CLI that spawns and immediately
     // exits 1 (stale binPath, missing dep, bad shim) surfaces as a typed
@@ -181,12 +214,20 @@ class SessionsManager {
       await Promise.race([firstSignal, new Promise<void>((r) => setTimeout(r, 800))]);
       settled = true;
       if (earlyError !== undefined) {
+        // Capture stderr tail BEFORE closing — close() aborts the SDK
+        // signal but the runner keeps the buffer until disposal.
+        const stderrTail = (() => {
+          try { return runner.getStderrTail().trim(); } catch { return ''; }
+        })();
         try { runner.close(); } catch { /* ignore */ }
+        const detail = stderrTail
+          ? `${earlyError} — stderr: ${stderrTail.slice(-512)}`
+          : earlyError;
         return {
           ok: false,
           error: 'Failed to start Claude',
           errorCode: 'CLI_SPAWN_FAILED',
-          detail: earlyError,
+          detail,
         };
       }
       this.runners.set(sessionId, runner);
@@ -317,11 +358,30 @@ class SessionsManager {
     if (!r) return false;
     r.close();
     this.runners.delete(sessionId);
+    // Stash the teardown promise so a subsequent start() for the same
+    // sessionId waits for the child to fully exit before respawning.
+    // Self-cleanup once awaitClosed settles — no entry leak.
+    const closed = r.awaitClosed().finally(() => {
+      // Only remove if this is still the same teardown (no newer close()
+      // displaced it). Simpler than identity tracking: deleteIfEqual.
+      if (this.closing.get(sessionId) === closed) {
+        this.closing.delete(sessionId);
+      }
+    });
+    this.closing.set(sessionId, closed);
     return true;
   }
 
   closeAll(): void {
-    for (const r of this.runners.values()) r.close();
+    for (const [sessionId, r] of this.runners) {
+      r.close();
+      const closed = r.awaitClosed().finally(() => {
+        if (this.closing.get(sessionId) === closed) {
+          this.closing.delete(sessionId);
+        }
+      });
+      this.closing.set(sessionId, closed);
+    }
     this.runners.clear();
   }
 
