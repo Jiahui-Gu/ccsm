@@ -27,6 +27,9 @@
 //   - sdk-stream-roundtrip
 //   - sdk-stream-event-partial
 //   - sdk-exit-error-surfaces
+//   - sdk-tool-use-roundtrip
+//   - sdk-system-subtypes
+//   - sdk-abort-on-disposed
 //   - user-block-hover-menu
 //
 // Add new AGENT cases here by:
@@ -1812,6 +1815,233 @@ async function caseSdkExitErrorSurfaces({ app, win, log }) {
   log('SDK exit-with-error via real agent:exit IPC -> error block surfaced + running cleared');
 }
 
+// ---------- sdk-tool-use-roundtrip ----------
+// Follow-up to PR #326. The 3 existing SDK cases cover text-only assistant
+// frames; this one exercises the tool_use / tool_result branch of
+// translateSdkMessage + stream-to-blocks. The SDK passes assistant frames
+// (containing tool_use blocks) and user frames (containing tool_result
+// blocks) through unchanged; the renderer's stream-to-blocks pipeline turns
+// them into a `tool` block whose result lands by toolUseId match. We inject
+// both frames over the same `agent:event` IPC channel SdkSessionRunner uses
+// and assert the ToolBlock renders with both the brief AND the result text.
+async function caseSdkToolUseRoundtrip({ app, win, log }) {
+  const SID = 's-sdk-tool';
+  const TUID = 'toolu_sdk_probe_1';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk-tool', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'read foo' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // Inject assistant(tool_use=Read) -> user(tool_result) frame pair via the
+  // real `agent:event` IPC. translateSdkMessage passes both straight
+  // through; lifecycle.ts -> streamEventToTranslation -> stream-to-blocks
+  // turns them into a tool block + setToolResult patch.
+  await app.evaluate(({ BrowserWindow }, [sid, tuid]) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'assistant',
+        session_id: sid,
+        message: {
+          id: 'msg-sdk-tool-1',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          content: [
+            { type: 'tool_use', id: tuid, name: 'Read', input: { file_path: 'C:/x/foo.txt' } },
+          ],
+        },
+      },
+    });
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'user',
+        session_id: sid,
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: tuid, content: 'PROBE_TOOL_RESULT body line', is_error: false },
+          ],
+        },
+      },
+    });
+  }, [SID, TUID]);
+  await win.waitForTimeout(400);
+
+  const state = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    const tools = blocks.filter((b) => b.kind === 'tool');
+    return tools.map((b) => ({ id: b.id, name: b.name, toolUseId: b.toolUseId, result: b.result, isError: b.isError }));
+  }, SID);
+  if (state.length !== 1) {
+    throw new Error(`expected exactly 1 tool block, got ${state.length}: ${JSON.stringify(state)}`);
+  }
+  const tool = state[0];
+  if (tool.name !== 'Read') throw new Error(`expected tool name=Read, got ${tool.name}`);
+  if (tool.toolUseId !== TUID) throw new Error(`expected toolUseId=${TUID}, got ${tool.toolUseId}`);
+  if (typeof tool.result !== 'string' || !tool.result.includes('PROBE_TOOL_RESULT body line')) {
+    throw new Error(`expected tool result to include PROBE_TOOL_RESULT, got ${JSON.stringify(tool.result)}`);
+  }
+  if (tool.isError) throw new Error('expected isError=false on success tool_result');
+
+  // The DOM-side ToolBlock should render with the same name and brief.
+  const renderedNames = await win.locator('[data-testid="tool-name"], [data-tool-name]').allTextContents().catch(() => []);
+  if (renderedNames.length === 0) {
+    // fallback: look for the tool brief substring in the chat
+    const html = await win.evaluate(() => document.body.innerText);
+    if (!html.includes('Read')) {
+      throw new Error('expected ToolBlock for Read to render in DOM');
+    }
+  }
+
+  log('SDK assistant(tool_use)+user(tool_result) via real agent:event IPC -> tool block coalesced with result');
+}
+
+// ---------- sdk-system-subtypes ----------
+// Follow-up to PR #326. translateSdkMessage allow-lists three system
+// subtypes (init, compact_boundary, api_retry) and drops the rest. The 3
+// existing SDK cases only cover `init`. This case fires `compact_boundary`
+// and `api_retry` frames via the real IPC channel and asserts each lands as
+// the expected status banner block (info / warn) per stream-to-blocks
+// systemBlocks().
+async function caseSdkSystemSubtypes({ app, win, log }) {
+  const SID = 's-sdk-sys';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk-sys', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'long convo' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  await app.evaluate(({ BrowserWindow }, sid) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    // 1) compact_boundary - emitted by SDK after auto/manual compaction.
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: sid,
+        uuid: 'sys-compact-1',
+        compact_metadata: {
+          trigger: 'auto',
+          pre_tokens: 120000,
+          post_tokens: 30000,
+          duration_ms: 850,
+        },
+      },
+    });
+    // 2) api_retry - emitted by SDK on transient HTTP failures during a turn.
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'system',
+        subtype: 'api_retry',
+        session_id: sid,
+        uuid: 'sys-retry-1',
+        attempt: 2,
+        max_retries: 5,
+        retry_delay_ms: 4000,
+        error_status: 503,
+      },
+    });
+  }, SID);
+  await win.waitForTimeout(300);
+
+  const banners = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks
+      .filter((b) => b.kind === 'status')
+      .map((b) => ({ id: b.id, tone: b.tone, title: b.title, detail: b.detail }));
+  }, SID);
+
+  const compact = banners.find((b) => typeof b.title === 'string' && b.title.toLowerCase().includes('compact'));
+  if (!compact) throw new Error(`expected compact_boundary status banner, got ${JSON.stringify(banners)}`);
+  if (compact.tone !== 'info') throw new Error(`expected compact banner tone=info, got ${compact.tone}`);
+  if (typeof compact.detail !== 'string' || !compact.detail.includes('120,000') || !compact.detail.includes('30,000')) {
+    throw new Error(`expected compact detail to include pre/post tokens, got ${JSON.stringify(compact.detail)}`);
+  }
+
+  const retry = banners.find((b) => typeof b.title === 'string' && b.title.toLowerCase().includes('retry'));
+  if (!retry) throw new Error(`expected api_retry status banner, got ${JSON.stringify(banners)}`);
+  if (retry.tone !== 'warn') throw new Error(`expected retry banner tone=warn, got ${retry.tone}`);
+  if (typeof retry.title !== 'string' || !retry.title.includes('2/5')) {
+    throw new Error(`expected retry title to include attempt 2/5, got ${JSON.stringify(retry.title)}`);
+  }
+  if (typeof retry.detail !== 'string' || !retry.detail.includes('503')) {
+    throw new Error(`expected retry detail to include HTTP 503, got ${JSON.stringify(retry.detail)}`);
+  }
+
+  log('SDK system subtypes compact_boundary+api_retry via real IPC -> info+warn status banners with metadata');
+}
+
+// ---------- sdk-abort-on-disposed ----------
+// Follow-up to PR #326. SdkSessionRunner's consumer loop (sessions.ts:419-
+// 429) catches AbortError after `dispose()` and surfaces it as
+// `onExit({ error: undefined })` — graceful close, NOT an error. The legacy
+// case `sdk-exit-error-surfaces` covers the error branch; this one covers
+// the symmetric graceful branch: `agent:exit` with no error string MUST
+// clear running WITHOUT appending an error block. Regression guard against
+// "AbortError gets surfaced as a red error block" UX bug.
+async function caseSdkAbortOnDisposed({ app, win, log }) {
+  const SID = 's-sdk-abort';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk-abort', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'do thing' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // Mirror what sessions.ts emits on the AbortError-after-dispose branch:
+  // `this.onExit({ error: undefined })` -> manager forwards `agent:exit`
+  // with no error field. Use `error: undefined` (omitted) to match exactly.
+  await app.evaluate(({ BrowserWindow }, sid) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    wc.send('agent:exit', { sessionId: sid });
+  }, SID);
+  await win.waitForTimeout(300);
+
+  const state = await win.evaluate((sid) => {
+    const s = window.__ccsmStore.getState();
+    const blocks = s.messagesBySession[sid] ?? [];
+    return {
+      blockKinds: blocks.map((b) => b.kind),
+      errorTexts: blocks.filter((b) => b.kind === 'error').map((b) => b.text),
+      running: !!s.runningSessions[sid],
+    };
+  }, SID);
+  if (state.errorTexts.length > 0) {
+    throw new Error(`expected NO error blocks on graceful AbortError exit; got ${JSON.stringify(state.errorTexts)}`);
+  }
+  if (state.blockKinds.includes('error')) {
+    throw new Error(`expected no error blocks at all; got blockKinds=${JSON.stringify(state.blockKinds)}`);
+  }
+  if (state.running) throw new Error('expected runningSessions cleared after graceful exit');
+
+  log('SDK graceful AbortError exit (agent:exit no error) -> running cleared, NO error block surfaced');
+}
+
 // ---------- user-block-hover-menu ----------
 // Absorbed from probe-e2e-user-block-hover-menu.mjs. Hover -> 4 action
 // buttons fade in (opacity 1); Copy lands text in clipboard; Truncate cuts
@@ -1932,6 +2162,9 @@ await runHarness({
     { id: 'sdk-stream-roundtrip', run: caseSdkStreamRoundtrip },
     { id: 'sdk-stream-event-partial', run: caseSdkStreamEventPartial },
     { id: 'sdk-exit-error-surfaces', run: caseSdkExitErrorSurfaces },
+    { id: 'sdk-tool-use-roundtrip', run: caseSdkToolUseRoundtrip },
+    { id: 'sdk-system-subtypes', run: caseSdkSystemSubtypes },
+    { id: 'sdk-abort-on-disposed', run: caseSdkAbortOnDisposed },
     { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
   ]
 });
