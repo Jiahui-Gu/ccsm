@@ -318,6 +318,15 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
   const restoreSession = useStore((s) => s.restoreSession);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
+  const archiveSession = useStore((s) => s.archiveSession);
+  const unarchiveSession = useStore((s) => s.unarchiveSession);
+  // BUG-2: the menu's archive entry flips to Unarchive when this session
+  // already lives under an archive-kind group. Read group kind from the
+  // store so the label stays in sync without threading a prop down.
+  const isArchived = useStore((s) => {
+    const g = s.groups.find((x) => x.id === session.groupId);
+    return g?.kind === 'archive';
+  });
   const toast = useToast();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
@@ -476,6 +485,14 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          onSelect={() =>
+            isArchived ? unarchiveSession(session.id) : archiveSession(session.id)
+          }
+        >
+          {isArchived ? t('common.unarchive') : t('common.archive')}
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={performDelete}>
           {t('common.delete')}
