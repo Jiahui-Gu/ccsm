@@ -2,10 +2,11 @@
 //
 // Contract: on a fresh app boot (no persisted sessions) the renderer must
 // NOT auto-create a session. Instead it shows a sentence-case CTA palette
-// (welcome line + new session + import + create-group + tip) anchored on
-// data-testid="first-run-empty". This test guards against the regression
-// where some startup hook silently calls createSession() and bypasses the
-// empty state.
+// (new session + import) anchored on data-testid="first-run-empty". The
+// welcome heading, "Create a new group" link, and tip line were removed
+// in #353 — they were visual noise that didn't unlock any action. This
+// test guards against the regression where some startup hook silently
+// calls createSession() and bypasses the empty state.
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
@@ -95,13 +96,14 @@ describe('first-run empty state', () => {
     // ChatStream branch) AND that no session was silently created during
     // render.
     expect(screen.getByTestId('first-run-empty')).toBeInTheDocument();
-    expect(screen.getByText(/Welcome to ccsm\./i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^New session$/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Import a CLI session$/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Create a new group$/ })).toBeInTheDocument();
+    // Removed in #353 — must not be present.
+    expect(screen.queryByText(/Welcome to ccsm\./i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Create a new group$/ })).not.toBeInTheDocument();
     expect(
-      screen.getByText(/groups organize sessions by task, not by repo/i)
-    ).toBeInTheDocument();
+      screen.queryByText(/groups organize sessions by task, not by repo/i)
+    ).not.toBeInTheDocument();
     // Critical: render() must not have created a session as a side effect.
     expect(useStore.getState().sessions).toHaveLength(0);
     expect(useStore.getState().activeId).toBe('');

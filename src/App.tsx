@@ -301,49 +301,32 @@ export default function App() {
                     // explicitly do NOT auto-create a session at boot; instead
                     // the user lands on this clean palette of CTAs. The wording
                     // is sentence case and i18n-driven (firstRun.* keys).
-                    // Layout mirrors the brainstorm spec from PR #254:
-                    // welcome line → 2 primary CTAs (new / import) → tertiary
-                    // "create a new group" link → tip about groups.
+                    // Trimmed in #353 to just the two primary CTAs — the
+                    // welcome heading, "Create a new group" link, and tip line
+                    // were noise on first launch (group creation is reachable
+                    // from the sidebar; the tip didn't unlock any action).
                     <div
-                      className="flex flex-col items-center gap-4"
+                      className="flex items-center gap-3"
                       data-testid="first-run-empty"
                     >
-                      <div className="font-mono text-mono-sm text-fg-tertiary select-none">
-                        {t('firstRun.welcome')}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <Button
-                          variant="primary"
-                          size="md"
-                          onClick={newSession}
-                          className="w-44 justify-center"
-                        >
-                          <Plus size={14} className="stroke-[2]" />
-                          <span>{t('firstRun.newSession')}</span>
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="md"
-                          onClick={() => setImportOpen(true)}
-                          className="w-44 justify-center"
-                        >
-                          <Download size={14} className="stroke-[2]" />
-                          <span>{t('firstRun.importSession')}</span>
-                        </Button>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const id = createGroup();
-                          focusGroup(id);
-                        }}
-                        className="font-mono text-mono-sm text-fg-tertiary hover:text-fg-secondary underline-offset-4 hover:underline transition-colors focus-ring rounded-sm px-1"
+                      <Button
+                        variant="primary"
+                        size="md"
+                        onClick={newSession}
+                        className="w-44 justify-center"
                       >
-                        {t('firstRun.newGroup')}
-                      </button>
-                      <div className="font-mono text-mono-xs text-fg-disabled select-none max-w-md text-center">
-                        {t('firstRun.tip')}
-                      </div>
+                        <Plus size={14} className="stroke-[2]" />
+                        <span>{t('firstRun.newSession')}</span>
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        onClick={() => setImportOpen(true)}
+                        className="w-44 justify-center"
+                      >
+                        <Download size={14} className="stroke-[2]" />
+                        <span>{t('firstRun.importSession')}</span>
+                      </Button>
                     </div>
                   ) : (
                     <Tutorial

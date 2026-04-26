@@ -572,12 +572,10 @@ const zh: EnCatalog = {
     diffCommentsPendingChip: '将随下条消息发送 {{count}} 条 diff 备注'
   },
   // task #329 — first-run empty-state CTA shown when no active session.
+  // 在 #353 精简为两个 CTA。
   firstRun: {
-    welcome: '欢迎使用 ccsm。',
     newSession: '新建会话',
-    importSession: '从 CLI 导入会话',
-    newGroup: '新建分组',
-    tip: '提示：分组按任务组织会话，而非按仓库。'
+    importSession: '从 CLI 导入会话'
   }
 };
 
