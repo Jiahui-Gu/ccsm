@@ -3189,6 +3189,169 @@ async function caseIconSizeCanon({ win, log }) {
   );
 }
 
+// ---------- card-padding-canon ----------
+// UX audit Group F (task #310 follow-up). Pins three small spacing nudges
+// so the canonical card rhythm doesn't drift back to the cramped/orphaned
+// pre-fix values:
+//   1. ChatStream wrapper `gap` >= 8px (was gap-1.5 = 6px).
+//   2. QuestionBlock body and footer share `padding-left` (both 16px) —
+//      footer used to be px-3 against body's px-4.
+//   3. SettingsDialog Field `margin-bottom` === 16px — was mb-5 (20px),
+//      equal to the panel's p-5 padding which made fields look orphaned.
+async function caseCardPaddingCanon({ win, log }) {
+  // Seed a session so ChatStream renders something measurable.
+  await win.evaluate(() => {
+    const st = window.__ccsmStore;
+    st.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: 's-pad', name: 's-pad', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: 's-pad',
+      messagesBySession: { 's-pad': [
+        { kind: 'user', id: 'u-pad-1', text: 'hello' }
+      ] },
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(150);
+
+  // ----- 1. ChatStream wrapper gap -----
+  const chatGap = await win.evaluate(() => {
+    // The wrapper is the px-4 py-3 flex column inside <main>. Find by class
+    // signature to avoid coupling to component file paths.
+    const main = document.querySelector('main');
+    if (!main) return null;
+    const candidates = Array.from(main.querySelectorAll('div'));
+    const wrap = candidates.find((el) => {
+      const cs = getComputedStyle(el);
+      return cs.display === 'flex'
+        && cs.flexDirection === 'column'
+        && el.className.includes('max-w-[1100px]');
+    });
+    if (!wrap) return null;
+    const gap = parseFloat(getComputedStyle(wrap).rowGap || '0');
+    return { gap };
+  });
+  if (!chatGap) throw new Error('card-padding-canon: ChatStream wrapper not found');
+  const errors = [];
+  if (!(chatGap.gap >= 8)) {
+    errors.push(`ChatStream gap drift: rowGap=${chatGap.gap}px (expected >= 8px)`);
+  }
+
+  // ----- 2. QuestionBlock body vs footer padding-left -----
+  await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    st.appendBlocks('s-pad', [{
+      kind: 'question',
+      id: 'q-pad-canon',
+      questions: [{
+        question: 'pad?',
+        options: [{ label: 'A' }, { label: 'B' }]
+      }]
+    }]);
+  });
+  await win.waitForSelector('[data-testid="question-submit"]', { timeout: 5000 });
+  await win.waitForTimeout(150);
+
+  const qPad = await win.evaluate(() => {
+    const submit = document.querySelector('[data-testid="question-submit"]');
+    if (!submit) return null;
+    // Footer = the flex row that contains the submit button.
+    let footer = submit.parentElement;
+    while (footer && !(footer.classList && footer.classList.contains('flex'))) {
+      footer = footer.parentElement;
+    }
+    if (!footer) return null;
+    // Body = previousElementSibling of footer (the px-4 py-3 wrapper).
+    const body = footer.previousElementSibling;
+    if (!body) return null;
+    const fs = getComputedStyle(footer);
+    const bs = getComputedStyle(body);
+    return {
+      bodyPadLeft: parseFloat(bs.paddingLeft),
+      bodyPadRight: parseFloat(bs.paddingRight),
+      footerPadLeft: parseFloat(fs.paddingLeft),
+      footerPadRight: parseFloat(fs.paddingRight)
+    };
+  });
+  if (!qPad) throw new Error('card-padding-canon: QuestionBlock body/footer not located');
+  if (qPad.bodyPadLeft !== qPad.footerPadLeft) {
+    errors.push(
+      `QuestionBlock horizontal padding drift: body padding-left=${qPad.bodyPadLeft}px, ` +
+      `footer padding-left=${qPad.footerPadLeft}px (must match)`
+    );
+  }
+  if (qPad.bodyPadLeft !== 16) {
+    errors.push(
+      `QuestionBlock body padding-left=${qPad.bodyPadLeft}px (canon=16px / px-4)`
+    );
+  }
+  if (qPad.footerPadLeft !== 16) {
+    errors.push(
+      `QuestionBlock footer padding-left=${qPad.footerPadLeft}px (canon=16px / px-4)`
+    );
+  }
+
+  // Clean up question so it doesn't bleed into later cases.
+  await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    st.clearMessages('s-pad');
+  });
+  await win.waitForTimeout(80);
+
+  // ----- 3. SettingsDialog Field margin-bottom -----
+  const settingsBtn = win.getByRole('button', { name: /^settings$/i }).first();
+  await settingsBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await settingsBtn.click();
+  const dialog = win.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 3000 });
+  await win.waitForTimeout(200);
+
+  const fieldMargin = await win.evaluate(() => {
+    const dlg = document.querySelector('[role="dialog"][data-modal-dialog], [role="dialog"][aria-modal="true"]');
+    if (!dlg) return null;
+    // Field wraps a <label class="block ..."> — walk up one parent.
+    const labels = Array.from(dlg.querySelectorAll('label.block'));
+    if (labels.length === 0) return null;
+    const fields = labels
+      .map((l) => l.parentElement)
+      .filter(Boolean)
+      // Filter to elements that look like the Field wrapper (have margin-bottom).
+      .filter((el) => parseFloat(getComputedStyle(el).marginBottom || '0') > 0);
+    if (fields.length === 0) return null;
+    return {
+      count: fields.length,
+      marginBottoms: fields.map((el) => parseFloat(getComputedStyle(el).marginBottom))
+    };
+  });
+  // Always close dialog before throwing to keep harness state clean.
+  await win.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {});
+
+  if (!fieldMargin) {
+    throw new Error('card-padding-canon: SettingsDialog Field elements not located');
+  }
+  const off = fieldMargin.marginBottoms.filter((m) => m !== 16);
+  if (off.length) {
+    errors.push(
+      `SettingsDialog Field margin-bottom drift: got ${fieldMargin.marginBottoms.join(',')}px ` +
+      `(canon=16px / mb-4)`
+    );
+  }
+
+  if (errors.length) {
+    throw new Error('card-padding-canon failures:\n  - ' + errors.join('\n  - '));
+  }
+
+  log(
+    `chat.gap=${chatGap.gap}px ` +
+    `qbody.padL=${qPad.bodyPadLeft}px qfooter.padL=${qPad.footerPadLeft}px ` +
+    `settings.field.mb=${fieldMargin.marginBottoms[0]}px (n=${fieldMargin.count})`
+  );
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -3219,6 +3382,10 @@ await runHarness({
     // rail + expanded action buttons + StatusBar chip chevron) to canonical
     // 14px so 13/10 mismatches don't sneak back in.
     { id: 'icon-size-canon', run: caseIconSizeCanon },
+    // UX audit Group F — task #310 follow-up. Pins ChatStream gap,
+    // QuestionBlock body/footer padding alignment, and SettingsDialog
+    // Field margin-bottom against the canon (8px / 16px / 16px).
+    { id: 'card-padding-canon', run: caseCardPaddingCanon },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },

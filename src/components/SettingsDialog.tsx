@@ -181,7 +181,7 @@ export function SettingsDialog({
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="mb-5">
+    <div className="mb-4">
       <label className="block text-chrome font-medium text-fg-primary mb-1">{label}</label>
       {hint && <div className="text-meta text-fg-tertiary mb-1.5">{hint}</div>}
       {children}
