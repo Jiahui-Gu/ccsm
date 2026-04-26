@@ -425,10 +425,13 @@ const en = {
     permissionRequestTitle: 'Permission requested',
     permissionRequestBody: '{{name}} is asking to {{action}}',
     turnDoneTitle: '{{name}} is done',
+    turnDoneBody: 'Turn done',
     turnErrorTitle: '{{name}} finished with an error',
     turnErrorBody: 'Turn ended in error - check the chat.',
     questionTitle: '{{name}} has a question',
+    questionBody: 'Question',
     inputNeededTitle: '{{name}} needs your input',
+    permissionBody: 'Permission',
     backgroundSessionFallback: 'Background session',
     backgroundWaitingToastTitle: '{{name}} needs your input'
   },

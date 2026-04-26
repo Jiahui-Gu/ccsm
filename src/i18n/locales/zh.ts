@@ -397,10 +397,13 @@ const zh: EnCatalog = {
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}',
     turnDoneTitle: '{{name}} 已完成',
+    turnDoneBody: '回合结束',
     turnErrorTitle: '{{name}} 执行出错',
     turnErrorBody: '本轮以错误结束，请查看聊天。',
     questionTitle: '{{name}} 提了一个问题',
+    questionBody: '提问',
     inputNeededTitle: '{{name}} 需要你的输入',
+    permissionBody: '权限请求',
     backgroundSessionFallback: '后台会话',
     backgroundWaitingToastTitle: '{{name}} 需要你的输入'
   },

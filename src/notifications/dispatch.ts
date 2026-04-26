@@ -8,114 +8,35 @@ export interface DispatchInput {
   title: string;
   body?: string;
   /**
-   * Optional rich metadata forwarded to the inlined notify module Adaptive Toasts in
-   * the main process (Wave 1D). Plain Electron Notification toasts ignore
-   * this — they only need `title` + `body`. Routing the action callback
-   * (Allow / Allow always / Reject) back to the renderer relies on
-   * `extras.toastId` matching the `requestId` used by PermissionPromptBlock.
+   * Minimal metadata forwarded to the main process notification IPC. Plain
+   * Electron Notification toasts ignore this — they only need `title` + `body`.
+   * `toastId` matches the `requestId` used by PermissionPromptBlock so the
+   * action callback (Allow / Allow always / Reject) can route back.
    */
   extras?: {
     toastId?: string;
     sessionName?: string;
     groupName?: string;
-    toolName?: string;
-    toolBrief?: string;
-    question?: string;
-    selectionKind?: 'single' | 'multi';
-    optionCount?: number;
-    lastUserMsg?: string;
-    lastAssistantMsg?: string;
-    elapsedMs?: number;
-    toolCount?: number;
-    cwd?: string;
+    eventType?: NotificationEventType;
   };
 }
 
-export type DispatchSkipReason =
-  | 'no-api'
-  | 'global-disabled'
-  | 'event-disabled'
-  | 'session-muted'
-  | 'focused-active'
-  | 'debounced';
+export type DispatchSkipReason = 'no-api' | 'global-disabled';
 
 export interface DispatchResult {
   dispatched: boolean;
   reason?: DispatchSkipReason;
 }
 
-const DEBOUNCE_MS = 30_000;
-// Last-fired timestamp per (sessionId|eventType). Module-level on purpose:
-// the lifecycle module is a singleton in the renderer, so this map naturally
-// scopes to one window. A bounded LRU is overkill — a typical user has at
-// most a few dozen sessions × 3 event types.
-const lastFiredAt = new Map<string, number>();
-
-function cacheKey(sessionId: string, eventType: NotificationEventType): string {
-  return `${sessionId}|${eventType}`;
-}
-
-// Test seam: probe-notifications.mjs and unit tests can override these to
-// simulate window focus / active session without driving real DOM events.
-export interface DispatchEnv {
-  hasFocus: () => boolean;
-  now: () => number;
-}
-
-const defaultEnv: DispatchEnv = {
-  hasFocus: () => (typeof document !== 'undefined' ? document.hasFocus() : false),
-  now: () => Date.now()
-};
-
-let env: DispatchEnv = defaultEnv;
-
-export function setDispatchEnv(next: Partial<DispatchEnv>): void {
-  env = { ...defaultEnv, ...env, ...next };
-}
-
-export function resetDispatchState(): void {
-  env = defaultEnv;
-  lastFiredAt.clear();
-}
-
-// Apply suppression rules then call the main-process notification IPC. The
-// rules are intentionally conservative: a notification is a heavy, OS-level
-// interruption, so when in doubt we skip rather than spam. Returns a structured
-// result so callers (and tests) can see *why* something was suppressed.
+// Single gate: if notifications are enabled globally, fire. No focus gate, no
+// debounce, no per-event toggle, no per-session mute. The user wants to know
+// whenever a session needs them — that's the whole point of an OS toast.
 export async function dispatchNotification(input: DispatchInput): Promise<DispatchResult> {
   const api = window.ccsm;
   if (!api) return { dispatched: false, reason: 'no-api' };
 
-  const state = useStore.getState();
-  const settings = state.notificationSettings;
+  const settings = useStore.getState().notificationSettings;
   if (!settings.enabled) return { dispatched: false, reason: 'global-disabled' };
-
-  const eventEnabled =
-    (input.eventType === 'permission' && settings.permission) ||
-    (input.eventType === 'question' && settings.question) ||
-    (input.eventType === 'turn_done' && settings.turnDone);
-  if (!eventEnabled) return { dispatched: false, reason: 'event-disabled' };
-
-  const session = state.sessions.find((s) => s.id === input.sessionId);
-  if (session?.notificationsMuted) {
-    return { dispatched: false, reason: 'session-muted' };
-  }
-
-  // Suppress when the user is already looking at this exact session — they
-  // will see the in-app affordance, no need to ping the OS too.
-  const focused = env.hasFocus();
-  const isActive = state.activeId === input.sessionId;
-  if (focused && isActive) {
-    return { dispatched: false, reason: 'focused-active' };
-  }
-
-  const key = cacheKey(input.sessionId, input.eventType);
-  const last = lastFiredAt.get(key) ?? 0;
-  const now = env.now();
-  if (now - last < DEBOUNCE_MS) {
-    return { dispatched: false, reason: 'debounced' };
-  }
-  lastFiredAt.set(key, now);
 
   await api.notify({
     sessionId: input.sessionId,
