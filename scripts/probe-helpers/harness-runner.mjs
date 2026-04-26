@@ -33,6 +33,68 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const ARTIFACTS_ROOT = path.join(REPO_ROOT, 'scripts/e2e-artifacts');
 
+const STALE_CHECK_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.css']);
+
+/**
+ * Walk `src/` and return the newest mtimeMs across files matching
+ * STALE_CHECK_EXTS. Dep-free (no glob). Returns 0 if `src/` is missing.
+ *
+ * @param {string} dir
+ * @returns {number}
+ */
+function newestSrcMtime(dir) {
+  let newest = 0;
+  let stack = [dir];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(cur, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(full);
+      } else if (ent.isFile()) {
+        const ext = path.extname(ent.name);
+        if (STALE_CHECK_EXTS.has(ext)) {
+          try {
+            const m = fs.statSync(full).mtimeMs;
+            if (m > newest) newest = m;
+          } catch {
+            // ignore stat errors
+          }
+        }
+      }
+    }
+  }
+  return newest;
+}
+
+/**
+ * Fail fast if `dist/renderer/bundle.js` is older than the newest file under
+ * `src/`. Harness runs use CCSM_PROD_BUNDLE=1 which loads the prebuilt bundle;
+ * a stale bundle silently masks src changes (PR #322 incident, 2026-04-26).
+ *
+ * Opt out via CCSM_HARNESS_SKIP_STALE_CHECK=1.
+ */
+function assertBundleFresh() {
+  if (process.env.CCSM_HARNESS_SKIP_STALE_CHECK === '1') return;
+  const bundlePath = path.join(REPO_ROOT, 'dist/renderer/bundle.js');
+  let bundleMtime;
+  try {
+    bundleMtime = fs.statSync(bundlePath).mtimeMs;
+  } catch {
+    throw new Error(`[harness] dist/renderer/bundle.js is missing — run \`npm run build\` first (harness loads the prebuilt bundle, not the dev server)`);
+  }
+  const srcMtime = newestSrcMtime(path.join(REPO_ROOT, 'src'));
+  if (srcMtime > bundleMtime) {
+    throw new Error(`[harness] dist/renderer/bundle.js is older than src/ — run \`npm run build\` first (current bundle would mask src changes)`);
+  }
+}
+
 /**
  * Parse `--only=a,b,c` from argv. Returns null when absent (= run all).
  *
@@ -80,6 +142,10 @@ function parseOnly(argv) {
  * @param {HarnessSpec} spec
  */
 export async function runHarness(spec) {
+  // Fail-fast BEFORE launching electron: a stale dist/renderer/bundle.js
+  // would silently run the harness against old src code (see PR #322 post-mortem).
+  assertBundleFresh();
+
   const only = parseOnly(process.argv.slice(2));
   const filtered = spec.cases.filter((c) => !only || only.has(c.id));
 
