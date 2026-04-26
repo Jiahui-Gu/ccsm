@@ -2646,9 +2646,22 @@ async function caseTerminal({ win, log }) {
     ]);
   }, sessionId);
 
-  await win.waitForTimeout(200);
-
+  // Wait for ChatStream to commit a render that includes the tool block we
+  // just appended, instead of relying on a fixed sleep. A bare 200ms is enough
+  // when this case runs first (cold renderer, immediate React commit), but
+  // becomes flaky when prior cases (language-toggle / i18n-settings-zh /
+  // settings-open / etc.) have churned i18n + framer-motion AnimatePresence
+  // transitions. In that scenario, the createSession+selectSession bump
+  // triggers a session-switch crossfade keyed on activeId; the EmptyState
+  // branch is mid-exit when appendBlocks fires, and the blocks branch hasn't
+  // mounted yet by the 200ms mark. Using locator.waitFor with the actual
+  // selector turns the wait into "wait until React commits", not "guess".
   const candidates = win.locator('[data-testid="tool-block-root"] button[aria-expanded]');
+  try {
+    await candidates.first().waitFor({ state: 'visible', timeout: 5000 });
+  } catch {
+    throw new Error('no ChatStream ToolBlock button found within 5s after appendBlocks');
+  }
   const btnCount = await candidates.count();
   if (btnCount === 0) throw new Error('no ChatStream ToolBlock button found');
   await candidates.first().click();
