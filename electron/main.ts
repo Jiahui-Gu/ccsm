@@ -1267,6 +1267,10 @@ app.whenReady().then(() => {
     (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
       activeSessionPids: () => sessions.activeRunnerPids(),
       activeSessionCount: () => sessions.activeSessionCount(),
+      // Lifecycle discriminator for the close-window / delete-session probes:
+      // distinguishes count-dropped-to-0-via-handler from
+      // count-dropped-to-0-because-CLI-self-crashed.
+      selfExitCount: () => sessions.selfExitsSinceStart(),
       // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
       // can swap the @ccsm/notify importer for a fake without resorting to
       // `require` from inside `app.evaluate` (where it's not in scope).

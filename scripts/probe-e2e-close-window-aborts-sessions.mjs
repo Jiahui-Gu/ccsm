@@ -6,6 +6,13 @@
 // (windows hidden, not closed). The fix pulls `sessions.closeAll()` forward
 // into `before-quit` as a belt-and-suspenders guarantee.
 //
+// Scope (#77 follow-up): asserts the `before-quit` handler body, NOT the
+// quit-path wiring. We emit `before-quit` directly on the app object and
+// observe `sessions.closeAll()` running. The probe deliberately does not
+// exercise tray→Quit, dock-Quit, or `app.quit() → window-all-closed →
+// closeAll` secondary paths — those are quit-machinery wiring tests, out
+// of scope here. If you regress those wirings this probe will not catch it.
+//
 // Liveness signal:
 //   The legacy probe polled the OS pid via `process.kill(pid, 0)`. After
 //   PR #271/#273 the agent runs through the SDK transport and the main
@@ -14,6 +21,15 @@
 //   `globalThis.__ccsmDebug` backdoor in main.ts as the liveness signal:
 //   before triggering shutdown the count must be > 0; after the
 //   `before-quit` handler runs it must be 0.
+//
+// False-pass guard (#77 A1): `count → 0` could also be satisfied by the CLI
+// self-crashing during the 5s poll (the manager's onExit callback also
+// removes the runner from the map). To distinguish handler-driven teardown
+// from incidental CLI death, we baseline `__ccsmDebug.selfExitCount()` before
+// `before-quit` fires and assert it didn't move during the poll. The counter
+// only increments on the self-exit branch (when the runner is still in the
+// map at onExit time) — close()/closeAll() delete first, so handler-driven
+// teardown leaves the counter unchanged.
 //
 // Strategy:
 //   - Launch Electron with an isolated userData dir.
@@ -133,6 +149,16 @@ try {
     `[probe-e2e-close-window-aborts-sessions] activeSessionCount before quit = ${countBefore}`
   );
 
+  // Baseline the self-exit counter so we can detect false-pass via CLI
+  // self-crash during the poll window (see #77 A1 in the header).
+  const selfExitsBefore = await app.evaluate(() => {
+    const dbg = globalThis.__ccsmDebug;
+    return dbg && dbg.selfExitCount ? dbg.selfExitCount() : -1;
+  });
+  if (selfExitsBefore < 0) {
+    fail('__ccsmDebug.selfExitCount missing — main.ts backdoor stale', app);
+  }
+
   // Drive the real-quit cleanup path. Emitting `before-quit` synchronously
   // runs the same handler the tray menu's Quit item triggers:
   //   isQuitting = true; sessions.closeAll();
@@ -161,6 +187,23 @@ try {
   if (countAfter !== 0) {
     fail(
       `activeSessionCount=${countAfter} 5s after before-quit; expected 0 — closeAll regression`,
+      app
+    );
+  }
+
+  // False-pass guard: a CLI self-crash during the poll would also drive the
+  // count to 0 without the close handler ever running. Confirm the
+  // self-exit counter didn't move.
+  const selfExitsAfter = await app.evaluate(() => {
+    const dbg = globalThis.__ccsmDebug;
+    return dbg ? dbg.selfExitCount() : -1;
+  });
+  if (selfExitsAfter !== selfExitsBefore) {
+    fail(
+      `selfExitCount went ${selfExitsBefore} -> ${selfExitsAfter} during the ` +
+        `before-quit poll window. The CLI self-exited; the close handler may ` +
+        `not have run. Cannot distinguish handler-driven teardown from ` +
+        `incidental CLI death — false pass.`,
       app
     );
   }
