@@ -42,6 +42,7 @@ import type {
   ExitHandler,
   PermissionRequestHandler,
   DiagnosticHandler,
+  ModelInfoHandler,
   AgentMessage,
 } from '../agent/sessions';
 import { translateSdkMessage, type SdkMessageLike } from './sdk-message-translator';
@@ -287,6 +288,7 @@ export class SdkSessionRunner {
     private readonly onExit: ExitHandler,
     private readonly onPermissionRequest: PermissionRequestHandler,
     private readonly onDiagnostic: DiagnosticHandler = () => {},
+    private readonly onModelInfo: ModelInfoHandler = () => {},
   ) {}
 
   /**
@@ -418,8 +420,7 @@ export class SdkSessionRunner {
         // every other tier. `effort` carries the actual tier label and is
         // omitted when Off (the SDK's model-default is then irrelevant
         // because thinking is disabled). See src/agent/effort.ts for the
-        // mapping table and `docs/thinking-tier-vscode-eval-2026-04-26.md`
-        // for the upstream probe that confirms this is the wire shape.
+        // mapping table.
         thinking: wire.thinking,
         effort: wire.effort,
         canUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
@@ -455,6 +456,50 @@ export class SdkSessionRunner {
     // Drain the SDK's outbound stream into ccsm's renderer event channel.
     // Errors from the iterator are surfaced via onExit; see the catch below.
     const query = this.query;
+
+    // Pull per-model capability metadata (notably `supportedEffortLevels`)
+    // from the SDK's initialize control_response. The promise resolves once
+    // the CLI has acknowledged the initialize handshake — at that point the
+    // SDK has the full ModelInfo[] available. Fire-and-forget: a failure
+    // here just means the StatusBar effort chip falls back to its hardcoded
+    // model→tier table (src/agent/effort.ts).
+    void (async () => {
+      try {
+        type SdkModelInfo = {
+          value?: unknown;
+          supportedEffortLevels?: unknown;
+        };
+        const supportedModels = (
+          query as unknown as { supportedModels?: () => Promise<SdkModelInfo[]> }
+        ).supportedModels;
+        if (typeof supportedModels !== 'function') return;
+        const models = await supportedModels.call(query);
+        if (this.disposed || !Array.isArray(models)) return;
+        const allowed = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+        const out = models
+          .map((m) => {
+            const id = typeof m?.value === 'string' ? m.value : null;
+            if (!id) return null;
+            const raw = m?.supportedEffortLevels;
+            const tiers = Array.isArray(raw)
+              ? raw.filter(
+                  (t): t is 'low' | 'medium' | 'high' | 'xhigh' | 'max' =>
+                    typeof t === 'string' && allowed.has(t),
+                )
+              : undefined;
+            return { modelId: id, supportedEffortLevels: tiers };
+          })
+          .filter((x): x is { modelId: string; supportedEffortLevels: ('low'|'medium'|'high'|'xhigh'|'max')[] | undefined } => x !== null);
+        if (out.length > 0) this.onModelInfo({ models: out });
+      } catch (err) {
+        this.onDiagnostic({
+          level: 'warn',
+          code: 'supported_models_failed',
+          message: `query.supportedModels() failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    })();
+
     this.consumer = (async () => {
       try {
         for await (const msg of query) {

@@ -67,6 +67,39 @@ describe('effort: model gating', () => {
     expect(isEffortLevelSupported(undefined, 'off')).toBe(true);
     expect(isEffortLevelSupported(null, 'off')).toBe(true);
   });
+
+  it('SDK-reported tiers OVERRIDE the hardcoded fallback', () => {
+    // Sonnet hardcoded -> [low,medium,high]. SDK report grants xhigh too.
+    const sdk = { 'claude-sonnet-4-99': ['low', 'medium', 'high', 'xhigh'] as const };
+    const set = supportedEffortLevelsForModel('claude-sonnet-4-99', sdk);
+    expect(set.has('xhigh')).toBe(true);
+    expect(set.has('max')).toBe(false);
+    // isEffortLevelSupported respects the override too.
+    expect(isEffortLevelSupported('claude-sonnet-4-99', 'xhigh', sdk)).toBe(true);
+    expect(isEffortLevelSupported('claude-sonnet-4-99', 'max', sdk)).toBe(false);
+  });
+
+  it('Falls back to hardcoded table when SDK has no entry for the model', () => {
+    const sdk = { 'some-other-model': ['low'] as const };
+    const set = supportedEffortLevelsForModel('claude-opus-4-7', sdk);
+    expect(set.has('xhigh')).toBe(true);
+    expect(set.has('max')).toBe(true);
+  });
+
+  it('SDK lookup is case-insensitive on the model id', () => {
+    const sdk = { 'Custom-Model-X': ['low', 'medium'] as const };
+    const set = supportedEffortLevelsForModel('custom-model-x', sdk);
+    expect(set.has('low')).toBe(true);
+    expect(set.has('medium')).toBe(true);
+    expect(set.has('high')).toBe(false);
+  });
+
+  it('Empty SDK report falls through to hardcoded fallback (no spurious empty set)', () => {
+    const sdk = { 'claude-opus-4-7': [] as const };
+    const set = supportedEffortLevelsForModel('claude-opus-4-7', sdk);
+    // Empty array shouldn't lock the chip out; treat as "no info" and fall back.
+    expect(set.has('high')).toBe(true);
+  });
 });
 
 describe('effort: coerceEffortLevel migration', () => {
@@ -216,5 +249,40 @@ describe('store: effort-level actions', () => {
     await hydrateStore();
     expect(useStore.getState().globalEffortLevel).toBe('high');
     expect(useStore.getState().effortLevelBySession).toEqual({});
+  });
+});
+
+describe('store: applyModelInfo (SDK-reported supportedEffortLevels)', () => {
+  it('populates supportedEffortLevelsByModel from agent:modelInfo payload', async () => {
+    const { useStore } = await freshStore({});
+    expect(useStore.getState().supportedEffortLevelsByModel).toEqual({});
+    useStore.getState().applyModelInfo([
+      { modelId: 'claude-opus-4-7', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+      { modelId: 'claude-sonnet-4-6', supportedEffortLevels: ['low', 'medium', 'high'] },
+    ]);
+    const m = useStore.getState().supportedEffortLevelsByModel;
+    expect(m['claude-opus-4-7']).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(m['claude-sonnet-4-6']).toEqual(['low', 'medium', 'high']);
+  });
+
+  it('ignores empty / malformed payloads without clobbering existing entries', async () => {
+    const { useStore } = await freshStore({});
+    useStore.getState().applyModelInfo([
+      { modelId: 'claude-opus-4-7', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    ]);
+    // Empty list — no-op.
+    useStore.getState().applyModelInfo([]);
+    // Malformed entries — skipped.
+    useStore
+      .getState()
+      .applyModelInfo([
+        { modelId: '', supportedEffortLevels: ['low'] } as never,
+        // unknown tier strings are filtered out by the reducer's allow-list.
+        { modelId: 'claude-bad', supportedEffortLevels: ['bogus' as never, 'high'] },
+      ]);
+    const m = useStore.getState().supportedEffortLevelsByModel;
+    expect(m['claude-opus-4-7']).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
+    expect(m['claude-bad']).toEqual(['high']);
+    expect(m['']).toBeUndefined();
   });
 });

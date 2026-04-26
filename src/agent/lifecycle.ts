@@ -365,6 +365,14 @@ export function subscribeAgentEvents(): void {
     });
   });
 
+  // Per-model effort-tier metadata reported by the SDK on session start
+  // (electron/agent-sdk/sessions.ts → `query.supportedModels()`). Drives
+  // StatusBar effort chip gating; the hardcoded fallback in
+  // src/agent/effort.ts handles models the SDK doesn't report.
+  api.onAgentModelInfo?.((e) => {
+    useStore.getState().applyModelInfo(e.models);
+  });
+
   api.onAgentPermissionRequest((req) => {
     // Session-scoped "Allow always" fast-path: if the user previously ticked
     // "Allow always" for this tool name, auto-resolve Allow and skip rendering
