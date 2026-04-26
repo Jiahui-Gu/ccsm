@@ -292,6 +292,33 @@ async function caseA11yFocusRestore({ win, log }) {
 
 // ---------- shortcut-overlay-opens ----------
 async function caseShortcutOverlayOpens({ win, log }) {
+  // Spoof navigator.platform = 'MacIntel' BEFORE the renderer bundle loads,
+  // then reload the page so ShortcutOverlay's module-level constants
+  // (MOD/SHIFT) re-evaluate against the mocked platform.
+  //
+  // This is the bit that catches a regression: the current diff makes
+  // those constants unconditional ('Ctrl'/'Shift'), so the spoof has no
+  // effect and the assertions below pass. If a future change re-introduces
+  // platform sniffing (e.g. `IS_MAC ? '⌘' : 'Ctrl'`), the constants will
+  // resolve to mac glyphs under the spoof and the glyph assertions trip.
+  // Without the spoof, navigator.platform is 'Win32' on every harness host
+  // and the regression would silently pass.
+  await win.context().addInitScript(() => {
+    try {
+      Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true });
+    } catch {}
+  });
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+  await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+
+  // Sanity-check the spoof actually took. If this fails, the rest of the
+  // case can't catch a platform-sniff regression.
+  const spoofedPlatform = await win.evaluate(() => navigator.platform);
+  if (spoofedPlatform !== 'MacIntel') {
+    throw new Error(`navigator.platform spoof failed; got ${spoofedPlatform}, expected MacIntel`);
+  }
+
   // Seed a normal active session so the full App branch renders (the
   // overlay is wired into both branches, but this keeps the test closer
   // to real usage).
@@ -375,6 +402,10 @@ async function caseShortcutOverlayOpens({ win, log }) {
 
   // SidebarHeader tooltip + CommandPalette hints must also be Windows-only.
   // Open the palette and assert its hint chips never spell "⌘" or "Cmd".
+  // Note: per-row `Ctrl+N` style hint chips only render once results are
+  // visible, which requires a non-empty query (CommandPalette renders
+  // an emptyHint placeholder while `q` is empty). So we must type a query
+  // before asserting on hint text.
   const paletteOpenedAfterShortcut = await win.evaluate(() => {
     const ev = new KeyboardEvent('keydown', {
       key: 'f',
@@ -390,15 +421,28 @@ async function caseShortcutOverlayOpens({ win, log }) {
   if (!paletteOpenedAfterShortcut) {
     log('skipped palette hint check: palette did not open via Ctrl+F');
   } else {
+    // Type a query that matches the built-in command rows ("New session",
+    // "New group", "Toggle sidebar", "Settings"…) so their per-row hints
+    // (Ctrl+N / Ctrl+Shift+N / Ctrl+B / Ctrl+,) are rendered.
+    const paletteInput = win.locator('[role="dialog"] input').first();
+    await paletteInput.waitFor({ state: 'visible', timeout: 2000 });
+    await paletteInput.fill('new');
+    // Wait for the result list to populate (at least one option row).
+    await win.waitForFunction(
+      () => document.querySelectorAll('[role="dialog"] [role="option"]').length > 0,
+      null,
+      { timeout: 2000 }
+    ).catch(() => { throw new Error('command palette showed no results for query "new"; per-row hint chips would not render'); });
+
     const paletteText = await win.evaluate(() => {
       const dlg = document.querySelector('[role="dialog"]');
       return dlg ? dlg.textContent || '' : '';
     });
     if (/[⌘⇧]/.test(paletteText)) {
-      throw new Error('command palette still renders mac glyphs in hints');
+      throw new Error('command palette still renders mac glyphs in hints; text=' + paletteText.slice(0, 200));
     }
     if (/\bCmd\b/.test(paletteText)) {
-      throw new Error('command palette still renders "Cmd" in hints');
+      throw new Error('command palette still renders "Cmd" in hints; text=' + paletteText.slice(0, 200));
     }
     if (!/Ctrl/.test(paletteText)) {
       throw new Error('expected "Ctrl" in command palette hints; text=' + paletteText.slice(0, 200));
