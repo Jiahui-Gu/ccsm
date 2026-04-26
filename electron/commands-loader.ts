@@ -219,9 +219,16 @@ export type LoadOpts = {
 };
 
 export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
-  const home = opts.homeDir ?? os.homedir();
   const cwd = opts.cwd ?? null;
-  const claudeRoot = path.join(home, '.claude');
+  // Resolve the Claude config root. Precedence:
+  //   1. opts.homeDir → `<homeDir>/.claude` (test override)
+  //   2. process.env.CLAUDE_CONFIG_DIR (used in production — ccsm sets this so
+  //      the binary and the GUI loader read the same tree; ignoring it would
+  //      desync the picker from what claude.exe actually executes)
+  //   3. `<os.homedir()>/.claude` (last-resort default)
+  const claudeRoot = opts.homeDir
+    ? path.join(opts.homeDir, '.claude')
+    : (process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'));
   const all: RawEntry[] = [];
 
   // 1. user
