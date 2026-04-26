@@ -2281,6 +2281,109 @@ async function caseToolRenderOpenInEditor({ win, log }) {
   log('short→absent, long→present(opacity 0), click→temp file written, button → "Opened"');
 }
 
+// ---------- thinking-toggle (was probe-e2e-thinking-toggle) ----------
+// /think slash-command picker → switch toggle → ipcMain spy on
+// agent:setMaxThinkingTokens. Single-launch UI flow; preMain installs the
+// ipcMain spy because window.ccsm is a frozen contextBridge.
+async function caseThinkingToggle({ app, win, log }) {
+  // Step 1: install ipcMain spy (preMain-equivalent done inline because we
+  // already have `app` here and the spy must reset between toggle reads).
+  await app.evaluate(({ ipcMain }) => {
+    const calls = (global.__thinkingIpcCalls = []);
+    try { ipcMain.removeHandler('agent:setMaxThinkingTokens'); } catch {}
+    ipcMain.handle('agent:setMaxThinkingTokens', (_e, sessionId, tokens) => {
+      calls.push({ sessionId, tokens });
+      return { ok: true };
+    });
+  });
+
+  // Step 2: seed an active session and mark it started so store.ts:setThinkingLevel
+  // fan-out actually dispatches the IPC (it short-circuits for un-started sessions).
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    const s = store.getState();
+    if (s.sessions.length === 0) s.createSession('~');
+    const sid = store.getState().activeId;
+    store.setState((prev) => ({
+      startedSessions: { ...prev.startedSessions, [sid]: true },
+    }));
+  });
+
+  const textarea = win.locator('textarea[data-input-bar]');
+  await textarea.waitFor({ state: 'visible', timeout: 10_000 });
+
+  // Step 3: type `/think` so the live picker opens.
+  await textarea.click();
+  await textarea.fill('/think');
+
+  const switchEl = win.locator('[data-testid="slash-think-switch"]');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateBefore = await switchEl.getAttribute('data-state');
+  if (stateBefore !== 'unchecked') throw new Error(`switch initial state expected 'unchecked', got '${stateBefore}'`);
+
+  const pre = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const sid = s.activeId;
+    return { sid, level: s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault };
+  });
+  if (pre.level !== 'off') throw new Error(`pre store level expected 'off', got '${pre.level}'`);
+
+  await switchEl.click();
+  await win.waitForFunction(
+    (sid) => {
+      const s = window.__ccsmStore.getState();
+      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
+      return lvl === 'default_on';
+    },
+    pre.sid,
+    { timeout: 5_000 },
+  );
+
+  await textarea.click();
+  await textarea.fill('/think');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateAfterOn = await switchEl.getAttribute('data-state');
+  if (stateAfterOn !== 'checked') throw new Error(`after toggle-on switch state expected 'checked', got '${stateAfterOn}'`);
+
+  await switchEl.click();
+  await win.waitForFunction(
+    (sid) => {
+      const s = window.__ccsmStore.getState();
+      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
+      return lvl === 'off';
+    },
+    pre.sid,
+    { timeout: 5_000 },
+  );
+
+  await textarea.click();
+  await textarea.fill('/think');
+  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
+  const stateAfterOff = await switchEl.getAttribute('data-state');
+  if (stateAfterOff !== 'unchecked') throw new Error(`after toggle-off switch state expected 'unchecked', got '${stateAfterOff}'`);
+
+  const ipcCalls = await app.evaluate(() => (global.__thinkingIpcCalls || []).slice());
+  if (ipcCalls.length < 2) {
+    throw new Error(`expected >=2 setMaxThinkingTokens IPC calls, got ${ipcCalls.length}: ${JSON.stringify(ipcCalls)}`);
+  }
+  const onCall = ipcCalls[0];
+  const offCall = ipcCalls[1];
+  if (!(onCall.tokens > 0)) throw new Error(`first IPC call (toggle on) expected tokens > 0, got ${JSON.stringify(onCall)}`);
+  if (offCall.tokens !== 0) throw new Error(`second IPC call (toggle off) expected tokens === 0, got ${JSON.stringify(offCall)}`);
+  if (onCall.sessionId !== pre.sid || offCall.sessionId !== pre.sid) {
+    throw new Error(`IPC sessionId mismatch — expected ${pre.sid}, got on=${onCall.sessionId} off=${offCall.sessionId}`);
+  }
+
+  // Restore the original handler so subsequent cases that send to a real
+  // claude don't have their setMaxThinkingTokens calls swallowed by our spy.
+  await app.evaluate(({ ipcMain }) => {
+    try { ipcMain.removeHandler('agent:setMaxThinkingTokens'); } catch {}
+    delete global.__thinkingIpcCalls;
+  });
+
+  log(`/think live row toggles store off ↔ default_on; setMaxThinkingTokens IPC fired: on=${onCall.tokens}, off=${offCall.tokens}`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -2331,7 +2434,11 @@ await runHarness({
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
     { id: 'terminal', run: caseTerminal },
-    { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor }
+    { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor },
+    // ---- Bucket-7 absorption (final cleanup pass) ----
+    // thinking-toggle: UI slash-command toggle that uses an ipcMain spy on
+    // agent:setMaxThinkingTokens. Pure UI, single launch, fits harness-ui.
+    { id: 'thinking-toggle', run: caseThinkingToggle }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler
