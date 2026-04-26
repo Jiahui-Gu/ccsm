@@ -157,7 +157,15 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
   const togglePick = useCallback(
     (q: QuestionSpec, label: string) => {
       if (submitted) return;
-      let didSelectFresh = false;
+      // Compute the "fresh selection" signal BEFORE the setPicks call. The
+      // updater fn passed to setState runs during the next render commit,
+      // not synchronously when set is called — reading a `let` flag set
+      // INSIDE the updater on the line below would always observe the
+      // initial `false` value (the auto-advance condition would silently
+      // never fire in production). Tests masked this because RTL's
+      // fireEvent flushes updaters synchronously inside `act`, but real
+      // browser dispatch defers them. Read from current picks instead.
+      const didSelectFresh = !q.multiSelect && !(picks[q.question]?.has(label) ?? false);
       setPicks((prev) => {
         const next = { ...prev };
         const set = new Set(next[q.question] ?? []);
@@ -165,7 +173,6 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
           if (set.has(label)) set.delete(label);
           else set.add(label);
         } else {
-          if (!set.has(label)) didSelectFresh = true;
           set.clear();
           set.add(label);
         }
@@ -189,7 +196,7 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
         }, AUTO_ADVANCE_MS);
       }
     },
-    [active, confirming, questions.length, submitted]
+    [active, confirming, picks, questions.length, submitted]
   );
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
