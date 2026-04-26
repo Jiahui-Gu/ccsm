@@ -345,7 +345,8 @@ const zh: EnCatalog = {
     groupProject: '项目 Commands',
     groupPlugin: 'Plugin Commands',
     groupSkill: 'Skills',
-    groupAgent: 'Agents'
+    groupAgent: 'Agents',
+    unknownToast: '未知命令：/{{name}}'
   },
   mentions: {
     pickerTitle: '文件引用',

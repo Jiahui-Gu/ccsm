@@ -17,6 +17,7 @@ import {
   filterSlashCommands,
   loadDynamicCommands,
   nextSectionIndex,
+  parseSlashInvocation,
   type SlashCommand
 } from '../slash-commands/registry';
 import {
@@ -38,6 +39,7 @@ import {
 } from '../lib/attachments';
 import { useTranslation } from '../i18n/useTranslation';
 import { runningPlaceholderForMode } from '../lib/runningPlaceholder';
+import { useToast } from './ui/Toast';
 
 // Per-session text drafts persist across session switches AND across app
 // restarts (see ../stores/drafts). Cleared on send. Image attachments stay
@@ -137,6 +139,7 @@ function hasDraggedFiles(e: DragEvent): boolean {
 
 export function InputBar({ sessionId }: { sessionId: string }) {
   const { t } = useTranslation();
+  const { push: pushToast } = useToast();
   const [value, setValue] = useState(() => getDraft(sessionId));
   const [attachments, setAttachments] = useState<ImageAttachment[]>(
     () => attachmentCache.get(sessionId) ?? []
@@ -667,6 +670,21 @@ export function InputBar({ sessionId }: { sessionId: string }) {
     if (text.startsWith('/') && imgs.length === 0) {
       const outcome = await dispatchSlashCommand(text, allCommands, { sessionId, args: '' });
       if (outcome === 'handled') {
+        update('');
+        return;
+      }
+      if (outcome === 'unknown-namespaced') {
+        // `/x:y` or `/plugin` — looks like a CLI / plugin command but the
+        // SDK transport can't run it. Forwarding would deliver the raw
+        // `/foo` text as a user message, which the model then either
+        // misinterprets or replies "deprecated, use the skill instead"
+        // (the bug PR #346 surfaced from the picker side). Bounce locally.
+        const parsed = parseSlashInvocation(text);
+        const name = parsed?.name ?? text.slice(1).split(/\s/)[0] ?? '';
+        pushToast({
+          kind: 'error',
+          title: t('slashCommands.unknownToast', { name })
+        });
         update('');
         return;
       }

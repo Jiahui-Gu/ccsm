@@ -371,7 +371,8 @@ const en = {
     groupProject: 'Project commands',
     groupPlugin: 'Plugin commands',
     groupSkill: 'Skills',
-    groupAgent: 'Agents'
+    groupAgent: 'Agents',
+    unknownToast: 'Unknown command: /{{name}}'
   },
   mentions: {
     pickerTitle: 'File mentions',
