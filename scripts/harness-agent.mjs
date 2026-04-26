@@ -3839,15 +3839,34 @@ async function caseAskUserQuestionFull({ app, win, log }) {
       { question: 'Which language?', options: [{ label: 'Python' }, { label: 'TypeScript' }, { label: 'Rust' }] },
     ]);
     await win.waitForSelector('[data-question-option]', { timeout: 5000 });
-    await win.waitForTimeout(150);
+    // Task #291: question card now grabs focus on mount (reverses PR #305's
+    // "no focus theft" choice). First option (Python) should be the active
+    // element; the textarea draft is preserved as a controlled value but
+    // no longer holds focus.
+    await win.waitForFunction(() => {
+      const el = document.activeElement;
+      return el instanceof HTMLElement && el.getAttribute('data-question-label') === 'Python';
+    }, null, { timeout: 2000 }).catch(() => {});
     const afterActive = await win.evaluate(() => {
       const el = document.activeElement;
-      return { tag: el?.tagName, textareaValue: document.querySelector('textarea')?.value?.slice(0, 32) };
+      return {
+        tag: el?.tagName,
+        role: el?.getAttribute('role'),
+        label: el?.getAttribute('data-question-label'),
+        textareaValue: document.querySelector('textarea')?.value?.slice(0, 32),
+      };
     });
-    if (afterActive.tag !== 'TEXTAREA') return record('J1', false, `auto-focus stole focus: tag=${afterActive.tag}`);
-    const firstOpt = win.locator('[data-question-option]').first();
-    await firstOpt.click();
-    await win.waitForTimeout(80);
+    if (afterActive.tag === 'TEXTAREA') return record('J1', false, `auto-focus left focus on textarea (#291 contract: question takes over): ${JSON.stringify(afterActive)}`);
+    if (afterActive.role !== 'radio' || afterActive.label !== 'Python') {
+      return record('J1', false, `expected first option (Python) focused on mount, got ${JSON.stringify(afterActive)}`);
+    }
+    if (afterActive.textareaValue !== 'half-typed draft') {
+      return record('J1', false, `textarea draft lost when question mounted: ${JSON.stringify(afterActive.textareaValue)}`);
+    }
+    // Starting from Python (focused via mount auto-focus, NOT yet selected).
+    // ↓↓↑ → TypeScript (Python → TypeScript → Rust → TypeScript). Same end
+    // state as the pre-#291 flow — only the starting focus changed (used to
+    // require an explicit click on the first option to seed focus).
     await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
     await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
     await win.keyboard.press('ArrowUp'); await win.waitForTimeout(40);
@@ -3873,7 +3892,7 @@ async function caseAskUserQuestionFull({ app, win, log }) {
     if (postSubmitFocus !== 'TEXTAREA') return record('J1', false, `after submit focus=${postSubmitFocus}, expected TEXTAREA`);
     await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
     await clearCaptured();
-    record('J1', true, 'auto-focus did not steal textarea; ↓↓↑Enter routed TypeScript; focus returned');
+    record('J1', true, 'mount auto-focused Python (textarea draft preserved); ↓↓↑Enter routed TypeScript; focus returned');
   }
 
   // ── J2 ────────────────────────────────────────────────────────────────
