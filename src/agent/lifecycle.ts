@@ -309,11 +309,13 @@ export function subscribeAgentEvents(): void {
       // duration, and per-event toggles all removed.
       turnStartedAt.delete(e.sessionId);
       const isActive = store.activeId === e.sessionId;
-      const windowFocused = typeof document !== 'undefined' && document.hasFocus();
-      const sessionFocused = isActive && windowFocused;
-      // Pulse the sidebar icon when the user isn't actively watching this
-      // session's chat. Cleared by selectSession on click.
-      if (!sessionFocused) {
+      // Pulse the sidebar icon ONLY when the user isn't actively viewing this
+      // session's chat. We previously also required `document.hasFocus()` to
+      // skip the pulse, which meant alt-tabbing away (window unfocused) and
+      // back would briefly pulse the active row — visual noise for the row
+      // the user is already looking at. Active session = no pulse, period.
+      // Cleared by selectSession on click for non-active sessions.
+      if (!isActive) {
         store.setSessionState(e.sessionId, 'waiting');
       }
       {
