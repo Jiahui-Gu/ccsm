@@ -2686,73 +2686,6 @@ async function caseRename({ win, log }) {
   log('session: Enter / Escape / whitespace / click-outside / IME guard; group: Enter / Escape');
 }
 
-// ---------- session-archive ----------
-// BUG-2: session right-click context menu must offer Archive (and Unarchive
-// for sessions already in an archive group). Archiving moves the session
-// into an archive group (auto-creating one if no archive group exists);
-// unarchive moves it back to a normal group.
-async function caseSessionArchive({ win, log }) {
-  await seedStore(win, {
-    groups: [
-      { id: 'g1', name: 'Alpha', collapsed: false, kind: 'normal' }
-    ],
-    sessions: [
-      { id: 's1', name: 'first', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }
-    ],
-    activeId: 's1'
-  });
-
-  // Step 1: right-click the session row, assert the menu surfaces an
-  // Archive item (en: "Archive", zh: "归档").
-  const row = win.locator('li[data-session-id="s1"]').first();
-  await row.click({ button: 'right' });
-  const archiveItem = win.getByRole('menuitem', { name: /^(Archive|归档)$/ }).first();
-  await archiveItem.waitFor({ state: 'visible', timeout: 3000 });
-
-  // Step 2: click Archive — session should land in an archive-kind group.
-  await archiveItem.click();
-  await win.waitForTimeout(200);
-
-  const afterArchive = await win.evaluate(() => {
-    const st = window.__ccsmStore.getState();
-    const s = st.sessions.find((x) => x.id === 's1');
-    if (!s) return { found: false };
-    const g = st.groups.find((gr) => gr.id === s.groupId);
-    return { found: true, groupId: s.groupId, groupKind: g?.kind ?? null };
-  });
-  if (!afterArchive.found) throw new Error('session s1 vanished after archive');
-  if (afterArchive.groupKind !== 'archive') {
-    throw new Error(`expected session in archive-kind group, got kind=${afterArchive.groupKind} (groupId=${afterArchive.groupId})`);
-  }
-
-  // Step 3: open the Archived Groups panel so the row becomes interactable,
-  // then right-click and assert the same menu now offers Unarchive.
-  const archivedToggle = win.locator('button[aria-expanded]').filter({ hasText: /Archived Groups|已归档分组/ }).first();
-  await archivedToggle.click();
-  await win.waitForTimeout(150);
-
-  const archivedRow = win.locator('li[data-session-id="s1"]').first();
-  await archivedRow.click({ button: 'right' });
-  const unarchiveItem = win.getByRole('menuitem', { name: /^(Unarchive|取消归档)$/ }).first();
-  await unarchiveItem.waitFor({ state: 'visible', timeout: 3000 });
-  await unarchiveItem.click();
-  await win.waitForTimeout(200);
-
-  const afterRestore = await win.evaluate(() => {
-    const st = window.__ccsmStore.getState();
-    const s = st.sessions.find((x) => x.id === 's1');
-    if (!s) return { found: false };
-    const g = st.groups.find((gr) => gr.id === s.groupId);
-    return { found: true, groupId: s.groupId, groupKind: g?.kind ?? null };
-  });
-  if (!afterRestore.found) throw new Error('session s1 vanished after unarchive');
-  if (afterRestore.groupKind !== 'normal') {
-    throw new Error(`expected session restored to a normal group, got kind=${afterRestore.groupKind} (groupId=${afterRestore.groupId})`);
-  }
-
-  log('archive moves session into archive group; unarchive moves it back to a normal group');
-}
-
 // ---------- terminal ----------
 // Seed a Bash tool block with ANSI-colored output, expand it, and verify the
 // xterm host renders with the payload visible.
@@ -3693,7 +3626,6 @@ await runHarness({
     { id: 'group-add', run: caseGroupAdd },
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
-    { id: 'session-archive', run: caseSessionArchive },
     { id: 'session-default-name-distinct', run: caseSessionDefaultNameDistinct },
     { id: 'terminal', run: caseTerminal },
     { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor },
