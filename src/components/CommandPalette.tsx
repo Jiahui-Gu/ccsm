@@ -75,7 +75,7 @@ export function CommandPalette({
     }
   }, [open]);
 
-  // a11y: palette is opened via Cmd+K (no Radix Trigger), so restore focus
+  // a11y: palette is opened via Ctrl+K (no Radix Trigger), so restore focus
   // to whatever had it before the palette intercepted. Falls back to the
   // active session row in the sidebar.
   const { handleCloseAutoFocus } = useFocusRestore(open, {
@@ -117,7 +117,7 @@ export function CommandPalette({
         id: 'cmd:new-session',
         kind: 'command',
         label: t('commandPalette.cmdNewSession'),
-        hint: '⌘N',
+        hint: 'Ctrl+N',
         icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -128,7 +128,7 @@ export function CommandPalette({
         id: 'cmd:new-group',
         kind: 'command',
         label: t('commandPalette.cmdNewGroup'),
-        hint: '⌘⇧N',
+        hint: 'Ctrl+Shift+N',
         icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -139,7 +139,7 @@ export function CommandPalette({
         id: 'cmd:toggle-sidebar',
         kind: 'command',
         label: t('commandPalette.cmdToggleSidebar'),
-        hint: '⌘B',
+        hint: 'Ctrl+B',
         icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -160,7 +160,7 @@ export function CommandPalette({
         id: 'cmd:open-settings',
         kind: 'command',
         label: t('commandPalette.cmdOpenSettings'),
-        hint: '⌘,',
+        hint: 'Ctrl+,',
         icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);

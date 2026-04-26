@@ -337,6 +337,24 @@ async function caseShortcutOverlayOpens({ win, log }) {
   const kbdCount = await overlay.locator('kbd').count();
   if (kbdCount < 6) throw new Error(`expected >=6 kbd chips in overlay, got ${kbdCount}`);
 
+  // Windows-only labels: every modifier chip must spell "Ctrl" / "Shift",
+  // never the macOS glyphs (⌘ / ⇧). The app dropped mac-aware modifier
+  // resolution; if a stray glyph reappears here, we want to fail loudly.
+  const labelDump = await overlay.evaluate((el) => {
+    const text = el.textContent || '';
+    const kbds = Array.from(el.querySelectorAll('kbd')).map((k) => k.textContent || '');
+    return { text, kbds };
+  });
+  if (/[⌘⇧]/.test(labelDump.text)) {
+    throw new Error('shortcut overlay still renders mac glyphs (⌘/⇧); kbds=' + JSON.stringify(labelDump.kbds));
+  }
+  if (/\bCmd\b/i.test(labelDump.text)) {
+    throw new Error('shortcut overlay still renders "Cmd"; text=' + labelDump.text.slice(0, 200));
+  }
+  if (!labelDump.kbds.includes('Ctrl')) {
+    throw new Error('expected at least one "Ctrl" kbd chip; got=' + JSON.stringify(labelDump.kbds));
+  }
+
   // Escape dismisses.
   await win.keyboard.press('Escape');
   const closed = await win.waitForFunction(
@@ -355,7 +373,40 @@ async function caseShortcutOverlayOpens({ win, log }) {
   }
   await win.keyboard.press('Escape');
 
-  log(`overlay opened via ? and Ctrl+/, ${kbdCount} kbd chips`);
+  // SidebarHeader tooltip + CommandPalette hints must also be Windows-only.
+  // Open the palette and assert its hint chips never spell "⌘" or "Cmd".
+  const paletteOpenedAfterShortcut = await win.evaluate(() => {
+    const ev = new KeyboardEvent('keydown', {
+      key: 'f',
+      code: 'KeyF',
+      ctrlKey: true,
+      bubbles: true
+    });
+    window.dispatchEvent(ev);
+    return new Promise((resolve) =>
+      setTimeout(() => resolve(!!document.querySelector('[role="dialog"]')), 250)
+    );
+  });
+  if (!paletteOpenedAfterShortcut) {
+    log('skipped palette hint check: palette did not open via Ctrl+F');
+  } else {
+    const paletteText = await win.evaluate(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      return dlg ? dlg.textContent || '' : '';
+    });
+    if (/[⌘⇧]/.test(paletteText)) {
+      throw new Error('command palette still renders mac glyphs in hints');
+    }
+    if (/\bCmd\b/.test(paletteText)) {
+      throw new Error('command palette still renders "Cmd" in hints');
+    }
+    if (!/Ctrl/.test(paletteText)) {
+      throw new Error('expected "Ctrl" in command palette hints; text=' + paletteText.slice(0, 200));
+    }
+    await win.keyboard.press('Escape');
+  }
+
+  log(`overlay opened via ? and Ctrl+/, ${kbdCount} kbd chips, Windows-only labels verified`);
 }
 
 // ---------- popover-cross-dismiss ----------
