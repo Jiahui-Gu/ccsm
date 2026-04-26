@@ -47,7 +47,7 @@ export type NotifyActionRouter = (event: ActionEvent) => void;
 let bootstrapped = false;
 
 /**
- * Configure the the inlined notify module wrapper. Safe to call multiple times — only the
+ * Configure the inlined notify module wrapper. Safe to call multiple times — only the
  * first invocation actually configures; subsequent calls are no-ops so the
  * onAction callback isn't replaced mid-flight (which would orphan in-flight
  * toasts).
