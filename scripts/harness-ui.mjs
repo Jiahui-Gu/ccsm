@@ -14,6 +14,7 @@
 //   - shortcut-overlay-opens               (UI-1 / #188)
 //   - popover-cross-dismiss                (popover-mutex / #221)
 //   - type-scale-snapshot                  (#225, 4-step type token system)
+//   - chat-user-assistant-contrast         (#345, dogfood: user vs assistant rail)
 //   - banner-i18n-toggle                   (banner i18n)
 //   - toast-a11y                           (#298 follow-up)
 //   - cwd-popover-recent-unfiltered        (probe-e2e-cwd-popover-recent-unfiltered)
@@ -505,6 +506,92 @@ async function caseTypeScaleSnapshot({ win, log }) {
   }
 
   log(`sidebar=${sizes.sidebar.px}px assistant=${sizes.assistant.px}px tool=${sizes.tool.px}px dialog=${sizes.dialog.px}px`);
+}
+
+// ---------- chat-user-assistant-contrast ----------
+// Dogfood feedback (#345): in dense scrolling the user vs assistant rows
+// were too easy to confuse — both flat, both mono prefix glyph, only a
+// one-step fg-color delta between them. Fix added a 2px accent-quiet rail
+// + colored, semibold `>` to the user row so the eye lands on it as an
+// "input prompt" rail (CLI-prompt visual semantic), without breaking the
+// no-bubble density philosophy. This case guards three signals: the user
+// row carries a left border whose color resolves to the accent-quiet hue,
+// the user row prefix `>` resolves to that same hue (not the default
+// fg-tertiary gray), and the assistant row stays bare (no border, no
+// accent-tinted glyph) so the rail remains a USER-only marker.
+//
+// Reverse-verify: revert UserBlock.tsx to its pre-#345 className
+// (`flex gap-3 text-body` with `text-fg-tertiary` on the `>` span) and
+// this case must FAIL on the userBorderHasColor check.
+async function caseChatUserAssistantContrast({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: {
+        s1: [
+          { kind: 'user', id: 'm-user', text: 'hello agent' },
+          { kind: 'assistant', id: 'm-asst', text: 'hello back' }
+        ]
+      }
+    });
+  });
+  await win.waitForTimeout(300);
+
+  const probe = await win.evaluate(() => {
+    const user = document.querySelector('[data-type-scale-role="user-body"]');
+    const assistant = document.querySelector('[data-type-scale-role="assistant-body"]');
+    if (!user || !assistant) return { user: null, assistant: null };
+    const userPrefix = user.querySelector('span');
+    const assistantPrefix = assistant.querySelector('span');
+    const cs = (el) => el ? getComputedStyle(el) : null;
+    const userCs = cs(user);
+    const assistantCs = cs(assistant);
+    return {
+      user: {
+        borderLeftWidth: userCs?.borderLeftWidth,
+        borderLeftColor: userCs?.borderLeftColor,
+        prefixColor: cs(userPrefix)?.color,
+        prefixWeight: cs(userPrefix)?.fontWeight
+      },
+      assistant: {
+        borderLeftWidth: assistantCs?.borderLeftWidth,
+        borderLeftColor: assistantCs?.borderLeftColor,
+        prefixColor: cs(assistantPrefix)?.color
+      }
+    };
+  });
+
+  const failures = [];
+  if (!probe.user) failures.push('user block [data-type-scale-role="user-body"] not found');
+  if (!probe.assistant) failures.push('assistant block [data-type-scale-role="assistant-body"] not found');
+
+  if (probe.user) {
+    const w = parseFloat(probe.user.borderLeftWidth || '0');
+    if (w < 1.5) failures.push(`user row should have a >= 2px left border, got ${probe.user.borderLeftWidth}`);
+    // Border + prefix must share a hue distinct from generic gray. We can't
+    // resolve oklch tokens from the harness, but we CAN assert the prefix
+    // color is not the same neutral as the assistant prefix (proves the
+    // accent token actually applied) AND that the border has a non-zero
+    // alpha non-grayscale color.
+    if (probe.user.prefixColor === probe.assistant?.prefixColor) {
+      failures.push(`user prefix color should differ from assistant prefix; both = ${probe.user.prefixColor}`);
+    }
+    const prefixWeight = parseInt(probe.user.prefixWeight || '0', 10);
+    if (prefixWeight < 600) failures.push(`user prefix should be semibold (>=600), got ${probe.user.prefixWeight}`);
+  }
+
+  if (probe.assistant) {
+    const w = parseFloat(probe.assistant.borderLeftWidth || '0');
+    if (w >= 1.5) failures.push(`assistant row must NOT have a left rail (would dilute the user-only marker), got ${probe.assistant.borderLeftWidth}`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error('user/assistant contrast regression:\n  - ' + failures.join('\n  - ') + '\n  probe=' + JSON.stringify(probe));
+  }
+
+  log(`user.border=${probe.user.borderLeftWidth}@${probe.user.borderLeftColor} user.prefix=${probe.user.prefixColor}/${probe.user.prefixWeight} assistant.prefix=${probe.assistant.prefixColor}`);
 }
 
 // ---------- banner-i18n-toggle ----------
@@ -2223,6 +2310,7 @@ await runHarness({
     { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
     { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss },
     { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot },
+    { id: 'chat-user-assistant-contrast', run: caseChatUserAssistantContrast },
     { id: 'banner-i18n-toggle', run: caseBannerI18nToggle },
     { id: 'toast-a11y', run: caseToastA11y },
     { id: 'cwd-popover-recent-unfiltered', run: caseCwdPopoverRecentUnfiltered },

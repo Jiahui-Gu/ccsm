@@ -128,12 +128,24 @@ export function UserBlock({
   }
 
   return (
+    // Dogfood feedback (#345): user vs assistant blocks weren't visually
+    // distinct enough when scrolling — both used the same flat layout with
+    // only a one-step fg-color delta and a mono prefix glyph (`>` vs `●`)
+    // that read as roughly the same weight. To restore quick scannability
+    // without breaking the CLI-density philosophy (no chat bubbles, no
+    // strong fill colors), the user row now wears a 2px accent-quiet rail
+    // on its left edge plus a saturated, semibold `>` glyph in the same
+    // accent-quiet hue. The accent-quiet token is the low-chroma, "won't
+    // fatigue over 8h" sibling of --color-accent (see global.css), so the
+    // rail reads as "input prompt" the way a shell `$` rail reads, not as
+    // a colored callout. Body text stays at fg-secondary so the assistant's
+    // fg-primary still wins the brightness contest for the answer surface.
     <div
-      className="group relative flex gap-3 text-body"
+      className="group relative flex gap-3 pl-2 border-l-2 border-accent-quiet/60 text-body"
       data-type-scale-role="user-body"
       data-user-block-id={id}
     >
-      <span className="text-fg-tertiary select-none w-3 shrink-0 font-mono">&gt;</span>
+      <span className="text-accent-quiet select-none w-3 shrink-0 font-mono font-semibold">&gt;</span>
       <div className="min-w-0 flex-1 flex flex-col gap-1.5">
         {images && images.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
