@@ -1842,6 +1842,175 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
   }
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// CASE: new-session-default-cwd-from-frequency
+//
+// Bug repro (post-#369): in the wild, "新建 session" still produces a default
+// cwd that has nothing to do with the user's frequency-top CLI directory.
+// The user reported the picker landing on `c:/x` — a stale value that lives
+// only inside their already-open ccsm session.
+//
+// Root cause: the `createSession` cwd fallback chain still prefers
+// `groupRecentCwd` (the cwd of the most-recent existing session in the
+// target group) BEFORE `historyRecentCwds[0]` (frequency vote over the last
+// 10 CLI sessions). So if the user has any prior session in the focused
+// group whose cwd happens to be a stray throwaway dir, every "New session"
+// click in that group inherits that stray cwd — completely shadowing #369's
+// frequency-vote default the user explicitly asked for.
+//
+// Expected per user direction: frequency vote wins over both
+// `groupRecentCwd` and `recentProjects`. The CLI transcript history is the
+// ONLY "where do you actually work" signal — neither a one-off chip pick
+// nor a stray cwd inherited from a prior in-app session should override it.
+//
+// This probe plants:
+//   - 10 jsonl history fixtures with frequency-top cwd `D:/work/repo-a` (×7)
+//     and `D:/work/repo-b` (×3) — same pattern as the #369 case but using
+//     Windows-style paths to match what the user actually hit.
+//   - An existing in-app session in the focused group with a stale cwd
+//     `c:/x` (the literal value the user reported).
+//   - A persisted `recentProjects` entry of `c:/x` so even if the
+//     groupRecentCwd path didn't fire, the second-best wrong-source would.
+//
+// Then triggers `createSession()` and asserts the new session's cwd ===
+// `D:/work/repo-a` (frequency winner).
+// ──────────────────────────────────────────────────────────────────────────
+async function caseNewSessionDefaultCwdFromFrequency({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-new-session-cwd-home-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  const projectsRoot = path.join(fakeHome, '.claude', 'projects');
+  fs.mkdirSync(projectsRoot, { recursive: true });
+
+  // Frequency layout: D:/work/repo-a 7x, D:/work/repo-b 3x in last 10.
+  const fixtures = [
+    { mtime: 10, cwd: 'D:/work/repo-b' },
+    { mtime: 9,  cwd: 'D:/work/repo-a' },
+    { mtime: 8,  cwd: 'D:/work/repo-a' },
+    { mtime: 7,  cwd: 'D:/work/repo-a' },
+    { mtime: 6,  cwd: 'D:/work/repo-b' },
+    { mtime: 5,  cwd: 'D:/work/repo-a' },
+    { mtime: 4,  cwd: 'D:/work/repo-a' },
+    { mtime: 3,  cwd: 'D:/work/repo-a' },
+    { mtime: 2,  cwd: 'D:/work/repo-b' },
+    { mtime: 1,  cwd: 'D:/work/repo-a' },
+  ];
+  const baseTime = Date.now() - 10 * 60_000;
+  for (let i = 0; i < fixtures.length; i++) {
+    const f = fixtures[i];
+    const sid = `00000000-0000-4000-8000-00000000010${(i + 1).toString(16)}`;
+    const projDir = path.join(projectsRoot, projectKeyFromCwd(f.cwd));
+    fs.mkdirSync(projDir, { recursive: true });
+    const filePath = path.join(projDir, `${sid}.jsonl`);
+    const ts = new Date(baseTime + f.mtime * 1000).toISOString();
+    const frames = [
+      {
+        type: 'user', parentUuid: null, isSidechain: false, uuid: `nu-${i}`,
+        cwd: f.cwd, sessionId: sid, timestamp: ts,
+        message: { role: 'user', content: [{ type: 'text', text: `probe ${i}` }] }
+      },
+      {
+        type: 'assistant', session_id: sid, parentUuid: `nu-${i}`, isSidechain: false,
+        uuid: `na-${i}`, cwd: f.cwd, timestamp: ts,
+        message: {
+          id: `nmsg-${i}`, role: 'assistant', model: 'claude-opus-4-7[1m]',
+          content: [{ type: 'text', text: `reply ${i}` }]
+        }
+      }
+    ];
+    fs.writeFileSync(filePath, frames.map((fr) => JSON.stringify(fr)).join('\n') + '\n');
+    const wantMs = baseTime + f.mtime * 1000;
+    fs.utimesSync(filePath, wantMs / 1000, wantMs / 1000);
+  }
+  log(`planted 10 fixtures: D:/work/repo-a:7 D:/work/repo-b:3 under ${projectsRoot}`);
+
+  const ud = isolatedUserData('ccsm-harness-new-session-cwd-userdata');
+  registerDispose(ud.cleanup);
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+
+    // Wait for the boot-time history scan IPC to populate the renderer store.
+    await win.waitForFunction(
+      () => {
+        const s = window.__ccsmStore?.getState?.();
+        return !!s && Array.isArray(s.historyRecentCwds) && s.historyRecentCwds.length > 0;
+      },
+      null,
+      { timeout: 15_000 }
+    );
+
+    // Sanity-check that the IPC ranked frequency-top correctly. If THIS
+    // fails, the bug is in the scanner / deriveRecentCwds, not in the
+    // store fallback chain.
+    const seeded = await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return { historyRecentCwds: s.historyRecentCwds };
+    });
+    log(`seeded historyRecentCwds[0]=${seeded.historyRecentCwds[0]}`);
+    if (seeded.historyRecentCwds[0] !== 'D:/work/repo-a') {
+      throw new Error(`scanner regression: historyRecentCwds[0] should be D:/work/repo-a; got ${JSON.stringify(seeded.historyRecentCwds)}`);
+    }
+
+    // Now plant the bug-repro state in the store:
+    //  1. an existing session in the focused group with cwd 'c:/x'
+    //     (mimics user's stale prior session that's leaking via groupRecentCwd)
+    //  2. recentProjects[0].path === 'c:/x' (mimics a stale chip pick)
+    //  3. focusedGroupId points to that group so createSession targets it
+    //
+    // The freq-vote winner is `D:/work/repo-a`; assertion below requires the
+    // new session to land on that, NOT on `c:/x`.
+    const created = await win.evaluate(() => {
+      const st = window.__ccsmStore;
+      st.setState({
+        sessions: [{
+          id: 's-stale',
+          name: 'stale prior',
+          state: 'idle',
+          cwd: 'c:/x',
+          model: 'claude-opus-4-7[1m]',
+          groupId: 'g-default',
+          agentType: 'claude-code',
+        }],
+        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        activeId: 's-stale',
+        focusedGroupId: 'g-default',
+        model: '',
+        recentProjects: [{ id: 'p-stale', name: 'x', path: 'c:/x' }],
+      });
+      st.getState().createSession();
+      const s = st.getState();
+      // createSession prepends, so the new session is index 0; the stale
+      // one is index 1.
+      const newSession = s.sessions[0];
+      return { cwd: newSession?.cwd, allCwds: s.sessions.map(x => x.cwd) };
+    });
+    log(`createSession() produced cwd=${created.cwd} (all session cwds: ${JSON.stringify(created.allCwds)})`);
+
+    if (created.cwd !== 'D:/work/repo-a') {
+      throw new Error(`new-session-default-cwd-from-frequency: new session cwd should be the frequency-top D:/work/repo-a; got ${created.cwd}. The stale 'c:/x' from groupRecentCwd / recentProjects shadowed the frequency vote — fix createSession's fallback chain so historyRecentCwds wins.`);
+    }
+    log(`PASS — new session cwd derived from frequency vote, not from stale groupRecentCwd/recentProjects`);
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
 
 await runHarness({
   name: 'restore',
@@ -1866,6 +2035,12 @@ await runHarness({
     // task#293: default cwd/model on a fresh session derive from frequency
     // over the last 10 CLI sessions. Pre-launch HOME sandbox + 10 jsonl
     // fixtures with controlled cwd/model distribution.
-    { id: 'default-cwd-model-from-recent-history', skipLaunch: true, run: caseDefaultCwdModelFromRecentHistory }
+    { id: 'default-cwd-model-from-recent-history', skipLaunch: true, run: caseDefaultCwdModelFromRecentHistory },
+    // dogfood-reported: post-#369, stale `groupRecentCwd` / `recentProjects`
+    // were still shadowing the frequency-vote default (user hit `c:/x` on
+    // every "New session"). This case proves the new-session cwd resolves
+    // to the frequency-top history cwd even when both stale sources are
+    // present in the store.
+    { id: 'new-session-default-cwd-from-frequency', skipLaunch: true, run: caseNewSessionDefaultCwdFromFrequency }
   ]
 });
