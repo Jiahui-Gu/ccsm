@@ -1900,9 +1900,9 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (idx < 0) return s;
       const truncated = prev.slice(0, idx);
       // Drop every flag that pins this session to the now-orphaned claude.exe
-      // conversation: started, running, interrupted, queue, resumeSessionId.
-      // Stats are intentionally preserved — they're the user's lifetime spend
-      // for this session, not bound to a single conversation turn.
+      // conversation: started, running, interrupted, queue. Stats are
+      // intentionally preserved — they're the user's lifetime spend for this
+      // session, not bound to a single conversation turn.
       const nextStarted = { ...s.startedSessions };
       delete nextStarted[sessionId];
       const nextRunning = { ...s.runningSessions };
@@ -1911,13 +1911,28 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete nextInterrupted[sessionId];
       const nextQueues = { ...s.messageQueues };
       delete nextQueues[sessionId];
+      // Bug #288 fix: pin `resumeSessionId` to the existing on-disk JSONL key
+      // (which is `session.resumeSessionId || session.id` — see `sidOnDisk`
+      // below) BEFORE the next `agentStart`. Without this the next start
+      // path in `src/agent/startSession.ts` passes `sessionId: <ccsm-uuid>`
+      // because `resumeSessionId` is missing — and the bundled CLI rejects
+      // that with `"Error: Session ID <uuid> is already in use."` (exit 1)
+      // because the JSONL file from the prior conversation still exists.
+      // Reproduced in `scripts/harness-real-cli.mjs`
+      // `truncate-from-here-then-resend-real-cli`. Switching to `resume`
+      // re-uses the existing JSONL instead of fighting it.
+      //
+      // Caveat: the on-disk JSONL is NOT trimmed to the truncation point
+      // (ccsm's design — see `loadMessages` and the truncation marker), so
+      // the resumed CLI conversation sees the full pre-truncate history.
+      // The renderer still hides the truncated tail via the marker, and
+      // sending a new turn appends to the JSONL. Trimming the JSONL itself
+      // is out of scope for this fix; tracked as a follow-up.
       const nextSessions = s.sessions.map((x) => {
         if (x.id !== sessionId) return x;
-        const cleaned = x.resumeSessionId === undefined ? x : (() => {
-          const { resumeSessionId: _drop, ...rest } = x;
-          return rest as typeof x;
-        })();
-        return cleaned.state === 'idle' ? cleaned : { ...cleaned, state: 'idle' as const };
+        const sidOnDisk = x.resumeSessionId || x.id;
+        const updated = x.resumeSessionId === sidOnDisk ? x : { ...x, resumeSessionId: sidOnDisk };
+        return updated.state === 'idle' ? updated : { ...updated, state: 'idle' as const };
       });
       return {
         sessions: nextSessions,
