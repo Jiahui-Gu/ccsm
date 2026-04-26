@@ -67,7 +67,6 @@ import { resolveCwd } from './agent/sessions';
 import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
-  deriveRecentCwds,
   type ScannableSession,
 } from './import-scanner';
 import { loadImportableHistory } from './import-history';
@@ -130,10 +129,12 @@ const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 // results to renderers, refreshing in the background on each request so
 // newly-recorded sessions show up without a manual reload.
 //
-// `recentCwds` is derived from the same scan and seeds the new-session
-// default cwd (via the renderer store) — same goal, no second IPC.
+// `recentCwds` is now derived from the ccsm-owned user-cwds list (see
+// `app:userCwds:get`/`app:userCwds:push` below), NOT from CLI JSONL scans —
+// the user's CLI history is *not* their ccsm working-set. Default cwd is
+// always `os.homedir()`; the recent list grows only when the user explicitly
+// picks a non-default cwd inside ccsm.
 let importableCache: ScannableSession[] = [];
-let recentCwdsCache: string[] = [];
 let importablePending: Promise<ScannableSession[]> | null = null;
 
 function refreshImportableCache(): Promise<ScannableSession[]> {
@@ -141,7 +142,6 @@ function refreshImportableCache(): Promise<ScannableSession[]> {
   importablePending = scanImportableSessions()
     .then((rows) => {
       importableCache = rows;
-      recentCwdsCache = deriveRecentCwds(rows);
       return rows;
     })
     .catch((err) => {
@@ -165,12 +165,70 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
   return refreshImportableCache();
 }
 
-async function getRecentCwds(): Promise<string[]> {
-  if (recentCwdsCache.length > 0 || importableCache.length > 0) {
-    return recentCwdsCache;
+// ───────────── user-owned cwd list (ccsm's own LRU) ─────────────
+//
+// The new-session default cwd is always `os.homedir()`. The recent list shown
+// in the StatusBar cwd popover is a user-owned LRU that only the user can
+// extend (by explicitly picking a non-default cwd). Persisted in the
+// `app_state` SQLite table under key `userCwds` as a JSON string list.
+//
+// Reads return `[homedir()]` when the list is empty so the popover always has
+// at least the home entry. Writes are LRU (newest first) with case-insensitive
+// path-normalised dedupe and a hard cap of 20 entries.
+
+const USER_CWDS_KEY = 'userCwds';
+const USER_CWDS_MAX = 20;
+
+function normalizeCwd(p: string): string {
+  // Trim trailing slashes/backslashes; leave the rest of the path raw so we
+  // don't accidentally break Windows drive-letter semantics. Comparison below
+  // also lower-cases for dedupe on case-insensitive filesystems.
+  return p.replace(/[\\/]+$/, '');
+}
+
+function readUserCwds(): string[] {
+  try {
+    const raw = loadState(USER_CWDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((p): p is string => typeof p === 'string' && !!p);
+  } catch {
+    return [];
   }
-  await refreshImportableCache();
-  return recentCwdsCache;
+}
+
+function writeUserCwds(list: string[]): void {
+  try {
+    saveState(USER_CWDS_KEY, JSON.stringify(list.slice(0, USER_CWDS_MAX)));
+  } catch (err) {
+    console.warn('[main] writeUserCwds failed', err);
+  }
+}
+
+function getUserCwds(): string[] {
+  const list = readUserCwds();
+  const home = os.homedir();
+  // Spec: "永远至少有 home" — home must always be present in the recent list,
+  // even after the user has explicitly picked other cwds. We append home at
+  // the tail if it isn't already in the user list, so the home entry stays
+  // available as a fallback target without bumping it back to the head.
+  if (list.length === 0) return [home];
+  const lower = home.toLowerCase();
+  if (list.some((p) => p.toLowerCase() === lower)) return list;
+  return [...list, home];
+}
+
+function pushUserCwd(p: string): string[] {
+  const norm = normalizeCwd(p);
+  if (!norm) return readUserCwds();
+  const cur = readUserCwds();
+  // Case-insensitive dedupe (Windows + macOS default fs).
+  const lower = norm.toLowerCase();
+  const without = cur.filter((x) => x.toLowerCase() !== lower);
+  const next = [norm, ...without].slice(0, USER_CWDS_MAX);
+  writeUserCwds(next);
+  return next;
 }
 
 // We don't want a visible File/Edit/View menu bar — CCSM is a single-
@@ -1068,7 +1126,17 @@ app.whenReady().then(() => {
   );
 
   ipcMain.handle('import:scan', () => getImportableSessions());
-  ipcMain.handle('import:recentCwds', () => getRecentCwds());
+  // Recent cwd list shown in the StatusBar cwd popover. Sourced from the
+  // ccsm-owned LRU (NOT from CLI JSONL scans). Always includes home as a
+  // fallback so the list is never empty.
+  ipcMain.handle('import:recentCwds', () => getUserCwds());
+  ipcMain.handle('app:userCwds:get', () => getUserCwds());
+  ipcMain.handle('app:userCwds:push', (e, p: unknown) => {
+    if (!fromMainFrame(e)) return getUserCwds();
+    if (typeof p !== 'string') return getUserCwds();
+    return pushUserCwd(p);
+  });
+  ipcMain.handle('app:userHome', () => os.homedir());
   // The new-session default model comes straight from the user's CLI
   // settings.json — same source the CLI itself reads for `--model`. Replaces
   // the old `import:topModel` frequency-vote IPC (PR #369), which produced
@@ -1337,10 +1405,9 @@ app.whenReady().then(() => {
   createWindow();
   ensureTray();
 
-  // Eager-load CLI transcripts so ImportDialog and the new-session cwd
-  // default have data the moment the user opens them. Fire-and-forget;
-  // refreshImportableCache logs its own errors and stores [] on failure so
-  // getRecentCwds still resolves.
+  // Eager-load CLI transcripts so ImportDialog has data the moment the user
+  // opens it. Fire-and-forget; refreshImportableCache logs its own errors and
+  // stores [] on failure so the dialog gracefully degrades.
   void refreshImportableCache();
 });
 

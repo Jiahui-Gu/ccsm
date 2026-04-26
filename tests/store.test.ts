@@ -61,22 +61,22 @@ describe('store: createSession', () => {
     expect(useStore.getState().sessions[1].groupId).toBe(gid);
   });
 
-  it('defaults cwd to most-recent project when caller passes null', () => {
-    useStore.getState().pushRecentProject('C:/Users/me/projects/alpha');
+  it('defaults cwd to userHome when caller passes null', () => {
+    useStore.setState({ userHome: 'C:/Users/me' });
     useStore.getState().createSession(null);
-    expect(useStore.getState().sessions[0].cwd).toBe('C:/Users/me/projects/alpha');
+    expect(useStore.getState().sessions[0].cwd).toBe('C:/Users/me');
   });
 
-  it('falls back to empty cwd (chip renders `(none)` placeholder) when recentProjects + historyRecentCwds are both empty', () => {
-    // task328: previously fell back to '~'. Per T4.b, an unset cwd is now an
-    // explicit empty string so the cwd chip renders the `(none)` placeholder
-    // and the popover does NOT auto-open — the user picks deliberately.
+  it('falls back to empty cwd (chip renders `(none)` placeholder) when userHome is unset', () => {
+    // Boot IPC pending or unavailable — userHome is '' so default cwd is
+    // '' and the chip renders the `(none)` placeholder. The user repicks
+    // via the StatusBar cwd popover.
     useStore.getState().createSession(null);
     expect(useStore.getState().sessions[0].cwd).toBe('');
   });
 
-  it('explicit cwd argument wins over recentProjects default', () => {
-    useStore.getState().pushRecentProject('C:/Users/me/projects/alpha');
+  it('explicit cwd argument wins over userHome default', () => {
+    useStore.setState({ userHome: 'C:/Users/me' });
     useStore.getState().createSession('C:/other/path');
     expect(useStore.getState().sessions[0].cwd).toBe('C:/other/path');
   });
@@ -1419,84 +1419,46 @@ describe('store: openPopover / closePopover (global popover mutex)', () => {
   });
 });
 
-// task328: per-group cwd default — when the user creates a new session in a
-// group, prefill the chip with the most-recent prior cwd from that group.
-// Empty group → fall through to the existing global default chain.
-describe('store: createSession — per-group cwd default (task328)', () => {
-  it('prefills new session cwd with the most-recent session cwd in the same group', () => {
-    const gid = useStore.getState().createGroup('Repo A');
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession('/repo/a');
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession('/repo/a/sub');
-    // Newest-first ordering: index 0 should be the latest, index 1 the
-    // earlier '/repo/a'. Now create a third session in the same group with
-    // no explicit cwd — it should pick up '/repo/a/sub'.
-    useStore.getState().focusGroup(gid);
+// task#328 / task#293 / task#369 — REMOVED.
+// The previous "per-group cwd default" + "frequency vote" + "recentProjects
+// fallback" behaviors are all gone (PR fix-default-cwd-home-and-model-...).
+// New spec: default cwd is ALWAYS `userHome` regardless of CLI history,
+// recentProjects, or sibling sessions in the same group. Tests for those
+// behaviors have been deleted; the new e2e cases live in scripts/harness-
+// restore.mjs (`new-session-default-cwd-is-home`,
+// `cwd-popover-recent-only-home-on-fresh`, `cwd-popover-lru-after-user-pick`).
+describe('store: createSession — default cwd is always home', () => {
+  it('falls through to "" when userHome is unset (boot IPC pending or unavailable)', () => {
     useStore.getState().createSession(null);
-    const created = useStore.getState().sessions[0];
-    expect(created.groupId).toBe(gid);
-    expect(created.cwd).toBe('/repo/a/sub');
+    expect(useStore.getState().sessions[0].cwd).toBe('');
   });
 
-  it('does not bleed cwd across groups', () => {
-    const gA = useStore.getState().createGroup('A');
-    const gB = useStore.getState().createGroup('B');
-    useStore.getState().focusGroup(gA);
-    useStore.getState().createSession('/repo/a');
-    useStore.getState().focusGroup(gB);
+  it('uses userHome as the new-session default when seeded', () => {
+    useStore.setState({ userHome: '/Users/me' });
     useStore.getState().createSession(null);
-    // Group B has no prior sessions and no recentProjects — should fall
-    // through to '' (chip renders `(none)` placeholder), NOT '/repo/a'.
-    const created = useStore.getState().sessions[0];
-    expect(created.groupId).toBe(gB);
-    expect(created.cwd).toBe('');
+    expect(useStore.getState().sessions[0].cwd).toBe('/Users/me');
   });
 
-  it('explicit cwd argument still wins over per-group default', () => {
-    const gid = useStore.getState().createGroup('A');
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession('/repo/a');
-    useStore.getState().focusGroup(gid);
+  it('explicit cwd argument still wins over userHome', () => {
+    useStore.setState({ userHome: '/Users/me' });
     useStore.getState().createSession('/explicit/path');
     expect(useStore.getState().sessions[0].cwd).toBe('/explicit/path');
   });
 
-  it('recentProjects wins over per-group default (frequency-vote priority)', () => {
-    // task#293 follow-up: stale `groupRecentCwd` shadowing the
-    // user's actual working directory was a real dogfood bug — a single
-    // forgotten session in the focused group with cwd 'c:/x' was enough
-    // to make every "New session" land on 'c:/x'. The new priority puts
-    // `historyRecentCwds[0]` (frequency vote) and `recentProjects[0]?.path`
-    // BEFORE `groupRecentCwd` for exactly this reason.
-    useStore.getState().pushRecentProject('/recent/proj');
-    const gid = useStore.getState().createGroup('Fresh');
+  it('does NOT inherit cwd from prior sessions in the same group', () => {
+    useStore.setState({ userHome: '/Users/me' });
+    const gid = useStore.getState().createGroup('Repo A');
+    useStore.getState().focusGroup(gid);
+    useStore.getState().createSession('/repo/a');
     useStore.getState().focusGroup(gid);
     useStore.getState().createSession(null);
-    // No prior sessions in 'Fresh' → recentProjects[0] wins.
-    expect(useStore.getState().sessions[0].cwd).toBe('/recent/proj');
-    // Now create a second session in the same group; per-group default
-    // STILL loses to recentProjects (priority is recentProjects ahead of
-    // groupRecentCwd, since groupRecentCwd is the weakest of the three).
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession('/repo/inside-group');
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession(null);
-    expect(useStore.getState().sessions[0].cwd).toBe('/recent/proj');
+    expect(useStore.getState().sessions[0].cwd).toBe('/Users/me');
   });
 
-  it('skips sessions with empty cwd when scanning the group', () => {
-    const gid = useStore.getState().createGroup('Mixed');
-    useStore.getState().focusGroup(gid);
-    useStore.getState().createSession('/repo/has-cwd');
-    useStore.getState().focusGroup(gid);
-    // Force an empty-cwd session into the group — simulates a previous
-    // `(none)`-state session.
-    useStore.getState().createSession('');
-    useStore.getState().focusGroup(gid);
+  it('does NOT consult recentProjects for new-session default', () => {
+    useStore.setState({ userHome: '/Users/me' });
+    useStore.getState().pushRecentProject('/recent/proj');
     useStore.getState().createSession(null);
-    // The most-recent (index 0) session has empty cwd; we should skip it
-    // and pick up '/repo/has-cwd'.
-    expect(useStore.getState().sessions[0].cwd).toBe('/repo/has-cwd');
+    expect(useStore.getState().sessions[0].cwd).toBe('/Users/me');
   });
 });
