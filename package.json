@@ -24,7 +24,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "probe:e2e": "npm run build && node scripts/run-all-e2e.mjs",
-    "probe:jsonl-id": "node scripts/probe-e2e-jsonl-filename-matches-session.mjs",
     "make": "npm run build && electron-builder --publish never",
     "make:win": "npm run build && electron-builder --win --publish never",
     "make:mac": "npm run build && electron-builder --mac --publish never",
