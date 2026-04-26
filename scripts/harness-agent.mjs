@@ -32,6 +32,12 @@
 //   - sdk-abort-on-disposed
 //   - user-block-hover-menu
 //
+//   Absorbed (PR: harness-agent absorbs 12 standalone probes):
+//   - empty-group-new-session, interrupt-banner, tool-journey-render
+//   - tool-call-dogfood, input-queue, send, switch
+//   - delete-session-kills-process, default-cwd, streaming-partial-frames
+//   - notify-integration, close-window-aborts-sessions
+//
 // Add new AGENT cases here by:
 //   1. Wrap the case body in a named function `case<Name>({ win, log, ... })`.
 //   2. Use `log()` instead of `console.log()` for the case-id prefix.
@@ -44,6 +50,7 @@
 // Run: `node scripts/harness-agent.mjs`
 // Run one case: `node scripts/harness-agent.mjs --only=streaming`
 
+import { randomUUID } from 'node:crypto';
 import { runHarness } from './probe-helpers/harness-runner.mjs';
 
 // ---------- diagnostic-banner (F1) ----------
@@ -2186,6 +2193,1472 @@ async function caseRequiresClaudeBinSkip({ log }) {
   log('claude binary detected; trivial pass (real probe would exec it here)');
 }
 
+// ============================================================================
+// Absorbed probes (PR: harness-agent absorbs 12 standalone probes).
+// Each case below was a `scripts/probe-e2e-<name>.mjs` file. The original
+// files are deleted in the same PR; their semantics are preserved here.
+// ============================================================================
+
+// ---------- empty-group-new-session (was probe-e2e-empty-group-new-session) ----------
+// Bug 1 (PR #149): clicking the sidebar's "New Session" button when there's
+// no usable (kind='normal') group must atomically synthesize a default
+// normal group AND insert a session into it, then activate it.
+async function caseEmptyGroupNewSession({ win, log }) {
+  async function clickSidebarNewSession() {
+    const btn = win.locator('aside').getByRole('button', { name: /^New Session$/ });
+    await btn.first().waitFor({ state: 'visible', timeout: 10000 });
+    await btn.first().click();
+  }
+  async function readState() {
+    return await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return {
+        groups: s.groups.map((g) => ({ id: g.id, name: g.name, kind: g.kind })),
+        sessions: s.sessions.map((x) => ({ id: x.id, groupId: x.groupId, name: x.name })),
+        activeId: s.activeId
+      };
+    });
+  }
+  async function expectComposerVisible() {
+    const composer = win.getByPlaceholder(/Ask anything…|Reply…/);
+    try {
+      await composer.first().waitFor({ state: 'visible', timeout: 10000 });
+    } catch { return false; }
+    return true;
+  }
+
+  // Scenario A: zero groups
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [], sessions: [], activeId: undefined, tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(150);
+  await clickSidebarNewSession();
+  await win.waitForFunction(
+    () => {
+      const s = window.__ccsmStore.getState();
+      return s.groups.length === 1 && s.sessions.length === 1 && !!s.activeId;
+    }, null, { timeout: 10000 }
+  );
+  {
+    const st = await readState();
+    if (st.groups.length !== 1) throw new Error(`A: expected 1 group, got ${st.groups.length}`);
+    const g = st.groups[0];
+    if (g.kind !== 'normal') throw new Error(`A: synthesized group should be kind=normal, got ${g.kind}`);
+    if (g.name !== 'Sessions') throw new Error(`A: synthesized group name should be "Sessions", got "${g.name}"`);
+    if (st.sessions.length !== 1) throw new Error(`A: expected 1 session, got ${st.sessions.length}`);
+    const s = st.sessions[0];
+    if (s.groupId !== g.id) throw new Error(`A: session.groupId=${s.groupId} should equal new group id ${g.id}`);
+    if (st.activeId !== s.id) throw new Error(`A: activeId=${st.activeId} should equal new session id ${s.id}`);
+    if (!(await expectComposerVisible())) throw new Error('A: composer not visible after createSession');
+  }
+
+  // Scenario B: only archived groups
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g-old', name: 'Old', collapsed: false, kind: 'archive' }],
+      sessions: [], activeId: undefined, tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(150);
+  await clickSidebarNewSession();
+  await win.waitForFunction(
+    () => {
+      const s = window.__ccsmStore.getState();
+      return s.groups.length === 2 && s.sessions.length === 1 && !!s.activeId;
+    }, null, { timeout: 10000 }
+  );
+  {
+    const st = await readState();
+    if (st.groups.length !== 2) throw new Error(`B: expected 2 groups, got ${st.groups.length}`);
+    const old = st.groups.find((g) => g.id === 'g-old');
+    if (!old) throw new Error('B: original archived group "g-old" was lost');
+    if (old.kind !== 'archive') throw new Error(`B: original group kind mutated to ${old.kind}`);
+    const fresh = st.groups.find((g) => g.id !== 'g-old');
+    if (!fresh || fresh.kind !== 'normal') throw new Error(`B: expected new normal group beside archive, got ${JSON.stringify(fresh)}`);
+    if (fresh.name !== 'Sessions') throw new Error(`B: synthesized group name should be "Sessions", got "${fresh.name}"`);
+    if (st.sessions.length !== 1) throw new Error(`B: expected 1 session, got ${st.sessions.length}`);
+    const s = st.sessions[0];
+    if (s.groupId !== fresh.id) throw new Error(`B: session should belong to new normal group ${fresh.id}, got ${s.groupId}`);
+    if (st.activeId !== s.id) throw new Error(`B: activeId=${st.activeId} should equal new session id ${s.id}`);
+    if (!(await expectComposerVisible())) throw new Error('B: composer not visible after createSession');
+  }
+  log('A: zero groups → 1 normal group + 1 session; B: archive preserved + new normal group + session');
+}
+
+// ---------- interrupt-banner (was probe-e2e-interrupt-banner) ----------
+// Bug 1: result{error_during_execution} after Stop must render as neutral
+// "Interrupted" status, not an ErrorBlock. Bug 2: banner/empty-state/error
+// text are user-selectable.
+async function caseInterruptBanner({ win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    st.createSession('~/interrupt-probe');
+    return window.__ccsmStore.getState().activeId;
+  });
+  if (!sessionId) throw new Error('no active session id after createSession');
+
+  await win.waitForFunction(
+    () => Array.from(document.querySelectorAll('div')).some((d) => d.textContent === 'Ready when you are.'),
+    null, { timeout: 5000 }
+  ).catch(() => { throw new Error('EmptyState "Ready when you are." not rendered'); });
+  const emptyStateSelectable = await win.evaluate(() => {
+    const el = Array.from(document.querySelectorAll('div')).find((d) => d.textContent === 'Ready when you are.');
+    if (!el) return { found: false };
+    return { found: true, userSelect: getComputedStyle(el).userSelect };
+  });
+  if (!emptyStateSelectable.found) throw new Error('EmptyState not rendered');
+  if (emptyStateSelectable.userSelect === 'none') throw new Error(`EmptyState user-select is 'none'`);
+
+  await win.evaluate((id) => {
+    const st = window.__ccsmStore.getState();
+    st.setRunning(id, true);
+    st.appendBlocks(id, [
+      { kind: 'user', id: 'u-probe', text: 'count slowly from 1 to 100' },
+      { kind: 'assistant', id: 'a-probe', text: '1\n2\n3\n' }
+    ]);
+  }, sessionId);
+
+  const statusBlock = await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    st.markInterrupted(sid);
+    const interrupted = st.consumeInterrupted(sid);
+    if (!interrupted) return { ok: false, reason: 'flag not consumed' };
+    st.appendBlocks(sid, [{ kind: 'status', id: 'res-probe', tone: 'info', title: 'Interrupted' }]);
+    st.setRunning(sid, false);
+    return { ok: true };
+  }, sessionId);
+  if (!statusBlock.ok) throw new Error(`interrupt flag not consumed: ${statusBlock.reason}`);
+
+  await win.waitForFunction(
+    () => Array.from(document.querySelectorAll('[role="status"]')).some((n) => n.textContent?.includes('Interrupted')),
+    null, { timeout: 5000 }
+  ).catch(() => { throw new Error('Interrupted banner not rendered'); });
+  const banner = await win.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll('[role="status"]'));
+    const el = nodes.find((n) => n.textContent?.includes('Interrupted'));
+    if (!el) return { found: false };
+    return {
+      found: true, text: el.textContent, userSelect: getComputedStyle(el).userSelect,
+      hasAlert: !!el.closest('[role="alert"]')
+    };
+  });
+  if (!banner.found) throw new Error('Interrupted banner not rendered');
+  if (banner.hasAlert) throw new Error('Interrupted banner is inside role="alert" — should be neutral');
+  if (banner.userSelect === 'none') throw new Error(`Interrupted banner user-select is 'none'`);
+  if (banner.text?.toLowerCase().includes('error_during_execution'))
+    throw new Error('banner text leaked "error_during_execution"');
+
+  await win.evaluate((sid) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'error', id: 'err-probe', text: 'Genuine failure details' }]);
+  }, sessionId);
+  await win.waitForSelector('[role="alert"]', { timeout: 5000 });
+  const errorBlock = await win.evaluate(() => {
+    const el = document.querySelector('[role="alert"]');
+    if (!el) return { found: false };
+    return { found: true, text: el.textContent, userSelect: getComputedStyle(el).userSelect };
+  });
+  if (!errorBlock.found) throw new Error('ErrorBlock not rendered');
+  if (errorBlock.userSelect === 'none') throw new Error(`ErrorBlock user-select is 'none'`);
+  if (!errorBlock.text?.includes('Genuine failure details')) throw new Error('ErrorBlock missing expected text');
+
+  const statusBar = await win.evaluate(() => {
+    const el = document.querySelector('.h-6.font-mono');
+    if (!el) return { found: false };
+    return { found: true, userSelect: getComputedStyle(el).userSelect };
+  });
+  if (statusBar.found && statusBar.userSelect === 'none') throw new Error(`StatusBar user-select still 'none'`);
+  log('EmptyState/Interrupted/ErrorBlock all selectable; interrupt → neutral status (no ErrorBlock)');
+}
+
+// ---------- tool-journey-render (was probe-e2e-tool-journey-render) ----------
+// Pure-store journey suite: toggle persistence + ANSI + truncation + tool error
+// styling + multi-tool independence + per-file diff chrome + cancel IPC + elapsed counter pause.
+async function caseToolJourneyRender({ app, win, log }) {
+  const failures = [];
+  function record(name, pass, observed = '') {
+    const tag = pass ? '[OK]' : '[XX]';
+    log(`  ${tag} ${name}${observed ? ' — ' + observed : ''}`);
+    if (!pass) failures.push(name);
+  }
+  async function seed(blocks) {
+    await win.evaluate(({ blocks }) => {
+      const store = window.__ccsmStore;
+      store.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{
+          id: 's-tool', name: 'tool-journey', state: 'idle', cwd: 'C:/x',
+          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+        }],
+        activeId: 's-tool',
+        messagesBySession: { 's-tool': blocks },
+        startedSessions: { 's-tool': true },
+        runningSessions: {}, messageQueues: {},
+      });
+    }, { blocks });
+    await win.waitForTimeout(250);
+  }
+
+  // J1: toggle persists across new frames
+  {
+    await seed([
+      { kind: 'user', id: 'u1', text: 'run a command' },
+      { kind: 'tool', id: 't1', toolUseId: 'tu_1', name: 'Bash',
+        brief: 'echo hi', expanded: false, result: 'hi-result-MARKER', isError: false },
+    ]);
+    const toolBtns0 = await win.locator('main button[aria-expanded]').all();
+    if (toolBtns0.length === 0) {
+      record('J1 toggle persists across new frames', false, 'no button[aria-expanded] in <main>');
+    } else {
+      const initialExpanded = await toolBtns0[0].getAttribute('aria-expanded');
+      const btn = toolBtns0[0];
+      await btn.click();
+      await win.waitForTimeout(150);
+      const afterClick = await btn.getAttribute('aria-expanded');
+      const markerVisibleAfterClick = await win.evaluate(() => document.body.innerText.includes('hi-result-MARKER'));
+      await win.evaluate(() => {
+        window.__ccsmStore.getState().appendBlocks('s-tool', [{ kind: 'assistant', id: 'a-new', text: 'new turn after toggle' }]);
+      });
+      await win.waitForTimeout(250);
+      const btnsAfter = await win.locator('main button[aria-expanded]').all();
+      const afterFrame = btnsAfter.length > 0 ? await btnsAfter[0].getAttribute('aria-expanded') : '<lost>';
+      const markerVisibleAfterFrame = await win.evaluate(() => document.body.innerText.includes('hi-result-MARKER'));
+      const pass = (afterClick !== initialExpanded) && (afterFrame === afterClick) && (markerVisibleAfterFrame === markerVisibleAfterClick);
+      record('J1 toggle persists across new frames', pass,
+        `init=${initialExpanded} click=${afterClick} frame=${afterFrame}`);
+    }
+  }
+
+  // J2: ANSI color preserved
+  {
+    const ansi = '\x1b[31mERROR_TOKEN\x1b[0m and_then_plain';
+    await seed([{ kind: 'tool', id: 't2', toolUseId: 'tu_2', name: 'Bash', brief: 'fail', expanded: true, result: ansi, isError: false }]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(200);
+    const probe = await win.evaluate(() => {
+      const text = document.body.innerText;
+      const literalSeq = text.includes('\x1b[31m') || text.includes('[31m');
+      let errColor = null, plainColor = null;
+      const all = document.querySelectorAll('main *');
+      for (const el of all) {
+        if (!errColor && el.textContent === 'ERROR_TOKEN') errColor = getComputedStyle(el).color;
+        if (!plainColor && el.textContent && el.textContent.trim() === 'and_then_plain') plainColor = getComputedStyle(el).color;
+      }
+      return { literalSeq, errColor, plainColor };
+    });
+    const pass = probe.literalSeq === false && probe.errColor && probe.plainColor && probe.errColor !== probe.plainColor;
+    record('J2 ANSI color preserved', pass, JSON.stringify(probe));
+  }
+
+  // J3: ANSI cursor-move scrubbing
+  {
+    const progress = 'progress 10%\n\x1b[1A\x1b[Kprogress 50%\n\x1b[1A\x1b[Kprogress 100%';
+    await seed([{ kind: 'tool', id: 't3', toolUseId: 'tu_3', name: 'Bash', brief: 'install', expanded: true, result: progress, isError: false }]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(200);
+    const probe = await win.evaluate(() => {
+      const text = document.body.innerText;
+      return {
+        hasLiteralEsc: text.includes('\x1b[') || text.includes('\\x1b[') || /\[1A|\[K/.test(text),
+        progress100Visible: text.includes('progress 100%'),
+      };
+    });
+    record('J3 ANSI cursor-move scrubbed', !probe.hasLiteralEsc && probe.progress100Visible, JSON.stringify(probe));
+  }
+
+  // J4 a-d: long output truncation/expand
+  {
+    const LINES = 50_000;
+    const big = Array.from({ length: LINES }, (_, i) => `line_${i.toString().padStart(6, '0')}_${'x'.repeat(80)}`).join('\n');
+    await seed([{ kind: 'tool', id: 't4', toolUseId: 'tu_4', name: 'Read', brief: 'huge.log', expanded: true, result: big, isError: false }]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(400);
+
+    const collapsedProbe = await win.evaluate(({ HEAD, TAIL, LINES }) => {
+      const head = document.querySelector('[data-testid="tool-output-collapsed-head"]');
+      const tail = document.querySelector('[data-testid="tool-output-collapsed-tail"]');
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      const copyBtn = document.querySelector('[data-testid="tool-output-copy"]');
+      const saveBtn = document.querySelector('[data-testid="tool-output-save"]');
+      const expandBtn = document.querySelector('[data-testid="tool-output-expand"]');
+      const all = document.querySelectorAll('.flex-1.overflow-y-auto');
+      const stream = all[all.length - 1];
+      const matches = stream ? stream.innerText.match(/line_(\d{6})/g) ?? [] : [];
+      const indices = matches.map((m) => parseInt(m.slice(5), 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      const expectedHidden = LINES - HEAD - TAIL;
+      const sepText = sep ? sep.textContent ?? '' : '';
+      return {
+        hasHead: !!head, hasTail: !!tail, hasSeparator: !!sep,
+        sepHasCount: sepText.includes(String(expectedHidden)),
+        hasCopyBtn: !!copyBtn, hasSaveBtn: !!saveBtn, hasExpandBtn: !!expandBtn,
+        firstLineSeen: min, lastLineSeen: max,
+        visibleLineCount: indices.length,
+        streamInnerLen: stream ? stream.innerText.length : 0,
+      };
+    }, { HEAD: 50, TAIL: 50, LINES });
+    const collapsedPass = collapsedProbe.hasHead && collapsedProbe.hasTail && collapsedProbe.hasSeparator &&
+      collapsedProbe.sepHasCount && collapsedProbe.hasCopyBtn && collapsedProbe.hasSaveBtn &&
+      collapsedProbe.hasExpandBtn && collapsedProbe.firstLineSeen === 0 &&
+      collapsedProbe.lastLineSeen === LINES - 1 && collapsedProbe.visibleLineCount <= 120 &&
+      collapsedProbe.streamInnerLen < 50_000;
+    record('J4a long output collapsed', collapsedPass, JSON.stringify(collapsedProbe));
+
+    await win.evaluate(() => { document.querySelector('[data-testid="tool-output-expand"]')?.click(); });
+    await win.waitForTimeout(300);
+    const expandedProbe = await win.evaluate(() => {
+      const viewport = document.querySelector('[data-testid="tool-output-viewport"]');
+      const spacer = document.querySelector('[data-testid="tool-output-spacer"]');
+      if (!viewport || !spacer) return { error: 'no viewport/spacer' };
+      const lineEls = spacer.querySelectorAll('[data-line-index]');
+      const indices = Array.from(lineEls).map((el) => parseInt(el.getAttribute('data-line-index') ?? '-1', 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      const spacerH = spacer.getBoundingClientRect().height;
+      return {
+        mountedLineCount: indices.length, firstMountedIdx: min, lastMountedIdx: max,
+        spacerHeightPx: spacerH, viewportInnerLen: viewport.innerText.length,
+      };
+    });
+    const expandedPass = typeof expandedProbe.mountedLineCount === 'number' &&
+      expandedProbe.mountedLineCount > 0 && expandedProbe.mountedLineCount < 1000 &&
+      expandedProbe.firstMountedIdx === 0 && expandedProbe.lastMountedIdx < 1000 &&
+      typeof expandedProbe.spacerHeightPx === 'number' && expandedProbe.spacerHeightPx > 100_000;
+    record('J4b expanded virtualizes', expandedPass, JSON.stringify(expandedProbe));
+
+    await win.evaluate(() => {
+      const v = document.querySelector('[data-testid="tool-output-viewport"]');
+      if (v) v.scrollTop = v.scrollHeight;
+    });
+    await win.waitForTimeout(250);
+    const scrolledProbe = await win.evaluate(({ LINES }) => {
+      const spacer = document.querySelector('[data-testid="tool-output-spacer"]');
+      if (!spacer) return { error: 'no spacer' };
+      const indices = Array.from(spacer.querySelectorAll('[data-line-index]'))
+        .map((el) => parseInt(el.getAttribute('data-line-index') ?? '-1', 10));
+      const min = indices.length ? Math.min(...indices) : -1;
+      const max = indices.length ? Math.max(...indices) : -1;
+      return { mountedLineCount: indices.length, firstMountedIdx: min, lastMountedIdx: max, sawLastLine: max === LINES - 1 };
+    }, { LINES });
+    const scrolledPass = typeof scrolledProbe.mountedLineCount === 'number' &&
+      scrolledProbe.mountedLineCount < 1000 && scrolledProbe.sawLastLine === true &&
+      scrolledProbe.firstMountedIdx > LINES - 1000;
+    record('J4c expanded scroll-to-end mounts tail', scrolledPass, JSON.stringify(scrolledProbe));
+
+    await win.evaluate(() => { document.querySelector('[data-testid="tool-output-expand"]')?.click(); });
+    await win.waitForTimeout(200);
+    const reCollapsed = await win.evaluate(() => ({
+      hasHead: !!document.querySelector('[data-testid="tool-output-collapsed-head"]'),
+      hasViewport: !!document.querySelector('[data-testid="tool-output-viewport"]'),
+    }));
+    record('J4d collapse round-trips', reCollapsed.hasHead && !reCollapsed.hasViewport, JSON.stringify(reCollapsed));
+  }
+
+  // J4-extreme: >10MB blocks expand
+  {
+    const HUGE_LINES = 110_000;
+    const huge = Array.from({ length: HUGE_LINES }, (_, i) => `xline_${i.toString().padStart(6, '0')}_${'x'.repeat(100)}`).join('\n');
+    await seed([{ kind: 'tool', id: 't4x', toolUseId: 'tu_4x', name: 'Read', brief: 'mega.log', expanded: true, result: huge, isError: false }]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(500);
+    const xprobe = await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-expand"]');
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      const save = document.querySelector('[data-testid="tool-output-save"]');
+      return {
+        expandDisabled: btn ? btn.hasAttribute('disabled') : null,
+        sepDisabled: sep ? sep.hasAttribute('disabled') : null,
+        hasSave: !!save,
+      };
+    });
+    await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-expand"]');
+      if (btn && !btn.hasAttribute('disabled')) btn.click();
+      const sep = document.querySelector('[data-testid="tool-output-separator"]');
+      if (sep && !sep.hasAttribute('disabled')) sep.click();
+    });
+    await win.waitForTimeout(200);
+    const stillNoViewport = await win.evaluate(() => !document.querySelector('[data-testid="tool-output-viewport"]'));
+    record('J4-extreme >10MB blocks inline expand',
+      xprobe.expandDisabled === true && xprobe.sepDisabled === true && xprobe.hasSave === true && stillNoViewport === true,
+      JSON.stringify({ ...xprobe, stillNoViewport }));
+  }
+
+  // J5: tool error visually distinct
+  {
+    await seed([
+      { kind: 'tool', id: 't5a', toolUseId: 'tu_5a', name: 'Bash', brief: 'ok', expanded: true, result: 'OK_RESULT_TOKEN', isError: false },
+      { kind: 'tool', id: 't5b', toolUseId: 'tu_5b', name: 'Bash', brief: 'bad', expanded: true, result: 'ERR_RESULT_TOKEN', isError: true },
+    ]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(200);
+    const probe = await win.evaluate(() => {
+      function containerFor(marker) {
+        const all = document.querySelectorAll('main *');
+        for (const el of all) {
+          if (el.children.length === 0 && el.textContent && el.textContent.includes(marker)) {
+            let cur = el;
+            for (let i = 0; i < 12 && cur; i++) {
+              if (cur.querySelector && cur.querySelector('button[aria-expanded]')) return cur;
+              cur = cur.parentElement;
+            }
+            return el.parentElement;
+          }
+        }
+        return null;
+      }
+      function snap(el) {
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor, outline: cs.outlineColor,
+          className: el.className && typeof el.className === 'string' ? el.className : '' };
+      }
+      return { ok: snap(containerFor('OK_RESULT_TOKEN')), err: snap(containerFor('ERR_RESULT_TOKEN')) };
+    });
+    const differs = probe.ok && probe.err && (
+      probe.ok.bg !== probe.err.bg || probe.ok.color !== probe.err.color ||
+      probe.ok.border !== probe.err.border || probe.ok.className !== probe.err.className
+    );
+    record('J5 tool error visually distinct', !!differs);
+  }
+
+  // J5b: errored tool block auto-expands
+  {
+    await seed([
+      { kind: 'tool', id: 't5c', toolUseId: 'tu_5c', name: 'Bash', brief: 'fail-auto', expanded: false, result: 'AUTO_EXPAND_ERR_TOKEN', isError: true },
+      { kind: 'tool', id: 't5d', toolUseId: 'tu_5d', name: 'Bash', brief: 'ok-auto', expanded: false, result: 'AUTO_EXPAND_OK_TOKEN', isError: false },
+    ]);
+    await win.waitForTimeout(200);
+    const probe = await win.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('main button[aria-expanded]'));
+      function find(token) {
+        for (const b of btns) {
+          const root = b.closest('[data-testid="tool-block-root"]');
+          if (root && root.textContent && root.textContent.includes(token)) return b;
+        }
+        return null;
+      }
+      const errBtn = find('fail-auto');
+      const okBtn = find('ok-auto');
+      return {
+        errExpanded: errBtn ? errBtn.getAttribute('aria-expanded') : null,
+        okExpanded: okBtn ? okBtn.getAttribute('aria-expanded') : null,
+        errBodyVisible: document.body.innerText.includes('AUTO_EXPAND_ERR_TOKEN'),
+        okBodyVisible: document.body.innerText.includes('AUTO_EXPAND_OK_TOKEN'),
+      };
+    });
+    record('J5b errored auto-expands; healthy stays collapsed',
+      probe.errExpanded === 'true' && probe.okExpanded === 'false' && probe.errBodyVisible === true && probe.okBodyVisible === false,
+      JSON.stringify(probe));
+  }
+
+  // J6: multi-tool independent toggles
+  {
+    await seed([
+      { kind: 'tool', id: 't6a', toolUseId: 'tu_6a', name: 'Bash', brief: 'ls', expanded: false, result: 'RESULT_A_TOKEN', isError: false },
+      { kind: 'tool', id: 't6b', toolUseId: 'tu_6b', name: 'Read', brief: 'index.ts', expanded: false, result: 'RESULT_B_TOKEN', isError: false },
+      { kind: 'tool', id: 't6c', toolUseId: 'tu_6c', name: 'Grep', brief: 'foo', expanded: false, result: 'RESULT_C_TOKEN', isError: false },
+    ]);
+    const btns = await win.locator('main button[aria-expanded]').all();
+    if (btns.length < 3) {
+      record('J6 multi-tool independent toggles', false, `only ${btns.length} aria-expanded buttons`);
+    } else {
+      await btns[1].click();
+      await win.waitForTimeout(200);
+      const states = await Promise.all(btns.map((b) => b.getAttribute('aria-expanded')));
+      const visibility = await win.evaluate(() => ({
+        a: document.body.innerText.includes('RESULT_A_TOKEN'),
+        b: document.body.innerText.includes('RESULT_B_TOKEN'),
+        c: document.body.innerText.includes('RESULT_C_TOKEN'),
+      }));
+      const pass = states[0] === 'false' && states[1] === 'true' && states[2] === 'false' &&
+        !visibility.a && visibility.b && !visibility.c;
+      record('J6 multi-tool independent toggles', pass, `states=${JSON.stringify(states)} vis=${JSON.stringify(visibility)}`);
+    }
+  }
+
+  // J10: per-file diff collapse chrome (#302)
+  {
+    await seed([
+      { kind: 'tool', id: 't-d1', toolUseId: 'tu_d1', name: 'Edit', brief: 'a.ts', expanded: true,
+        input: { file_path: '/a.ts', old_string: 'old_A', new_string: 'NEW_A_TOK' }, result: 'ok', isError: false },
+      { kind: 'tool', id: 't-d2', toolUseId: 'tu_d2', name: 'Edit', brief: 'b.ts', expanded: true,
+        input: { file_path: '/b.ts', old_string: 'old_B\nold_B2', new_string: 'NEW_B_TOK\nNEW_B2_TOK' }, result: 'ok', isError: false },
+      { kind: 'tool', id: 't-d3', toolUseId: 'tu_d3', name: 'Edit', brief: 'c.ts', expanded: true,
+        input: { file_path: '/c.ts', old_string: '', new_string: 'NEW_C_TOK' }, result: 'ok', isError: false },
+    ]);
+    await win.evaluate(() => { document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click()); });
+    await win.waitForTimeout(250);
+    const probe = await win.evaluate(() => {
+      const wrappers = Array.from(document.querySelectorAll('[data-testid="diff-view"]'));
+      const fileCounts = wrappers.map((w) => w.getAttribute('data-file-count'));
+      const fileToggleBtns = Array.from(document.querySelectorAll('[data-testid="diff-view"] button[aria-expanded][aria-label^="Toggle file:"]'));
+      const expandedStates = fileToggleBtns.map((b) => b.getAttribute('aria-expanded'));
+      const text = document.body.innerText;
+      const plusMatches = (text.match(/\+\d+\s*\/\s*-\d+/g) ?? []).length;
+      return {
+        diffViewCount: wrappers.length, fileCounts, toggleBtnCount: fileToggleBtns.length,
+        expandedStates, plusMatches,
+        sawTokA: text.includes('NEW_A_TOK'), sawTokB: text.includes('NEW_B_TOK'), sawTokC: text.includes('NEW_C_TOK'),
+      };
+    });
+    const pass = probe.diffViewCount === 3 && probe.fileCounts.every((c) => c === '1') &&
+      probe.toggleBtnCount === 3 && probe.expandedStates.every((s) => s === 'true') &&
+      probe.plusMatches >= 3 && probe.sawTokA && probe.sawTokB && probe.sawTokC;
+    record('J10 per-file diff collapse chrome', pass, JSON.stringify(probe));
+  }
+
+  // J9 + J9b: per-tool-use cancel IPC (#239)
+  {
+    await app.evaluate(({ ipcMain }) => {
+      const calls = (global.__cancelCalls = []);
+      try { ipcMain.removeHandler('agent:cancelToolUse'); } catch {}
+      ipcMain.handle('agent:cancelToolUse', (_e, args) => { calls.push(args); return { ok: true }; });
+    });
+
+    await seed([{ kind: 'tool', id: 't-cancel', toolUseId: 'tu-cancel-XYZ', name: 'Bash', brief: 'sleep 200', expanded: false }]);
+    await win.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      window.__realDateNow = realNow;
+      Date.now = () => realNow() + 95_000;
+      window.__ccsmStore.getState().appendBlocks('s-tool', [{ kind: 'assistant', id: 'a-noop-cancel', text: '' }]);
+    });
+    await win.waitForTimeout(400);
+
+    const cancelEl = await win.$('[data-testid="tool-stall-cancel"]');
+    let invokedWith = null;
+    let cancellingTextAfter = null;
+    let ariaDisabledAfter = null;
+    let ariaLabelOk = null;
+    if (cancelEl) {
+      const aria = await cancelEl.getAttribute('aria-label');
+      ariaLabelOk = aria === 'Cancel tool';
+      await cancelEl.click();
+      await win.waitForTimeout(150);
+      const calls = await app.evaluate(() => (global.__cancelCalls || []).slice());
+      const observed = await win.evaluate(() => ({
+        text: document.querySelector('[data-testid="tool-stall-cancel"]')?.textContent ?? null,
+        aria: document.querySelector('[data-testid="tool-stall-cancel"]')?.getAttribute('aria-disabled') ?? null,
+      }));
+      invokedWith = calls[0] ?? null;
+      cancellingTextAfter = observed.text;
+      ariaDisabledAfter = observed.aria;
+    }
+    await win.evaluate(() => { if (window.__realDateNow) Date.now = window.__realDateNow; });
+    record('J9 cancel link aria-label="Cancel tool"', ariaLabelOk === true);
+    const passWiring = !!cancelEl && invokedWith && invokedWith.sessionId === 's-tool' && invokedWith.toolUseId === 'tu-cancel-XYZ';
+    record('J9 cancel button invokes agentCancelToolUse', !!passWiring,
+      `invokedWith=${JSON.stringify(invokedWith)}`);
+    const passCancellingState = cancellingTextAfter && /cancelling/i.test(cancellingTextAfter) && ariaDisabledAfter === 'true';
+    record('J9b cancel link → "Cancelling…" + aria-disabled', !!passCancellingState,
+      `text=${JSON.stringify(cancellingTextAfter)} aria-disabled=${ariaDisabledAfter}`);
+  }
+
+  // J11: elapsed counter pauses while permission pending (#311)
+  {
+    await win.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      window.__realDateNow = realNow;
+      window.__nowOffset = 0;
+      Date.now = () => realNow() + window.__nowOffset;
+    });
+    await seed([
+      { kind: 'user', id: 'u-pp', text: 'run a command' },
+      { kind: 'tool', id: 't-pp', toolUseId: 'tu-pp-1', name: 'Bash', brief: 'rm -rf node_modules', expanded: false },
+      { kind: 'waiting', id: 'wait-pp', intent: 'permission', requestId: 'req-pp', toolName: 'Bash',
+        prompt: 'Bash: rm -rf node_modules', toolInput: { command: 'rm -rf node_modules' } },
+    ]);
+    await win.evaluate(() => {
+      window.__nowOffset = 95_000;
+      window.__ccsmStore.getState().appendBlocks('s-tool', [{ kind: 'assistant', id: 'a-noop-pp', text: '' }]);
+    });
+    await win.waitForTimeout(400);
+    const pendingProbe = await win.evaluate(() => ({
+      hasElapsed: !!document.querySelector('[data-testid="tool-elapsed"]'),
+      hasStalled: !!document.querySelector('[data-testid="tool-stalled"]'),
+      hasEscalated: !!document.querySelector('[data-testid="tool-stall-escalated"]'),
+      hasCancel: !!document.querySelector('[data-testid="tool-stall-cancel"]'),
+      hasPermissionPrompt: !!document.querySelector('[data-testid="permission-prompt"]') ||
+        document.body.innerText.includes('rm -rf node_modules'),
+    }));
+    const pausedPass = pendingProbe.hasElapsed === false && pendingProbe.hasStalled === false &&
+      pendingProbe.hasEscalated === false && pendingProbe.hasCancel === false &&
+      pendingProbe.hasPermissionPrompt === true;
+    record('J11a elapsed/stall suppressed during permission gate', pausedPass, JSON.stringify(pendingProbe));
+
+    await win.evaluate(() => {
+      const store = window.__ccsmStore;
+      const blocks = store.getState().messagesBySession['s-tool'].filter((b) => b.kind !== 'waiting');
+      store.setState({ messagesBySession: { 's-tool': blocks } });
+    });
+    await win.waitForTimeout(200);
+    const justClearedText = await win.evaluate(() =>
+      document.querySelector('[data-testid="tool-elapsed"]')?.textContent ?? null);
+    await win.evaluate(() => { window.__nowOffset = 95_000 + 2_000; });
+    await win.waitForTimeout(300);
+    const afterTickText = await win.evaluate(() =>
+      document.querySelector('[data-testid="tool-elapsed"]')?.textContent ?? null);
+    const parseSec = (s) => {
+      if (!s) return NaN;
+      const m = s.match(/^(\d+)\.(\d)s$/);
+      return m ? parseInt(m[1], 10) + parseInt(m[2], 10) / 10 : NaN;
+    };
+    const justSec = parseSec(justClearedText);
+    const tickSec = parseSec(afterTickText);
+    const startsFromZero = !isNaN(justSec) && justSec < 1.5;
+    const ticksAfter = !isNaN(tickSec) && tickSec >= 1.5 && tickSec < 5.0;
+    const noEscalation = await win.evaluate(() => !document.querySelector('[data-testid="tool-stall-escalated"]'));
+    record('J11b elapsed counter starts from zero at execution-begin',
+      startsFromZero && ticksAfter && noEscalation,
+      `just=${justSec}s tick=${tickSec}s noEsc=${noEscalation}`);
+    await win.evaluate(() => { if (window.__realDateNow) Date.now = window.__realDateNow; });
+  }
+
+  if (failures.length > 0) throw new Error(`${failures.length} journey(s) failed: ${failures.join('; ')}`);
+}
+
+// ---------- input-queue (was probe-e2e-input-queue) ----------
+// CLI-style message queue + Esc interrupt — needs real claude.exe to drive
+// the assistant turn long enough to enqueue a follow-up.
+async function caseInputQueue({ app, win, log }) {
+  await app.evaluate(async ({ dialog }, fakeCwd) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
+  }, process.cwd());
+
+  const newBtn = win.getByRole('button', { name: /new session/i }).first();
+  await newBtn.waitFor({ state: 'visible', timeout: 15_000 });
+  await newBtn.click();
+
+  const textarea = win.locator('textarea');
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+
+  const cwdChip = win.locator('[data-cwd-chip]').first();
+  await cwdChip.waitFor({ state: 'visible', timeout: 5000 });
+  await cwdChip.click();
+  const browseItem = win.getByText('Browse folder…').first();
+  await browseItem.waitFor({ state: 'visible', timeout: 3000 });
+  await browseItem.click();
+  await win.waitForTimeout(400);
+
+  await textarea.click();
+  await textarea.fill('count slowly from one to fifteen, one number per line');
+  await win.keyboard.press('Enter');
+
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 15_000 });
+
+  await textarea.click();
+  await textarea.fill('also reply with the single word: queued-pong');
+  await win.keyboard.press('Enter');
+
+  const chip = win.getByText(/\+1 queued/);
+  await chip.waitFor({ state: 'visible', timeout: 5000 });
+  await chip.waitFor({ state: 'hidden', timeout: 90_000 });
+
+  const queuedEcho = win.getByText('also reply with the single word: queued-pong').first();
+  if (!(await queuedEcho.isVisible().catch(() => false))) {
+    throw new Error('queued user-echo missing from chat after drain');
+  }
+  await stopBtn.waitFor({ state: 'hidden', timeout: 60_000 });
+  log('+1 queued chip visible during run; drained to user echo + completed second turn');
+}
+
+// ---------- send (was probe-e2e-send) ----------
+// User journey: New Session → cwd via dialog → Enter sends → assistant reply rendered.
+async function caseSend({ app, win, log }) {
+  await app.evaluate(async ({ dialog }, fakeCwd) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
+  }, process.cwd());
+
+  const newBtn = win.getByRole('button', { name: /new session/i }).first();
+  await newBtn.waitFor({ state: 'visible', timeout: 15_000 });
+  await newBtn.click();
+
+  const textarea = win.locator('textarea');
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+
+  const cwdChip = win.locator('[data-cwd-chip]').first();
+  await cwdChip.waitFor({ state: 'visible', timeout: 5000 });
+  await cwdChip.click();
+  const browseItem = win.getByText('Browse folder…').first();
+  await browseItem.waitFor({ state: 'visible', timeout: 3000 });
+  await browseItem.click();
+  await win.waitForTimeout(400);
+
+  const assistantSelector = '[data-type-scale-role="assistant-body"]';
+  async function countAssistantBlocks() {
+    return await win.evaluate((sel) => document.querySelectorAll(sel).length, assistantSelector);
+  }
+  let assistantBaseline = await countAssistantBlocks();
+  async function sendAndWait(text, label, timeoutMs = 60_000) {
+    await textarea.click();
+    await textarea.fill(text);
+    await win.keyboard.press('Enter');
+    const echo = win.getByText(text, { exact: false }).first();
+    await echo.waitFor({ state: 'visible', timeout: 5000 });
+    const deadline = Date.now() + timeoutMs;
+    let now = assistantBaseline;
+    while (Date.now() < deadline) {
+      now = await countAssistantBlocks();
+      if (now > assistantBaseline) break;
+      await win.waitForTimeout(250);
+    }
+    if (now <= assistantBaseline) throw new Error(`[${label}] no new assistant block within ${timeoutMs}ms`);
+    assistantBaseline = now;
+  }
+
+  await sendAndWait('reply with the single word: pong', 'baseline');
+
+  await textarea.click();
+  await textarea.fill('');
+  await textarea.type('first line');
+  await win.keyboard.down('Shift');
+  await win.keyboard.press('Enter');
+  await win.keyboard.up('Shift');
+  await textarea.type('second line');
+  const composerValue = await textarea.inputValue();
+  if (composerValue !== 'first line\nsecond line') {
+    throw new Error(`[multiline] Shift+Enter did not insert newline. composer=${JSON.stringify(composerValue)}`);
+  }
+  await win.keyboard.press('Enter');
+  const mlEcho = win.getByText('second line', { exact: false }).first();
+  await mlEcho.waitFor({ state: 'visible', timeout: 5000 });
+  {
+    const deadline = Date.now() + 60_000;
+    let now = assistantBaseline;
+    while (Date.now() < deadline) {
+      now = await countAssistantBlocks();
+      if (now > assistantBaseline) break;
+      await win.waitForTimeout(250);
+    }
+    if (now <= assistantBaseline) throw new Error('[multiline] no new assistant block within 60s');
+    assistantBaseline = now;
+  }
+
+  const tricky = 'echo this back literally please: <tag> `inline` 🚀';
+  await sendAndWait(tricky, 'tricky');
+  const trickyEcho = win.getByText(tricky, { exact: true }).first();
+  if (!(await trickyEcho.isVisible().catch(() => false))) {
+    const partials = ['<tag>', '`inline`', '🚀'];
+    const present = await Promise.all(
+      partials.map((p) => win.getByText(p, { exact: false }).first().isVisible().catch(() => false))
+    );
+    const dropped = partials.filter((_, i) => !present[i]);
+    throw new Error(`[tricky] user echo missing exact match; missing: ${dropped.join(', ') || '(layout-only)'}`);
+  }
+  log('3/3 phases: baseline + multiline + tricky chars');
+}
+
+// ---------- switch (was probe-e2e-switch) ----------
+// A→B→A round-trip preserves chat history, draft, focus, scroll.
+async function caseSwitch({ app, win, log }) {
+  await app.evaluate(async ({ dialog }, fakeCwd) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fakeCwd] });
+  }, process.cwd());
+
+  const PROMPT_A = 'reply with the single word: alpha';
+  const PROMPT_B = 'reply with the single word: beta';
+  const DRAFT_A = 'half-typed alpha follow-up — DO NOT SEND';
+
+  async function clickNewSession() {
+    const btn = win.getByRole('button', { name: /new session/i }).first();
+    await btn.waitFor({ state: 'visible', timeout: 15_000 });
+    await btn.click();
+    await win.locator('textarea').waitFor({ state: 'visible', timeout: 5000 });
+  }
+  async function setCwdViaChip() {
+    const chip = win.locator('[data-cwd-chip]').first();
+    await chip.waitFor({ state: 'visible', timeout: 5000 });
+    await chip.click();
+    const browseItem = win.getByText('Browse folder…').first();
+    await browseItem.waitFor({ state: 'visible', timeout: 3000 });
+    await browseItem.click();
+    await win.waitForTimeout(400);
+  }
+  async function sendPrompt(text) {
+    const textarea = win.locator('textarea');
+    await textarea.click();
+    await textarea.fill(text);
+    await win.keyboard.press('Enter');
+    const assistant = win.locator('[data-type-scale-role="assistant-body"]').filter({ has: win.locator('span:has-text("●")') });
+    await assistant.first().waitFor({ state: 'visible', timeout: 30_000 });
+    await win.waitForTimeout(800);
+  }
+
+  await clickNewSession();
+  await setCwdViaChip();
+  await sendPrompt(PROMPT_A);
+
+  if (!(await win.getByText(PROMPT_A).first().isVisible().catch(() => false))) {
+    throw new Error('alpha user echo not visible right after sending');
+  }
+  async function chatSnapshot() {
+    return await win.evaluate(() => {
+      const main = document.querySelector('main');
+      return main ? main.innerText : '';
+    });
+  }
+  const snapshotA_before = await chatSnapshot();
+  if (!snapshotA_before.includes(PROMPT_A)) throw new Error('chat snapshot of session A missing alpha');
+
+  const textarea = win.locator('textarea');
+  await textarea.click();
+  await textarea.fill(DRAFT_A);
+  if ((await textarea.inputValue()) !== DRAFT_A) throw new Error('draft did not stick before switch');
+
+  await clickNewSession();
+  await win.waitForTimeout(500);
+  if (await win.getByText(PROMPT_A).first().isVisible().catch(() => false)) {
+    throw new Error('after switch to B, A content still visible');
+  }
+  if ((await textarea.inputValue()) !== '') throw new Error('B composer is not empty — A draft leaked');
+  await setCwdViaChip();
+  await sendPrompt(PROMPT_B);
+
+  const sessionCount = await win.locator('aside li').count();
+  if (sessionCount < 2) throw new Error(`expected ≥2 sessions in sidebar, got ${sessionCount}`);
+  await win.locator('aside li').nth(1).click();
+  await win.waitForTimeout(800);
+
+  const snapshotA_after = await chatSnapshot();
+  if (!snapshotA_after.includes(PROMPT_A)) throw new Error('session A lost chat history after A→B→A');
+  const assistantStillThere = await win.locator('[data-type-scale-role="assistant-body"]').filter({ has: win.locator('span:has-text("●")') })
+    .first().isVisible().catch(() => false);
+  if (!assistantStillThere) throw new Error('assistant block in A missing after round-trip');
+
+  if ((await textarea.inputValue()) !== DRAFT_A) throw new Error('composer draft for A not restored on switch-back');
+
+  const focusInfo = await win.evaluate(() => {
+    const ae = document.activeElement;
+    if (!ae) return { tag: null, hasInputBarAttr: false };
+    return { tag: ae.tagName, hasInputBarAttr: ae.hasAttribute('data-input-bar') };
+  });
+  if (!focusInfo.hasInputBarAttr) throw new Error(`focus did not return to composer; activeElement=${JSON.stringify(focusInfo)}`);
+
+  const scrollState = await win.evaluate(() => {
+    const el = document.querySelector('[data-chat-stream]');
+    if (!el) return { ok: false, reason: 'no [data-chat-stream]' };
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return { ok: true, distanceFromBottom };
+  });
+  if (!scrollState.ok) throw new Error(`scroll probe failed: ${scrollState.reason}`);
+  if (scrollState.distanceFromBottom > 64) throw new Error(`chat did not snap to bottom; Δ=${scrollState.distanceFromBottom}`);
+
+  log(`A→B→A retained alpha + draft + focus; scroll Δ=${scrollState.distanceFromBottom}px`);
+}
+
+// ---------- tool-call-dogfood (was probe-e2e-tool-call-dogfood) ----------
+async function caseToolCallDogfood({ win, log }) {
+  const newBtn = win.getByRole('button', { name: /new session/i }).first();
+  await newBtn.waitFor({ state: 'visible', timeout: 15_000 });
+  await newBtn.click();
+  const textarea = win.locator('textarea');
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  await textarea.click();
+  await textarea.fill('Use the Bash tool to run `echo dogfood_marker_8421` and tell me what it printed.');
+  await win.keyboard.press('Enter');
+
+  const toolBtn = win.locator('button[aria-expanded]').first();
+  await toolBtn.waitFor({ state: 'visible', timeout: 90_000 });
+  const toolText = await toolBtn.innerText();
+  await win.waitForTimeout(8000);
+  const markerSeen = await win.evaluate(() => document.body.innerText.includes('dogfood_marker_8421'));
+  log(`tool block: ${toolText.replace(/\s+/g, ' ').slice(0, 100)} | marker echoed: ${markerSeen}`);
+}
+
+// ---------- streaming-partial-frames (was probe-e2e-streaming-partial-frames) ----------
+// Wire-level: real claude.exe spawn → assert ≥2 stream_event(text_delta)
+// frames + dots visible at T0 + dots gone after first delta.
+async function caseStreamingPartialFrames({ win, log }) {
+  await win.evaluate(() => {
+    window.__probeFrames = [];
+    window.__probeFirstTextDeltaAt = null;
+    const t0 = Date.now();
+    const off = window.ccsm.onAgentEvent((e) => {
+      const msg = e.message;
+      const entry = { ts: Date.now() - t0, sessionId: e.sessionId, type: msg?.type ?? '<no-type>' };
+      if (msg && msg.type === 'stream_event') {
+        const inner = msg.event ?? {};
+        entry.eventType = inner.type;
+        if (inner.type === 'content_block_delta') {
+          entry.deltaType = inner.delta?.type;
+          if (inner.delta?.type === 'text_delta' && window.__probeFirstTextDeltaAt === null) {
+            window.__probeFirstTextDeltaAt = Date.now();
+          }
+        }
+      }
+      window.__probeFrames.push(entry);
+    });
+    window.__probeOff = off;
+  });
+
+  await win.getByRole('button', { name: /new session/i }).first().click();
+  await win.waitForTimeout(1000);
+  // Use harness root as the cwd; it exists.
+  await win.evaluate((p) => {
+    const st = window.__ccsmStore?.getState?.();
+    if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
+  }, process.cwd());
+  await win.waitForTimeout(400);
+
+  const ta = win.locator('textarea').first();
+  await ta.waitFor({ state: 'visible', timeout: 8000 });
+  await ta.click();
+  await ta.fill('Write a 100-word summary of what TypeScript is. Just the summary, no preamble.');
+  await win.keyboard.press('Enter');
+  const sentAt = Date.now();
+
+  let dotsVisibleAtT0 = false;
+  const t0Deadline = Date.now() + 4_000;
+  while (Date.now() < t0Deadline) {
+    await win.waitForTimeout(150);
+    const v = await win.locator('[data-testid="chat-thinking-dots"]').first().isVisible({ timeout: 100 }).catch(() => false);
+    if (v) { dotsVisibleAtT0 = true; break; }
+    const firstDeltaAt = await win.evaluate(() => window.__probeFirstTextDeltaAt);
+    if (firstDeltaAt) break;
+  }
+  if (!dotsVisibleAtT0) {
+    const dump = await win.evaluate(() => window.__probeFrames.slice(0, 30));
+    throw new Error(`chat-thinking-dots not visible at T0; frames=${JSON.stringify(dump).slice(0, 500)}`);
+  }
+
+  const deltaDl = Date.now() + 90_000;
+  let textDeltaCount = 0, sawAssistantFinal = false, sawTurnResult = false;
+  while (Date.now() < deltaDl) {
+    await win.waitForTimeout(500);
+    const snap = await win.evaluate(() => {
+      let textDeltas = 0, assistant = false, result = false;
+      for (const f of window.__probeFrames) {
+        if (f.type === 'stream_event' && f.eventType === 'content_block_delta' && f.deltaType === 'text_delta') textDeltas++;
+        if (f.type === 'assistant') assistant = true;
+        if (f.type === 'result') result = true;
+      }
+      return { textDeltas, assistant, result };
+    });
+    textDeltaCount = snap.textDeltas;
+    sawAssistantFinal = snap.assistant;
+    sawTurnResult = snap.result;
+    if (sawTurnResult) break;
+    if (textDeltaCount >= 2 && sawAssistantFinal) {
+      await win.waitForTimeout(2000);
+      break;
+    }
+  }
+  if (textDeltaCount < 2) throw new Error(`expected ≥2 text_delta frames; got ${textDeltaCount}`);
+
+  const firstDeltaAt = await win.evaluate(() => window.__probeFirstTextDeltaAt);
+  if (firstDeltaAt) {
+    const elapsed = Date.now() - firstDeltaAt;
+    if (elapsed < 2000) await win.waitForTimeout(2000 - elapsed);
+  }
+  const dotsStillVisible = await win.locator('[data-testid="chat-thinking-dots"]').first().isVisible({ timeout: 200 }).catch(() => false);
+  if (dotsStillVisible) throw new Error('chat-thinking-dots still visible >2s after first text_delta');
+  void sentAt;
+  log(`text_delta_frames=${textDeltaCount} dots_at_T0=true dots_after_delta=false`);
+}
+
+// ---------- notify-integration (was probe-e2e-notify-integration) ----------
+// the inlined notify module pipeline + retry/cancel/gate behaviors.
+// Uses preMain to install the mock importer + bootstrapNotify. After this case
+// runs, bootstrapNotify state is mutated; pair with `relaunch: true` on the
+// NEXT case (or rely on case ordering — placed near end of cases array).
+async function caseNotifyIntegration({ app, win, log }) {
+  async function blurAndWaitUnfocused() {
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const stillFocused = () => BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isFocused() && w.isVisible());
+      for (const w of BrowserWindow.getAllWindows()) { try { w.blur(); } catch {} }
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && stillFocused()) await new Promise((r) => setTimeout(r, 50));
+      if (stillFocused()) {
+        for (const w of BrowserWindow.getAllWindows()) { try { w.hide(); } catch {} }
+        const dl2 = Date.now() + 1000;
+        while (Date.now() < dl2 && stillFocused()) await new Promise((r) => setTimeout(r, 50));
+      }
+    });
+  }
+
+  // Install mock importer + re-bootstrap notify.
+  const installed = await app.evaluate(async ({ BrowserWindow }) => {
+    const g = globalThis;
+    const dbg = g.__ccsmDebug;
+    if (!dbg || !dbg.notify || !dbg.notifyBootstrap) {
+      throw new Error('__ccsmDebug.notify / notifyBootstrap not exposed');
+    }
+    g.__notifyCalls = [];
+    g.__notifyOnAction = null;
+    const notifyMod = dbg.notify;
+    const bootstrapMod = dbg.notifyBootstrap;
+    notifyMod.__setNotifyImporter(async () => ({
+      Notifier: {
+        create: async (opts) => {
+          g.__notifyOnAction = opts.onAction;
+          return {
+            permission: (p) => g.__notifyCalls.push({ kind: 'permission', payload: p }),
+            question: (p) => g.__notifyCalls.push({ kind: 'question', payload: p }),
+            done: (p) => g.__notifyCalls.push({ kind: 'done', payload: p }),
+            dismiss: (id) => g.__notifyCalls.push({ kind: 'dismiss', toastId: id }),
+            dispose: () => {},
+          };
+        },
+      },
+    }));
+    bootstrapMod.__resetBootstrapForTests();
+    bootstrapMod.bootstrapNotify((event) => {
+      g.__notifyCalls.push({ kind: 'router', event });
+      bootstrapMod.createDefaultToastActionRouter({
+        resolvePermission: dbg.sessions.resolvePermission.bind(dbg.sessions),
+        cancelQuestionRetry: dbg.notifyRetry.cancelQuestionRetry,
+        getMainWindow: () => BrowserWindow.getAllWindows().find((x) => !x.isDestroyed()) ?? null,
+      })(event);
+    });
+    await notifyMod.probeNotifyAvailability();
+    return notifyMod.isNotifyAvailable();
+  });
+  if (installed !== true) throw new Error(`failed to install mock notify importer (isNotifyAvailable=${installed})`);
+
+  // Seed session.
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.createGroup('Test Group');
+    const groups = window.__ccsmStore.getState().groups;
+    const groupId = groups[groups.length - 1].id;
+    s.createSession(groupId, { name: 'Test Session', cwd: '/tmp/probe-cwd' });
+  });
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    return s.sessions[s.sessions.length - 1].id;
+  });
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('failed to seed session');
+
+  await blurAndWaitUnfocused();
+
+  const REQUEST_ID = 'probe-req-1';
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Permission needed', body: 'Bash: ls -la', eventType: 'permission',
+    extras: { toastId: args.requestId, sessionName: 'Test Session', toolName: 'Bash', toolBrief: 'ls -la', cwd: '/tmp/probe-cwd' },
+  }), { sessionId, requestId: REQUEST_ID });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'permission')) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for notifyPermission');
+  });
+  const calls1 = await app.evaluate(() => globalThis.__notifyCalls);
+  const perm = calls1.find((c) => c.kind === 'permission');
+  if (!perm) throw new Error('notifyPermission was never called');
+  if (perm.payload.toastId !== REQUEST_ID) throw new Error(`unexpected toastId: ${perm.payload.toastId}`);
+  if (perm.payload.toolName !== 'Bash') throw new Error(`unexpected toolName: ${perm.payload.toolName}`);
+  if (perm.payload.cwdBasename !== 'probe-cwd') throw new Error(`expected cwdBasename "probe-cwd", got ${perm.payload.cwdBasename}`);
+
+  // Question.
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Question', body: 'Pick one', eventType: 'question',
+    extras: { toastId: 'q-probe-q-1', sessionName: 'Test Session', question: 'Pick one', selectionKind: 'single', optionCount: 3, cwd: '/tmp/probe-cwd' },
+  }), { sessionId });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'question')) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for notifyQuestion');
+  });
+  const calls2 = await app.evaluate(() => globalThis.__notifyCalls);
+  const question = calls2.find((c) => c.kind === 'question');
+  if (!question) throw new Error('notifyQuestion was never called');
+  if (question.payload.optionCount !== 3) throw new Error(`unexpected optionCount: ${question.payload.optionCount}`);
+
+  // Turn done.
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Done', body: 'Finished build', eventType: 'turn_done',
+    extras: { toastId: 'done-probe-1', sessionName: 'Test Session', groupName: 'Test Group', elapsedMs: 42_000, toolCount: 4, lastUserMsg: 'build it', lastAssistantMsg: 'Finished build', cwd: '/tmp/probe-cwd' },
+  }), { sessionId });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'done')) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for notifyDone');
+  });
+  const calls3 = await app.evaluate(() => globalThis.__notifyCalls);
+  const done = calls3.find((c) => c.kind === 'done');
+  if (!done) throw new Error('notifyDone was never called');
+  if (done.payload.toolCount !== 4) throw new Error(`unexpected toolCount: ${done.payload.toolCount}`);
+  if (done.payload.elapsedMs !== 42_000) throw new Error(`unexpected elapsedMs: ${done.payload.elapsedMs}`);
+
+  // allow-always activation routes back to renderer.
+  await win.evaluate((args) => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(args.sessionId, [{
+      kind: 'waiting', id: `wait-${args.requestId}`, prompt: 'Bash: ls -la',
+      intent: 'permission', requestId: args.requestId, toolName: 'Bash', toolInput: { command: 'ls -la' },
+    }]);
+  }, { sessionId, requestId: REQUEST_ID });
+  await app.evaluate(({ ipcMain }, args) => {
+    void ipcMain;
+    const cb = globalThis.__notifyOnAction;
+    if (!cb) throw new Error('onAction not captured');
+    cb({ toastId: args.requestId, action: 'allow-always', args: {} });
+  }, { requestId: REQUEST_ID });
+  await win.waitForFunction(() => window.__ccsmStore.getState().allowAlwaysTools.includes('Bash'), null, { timeout: 3000 });
+
+  // Focus suppression.
+  await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed() && x.isVisible());
+    if (w) w.focus();
+  });
+  const suppressed = await app.evaluate(({ BrowserWindow }) => {
+    const dbg = globalThis.__ccsmDebug;
+    const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed());
+    if (w && !w.isFocused()) { try { w.show(); w.focus(); } catch {} }
+    return dbg.notifyBootstrap.shouldSuppressForFocus();
+  });
+  if (!suppressed) throw new Error('shouldSuppressForFocus returned false with focused window');
+  const before = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'permission').length);
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Should be suppressed', body: 'focus gate', eventType: 'permission',
+    extras: { toastId: 'probe-req-suppressed', sessionName: 'Test Session', toolName: 'Bash', toolBrief: 'echo suppress', cwd: '/tmp/probe-cwd' },
+  }), { sessionId });
+  await new Promise((r) => setTimeout(r, 400));
+  const after = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'permission').length);
+  if (after !== before) throw new Error(`focus suppression failed — wrapper called ${after - before} extra times`);
+
+  // Question retry (#252).
+  await blurAndWaitUnfocused();
+  await app.evaluate(() => {
+    const g = globalThis;
+    const dbg = g.__ccsmDebug;
+    if (!dbg.notifyRetry) throw new Error('__ccsmDebug.notifyRetry not exposed');
+    g.__retryQueue = [];
+    g.__retryTimers = new Map();
+    g.__retrySeq = 1;
+    dbg.notifyRetry.__resetRetryStateForTests();
+    dbg.notifyRetry.__setRetrySchedulerForTests(
+      (cb, delayMs) => {
+        const id = g.__retrySeq++;
+        const entry = { cb, delayMs, cancelled: false };
+        g.__retryTimers.set(id, entry);
+        g.__retryQueue.push({ id, entry });
+        return id;
+      },
+      (handle) => {
+        const entry = g.__retryTimers.get(handle);
+        if (entry) entry.cancelled = true;
+      },
+    );
+  });
+  const RETRY_REQ = 'probe-q-retry-1';
+  const RETRY_TOAST_ID = `q-${RETRY_REQ}`;
+  const beforeQ = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Question (retry)', body: 'Pick one', eventType: 'question',
+    extras: { toastId: args.toastId, sessionName: 'Test Session', question: 'Pick one', selectionKind: 'single', optionCount: 2, cwd: '/tmp/probe-cwd' },
+  }), { sessionId, toastId: RETRY_TOAST_ID });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      const qC = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      const rC = globalThis.__retryQueue?.length ?? 0;
+      if (qC >= 1 && rC >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for initial question + retry schedule');
+  });
+  const queuedDelay = await app.evaluate(() => globalThis.__retryQueue[globalThis.__retryQueue.length - 1].entry.delayMs);
+  if (queuedDelay !== 30_000) throw new Error(`retry delay should be 30000ms, got ${queuedDelay}`);
+  await app.evaluate(() => {
+    const last = globalThis.__retryQueue[globalThis.__retryQueue.length - 1];
+    if (!last || last.entry.cancelled) throw new Error('retry timer cancelled or missing');
+    last.entry.cb();
+  });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length >= 2) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for retry question');
+  });
+  const afterRetry = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterRetry !== beforeQ + 2) throw new Error(`expected 2 question calls after retry, got ${afterRetry - beforeQ}`);
+  const retryToastId = await app.evaluate(() => {
+    const all = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question');
+    return all[all.length - 1]?.payload?.toastId;
+  });
+  if (retryToastId !== RETRY_TOAST_ID) throw new Error(`retry payload toastId mismatch: ${retryToastId}`);
+
+  // Cancellation: resolvePermission clears pending retry.
+  const CANCEL_REQ = 'probe-q-cancel-1';
+  const CANCEL_TOAST_ID = `q-${CANCEL_REQ}`;
+  const beforeCancel = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Question (cancel)', body: 'Pick one', eventType: 'question',
+    extras: { toastId: args.toastId, sessionName: 'Test Session', question: 'Pick one', selectionKind: 'single', optionCount: 2, cwd: '/tmp/probe-cwd' },
+  }), { sessionId, toastId: CANCEL_TOAST_ID });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for cancel-case initial question');
+  });
+  const queueLenBefore = await app.evaluate(() => globalThis.__retryQueue.filter((q) => !q.entry.cancelled).length);
+  if (queueLenBefore < 1) throw new Error(`expected ≥1 live retry timer, got ${queueLenBefore}`);
+  await win.evaluate((args) => window.ccsm.agentResolvePermission(args.sessionId, args.requestId, 'deny'), { sessionId, requestId: CANCEL_REQ });
+  await new Promise((r) => setTimeout(r, 200));
+  const cancelled = await app.evaluate(() => globalThis.__retryQueue.some((q) => q.entry.cancelled === true));
+  if (!cancelled) throw new Error('agentResolvePermission did not cancel the pending retry timer');
+  const afterCancel = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterCancel !== beforeCancel + 1) throw new Error(`expected 1 question call after cancellation, got ${afterCancel - beforeCancel}`);
+
+  // Fire-time gate (#307): notifications-disabled suppresses retry.
+  const GATE_REQ = 'probe-q-gate-1';
+  const GATE_TOAST_ID = `q-${GATE_REQ}`;
+  await win.evaluate(() => window.ccsm.notifySetRuntimeState({ notificationsEnabled: true, activeSessionId: null }));
+  const beforeGate = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Question (gate)', body: 'Pick one', eventType: 'question',
+    extras: { toastId: args.toastId, sessionName: 'Test Session', question: 'Pick one', selectionKind: 'single', optionCount: 2, cwd: '/tmp/probe-cwd' },
+  }), { sessionId, toastId: GATE_TOAST_ID });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      const qC = (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length;
+      const rC = globalThis.__retryQueue.filter((q) => !q.entry.cancelled).length;
+      if (qC >= 1 && rC >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for gate-case initial question + retry schedule');
+  });
+  await win.evaluate(() => window.ccsm.notifySetRuntimeState({ notificationsEnabled: false }));
+  await new Promise((r) => setTimeout(r, 200));
+  await app.evaluate(() => {
+    const live = globalThis.__retryQueue.filter((q) => !q.entry.cancelled && q.entry.cb);
+    const last = live[live.length - 1];
+    if (!last) throw new Error('no live retry timer for gate case');
+    last.entry.cb();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  const afterGate = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'question').length);
+  if (afterGate !== beforeGate + 1) throw new Error(`expected 1 question call when disabled at fire-time, got ${afterGate - beforeGate}`);
+  await win.evaluate(() => window.ccsm.notifySetRuntimeState({ notificationsEnabled: true }));
+  await new Promise((r) => setTimeout(r, 100));
+
+  // Toast-action reject cancels pending retry (#308).
+  const REJECT_REQ = 'probe-q-reject-1';
+  await blurAndWaitUnfocused();
+  await app.evaluate(() => { globalThis.__routerCancelCalls = []; });
+  await app.evaluate(({ BrowserWindow }) => {
+    const g = globalThis;
+    const dbg = g.__ccsmDebug;
+    dbg.notifyBootstrap.__resetBootstrapForTests();
+    const wrapCancel = (toastId) => {
+      (g.__routerCancelCalls ||= []).push(toastId);
+      dbg.notifyRetry.cancelQuestionRetry(toastId);
+    };
+    dbg.notifyBootstrap.bootstrapNotify((event) => {
+      g.__notifyCalls.push({ kind: 'router', event });
+      dbg.notifyBootstrap.createDefaultToastActionRouter({
+        resolvePermission: dbg.sessions.resolvePermission.bind(dbg.sessions),
+        cancelQuestionRetry: wrapCancel,
+        getMainWindow: () => BrowserWindow.getAllWindows().find((x) => !x.isDestroyed()) ?? null,
+      })(event);
+    });
+  });
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Question (reject)', body: 'Pick one', eventType: 'question',
+    extras: { toastId: `q-${args.req}`, sessionName: 'Test Session', question: 'Pick one', selectionKind: 'single', optionCount: 2, cwd: '/tmp/probe-cwd' },
+  }), { sessionId, req: REJECT_REQ });
+  await app.evaluate(async (_e, args) => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      const has = (globalThis.__notifyCalls || []).some((c) => c.kind === 'question' && c.payload.toastId === args.toastId);
+      const pending = globalThis.__ccsmDebug.notifyRetry.__pendingRetryKeysForTests().includes(args.toastId);
+      if (has && pending) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for reject-case initial question + retry schedule');
+  }, { toastId: `q-${REJECT_REQ}` });
+  await app.evaluate((_e, args) => {
+    const dbg = globalThis.__ccsmDebug;
+    dbg.notifyBootstrap.registerToastTarget(args.req, args.sessionId, 'permission');
+    const cb = globalThis.__notifyOnAction;
+    if (!cb) throw new Error('onAction not captured');
+    cb({ toastId: args.req, action: 'reject', args: {} });
+  }, { sessionId, req: REJECT_REQ });
+  await new Promise((r) => setTimeout(r, 300));
+  const routerCancelCalls = await app.evaluate(() => globalThis.__routerCancelCalls ?? []);
+  if (routerCancelCalls.length === 0) {
+    throw new Error(`expected toast-action reject router to call cancelQuestionRetry directly (#308); got 0`);
+  }
+  if (!routerCancelCalls.includes(`q-${REJECT_REQ}`)) {
+    throw new Error(`router didn't call cancelQuestionRetry with q-${REJECT_REQ}: ${JSON.stringify(routerCancelCalls)}`);
+  }
+
+  // Rich done payload (#252).
+  const longAssistant = 'x'.repeat(200);
+  await blurAndWaitUnfocused();
+  await win.evaluate((args) => window.ccsm.notify({
+    sessionId: args.sessionId, title: 'Done (rich)', eventType: 'turn_done',
+    extras: { toastId: 'done-rich-1', sessionName: 'Test Session', groupName: 'Test Group',
+      lastUserMsg: 'do the thing', lastAssistantMsg: args.longAssistant,
+      elapsedMs: 12_345, toolCount: 3, cwd: '/tmp/probe-cwd' },
+  }), { sessionId, longAssistant });
+  await app.evaluate(async () => {
+    const dl = Date.now() + 3000;
+    while (Date.now() < dl) {
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1')) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('timeout waiting for rich done');
+  });
+  const richDone = await app.evaluate(() =>
+    (globalThis.__notifyCalls || []).find((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1'));
+  if (!richDone) throw new Error('rich done not captured');
+  if (richDone.payload.groupName !== 'Test Group') throw new Error(`groupName: ${richDone.payload.groupName}`);
+  if (richDone.payload.sessionName !== 'Test Session') throw new Error(`sessionName: ${richDone.payload.sessionName}`);
+  if (typeof richDone.payload.lastAssistantMsg !== 'string') throw new Error('lastAssistantMsg missing');
+  if (richDone.payload.lastAssistantMsg.length !== 80) throw new Error(`lastAssistantMsg length: ${richDone.payload.lastAssistantMsg.length}`);
+  if (!richDone.payload.lastAssistantMsg.endsWith('…')) throw new Error('expected ellipsis at end of truncated lastAssistantMsg');
+
+  log('all 11 notify checkpoints passed (perm/question/done emit, allow-always routing, focus suppress, retry, cancel, fire-time gate, reject cancel, rich done)');
+}
+
+// ---------- delete-session-kills-process (was probe-e2e-delete-session-kills-process) ----------
+// deleteSession must dispatch agent:close → activeSessionCount → 0.
+async function caseDeleteSessionKillsProcess({ app, win, log }) {
+  const cwd = process.cwd();
+  const sessionId = randomUUID();
+  await win.evaluate(({ sid, cwd }) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'delete-probe', state: 'idle', cwd, model: 'claude-sonnet-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid, messagesBySession: { [sid]: [] }, startedSessions: {}, runningSessions: {}
+    });
+  }, { sid: sessionId, cwd });
+
+  const startRes = await win.evaluate(async ({ sid, cwd }) =>
+    await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default' }), { sid: sessionId, cwd });
+  if (!startRes || startRes.ok !== true) throw new Error(`agentStart failed: ${JSON.stringify(startRes)}`);
+
+  await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    st.markStarted(sid);
+    st.setRunning(sid, true);
+  }, sessionId);
+
+  let countBefore = 0;
+  for (let i = 0; i < 30; i++) {
+    countBefore = await app.evaluate(() => globalThis.__ccsmDebug?.activeSessionCount() ?? -1);
+    if (countBefore === -1) throw new Error('__ccsmDebug missing in main process');
+    if (countBefore > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (countBefore <= 0) throw new Error(`activeSessionCount=${countBefore} after agentStart; expected > 0`);
+
+  const selfExitsBefore = await app.evaluate(() => globalThis.__ccsmDebug.selfExitCount?.() ?? -1);
+  if (selfExitsBefore < 0) throw new Error('__ccsmDebug.selfExitCount missing');
+
+  await win.evaluate((sid) => window.__ccsmStore.getState().deleteSession(sid), sessionId);
+
+  const deadline = Date.now() + 5_000;
+  let countAfter = countBefore;
+  while (Date.now() < deadline) {
+    countAfter = await app.evaluate(() => globalThis.__ccsmDebug?.activeSessionCount() ?? -1);
+    if (countAfter === 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (countAfter !== 0) throw new Error(`activeSessionCount=${countAfter} 5s after deleteSession; expected 0`);
+
+  const selfExitsAfter = await app.evaluate(() => globalThis.__ccsmDebug.selfExitCount());
+  if (selfExitsAfter !== selfExitsBefore) {
+    throw new Error(`selfExitCount went ${selfExitsBefore} -> ${selfExitsAfter} during poll — CLI self-exited; cannot distinguish from handler-driven teardown`);
+  }
+  log(`activeSessionCount went ${countBefore} -> 0 within 5s of deleteSession`);
+}
+
+// ---------- close-window-aborts-sessions (was probe-e2e-close-window-aborts-sessions) ----------
+// `before-quit` handler must drive sessions.closeAll(). Pair with `relaunch: true`
+// since this puts the app into is-quitting mode and contaminates subsequent cases.
+async function caseCloseWindowAbortsSessions({ app, win, log }) {
+  const cwd = process.cwd();
+  const sessionId = randomUUID();
+  await win.evaluate(({ sid, cwd }) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'close-probe', state: 'idle', cwd, model: 'claude-sonnet-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid, messagesBySession: { [sid]: [] }, startedSessions: {}, runningSessions: {}
+    });
+  }, { sid: sessionId, cwd });
+
+  const startRes = await win.evaluate(async ({ sid, cwd }) =>
+    await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default' }), { sid: sessionId, cwd });
+  if (!startRes || startRes.ok !== true) throw new Error(`agentStart failed: ${JSON.stringify(startRes)}`);
+
+  let countBefore = 0;
+  for (let i = 0; i < 30; i++) {
+    countBefore = await app.evaluate(() => globalThis.__ccsmDebug?.activeSessionCount() ?? -1);
+    if (countBefore === -1) throw new Error('__ccsmDebug missing');
+    if (countBefore > 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (countBefore <= 0) throw new Error(`activeSessionCount=${countBefore} after agentStart`);
+
+  const selfExitsBefore = await app.evaluate(() => globalThis.__ccsmDebug.selfExitCount?.() ?? -1);
+  if (selfExitsBefore < 0) throw new Error('__ccsmDebug.selfExitCount missing');
+
+  await app.evaluate(({ app: a }) => {
+    a.emit('before-quit', { preventDefault() {}, defaultPrevented: false });
+  });
+
+  const deadline = Date.now() + 5_000;
+  let countAfter = countBefore;
+  while (Date.now() < deadline) {
+    countAfter = await app.evaluate(() => globalThis.__ccsmDebug?.activeSessionCount() ?? -1);
+    if (countAfter === 0) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (countAfter !== 0) throw new Error(`activeSessionCount=${countAfter} 5s after before-quit; expected 0`);
+
+  const selfExitsAfter = await app.evaluate(() => globalThis.__ccsmDebug.selfExitCount());
+  if (selfExitsAfter !== selfExitsBefore) {
+    throw new Error(`selfExitCount went ${selfExitsBefore} -> ${selfExitsAfter} — CLI self-exited; false pass`);
+  }
+  log(`activeSessionCount went ${countBefore} -> 0 within 5s of before-quit`);
+}
+
+// ---------- default-cwd (was probe-e2e-default-cwd) ----------
+// Default cwd "~" must expand correctly so spawn doesn't ENOENT.
+async function caseDefaultCwd({ win, log }) {
+  const errors = [];
+  win.on('console', (m) => { if (m.type() === 'error') errors.push(`[console.error] ${m.text()}`); });
+
+  const newBtn = win.getByRole('button', { name: /new session/i }).first();
+  await newBtn.waitFor({ state: 'visible', timeout: 15_000 });
+  await newBtn.click();
+  const textarea = win.locator('textarea');
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+
+  // Deliberately skip the cwd chip — default cwd is "~".
+  await textarea.click();
+  await textarea.fill('hi');
+  await win.keyboard.press('Enter');
+
+  const assistant = win.locator('[data-type-scale-role="assistant-body"]').filter({ has: win.locator('span:has-text("●")') });
+  await assistant.first().waitFor({ state: 'visible', timeout: 30_000 });
+
+  const symptom = errors.find((e) => /native binary not found|ENOENT/i.test(e));
+  if (symptom) throw new Error(`console reported spawn failure: ${symptom}`);
+  log('default cwd "~" produced an assistant reply');
+}
+
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'agent',
@@ -2248,5 +3721,29 @@ await runHarness({
       requiresClaudeBin: true,
       run: caseRequiresClaudeBinSkip
     },
+    // ---- Absorbed standalone probes ----
+    // Pure-store cases (no real CLI required):
+    { id: 'empty-group-new-session', run: caseEmptyGroupNewSession },
+    { id: 'interrupt-banner', run: caseInterruptBanner },
+    { id: 'tool-journey-render', run: caseToolJourneyRender },
+    // Real-CLI cases (skip when claude is not on PATH):
+    { id: 'tool-call-dogfood', requiresClaudeBin: true, run: caseToolCallDogfood },
+    { id: 'input-queue', requiresClaudeBin: true, run: caseInputQueue },
+    { id: 'send', requiresClaudeBin: true, run: caseSend },
+    { id: 'switch', requiresClaudeBin: true, run: caseSwitch },
+    { id: 'delete-session-kills-process', requiresClaudeBin: true, run: caseDeleteSessionKillsProcess },
+    { id: 'default-cwd', requiresClaudeBin: true, userDataDir: 'fresh', run: caseDefaultCwd },
+    { id: 'streaming-partial-frames', requiresClaudeBin: true, userDataDir: 'fresh', run: caseStreamingPartialFrames },
+    // notify-integration heavily mutates main-process notify bootstrap state
+    // (mock importer, fake retry scheduler). Placed near the end so its
+    // contamination doesn't affect other cases. close-window-aborts-sessions
+    // follows with relaunch:true → fresh app, then notify-integration's
+    // bootstrap mutations don't matter either way.
+    { id: 'notify-integration', requiresClaudeBin: false, run: caseNotifyIntegration },
+    // close-window-aborts-sessions emits before-quit on the live app, putting
+    // it in is-quitting mode. relaunch:true gives THIS case a fresh app so
+    // the previous notify-integration mutations don't leak in; subsequent
+    // cases would need another relaunch — none planned, so it's last.
+    { id: 'close-window-aborts-sessions', requiresClaudeBin: true, relaunch: true, run: caseCloseWindowAbortsSessions },
   ]
 });
