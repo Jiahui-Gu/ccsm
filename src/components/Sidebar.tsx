@@ -625,11 +625,13 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
-      {/* Top drag strip — mirrors the right pane's 32px drag strip so the
-          two panes share a horizontal title-bar band. On macOS this is
-          where the OS draws the traffic lights (`hiddenInset` reserves
-          ~78px on the left); on win/linux it's just a drag-to-move area. */}
-      <DragRegion className="shrink-0 w-full" style={{ height: 32 }} />
+      {/* Top drag strip — Windows-only build, so we only need a thin
+          drag-to-move band (8px) to preserve OS window-drag affordance.
+          The right pane keeps its 32px band because it must host
+          WindowControls (min/max/close buttons). The slight misalignment
+          is intentional: dogfood flagged the 32px gap above "new session"
+          as visually empty. */}
+      <DragRegion className="shrink-0 w-full" style={{ height: 8 }} />
       {collapsed ? (
         <div className="flex flex-col items-center w-full h-full py-3 gap-2">
           <IconButton
