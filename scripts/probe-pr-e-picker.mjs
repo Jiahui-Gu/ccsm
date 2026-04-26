@@ -95,7 +95,6 @@ await page.addInitScript(() => {
     onPermissionUpdate: noopFn,
     onSessionEvent: noopFn,
     onUpdateEvent: noopFn,
-    onWindowTintChange: noopFn,
     onWindowFocusChange: noopFn,
     loadMessages: async () => [],
     saveMessages: asyncNoop,

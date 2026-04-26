@@ -1200,16 +1200,6 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           </Button>
         </div>
       </div>
-
-      {/* Shortcut hints — one terse muted line below the composer. Swaps to
-          "Esc to stop" while a turn is running so the user always sees the
-          most relevant shortcut for the current state. */}
-      <div
-        className="mt-1 px-1 font-mono text-mono-xs text-fg-disabled select-none"
-        aria-hidden
-      >
-        {running ? t('chat.escToStop') : t('chat.enterToSend')}
-      </div>
     </div>
   );
 }

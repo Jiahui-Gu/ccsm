@@ -36,6 +36,9 @@
 //   - rename                               (probe-e2e-rename)
 //   - terminal                             (probe-e2e-terminal)
 //   - tool-render-open-in-editor           (probe-e2e-tool-render-open-in-editor)
+//   - dead-ui-cleanup                       (locks the 3-deletion cleanup PR:
+//                                            EmptyState greeting, composer
+//                                            kbd hint, Window tint setting)
 //
 // NOT absorbed (split into its own visible-mode harness):
 //   - probe-e2e-dnd: needs CCSM_E2E_HIDDEN=0 (visible window) for dnd-kit
@@ -151,11 +154,18 @@ async function caseEmptyStateMinimal({ win, log }) {
   });
   await win.waitForTimeout(300);
 
-  const hero = win.getByText(/Ready when you are\./i);
+  const hero = win.locator('text=/type a message and press/i');
   try {
     await hero.first().waitFor({ state: 'visible', timeout: 5000 });
   } catch {
-    throw new Error('empty-state hero "Ready when you are." not visible');
+    throw new Error('empty-state hint "type a message and press [Enter]" not visible');
+  }
+
+  // Old "Ready when you are." greeting was removed (dogfood: redundant
+  // with the hint+placeholder below). Make sure it doesn't sneak back.
+  const oldGreeting = await win.getByText(/Ready when you are\./i).count();
+  if (oldGreeting > 0) {
+    throw new Error('legacy "Ready when you are." greeting still rendered in EmptyState');
   }
 
   for (const removed of ['Explain this codebase', 'Find and fix a bug', 'Add tests', 'Refactor for clarity']) {
@@ -166,7 +176,7 @@ async function caseEmptyStateMinimal({ win, log }) {
   const workingIn = await win.getByText(/Working in /i).count();
   if (workingIn > 0) throw new Error('old "Working in …" line still rendered');
 
-  log('hero visible, no starter cards, no "Working in" line');
+  log('hint+kbd visible, no greeting, no starter cards, no "Working in" line');
 }
 
 // ---------- a11y-focus-restore ----------
@@ -2460,6 +2470,80 @@ async function caseThinkingToggle({ app, win, log }) {
   log(`/think live row toggles store off ↔ default_on; setMaxThinkingTokens IPC fired: on=${onCall.tokens}, off=${offCall.tokens}`);
 }
 
+// ---------- dead-ui-cleanup ----------
+// Lock in the three deletions from the "remove dead UI strings/settings"
+// PR (greeting, kbd hint, window tint). Each assertion regresses to the
+// pre-PR state if any of them sneak back in.
+async function caseDeadUiCleanup({ win, log, registerDispose }) {
+  // 1) EmptyState no longer renders the "Ready when you are." greeting.
+  //    Seed a session with no messages so EmptyState is on screen.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        {
+          id: 's-cleanup',
+          name: 's',
+          state: 'idle',
+          cwd: 'C:/x',
+          model: 'claude-opus-4',
+          groupId: 'g1',
+          agentType: 'claude-code'
+        }
+      ],
+      activeId: 's-cleanup',
+      messagesBySession: {}
+    });
+  });
+  await win.waitForTimeout(250);
+
+  const greetingCount = await win.getByText(/Ready when you are\./i).count();
+  // tutorial.startTitle ("Ready when you are") still exists as an
+  // onboarding slide title — but tutorialSeen=true above hides Tutorial,
+  // so any match here would be the EmptyState regression.
+  if (greetingCount > 0) {
+    throw new Error('EmptyState greeting "Ready when you are." came back');
+  }
+
+  // 2) Composer no longer renders the "Enter send · Shift+Enter newline"
+  //    hint (or its zh equivalent) below the textarea.
+  const enterHintEn = await win.getByText(/Enter send.*Shift\+Enter/i).count();
+  if (enterHintEn > 0) {
+    throw new Error('Composer "Enter send · Shift+Enter newline" hint came back');
+  }
+  // Same for the running-state companion hint (was deleted alongside).
+  const escHint = await win.getByText(/Esc to stop.*Enter to queue/i).count();
+  if (escHint > 0) {
+    throw new Error('Composer "Esc to stop · Enter to queue" hint came back');
+  }
+
+  // 3) Settings → Appearance no longer shows "Window tint".
+  registerDispose(async () => {
+    await win.keyboard.press('Escape').catch(() => {});
+  });
+  const settingsBtn = win.getByRole('button', { name: /^Settings$/ }).first();
+  await settingsBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await settingsBtn.click();
+  const dialog = win.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 3000 });
+
+  // Appearance is the default tab.
+  const tintLabel = await dialog.getByText(/Window tint/i).count();
+  if (tintLabel > 0) {
+    throw new Error('Settings → Appearance still shows "Window tint" field');
+  }
+  // Defensive: any leaked tint preset chips.
+  const tintChips = await dialog.locator('[data-tint-option]').count();
+  if (tintChips > 0) {
+    throw new Error(`Settings → Appearance still has ${tintChips} tint preset chips`);
+  }
+
+  await win.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {});
+
+  log('greeting gone, kbd hint gone, Window tint field gone');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -2565,7 +2649,8 @@ await runHarness({
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // thinking-toggle: UI slash-command toggle that uses an ipcMain spy on
     // agent:setMaxThinkingTokens. Pure UI, single launch, fits harness-ui.
-    { id: 'thinking-toggle', run: caseThinkingToggle }
+    { id: 'thinking-toggle', run: caseThinkingToggle },
+    { id: 'dead-ui-cleanup', run: caseDeadUiCleanup }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler
