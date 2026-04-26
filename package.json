@@ -157,7 +157,10 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "allowElevation": true,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CCSM"
     },
     "mac": {
       "target": [
