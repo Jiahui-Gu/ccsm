@@ -7,12 +7,24 @@
 // excluded from the per-file runner via scripts/run-all-e2e.mjs's
 // MERGED_INTO_HARNESS skip list.
 //
-// Pilot scope (5 cases, all pure-store / no real claude.exe required):
+// Scope (all pure-store / no real claude.exe required):
 //   - streaming
 //   - streaming-caret-lifecycle
 //   - inputbar-visible
 //   - chat-copy
 //   - input-placeholder
+//   - tool-block-ux
+//   - tool-stall-escalation
+//   - diagnostic-banner
+//   - init-failure-banner
+//   - streaming-journey-switch
+//   - streaming-journey-parallel
+//   - streaming-journey-queue-clear
+//   - streaming-journey-esc-interrupt
+//   - msg-queue
+//   - esc-interrupt
+//   - composer-morph-mention
+//   - user-block-hover-menu
 //
 // Add new AGENT cases here by:
 //   1. Wrap the case body in a named function `case<Name>({ win, log, ... })`.
@@ -797,6 +809,853 @@ async function caseToolStallEscalation({ win, log, registerDispose }) {
   log('tier-1 (31s): hint only, no escalation/cancel; tier-2 (91s): escalation badge + Cancel link, hint suppressed, click does not toggle row');
 }
 
+// ---------- streaming-journey-switch ----------
+// Absorbed from probe-e2e-streaming-journey-switch.mjs. Stream survives a
+// session switch and back: A starts streaming, user switches to B, more
+// chunks arrive for A while offscreen, switch back to A reveals the full
+// concatenated reply with no torn / duplicated blocks, finalize clears the
+// caret.
+async function caseStreamingJourneySwitch({ win, log }) {
+  const A = 's-jswitch-A';
+  const B = 's-jswitch-B';
+  const BLOCK_ID = 'msg-A-jswitch:0';
+
+  await win.evaluate(([a, b]) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: a, name: 'session-A', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+        { id: b, name: 'session-B', state: 'idle', cwd: 'C:/y', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }
+      ],
+      activeId: a,
+      messagesBySession: {
+        [a]: [{ kind: 'user', id: 'u-a', text: 'long reply please' }],
+        [b]: [{ kind: 'user', id: 'u-b', text: 'unrelated' }]
+      },
+      startedSessions: { [a]: true, [b]: true },
+      runningSessions: { [a]: true, [b]: false }
+    });
+  }, [A, B]);
+  await win.waitForTimeout(200);
+
+  const CHUNKS = Array.from({ length: 30 }, (_, i) => `c${i.toString().padStart(2, '0')} `);
+
+  const inject = async (idx) => {
+    await win.evaluate(
+      ([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false),
+      [A, BLOCK_ID, CHUNKS[idx]]
+    );
+  };
+
+  // Phase 1: chunks 0..9 with A active.
+  for (let i = 0; i < 10; i++) await inject(i);
+  await win.waitForTimeout(150);
+
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch { /* fall through */ }
+  const caretMid = await win.locator('span.animate-pulse').count();
+  if (caretMid < 1) throw new Error('expected streaming caret to be visible while A is mid-stream');
+
+  const aMid = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.filter((b) => b.id === bid).map((b) => ({ text: b.text, streaming: b.streaming }));
+  }, [A, BLOCK_ID]);
+  if (aMid.length !== 1) throw new Error(`expected exactly 1 block id ${BLOCK_ID}, got ${aMid.length}`);
+  const expectedHalf = CHUNKS.slice(0, 10).join('');
+  if (aMid[0].text !== expectedHalf) {
+    throw new Error(`mid-stream text mismatch: got ${JSON.stringify(aMid[0].text)} want ${JSON.stringify(expectedHalf)}`);
+  }
+  if (aMid[0].streaming !== true) throw new Error('streaming flag should be true mid-stream');
+
+  // Phase 2: switch to B.
+  await win.evaluate((b) => window.__ccsmStore.setState({ activeId: b }), B);
+  await win.waitForTimeout(150);
+
+  // Deliver chunks 10..24 to A while on B.
+  for (let i = 10; i < 25; i++) await inject(i);
+  await win.waitForTimeout(150);
+
+  const bWhileAStreams = await win.evaluate(
+    (sid) => (window.__ccsmStore.getState().messagesBySession[sid] ?? []).map((b) => ({ id: b.id, text: b.text })),
+    B
+  );
+  const leakedToB = bWhileAStreams.find((b) => b.id === BLOCK_ID || (b.text ?? '').includes('c10'));
+  if (leakedToB) throw new Error(`A stream leaked into B: ${JSON.stringify(leakedToB)}`);
+
+  const sawAStreamInDom = await win.evaluate(() => document.body.textContent?.includes('c14') ?? false);
+  if (sawAStreamInDom) throw new Error('chunk c14 visible in DOM while on B — wrong session shown');
+
+  // Phase 3: deliver 25..29 then switch back to A.
+  for (let i = 25; i < 30; i++) await inject(i);
+  await win.waitForTimeout(100);
+
+  await win.evaluate((a) => window.__ccsmStore.setState({ activeId: a }), A);
+  await win.waitForTimeout(200);
+
+  const aFull = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.filter((b) => b.id === bid).map((b) => ({ text: b.text, streaming: b.streaming }));
+  }, [A, BLOCK_ID]);
+  if (aFull.length !== 1) throw new Error(`after switch-back, expected 1 block, got ${aFull.length}`);
+  const expectedFull = CHUNKS.join('');
+  if (aFull[0].text !== expectedFull) {
+    throw new Error(`full text mismatch: got ${JSON.stringify(aFull[0].text)} want ${JSON.stringify(expectedFull)}`);
+  }
+  if (aFull[0].streaming !== true) throw new Error('streaming flag should still be true (no finalize yet)');
+
+  // Finalize.
+  await win.evaluate(([sid, bid, text]) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
+  }, [A, BLOCK_ID, expectedFull]);
+  await win.waitForTimeout(150);
+
+  const aFinal = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.filter((b) => b.id === bid).map((b) => ({ text: b.text, streaming: b.streaming }));
+  }, [A, BLOCK_ID]);
+  if (aFinal.length !== 1) throw new Error(`after finalize, expected 1 block, got ${aFinal.length}`);
+  if (aFinal[0].streaming) throw new Error('streaming flag should be cleared after finalize');
+  if (aFinal[0].text !== expectedFull) throw new Error('finalized text mutated unexpectedly');
+
+  const caretFinal = await win.locator('span.animate-pulse').count();
+  if (caretFinal !== 0) throw new Error(`caret should be gone after finalize, found ${caretFinal}`);
+
+  log('A absorbed all 30 chunks across a B-side detour, single block, finalize cleared caret');
+}
+
+// ---------- streaming-journey-parallel ----------
+// Absorbed from probe-e2e-streaming-journey-parallel.mjs. Interleaved
+// per-session deltas must remain isolated; carets clear independently.
+async function caseStreamingJourneyParallel({ win, log }) {
+  const A = 's-jpar-A';
+  const B = 's-jpar-B';
+  const BID_A = 'msg-A:jpar';
+  const BID_B = 'msg-B:jpar';
+
+  await win.evaluate(([a, b]) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: a, name: 'A', state: 'idle', cwd: 'C:/x', model: 'm', groupId: 'g1', agentType: 'claude-code' },
+        { id: b, name: 'B', state: 'idle', cwd: 'C:/y', model: 'm', groupId: 'g1', agentType: 'claude-code' }
+      ],
+      activeId: a,
+      messagesBySession: {
+        [a]: [{ kind: 'user', id: 'ua', text: 'A asks' }],
+        [b]: [{ kind: 'user', id: 'ub', text: 'B asks' }]
+      },
+      startedSessions: { [a]: true, [b]: true },
+      runningSessions: { [a]: true, [b]: true }
+    });
+  }, [A, B]);
+  await win.waitForTimeout(150);
+
+  const A_CHUNKS = ['Aa ', 'Ab ', 'Ac ', 'Ad ', 'Ae ', 'Af '];
+  const B_CHUNKS = ['Bp ', 'Bq ', 'Br ', 'Bs ', 'Bt ', 'Bu '];
+
+  for (let i = 0; i < 6; i++) {
+    await win.evaluate(([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false), [A, BID_A, A_CHUNKS[i]]);
+    await win.evaluate(([sid, bid, text]) => window.__ccsmStore.getState().streamAssistantText(sid, bid, text, false), [B, BID_B, B_CHUNKS[i]]);
+  }
+  await win.waitForTimeout(150);
+
+  const aText = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.id === bid)?.text;
+  }, [A, BID_A]);
+  const bText = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.id === bid)?.text;
+  }, [B, BID_B]);
+
+  const wantA = A_CHUNKS.join('');
+  const wantB = B_CHUNKS.join('');
+  if (aText !== wantA) throw new Error(`A text wrong: got ${JSON.stringify(aText)} want ${JSON.stringify(wantA)}`);
+  if (bText !== wantB) throw new Error(`B text wrong: got ${JSON.stringify(bText)} want ${JSON.stringify(wantB)}`);
+
+  for (const c of B_CHUNKS) {
+    if (aText.includes(c)) throw new Error(`A reply contains B chunk ${JSON.stringify(c)}`);
+  }
+  for (const c of A_CHUNKS) {
+    if (bText.includes(c)) throw new Error(`B reply contains A chunk ${JSON.stringify(c)}`);
+  }
+
+  const aBlocks = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.filter((b) => b.kind === 'assistant').map((b) => ({ id: b.id, streaming: b.streaming }));
+  }, A);
+  const bBlocks = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.filter((b) => b.kind === 'assistant').map((b) => ({ id: b.id, streaming: b.streaming }));
+  }, B);
+  if (aBlocks.length !== 1) throw new Error(`A should have 1 assistant block, got ${aBlocks.length}`);
+  if (bBlocks.length !== 1) throw new Error(`B should have 1 assistant block, got ${bBlocks.length}`);
+  if (aBlocks[0].id !== BID_A) throw new Error(`A block has wrong id ${aBlocks[0].id}`);
+  if (bBlocks[0].id !== BID_B) throw new Error(`B block has wrong id ${bBlocks[0].id}`);
+  if (!aBlocks[0].streaming || !bBlocks[0].streaming) throw new Error('both should still be streaming pre-finalize');
+
+  // Finalize A only.
+  await win.evaluate(([sid, bid, text]) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
+  }, [A, BID_A, wantA]);
+  await win.waitForTimeout(150);
+
+  await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), A);
+  await win.waitForFunction(
+    (text) => document.body.textContent?.includes(text) ?? false,
+    'Aa Ab Ac',
+    { timeout: 3000 }
+  ).catch(() => { throw new Error('A view never mounted after switch'); });
+  await win.waitForFunction(() => document.querySelectorAll('span.animate-pulse').length === 0, null, { timeout: 2000 }).catch(() => {});
+  const caretAfterA = await win.locator('span.animate-pulse').count();
+  if (caretAfterA !== 0) throw new Error(`A caret should be gone after finalize, found ${caretAfterA}`);
+
+  const bStillStreaming = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.kind === 'assistant')?.streaming === true;
+  }, B);
+  if (!bStillStreaming) throw new Error('B should still be streaming after only A was finalized');
+
+  await win.evaluate((sid) => window.__ccsmStore.setState({ activeId: sid }), B);
+  await win.waitForFunction(
+    (text) => document.body.textContent?.includes(text) ?? false,
+    'Bp Bq Br',
+    { timeout: 3000 }
+  ).catch(() => { throw new Error('B view never mounted after switch'); });
+  await win.locator('span.animate-pulse').first().waitFor({ state: 'visible', timeout: 3000 })
+    .catch(() => { throw new Error('B should still show caret'); });
+
+  // Finalize B.
+  await win.evaluate(([sid, bid, text]) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [{ kind: 'assistant', id: bid, text }]);
+    window.__ccsmStore.getState().setRunning(sid, false);
+  }, [B, BID_B, wantB]);
+  await win.waitForFunction(() => document.querySelectorAll('span.animate-pulse').length === 0, null, { timeout: 3000 }).catch(() => {});
+  const caretFinal = await win.locator('span.animate-pulse').count();
+  if (caretFinal !== 0) throw new Error(`caret should be 0 after both finalize, got ${caretFinal}`);
+
+  log('A and B streamed interleaved, no bleed; carets cleared independently');
+}
+
+// ---------- streaming-journey-queue-clear ----------
+// Absorbed from probe-e2e-streaming-journey-queue-clear.mjs. While running,
+// queue 3 messages -> "+3 queued" chip; Esc -> messageQueues emptied (3-deep
+// not just head-drop) AND chip gone.
+async function caseStreamingJourneyQueueClear({ win, log }) {
+  // Defensive: prior runs may have persisted i18n=zh; we assert on English
+  // chip text + "Stop" button name below.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const SID = 's-jqclear';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 'queue-clear', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: sid,
+      messagesBySession: {
+        [sid]: [
+          { kind: 'user', id: 'u-1', text: 'first turn' },
+          { kind: 'assistant', id: 'a-1', text: 'streaming reply...' }
+        ]
+      },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true }
+    });
+  }, SID);
+  await win.waitForTimeout(200);
+
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('Stop button missing — running not rendered'); });
+
+  const queueWanted = ['queued one', 'queued two', 'queued three'];
+  await win.evaluate(([sid, msgs]) => {
+    const st = window.__ccsmStore.getState();
+    for (const m of msgs) st.enqueueMessage(sid, { text: m, attachments: [] });
+  }, [SID, queueWanted]);
+  await win.waitForTimeout(150);
+
+  const chip = win.getByText(/\+3 queued/);
+  await chip.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('"+3 queued" chip never appeared'); });
+
+  const preEscQueue = await win.evaluate(
+    (sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).map((m) => m.text),
+    SID
+  );
+  if (JSON.stringify(preEscQueue) !== JSON.stringify(queueWanted)) {
+    throw new Error(`pre-Esc queue mismatch: got ${JSON.stringify(preEscQueue)}`);
+  }
+
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(250);
+
+  const postEsc = await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    return {
+      interrupted: !!st.interruptedSessions[sid],
+      queueLen: (st.messageQueues[sid] ?? []).length,
+      queueDump: (st.messageQueues[sid] ?? []).map((m) => m.text)
+    };
+  }, SID);
+  if (!postEsc.interrupted) throw new Error('interruptedSessions flag not set after Esc');
+  if (postEsc.queueLen !== 0) {
+    throw new Error(`queue should be EMPTY after Esc, got len=${postEsc.queueLen}, contents=${JSON.stringify(postEsc.queueDump)}`);
+  }
+
+  await chip.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => { throw new Error('"+3 queued" chip still visible after Esc'); });
+
+  for (const n of [1, 2]) {
+    const remaining = win.getByText(new RegExp(`\\+${n} queued`));
+    if (await remaining.count() > 0) {
+      throw new Error(`unexpected "+${n} queued" chip visible after Esc — partial drop, not full clear`);
+    }
+  }
+
+  log('3 enqueues -> chip +3 queued; Esc -> queue empty + chip gone');
+}
+
+// ---------- streaming-journey-esc-interrupt ----------
+// Absorbed from probe-e2e-streaming-journey-esc-interrupt.mjs. Esc during a
+// stream halts deltas, neutral "Interrupted" status block appears, caret
+// disappears, composer focus returns, Stop -> Send affordance.
+async function caseStreamingJourneyEscInterrupt({ win, log }) {
+  // Defensive: assertions below pin the English "Stop" button name + status
+  // banner text; force i18n=en in case a prior run persisted zh.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const SID = 's-jesc';
+  const BLOCK_ID = 'msg-jesc:0';
+
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 'esc-stream', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'count 1..30' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true }
+    });
+  }, SID);
+
+  await win.waitForFunction((sid) => {
+    return window.__ccsmStore?.getState().activeId === sid && document.querySelector('textarea') !== null;
+  }, SID, { timeout: 5000 });
+
+  await win.evaluate(([sid, bid]) => {
+    const st = window.__ccsmStore.getState();
+    for (let i = 0; i < 8; i++) st.streamAssistantText(sid, bid, `c${i} `, false);
+  }, [SID, BLOCK_ID]);
+  await win.waitForTimeout(150);
+
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch { /* fall through */ }
+  const caretMid = await win.locator('span.animate-pulse').count();
+  if (caretMid < 1) throw new Error('caret should be pulsing while streaming');
+
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('Stop button not visible mid-stream'); });
+
+  const midText = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.id === bid)?.text;
+  }, [SID, BLOCK_ID]);
+
+  // Park focus elsewhere so we can prove focus returns post-interrupt.
+  await win.evaluate(() => {
+    const ta = document.querySelector('textarea');
+    if (ta) ta.blur();
+    document.body.focus();
+  });
+
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(200);
+
+  const interrupted = await win.evaluate((sid) => !!window.__ccsmStore.getState().interruptedSessions[sid], SID);
+  if (!interrupted) throw new Error('interruptedSessions flag not set after Esc');
+
+  // Synthesize the lifecycle's post-interrupt result frame translation.
+  await win.evaluate(([sid, bid]) => {
+    const st = window.__ccsmStore.getState();
+    if (!st.consumeInterrupted(sid)) throw new Error('flag not consumed');
+    const open = (st.messagesBySession[sid] ?? []).find((b) => b.id === bid);
+    if (open) {
+      st.appendBlocks(sid, [{ kind: 'assistant', id: bid, text: open.text ?? '' }]);
+    }
+    st.appendBlocks(sid, [{ kind: 'status', id: 'res-jesc', tone: 'info', title: 'Interrupted' }]);
+    st.setRunning(sid, false);
+  }, [SID, BLOCK_ID]);
+  await win.waitForTimeout(200);
+
+  const caretAfter = await win.locator('span.animate-pulse').count();
+  if (caretAfter !== 0) throw new Error(`caret still pulsing after interrupt, found ${caretAfter}`);
+
+  const inflight = await win.evaluate(([sid, bid]) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.find((b) => b.id === bid);
+  }, [SID, BLOCK_ID]);
+  if (!inflight) throw new Error('in-flight block disappeared after interrupt — should remain with partial text');
+  if (inflight.streaming) throw new Error('in-flight block.streaming should be false after interrupt');
+  if (inflight.text !== midText) throw new Error(`in-flight text changed unexpectedly. before=${JSON.stringify(midText)} after=${JSON.stringify(inflight.text)}`);
+
+  await win.waitForSelector('[role="status"]', { timeout: 3000 });
+  const banner = await win.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll('[role="status"]'));
+    const el = nodes.find((n) => n.textContent?.includes('Interrupted'));
+    if (!el) return { found: false };
+    return { found: true, hasAlert: !!el.closest('[role="alert"]') };
+  });
+  if (!banner.found) throw new Error('"Interrupted" banner not rendered with role=status');
+  if (banner.hasAlert) throw new Error('"Interrupted" banner is inside role=alert — should be neutral');
+
+  await stopBtn.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => { throw new Error('Stop button still visible after running cleared'); });
+
+  await win.waitForFunction(() => document.activeElement?.tagName === 'TEXTAREA', null, { timeout: 2000 }).catch(async () => {
+    const tag = await win.evaluate(() => document.activeElement?.tagName);
+    throw new Error(`composer focus did not return to textarea after interrupt; activeElement=${tag}`);
+  });
+
+  // Clear any prior draft text from a previous case using the same session id slot
+  // (drafts.ts module-scope cache survives setState).
+  await win.locator('textarea').first().fill('');
+  await win.locator('textarea').first().click();
+  await win.keyboard.type('post-int');
+  const val = await win.locator('textarea').first().inputValue();
+  if (val !== 'post-int') throw new Error(`textarea value should be 'post-int' after typing, got ${JSON.stringify(val)}`);
+
+  log('Esc -> caret cleared, neutral Interrupted banner, focus back to composer');
+}
+
+// ---------- msg-queue ----------
+// Absorbed from probe-e2e-msg-queue.mjs. While running, 3 Enter-presses
+// must each enqueue (not call agentSend); chip shows "+3 queued"; FIFO drain
+// via dequeueMessage; chip drops in lockstep and hides at zero.
+async function caseMsgQueue({ win, log }) {
+  // Defensive: pin English so "Stop" button + "+N queued" chip selectors hit.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const SID = 's-mq';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 'queue-probe', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: sid,
+      messagesBySession: {
+        [sid]: [
+          { kind: 'user', id: 'u-0', text: 'first turn' },
+          { kind: 'assistant', id: 'a-0', text: 'starting…' }
+        ]
+      },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true }
+    });
+  }, SID);
+  await win.waitForTimeout(200);
+
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  // Prior case may have left a draft in the per-session drafts cache.
+  await textarea.fill('');
+
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('Stop button missing — running state did not render'); });
+
+  const messages = ['queued one', 'queued two', 'queued three'];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    const want = i + 1;
+    await win.waitForFunction(() => (document.querySelector('textarea')?.value ?? '') === '', null, { timeout: 3000 }).catch(() => {});
+    await textarea.click();
+    await textarea.fill(msg);
+    await win.waitForFunction((m) => document.querySelector('textarea')?.value === m, msg, { timeout: 2000 }).catch(async () => {
+      const v = await win.evaluate(() => document.querySelector('textarea')?.value);
+      throw new Error(`pre-Enter textarea value mismatch: got ${JSON.stringify(v)} want ${JSON.stringify(msg)}`);
+    });
+    const running = await win.evaluate((sid) => !!window.__ccsmStore.getState().runningSessions[sid], SID);
+    if (!running) throw new Error('running flag false at iteration ' + i);
+    await textarea.press('Enter');
+    await win.waitForFunction(
+      ([sid, n]) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).length === n,
+      [SID, want],
+      { timeout: 3000 }
+    ).catch(async () => {
+      const len = await win.evaluate((sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).length, SID);
+      const dump = await win.evaluate((sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).map((m) => m.text), SID);
+      throw new Error(`enqueue #${want} did not advance queue length (got ${len}, queue=${JSON.stringify(dump)})`);
+    });
+    await win.waitForFunction(() => (document.querySelector('textarea')?.value ?? '') === '', null, { timeout: 2000 }).catch(() => {});
+  }
+
+  const chip = win.getByText(/\+3 queued/);
+  await chip.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('"+3 queued" chip never appeared after 3 Enters'); });
+
+  const queuedTexts = await win.evaluate(
+    (sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).map((m) => m.text),
+    SID
+  );
+  if (JSON.stringify(queuedTexts) !== JSON.stringify(messages)) {
+    throw new Error(`queue order wrong after 3 Enters: got ${JSON.stringify(queuedTexts)}, want ${JSON.stringify(messages)}`);
+  }
+
+  const composerValue = await textarea.inputValue();
+  if (composerValue !== '') {
+    throw new Error(`composer should be empty after enqueue, got ${JSON.stringify(composerValue)}`);
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const head = await win.evaluate((sid) => window.__ccsmStore.getState().dequeueMessage(sid), SID);
+    if (!head) throw new Error(`dequeue #${i + 1} returned null — queue ran dry early`);
+    if (head.text !== messages[i]) {
+      throw new Error(`dequeue #${i + 1} popped wrong message: got "${head.text}", expected "${messages[i]}"`);
+    }
+    await win.waitForTimeout(80);
+    const remaining = await win.evaluate((sid) => (window.__ccsmStore.getState().messageQueues[sid] ?? []).length, SID);
+    const expectRemaining = 3 - i - 1;
+    if (remaining !== expectRemaining) {
+      throw new Error(`after dequeue #${i + 1}, queue length should be ${expectRemaining}, got ${remaining}`);
+    }
+    if (expectRemaining > 0) {
+      const partial = win.getByText(new RegExp(`\\+${expectRemaining} queued`));
+      await partial.waitFor({ state: 'visible', timeout: 1500 })
+        .catch(() => { throw new Error(`chip should show "+${expectRemaining} queued" after dequeue #${i + 1}`); });
+    }
+  }
+
+  const finalQueue = await win.evaluate((sid) => window.__ccsmStore.getState().messageQueues[sid], SID);
+  if (finalQueue && finalQueue.length > 0) {
+    throw new Error(`queue not empty after 3 dequeues: ${JSON.stringify(finalQueue)}`);
+  }
+
+  await chip.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => { throw new Error('queue chip still visible after final dequeue'); });
+
+  log('3 Enter-presses -> chip "+3 queued"; FIFO dequeue: ' + messages.join(' -> '));
+}
+
+// ---------- esc-interrupt ----------
+// Absorbed from probe-e2e-esc-interrupt.mjs. Esc during running -> stop()
+// runs (markInterrupted + clearQueue), Stop button hides after running
+// flips false, textarea usable again post-interrupt.
+async function caseEscInterrupt({ win, log }) {
+  // Defensive: pin English so "Stop" button name + "+1 queued" chip hit.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const SID = 's-esc-int';
+  await win.evaluate((sid) => {
+    const store = window.__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 'esc-probe', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: sid,
+      messagesBySession: {
+        [sid]: [
+          { kind: 'user', id: 'u-1', text: 'count slowly to 100' },
+          { kind: 'assistant', id: 'a-1', text: '1\n2\n3\n' }
+        ]
+      },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true }
+    });
+    store.getState().enqueueMessage(sid, { text: 'queued during running', attachments: [] });
+  }, SID);
+  await win.waitForTimeout(200);
+
+  const stopBtn = win.getByRole('button', { name: /^stop$/i });
+  await stopBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => { throw new Error('Stop button not visible — session not in running state'); });
+
+  const chip = win.getByText(/\+1 queued/);
+  await chip.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('queue chip never appeared after enqueue'); });
+
+  await win.evaluate(() => {
+    const ta = document.querySelector('textarea');
+    if (ta) ta.blur();
+    document.body.focus();
+  });
+
+  await win.evaluate(() => {
+    window.__sawEsc = false;
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') window.__sawEsc = true;
+    }, { capture: true });
+  });
+
+  await win.evaluate(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await win.waitForTimeout(200);
+
+  const sawEsc = await win.evaluate(() => window.__sawEsc);
+  if (!sawEsc) throw new Error('document never saw the Escape keydown — playwright dispatch path broken');
+
+  const postEsc = await win.evaluate((sid) => ({
+    interrupted: !!window.__ccsmStore.getState().interruptedSessions[sid],
+    queueLen: (window.__ccsmStore.getState().messageQueues[sid] ?? []).length,
+  }), SID);
+  if (!postEsc.interrupted) throw new Error('after Esc, interruptedSessions flag was not set — stop() did not run');
+  if (postEsc.queueLen !== 0) {
+    throw new Error(`after Esc, queue should be empty (CLI Ctrl+C parity), got length=${postEsc.queueLen}`);
+  }
+
+  await chip.waitFor({ state: 'hidden', timeout: 2000 }).catch(() => { throw new Error('queue chip still visible after Esc — clearQueue did not propagate'); });
+
+  // Synthesize the SDK delivering the post-interrupt result frame.
+  await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    if (!st.consumeInterrupted(sid)) throw new Error('interrupted flag was not consumed');
+    st.appendBlocks(sid, [{ kind: 'status', id: 'res-esc-int', tone: 'info', title: 'Interrupted' }]);
+    st.setRunning(sid, false);
+  }, SID);
+  await win.waitForTimeout(150);
+
+  await stopBtn.waitFor({ state: 'hidden', timeout: 3000 }).catch(() => { throw new Error('Stop button still visible after running flipped to false'); });
+
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 3000 });
+  await textarea.fill('');
+  await textarea.click();
+  await win.keyboard.type('post-interrupt');
+  const value = await textarea.inputValue();
+  if (value !== 'post-interrupt') {
+    throw new Error(`textarea not usable after interrupt: inputValue=${JSON.stringify(value)}`);
+  }
+
+  log('Esc -> stop() ran (interrupted+queue cleared); Interrupted status block; textarea usable');
+}
+
+// ---------- composer-morph-mention ----------
+// Absorbed from probe-e2e-composer-morph-mention.mjs. Verifies the
+// send/stop morph button + @file mention picker. Stubs the `files:list`
+// IPC handler on main; restored via registerDispose so subsequent cases
+// see the real handler.
+async function caseComposerMorphMention({ win, log, app, registerDispose }) {
+  // Defensive: morph button aria-label asserts /stop/i; pin English first.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  // Replace `files:list` with a known-three-row stub. Restore on dispose so
+  // subsequent cases see the real handler.
+  await app.evaluate(({ ipcMain }) => {
+    try { ipcMain.removeHandler('files:list'); } catch {}
+    ipcMain.handle('files:list', async () => [
+      { path: 'src/components/InputBar.tsx', name: 'InputBar.tsx' },
+      { path: 'src/components/MentionPicker.tsx', name: 'MentionPicker.tsx' },
+      { path: 'README.md', name: 'README.md' },
+    ]);
+  });
+  registerDispose(async () => {
+    // Removing our stub leaves the channel un-handled; subsequent cases
+    // either don't touch it or will register their own. Removing is safer
+    // than leaving stale data in.
+    await app.evaluate(({ ipcMain }) => {
+      try { ipcMain.removeHandler('files:list'); } catch {}
+    });
+  });
+
+  const stubCheck = await win.evaluate(async () => {
+    const list = window.ccsm?.files?.list;
+    if (typeof list !== 'function') return { ok: false, why: 'list not function' };
+    const r = await list(null);
+    return { ok: true, count: Array.isArray(r) ? r.length : -1 };
+  });
+  if (!stubCheck.ok || stubCheck.count !== 3) {
+    throw new Error(`bridge stub failed: ${JSON.stringify(stubCheck)} — IPC override didn't take`);
+  }
+
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: 's-morph', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude',
+        groupId: 'g1', agentType: 'claude-code',
+      }],
+      activeId: 's-morph',
+      messagesBySession: { 's-morph': [] },
+      startedSessions: { 's-morph': true },
+      runningSessions: {},
+      messageQueues: {},
+    });
+  });
+  await win.waitForTimeout(300);
+
+  const ta = win.locator('textarea').first();
+  await ta.waitFor({ state: 'visible', timeout: 5000 }).catch(() => { throw new Error('textarea did not appear'); });
+  // Drain any prior draft text the drafts module-cache may have hung onto.
+  await ta.fill('');
+
+  // 1. Morph button: idle = send/primary.
+  let morph = win.locator('button[data-morph-state]').first();
+  let morphState = await morph.getAttribute('data-morph-state');
+  let morphVariant = await morph.getAttribute('data-variant');
+  if (morphState !== 'send' || morphVariant !== 'primary') {
+    throw new Error(`expected idle morph button send/primary; got ${morphState}/${morphVariant}`);
+  }
+
+  // Flip running -> stop/danger.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({ runningSessions: { 's-morph': true } });
+  });
+  await win.waitForTimeout(350);
+
+  morph = win.locator('button[data-morph-state]').first();
+  morphState = await morph.getAttribute('data-morph-state');
+  morphVariant = await morph.getAttribute('data-variant');
+  if (morphState !== 'stop' || morphVariant !== 'danger') {
+    throw new Error(`expected running morph button stop/danger; got ${morphState}/${morphVariant}`);
+  }
+  const morphLabel = await morph.getAttribute('aria-label');
+  if (!morphLabel || !/stop/i.test(morphLabel)) {
+    throw new Error(`expected aria-label including "Stop"; got ${JSON.stringify(morphLabel)}`);
+  }
+
+  // Restore idle for the @mention subtests.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({ runningSessions: {} });
+  });
+  await win.waitForTimeout(200);
+
+  // 2. @ trigger opens picker; Esc dismisses without altering value.
+  await ta.click();
+  await win.keyboard.type('@');
+  await win.waitForTimeout(200);
+
+  let picker = win.getByRole('listbox', { name: /file mentions/i });
+  await picker.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('mention picker did not open after typing @'); });
+
+  await win.keyboard.press('Escape');
+  await win.waitForTimeout(200);
+  const stillOpen = await picker.isVisible().catch(() => false);
+  if (stillOpen) throw new Error('mention picker did not dismiss on Esc');
+  const valueAfterEsc = await ta.inputValue();
+  if (valueAfterEsc !== '@') throw new Error(`Esc altered textarea value: ${JSON.stringify(valueAfterEsc)}`);
+
+  // 3. Re-arm picker by edit, then Enter inserts @<path>.
+  await win.keyboard.type(' ');
+  await win.keyboard.press('Backspace');
+  await win.waitForTimeout(150);
+
+  picker = win.getByRole('listbox', { name: /file mentions/i });
+  await picker.waitFor({ state: 'visible', timeout: 3000 }).catch(() => { throw new Error('mention picker did not reopen after edit re-arm'); });
+
+  await win.keyboard.press('Enter');
+  await win.waitForTimeout(200);
+
+  const finalValue = await ta.inputValue();
+  if (finalValue !== '@src/components/InputBar.tsx ') {
+    throw new Error(`expected '@src/components/InputBar.tsx '; got ${JSON.stringify(finalValue)}`);
+  }
+
+  log('morph button send<->stop verified; @mention picker open/Esc-dismiss/Enter-commit verified');
+}
+
+// ---------- user-block-hover-menu ----------
+// Absorbed from probe-e2e-user-block-hover-menu.mjs. Hover -> 4 action
+// buttons fade in (opacity 1); Copy lands text in clipboard; Truncate cuts
+// blocks at the user message AND clears resumeSessionId + startedSessions.
+async function caseUserBlockHoverMenu({ win, log }) {
+  // Defensive: prior runs (or sibling cases) may have left i18n on `zh`
+  // persisted in app_state. The aria-label assertions below pin the English
+  // strings, so force the renderer to en before seeding.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const SAMPLE = 'PROBE_USER_TEXT please implement X';
+  const SID = 's-uhover';
+  await win.evaluate(([sid, sample]) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: sid, name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4',
+        groupId: 'g1', agentType: 'claude-code', resumeSessionId: 'old-uuid'
+      }],
+      activeId: sid,
+      startedSessions: { [sid]: true },
+      messagesBySession: {
+        [sid]: [
+          { kind: 'assistant', id: 'a0', text: 'Earlier reply.' },
+          { kind: 'user', id: 'u-rewind', text: sample },
+          { kind: 'assistant', id: 'a1', text: 'Followup reply that should be truncated.' }
+        ]
+      }
+    });
+  }, [SID, SAMPLE]);
+  await win.waitForTimeout(300);
+
+  const userRow = win.locator('[data-user-block-id="u-rewind"]');
+  await userRow.waitFor({ state: 'visible', timeout: 5000 });
+
+  await userRow.hover();
+  await win.waitForTimeout(250);
+
+  const actions = userRow.locator('[data-testid="user-block-actions"]');
+  const opacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  if (opacity !== '1') {
+    throw new Error(`expected actions opacity=1 on hover, got ${opacity}`);
+  }
+
+  const labels = ['Edit and resend', 'Retry', 'Copy message', 'Truncate from here'];
+  for (const label of labels) {
+    const btn = actions.locator(`button[aria-label="${label}"]`);
+    if ((await btn.count()) !== 1) {
+      throw new Error(`expected exactly 1 button with aria-label="${label}"`);
+    }
+  }
+
+  await actions.locator('button[aria-label="Copy message"]').click();
+  await win.waitForTimeout(200);
+  const clip = await win.evaluate(() =>
+    navigator.clipboard.readText().catch((e) => `ERR:${e.message}`)
+  );
+  if (!clip.includes('PROBE_USER_TEXT')) {
+    throw new Error(`clipboard missing user text after Copy click (clip=${JSON.stringify(clip.slice(0, 80))})`);
+  }
+
+  await actions.locator('button[aria-label="Truncate from here"]').click();
+  await win.waitForTimeout(300);
+
+  const after = await win.evaluate((sid) => {
+    const s = window.__ccsmStore.getState();
+    const blocks = s.messagesBySession[sid] ?? [];
+    const sess = s.sessions.find((x) => x.id === sid);
+    return {
+      blockIds: blocks.map((b) => b.id),
+      resume: sess?.resumeSessionId ?? null,
+      started: !!s.startedSessions[sid]
+    };
+  }, SID);
+  if (after.blockIds.length !== 1 || after.blockIds[0] !== 'a0') {
+    throw new Error(`expected blocks=[a0] after Truncate, got ${JSON.stringify(after.blockIds)}`);
+  }
+  if (after.resume !== null) {
+    throw new Error(`expected resumeSessionId=null after Truncate, got ${JSON.stringify(after.resume)}`);
+  }
+  if (after.started) {
+    throw new Error(`expected startedSessions cleared after Truncate, got true`);
+  }
+
+  log('hover reveals 4 actions; Copy -> clipboard; Truncate -> cut + clear resume');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'agent',
@@ -819,5 +1678,13 @@ await runHarness({
     { id: 'tool-stall-escalation', run: caseToolStallEscalation },
     { id: 'diagnostic-banner', run: caseDiagnosticBanner },
     { id: 'init-failure-banner', run: caseInitFailureBanner },
+    { id: 'streaming-journey-switch', run: caseStreamingJourneySwitch },
+    { id: 'streaming-journey-parallel', run: caseStreamingJourneyParallel },
+    { id: 'streaming-journey-queue-clear', run: caseStreamingJourneyQueueClear },
+    { id: 'streaming-journey-esc-interrupt', run: caseStreamingJourneyEscInterrupt },
+    { id: 'msg-queue', run: caseMsgQueue },
+    { id: 'esc-interrupt', run: caseEscInterrupt },
+    { id: 'composer-morph-mention', run: caseComposerMorphMention },
+    { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
   ]
 });
