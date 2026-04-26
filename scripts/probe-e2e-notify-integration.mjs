@@ -50,6 +50,40 @@ function fail(msg) {
   process.exit(1);
 }
 
+// FLAKE FIX: `BrowserWindow.blur()` is asynchronous from the OS's perspective
+// (especially on Windows). If the probe drives `window.ccsm.notify(...)`
+// immediately after `w.blur()`, the IPC handler in `electron/notifications.ts`
+// can still see `shouldSuppressForFocus() === true` (line 103) and silently
+// drop the call — manifesting as "timeout waiting for notify* call". We blur
+// every window then poll until focus is actually gone, with a hide() fallback
+// for the stubborn launch-time case.
+async function blurAndWaitUnfocused(app, { allowHideFallback = true } = {}) {
+  await app.evaluate(async ({ BrowserWindow }, allowHide) => {
+    const stillFocused = () => BrowserWindow.getAllWindows()
+      .some((w) => !w.isDestroyed() && w.isFocused() && w.isVisible());
+    for (const w of BrowserWindow.getAllWindows()) {
+      try { w.blur(); } catch {}
+    }
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline && stillFocused()) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (stillFocused() && allowHide) {
+      // Last resort for runners that hold focus on the launched Electron
+      // window (some headless / playwright environments). hide() reliably
+      // clears `isFocused()`; subsequent steps that need focus call
+      // `w.show()` + `w.focus()` explicitly anyway.
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { w.hide(); } catch {}
+      }
+      const deadline2 = Date.now() + 1000;
+      while (Date.now() < deadline2 && stillFocused()) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+  }, allowHideFallback);
+}
+
 const { port: PORT, close: closeServer } = await startBundleServer(root);
 
 // HOME / USERPROFILE sanitization per project rule — the probe must not
@@ -141,15 +175,11 @@ try {
   console.log(`[probe-e2e-notify-integration] seeded sessionId=${sessionId}`);
 
   // ── 3. Blur the window so focus suppression doesn't gate the probe ──────
-  // The legacy electron Notification path is still gated by
-  // `BrowserWindow.isFocused()` in main; we explicitly drop focus so emits
-  // fan out to the @ccsm/notify wrapper. (We re-test focus suppression at
-  // step 7 below by re-focusing.)
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { w.blur(); } catch {}
-    }
-  });
+  // The legacy electron Notification path is gated by `BrowserWindow.isFocused()`
+  // in main; we explicitly drop focus so emits fan out to the @ccsm/notify
+  // wrapper. (We re-test focus suppression at step 7 by re-focusing.)
+  // See `blurAndWaitUnfocused` for the rationale on polling.
+  await blurAndWaitUnfocused(app);
 
   const REQUEST_ID = 'probe-req-1';
 
@@ -346,11 +376,7 @@ try {
   // retry). Then verify cancellation: schedule a fresh retry and call the
   // resolvePermission IPC — the timer must have been removed without
   // firing.
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { w.blur(); } catch {}
-    }
-  });
+  await blurAndWaitUnfocused(app);
 
   const installedRetry = await app.evaluate(() => {
     const g = globalThis;
@@ -619,11 +645,7 @@ try {
   const REJECT_REQ = 'probe-q-reject-1';
   // Ensure the window is blurred so focus suppression doesn't gate the
   // initial emit (case 8 above re-focused it).
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { w.blur(); } catch {}
-    }
-  });
+  await blurAndWaitUnfocused(app);
 
   // Install a spy on `cancelQuestionRetry` that flags calls coming from
   // the router by wrapping the deps-injected reference, not the module
@@ -730,11 +752,7 @@ try {
   // The toast-action reject path (case 10c) routes through the default
   // router which focuses the main window. Blur again before firing the
   // next emit so focus suppression doesn't gate it.
-  await app.evaluate(({ BrowserWindow }) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { w.blur(); } catch {}
-    }
-  });
+  await blurAndWaitUnfocused(app);
   await win.evaluate((args) => {
     return window.ccsm.notify({
       sessionId: args.sessionId,
