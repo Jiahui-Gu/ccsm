@@ -2045,6 +2045,94 @@ async function caseNewSessionDefaultModelHonorsClaudeConfigDir({ log, registerDi
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// CASE: model-picker-list-honors-claude-config-dir
+// Bug #328 follow-up to PR #386. `listModelsFromSettings()` (the source for
+// the model picker list, exposed via IPC `models:list` →
+// `window.ccsm.models.list()`) had the same `os.homedir() + '.claude'`
+// hard-code that `readDefaultModelFromSettings()` had pre-#386. So under a
+// custom `CLAUDE_CONFIG_DIR`, any sentinel model id placed in the real
+// settings.json was silently dropped from the picker — the picker only
+// surfaced the static fallback / cli-picker entries instead.
+//
+// Setup mirrors `new-session-default-model-honors-claude-config-dir`:
+// HOME → decoy `~/.claude/settings.json` (no model fields);
+// CLAUDE_CONFIG_DIR → sandbox B with a sentinel model id.
+//
+// Without the fix: `models:list` returns the fallback list with NO sentinel.
+// With the fix: the sentinel id is present, tagged source 'settings'.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseModelPickerListHonorsClaudeConfigDir({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-models-cfgdir-home-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  // Decoy `~/.claude/settings.json` in HOME with NO model field. If the
+  // picker list reader fell back to homedir, it would see only the static
+  // fallback + cli-picker entries — never the sentinel below.
+  const decoyClaudeDir = path.join(fakeHome, '.claude');
+  fs.mkdirSync(decoyClaudeDir, { recursive: true });
+  fs.writeFileSync(path.join(decoyClaudeDir, 'settings.json'), JSON.stringify({}, null, 2));
+
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-models-cfgdir-real-'));
+  registerDispose(() => { try { fs.rmSync(cfgDir, { recursive: true, force: true }); } catch {} });
+  // Sentinel id is intentionally a string that cannot collide with any
+  // CLI_PICKER_MODELS / FALLBACK_MODELS / env-derived id, so its presence
+  // proves the read consulted CLAUDE_CONFIG_DIR.
+  const SENTINEL = 'sentinel-cfgdir-model-9zq';
+  fs.writeFileSync(
+    path.join(cfgDir, 'settings.json'),
+    JSON.stringify({ model: SENTINEL }, null, 2)
+  );
+  log(`HOME=${fakeHome} (decoy empty settings) | CLAUDE_CONFIG_DIR=${cfgDir} (model="${SENTINEL}")`);
+
+  const ud = isolatedUserData('ccsm-harness-models-cfgdir-userdata');
+  registerDispose(ud.cleanup);
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: cfgDir
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+
+    // Invoke the same IPC that the model picker UI uses.
+    const models = await win.evaluate(async () => {
+      // @ts-expect-error renderer global injected by preload
+      return await window.ccsm.models.list();
+    });
+    log(`models:list returned ${models.length} entries (first 3: ${JSON.stringify(models.slice(0, 3))})`);
+
+    const sentinelEntry = models.find((m) => m.id === SENTINEL);
+    if (!sentinelEntry) {
+      throw new Error(
+        `expected models:list to contain sentinel id "${SENTINEL}" sourced from CLAUDE_CONFIG_DIR/settings.json; ` +
+        `got ids=${JSON.stringify(models.map((m) => m.id))}. ` +
+        `listModelsFromSettings() should consult process.env.CLAUDE_CONFIG_DIR like readDefaultModelFromSettings() and commands-loader.ts do.`
+      );
+    }
+    if (sentinelEntry.source !== 'settings') {
+      throw new Error(
+        `sentinel "${SENTINEL}" found but source=${sentinelEntry.source}; expected 'settings' (top-level model field).`
+      );
+    }
+    log(`PASS — listModelsFromSettings honors CLAUDE_CONFIG_DIR (sentinel present, source='settings')`);
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // CASE: new-session-default-cwd-from-frequency
 //
 // Bug repro (post-#369): in the wild, "新建 session" still produces a default
@@ -2251,6 +2339,14 @@ await runHarness({
     // The same read must honor `CLAUDE_CONFIG_DIR` (commands-loader.ts:231
     // already does). ccsm pins this env var in production; this case
     // guards against future drift between the two readers.
-    { id: 'new-session-default-model-honors-claude-config-dir', skipLaunch: true, run: caseNewSessionDefaultModelHonorsClaudeConfigDir }
+    { id: 'new-session-default-model-honors-claude-config-dir', skipLaunch: true, run: caseNewSessionDefaultModelHonorsClaudeConfigDir },
+    // Bug #328 follow-up: `listModelsFromSettings()` in list-models-from-settings.ts
+    // is the second consumer of `<configDir>/settings.json` in this module and
+    // had the SAME hard-coded `os.homedir() + '.claude'` fallback that
+    // `readDefaultModelFromSettings()` had pre-#386. The model picker list
+    // therefore silently ignores settings.json under a custom CLAUDE_CONFIG_DIR.
+    // This case mirrors the case above but asserts the IPC `models:list`
+    // result (what populates the picker UI) reflects the sandbox-B settings.
+    { id: 'model-picker-list-honors-claude-config-dir', skipLaunch: true, run: caseModelPickerListHonorsClaudeConfigDir }
   ]
 });
