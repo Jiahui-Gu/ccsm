@@ -67,7 +67,6 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         "theme",
         "fontSize",
         "fontSizePx",
-        "density",
         "recentProjects",
         "tutorialSeen",
         "notificationSettings",
@@ -138,7 +137,6 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
       theme: 'dark',
       fontSize: 'lg',
       fontSizePx: 16,
-      density: 'compact',
       recentProjects: [{ id: 'p1', name: 'n', path: '/x' }],
       tutorialSeen: true,
       notificationSettings: {

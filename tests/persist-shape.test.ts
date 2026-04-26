@@ -29,7 +29,6 @@ describe('persist: curated snapshot payload', () => {
         theme: 'system',
         fontSize: 'md',
         fontSizePx: 14,
-        density: 'normal',
         recentProjects: [],
         tutorialSeen: false,
         notificationSettings: {
@@ -61,7 +60,6 @@ describe('persist: curated snapshot payload', () => {
         'theme',
         'fontSize',
         'fontSizePx',
-        'density',
         'recentProjects',
         'tutorialSeen',
         'notificationSettings'

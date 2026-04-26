@@ -35,7 +35,7 @@
 // a future-proof spot in case persist.ts ever splits keys into rows.
 const APP_STATE_KEEP = new Set([
   // currently empty — see comment above. If/when persist.ts splits keys, list
-  // the survivors here (e.g. 'theme', 'fontSize', 'fontSizePx', 'density').
+  // the survivors here (e.g. 'theme', 'fontSize', 'fontSizePx').
 ]);
 
 /**

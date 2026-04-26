@@ -4,7 +4,6 @@ import {
   legacyFontSizeToPx,
   pxToLegacyFontSize,
   sanitizeFontSizePx,
-  sanitizeDensity,
   sanitizeSidebarWidth,
   resolvePersistedSidebarWidth,
   SIDEBAR_WIDTH_DEFAULT,
@@ -61,20 +60,6 @@ describe('font size migration', () => {
     expect(sanitizeFontSizePx(null)).toBe(14);
     expect(sanitizeFontSizePx(99)).toBe(14);
     expect(sanitizeFontSizePx(NaN)).toBe(14);
-  });
-});
-
-describe('density sanitize', () => {
-  it('passes through valid values', () => {
-    expect(sanitizeDensity('compact')).toBe('compact');
-    expect(sanitizeDensity('normal')).toBe('normal');
-    expect(sanitizeDensity('comfortable')).toBe('comfortable');
-  });
-
-  it('coerces invalid to normal (default)', () => {
-    expect(sanitizeDensity('weird')).toBe('normal');
-    expect(sanitizeDensity(undefined)).toBe('normal');
-    expect(sanitizeDensity(42)).toBe('normal');
   });
 });
 
