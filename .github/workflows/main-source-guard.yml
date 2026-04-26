@@ -1,0 +1,17 @@
+name: main source guard
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-working source
+        run: |
+          if [ "${{ github.head_ref }}" != "working" ]; then
+            echo "::error::PRs to main must come from 'working'. Got '${{ github.head_ref }}'."
+            exit 1
+          fi
+          echo "OK: PR head ref is 'working'."
