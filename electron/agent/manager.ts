@@ -45,6 +45,14 @@ export type AgentDiagnostic = {
 class SessionsManager {
   private runners = new Map<string, Runner>();
   private sender: Sender | null = null;
+  // Test-only counter incremented when a runner's onExit callback fires
+  // *before* close()/closeAll() removed it from the map — i.e. the CLI
+  // self-crashed/exited rather than being torn down by the manager. Read
+  // by the close-window / delete-session probes via `__ccsmDebug` to
+  // distinguish "count went to 0 because handler worked" (counter unchanged)
+  // from "count went to 0 because CLI happened to die" (counter incremented).
+  // Has no production read path.
+  private selfExitCount = 0;
 
   bindSender(wc: WebContents): void {
     this.sender = (channel, payload) => {
@@ -90,6 +98,17 @@ class SessionsManager {
     return this.runners.size;
   }
 
+  /**
+   * Test-only: total count of CLI self-exits observed since process start.
+   * Probes baseline this before triggering the path under test, then assert
+   * it didn't move during the poll window — otherwise their `count → 0`
+   * assertion could be satisfied by an unrelated CLI crash instead of the
+   * close handler. Read via `__ccsmDebug.selfExitCount()`.
+   */
+  selfExitsSinceStart(): number {
+    return this.selfExitCount;
+  }
+
   async start(sessionId: string, opts: StartOptions): Promise<StartResult> {
     if (this.runners.has(sessionId)) return { ok: true };
     // Race the SDK consumer's first signal (event = healthy, exit = early
@@ -117,6 +136,10 @@ class SessionsManager {
             return;
           }
           this.emit('agent:exit', { sessionId, error });
+          // Discriminate self-exit (CLI crashed) from manager-driven teardown:
+          // close()/closeAll() delete from `runners` *before* this callback
+          // fires, so `has(sessionId)` is true only on the self-exit path.
+          if (this.runners.has(sessionId)) this.selfExitCount += 1;
           this.runners.delete(sessionId);
         },
         (req) => this.emit('agent:permissionRequest', { sessionId, ...req }),
