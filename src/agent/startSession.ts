@@ -1,5 +1,6 @@
 import { useStore } from '../stores/store';
 import { i18next } from '../i18n';
+import { getMaxThinkingTokensForModel } from './thinking';
 
 /**
  * Kick off `agent:start` for the given session and reconcile store state
@@ -56,6 +57,17 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
     // is already false. Without this reset the banner stayed visible until
     // app restart even after the user reinstalled and a session launched OK.
     store.setInstallerCorrupt(false);
+    // Push the resolved thinking-tokens cap to the freshly-spawned session
+    // so launch + resume both honour the user's `/think` toggle. Mirrors
+    // upstream's `launchClaude(..., thinkingLevel)` behaviour where the cap
+    // is delivered as the first control RPC after init. Sent unconditionally
+    // (including the value 0) so an off-by-default session explicitly clears
+    // any stale cap from the SDK side.
+    const fresh = useStore.getState();
+    const level =
+      fresh.thinkingLevelBySession[sessionId] ?? fresh.globalThinkingDefault;
+    const tokens = getMaxThinkingTokensForModel(session.model || undefined, level);
+    void api.agentSetMaxThinkingTokens(sessionId, tokens);
     return true;
   }
 

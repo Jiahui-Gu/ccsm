@@ -97,3 +97,18 @@ function attach(name: string, handler: (ctx: SlashCommandContext) => void | Prom
 
 attach('clear', handleClear);
 attach('config', handleConfig);
+
+// ---------- /think ----------
+// Toggle the active session's extended-thinking level. No CLI pass-through —
+// upstream's VS Code extension also handles this entirely client-side via
+// `extension.setThinkingLevel(level)`. The store action takes care of the
+// IPC fan-out so this handler is intentionally trivial.
+export function handleThink(ctx: SlashCommandContext): void {
+  const store = useStore.getState();
+  const current =
+    store.thinkingLevelBySession[ctx.sessionId] ?? store.globalThinkingDefault;
+  const next = current === 'off' ? 'default_on' : 'off';
+  store.setThinkingLevel(ctx.sessionId, next);
+}
+
+attach('think', handleThink);

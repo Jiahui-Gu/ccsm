@@ -603,6 +603,40 @@ export class SdkSessionRunner {
     }
   }
 
+  /**
+   * Push an updated `max_thinking_tokens` cap into the live SDK session.
+   * Sent unconditionally (including the value 0) so toggling `/think` off
+   * produces an explicit clear, matching upstream's behaviour. No-op until
+   * `start()` has installed `this.query`.
+   */
+  async setMaxThinkingTokens(tokens: number): Promise<void> {
+    if (!this.query) return;
+    try {
+      // SDK exposes setMaxThinkingTokens on the Query handle (mirrors
+      // upstream `extension.setThinkingLevel` → `query.setMaxThinkingTokens`).
+      const q = this.query as unknown as {
+        setMaxThinkingTokens?: (n: number) => Promise<void>;
+      };
+      if (typeof q.setMaxThinkingTokens !== 'function') {
+        this.onDiagnostic({
+          level: 'warn',
+          code: 'set_max_thinking_tokens_unsupported',
+          message: 'SDK Query.setMaxThinkingTokens missing — extended thinking toggle ignored.',
+        });
+        return;
+      }
+      await q.setMaxThinkingTokens(tokens);
+    } catch (err) {
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'set_max_thinking_tokens_timeout',
+        message: `Agent unresponsive to thinking-tokens change (${
+          err instanceof Error ? err.message : String(err)
+        }).`,
+      });
+    }
+  }
+
   async setModel(model?: string): Promise<void> {
     if (!this.query || !model) return;
     try {

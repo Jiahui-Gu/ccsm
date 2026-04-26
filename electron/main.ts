@@ -990,6 +990,39 @@ app.whenReady().then(() => {
     if (!fromMainFrame(e)) return false;
     return sessions.setModel(sessionId, model);
   });
+  /**
+   * Apply the resolved `max_thinking_tokens` cap to a live session. The
+   * renderer computes the value via `getMaxThinkingTokensForModel(model,
+   * level)` so the main side stays a thin pass-through (and so a future
+   * upstream per-model branch only has to land in one place). Validates
+   * payload defensively — a non-finite or negative `tokens` from a buggy
+   * renderer would otherwise reach the SDK and throw mid-session.
+   */
+  ipcMain.handle(
+    'agent:setMaxThinkingTokens',
+    async (
+      e,
+      sessionId: string,
+      tokens: number,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      if (
+        typeof sessionId !== 'string' ||
+        !sessionId ||
+        typeof tokens !== 'number' ||
+        !Number.isFinite(tokens) ||
+        tokens < 0
+      ) {
+        return { ok: false, error: 'bad_payload' };
+      }
+      try {
+        const ok = await sessions.setMaxThinkingTokens(sessionId, Math.floor(tokens));
+        return ok ? { ok: true } : { ok: false, error: 'no_session' };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
   ipcMain.handle('agent:close', (e, sessionId: string) => {
     if (!fromMainFrame(e)) return false;
     return sessions.close(sessionId);

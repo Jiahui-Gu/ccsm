@@ -644,8 +644,9 @@ describe('store: installerCorrupt flag', () => {
     expect(useStore.getState().installerCorrupt).toBe(true);
 
     const agentStart = vi.fn().mockResolvedValue({ ok: true });
+    const agentSetMaxThinkingTokens = vi.fn().mockResolvedValue({ ok: true });
     (globalThis as unknown as { window?: { ccsm?: unknown } }).window = {
-      ccsm: { agentStart }
+      ccsm: { agentStart, agentSetMaxThinkingTokens }
     };
 
     const { startSessionAndReconcile } = await import('../src/agent/startSession');
