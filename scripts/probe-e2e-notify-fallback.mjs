@@ -1,19 +1,22 @@
-// E2E: When the optional `@ccsm/notify` native module is unavailable
-// (npm install skipped it because the @nodert-win10-au native deps wouldn't
-// build on this machine), CCSM must:
+// E2E: When the optional `electron-windows-notifications` native module is
+// unavailable (npm install skipped it because the @nodert-win10-au native
+// deps wouldn't build on this machine), CCSM must:
 //
 //   1. Start cleanly — no startup crash, no unhandled promise rejection.
 //   2. Surface the fallback state in Settings → Notifications via the
 //      `data-testid=notifications-module-status` indicator
 //      (`data-available="false"` plus the sentence-case English string).
 //   3. The IPC `notify:availability` returns `{ available: false, error: ... }`
-//      with an error message that proves the dynamic import was attempted
+//      with an error message that proves the native require was attempted
 //      and failed.
 //
-// We simulate "optional install failed" by renaming `node_modules/@ccsm/notify`
-// to a sibling path before launching electron, then restoring it on exit.
-// The wrapper's dynamic import then throws ERR_MODULE_NOT_FOUND just as it
-// would on a user machine where the native deps couldn't compile.
+// We simulate "optional install failed" by renaming
+// `node_modules/electron-windows-notifications` to a sibling path before
+// launching electron, then restoring it on exit. The `WindowsAdapter`
+// constructor's `require('electron-windows-notifications')` then throws
+// MODULE_NOT_FOUND just as it would on a user machine where the native deps
+// couldn't compile, and that bubbles up to `Notifier.create` rejection in
+// the wrapper.
 //
 // Reverse-verify: stash the try/catch in `electron/notify.ts` (and rebuild)
 // and re-run this probe; it must FAIL with an unhandled rejection logged or
@@ -34,8 +37,12 @@ function fail(msg) {
   process.exit(1);
 }
 
-const notifyDir = path.join(root, 'node_modules', '@ccsm', 'notify');
-const stashedDir = path.join(root, 'node_modules', '@ccsm', 'notify.__probe_stash__');
+const notifyDir = path.join(root, 'node_modules', 'electron-windows-notifications');
+const stashedDir = path.join(
+  root,
+  'node_modules',
+  'electron-windows-notifications.__probe_stash__',
+);
 
 let stashed = false;
 function stashNotify() {
@@ -72,7 +79,7 @@ process.on('SIGINT', () => {
 // --- 1. Hide the optional dep -------------------------------------------
 stashNotify();
 if (fs.existsSync(notifyDir)) {
-  fail(`failed to stash node_modules/@ccsm/notify at ${notifyDir}`);
+  fail(`failed to stash node_modules/electron-windows-notifications at ${notifyDir}`);
 }
 
 const { port: PORT, close: closeServer } = await startBundleServer(root);
@@ -173,10 +180,12 @@ try {
   const text = (await status.textContent())?.trim() ?? '';
   if (!text) fail('notifications-module-status indicator was empty');
   // The English fallback message MUST be sentence case (no SCREAMING),
-  // mention @ccsm/notify, and explicitly call out "in-app banners" so the
-  // user knows what to expect instead.
+  // mention the native notification module, and explicitly call out
+  // "in-app banners" so the user knows what to expect instead.
   const lower = text.toLowerCase();
-  if (!lower.includes('@ccsm/notify')) fail(`fallback message missing @ccsm/notify: "${text}"`);
+  if (!lower.includes('native notification module')) {
+    fail(`fallback message missing "native notification module": "${text}"`);
+  }
   if (!lower.includes('in-app banners')) fail(`fallback message missing "in-app banners": "${text}"`);
   // Reject all-caps words (>3 letters) — project's "no SCREAMING UI strings".
   for (const word of text.split(/\s+/)) {

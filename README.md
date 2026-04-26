@@ -110,8 +110,9 @@ attention or a long-running turn finishes:
 - `turn_done` — a turn finished, and either took longer than 15 seconds,
   errored, or completed in a session that wasn't focused.
 
-On Windows, when the optional `@ccsm/notify` package is installed (it ships
-as an `optionalDependency`; see Wave 1B), CCSM uses Adaptive Toasts with
+On Windows, when the optional `electron-windows-notifications` native module
+is installed (it ships as an `optionalDependency` and may fail to build on
+machines without MSBuild — that's tolerated), CCSM uses Adaptive Toasts with
 inline buttons — clicking **Allow** / **Allow always** / **Reject** on the
 toast resolves the in-app permission prompt without bringing the window
 forward. On other platforms, or when the optional native module fails to
@@ -137,7 +138,7 @@ CCSM register both automatically. For `npm run dev` (no installer is run),
 register them once per machine:
 
 ```powershell
-pwsh node_modules/@ccsm/notify/scripts/setup-aumid.ps1
+pwsh scripts/setup-aumid.ps1
 ```
 
 Without this, the Adaptive Toast pipeline silently no-ops in dev mode and

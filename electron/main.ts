@@ -508,7 +508,7 @@ app.whenReady().then(() => {
   }
   initDb();
 
-  // Wave 1D: bootstrap the optional `@ccsm/notify` Adaptive Toast pipeline.
+  // Wave 1D: bootstrap the optional the inlined notify module Adaptive Toast pipeline.
   // Wrapped in try/catch by the bootstrap helper itself; failure (missing
   // native deps, unregistered AUMID, non-win32) leaves the app running with
   // the legacy Electron Notification path. The router below routes toast
@@ -1305,7 +1305,7 @@ app.whenReady().then(() => {
       // count-dropped-to-0-because-CLI-self-crashed.
       selfExitCount: () => sessions.selfExitsSinceStart(),
       // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
-      // can swap the @ccsm/notify importer for a fake without resorting to
+      // can swap the the inlined notify module importer for a fake without resorting to
       // `require` from inside `app.evaluate` (where it's not in scope).
       notify: notifyMod,
       notifyBootstrap: bootstrapMod,

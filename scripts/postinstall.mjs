@@ -10,10 +10,11 @@
 //
 // Now we fail loudly for REQUIRED native deps (better-sqlite3) and tolerate
 // failures for OPTIONAL native deps (the @nodert-win10-au/* chain pulled in
-// by @ccsm/notify, which has no prebuilds and needs a working MSBuild
-// toolchain to compile). The optional chain is exposed through
-// `electron/notify.ts`, which lazy-loads @ccsm/notify and falls back to
-// in-app banners if the import throws — so a failed rebuild is recoverable.
+// by `electron-windows-notifications`, which has no prebuilds and needs a
+// working MSBuild toolchain to compile). The optional chain is exposed
+// through `electron/notify.ts`, which lazy-loads the inlined notify module
+// (`electron/notify-impl/`) and falls back to in-app banners if the native
+// require throws — so a failed rebuild is recoverable.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -57,11 +58,11 @@ if (fullRebuild.signal) {
 
 if (typeof fullRebuild.status === 'number' && fullRebuild.status !== 0) {
   // The full rebuild failed. The most common cause is the @nodert-win10-au
-  // native chain pulled in by the optional @ccsm/notify dep (no prebuilds,
-  // requires MSBuild). Try rebuilding just better-sqlite3 — that's the only
-  // REQUIRED native module the app needs at runtime. If that succeeds,
-  // demote the original failure to a warning and let install proceed; the
-  // app's notify wrapper will fall back to in-app banners.
+  // native chain pulled in by the optional `electron-windows-notifications`
+  // dep (no prebuilds, requires MSBuild). Try rebuilding just better-sqlite3
+  // — that's the only REQUIRED native module the app needs at runtime. If
+  // that succeeds, demote the original failure to a warning and let install
+  // proceed; the app's notify wrapper will fall back to in-app banners.
   console.warn(
     `\n[postinstall] electron-builder install-app-deps exited with code ${fullRebuild.status}. ` +
       `Retrying with the required-only set (better-sqlite3) — see task #267.`,
@@ -93,9 +94,9 @@ if (typeof fullRebuild.status === 'number' && fullRebuild.status !== 0) {
 
   console.warn(
     '\n[postinstall] better-sqlite3 rebuilt OK. Optional native deps (e.g. ' +
-      '@ccsm/notify -> @nodert-win10-au/*) failed to build; CCSM will fall ' +
-      'back to in-app banners and standard system notifications. See ' +
-      'electron/notify.ts.',
+      'electron-windows-notifications -> @nodert-win10-au/*) failed to ' +
+      'build; CCSM will fall back to in-app banners and standard system ' +
+      'notifications. See electron/notify.ts.',
   );
   process.exit(0);
 }
