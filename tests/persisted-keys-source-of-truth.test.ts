@@ -146,8 +146,8 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         turnDone: false,
         sound: false
       },
-      globalThinkingDefault: 'default_on',
-      thinkingLevelBySession: { 's-test': 'default_on' }
+      globalThinkingDefault: 'think_harder',
+      thinkingLevelBySession: { 's-test': 'think_harder' }
     };
 
     for (const k of PERSISTED_KEYS) {

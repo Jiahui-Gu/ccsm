@@ -58,11 +58,12 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
     // app restart even after the user reinstalled and a session launched OK.
     store.setInstallerCorrupt(false);
     // Push the resolved thinking-tokens cap to the freshly-spawned session
-    // so launch + resume both honour the user's `/think` toggle. Mirrors
-    // upstream's `launchClaude(..., thinkingLevel)` behaviour where the cap
-    // is delivered as the first control RPC after init. Sent unconditionally
-    // (including the value 0) so an off-by-default session explicitly clears
-    // any stale cap from the SDK side.
+    // so launch + resume both honour the StatusBar Thinking chip's value
+    // (and any persisted per-session override). Mirrors upstream's
+    // `launchClaude(..., thinkingLevel)` behaviour where the cap is
+    // delivered as the first control RPC after init. Sent unconditionally
+    // (including the value 0) so an off-by-default session explicitly
+    // clears any stale cap from the SDK side.
     const fresh = useStore.getState();
     const level =
       fresh.thinkingLevelBySession[sessionId] ?? fresh.globalThinkingDefault;

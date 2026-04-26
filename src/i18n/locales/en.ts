@@ -557,7 +557,41 @@ const en = {
     // Mirrors the official VS Code Claude extension's auto-compact tooltip
     // wording so users who switch between surfaces see the same prompt.
     contextTooltip: '{{percent}}% used ({{used}} / {{limit}} tokens). Click to /compact.',
-    contextAriaLabel: '{{percent}}% of context window used. Click to compact.'
+    contextAriaLabel: '{{percent}}% of context window used. Click to compact.',
+    // Extended-thinking tier picker. Five options that mirror the upstream
+    // CLI keyword detector — "off" plus the four token tiers ("think",
+    // "think hard", "think harder", "ultrathink"). Sentence case throughout
+    // (no SCREAMING UI strings). Tooltips name the cap so power users can
+    // verify the wiring without reading source.
+    thinking: {
+      menuLabel: 'Extended thinking',
+      triggerPrefix: 'thinking:',
+      off: {
+        label: 'Off',
+        desc: 'No extended thinking',
+        tooltip: 'Extended thinking off — model replies without a thinking budget.'
+      },
+      think: {
+        label: 'Think',
+        desc: 'Light thinking · 4,000 tokens',
+        tooltip: 'Think — small thinking budget (~4,000 tokens). Cheapest tier.'
+      },
+      think_hard: {
+        label: 'Think hard',
+        desc: 'Medium thinking · 10,000 tokens',
+        tooltip: 'Think hard — medium thinking budget (~10,000 tokens).'
+      },
+      think_harder: {
+        label: 'Think harder',
+        desc: 'Deep thinking · 31,999 tokens',
+        tooltip: 'Think harder — deep thinking budget (~31,999 tokens).'
+      },
+      ultrathink: {
+        label: 'Ultrathink',
+        desc: 'Maximum thinking · 31,999 tokens',
+        tooltip: 'Ultrathink — maximum thinking budget (~31,999 tokens, same cap as think harder upstream).'
+      }
+    }
   },
   cwdPopover: {
     placeholder: 'Type to filter or paste a path…',

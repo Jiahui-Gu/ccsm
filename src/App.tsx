@@ -87,6 +87,9 @@ export default function App() {
   const pushRecentProject = useStore((s) => s.pushRecentProject);
   const setSessionModel = useStore((s) => s.setSessionModel);
   const setPermission = useStore((s) => s.setPermission);
+  const setThinkingLevel = useStore((s) => s.setThinkingLevel);
+  const globalThinkingDefault = useStore((s) => s.globalThinkingDefault);
+  const thinkingLevelBySession = useStore((s) => s.thinkingLevelBySession);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
@@ -207,6 +210,14 @@ export default function App() {
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
     [sessions, activeId]
   );
+
+  // Resolve the per-session extended-thinking level for the StatusBar
+  // chip. Per-session override wins; fall back to the persisted global
+  // default. Mirrors the same precedence the SDK runner uses in
+  // src/agent/startSession.ts when seeding the cap on launch.
+  const thinkingLevel = active
+    ? thinkingLevelBySession[active.id] ?? globalThinkingDefault
+    : globalThinkingDefault;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -418,6 +429,7 @@ export default function App() {
                 sessionId={active.id}
                 model={active.model || model}
                 permission={permission}
+                thinkingLevel={thinkingLevel}
                 onChangeCwdToPath={(p) => {
                   if (!p) return;
                   changeCwd(p);
@@ -431,6 +443,7 @@ export default function App() {
                 }}
                 onChangeModel={(m) => setSessionModel(active.id, m)}
                 onChangePermission={setPermission}
+                onChangeThinkingLevel={(level) => setThinkingLevel(active.id, level)}
               />
               <InputBar sessionId={active.id} />
             </main>

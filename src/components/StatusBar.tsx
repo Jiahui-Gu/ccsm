@@ -12,6 +12,7 @@ import {
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { CwdPopover } from './CwdPopover';
+import { THINKING_LEVELS, type ThinkingLevel } from '../agent/thinking';
 
 // Permission mode values match claude.exe's `--permission-mode` flag 1:1.
 // We use the official CLI names (title-cased for display) rather than
@@ -66,6 +67,9 @@ type ChipMenuProps<V extends string> = {
   triggerLabel: string;
   triggerTitle?: string;
   triggerAccent?: 'warn';
+  /** Optional `data-testid` forwarded to the chip trigger for stable e2e
+   *  selection (e.g. the StatusBar Thinking chip). */
+  triggerTestId?: string;
   options: ChipOption<V>[];
   onSelect: (value: V) => void;
 };
@@ -76,6 +80,7 @@ function ChipMenu<V extends string>({
   triggerLabel,
   triggerTitle,
   triggerAccent,
+  triggerTestId,
   options,
   onSelect
 }: ChipMenuProps<V>) {
@@ -100,7 +105,7 @@ function ChipMenu<V extends string>({
       }}
     >
       <DropdownMenuTrigger asChild>
-        <Chip title={triggerTitle} accent={triggerAccent}>{triggerLabel}</Chip>
+        <Chip title={triggerTitle} accent={triggerAccent} data-testid={triggerTestId}>{triggerLabel}</Chip>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="min-w-[240px] max-h-[360px] overflow-y-auto">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
@@ -276,10 +281,12 @@ export type StatusBarProps = {
   sessionId: string;
   model: string;
   permission: PermissionMode;
+  thinkingLevel: ThinkingLevel;
   onChangeCwdToPath: (cwd: string) => void;
   onBrowseForCwd: () => void;
   onChangeModel: (model: string) => void;
   onChangePermission: (mode: PermissionMode) => void;
+  onChangeThinkingLevel: (level: ThinkingLevel) => void;
 };
 
 export function StatusBar({
@@ -288,10 +295,12 @@ export function StatusBar({
   sessionId,
   model,
   permission,
+  thinkingLevel,
   onChangeCwdToPath,
   onBrowseForCwd,
   onChangeModel,
-  onChangePermission
+  onChangePermission,
+  onChangeThinkingLevel
 }: StatusBarProps) {
   const { t } = useTranslation();
   const models = useStore((s) => s.models);
@@ -348,6 +357,25 @@ export function StatusBar({
   // Render the trigger as the model id, else a friendly placeholder.
   const modelTriggerLabel = model || t('statusBar.pickModel');
 
+  // Extended-thinking tiers — five options that mirror the upstream CLI
+  // keyword detector (off / think / think hard / think harder /
+  // ultrathink). Ordered from cheapest to deepest so the user-facing
+  // mental model matches "more = more". Token caps live in
+  // src/agent/thinking.ts (single source of truth, re-grep on SDK bump).
+  const thinkingOptions: ChipOption<ThinkingLevel>[] = THINKING_LEVELS.map(
+    (level) => ({
+      kind: 'item' as const,
+      value: level,
+      primary: t(`statusBar.thinking.${level}.label`),
+      secondary: t(`statusBar.thinking.${level}.desc`),
+    }),
+  );
+
+  const thinkingTriggerLabel = `${t('statusBar.thinking.triggerPrefix')} ${t(
+    `statusBar.thinking.${thinkingLevel}.label`,
+  )}`;
+  const thinkingTooltip = t(`statusBar.thinking.${thinkingLevel}.tooltip`);
+
   const chips: React.ReactNode[] = [
     cwdChip,
     <ChipMenu
@@ -367,6 +395,16 @@ export function StatusBar({
       triggerAccent={permission === 'bypassPermissions' ? 'warn' : undefined}
       options={permissionOptions}
       onSelect={onChangePermission}
+    />,
+    <ChipMenu
+      key="thinking"
+      popoverId="thinking"
+      label={t('statusBar.thinking.menuLabel')}
+      triggerLabel={thinkingTriggerLabel}
+      triggerTitle={thinkingTooltip}
+      triggerTestId="thinking-chip"
+      options={thinkingOptions}
+      onSelect={onChangeThinkingLevel}
     />
   ];
   if (contextChipVisible) {

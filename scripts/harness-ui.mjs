@@ -2281,6 +2281,127 @@ async function caseToolRenderOpenInEditor({ win, log }) {
   log('short→absent, long→present(opacity 0), click→temp file written, button → "Opened"');
 }
 
+// ---------- thinking-chip ----------
+// Verifies the StatusBar Thinking dropdown — five tiers (off / think /
+// think hard / think harder / ultrathink), trigger label reflects current
+// state, and selecting a tier:
+//   1. updates the store (per-session override)
+//   2. fires the `agent:setMaxThinkingTokens` IPC with the upstream cap
+//      for that tier (off=0, think=4000, think_hard=10000,
+//      think_harder=ultrathink=31999).
+// Replaces the standalone probe-e2e-thinking-toggle.mjs (which exercised
+// the retired `/think` slash + Switch facsimile path) — keeping coverage
+// in the harness avoids a fresh ~30s electron boot per release.
+async function caseThinkingChip({ app, win, log }) {
+  // Install ipcMain spy on agent:setMaxThinkingTokens. Renderer-side
+  // window.ccsm methods are contextBridge-bound and non-writable, so the
+  // spy must live in main. Echo the upstream success shape so the store
+  // doesn't see a rejection.
+  await app.evaluate(({ ipcMain }) => {
+    const calls = (global.__thinkingIpcCalls = []);
+    try {
+      ipcMain.removeHandler('agent:setMaxThinkingTokens');
+    } catch {}
+    ipcMain.handle('agent:setMaxThinkingTokens', (_e, sessionId, tokens) => {
+      calls.push({ sessionId, tokens });
+      return { ok: true };
+    });
+  });
+
+  // Seed an active, started session so the StatusBar renders all chips
+  // and setThinkingLevel actually fires the IPC fan-out (it short-
+  // circuits for un-started sessions since there's no Query handle yet).
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: 's-think', name: 't', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+      }],
+      activeId: 's-think',
+      model: 'claude-opus-4',
+      models: [{ id: 'claude-opus-4', source: 'manual' }],
+      modelsLoaded: true,
+      messagesBySession: { 's-think': [] },
+      startedSessions: { 's-think': true },
+      runningSessions: {},
+      messageQueues: {},
+      openPopoverId: null,
+      globalThinkingDefault: 'off',
+      thinkingLevelBySession: {}
+    });
+  });
+  await win.waitForTimeout(150);
+
+  const chip = win.locator('[data-testid="thinking-chip"]');
+  await chip.waitFor({ state: 'visible', timeout: 5000 });
+
+  // Initial trigger label reflects the off state.
+  const labelOff = (await chip.innerText()).trim();
+  if (!/off/i.test(labelOff)) {
+    throw new Error(`thinking chip initial label expected to mention 'off', got ${JSON.stringify(labelOff)}`);
+  }
+
+  // Tier-by-tier walk. Each iteration: open the dropdown, click the
+  // option by its unique secondary description (the primary label "Think"
+  // is a substring of the others, so anchoring on the description avoids
+  // ambiguous matches), then assert store + IPC + trigger label.
+  const tiers = [
+    { value: 'think',         primary: 'Think',         desc: '4,000 tokens',   cap: 4000  },
+    { value: 'think_hard',    primary: 'Think hard',    desc: '10,000 tokens',  cap: 10000 },
+    { value: 'think_harder',  primary: 'Think harder',  desc: '31,999 tokens',  cap: 31999 },
+    { value: 'ultrathink',    primary: 'Ultrathink',    desc: 'Maximum',        cap: 31999 },
+    { value: 'off',           primary: 'Off',           desc: 'No extended',    cap: 0     }
+  ];
+
+  for (const tier of tiers) {
+    await chip.click();
+    const menu = win.locator('[role="menu"]').first();
+    await menu.waitFor({ state: 'visible', timeout: 3000 });
+
+    const option = menu.locator('[role="menuitem"]', { hasText: tier.desc }).first();
+    await option.click();
+
+    // Wait for the menu to close + the store to flip.
+    await win.waitForFunction(
+      ([sid, expected]) => {
+        const s = window.__ccsmStore.getState();
+        return (s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault) === expected;
+      },
+      ['s-think', tier.value],
+      { timeout: 3000 }
+    );
+
+    // IPC: most-recent call must match this tier's cap (off=0 included).
+    const lastCall = await app.evaluate(() => {
+      const calls = global.__thinkingIpcCalls || [];
+      return calls[calls.length - 1] ?? null;
+    });
+    if (!lastCall || lastCall.sessionId !== 's-think' || lastCall.tokens !== tier.cap) {
+      throw new Error(
+        `tier ${tier.value}: expected IPC { sessionId: 's-think', tokens: ${tier.cap} }, ` +
+        `got ${JSON.stringify(lastCall)}`
+      );
+    }
+
+    // Trigger label refreshes to the picked tier (sentence case, not
+    // SCREAMING — UI strings rule).
+    const label = (await chip.innerText()).trim();
+    if (!label.toLowerCase().endsWith(tier.primary.toLowerCase())) {
+      throw new Error(`tier ${tier.value}: trigger label ${JSON.stringify(label)} did not end with ${JSON.stringify(tier.primary)}`);
+    }
+  }
+
+  // Total IPC count = number of tiers walked (one per click).
+  const total = await app.evaluate(() => (global.__thinkingIpcCalls || []).length);
+  if (total !== tiers.length) {
+    throw new Error(`expected ${tiers.length} IPC calls (one per tier), got ${total}`);
+  }
+
+  log(`5 tiers walked, store + IPC + trigger label all match (off→4000→10000→31999→31999→0)`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -2331,7 +2452,8 @@ await runHarness({
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
     { id: 'terminal', run: caseTerminal },
-    { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor }
+    { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor },
+    { id: 'thinking-chip', run: caseThinkingChip }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

@@ -527,7 +527,36 @@ const zh: EnCatalog = {
     modeAutoTooltip: '自动 — 研究预览，需 Sonnet 4.6+。当前账号或模型不支持时会回退到默认。',
     contextLabel: '上下文',
     contextTooltip: '已用 {{percent}}%（{{used}} / {{limit}} 个 token）。点击执行 /compact。',
-    contextAriaLabel: '上下文窗口已使用 {{percent}}%。点击触发压缩。'
+    contextAriaLabel: '上下文窗口已使用 {{percent}}%。点击触发压缩。',
+    thinking: {
+      menuLabel: '扩展思考',
+      triggerPrefix: '思考：',
+      off: {
+        label: '关闭',
+        desc: '不启用扩展思考',
+        tooltip: '扩展思考已关闭——模型直接作答，无思考预算。'
+      },
+      think: {
+        label: '思考',
+        desc: '轻度思考 · 4,000 tokens',
+        tooltip: '思考——少量思考预算（约 4,000 tokens）。最经济档。'
+      },
+      think_hard: {
+        label: '深入思考',
+        desc: '中度思考 · 10,000 tokens',
+        tooltip: '深入思考——中等思考预算（约 10,000 tokens）。'
+      },
+      think_harder: {
+        label: '更深思考',
+        desc: '深度思考 · 31,999 tokens',
+        tooltip: '更深思考——深度思考预算（约 31,999 tokens）。'
+      },
+      ultrathink: {
+        label: '终极思考',
+        desc: '最大思考 · 31,999 tokens',
+        tooltip: '终极思考——最大思考预算（约 31,999 tokens，与「更深思考」同档）。'
+      }
+    }
   },
   cwdPopover: {
     placeholder: '输入筛选或粘贴路径…',

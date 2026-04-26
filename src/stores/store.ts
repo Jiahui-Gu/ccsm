@@ -7,7 +7,11 @@ import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { disposeStreamer } from '../agent/lifecycle';
 import { streamEventToTranslation } from '../agent/stream-to-blocks';
-import { getMaxThinkingTokensForModel, type ThinkingLevel } from '../agent/thinking';
+import {
+  coerceThinkingLevel,
+  getMaxThinkingTokensForModel,
+  type ThinkingLevel,
+} from '../agent/thinking';
 export type { ThinkingLevel };
 
 // Resolve the localized default-group name with a hard-coded English fallback
@@ -197,8 +201,9 @@ type State = {
   /**
    * Global default extended-thinking level applied to NEW sessions and to
    * any session without a per-session override in `thinkingLevelBySession`.
-   * Two values only — matches upstream's Switch (off vs default_on). The
-   * resolved `max_thinking_tokens` is computed from this + model id via
+   * Five tiers (off / think / think_hard / think_harder / ultrathink) match
+   * the upstream CLI keyword detector. The resolved `max_thinking_tokens`
+   * is computed from this + model id via
    * `src/agent/thinking.ts:getMaxThinkingTokensForModel`.
    */
   globalThinkingDefault: ThinkingLevel;
@@ -711,9 +716,12 @@ export function migratePermission(raw: unknown): PermissionMode {
 }
 
 /**
- * Coerce a persisted per-session thinking-level map back into the strict
- * `'off' | 'default_on'` union. Strips entries with malformed values rather
- * than throwing — a legacy snapshot with stray keys shouldn't block boot.
+ * Coerce a persisted per-session thinking-level map back into the
+ * current strict union. Strips entries whose value can't be coerced
+ * rather than throwing — a legacy snapshot with stray keys shouldn't
+ * block boot. The legacy `'default_on'` value (from the pre-dropdown
+ * 2-state Switch) is migrated by `coerceThinkingLevel` to the
+ * equivalent-cap `'think_harder'` tier.
  */
 export function sanitizeThinkingLevelMap(
   raw: unknown,
@@ -721,7 +729,8 @@ export function sanitizeThinkingLevelMap(
   if (!raw || typeof raw !== 'object') return {};
   const out: Record<string, ThinkingLevel> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (v === 'off' || v === 'default_on') out[k] = v;
+    const coerced = coerceThinkingLevel(v);
+    if (coerced) out[k] = coerced;
   }
   return out;
 }
@@ -2548,7 +2557,7 @@ export async function hydrateStore(): Promise<void> {
         ...(persisted.notificationSettings ?? {})
       },
       globalThinkingDefault:
-        persisted.globalThinkingDefault === 'default_on' ? 'default_on' : 'off',
+        coerceThinkingLevel(persisted.globalThinkingDefault) ?? 'off',
       thinkingLevelBySession: sanitizeThinkingLevelMap(persisted.thinkingLevelBySession)
     });
   }

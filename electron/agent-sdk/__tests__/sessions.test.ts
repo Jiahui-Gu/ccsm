@@ -212,7 +212,7 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
-  it('setMaxThinkingTokens() forwards both off (0) and default_on (31999) values', async () => {
+  it('setMaxThinkingTokens() forwards both endpoint values (0 and 31999)', async () => {
     const runner = new SdkSessionRunner('s7b', noop, noop, noop, noop);
     await runner.start(baseStart);
     await runner.setMaxThinkingTokens(0);

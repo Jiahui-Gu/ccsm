@@ -18,7 +18,7 @@
 // raw `/foo` line, which is intentional: forward-compat with new commands
 // the CLI ships before we sync.
 
-import { Eraser, Minimize2, Settings, Brain, type LucideIcon } from 'lucide-react';
+import { Eraser, Minimize2, Settings, type LucideIcon } from 'lucide-react';
 import Fuse from 'fuse.js';
 import type { ReactNode } from 'react';
 
@@ -55,10 +55,11 @@ export type SlashCommand = {
   passThrough: boolean;
   clientHandler?: (ctx: SlashCommandContext) => void | Promise<void>;
   /**
-   * Optional right-aligned slot rendered by `<SlashCommandPicker />` (e.g.
-   * a Switch showing the current toggle state for `/think`). Built-ins
-   * compute this dynamically — see `handlers.ts` where `/think` reattaches
-   * a fresh node each render via the resolver. Dynamic / pass-through
+   * Optional right-aligned slot rendered by `<SlashCommandPicker />` —
+   * built-ins can attach a small live indicator next to the command
+   * name. The previous occupant — `/think` showing a Switch facsimile —
+   * was retired when the StatusBar Thinking chip dropdown landed; the
+   * slot is kept available for future built-ins. Dynamic / pass-through
    * commands leave it undefined and the picker falls back to the
    * argument-hint pill (or empty space) on the right.
    */
@@ -91,18 +92,13 @@ export const BUILT_IN_COMMANDS: SlashCommand[] = [
     source: 'built-in',
     passThrough: false,
   },
-  {
-    // Mirrors upstream extension v2.1.120's "Thinking" Command Palette row.
-    // Local-only: toggles the per-session thinking level + pushes the cap
-    // through the SDK control RPC. Never forwarded to claude.exe (upstream
-    // doesn't either — the CLI has no `/think` of its own).
-    name: 'think',
-    description: 'Toggle extended thinking mode',
-    icon: Brain,
-    source: 'built-in',
-    passThrough: false,
-  },
 ];
+
+// `/think` was removed when the StatusBar Thinking chip dropdown landed.
+// The chip is the canonical entry point (visible at all times, no need
+// to open the picker first); a redundant slash command on top of the
+// chip just split user attention. The full thinking-tier picker lives
+// in `src/components/StatusBar.tsx`.
 
 // Parse a raw input line into a slash command + args. Returns null when the
 // text is not a bare slash invocation (e.g., empty, no leading slash,
