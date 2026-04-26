@@ -31,6 +31,36 @@ import { runHarness } from './probe-helpers/harness-runner.mjs';
 // Shared helper: ensure a session exists with a usable cwd so InputBar enables
 // the textarea. Mirrors the seed pattern used across the source probes.
 async function seedSession(win, { sid = 's-perm', cwd = 'C:/x' } = {}) {
+  // Scrub the composer-draft cache BEFORE touching the store. The drafts
+  // module (src/stores/drafts.ts) keeps a module-scope `cache` Map that
+  // outlives `resetBetweenCases` — once a prior case typed into the
+  // composer (e.g. the `keyboard.press('n')` in casePermissionPrompt that
+  // landed inside the textarea before autoFocus committed), the cached
+  // entry hydrates back into InputBar's initial `value` on the next case's
+  // mount, focuses the composer, and PermissionPromptBlock's auto-focus
+  // exception clause (composer focused + non-empty → don't steal) keeps
+  // Reject from getting focus. That's the root cause #320 chased.
+  //
+  // Two-pronged scrub (no DOM input — PR #320 used composer.fill('') + blur
+  // and that introduced a NEW focus race against the permission-prompt
+  // autoFocus path, ~50% flake on the previously-stable case):
+  //   1. `__ccsmDrafts._resetForTests()` clears the in-memory Map. Exposed
+  //      from drafts.ts purely for harness use, mirroring `__ccsmStore` /
+  //      `__ccsmI18n`.
+  //   2. `saveState('drafts', empty)` zeroes the persisted blob so a
+  //      future renderer reload (or next launch) doesn't re-hydrate the
+  //      stale entry.
+  await win.evaluate(async () => {
+    window.__ccsmDrafts?._resetForTests?.();
+    try {
+      await window.ccsm?.saveState?.('drafts', JSON.stringify({ version: 1, drafts: {} }));
+    } catch {
+      /* persist failure here is non-fatal — in-memory wipe is what matters
+       * for the in-process focus race; persisted-blob wipe is defense in
+       * depth for next-launch hydration. */
+    }
+  });
+
   await win.evaluate(({ sid, cwd }) => {
     window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
@@ -367,18 +397,13 @@ async function casePermissionTruncateWidth({ win, log }) {
 async function casePermissionSequentialFocus({ win, log }) {
   await seedSession(win);
 
-  // Reset draft-cache + blur textarea so a prior case's leftover text
-  // (e.g. shortcut-scope leaves "helloY") doesn't steal focus during
-  // subsequent autoFocus assertions. The drafts cache is module-scope and
-  // DB cleanup alone can't reach it.
-  const ta = win.locator('textarea').first();
-  await ta.waitFor({ state: 'visible', timeout: 5000 });
-  await ta.fill('');
-  await win.evaluate(() => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    document.body.focus?.();
-  });
-  await win.waitForTimeout(100);
+  // Note: previously this case did `ta.fill('') + blur` here to defend
+  // against a stale draft (e.g. shortcut-scope leaves "helloY") stealing
+  // focus during subsequent autoFocus assertions. seedSession now scrubs
+  // the drafts cache directly via `__ccsmDrafts._resetForTests()`, so the
+  // DOM-level workaround is unnecessary — and the blur half of it
+  // introduced a focus race against permission-prompt's autoFocus on
+  // some Chromium builds.
 
   // Inject first permission.
   await injectWaiting(win, {
