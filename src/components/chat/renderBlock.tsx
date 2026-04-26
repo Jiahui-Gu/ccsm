@@ -27,7 +27,7 @@ export function renderBlock(
     case 'user':
       return <UserBlock id={b.id} text={b.text} images={b.images} sessionId={activeId} />;
     case 'assistant':
-      return <AssistantBlock text={b.text} streaming={b.streaming} viaSkill={b.viaSkill} />;
+      return <AssistantBlock id={b.id} text={b.text} streaming={b.streaming} viaSkill={b.viaSkill} />;
     case 'tool':
       return <ToolBlock name={b.name} brief={b.brief} result={b.result} isError={b.isError} input={b.input} now={opts.now} sessionId={activeId} toolUseId={b.toolUseId} permissionPending={!!(b.toolUseId && opts.permissionPendingToolIds?.has(b.toolUseId))} bashPartialCommand={b.bashPartialCommand} streamingInput={b.streamingInput} />;
     case 'todo':
