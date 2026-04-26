@@ -517,7 +517,15 @@ export class SdkSessionRunner {
     ctx: { signal: AbortSignal; toolUseID: string },
   ): Promise<import('@anthropic-ai/claude-agent-sdk').PermissionResult> {
     // Mirror the legacy runner's mode-driven shortcuts: bypass + acceptEdits
-    // + auto never prompt; passthrough tools delegate to the renderer's own UI.
+    // + auto never prompt. Passthrough tools (AskUserQuestion / ExitPlanMode)
+    // are NOT short-circuited here — they MUST flow through onPermissionRequest
+    // so the renderer can mount its bespoke question / plan UI. The legacy
+    // spawner's `HOOK_PASSTHROUGH_TOOLS` check lived in the PreToolUse-hook
+    // path and meant "let the CLI fall through to can_use_tool"; on the SDK
+    // runner there's only one path, so a short-circuit here drops the request
+    // on the floor — the renderer never sees it, no question card mounts, the
+    // SDK gets a synthetic allow, and the agent receives an empty tool_result
+    // body. The user observes "agent asked but nothing showed up".
     // NOTE: every `behavior: 'allow'` MUST carry `updatedInput`. The SDK's TS
     // type declares it `.optional()`, but the CLI's over-the-wire Zod schema
     // rejects `updatedInput: undefined` (undefined-serialized-over-wire is
@@ -529,10 +537,13 @@ export class SdkSessionRunner {
       this.permissionMode === 'acceptEdits' ||
       this.permissionMode === 'auto'
     ) {
-      return { behavior: 'allow', updatedInput: input };
-    }
-    if (PASSTHROUGH_TOOLS.has(toolName)) {
-      return { behavior: 'allow', updatedInput: input };
+      // For passthrough tools we still need to surface the question UI to
+      // the user even in bypass-style modes — bypass means "skip permission
+      // prompts for tools the agent calls", not "skip the user-asked-me-a-
+      // question UI". Fall through to the onPermissionRequest path.
+      if (!PASSTHROUGH_TOOLS.has(toolName)) {
+        return { behavior: 'allow', updatedInput: input };
+      }
     }
 
     const decision = await new Promise<CanUseToolDecision>((resolve) => {
@@ -577,26 +588,30 @@ export class SdkSessionRunner {
    *
    * Returned shape: `SyncHookJSONOutput` with a `PreToolUseHookSpecificOutput`
    * payload. `permissionDecision: 'ask'` tells the CLI "delegate to the host's
-   * canUseTool"; `'allow'` tells it "skip canUseTool and run the tool". We use
-   * 'allow' for passthrough tools (AskUserQuestion / ExitPlanMode) so the
-   * renderer's bespoke UI stays the single source of truth for those — same
-   * rationale as the PASSTHROUGH_TOOLS short-circuit at the top of
-   * handleCanUseTool. Bypass-style modes are also fast-pathed to 'allow' so
-   * we don't pay a host round-trip per tool invocation when the user has
-   * explicitly opted out of prompting.
+   * canUseTool"; `'allow'` tells it "skip canUseTool and run the tool".
+   * Passthrough tools (AskUserQuestion / ExitPlanMode) MUST resolve to 'ask'
+   * — returning 'allow' here causes the CLI to bypass canUseTool entirely
+   * and synthesize a successful tool_result with empty body, so the renderer
+   * never receives the permission-request frame and no question / plan card
+   * mounts. The user observes "the agent asked me a question but nothing
+   * showed up". Bypass-style modes are still fast-pathed to 'allow' for
+   * NON-passthrough tools so we don't pay a host round-trip per tool
+   * invocation when the user has explicitly opted out of prompting.
    */
   private makePreToolUseHook(): import('@anthropic-ai/claude-agent-sdk').HookCallback {
     return async (input) => {
       const toolName =
         input.hook_event_name === 'PreToolUse' ? input.tool_name : '';
-      const decision: import('@anthropic-ai/claude-agent-sdk').HookPermissionDecision =
+      const isPassthrough = PASSTHROUGH_TOOLS.has(toolName);
+      const isBypassMode =
         this.permissionMode === 'bypassPermissions' ||
         this.permissionMode === 'yolo' ||
         this.permissionMode === 'acceptEdits' ||
-        this.permissionMode === 'auto' ||
-        PASSTHROUGH_TOOLS.has(toolName)
-          ? 'allow'
-          : 'ask';
+        this.permissionMode === 'auto';
+      // Passthrough tools always 'ask' — see jsdoc above. Bypass-mode
+      // short-circuit only applies to non-passthrough tools.
+      const decision: import('@anthropic-ai/claude-agent-sdk').HookPermissionDecision =
+        !isPassthrough && isBypassMode ? 'allow' : 'ask';
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
