@@ -220,28 +220,45 @@ function truncate(s: string, n: number): string {
 }
 
 /**
- * Derive a deduped list of recently-used cwds from a (presumably mtime-sorted)
- * scan result. Most-recent first, dropping the placeholder `~` entries the
- * scanner emits when no `cwd` field was found in the transcript head — those
- * would default the picker to the user's home dir, which is rarely useful.
- * Caps at `max` entries so the dropdown stays a reasonable length.
+ * Derive a frequency-ranked list of recently-used cwds from a scan result.
+ *
+ * Algorithm (task #293 — dogfood-driven default-cwd correctness):
+ *   1. Take the last `windowSize=10` sessions by mtime (most-recent first).
+ *   2. Count how often each cwd appears in that window.
+ *   3. Return the top `max=10` cwds sorted by frequency desc, ties broken by
+ *      most-recent occurrence so a directory the user just opened wins over
+ *      an equally-frequent but stale one.
+ *
+ * Why frequency over pure recency: a one-off `cd` into a side project
+ * shouldn't override the directory the user actually works in 9 days out
+ * of 10. The CLI transcript history is exactly the right signal for "where
+ * does this user usually work" — we just had to read it correctly.
+ *
+ * Drops placeholder `~` entries the scanner emits when no `cwd` field was
+ * found in the transcript head; those would default the picker to the
+ * user's home dir, which is rarely useful.
  */
 export function deriveRecentCwds(
   sessions: ReadonlyArray<Pick<ScannableSession, 'cwd' | 'mtime'>>,
-  max = 10
+  max = 10,
+  windowSize = 10
 ): string[] {
-  const ordered = [...sessions].sort((a, b) => b.mtime - a.mtime);
-  const seen = new Set<string>();
-  const out: string[] = [];
+  if (sessions.length === 0) return [];
+  const ordered = [...sessions].sort((a, b) => b.mtime - a.mtime).slice(0, windowSize);
+  const counts = new Map<string, number>();
+  const lastSeen = new Map<string, number>();
   for (const s of ordered) {
     const cwd = s.cwd;
     if (!cwd || cwd === '~') continue;
-    if (seen.has(cwd)) continue;
-    seen.add(cwd);
-    out.push(cwd);
-    if (out.length >= max) break;
+    counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
+    if (!lastSeen.has(cwd)) lastSeen.set(cwd, s.mtime);
   }
-  return out;
+  if (counts.size === 0) return [];
+  const ranked = Array.from(counts.entries()).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return (lastSeen.get(b[0]) ?? 0) - (lastSeen.get(a[0]) ?? 0);
+  });
+  return ranked.slice(0, max).map(([cwd]) => cwd);
 }
 
 // A frame written by the CLI for a sub-agent (Task tool spawn) carries either
@@ -304,14 +321,18 @@ function extractModel(d: any): string | null {
 }
 
 /**
- * Most-frequently-observed model across the (presumably mtime-sorted) recent
- * `max` sessions. Ties broken by most-recent occurrence so a model the user
+ * Most-frequently-observed model across the most recent `max=10` sessions
+ * (by mtime). Ties broken by most-recent occurrence so a model the user
  * just switched to wins over a stale historical favourite. Returns null on
  * empty input or when no session carries a model.
+ *
+ * The 10-session window matches `deriveRecentCwds` (task #293) — the
+ * default-cwd and default-model both derive from the same "last 10 things
+ * the user actually did" signal so they tell a consistent story.
  */
 export function deriveTopModel(
   sessions: ReadonlyArray<Pick<ScannableSession, 'model' | 'mtime'>>,
-  max = 50
+  max = 10
 ): string | null {
   if (sessions.length === 0) return null;
   const ordered = [...sessions].sort((a, b) => b.mtime - a.mtime).slice(0, max);
