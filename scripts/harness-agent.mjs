@@ -58,7 +58,10 @@ async function caseDiagnosticBanner({ win, log }) {
   await win.waitForTimeout(200);
 
   // No banner visible initially.
-  const initial = await win.locator('[data-agent-diagnostic-banner]').count();
+  // The banner element comes from <TopBanner /> (#237 unification), which
+  // emits `data-testid={testId}` and `data-variant={variant}` — NOT the
+  // legacy `data-agent-diagnostic-banner` / `data-severity` attributes.
+  const initial = await win.locator('[data-testid="agent-diagnostic-banner"]').count();
   if (initial !== 0) throw new Error(`expected no diagnostic banner initially, got ${initial}`);
 
   // Push a diagnostic (simulating what lifecycle.ts does on onAgentDiagnostic).
@@ -73,10 +76,10 @@ async function caseDiagnosticBanner({ win, log }) {
   }, SID);
   await win.waitForTimeout(250);
 
-  const banner = win.locator('[data-agent-diagnostic-banner]').first();
+  const banner = win.locator('[data-testid="agent-diagnostic-banner"]').first();
   await banner.waitFor({ state: 'visible', timeout: 3000 });
-  const severity = await banner.getAttribute('data-severity');
-  if (severity !== 'error') throw new Error(`expected severity=error, got ${severity}`);
+  const severity = await banner.getAttribute('data-variant');
+  if (severity !== 'error') throw new Error(`expected variant=error, got ${severity}`);
   const bannerText = await banner.innerText();
   if (!bannerText.includes('E2E_PROBE')) throw new Error(`banner text missing probe message, got: ${JSON.stringify(bannerText)}`);
 
@@ -88,10 +91,11 @@ async function caseDiagnosticBanner({ win, log }) {
   if (entryBefore.length !== 1) throw new Error(`expected 1 diagnostic, got ${entryBefore.length}`);
   if (entryBefore[0].dismissed) throw new Error('diagnostic should not be dismissed yet');
 
-  // Dismiss — banner should disappear.
-  await win.locator('[data-agent-diagnostic-dismiss]').first().click();
+  // Dismiss — banner should disappear. TopBanner renders the dismiss
+  // button with `data-top-banner-dismiss`.
+  await win.locator('[data-testid="agent-diagnostic-banner"] [data-top-banner-dismiss]').first().click();
   await win.waitForTimeout(300);
-  const afterDismiss = await win.locator('[data-agent-diagnostic-banner]').count();
+  const afterDismiss = await win.locator('[data-testid="agent-diagnostic-banner"]').count();
   if (afterDismiss !== 0) throw new Error(`banner should be hidden after dismiss, still ${afterDismiss}`);
 
   const entryAfter = await win.evaluate(() => window.__ccsmStore.getState().diagnostics[0]);
@@ -108,7 +112,7 @@ async function caseDiagnosticBanner({ win, log }) {
     });
   });
   await win.waitForTimeout(200);
-  const crossSession = await win.locator('[data-agent-diagnostic-banner]').count();
+  const crossSession = await win.locator('[data-testid="agent-diagnostic-banner"]').count();
   if (crossSession !== 0) throw new Error(`banner should not surface cross-session, got ${crossSession}`);
 
   log('push → banner render → dismiss → hide; cross-session entries do not leak into active view');
@@ -136,8 +140,9 @@ async function caseInitFailureBanner({ win, log }) {
   }, SID);
   await win.waitForTimeout(150);
 
-  // No banner initially.
-  const initialCount = await win.locator('[data-agent-init-failed-banner]').count();
+  // No banner initially. Same TopBanner unification — selector is the
+  // shared `data-testid={testId}` slot, not the legacy data-agent-* attr.
+  const initialCount = await win.locator('[data-testid="agent-init-failed-banner"]').count();
   if (initialCount !== 0) throw new Error(`expected no init-failed banner initially, got ${initialCount}`);
 
   // Seed a failure — matches what startSessionAndReconcile produces for a
@@ -151,7 +156,7 @@ async function caseInitFailureBanner({ win, log }) {
   }, SID);
   await win.waitForTimeout(250);
 
-  const banner = win.locator('[data-agent-init-failed-banner]').first();
+  const banner = win.locator('[data-testid="agent-init-failed-banner"]').first();
   await banner.waitFor({ state: 'visible', timeout: 3000 });
   const text = await banner.innerText();
   if (!text.includes('Failed to start Claude')) throw new Error(`missing title, got ${JSON.stringify(text)}`);
@@ -183,7 +188,7 @@ async function caseInitFailureBanner({ win, log }) {
     window.__ccsmStore.getState().clearSessionInitFailure(sid);
   }, SID);
   await win.waitForTimeout(300);
-  const afterClear = await win.locator('[data-agent-init-failed-banner]').count();
+  const afterClear = await win.locator('[data-testid="agent-init-failed-banner"]').count();
   if (afterClear !== 0) throw new Error(`banner should be hidden after clearSessionInitFailure, still ${afterClear}`);
 
   // The banner is also session-scoped: a failure on a DIFFERENT session must
@@ -196,7 +201,7 @@ async function caseInitFailureBanner({ win, log }) {
     });
   });
   await win.waitForTimeout(200);
-  const crossSession = await win.locator('[data-agent-init-failed-banner]').count();
+  const crossSession = await win.locator('[data-testid="agent-init-failed-banner"]').count();
   if (crossSession !== 0) throw new Error(`banner should not leak across sessions, got ${crossSession}`);
 
   log('setSessionInitFailure → banner render (title + error + Retry + Reconfigure) → Reconfigure opens Settings → clearSessionInitFailure hides banner → cross-session scoped');
