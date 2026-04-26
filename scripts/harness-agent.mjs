@@ -4586,6 +4586,193 @@ async function caseAskUserQuestionFull({ app, win, log }) {
     record('J7', true, 'Enter on focused option submitted when all questions answered (single+multi)');
   }
 
+  // ── J8 ────────────────────────────────────────────────────────────────
+  // Bug #330: AskUserQuestion 选 Other 后输入态键盘全废. While the Other
+  // contenteditable input has focus and the user is typing, three keyboard
+  // behaviors must work:
+  //   ① ↑/↓ cycles options (incl. Other itself + above predefined options).
+  //      Input text and Other-selected state preserved across the cycle.
+  //   ② ←/→ moves caret inside the text by default; at the EDGE
+  //      (caret at 0 with no selection → previous question; caret at end with
+  //      no selection → next question).
+  //   ③ Enter on the LAST question with all answered → submits the whole set.
+  async function j8() {
+    const sessionId = await ensureSession('J8');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await injectQuestion(sessionId, 'q-J8', [
+      { question: 'Q1 lang', options: [{ label: 'Python' }, { label: 'TypeScript' }] },
+      { question: 'Q2 db', options: [{ label: 'Postgres' }, { label: 'SQLite' }] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+
+    // Activate Other on Q1 by clicking its chip (auto-focuses the input).
+    await win.locator('[data-question-option][data-question-label="Other"]').first().click();
+    await win.waitForTimeout(150);
+    const otherInput = win.locator('[data-testid="question-other-input"]').first();
+    await otherInput.waitFor({ state: 'visible', timeout: 2000 });
+
+    // Type "abc" into the Other input. Use keyboard.type so the input takes
+    // focus through real key events (matches the user flow that triggered
+    // the bug — keyboard becomes unresponsive once focus enters the input).
+    await otherInput.click();
+    await win.waitForTimeout(40);
+    await win.keyboard.type('abc', { delay: 10 });
+    await win.waitForTimeout(60);
+    let txt = await otherInput.evaluate((el) => el.textContent || '');
+    if (txt !== 'abc') return record('J8', false, `expected 'abc' typed into Other input, got '${txt}'`);
+
+    // ── Assertion ① ↑/↓ cycles options even with focus inside Other input.
+    // Other is the LAST option (Python, TypeScript, Other). ↑ → TypeScript.
+    await win.keyboard.press('ArrowUp');
+    await win.waitForTimeout(80);
+    let focused = await win.evaluate(() => {
+      const el = document.activeElement;
+      return el ? { tag: el.tagName, label: el.getAttribute('data-question-label'), role: el.getAttribute('role') } : null;
+    });
+    if (focused?.label !== 'TypeScript') {
+      return record('J8', false, `① after ArrowUp from Other input expected TypeScript option focused, got ${JSON.stringify(focused)}`);
+    }
+    // ↓ → Other again. The Other option chip is what gets focus; the inline
+    // input remains rendered with our typed text intact.
+    await win.keyboard.press('ArrowDown');
+    await win.waitForTimeout(80);
+    focused = await win.evaluate(() => {
+      const el = document.activeElement;
+      return el ? { tag: el.tagName, label: el.getAttribute('data-question-label'), role: el.getAttribute('role') } : null;
+    });
+    if (focused?.label !== 'Other') {
+      return record('J8', false, `① after ArrowDown back expected Other focused, got ${JSON.stringify(focused)}`);
+    }
+    txt = await otherInput.evaluate((el) => el.textContent || '');
+    if (txt !== 'abc') {
+      return record('J8', false, `① Other input text mutated by arrow cycling, expected 'abc' got '${txt}'`);
+    }
+    // Other is still selected (input still rendered).
+    const stillRendered = await win.locator('[data-testid="question-other-input"]').count();
+    if (stillRendered !== 1) return record('J8', false, `① Other input no longer rendered after ↑↓ cycle (count=${stillRendered})`);
+
+    // Re-focus the input and place caret at offset 0 (start). Pressing →
+    // three times should walk through 'a','b','c' to end, with NO page change.
+    // The fourth → at end-with-no-selection should page to Q1. (Spec: edge-
+    // overflow pages; mid-text caret movement stays put.)
+    await otherInput.click();
+    await otherInput.evaluate((el) => {
+      const range = document.createRange();
+      range.setStart(el.firstChild ?? el, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    await win.waitForTimeout(40);
+
+    // ── Assertion ② right arrow moves caret while inside text, pages at edge.
+    await win.keyboard.press('ArrowRight');
+    await win.waitForTimeout(40);
+    await win.keyboard.press('ArrowRight');
+    await win.waitForTimeout(40);
+    await win.keyboard.press('ArrowRight');
+    await win.waitForTimeout(40);
+    let activeTab = await win.evaluate(() =>
+      document.querySelector('[data-testid="question-tab-1"]')?.getAttribute('data-active') === 'true' ? 1
+        : document.querySelector('[data-testid="question-tab-0"]')?.getAttribute('data-active') === 'true' ? 0 : -1
+    );
+    if (activeTab !== 0) {
+      return record('J8', false, `② non-edge ArrowRights should NOT page; expected still on Q0 got tab=${activeTab}`);
+    }
+    await win.keyboard.press('ArrowRight');
+    await win.waitForTimeout(120);
+    activeTab = await win.evaluate(() =>
+      document.querySelector('[data-testid="question-tab-1"]')?.getAttribute('data-active') === 'true' ? 1 : 0
+    );
+    if (activeTab !== 1) {
+      return record('J8', false, `② ArrowRight at end-of-input should page to Q1, got tab=${activeTab}`);
+    }
+    // Pick a normal option on Q2 to satisfy allAnswered.
+    await win.locator('[data-question-option][data-question-label="Postgres"]').first().click();
+    await win.waitForTimeout(150);
+    // Page back to Q1 to test left-edge → previous question. Click tab 0.
+    await win.locator('[data-testid="question-tab-0"]').click();
+    await win.waitForTimeout(200);
+    // Other input is auto-focused on return (see useEffect at line 156). Place
+    // caret at offset 0.
+    const otherInput2 = win.locator('[data-testid="question-other-input"]').first();
+    await otherInput2.waitFor({ state: 'visible', timeout: 2000 });
+    await otherInput2.click();
+    await otherInput2.evaluate((el) => {
+      const range = document.createRange();
+      range.setStart(el.firstChild ?? el, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    await win.waitForTimeout(40);
+    // Q1 is the FIRST question (index 0); ArrowLeft at caret 0 has no prev
+    // question so it's a no-op. We can't assert "page prev" here (no prev
+    // question exists). Instead, advance to Q2 first, focus Q2 Other? Q2 is
+    // currently a Postgres pick — no Other. Test left-edge from Q2 by
+    // re-picking Other on Q2.
+    await win.locator('[data-testid="question-tab-1"]').click();
+    await win.waitForTimeout(150);
+    await win.locator('[data-question-option][data-question-label="Other"]').first().click();
+    await win.waitForTimeout(150);
+    const otherInputQ2 = win.locator('[data-testid="question-other-input"]').first();
+    await otherInputQ2.waitFor({ state: 'visible', timeout: 2000 });
+    await otherInputQ2.click();
+    await win.waitForTimeout(40);
+    await win.keyboard.type('xy', { delay: 10 });
+    await win.waitForTimeout(60);
+    // Caret at end (offset 2). Press ← twice — caret moves through chars,
+    // not pages. Then a 3rd press lands at offset 0 (still in text) — also
+    // no page. 4th press at offset 0 → page back to Q1.
+    await otherInputQ2.evaluate((el) => {
+      const range = document.createRange();
+      range.setStart(el.firstChild ?? el, 0);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    await win.waitForTimeout(40);
+    await win.keyboard.press('ArrowLeft');
+    await win.waitForTimeout(120);
+    activeTab = await win.evaluate(() =>
+      document.querySelector('[data-testid="question-tab-0"]')?.getAttribute('data-active') === 'true' ? 0 : 1
+    );
+    if (activeTab !== 0) {
+      return record('J8', false, `② ArrowLeft at start-of-input should page back to Q0, got tab=${activeTab}`);
+    }
+
+    // ── Assertion ③ Enter when all answered submits.
+    // Currently on Q0 with Other='abc'. Q1 had Other='xy' — both questions
+    // answered. Move to last question (Q1) and press Enter inside Other input.
+    await win.locator('[data-testid="question-tab-1"]').click();
+    await win.waitForTimeout(200);
+    const otherInputQ2b = win.locator('[data-testid="question-other-input"]').first();
+    await otherInputQ2b.waitFor({ state: 'visible', timeout: 2000 });
+    await otherInputQ2b.click();
+    await win.waitForTimeout(40);
+    await win.keyboard.press('Enter');
+    await win.waitForTimeout(350);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1) {
+      return record('J8', false, `③ expected 1 send after Enter on last question's Other input, got ${sent.length}`);
+    }
+    if (!/abc/.test(sent[0].text || '') || !/xy/.test(sent[0].text || '')) {
+      return record('J8', false, `③ payload missing 'abc' and/or 'xy': ${JSON.stringify(sent[0])}`);
+    }
+    if (sent[0].sessionId !== sessionId) {
+      return record('J8', false, `③ wrong sessionId: expected ${sessionId}, got ${sent[0].sessionId}`);
+    }
+
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J8', true, '① ↑↓ from Other input cycles options + preserves text; ② ←/→ at edges pages question; ③ Enter on last question submits');
+  }
+
   await safeRun('J1', j1);
   await safeRun('J2', j2);
   await safeRun('J3', j3);
@@ -4593,11 +4780,12 @@ async function caseAskUserQuestionFull({ app, win, log }) {
   await safeRun('J5', j5);
   await safeRun('J6', j6);
   await safeRun('J7', j7);
+  await safeRun('J8', j8);
 
   if (failures.length > 0) {
     throw new Error(`${failures.length} journey failure(s):\n  - ${failures.join('\n  - ')}`);
   }
-  log('all 7 journeys matched expected behavior');
+  log('all 8 journeys matched expected behavior');
 }
 
 // ---------- sidebar-journey-create-delete (was probe-e2e-sidebar-journey-create-delete) ----------

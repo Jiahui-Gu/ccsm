@@ -1,0 +1,18 @@
+[harness=agent] launching electron — 1/45 case(s)
+
+[harness=agent] >>> case askuserquestion-full
+[case=askuserquestion-full] OK    J1  — mount auto-focused Python (textarea draft preserved); ↓↓↑Enter routed TypeScript; focus returned
+[case=askuserquestion-full] OK    J2  — gating tracks pick count (0→1→0→2); both labels submitted
+[case=askuserquestion-full] OK    J3  — revised picks captured (A3+B1+C0), no stale A2
+[case=askuserquestion-full] OK    J4  — down/up wraps through 12+Other; last model option submits
+[case=askuserquestion-full] OK    J5  — no horizontal overflow (0 labels)
+[case=askuserquestion-full] OK    J6  — answers routed to correct sessions; no question leakage on switch
+[case=askuserquestion-full] OK    J7  — Enter on focused option submitted when all questions answered (single+multi)
+[case=askuserquestion-full] OK    J8  — ① ↑↓ from Other input cycles options + preserves text; ② ←/→ at edges pages question; ③ Enter on last question submits
+[case=askuserquestion-full] all 8 journeys matched expected behavior
+[case=askuserquestion-full] OK
+
+=== harness=agent summary (19020ms wall) ===
+  [OK] askuserquestion-full                      16785ms
+
+=== totals: 1 passed, 0 failed, 0 skipped, 1 total ===

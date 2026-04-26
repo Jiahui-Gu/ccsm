@@ -551,15 +551,112 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
                           // Fall through to root handler.
                           return;
                         }
+                        // #330: keyboard inside the Other input was fully
+                        // dead. Three behaviors must work even with focus in
+                        // the contenteditable:
+                        //   ↑/↓  → cycle options (input is single-line; up/
+                        //          down has no caret meaning, route to the
+                        //          question controller).
+                        //   ←/→  → default caret movement; at the EDGE
+                        //          (caret=0 / caret=end with no selection)
+                        //          → page question.
+                        //   Enter → submit when all answered, else page
+                        //           forward on non-last questions.
+                        // We stopPropagation AFTER our own handling so the
+                        // root onKeyDown doesn't double-fire.
+                        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          const root = optionsRef.current;
+                          if (!root) return;
+                          const opts = Array.from(
+                            root.querySelectorAll<HTMLElement>('[data-question-option]')
+                          );
+                          if (opts.length === 0) return;
+                          // Caret lives in the Other input; logical "current"
+                          // option is the Other chip (parent of this input).
+                          const otherChipIdx = opts.findIndex(
+                            (el) => el.dataset.questionLabel === OTHER_LABEL
+                          );
+                          if (otherChipIdx === -1) return;
+                          const nextIdx =
+                            e.key === 'ArrowUp'
+                              ? otherChipIdx <= 0
+                                ? opts.length - 1
+                                : otherChipIdx - 1
+                              : otherChipIdx >= opts.length - 1
+                                ? 0
+                                : otherChipIdx + 1;
+                          opts[nextIdx]?.focus({ preventScroll: true });
+                          return;
+                        }
+                        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                          // Detect edge + no selection. If neither, fall
+                          // through to default caret behavior (and DON'T
+                          // stopPropagation — the root handler also wants
+                          // to ignore it because we're typing).
+                          const sel = window.getSelection();
+                          const node = e.currentTarget;
+                          const text = node.textContent ?? '';
+                          let atStart = false;
+                          let atEnd = false;
+                          let collapsed = true;
+                          if (sel && sel.rangeCount > 0) {
+                            const range = sel.getRangeAt(0);
+                            collapsed = range.collapsed;
+                            // Compute caret offset relative to the input's
+                            // text by measuring a range from start-of-node
+                            // to caret.
+                            const probe = document.createRange();
+                            probe.selectNodeContents(node);
+                            try {
+                              probe.setEnd(range.endContainer, range.endOffset);
+                            } catch {
+                              // endContainer outside the node — bail.
+                              e.stopPropagation();
+                              return;
+                            }
+                            const caret = probe.toString().length;
+                            atStart = caret === 0;
+                            atEnd = caret === text.length;
+                          }
+                          if (!collapsed) {
+                            // Selection active → default behavior (collapse
+                            // selection); don't page.
+                            e.stopPropagation();
+                            return;
+                          }
+                          if (e.key === 'ArrowLeft' && atStart && active > 0) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setActive(active - 1);
+                            return;
+                          }
+                          if (
+                            e.key === 'ArrowRight' &&
+                            atEnd &&
+                            active < questions.length - 1
+                          ) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setActive(active + 1);
+                            return;
+                          }
+                          // Mid-text or at-edge-but-no-more-questions →
+                          // default caret movement; stop bubbling so the
+                          // root doesn't try to interpret it.
+                          e.stopPropagation();
+                          return;
+                        }
                         e.stopPropagation();
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
-                          // Last question: Enter inside Other = submit
-                          // (matches the Submit button). Earlier questions
-                          // page forward.
+                          // Last question + all answered → submit. Earlier
+                          // questions OR last-but-not-yet-answered → page
+                          // forward (legacy behavior).
                           if (active < questions.length - 1) {
                             setActive(active + 1);
-                          } else {
+                          } else if (allAnswered) {
                             submit();
                           }
                         }
