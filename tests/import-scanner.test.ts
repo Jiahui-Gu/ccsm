@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
-import { parseHead, deriveRecentCwds, deriveTopModel, isSidechainFrame, isCCSMTempCwd } from '../electron/import-scanner';
+import { parseHead, deriveRecentCwds, isSidechainFrame, isCCSMTempCwd } from '../electron/import-scanner';
 
 const j = (o: unknown) => JSON.stringify(o);
 
@@ -288,71 +288,3 @@ describe('parseHead model extraction', () => {
   });
 });
 
-describe('deriveTopModel', () => {
-  it('returns null on empty input', () => {
-    expect(deriveTopModel([])).toBeNull();
-  });
-
-  it('returns null when no entry has a model', () => {
-    expect(
-      deriveTopModel([
-        { model: null, mtime: 1 },
-        { model: null, mtime: 2 },
-      ])
-    ).toBeNull();
-  });
-
-  it('returns the most-frequent model', () => {
-    expect(
-      deriveTopModel([
-        { model: 'claude-sonnet-4.5', mtime: 100 },
-        { model: 'claude-haiku-4.5', mtime: 90 },
-        { model: 'claude-haiku-4.5', mtime: 80 },
-        { model: 'claude-haiku-4.5', mtime: 70 },
-        { model: 'claude-sonnet-4.5', mtime: 60 },
-      ])
-    ).toBe('claude-haiku-4.5');
-  });
-
-  it('breaks ties by most-recent occurrence', () => {
-    expect(
-      deriveTopModel([
-        { model: 'claude-sonnet-4.5', mtime: 200 },
-        { model: 'claude-haiku-4.5', mtime: 100 },
-        { model: 'claude-sonnet-4.5', mtime: 50 },
-        { model: 'claude-haiku-4.5', mtime: 10 },
-      ])
-    ).toBe('claude-sonnet-4.5');
-  });
-
-  it('honours the max window — older entries past the cap are ignored', () => {
-    // Default cap is 10 (matches deriveRecentCwds for consistent default-
-    // sourcing). With a tiny cap of 1, only the single newest entry counts.
-    const sessions = [
-      { model: 'recent-model', mtime: 500 },
-      ...Array.from({ length: 60 }, (_, i) => ({
-        model: 'old-model',
-        mtime: 100 - i,
-      })),
-    ];
-    expect(deriveTopModel(sessions, 1)).toBe('recent-model');
-  });
-
-  it('default max=10 means older sessions past the 10th are ignored', () => {
-    // 9 newest sessions are all 'opus[1m]', the 10th newest is 'sonnet',
-    // and there are 100 ancient 'haiku' sessions. Within the last-10 window
-    // opus has 9 hits, sonnet has 1, haiku has 0 → opus wins.
-    const sessions = [
-      ...Array.from({ length: 9 }, (_, i) => ({
-        model: 'claude-opus-4-7[1m]',
-        mtime: 1000 - i,
-      })),
-      { model: 'claude-sonnet-4-6', mtime: 990 },
-      ...Array.from({ length: 100 }, (_, i) => ({
-        model: 'claude-haiku-4-5',
-        mtime: 100 - i,
-      })),
-    ];
-    expect(deriveTopModel(sessions)).toBe('claude-opus-4-7[1m]');
-  });
-});

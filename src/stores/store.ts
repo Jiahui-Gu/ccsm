@@ -183,11 +183,14 @@ type State = {
    */
   historyRecentCwds: string[];
   /**
-   * Most-used model across recent CLI transcripts. Same rationale as
-   * `historyRecentCwds` — seeds the new-session model picker on fresh
-   * userData. Null until the boot scan resolves or if undeterminable.
+   * Default model from `~/.claude/settings.json` (the CLI's own `--model`
+   * default). Seeds the new-session model picker so ccsm picks the same
+   * model the user already configured for the CLI. Null until the boot
+   * read resolves or if no `model` field is set — in which case createSession
+   * falls through to the connection profile / first discovered model / SDK
+   * default.
    */
-  historyTopModel: string | null;
+  claudeSettingsDefaultModel: string | null;
   activeId: string;
   focusedGroupId: string | null;
   model: ModelId;
@@ -991,7 +994,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   groups: defaultGroups,
   recentProjects: [],
   historyRecentCwds: [],
-  historyTopModel: null,
+  claudeSettingsDefaultModel: null,
   activeId: '',
   focusedGroupId: null,
   model: '',
@@ -1066,7 +1069,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       model,
       recentProjects,
       historyRecentCwds,
-      historyTopModel,
+      claudeSettingsDefaultModel,
       models,
       connection,
     } = get();
@@ -1108,7 +1111,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     const defaultCwd =
       historyRecentCwds[0] ?? recentProjects[0]?.path ?? groupRecentCwd ?? '';
     let initialModel = model;
-    if (!initialModel) initialModel = historyTopModel ?? '';
+    // Default-model source order:
+    //   1. persisted global `model` (the user's most-recent explicit pick)
+    //   2. CLI `~/.claude/settings.json` `model` — the same value the CLI
+    //      itself reads for `--model` defaulting. Replaces the old PR #369
+    //      frequency vote over recent transcripts, which produced model ids
+    //      that weren't always in our picker list (dogfood: defaulted to
+    //      "claude-opus-4" which doesn't appear anywhere).
+    //   3. connection profile model (endpoint-pinned default)
+    //   4. first discovered model (last-resort, never empty)
+    // When all four are empty the SDK applies its own default at session start.
+    if (!initialModel) initialModel = claudeSettingsDefaultModel ?? '';
     if (!initialModel) initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';
     const newSession: Session = {
@@ -2647,21 +2660,21 @@ export async function hydrateStore(): Promise<void> {
     }));
   })();
 
-  // Seed history-derived defaults from CLI transcripts. Fresh Electron
-  // userData starts with empty `recentProjects` and no `model`; without this
-  // the new-session picker falls back to '' (chip `(none)` placeholder) and
-  // the first endpoint's first model regardless of what the user actually
-  // uses in the CLI.
+  // Seed history-derived defaults from CLI transcripts + settings. Fresh
+  // Electron userData starts with empty `recentProjects` and no `model`;
+  // without this the new-session picker falls back to '' (chip `(none)`
+  // placeholder) and the first endpoint's first model regardless of what
+  // the user actually uses in the CLI.
   try {
     const api = window.ccsm;
-    if (api?.recentCwds && api?.topModel) {
-      const [recentCwds, topModel] = await Promise.all([
+    if (api?.recentCwds && api?.defaultModel) {
+      const [recentCwds, defaultModel] = await Promise.all([
         api.recentCwds(),
-        api.topModel(),
+        api.defaultModel(),
       ]);
       useStore.setState({
         historyRecentCwds: Array.isArray(recentCwds) ? recentCwds : [],
-        historyTopModel: typeof topModel === 'string' ? topModel : null,
+        claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
       });
     }
   } catch {
