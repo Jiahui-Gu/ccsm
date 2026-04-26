@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Loader2, ShieldAlert } from 'lucide-react';
 import { Button } from './ui/Button';
@@ -136,9 +136,21 @@ export function PermissionPromptBlock({
   //    on it after they finish typing).
   // External text entries (rename input, dialog field, IME composition,
   // settings textarea) are always respected.
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!autoFocus) return;
-    const raf = requestAnimationFrame(() => {
+    // Focus synchronously in the layout phase (before paint) so the button
+    // is focused by the time anything observes activeElement on first frame.
+    // Original implementation used a single rAF, which created a race: the
+    // observer (test harness, screen-readers, anything querying focus on
+    // mount) could read activeElement BEFORE the rAF fired, seeing body.
+    // We still re-check on the next two frames to defend against any later
+    // focus-claim (e.g. InputBar's own mount-time textarea.focus()) winning
+    // a subsequent tick — capped so we never loop.
+    let raf = 0;
+    let cancelled = false;
+    const MAX_RETRIES = 2;
+    const tryFocus = () => {
+      if (cancelled) return false;
       const active = document.activeElement;
       if (active instanceof HTMLElement && active !== document.body && !rootRef.current?.contains(active)) {
         const isTextEntry =
@@ -149,18 +161,35 @@ export function PermissionPromptBlock({
           active.getAttribute('role') === 'textbox';
         if (isTextEntry) {
           const isComposer = active.hasAttribute('data-input-bar');
-          if (!isComposer) return;
+          if (!isComposer) return false;
           // Composer-specific: only steal when it's empty.
           const value =
             active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
               ? active.value
               : active.textContent ?? '';
-          if (value.trim().length > 0) return;
+          if (value.trim().length > 0) return false;
         }
       }
       rejectRef.current?.focus({ preventScroll: true });
-    });
-    return () => cancelAnimationFrame(raf);
+      return document.activeElement === rejectRef.current;
+    };
+    const succeeded = tryFocus();
+    if (!succeeded) {
+      // Schedule retries across the next 2 frames in case rejectRef wasn't
+      // attachable yet, or a same-tick focus claim landed after us.
+      let attempt = 0;
+      const next = () => {
+        if (cancelled) return;
+        if (document.activeElement === rejectRef.current) return;
+        if (tryFocus()) return;
+        if (++attempt < MAX_RETRIES) raf = requestAnimationFrame(next);
+      };
+      raf = requestAnimationFrame(next);
+    }
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
