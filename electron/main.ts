@@ -83,7 +83,7 @@ import { cancelQuestionRetry } from './notify-retry';
 import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings } from './agent/list-models-from-settings';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
-import { loadCommands } from './commands-loader';
+import { loadPickerCommands } from './commands-loader';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -1111,17 +1111,23 @@ app.whenReady().then(() => {
 
   // ─────────────────────── disk-based slash commands ──────────────────────
   //
-  // Picker discovery for user / project / plugin command markdown files.
-  // Renderer calls this on focus / cwd change. Execution stays pass-through:
+  // Picker discovery for user / project command markdown files. Renderer
+  // calls this on focus / cwd change. Execution stays pass-through:
   // selecting one inserts `/<name>` into the textarea, which the existing
   // send path forwards to claude.exe. We never parse the body.
+  //
+  // `loadPickerCommands` filters out plugin / skill / agent sources because
+  // the @anthropic-ai/claude-agent-sdk transport doesn't execute them
+  // without explicit configuration ccsm doesn't currently provide; listing
+  // them in the picker misled users into invocations that fell through to
+  // the model as plain text. See commands-loader.ts for the full rationale.
   ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) => {
     // commands-loader does its own fs reads against the supplied cwd; UNC or
     // relative inputs get filtered out here so we don't leak NTLM (Windows)
     // or descend into wherever a confused renderer points us. Empty list is
     // the safe fallback for any unsafe input.
     if (cwd != null && !isSafePath(cwd)) return [];
-    return loadCommands({ cwd: cwd ?? null });
+    return loadPickerCommands({ cwd: cwd ?? null });
   });
 
   // ─────────────────────── @mention file listing ──────────────────────────

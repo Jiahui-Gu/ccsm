@@ -299,3 +299,39 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
       ...(e.pluginId ? { pluginId: e.pluginId } : {}),
     }));
 }
+
+// ────────────────────── picker-visible filter ──────────────────────────────
+//
+// Subset of `loadCommands` surfaced to the slash-command picker. Three
+// sources are deliberately hidden:
+//
+//   - PLUGIN commands (`/<plugin>:<name>` from ~/.claude/plugins/cache/...).
+//     The CLI binary loads them in its own REPL but the
+//     @anthropic-ai/claude-agent-sdk transport ccsm uses requires plugins
+//     to be declared via `query({ options: { plugins: [...] } })`, which
+//     ccsm doesn't pass. Forwarding `/superpowers:brainstorm` to the SDK
+//     therefore arrives as plain user text and the model replies with the
+//     deprecated-skill stub instead of running the plugin command.
+//
+//   - SKILL entries (from ~/.claude/skills/) are loaded by the SDK as
+//     description-keyed system-prompt extensions ("when X happens, use this
+//     skill") — the agent invokes them on its own, the user cannot trigger
+//     them with `/skill-name`. Listing them in the picker created the same
+//     false affordance.
+//
+//   - AGENT entries are subagent definitions invoked by the main agent via
+//     the Task tool. There is no user-facing slash form, so they had no
+//     business in the picker either.
+//
+// `loadCommands` itself still returns every source — keeps the discovery
+// complete for future wiring (e.g. surfacing skills in a separate UI). Add
+// a source to PICKER_VISIBLE_SOURCES once the corresponding execution path
+// is actually wired through the SDK.
+export const PICKER_VISIBLE_SOURCES: ReadonlySet<CommandSource> = new Set([
+  'user',
+  'project',
+]);
+
+export function loadPickerCommands(opts: LoadOpts = {}): LoadedCommand[] {
+  return loadCommands(opts).filter((c) => PICKER_VISIBLE_SOURCES.has(c.source));
+}

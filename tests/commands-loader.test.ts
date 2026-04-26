@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { loadCommands, parseFrontmatter } from '../electron/commands-loader';
+import { loadCommands, loadPickerCommands, parseFrontmatter } from '../electron/commands-loader';
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -309,5 +309,90 @@ describe('loadCommands', () => {
     const agents = cmds.filter((c) => c.source === 'agent');
     expect(agents.map((c) => c.name)).toEqual(['empty']);
     expect(agents[0].description).toBeUndefined();
+  });
+});
+
+// ─── loadPickerCommands ────────────────────────────────────────────────────
+//
+// Picker-visible filter: hides plugin / skill / agent sources because the
+// agent SDK transport ccsm uses cannot execute them without configuration
+// ccsm doesn't supply. These tests pin that contract so a future
+// refactor doesn't silently re-surface broken slash entries to users.
+
+describe('loadPickerCommands', () => {
+  it('keeps user and project sources, drops plugin / skill / agent', () => {
+    // user
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'user-cmd.md'),
+      `---\ndescription: u\n---\n`
+    );
+    // project
+    write(
+      path.join(tmpCwd, '.claude', 'commands', 'project-cmd.md'),
+      `---\ndescription: p\n---\n`
+    );
+    // plugin
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginA',
+        '1.0.0',
+        'commands',
+        'plugin-cmd.md'
+      ),
+      `---\ndescription: pl\n---\n`
+    );
+    // skill
+    write(
+      path.join(tmpHome, '.claude', 'skills', 'skill-cmd.md'),
+      `---\ndescription: sk\n---\n`
+    );
+    // agent
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'agent-cmd.md'),
+      `---\ndescription: ag\n---\n`
+    );
+
+    const all = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const picker = loadPickerCommands({ homeDir: tmpHome, cwd: tmpCwd });
+
+    // sanity: full loader still returns every source
+    const allSources = new Set(all.map((c) => c.source));
+    expect(allSources).toEqual(new Set(['user', 'project', 'plugin', 'skill', 'agent']));
+
+    // picker filter: only user + project survive
+    const pickerNames = picker.map((c) => `${c.source}/${c.name}`).sort();
+    expect(pickerNames).toEqual(['project/project-cmd', 'user/user-cmd']);
+  });
+
+  it('returns an empty list when only plugin / skill / agent entries exist', () => {
+    // Real-world scenario: a fresh user with the superpowers + pua plugins
+    // installed but no personal `~/.claude/commands` of their own. The
+    // picker must NOT show plugin entries — that's the whole bug.
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'superpowers',
+        '1.0.0',
+        'commands',
+        'brainstorm.md'
+      ),
+      `---\ndescription: deprecated\n---\n`
+    );
+    write(
+      path.join(tmpHome, '.claude', 'skills', 'helpful.md'),
+      `---\ndescription: a skill\n---\n`
+    );
+
+    const picker = loadPickerCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(picker).toEqual([]);
   });
 });
