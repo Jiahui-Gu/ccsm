@@ -1305,7 +1305,7 @@ app.whenReady().then(() => {
       // count-dropped-to-0-because-CLI-self-crashed.
       selfExitCount: () => sessions.selfExitsSinceStart(),
       // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
-      // can swap the the inlined notify module importer for a fake without resorting to
+      // can swap the inlined notify module importer for a fake without resorting to
       // `require` from inside `app.evaluate` (where it's not in scope).
       notify: notifyMod,
       notifyBootstrap: bootstrapMod,

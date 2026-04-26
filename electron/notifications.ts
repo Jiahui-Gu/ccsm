@@ -63,7 +63,7 @@ export interface ShowNotificationPayload {
   body?: string;
   eventType?: NotificationEventType;
   silent?: boolean;
-  /** Optional rich metadata for the the inlined notify module Adaptive Toast pipeline. */
+  /** Optional rich metadata for the inlined notify module Adaptive Toast pipeline. */
   extras?: NotifyExtras;
 }
 
