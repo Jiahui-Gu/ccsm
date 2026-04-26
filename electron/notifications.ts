@@ -101,6 +101,14 @@ export function showNotification(
   // here, since the user is already looking at the app and the sidebar pulse
   // is sufficient). Test-only `eventType === 'test'` skips this.
   if (payload.eventType !== 'test' && shouldSuppressForFocus()) {
+    // PR #323 + #324 incident: this gate was previously silent, so a flake
+    // where a notify was unexpectedly dropped looked indistinguishable from
+    // a wrapper failure. Log every focus-suppress with enough context
+    // (event type, session, title) to disambiguate during diagnosis.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[notify] suppressed: a window is focused, dropping notification: eventType=${payload.eventType ?? 'unknown'} sessionId=${payload.sessionId} title=${JSON.stringify(payload.title)}`,
+    );
     return false;
   }
 
