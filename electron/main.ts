@@ -873,6 +873,9 @@ app.whenReady().then(() => {
         // StartOptions; the legacy hand-written runner ignores it. See
         // `src/stores/store.ts` newSessionId() for the unification rationale.
         sessionId?: string;
+        // Resolved 6-tier effort chip level. Forwarded to the SDK runner so
+        // launch query() carries `thinking` + `effort`.
+        effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       }
     ) => {
       if (!fromMainFrame(e)) {
@@ -985,12 +988,11 @@ app.whenReady().then(() => {
     return sessions.setModel(sessionId, model);
   });
   /**
-   * Apply the resolved `max_thinking_tokens` cap to a live session. The
-   * renderer computes the value via `getMaxThinkingTokensForModel(model,
-   * level)` so the main side stays a thin pass-through (and so a future
-   * upstream per-model branch only has to land in one place). Validates
-   * payload defensively — a non-finite or negative `tokens` from a buggy
-   * renderer would otherwise reach the SDK and throw mid-session.
+   * Legacy: apply a `max_thinking_tokens` cap to a live session. Kept for
+   * the harness probe path (which spies on this IPC); the unified 6-tier
+   * effort+thinking chip uses `agent:setEffort` instead. Validates payload
+   * defensively — a non-finite or negative `tokens` would otherwise reach
+   * the SDK and throw mid-session.
    */
   ipcMain.handle(
     'agent:setMaxThinkingTokens',
@@ -1011,6 +1013,38 @@ app.whenReady().then(() => {
       }
       try {
         const ok = await sessions.setMaxThinkingTokens(sessionId, Math.floor(tokens));
+        return ok ? { ok: true } : { ok: false, error: 'no_session' };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+  // 6-tier effort+thinking chip change. Validates the level union strictly;
+  // the runner fans out to two concurrent SDK control RPCs (see
+  // electron/agent-sdk/sessions.ts:setEffort) so the renderer never sees
+  // the two-dimension wire shape.
+  ipcMain.handle(
+    'agent:setEffort',
+    async (
+      e,
+      sessionId: string,
+      level: unknown,
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
+      if (
+        typeof sessionId !== 'string' ||
+        !sessionId ||
+        (level !== 'off' &&
+          level !== 'low' &&
+          level !== 'medium' &&
+          level !== 'high' &&
+          level !== 'xhigh' &&
+          level !== 'max')
+      ) {
+        return { ok: false, error: 'bad_payload' };
+      }
+      try {
+        const ok = await sessions.setEffort(sessionId, level);
         return ok ? { ok: true } : { ok: false, error: 'no_session' };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };

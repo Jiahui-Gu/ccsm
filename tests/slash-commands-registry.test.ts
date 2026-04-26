@@ -129,7 +129,7 @@ describe('groupSlashCommands', () => {
       'skill',
       'agent',
     ]);
-    expect(groups[0].commands.map((c) => c.name)).toEqual(['clear', 'compact', 'config', 'think']);
+    expect(groups[0].commands.map((c) => c.name)).toEqual(['clear', 'compact', 'config']);
     expect(groups[1].commands.map((c) => c.name)).toEqual(['user-cmd']);
     expect(groups[2].commands.map((c) => c.name)).toEqual(['proj-cmd']);
     expect(groups[3].commands.map((c) => c.name)).toEqual(['plug-cmd']);
@@ -168,17 +168,16 @@ describe('filterSlashCommands fuzzy matching', () => {
 });
 
 describe('nextSectionIndex', () => {
-  // Four built-ins (clear, compact, config, think), then user, project,
-  // plugin sections. Flat layout:
+  // Three built-ins (clear, compact, config), then user, project, plugin
+  // sections. Flat layout:
   //   [0] clear           built-in
   //   [1] compact         built-in
   //   [2] config          built-in
-  //   [3] think           built-in
-  //   [4] u1              user
-  //   [5] u2              user
-  //   [6] p1              project
-  //   [7] pl1             plugin
-  //   [8] pl2             plugin
+  //   [3] u1              user
+  //   [4] u2              user
+  //   [5] p1              project
+  //   [6] pl1             plugin
+  //   [7] pl2             plugin
   const fixture: SlashCommand[] = [
     ...BUILT_IN_COMMANDS,
     mkDynamic('u1', 'user'),
@@ -189,37 +188,35 @@ describe('nextSectionIndex', () => {
   ];
 
   it('Tab from inside built-in jumps to first row of next section (user)', () => {
-    expect(nextSectionIndex(fixture, 0, 1)).toBe(4);
-    expect(nextSectionIndex(fixture, 1, 1)).toBe(4);
-    expect(nextSectionIndex(fixture, 2, 1)).toBe(4);
-    expect(nextSectionIndex(fixture, 3, 1)).toBe(4);
+    expect(nextSectionIndex(fixture, 0, 1)).toBe(3);
+    expect(nextSectionIndex(fixture, 1, 1)).toBe(3);
+    expect(nextSectionIndex(fixture, 2, 1)).toBe(3);
   });
 
   it('Tab from inside user jumps to first row of project', () => {
-    expect(nextSectionIndex(fixture, 4, 1)).toBe(6);
-    expect(nextSectionIndex(fixture, 5, 1)).toBe(6);
+    expect(nextSectionIndex(fixture, 3, 1)).toBe(5);
+    expect(nextSectionIndex(fixture, 4, 1)).toBe(5);
   });
 
   it('Tab from the last section wraps to the first section', () => {
     // Plugin is the last group in fixture; wrap → built-in (idx 0).
+    expect(nextSectionIndex(fixture, 6, 1)).toBe(0);
     expect(nextSectionIndex(fixture, 7, 1)).toBe(0);
-    expect(nextSectionIndex(fixture, 8, 1)).toBe(0);
   });
 
   it('Shift+Tab from inside a section jumps to the start of the previous section', () => {
     // From plugin → project.
-    expect(nextSectionIndex(fixture, 8, -1)).toBe(6);
+    expect(nextSectionIndex(fixture, 7, -1)).toBe(5);
     // From project → user.
-    expect(nextSectionIndex(fixture, 6, -1)).toBe(4);
+    expect(nextSectionIndex(fixture, 5, -1)).toBe(3);
     // From user → built-in.
-    expect(nextSectionIndex(fixture, 4, -1)).toBe(0);
+    expect(nextSectionIndex(fixture, 3, -1)).toBe(0);
   });
 
   it('Shift+Tab from the first section wraps to the last section', () => {
-    expect(nextSectionIndex(fixture, 0, -1)).toBe(7);
-    expect(nextSectionIndex(fixture, 1, -1)).toBe(7);
-    expect(nextSectionIndex(fixture, 2, -1)).toBe(7);
-    expect(nextSectionIndex(fixture, 3, -1)).toBe(7);
+    expect(nextSectionIndex(fixture, 0, -1)).toBe(6);
+    expect(nextSectionIndex(fixture, 1, -1)).toBe(6);
+    expect(nextSectionIndex(fixture, 2, -1)).toBe(6);
   });
 
   it('skips groups that are empty after filtering', () => {

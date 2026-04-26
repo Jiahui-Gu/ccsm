@@ -1,6 +1,5 @@
 import { useStore } from '../stores/store';
 import { i18next } from '../i18n';
-import { getMaxThinkingTokensForModel } from './thinking';
 
 /**
  * Kick off `agent:start` for the given session and reconcile store state
@@ -40,6 +39,13 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   const isUuidShaped = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
     sessionId,
   );
+  // Resolve the chip's effort level (per-session override, else global
+  // default). Pass it through to `agentStart` so the SDK is launched with
+  // the right `thinking` + `effort` options on the FIRST query — no
+  // post-init RPC race. The mid-session `setEffort` IPC stays in place for
+  // chip flips after launch.
+  const effortLevel =
+    store.effortLevelBySession[sessionId] ?? store.globalEffortLevel;
   const res = await api.agentStart(sessionId, {
     cwd: session.cwd,
     model: session.model || undefined,
@@ -47,6 +53,7 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
     resumeSessionId: session.resumeSessionId,
     sessionId:
       session.resumeSessionId == null && isUuidShaped ? sessionId : undefined,
+    effortLevel,
   });
 
   if (res.ok) {
@@ -57,17 +64,6 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
     // is already false. Without this reset the banner stayed visible until
     // app restart even after the user reinstalled and a session launched OK.
     store.setInstallerCorrupt(false);
-    // Push the resolved thinking-tokens cap to the freshly-spawned session
-    // so launch + resume both honour the user's `/think` toggle. Mirrors
-    // upstream's `launchClaude(..., thinkingLevel)` behaviour where the cap
-    // is delivered as the first control RPC after init. Sent unconditionally
-    // (including the value 0) so an off-by-default session explicitly clears
-    // any stale cap from the SDK side.
-    const fresh = useStore.getState();
-    const level =
-      fresh.thinkingLevelBySession[sessionId] ?? fresh.globalThinkingDefault;
-    const tokens = getMaxThinkingTokensForModel(session.model || undefined, level);
-    void api.agentSetMaxThinkingTokens(sessionId, tokens);
     return true;
   }
 

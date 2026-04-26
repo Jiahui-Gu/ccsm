@@ -526,7 +526,25 @@ const en = {
     // Mirrors the official VS Code Claude extension's auto-compact tooltip
     // wording so users who switch between surfaces see the same prompt.
     contextTooltip: '{{percent}}% used ({{used}} / {{limit}} tokens). Click to /compact.',
-    contextAriaLabel: '{{percent}}% of context window used. Click to compact.'
+    contextAriaLabel: '{{percent}}% of context window used. Click to compact.',
+    // 6-tier effort+thinking chip. Labels mirror the SDK's EffortLevel
+    // union (low/medium/high/xhigh/max) plus an 'Off' tier that maps to
+    // thinking=disabled. Default tier is High; Extra high/Max are
+    // model-gated.
+    effort: 'Effort',
+    effortOffLabel: 'Off',
+    effortLowLabel: 'Low',
+    effortMediumLabel: 'Medium',
+    effortHighLabel: 'High',
+    effortXhighLabel: 'Extra high',
+    effortMaxLabel: 'Max',
+    effortOffDesc: 'No thinking. Fastest.',
+    effortLowDesc: 'Quick takes. Adaptive thinking.',
+    effortMediumDesc: 'Balanced reasoning.',
+    effortHighDesc: 'Deeper thinking (default).',
+    effortXhighDesc: 'Extended deliberation. Opus 4.7.',
+    effortMaxDesc: 'Maximum effort. Opus 4.6/4.7.',
+    effortGatedTooltip: 'Not supported by current model.'
   },
   cwdPopover: {
     placeholder: 'Type to filter or paste a path…',

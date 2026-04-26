@@ -21,6 +21,8 @@ type StartOpts = {
    * "no migration for old users" decision.
    */
   sessionId?: string;
+  /** Resolved 6-tier effort chip level applied at launch. */
+  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 type AgentEvent = { sessionId: string; message: AgentMessage };
@@ -159,9 +161,20 @@ const api = {
   agentSetModel: (sessionId: string, model?: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:setModel', sessionId, model),
   /**
-   * Push a `max_thinking_tokens` cap into a live session. `tokens === 0`
-   * disables extended thinking; positive values enable it. The renderer
-   * computes the value via `src/agent/thinking.ts`.
+   * Push a 6-tier effort chip change into a live session. Main side fans
+   * out to two concurrent SDK RPCs (setMaxThinkingTokens + applyFlagSettings).
+   * Renderer never has to know about the two-dimension wire shape — it
+   * just passes the chip's value.
+   */
+  agentSetEffort: (
+    sessionId: string,
+    level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('agent:setEffort', sessionId, level),
+  /**
+   * Legacy: push a `max_thinking_tokens` cap into a live session. Kept for
+   * the harness probe path that pre-dates the unified chip; new renderer
+   * code uses `agentSetEffort`.
    */
   agentSetMaxThinkingTokens: (
     sessionId: string,

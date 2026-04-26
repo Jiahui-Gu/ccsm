@@ -21,6 +21,12 @@ interface Runner {
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): Promise<void>;
   setMaxThinkingTokens(tokens: number): Promise<void>;
+  /**
+   * Push a 6-tier effort chip change into a live session. Implementation
+   * dispatches the two SDK control RPCs concurrently — see
+   * `electron/agent-sdk/sessions.ts:setEffort`.
+   */
+  setEffort(level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'): Promise<void>;
   resolvePermission(requestId: string, decision: 'allow' | 'deny'): boolean;
   resolvePermissionPartial(requestId: string, acceptedHunks: number[]): boolean;
   close(): void;
@@ -247,6 +253,22 @@ class SessionsManager {
     const r = this.runners.get(sessionId);
     if (!r) return false;
     await r.setMaxThinkingTokens(tokens);
+    return true;
+  }
+
+  /**
+   * Push a 6-tier effort chip change into the running SDK session. The
+   * runner concurrently dispatches `setMaxThinkingTokens` (legacy/thinking
+   * dimension) + `applyFlagSettings({effortLevel})` (effort dimension).
+   * Returns false when the session is gone (mirrors setMaxThinkingTokens).
+   */
+  async setEffort(
+    sessionId: string,
+    level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
+  ): Promise<boolean> {
+    const r = this.runners.get(sessionId);
+    if (!r) return false;
+    await r.setEffort(level);
     return true;
   }
 

@@ -63,6 +63,9 @@ type CanUseToolDecision =
   | { allow: false; deny_reason?: string };
 
 import { filterToolInputByAcceptedHunks } from '../agent/partial-write';
+import { projectEffortToWire, thinkingTokensForLevel } from '../../src/agent/effort';
+
+type EffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 /**
  * Resolve `~`-prefixed paths the way the legacy runner does. Kept identical
@@ -248,6 +251,7 @@ export class SdkSessionRunner {
   private disposed = false;
   private cliSessionId: string | undefined;
   private permissionMode: PermissionMode = 'default';
+  private effortLevel: EffortLevel = 'high';
 
   /**
    * Outbound user-message queue. The SDK consumes user input via an
@@ -378,6 +382,15 @@ export class SdkSessionRunner {
 
     const sdkPermissionMode = toSdkPermissionMode(this.permissionMode);
 
+    // Project the resolved chip level into the SDK's two dimensions. Sent
+    // EXPLICITLY at launch (even for the default 'high') so the chip's
+    // value is the single source of truth — the bundled CLI's
+    // settings.json default doesn't get to second-guess us. Mirrors the
+    // VS Code extension's wire path.
+    const effortLevel: EffortLevel = opts.effortLevel ?? 'high';
+    const wire = projectEffortToWire(effortLevel);
+    this.effortLevel = effortLevel;
+
     this.query = sdk.query({
       prompt: this.makeInputIterable(),
       options: {
@@ -400,6 +413,15 @@ export class SdkSessionRunner {
         resume: opts.resumeSessionId,
         sessionId: presetSessionId,
         pathToClaudeCodeExecutable: binaryPath,
+        // 6-tier effort+thinking chip → SDK options. `thinking: 'disabled'`
+        // when the chip is Off, `'adaptive'` (Claude decides budget) for
+        // every other tier. `effort` carries the actual tier label and is
+        // omitted when Off (the SDK's model-default is then irrelevant
+        // because thinking is disabled). See src/agent/effort.ts for the
+        // mapping table and `docs/thinking-tier-vscode-eval-2026-04-26.md`
+        // for the upstream probe that confirms this is the wire shape.
+        thinking: wire.thinking,
+        effort: wire.effort,
         canUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
         // PreToolUse hook (#94): the CLI's local rule engine handles built-in
         // tools (Bash/Write/Edit/...) entirely client-side and only routes
@@ -732,6 +754,83 @@ export class SdkSessionRunner {
         }).`,
       });
     }
+  }
+
+  /**
+   * Push a 6-tier effort chip change into the live SDK session.
+   *
+   * Mid-session change requires TWO concurrent control RPCs because the
+   * SDK splits the chip's two underlying dimensions:
+   *   1) `setMaxThinkingTokens` carries the thinking on/off bit
+   *      (null = enable adaptive thinking; 0 = disable).
+   *   2) `applyFlagSettings({ effortLevel })` carries the tier itself
+   *      (low/medium/high/xhigh; SDK's `Settings.effortLevel` schema does
+   *      NOT include 'max' — for 'max' we still send applyFlagSettings as
+   *      a best-effort, casting through unknown; the SDK's CLI validates
+   *      and the catch below downgrades to a soft diagnostic if rejected).
+   *
+   * Both go out at the same time (`Promise.all`) so a slow turn doesn't
+   * see a half-applied state where thinking flipped but effort didn't.
+   * No session restart.
+   *
+   * For the 'off' chip: only RPC #1 is meaningful (thinking off; tier is
+   * irrelevant). We still send #2 as 'low' so a flip back ON re-syncs
+   * cleanly without leaving stale higher-tier state on the SDK side.
+   */
+  async setEffort(level: EffortLevel): Promise<void> {
+    this.effortLevel = level;
+    if (!this.query) return;
+    const tokens = thinkingTokensForLevel(level);
+    const settingsEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' =
+      level === 'off' ? 'low' : level;
+
+    const q = this.query as unknown as {
+      setMaxThinkingTokens?: (n: number | null) => Promise<void>;
+      applyFlagSettings?: (settings: Record<string, unknown>) => Promise<void>;
+    };
+
+    const tasks: Promise<unknown>[] = [];
+    if (typeof q.setMaxThinkingTokens === 'function') {
+      tasks.push(
+        q.setMaxThinkingTokens(tokens).catch((err) => {
+          this.onDiagnostic({
+            level: 'warn',
+            code: 'set_max_thinking_tokens_timeout',
+            message: `Agent unresponsive to thinking change (${
+              err instanceof Error ? err.message : String(err)
+            }).`,
+          });
+        }),
+      );
+    } else {
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'set_max_thinking_tokens_unsupported',
+        message: 'SDK Query.setMaxThinkingTokens missing — chip flip ignored.',
+      });
+    }
+    if (typeof q.applyFlagSettings === 'function') {
+      tasks.push(
+        q
+          .applyFlagSettings({ effortLevel: settingsEffort })
+          .catch((err) => {
+            this.onDiagnostic({
+              level: 'warn',
+              code: 'apply_flag_settings_failed',
+              message: `Agent unresponsive to effort change (${
+                err instanceof Error ? err.message : String(err)
+              }).`,
+            });
+          }),
+      );
+    } else {
+      this.onDiagnostic({
+        level: 'warn',
+        code: 'apply_flag_settings_unsupported',
+        message: 'SDK Query.applyFlagSettings missing — effort tier change ignored.',
+      });
+    }
+    await Promise.all(tasks);
   }
 
   async setModel(model?: string): Promise<void> {

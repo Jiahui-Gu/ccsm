@@ -70,6 +70,14 @@ export type StartOptions = {
    * "Browse for binary..." pick in the first-run wizard).
    */
   binaryPath?: string;
+  /**
+   * Resolved effort level for this session at launch. Drives `query()`'s
+   * `thinking` (adaptive/disabled) + `effort` options. The 6-tier chip
+   * resolves to this value via per-session-override OR globalEffortLevel
+   * fallback in `src/agent/startSession.ts`. Optional for back-compat with
+   * harness probes that don't supply it; runner falls back to 'high'.
+   */
+  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 export type EventHandler = (msg: AgentMessage) => void;

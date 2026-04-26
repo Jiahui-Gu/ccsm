@@ -25,6 +25,8 @@ type StartOpts = {
    * `resumeSessionId` per SDK constraints.
    */
   sessionId?: string;
+  /** Resolved 6-tier effort chip level applied at launch. */
+  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
 // Mirror of `StartResult` from `electron/agent/start-result-types.ts` —
@@ -137,6 +139,10 @@ declare global {
       agentSetMaxThinkingTokens: (
         sessionId: string,
         tokens: number
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
+      agentSetEffort: (
+        sessionId: string,
+        level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
       ) => Promise<{ ok: true } | { ok: false; error: string }>;
       agentClose: (sessionId: string) => Promise<boolean>;
       agentResolvePermission: (
