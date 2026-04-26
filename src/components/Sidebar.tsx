@@ -684,7 +684,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               bg-bg-sidebar/80 + backdrop-blur, so the buttons read as
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
-          <div className="px-3 pt-1 pb-3 flex items-center gap-2">
+          <div data-testid="sidebar-newsession-row" className="px-3 pt-1 pb-3 flex items-center gap-2">
             <NewSessionButton onCreateSession={onCreateSession} />
             <IconButton
               variant="raised"
@@ -700,8 +700,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           {/* Middle: work zone — Groups (flex-grow, scrollable) on top,
               Archived Groups pinned to a fixed-height block above Settings.
               Both lists scroll internally. */}
-          <div className="mt-2 border-t border-border-subtle" />
-          <div className="px-3 pt-3 pb-1 flex items-center justify-between shrink-0">
+          {/* Divider sits flush with NewSession row bottom; the row's pb-3 (12px) IS the gap to this divider — symmetric with the 12px window-top→NewSession-top gap. */}
+          <div data-testid="sidebar-divider-groups" className="border-t border-border-subtle" />
+          <div data-testid="sidebar-groups-label" className="px-3 pt-3 pb-1 flex items-center justify-between shrink-0">
             <span className="text-label-section">
               {t('sidebar.groups')}
             </span>
@@ -742,7 +743,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
 
           {/* Archived Groups — pinned bottom block. Header is clickable to
               fold/unfold; folded by default so it stays out of the way. */}
-          <div className="border-t border-border-subtle shrink-0" />
+          <div data-testid="sidebar-divider-archived" className="border-t border-border-subtle shrink-0" />
           <button
             type="button"
             onClick={() => setArchiveOpen((o) => !o)}
@@ -793,7 +794,10 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               The 8px DragRegion above + pt-1 (4px) on the top wrapper give
               12px from sidebar.top to New Session.top — symmetric with this
               12px from sidebar.bottom to Settings.bottom. UX audit Group A. */}
-          <div className="px-3 pt-3 pb-3 border-t border-border-subtle flex items-center gap-2">
+          {/* pt-[17px] (12 + 5) lifts the bottom block 5px so the divider
+              above the collapsed Archived row sits at the same Y as the
+              InputBar wrapper top edge — visual cross-pane alignment. */}
+          <div className="px-3 pt-[17px] pb-3 border-t border-border-subtle flex items-center gap-2">
             <Button
               variant="raised"
               size="md"
