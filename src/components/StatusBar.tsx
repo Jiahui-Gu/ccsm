@@ -14,7 +14,6 @@ import { useTranslation } from '../i18n/useTranslation';
 import { CwdPopover } from './CwdPopover';
 import {
   EFFORT_LEVELS,
-  isEffortLevelSupported,
   type EffortLevel,
 } from '../agent/effort';
 
@@ -59,15 +58,6 @@ type ChipOption<V extends string> =
       primary: string;
       secondary?: string;
       icon?: React.ReactNode;
-      /**
-       * Render the row greyed-out and non-selectable. Used by the Effort
-       * chip to flag tiers the current model doesn't support — surfacing
-       * them visibly (rather than hiding) so users can see why a tier
-       * isn't selectable and understand model gating exists.
-       */
-      disabled?: boolean;
-      /** Tooltip surfaced on hover; primary use is explaining `disabled`. */
-      titleAttr?: string;
     }
   | { kind: 'separator' }
   | { kind: 'label'; primary: string };
@@ -133,15 +123,7 @@ function ChipMenu<V extends string>({
             return (
               <DropdownMenuItem
                 key={o.value}
-                disabled={o.disabled}
-                title={o.titleAttr}
-                onSelect={(e) => {
-                  if (o.disabled) {
-                    e.preventDefault();
-                    return;
-                  }
-                  onSelect(o.value);
-                }}
+                onSelect={() => onSelect(o.value)}
                 className="flex-col items-start gap-0 h-auto py-1.5"
               >
                 <span className="truncate w-full text-fg-primary">{o.primary}</span>
@@ -154,15 +136,7 @@ function ChipMenu<V extends string>({
           return (
             <DropdownMenuItem
               key={o.value}
-              disabled={o.disabled}
-              title={o.titleAttr}
-              onSelect={(e) => {
-                if (o.disabled) {
-                  e.preventDefault();
-                  return;
-                }
-                onSelect(o.value);
-              }}
+              onSelect={() => onSelect(o.value)}
             >
               {o.icon}
               <span>{o.primary}</span>
@@ -331,11 +305,6 @@ export function StatusBar({
   const { t } = useTranslation();
   const models = useStore((s) => s.models);
   const modelsLoaded = useStore((s) => s.modelsLoaded);
-  // SDK-reported per-model effort tiers (populated from the `agent:modelInfo`
-  // IPC channel in src/agent/lifecycle.ts). Empty until at least one session
-  // has started; supportedEffortLevelsForModel falls back to its hardcoded
-  // table for any model not yet reported.
-  const supportedEffortLevelsByModel = useStore((s) => s.supportedEffortLevelsByModel);
   const contextUsage = useStore((s) => s.contextUsageBySession[sessionId]);
   // 6-tier effort+thinking chip: per-session override falls back to the
   // global default so a fresh session starts at 'high' (the unified chip's
@@ -396,9 +365,13 @@ export function StatusBar({
   const modelTriggerLabel = model || t('statusBar.pickModel');
 
   // 6-tier effort+thinking chip. Labels are localized; the underlying VALUES
-  // are the SDK's union literals and stay in English. Tiers the current
-  // model doesn't support are rendered disabled+tooltipped (rather than
-  // hidden) so users see model gating exists. Off is always selectable.
+  // are the SDK's union literals and stay in English. Every tier is enabled
+  // unconditionally — ccsm is OPTIMISTIC about model support and lets the
+  // CLI reject unsupported tiers, at which point the runner auto-downgrades
+  // (see `electron/agent-sdk/sessions.ts` setEffort + start fallback paths
+  // and `src/agent/effort.ts::nextLowerEffort`). The chip's visible label
+  // keeps showing the user-selected tier even if the runner had to downgrade
+  // under the hood.
   const effortLabels: Record<EffortLevel, string> = {
     off: t('statusBar.effortOffLabel'),
     low: t('statusBar.effortLowLabel'),
@@ -415,18 +388,12 @@ export function StatusBar({
     xhigh: t('statusBar.effortXhighDesc'),
     max: t('statusBar.effortMaxDesc'),
   };
-  const gatedTooltip = t('statusBar.effortGatedTooltip');
-  const effortOptions: ChipOption<EffortLevel>[] = EFFORT_LEVELS.map((lvl) => {
-    const supported = isEffortLevelSupported(model, lvl, supportedEffortLevelsByModel);
-    return {
-      kind: 'item' as const,
-      value: lvl,
-      primary: effortLabels[lvl],
-      secondary: effortDescs[lvl],
-      disabled: !supported,
-      titleAttr: supported ? undefined : gatedTooltip,
-    };
-  });
+  const effortOptions: ChipOption<EffortLevel>[] = EFFORT_LEVELS.map((lvl) => ({
+    kind: 'item' as const,
+    value: lvl,
+    primary: effortLabels[lvl],
+    secondary: effortDescs[lvl],
+  }));
 
   const chips: React.ReactNode[] = [
     cwdChip,

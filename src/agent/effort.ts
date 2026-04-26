@@ -14,8 +14,8 @@
 //   Low           thinking=adaptive   effort=low
 //   Medium        thinking=adaptive   effort=medium
 //   High          thinking=adaptive   effort=high       <- default
-//   Extra high    thinking=adaptive   effort=xhigh      (model-gated)
-//   Max           thinking=adaptive   effort=max        (model-gated)
+//   Extra high    thinking=adaptive   effort=xhigh
+//   Max           thinking=adaptive   effort=max
 //
 // Wire path (mirrors SDK schema):
 //   - Launch:      query({ thinking, effort })
@@ -23,14 +23,22 @@
 //   - Persistence: settings.json effortLevel (CLI reads via CLAUDE_CONFIG_DIR;
 //                  ccsm does NOT parse settings.json — see project_cli_config_reuse memory).
 //
-// Model gating: we prefer the SDK's own `Model.supportedEffortLevels` (piped
-// in per-model via the `agent:modelInfo` IPC channel — see
-// `electron/agent-sdk/sessions.ts` and the renderer wiring in
-// `src/agent/lifecycle.ts`). When no SDK report is available yet — e.g.
-// before the first session starts in an app run — we fall back to a small
-// hardcoded model→tier table inside `supportedEffortLevelsForModel`. Gated
-// tiers render `disabled` in the dropdown with a "not supported by current
-// model" tooltip.
+// Model gating: ccsm is OPTIMISTIC. Every chip tier is enabled in the UI
+// regardless of which model the user picked — the chip never disables itself
+// or shows a "not supported" tooltip. If the CLI rejects the chosen tier (for
+// either a launch or mid-session apply), the runner auto-downgrades one tier
+// at a time (max → xhigh → high → medium → low → off) and retries until the
+// CLI accepts. The chip's visible label keeps showing the user-selected tier
+// — the downgrade is invisible at the UI layer, only logged via diagnostic.
+//
+// Why optimistic instead of a hardcoded model→tiers table or piping the SDK's
+// `Model.supportedEffortLevels` into a `disabled+tooltip` UI: alias model ids
+// (e.g. CLI picker `opus[1m]` → real id `claude-opus-4-7-1m`) defeat regex-
+// based gating, and the SDK report only arrives once a session has started
+// — so a fresh chip on app launch had no usable info anyway. The downgrade
+// loop is a single source of truth that works for every model the CLI knows
+// about, including aliases and future additions ccsm hasn't been recompiled
+// for.
 
 export type EffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -96,68 +104,59 @@ export function thinkingTokensForLevel(level: EffortLevel): number | null {
 }
 
 /**
- * Resolve the set of NON-'off' tiers a given model supports. 'off' is always
- * usable (it is purely a ccsm-side toggle: thinking=disabled).
+ * Optimistic-fallback ladder. Returns the next-lower tier to try after the
+ * CLI rejected the current one, or `null` once we've reached the bottom
+ * ('off' is always accepted because it's purely a ccsm-side toggle: thinking=disabled,
+ * no effort sent).
  *
- * Resolution order:
- *   1. `sdkReported` — the SDK's own `Model.supportedEffortLevels` for this
- *      model id, populated on session start via `query.supportedModels()`
- *      (see electron/agent-sdk/sessions.ts and the `agent:modelInfo` IPC
- *      channel). This is the canonical answer when present, including
- *      future model additions ccsm hasn't been recompiled for.
- *   2. Hardcoded fallback below — used when no SDK report has arrived yet
- *      (no session has started in this app run, or the running SDK build
- *      doesn't list the chosen model). Mirrors what the bundled CLI
- *      reported in dogfood at the time of writing:
+ * Order: max → xhigh → high → medium → low → off → null.
  *
- *        Opus 4.7    → low, medium, high, xhigh, max
- *        Opus 4.6    → low, medium, high, max
- *        Sonnet 4.6+ → low, medium, high
- *        Older       → low, medium, high  (always-safe trio; the chip still
- *                      works so a model swap picks up support without a
- *                      relaunch).
+ * Used by `electron/agent-sdk/sessions.ts` on both launch (query() rejected
+ * for unsupported `effort`) and mid-session (`apply_flag_settings` rejected).
  */
-export function supportedEffortLevelsForModel(
-  modelId: string | null | undefined,
-  sdkReported?: Readonly<
-    Record<string, ReadonlyArray<Exclude<EffortLevel, 'off'>>>
-  >
-): ReadonlySet<Exclude<EffortLevel, 'off'>> {
-  const id = (modelId ?? '').toLowerCase();
-  if (sdkReported && modelId) {
-    // Try the exact id the SDK reported with first; fall back to a
-    // case-insensitive lookup so callers don't have to care about how the
-    // CLI spells the canonical id (e.g. `claude-opus-4-7-...` vs the
-    // user-facing alias).
-    const exact = sdkReported[modelId];
-    if (exact && exact.length > 0) return new Set(exact);
-    for (const [k, v] of Object.entries(sdkReported)) {
-      if (k.toLowerCase() === id && v.length > 0) return new Set(v);
-    }
+export function nextLowerEffort(level: EffortLevel): EffortLevel | null {
+  switch (level) {
+    case 'max':
+      return 'xhigh';
+    case 'xhigh':
+      return 'high';
+    case 'high':
+      return 'medium';
+    case 'medium':
+      return 'low';
+    case 'low':
+      return 'off';
+    case 'off':
+      return null;
   }
-  // Order matters: opus-4-7 must be tested before opus-4 (substring match).
-  if (/opus-4[-_]7|opus-4\.7/.test(id)) {
-    return new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-  }
-  if (/opus-4[-_]6|opus-4\.6|opus-4(?![-_.\d])/.test(id)) {
-    return new Set(['low', 'medium', 'high', 'max']);
-  }
-  if (/sonnet-4|sonnet/.test(id)) {
-    return new Set(['low', 'medium', 'high']);
-  }
-  // Unknown model: surface the always-safe trio.
-  return new Set(['low', 'medium', 'high']);
 }
 
-export function isEffortLevelSupported(
-  modelId: string | null | undefined,
-  level: EffortLevel,
-  sdkReported?: Readonly<
-    Record<string, ReadonlyArray<Exclude<EffortLevel, 'off'>>>
-  >
-): boolean {
-  if (level === 'off') return true;
-  return supportedEffortLevelsForModel(modelId, sdkReported).has(level);
+/**
+ * Heuristic to decide whether an SDK / CLI error message indicates the
+ * `effort` (or its underlying `thinking` dimension) was rejected and the
+ * runner should auto-downgrade. Bundled CLI rejections come back as plain
+ * `Error(W.error)` (see `node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`
+ * `pendingControlResponses` handler) — the only signal is the message text,
+ * and the CLI's exact wording varies across versions. The regex matches the
+ * intersection of words seen in dogfood and is intentionally permissive —
+ * a false positive just means a one-tier downgrade on a different class of
+ * error (still ends up at `off` and surfaces the original error if even
+ * `off` fails).
+ */
+export function isEffortRejectionError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  if (!msg) return false;
+  // Match any of:
+  //   - phrases mentioning "effort" with unsupported/invalid/not-supported
+  //   - phrases mentioning "thinking" with unsupported/invalid/not-supported
+  //   - flag_settings rejections that name effortLevel
+  return (
+    /\beffort\b[^.]{0,60}\b(unsupported|not\s+supported|invalid|unknown|disallow|not\s+allowed)\b/i.test(msg) ||
+    /\b(unsupported|not\s+supported|invalid|unknown|disallow|not\s+allowed)\b[^.]{0,60}\beffort\b/i.test(msg) ||
+    /\bthinking\b[^.]{0,60}\b(unsupported|not\s+supported|invalid|unknown|disallow|not\s+allowed)\b/i.test(msg) ||
+    /\b(unsupported|not\s+supported|invalid|unknown|disallow|not\s+allowed)\b[^.]{0,60}\bthinking\b/i.test(msg) ||
+    /\beffortLevel\b/i.test(msg)
+  );
 }
 
 /**

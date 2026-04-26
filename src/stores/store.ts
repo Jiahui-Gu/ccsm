@@ -250,19 +250,6 @@ type State = {
   messageQueues: Record<string, QueuedMessage[]>;
   models: DiscoveredModel[];
   modelsLoaded: boolean;
-  /**
-   * Per-model `supportedEffortLevels` reported by the SDK on session start
-   * via `query.supportedModels()` (forwarded to the renderer over the
-   * `agent:modelInfo` IPC channel — see `electron/agent-sdk/sessions.ts`).
-   * Source of truth for the StatusBar effort chip's tier gating; falls
-   * back to the hardcoded model→tier table in `src/agent/effort.ts` for
-   * any model not yet reported (e.g. before any session has started, or
-   * for a model the bundled SDK doesn't list).
-   *
-   * Keyed by raw model id (`ModelInfo.value`), shared across sessions —
-   * the SDK reports the SAME catalogue regardless of which session asked.
-   */
-  supportedEffortLevelsByModel: Record<string, ReadonlyArray<Exclude<EffortLevel, 'off'>>>;
   connection: ConnectionInfo | null;
   // Monotonic counter bumped whenever a user-driven action requests that the
   // InputBar textarea take focus (e.g. clicking a session in the sidebar,
@@ -593,19 +580,6 @@ type Actions = {
   setSessionContextUsage: (sessionId: string, usage: SessionContextUsage) => void;
 
   loadModels: () => Promise<void>;
-  /**
-   * Merge per-model effort-tier metadata reported by the SDK
-   * (`agent:modelInfo` IPC) into `supportedEffortLevelsByModel`. New entries
-   * overwrite previous ones — the SDK's report is canonical for whatever
-   * model id it includes. Models absent from the report keep their prior
-   * entries (or fall back to the hardcoded table at lookup time).
-   */
-  applyModelInfo: (
-    models: ReadonlyArray<{
-      modelId: string;
-      supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
-    }>
-  ) => void;
   loadConnection: () => Promise<void>;
 
   /** Flip the `installerCorrupt` banner on (true) or off (false). Called
@@ -1041,7 +1015,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   messageQueues: {},
   models: [],
   modelsLoaded: false,
-  supportedEffortLevelsByModel: {},
   connection: null,
   focusInputNonce: 0,
   installerCorrupt: false,
@@ -2488,40 +2461,6 @@ export const useStore = create<State & Actions>((set, get) => ({
     } catch {
       set({ modelsLoaded: true });
     }
-  },
-
-  applyModelInfo: (models) => {
-    if (!Array.isArray(models) || models.length === 0) return;
-    set((s) => {
-      const next = { ...s.supportedEffortLevelsByModel };
-      let changed = false;
-      for (const m of models) {
-        if (!m || typeof m.modelId !== 'string' || !m.modelId) continue;
-        const tiers = m.supportedEffortLevels;
-        if (!Array.isArray(tiers)) continue;
-        // Defence-in-depth: filter to known union members. The IPC payload
-        // is already validated in preload but the store is the boundary
-        // both production and harness probes hit, so keep the guard local.
-        const allowed = (['low', 'medium', 'high', 'xhigh', 'max'] as const).filter((t) =>
-          tiers.includes(t)
-        );
-        // Empty filter result == no usable info → skip rather than write an
-        // empty array (effort.ts treats empty as "no SDK report" and falls
-        // back to the hardcoded table; storing [] would just waste a slot).
-        if (allowed.length === 0) continue;
-        const prev = next[m.modelId];
-        if (
-          prev &&
-          prev.length === allowed.length &&
-          prev.every((v, i) => v === allowed[i])
-        ) {
-          continue;
-        }
-        next[m.modelId] = allowed;
-        changed = true;
-      }
-      return changed ? { supportedEffortLevelsByModel: next } : s;
-    });
   },
 
   loadConnection: async () => {

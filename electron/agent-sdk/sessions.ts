@@ -42,7 +42,6 @@ import type {
   ExitHandler,
   PermissionRequestHandler,
   DiagnosticHandler,
-  ModelInfoHandler,
   AgentMessage,
 } from '../agent/sessions';
 import { translateSdkMessage, type SdkMessageLike } from './sdk-message-translator';
@@ -64,7 +63,12 @@ type CanUseToolDecision =
   | { allow: false; deny_reason?: string };
 
 import { filterToolInputByAcceptedHunks } from '../agent/partial-write';
-import { projectEffortToWire, thinkingTokensForLevel } from '../../src/agent/effort';
+import {
+  projectEffortToWire,
+  thinkingTokensForLevel,
+  nextLowerEffort,
+  isEffortRejectionError,
+} from '../../src/agent/effort';
 
 type EffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
@@ -288,7 +292,6 @@ export class SdkSessionRunner {
     private readonly onExit: ExitHandler,
     private readonly onPermissionRequest: PermissionRequestHandler,
     private readonly onDiagnostic: DiagnosticHandler = () => {},
-    private readonly onModelInfo: ModelInfoHandler = () => {},
   ) {}
 
   /**
@@ -389,160 +392,283 @@ export class SdkSessionRunner {
     // value is the single source of truth — the bundled CLI's
     // settings.json default doesn't get to second-guess us. Mirrors the
     // VS Code extension's wire path.
-    const effortLevel: EffortLevel = opts.effortLevel ?? 'high';
-    const wire = projectEffortToWire(effortLevel);
-    this.effortLevel = effortLevel;
+    //
+    // Optimistic gating: ccsm UI never disables effort tiers. If the CLI
+    // rejects the user-selected tier as unsupported for the current model
+    // (typical alias surface: `opus[1m]` -> Opus 4.7 1M which has different
+    // tier ceilings than the alias regex would suggest), we auto-downgrade
+    // one tier at a time (max -> xhigh -> ... -> off) and retry. The
+    // chip's visible label in StatusBar stays at the user-selected tier;
+    // each downgrade emits a diagnostic.
+    const userEffort: EffortLevel = opts.effortLevel ?? 'high';
+    this.effortLevel = userEffort;
 
-    this.query = sdk.query({
-      prompt: this.makeInputIterable(),
-      options: {
-        cwd: resolveCwd(opts.cwd),
-        env: buildSdkEnv({
-          configDir: resolveClaudeConfigDir(opts.configDir),
-          envOverrides: opts.envOverrides,
-        }),
-        model: opts.model,
-        permissionMode: sdkPermissionMode,
-        // Always pass allowDangerouslySkipPermissions: true so users can
-        // switch to bypassPermissions mid-session via the chip without
-        // restarting. The SDK gate is one-way: the launch flag is only
-        // required to ENTER bypassPermissions; switching out of bypass
-        // needs no flag. Without this, sessions launched in `default`
-        // mode hit "was not launched with --dangerously-skip-permissions"
-        // when the user clicks the bypass chip, surfacing as a vague
-        // "Agent unresponsive" toast.
-        allowDangerouslySkipPermissions: true,
-        resume: opts.resumeSessionId,
-        sessionId: presetSessionId,
-        pathToClaudeCodeExecutable: binaryPath,
-        // 6-tier effort+thinking chip → SDK options. `thinking: 'disabled'`
-        // when the chip is Off, `'adaptive'` (Claude decides budget) for
-        // every other tier. `effort` carries the actual tier label and is
-        // omitted when Off (the SDK's model-default is then irrelevant
-        // because thinking is disabled). See src/agent/effort.ts for the
-        // mapping table.
-        thinking: wire.thinking,
-        effort: wire.effort,
-        canUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
-        // PreToolUse hook (#94): the CLI's local rule engine handles built-in
-        // tools (Bash/Write/Edit/...) entirely client-side and only routes
-        // "ask" tools (AskUserQuestion / ExitPlanMode) through canUseTool.
-        // Without an external signal, Bash in `default` mode auto-allows
-        // based on the CLI's safe-command heuristics — so the renderer's
-        // PermissionPromptBlock never renders and probes can't assert the
-        // permission flow ran. The legacy wrapper used `--pretool-use-hook`
-        // to force every tool through our handler; the SDK exposes the same
-        // mechanism via `options.hooks`. Returning `permissionDecision:'ask'`
-        // makes the CLI defer to canUseTool. PASSTHROUGH_TOOLS get an
-        // explicit `allow` so we don't double-prompt over the renderer's
-        // own AskUserQuestion / ExitPlanMode UI (which uses canUseTool too;
-        // the canUseTool short-circuit at the top of handleCanUseTool stays
-        // as defence-in-depth).
-        hooks: {
-          PreToolUse: [
-            {
-              matcher: '.*',
-              hooks: [this.makePreToolUseHook()],
-            },
-          ],
-        },
-        // Match the legacy spawner: we want partial-message streaming so
-        // long replies don't appear frozen.
-        includePartialMessages: true,
-        abortController: this.abort,
-      },
+    // Spawn the first attempt synchronously so `start()` returns immediately
+    // (matching the legacy contract: manager.ts races its first-event signal
+    // against an 800ms timeout AFTER start() resolves). The retry loop lives
+    // entirely inside the spawned consumer chain — see `attemptRun` below.
+    this.consumer = this.attemptRun(sdk, {
+      sdkPermissionMode,
+      presetSessionId,
+      binaryPath,
+      cwd: opts.cwd,
+      configDir: resolveClaudeConfigDir(opts.configDir),
+      envOverrides: opts.envOverrides,
+      model: opts.model,
+      resumeSessionId: opts.resumeSessionId,
+      userEffort,
+      currentEffort: userEffort,
     });
+  }
 
-    // Drain the SDK's outbound stream into ccsm's renderer event channel.
-    // Errors from the iterator are surfaced via onExit; see the catch below.
-    const query = this.query;
+  private async attemptRun(
+    sdk: typeof import('@anthropic-ai/claude-agent-sdk'),
+    ctx: {
+      sdkPermissionMode: ReturnType<typeof toSdkPermissionMode>;
+      presetSessionId: string | undefined;
+      binaryPath: string | undefined;
+      cwd: string;
+      configDir: string;
+      envOverrides: Record<string, string> | undefined;
+      model: string | undefined;
+      resumeSessionId: string | undefined;
+      userEffort: EffortLevel;
+      currentEffort: EffortLevel;
+    },
+  ): Promise<void> {
+    let attemptedDowngrade = false;
+    // Attempt loop: tries up to 6 tiers (max -> off). Each iteration sets
+    // up the consumer; on effort-rejection at the initial handshake we
+    // tear down and retry. Any non-effort error or stream-mid error is
+    // surfaced normally via onExit.
+    while (true) {
+      if (this.disposed) return;
+      // Refresh abort controller each retry — the previous one is wired to
+      // the torn-down query.
+      if (!this.abort) this.abort = new AbortController();
+      const wire = projectEffortToWire(ctx.currentEffort);
 
-    // Pull per-model capability metadata (notably `supportedEffortLevels`)
-    // from the SDK's initialize control_response. The promise resolves once
-    // the CLI has acknowledged the initialize handshake — at that point the
-    // SDK has the full ModelInfo[] available. Fire-and-forget: a failure
-    // here just means the StatusBar effort chip falls back to its hardcoded
-    // model→tier table (src/agent/effort.ts).
-    void (async () => {
-      try {
-        type SdkModelInfo = {
-          value?: unknown;
-          supportedEffortLevels?: unknown;
-        };
-        const supportedModels = (
-          query as unknown as { supportedModels?: () => Promise<SdkModelInfo[]> }
-        ).supportedModels;
-        if (typeof supportedModels !== 'function') return;
-        const models = await supportedModels.call(query);
-        if (this.disposed || !Array.isArray(models)) return;
-        const allowed = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
-        const out = models
-          .map((m) => {
-            const id = typeof m?.value === 'string' ? m.value : null;
-            if (!id) return null;
-            const raw = m?.supportedEffortLevels;
-            const tiers = Array.isArray(raw)
-              ? raw.filter(
-                  (t): t is 'low' | 'medium' | 'high' | 'xhigh' | 'max' =>
-                    typeof t === 'string' && allowed.has(t),
-                )
-              : undefined;
-            return { modelId: id, supportedEffortLevels: tiers };
-          })
-          .filter((x): x is { modelId: string; supportedEffortLevels: ('low'|'medium'|'high'|'xhigh'|'max')[] | undefined } => x !== null);
-        if (out.length > 0) this.onModelInfo({ models: out });
-      } catch (err) {
+      const query = sdk.query({
+        prompt: this.makeInputIterable(),
+        options: {
+          cwd: resolveCwd(ctx.cwd),
+          env: buildSdkEnv({
+            configDir: ctx.configDir,
+            envOverrides: ctx.envOverrides,
+          }),
+          model: ctx.model,
+          permissionMode: ctx.sdkPermissionMode,
+          // Always pass allowDangerouslySkipPermissions: true so users can
+          // switch to bypassPermissions mid-session via the chip without
+          // restarting. The SDK gate is one-way: the launch flag is only
+          // required to ENTER bypassPermissions; switching out of bypass
+          // needs no flag. Without this, sessions launched in `default`
+          // mode hit "was not launched with --dangerously-skip-permissions"
+          // when the user clicks the bypass chip, surfacing as a vague
+          // "Agent unresponsive" toast.
+          allowDangerouslySkipPermissions: true,
+          resume: ctx.resumeSessionId,
+          sessionId: ctx.presetSessionId,
+          pathToClaudeCodeExecutable: ctx.binaryPath,
+          // 6-tier effort+thinking chip → SDK options. `thinking: 'disabled'`
+          // when the chip is Off, `'adaptive'` (Claude decides budget) for
+          // every other tier. `effort` carries the actual tier label and is
+          // omitted when Off (the SDK's model-default is then irrelevant
+          // because thinking is disabled). See src/agent/effort.ts for the
+          // mapping table.
+          thinking: wire.thinking,
+          effort: wire.effort,
+          canUseTool: (toolName, input, c) => this.handleCanUseTool(toolName, input, c),
+          // PreToolUse hook (#94): the CLI's local rule engine handles built-in
+          // tools (Bash/Write/Edit/...) entirely client-side and only routes
+          // "ask" tools (AskUserQuestion / ExitPlanMode) through canUseTool.
+          // Without an external signal, Bash in `default` mode auto-allows
+          // based on the CLI's safe-command heuristics — so the renderer's
+          // PermissionPromptBlock never renders and probes can't assert the
+          // permission flow ran. The legacy wrapper used `--pretool-use-hook`
+          // to force every tool through our handler; the SDK exposes the same
+          // mechanism via `options.hooks`. Returning `permissionDecision:'ask'`
+          // makes the CLI defer to canUseTool. PASSTHROUGH_TOOLS get an
+          // explicit `allow` so we don't double-prompt over the renderer's
+          // own AskUserQuestion / ExitPlanMode UI (which uses canUseTool too;
+          // the canUseTool short-circuit at the top of handleCanUseTool stays
+          // as defence-in-depth).
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: '.*',
+                hooks: [this.makePreToolUseHook()],
+              },
+            ],
+          },
+          // Match the legacy spawner: we want partial-message streaming so
+          // long replies don't appear frozen.
+          includePartialMessages: true,
+          abortController: this.abort,
+        },
+      });
+      this.query = query;
+
+      // Probe the initialize handshake before committing to the consumer
+      // loop. Effort rejections from the CLI surface here (control_response
+      // with subtype:"error") as a rejection from .next(); we tear down and
+      // retry one tier lower. Any other error or success falls through to
+      // the production consumer path.
+      const probe = await this.probeFirstMessage(query);
+
+      if (probe.kind === 'effort-rejected') {
+        const downgrade = nextLowerEffort(ctx.currentEffort);
+        try { query.close(); } catch { /* ignore */ }
+        this.query = null;
+        this.abort = null;
+        if (downgrade === null) {
+          // Already at 'off'; surface the original error via onExit.
+          this.onExit({ error: probe.error });
+          this.cleanupAfterExit();
+          return;
+        }
         this.onDiagnostic({
           level: 'warn',
-          code: 'supported_models_failed',
-          message: `query.supportedModels() failed: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'effort_downgrade_on_launch',
+          message: `Model rejected effort=${ctx.currentEffort} at launch (${probe.error}); retrying with ${downgrade}.`,
+        });
+        attemptedDowngrade = true;
+        ctx.currentEffort = downgrade;
+        // Note: we keep `this.effortLevel = userEffort` unchanged — the chip
+        // continues to render the user-selected tier even though the runner
+        // is now at the downgraded one.
+        continue;
+      }
+
+      if (probe.kind === 'other-error') {
+        this.query = null;
+        this.abort = null;
+        this.onExit({ error: probe.error });
+        this.cleanupAfterExit();
+        return;
+      }
+
+      // Success path.
+      if (attemptedDowngrade) {
+        this.onDiagnostic({
+          level: 'warn',
+          code: 'effort_downgraded_active',
+          message: `Effort level downgraded to ${ctx.currentEffort} (user selected ${ctx.userEffort}); chip label unchanged.`,
         });
       }
-    })();
+      await this.runConsumer(probe.iterator, probe.first);
+      return;
+    }
+  }
 
-    this.consumer = (async () => {
-      try {
-        for await (const msg of query) {
-          if (this.disposed) break;
-          // Capture cliSessionId from the first system init frame and
-          // diagnose when it differs from ccsm's runner id. With PR-D's
-          // pre-allocated sessionId option the two should always match
-          // for fresh spawns; a mismatch is informative — either the SDK
-          // ignored our sessionId, or this is a resume path where the
-          // SDK allocated a fresh sid for the resumed branch.
-          const m = msg as SdkMessageLike;
-          if (m.type === 'system' && m.subtype === 'init' && !this.cliSessionId) {
-            const sid = (m as { session_id?: unknown }).session_id;
-            if (typeof sid === 'string') {
-              this.cliSessionId = sid;
-              if (sid !== this.id) {
-                this.onDiagnostic({
-                  level: 'warn',
-                  code: 'session_id_mismatch',
-                  message: `SDK assigned session_id ${sid} but ccsm runner id is ${this.id}. JSONL transcript will not match in-app id.`,
-                });
-              }
-            }
-          }
-          const translated = translateSdkMessage(m);
-          if (translated) this.onEvent(translated);
-        }
-        this.onExit({ error: undefined });
-      } catch (err) {
-        // The SDK throws AbortError on intentional close — don't surface that
-        // as a user-visible error. Anything else propagates with its message.
-        const isAbort =
-          err instanceof Error &&
-          (err.name === 'AbortError' || /aborted/i.test(err.message));
-        if (isAbort && this.disposed) {
-          this.onExit({ error: undefined });
-        } else {
-          this.onExit({ error: err instanceof Error ? err.message : String(err) });
-        }
-      } finally {
-        this.cleanupAfterExit();
+  /**
+   * Pull the first SDK message off a freshly-created query handle so we can
+   * detect a CLI-side rejection of the launch options (notably an unsupported
+   * `effort` tier) before committing to the production consumer loop. Returns
+   * either the buffered first message (`success`) or a classified error.
+   *
+   * The real SDK Query exposes `next()` directly on the handle; tests
+   * sometimes only expose the iterator protocol. We grab `Symbol.asyncIterator`
+   * once and reuse it for both the probe and the production consumer (passed
+   * through via `runConsumer`'s `iterator` arg) so the consumer sees no gap
+   * between the buffered first message and subsequent frames.
+   */
+  private async probeFirstMessage(
+    query: import('@anthropic-ai/claude-agent-sdk').Query,
+  ): Promise<
+    | {
+        kind: 'success';
+        first: SdkMessageLike | undefined;
+        iterator: AsyncIterator<unknown>;
       }
-    })();
+    | { kind: 'effort-rejected'; error: string }
+    | { kind: 'other-error'; error: string }
+  > {
+    const iterable = query as unknown as AsyncIterable<unknown>;
+    const iterator = iterable[Symbol.asyncIterator]();
+    try {
+      const result = await iterator.next();
+      if (result.done) {
+        return { kind: 'success', first: undefined, iterator };
+      }
+      return {
+        kind: 'success',
+        first: result.value as SdkMessageLike,
+        iterator,
+      };
+    } catch (err) {
+      const isAbort =
+        err instanceof Error &&
+        (err.name === 'AbortError' || /aborted/i.test(err.message));
+      if (isAbort && this.disposed) {
+        return { kind: 'other-error', error: '' };
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isEffortRejectionError(err)) {
+        return { kind: 'effort-rejected', error: msg };
+      }
+      return { kind: 'other-error', error: msg };
+    }
+  }
+
+  /**
+   * Drain the SDK's outbound stream into ccsm's renderer event channel.
+   * Errors from the iterator are surfaced via onExit. Takes the iterator
+   * already drawn by `probeFirstMessage` plus its buffered first message
+   * so no frame is dropped between probe and consumer handoff.
+   */
+  private async runConsumer(
+    iterator: AsyncIterator<unknown>,
+    bufferedFirst: SdkMessageLike | undefined,
+  ): Promise<void> {
+    try {
+      if (bufferedFirst !== undefined) {
+        this.handleSdkMessage(bufferedFirst);
+      }
+      while (!this.disposed) {
+        const r = await iterator.next();
+        if (r.done) break;
+        this.handleSdkMessage(r.value as SdkMessageLike);
+      }
+      this.onExit({ error: undefined });
+    } catch (err) {
+      // The SDK throws AbortError on intentional close — don't surface that
+      // as a user-visible error. Anything else propagates with its message.
+      const isAbort =
+        err instanceof Error &&
+        (err.name === 'AbortError' || /aborted/i.test(err.message));
+      if (isAbort && this.disposed) {
+        this.onExit({ error: undefined });
+      } else {
+        this.onExit({ error: err instanceof Error ? err.message : String(err) });
+      }
+    } finally {
+      this.cleanupAfterExit();
+    }
+  }
+
+  private handleSdkMessage(m: SdkMessageLike): void {
+    // Capture cliSessionId from the first system init frame and
+    // diagnose when it differs from ccsm's runner id. With PR-D's
+    // pre-allocated sessionId option the two should always match
+    // for fresh spawns; a mismatch is informative — either the SDK
+    // ignored our sessionId, or this is a resume path where the
+    // SDK allocated a fresh sid for the resumed branch.
+    if (m.type === 'system' && m.subtype === 'init' && !this.cliSessionId) {
+      const sid = (m as { session_id?: unknown }).session_id;
+      if (typeof sid === 'string') {
+        this.cliSessionId = sid;
+        if (sid !== this.id) {
+          this.onDiagnostic({
+            level: 'warn',
+            code: 'session_id_mismatch',
+            message: `SDK assigned session_id ${sid} but ccsm runner id is ${this.id}. JSONL transcript will not match in-app id.`,
+          });
+        }
+      }
+    }
+    const translated = translateSdkMessage(m);
+    if (translated) this.onEvent(translated);
   }
 
   /**
@@ -821,13 +947,19 @@ export class SdkSessionRunner {
    * For the 'off' chip: only RPC #1 is meaningful (thinking off; tier is
    * irrelevant). We still send #2 as 'low' so a flip back ON re-syncs
    * cleanly without leaving stale higher-tier state on the SDK side.
+   *
+   * Optimistic gating: ccsm UI never disables effort tiers. If the CLI
+   * rejects `applyFlagSettings({ effortLevel })` as unsupported for the
+   * current model, we auto-downgrade one tier at a time (max -> xhigh ->
+   * ... -> off) and retry until accepted. The chip's visible label keeps
+   * showing the user-selected tier; the runner's `this.effortLevel` is
+   * what the chip reads, so it must stay at `level` even when the wire
+   * value drops below it.
    */
   async setEffort(level: EffortLevel): Promise<void> {
     this.effortLevel = level;
     if (!this.query) return;
     const tokens = thinkingTokensForLevel(level);
-    const settingsEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' =
-      level === 'off' ? 'low' : level;
 
     const q = this.query as unknown as {
       setMaxThinkingTokens?: (n: number | null) => Promise<void>;
@@ -855,19 +987,7 @@ export class SdkSessionRunner {
       });
     }
     if (typeof q.applyFlagSettings === 'function') {
-      tasks.push(
-        q
-          .applyFlagSettings({ effortLevel: settingsEffort })
-          .catch((err) => {
-            this.onDiagnostic({
-              level: 'warn',
-              code: 'apply_flag_settings_failed',
-              message: `Agent unresponsive to effort change (${
-                err instanceof Error ? err.message : String(err)
-              }).`,
-            });
-          }),
-      );
+      tasks.push(this.applyEffortWithFallback(q.applyFlagSettings.bind(q), level));
     } else {
       this.onDiagnostic({
         level: 'warn',
@@ -876,6 +996,61 @@ export class SdkSessionRunner {
       });
     }
     await Promise.all(tasks);
+  }
+
+  /**
+   * Send `applyFlagSettings({ effortLevel })` with auto-downgrade on CLI
+   * rejection. See `setEffort` jsdoc for the gating rationale. Stops at
+   * the first wire value that succeeds; gives up at 'off' (which would
+   * have nothing to send and is treated as success). Each downgrade
+   * emits an `effort_downgrade_on_apply` diagnostic.
+   */
+  private async applyEffortWithFallback(
+    applyFlagSettings: (settings: Record<string, unknown>) => Promise<void>,
+    requested: EffortLevel,
+  ): Promise<void> {
+    let current: EffortLevel = requested;
+    while (true) {
+      // 'off' is meaningless on the wire (thinking already disabled via
+      // setMaxThinkingTokens); we send `low` as a stable resync-anchor
+      // matching the pre-fallback behaviour. Treat as terminal success.
+      const wire: 'low' | 'medium' | 'high' | 'xhigh' | 'max' =
+        current === 'off' ? 'low' : current;
+      try {
+        await applyFlagSettings({ effortLevel: wire });
+        return;
+      } catch (err) {
+        if (!isEffortRejectionError(err)) {
+          this.onDiagnostic({
+            level: 'warn',
+            code: 'apply_flag_settings_failed',
+            message: `Agent unresponsive to effort change (${
+              err instanceof Error ? err.message : String(err)
+            }).`,
+          });
+          return;
+        }
+        const downgrade = nextLowerEffort(current);
+        if (downgrade === null) {
+          this.onDiagnostic({
+            level: 'warn',
+            code: 'apply_flag_settings_failed',
+            message: `Effort change rejected at every tier; giving up (${
+              err instanceof Error ? err.message : String(err)
+            }).`,
+          });
+          return;
+        }
+        this.onDiagnostic({
+          level: 'warn',
+          code: 'effort_downgrade_on_apply',
+          message: `Model rejected effort=${current} mid-session (${
+            err instanceof Error ? err.message : String(err)
+          }); retrying with ${downgrade}.`,
+        });
+        current = downgrade;
+      }
+    }
   }
 
   async setModel(model?: string): Promise<void> {
