@@ -2130,6 +2130,62 @@ async function caseUserBlockHoverMenu({ win, log }) {
   log('hover reveals 4 actions; Copy -> clipboard; Truncate -> cut + clear resume');
 }
 
+// ---------- cap-pre-main-injects-global (capability demo) ----------
+// Demonstrates `preMain`: stage state in the electron MAIN process via
+// app.evaluate before the case body runs. The case body then reads it back
+// via a second app.evaluate. Mirrors the pattern probe-e2e-notify-integration
+// uses to install a fake `__setNotifyImporter`. Pure capability demo —
+// asserts only that the value round-trips.
+async function casePreMainInjectsGlobal({ app, log }) {
+  const observed = await app.evaluate(() => globalThis.__ccsmHarnessCapDemo);
+  if (observed !== 'preMain-was-here') {
+    throw new Error(`expected preMain to set globalThis.__ccsmHarnessCapDemo='preMain-was-here', got ${JSON.stringify(observed)}`);
+  }
+  log('preMain injected main-process global; case body read it back');
+}
+
+// ---------- cap-relaunch-cold-start (capability demo) ----------
+// Demonstrates `relaunch`: the runner closes the shared electron app and
+// brings up a fresh one before this case. The case asserts that the store
+// is at its post-boot baseline (no sessions from previous cases). Useful
+// for cases that need to verify cold-launch UX (probe-e2e-installer-corrupt
+// style) without paying for a fresh user-data dir.
+async function caseRelaunchColdStart({ win, log }) {
+  const sessionCount = await win.evaluate(() => {
+    return (window.__ccsmStore?.getState().sessions ?? []).length;
+  });
+  if (sessionCount !== 0) {
+    throw new Error(`expected 0 sessions after relaunch, got ${sessionCount}`);
+  }
+  log('relaunch produced fresh electron with empty store');
+}
+
+// ---------- cap-fresh-userdatadir (capability demo) ----------
+// Demonstrates `userDataDir: 'fresh'`: case launches into a brand-new
+// mktemp user-data directory. We assert that the userData path electron
+// reports lives under the OS tmpdir (so it's distinct from the dev's real
+// install). The dir is cleaned up after the case.
+async function caseFreshUserDataDir({ app, log }) {
+  const info = await app.evaluate(({ app: a }) => {
+    return { userData: a.getPath('userData'), tmp: a.getPath('temp') };
+  });
+  // On all 3 OSes os.tmpdir() and electron's `temp` resolve to the same root.
+  // The fresh dir name embeds 'ccsm-harness-' so check that explicitly.
+  if (!/ccsm-harness-/.test(info.userData)) {
+    throw new Error(`expected userData path to contain 'ccsm-harness-', got ${info.userData}`);
+  }
+  log(`userData=${info.userData} (fresh tmpdir-rooted)`);
+}
+
+// ---------- cap-requires-claude-bin-skip (capability demo) ----------
+// Demonstrates `requiresClaudeBin: true`. On dev machines without
+// `claude` on PATH (or CCSM_CLAUDE_BIN unset to a real path), the runner
+// will SKIP this case — body never executes. On a machine that has the
+// CLI we run a trivial assertion. Either outcome counts as harness-pass.
+async function caseRequiresClaudeBinSkip({ log }) {
+  log('claude binary detected; trivial pass (real probe would exec it here)');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'agent',
@@ -2166,5 +2222,31 @@ await runHarness({
     { id: 'sdk-system-subtypes', run: caseSdkSystemSubtypes },
     { id: 'sdk-abort-on-disposed', run: caseSdkAbortOnDisposed },
     { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
+    // ---- Per-case capability demos (task #223) ----
+    // Each demo exercises one new field on the runner contract; the assertion
+    // is intentionally trivial — the value here is locking the API shape, not
+    // re-testing app behavior the existing cases already cover.
+    {
+      id: 'cap-pre-main-injects-global',
+      preMain: async (app) => {
+        await app.evaluate(() => { globalThis.__ccsmHarnessCapDemo = 'preMain-was-here'; });
+      },
+      run: casePreMainInjectsGlobal
+    },
+    {
+      id: 'cap-relaunch-cold-start',
+      relaunch: true,
+      run: caseRelaunchColdStart
+    },
+    {
+      id: 'cap-fresh-userdatadir',
+      userDataDir: 'fresh',
+      run: caseFreshUserDataDir
+    },
+    {
+      id: 'cap-requires-claude-bin-skip',
+      requiresClaudeBin: true,
+      run: caseRequiresClaudeBinSkip
+    },
   ]
 });

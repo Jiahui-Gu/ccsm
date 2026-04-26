@@ -984,6 +984,25 @@ async function casePermissionRejectStopsAgent({ win, log }) {
   log('deny IPC fired exactly once, no retry, chat retained denial trace');
 }
 
+// ---------- cap-setup-before-i18n-pin (capability demo) ----------
+// Demonstrates `setupBefore`: per-case renderer-side hook. Pins i18n to
+// English BEFORE the case body so an English-anchored assertion is
+// deterministic regardless of OS locale or earlier-case mutations. Mirrors
+// the inline pattern at the top of casePermissionAutoAndTitles, but lifted
+// into a reusable hook.
+async function caseSetupBeforeI18nPin({ win, log }) {
+  const lang = await win.evaluate(() => window.__ccsmI18n?.language ?? null);
+  if (lang !== 'en') {
+    throw new Error(`expected setupBefore to pin i18n to 'en', got ${lang}`);
+  }
+  // Confirm a known en string resolves so we know i18n actually responded.
+  const sample = await win.evaluate(() => window.__ccsmI18n?.t?.('statusBar.modeAutoLabel'));
+  if (sample !== 'Auto') {
+    throw new Error(`expected i18n.t('statusBar.modeAutoLabel')='Auto' under en, got ${JSON.stringify(sample)}`);
+  }
+  log('setupBefore pinned i18n to en; English-anchored key resolves');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -1014,6 +1033,16 @@ await runHarness({
     { id: 'permission-a11y', run: casePermissionA11y },
     { id: 'permission-partial-accept', run: casePermissionPartialAccept },
     { id: 'permission-auto-and-titles', run: casePermissionAutoAndTitles },
-    { id: 'permission-reject-stops-agent', run: casePermissionRejectStopsAgent }
+    { id: 'permission-reject-stops-agent', run: casePermissionRejectStopsAgent },
+    // ---- Per-case capability demo (task #223) ----
+    {
+      id: 'cap-setup-before-i18n-pin',
+      setupBefore: async ({ win }) => {
+        await win.evaluate(async () => {
+          if (window.__ccsmI18n?.changeLanguage) await window.__ccsmI18n.changeLanguage('en');
+        });
+      },
+      run: caseSetupBeforeI18nPin
+    }
   ]
 });

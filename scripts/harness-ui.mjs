@@ -36,6 +36,8 @@
 // Run one case: `node scripts/harness-ui.mjs --only=sidebar-align`
 
 import { runHarness } from './probe-helpers/harness-runner.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // ---------- sidebar-align ----------
 async function caseSidebarAlign({ win, log }) {
@@ -1680,6 +1682,26 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   log('Appearance / Notifications / Updates / Connection panes all render Chinese labels');
 }
 
+// ---------- cap-skip-launch-bundle-shape (capability demo) ----------
+// Demonstrates `skipLaunch: true`: case runs as a pure Node script without
+// booting electron. Useful for fs / package.json / dist bundle checks that
+// don't need the renderer (saves ~1-2s of electron boot per case). Mirrors
+// the future probe-e2e-installer-bundle-shape migration target.
+async function caseSkipLaunchBundleShape({ harnessRoot, log }) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(harnessRoot, 'package.json'), 'utf8'));
+  if (typeof pkg.main !== 'string' || pkg.main.length === 0) {
+    throw new Error('package.json "main" missing or non-string');
+  }
+  if (!pkg.main.includes('dist/')) {
+    throw new Error(`package.json "main" should point under dist/, got ${pkg.main}`);
+  }
+  const bundlePath = path.join(harnessRoot, 'dist/renderer/bundle.js');
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error(`dist/renderer/bundle.js missing at ${bundlePath}`);
+  }
+  log(`pkg.main=${pkg.main} bundle=${path.relative(harnessRoot, bundlePath)}`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -1720,6 +1742,8 @@ await runHarness({
     { id: 'focus-orchestration', run: caseFocusOrchestration },
     { id: 'theme-toggle', run: caseThemeToggle },
     { id: 'language-toggle', run: caseLanguageToggle },
-    { id: 'i18n-settings-zh', run: caseI18nSettingsZh }
+    { id: 'i18n-settings-zh', run: caseI18nSettingsZh },
+    // ---- Per-case capability demo (task #223) ----
+    { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, run: caseSkipLaunchBundleShape }
   ]
 });
