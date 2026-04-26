@@ -1090,24 +1090,23 @@ export const useStore = create<State & Actions>((set, get) => ({
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
     const id = newSessionId();
-    // task328: per-group cwd default — when the caller doesn't pin a cwd,
-    // prefer the most-recent session in the target group that has a usable
-    // cwd. `sessions` is ordered newest-first (createSession prepends), so
-    // the first match is the most recent. Falls through to the global
-    // historyRecentCwds/recentProjects defaults when the group is empty or
-    // none of its sessions have a cwd. `(none)` chip placeholder appears
-    // only when ALL of these resolve to empty.
+    // task#293 (post-#369 dogfood follow-up): the frequency vote over the
+    // last 10 CLI sessions IS the answer to "where does this user actually
+    // work" — it must win over `groupRecentCwd` (a single stale prior
+    // session in the focused group can otherwise shadow the user's actual
+    // working directory; dogfood hit `c:/x` on every "New session" because
+    // a long-forgotten session in the focused group held that cwd) AND
+    // over `recentProjects[0]?.path` (a one-off chip pick).
     //
-    // task#293: `historyRecentCwds[0]` (now frequency-ranked from the last
-    // 10 CLI sessions) takes precedence over `recentProjects[0]?.path` (a
-    // pure recency list of in-app picks). If the user works in a directory
-    // 9 out of 10 sessions, that's their default — a one-off chip pick
-    // shouldn't override it.
+    // `groupRecentCwd` stays in the chain as a tertiary fallback for the
+    // case where `historyRecentCwds` is empty (fresh-install with no CLI
+    // history) AND `recentProjects` is empty — better to inherit the
+    // group's own recent cwd than fall to ''.
     const groupRecentCwd = sessions.find(
       (x) => x.groupId === targetGroupId && !!x.cwd
     )?.cwd;
     const defaultCwd =
-      groupRecentCwd ?? historyRecentCwds[0] ?? recentProjects[0]?.path ?? '';
+      historyRecentCwds[0] ?? recentProjects[0]?.path ?? groupRecentCwd ?? '';
     let initialModel = model;
     if (!initialModel) initialModel = historyTopModel ?? '';
     if (!initialModel) initialModel = connection?.model ?? '';

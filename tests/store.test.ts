@@ -1462,7 +1462,13 @@ describe('store: createSession — per-group cwd default (task328)', () => {
     expect(useStore.getState().sessions[0].cwd).toBe('/explicit/path');
   });
 
-  it('per-group default loses to recentProjects only when group is empty', () => {
+  it('recentProjects wins over per-group default (frequency-vote priority)', () => {
+    // task#293 follow-up: stale `groupRecentCwd` shadowing the
+    // user's actual working directory was a real dogfood bug — a single
+    // forgotten session in the focused group with cwd 'c:/x' was enough
+    // to make every "New session" land on 'c:/x'. The new priority puts
+    // `historyRecentCwds[0]` (frequency vote) and `recentProjects[0]?.path`
+    // BEFORE `groupRecentCwd` for exactly this reason.
     useStore.getState().pushRecentProject('/recent/proj');
     const gid = useStore.getState().createGroup('Fresh');
     useStore.getState().focusGroup(gid);
@@ -1470,12 +1476,13 @@ describe('store: createSession — per-group cwd default (task328)', () => {
     // No prior sessions in 'Fresh' → recentProjects[0] wins.
     expect(useStore.getState().sessions[0].cwd).toBe('/recent/proj');
     // Now create a second session in the same group; per-group default
-    // should now win over recentProjects.
+    // STILL loses to recentProjects (priority is recentProjects ahead of
+    // groupRecentCwd, since groupRecentCwd is the weakest of the three).
     useStore.getState().focusGroup(gid);
     useStore.getState().createSession('/repo/inside-group');
     useStore.getState().focusGroup(gid);
     useStore.getState().createSession(null);
-    expect(useStore.getState().sessions[0].cwd).toBe('/repo/inside-group');
+    expect(useStore.getState().sessions[0].cwd).toBe('/recent/proj');
   });
 
   it('skips sessions with empty cwd when scanning the group', () => {
