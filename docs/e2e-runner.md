@@ -77,8 +77,9 @@ per-file probes** (one Electron launch per case):
 - `probe-e2e-close-window-aborts-sessions` (asserts on app shutdown)
 - `probe-e2e-restore*` family (specifically test "what happens after
   restart" — they require a relaunch by definition)
-- `probe-e2e-dnd` (needs `CCSM_E2E_HIDDEN=0` for dnd-kit pointer
-  hit-testing; per-case env override is not in the capability surface)
+- (`probe-e2e-dnd` was absorbed into `harness-dnd.mjs` — its own
+  visible-mode harness because dnd-kit needs `CCSM_E2E_HIDDEN=0` and
+  per-case env override is not in the capability surface)
 
 If you’re tempted to merge one of these, re-read the brainstorm §3
 (shared-state inventory) and §9 first.

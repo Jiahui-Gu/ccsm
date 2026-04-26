@@ -35,11 +35,13 @@
 //   - terminal                             (probe-e2e-terminal)
 //   - tool-render-open-in-editor           (probe-e2e-tool-render-open-in-editor)
 //
-// NOT absorbed (reclassified to bucket 4 — kept as standalone probe):
+// NOT absorbed (split into its own visible-mode harness):
 //   - probe-e2e-dnd: needs CCSM_E2E_HIDDEN=0 (visible window) for dnd-kit
 //     pointer hit-testing. The capability surface has no per-case env
 //     override, and flipping the whole harness to visible would slow every
-//     other case + introduce window pop-up noise. Stays standalone.
+//     other case + introduce window pop-up noise. Lives in
+//     scripts/harness-dnd.mjs (its own visible-mode launch, future home
+//     for any other visible-mode-only cases).
 //
 // Related UI probes already absorbed into harness-agent.mjs:
 //   - inputbar-visible, chat-copy, input-placeholder
