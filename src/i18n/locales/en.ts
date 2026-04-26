@@ -590,14 +590,11 @@ const en = {
   },
   // task #329 — first-run empty-state CTA shown when there is no active
   // session (fresh install, or all sessions deleted). Sentence case per
-  // repo rule. Tip echoes the brainstorm spec: groups are organised by
-  // task, not by repo.
+  // repo rule. Trimmed to two CTAs in #353; welcome / newGroup / tip were
+  // removed as visual noise (group creation is reachable from sidebar).
   firstRun: {
-    welcome: 'Welcome to ccsm.',
     newSession: 'New session',
-    importSession: 'Import a CLI session',
-    newGroup: 'Create a new group',
-    tip: 'Tip: groups organize sessions by task, not by repo.'
+    importSession: 'Import a CLI session'
   }
 } as const;
 

@@ -126,13 +126,15 @@ async function caseNoSessionsLanding({ win, log }) {
   const oldCopy = await win.getByText(/No sessions yet|Create a session to start|Import from Claude Code/i).count();
   if (oldCopy > 0) throw new Error('legacy no-sessions copy still present');
 
-  // Welcome line + tertiary group CTA + tip should all render (task #329).
+  // #353: the welcome line, tertiary "Create a new group" link, and tip
+  // were removed (visual noise on first launch). Reverse-verify any of
+  // them comes back fails this case.
   const welcome = await win.getByText(/Welcome to ccsm\./i).count();
-  if (welcome === 0) throw new Error('first-run welcome line missing');
+  if (welcome > 0) throw new Error('first-run welcome line should be removed');
   const groupCta = await win.getByRole('button', { name: /^Create a new group$/ }).count();
-  if (groupCta === 0) throw new Error('first-run "Create a new group" tertiary CTA missing');
+  if (groupCta > 0) throw new Error('first-run "Create a new group" tertiary CTA should be removed');
   const tip = await win.getByText(/groups organize sessions by task, not by repo/i).count();
-  if (tip === 0) throw new Error('first-run tip line missing');
+  if (tip > 0) throw new Error('first-run tip line should be removed');
 
   log(`both buttons ${a.width.toFixed(1)}x${a.height.toFixed(1)}`);
 }
