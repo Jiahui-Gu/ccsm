@@ -246,7 +246,7 @@ const en = {
     },
     notifications: {
       intro:
-        'OS-level toasts when a session needs your attention. Suppressed when the window is focused on that same session, and debounced per session per event type so a chatty agent cannot spam you.',
+        'OS-level toasts whenever a session needs you — permission requests, agent questions, and turn-done events all fire immediately. The toast title shows the group and session; the body shows the event type.',
       enable: 'Enable notifications',
       sound: 'Sound',
       soundHint: 'Play the OS default notification sound.'
