@@ -109,7 +109,12 @@ async function launch({ userDataDir, env = {}, extraArgs = [] }) {
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`, ...extraArgs],
     cwd: ROOT,
-    env: { ...process.env, CCSM_PROD_BUNDLE: '1', ...env }
+    // Mirror harness-runner.mjs:334 — default CCSM_E2E_HIDDEN=1 so standalone
+    // `node scripts/harness-restore.mjs --only=<case>` runs don't pop a window
+    // and steal focus. Order matters: default first, then process.env (user
+    // can opt out with CCSM_E2E_HIDDEN=0 in shell), then per-case env wins
+    // last (caseSidebarResize sets '0' to force visible).
+    env: { CCSM_E2E_HIDDEN: '1', ...process.env, CCSM_PROD_BUNDLE: '1', ...env }
   });
   return app;
 }
@@ -825,6 +830,7 @@ async function caseNotifyFallback({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${userDataDir}`],
     cwd: ROOT,
     env: {
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'development',
       CCSM_DEV_PORT: String(server.port),
@@ -997,6 +1003,7 @@ async function caseImportSession({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -1513,6 +1520,7 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
   // Strip CLAUDECODE so the spawned claude.exe doesn't refuse-to-launch
   // with "cannot run inside another Claude Code session".
   const env = {
+    CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
     ...process.env,
     CCSM_PROD_BUNDLE: '1',
     CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
@@ -1755,6 +1763,7 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -1870,6 +1879,7 @@ async function caseNewSessionDefaultModelFromClaudeSettings({ log, registerDispo
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -2031,6 +2041,7 @@ async function caseNewSessionDefaultCwdFromFrequency({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
+      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
