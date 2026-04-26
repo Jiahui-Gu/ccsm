@@ -26,6 +26,7 @@ function makeFakeSdk() {
   const interrupt = vi.fn().mockResolvedValue(undefined);
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
   const setModel = vi.fn().mockResolvedValue(undefined);
+  const setMaxThinkingTokens = vi.fn().mockResolvedValue(undefined);
   const close = vi.fn();
 
   const query = (args: unknown) => {
@@ -45,6 +46,7 @@ function makeFakeSdk() {
       interrupt,
       setPermissionMode,
       setModel,
+      setMaxThinkingTokens,
       close,
     };
     return iter;
@@ -73,6 +75,7 @@ function makeFakeSdk() {
     interrupt,
     setPermissionMode,
     setModel,
+    setMaxThinkingTokens,
     close,
   };
 }
@@ -187,6 +190,16 @@ describe('agent-sdk/SdkSessionRunner', () => {
     expect(fake.setModel).not.toHaveBeenCalled();
     await runner.setModel('claude-x');
     expect(fake.setModel).toHaveBeenCalledWith('claude-x');
+    runner.close();
+  });
+
+  it('setMaxThinkingTokens() forwards both off (0) and default_on (31999) values', async () => {
+    const runner = new SdkSessionRunner('s7b', noop, noop, noop, noop);
+    await runner.start(baseStart);
+    await runner.setMaxThinkingTokens(0);
+    expect(fake.setMaxThinkingTokens).toHaveBeenCalledWith(0);
+    await runner.setMaxThinkingTokens(31999);
+    expect(fake.setMaxThinkingTokens).toHaveBeenLastCalledWith(31999);
     runner.close();
   });
 

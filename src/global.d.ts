@@ -134,6 +134,10 @@ declare global {
         mode: PermissionMode
       ) => Promise<{ ok: true } | { ok: false; error: string }>;
       agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;
+      agentSetMaxThinkingTokens: (
+        sessionId: string,
+        tokens: number
+      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       agentClose: (sessionId: string) => Promise<boolean>;
       agentResolvePermission: (
         sessionId: string,

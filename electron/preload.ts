@@ -158,6 +158,16 @@ const api = {
     ipcRenderer.invoke('agent:setPermissionMode', sessionId, mode),
   agentSetModel: (sessionId: string, model?: string): Promise<boolean> =>
     ipcRenderer.invoke('agent:setModel', sessionId, model),
+  /**
+   * Push a `max_thinking_tokens` cap into a live session. `tokens === 0`
+   * disables extended thinking; positive values enable it. The renderer
+   * computes the value via `src/agent/thinking.ts`.
+   */
+  agentSetMaxThinkingTokens: (
+    sessionId: string,
+    tokens: number,
+  ): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('agent:setMaxThinkingTokens', sessionId, tokens),
   agentClose: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('agent:close', sessionId),
   agentResolvePermission: (
     sessionId: string,
