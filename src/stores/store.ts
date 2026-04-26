@@ -1898,7 +1898,11 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (!prev) return s;
       const idx = prev.findIndex((b) => b.id === blockId);
       if (idx < 0) return s;
-      const truncated = prev.slice(0, idx);
+      // Bug #309: keep the clicked user message itself — "rewind from here"
+      // means "go back to right after this message was sent, before the
+      // agent replied", NOT "delete this message too". Slice is inclusive of
+      // `idx` (`idx + 1`); blocks AFTER the clicked one are dropped.
+      const truncated = prev.slice(0, idx + 1);
       // Drop every flag that pins this session to the now-orphaned claude.exe
       // conversation: started, running, interrupted, queue. Stats are
       // intentionally preserved — they're the user's lifetime spend for this
@@ -2087,7 +2091,9 @@ export const useStore = create<State & Actions>((set, get) => ({
         const marker = await window.ccsm?.truncationGet?.(sessionId);
         if (marker && marker.blockId) {
           const cut = sanitized.findIndex((b) => b.id === marker.blockId);
-          if (cut >= 0) sanitized = sanitized.slice(0, cut);
+          // Bug #309: inclusive cut — keep the marker block itself. Mirrors
+          // `rewindToBlock`'s `prev.slice(0, idx + 1)`.
+          if (cut >= 0) sanitized = sanitized.slice(0, cut + 1);
         }
       } catch (err) {
         // truncationGet is best-effort; a failure leaves history intact.
