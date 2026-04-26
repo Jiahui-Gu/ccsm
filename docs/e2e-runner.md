@@ -71,19 +71,16 @@ Per `docs/e2e/single-harness-brainstorm.md` §9, the following exercise
 singleton main-process state or first-launch UI and **must stay as
 per-file probes** (one Electron launch per case):
 
-- `probe-e2e-app-icon-present`
 - `probe-e2e-tray`
-- `probe-e2e-titlebar` (window chrome init)
-- `probe-e2e-tutorial`, `probe-e2e-no-sessions-landing`,
-  `probe-e2e-empty-state-minimal` (first-launch UI)
 - `probe-e2e-db-corruption-recovery` (pre-seeds garbage DB before launch)
-- `probe-e2e-import-session`, `probe-e2e-import-empty-groups`
-  (depends on userData state at launch)
+- `probe-e2e-import-session` (depends on userData state at launch)
 - `probe-e2e-close-window-aborts-sessions` (asserts on app shutdown)
 - `probe-e2e-ipc-unc-rejection`, `probe-e2e-env-passthrough`
   (process-launch concerns)
 - `probe-e2e-restore*` family (specifically test "what happens after
   restart" — they require a relaunch by definition)
+- `probe-e2e-dnd` (needs `CCSM_E2E_HIDDEN=0` for dnd-kit pointer
+  hit-testing; per-case env override is not in the capability surface)
 
 If you’re tempted to merge one of these, re-read the brainstorm §3
 (shared-state inventory) and §9 first.

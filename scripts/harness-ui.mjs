@@ -28,6 +28,18 @@
 //   - theme-toggle                         (probe-e2e-theme-toggle)
 //   - language-toggle                      (probe-e2e-language-toggle)
 //   - i18n-settings-zh                     (probe-e2e-i18n-settings-zh)
+//   - app-icon-present                     (probe-e2e-app-icon-present, skipLaunch)
+//   - group-add                            (probe-e2e-group-add)
+//   - import-empty-groups                  (probe-e2e-import-empty-groups)
+//   - rename                               (probe-e2e-rename)
+//   - terminal                             (probe-e2e-terminal)
+//   - tool-render-open-in-editor           (probe-e2e-tool-render-open-in-editor)
+//
+// NOT absorbed (reclassified to bucket 4 — kept as standalone probe):
+//   - probe-e2e-dnd: needs CCSM_E2E_HIDDEN=0 (visible window) for dnd-kit
+//     pointer hit-testing. The capability surface has no per-case env
+//     override, and flipping the whole harness to visible would slow every
+//     other case + introduce window pop-up noise. Stays standalone.
 //
 // Related UI probes already absorbed into harness-agent.mjs:
 //   - inputbar-visible, chat-copy, input-placeholder
@@ -36,8 +48,12 @@
 // Run one case: `node scripts/harness-ui.mjs --only=sidebar-align`
 
 import { runHarness } from './probe-helpers/harness-runner.mjs';
+import { seedStore } from './probe-utils.mjs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFile, stat } from 'node:fs/promises';
 
 // ---------- sidebar-align ----------
 async function caseSidebarAlign({ win, log }) {
@@ -1702,6 +1718,482 @@ async function caseSkipLaunchBundleShape({ harnessRoot, log }) {
   log(`pkg.main=${pkg.main} bundle=${path.relative(harnessRoot, bundlePath)}`);
 }
 
+// ---------- app-icon-present (skipLaunch) ----------
+// Pure fs/json check: build/icon.png is a valid PNG >= 256x256 AND
+// package.json build.{win,mac,linux}.icon all reference an existing file.
+// No electron needed — runs as a Node script under the skipLaunch capability.
+async function caseAppIconPresent({ harnessRoot, log }) {
+  const iconPath = path.join(harnessRoot, 'build', 'icon.png');
+  let st;
+  try {
+    st = await stat(iconPath);
+  } catch {
+    throw new Error(`build/icon.png not found at ${iconPath} — run: node scripts/generate-app-icon.mjs`);
+  }
+  if (!st.isFile()) throw new Error(`${iconPath} is not a regular file`);
+  if (st.size < 1024) throw new Error(`build/icon.png is suspiciously small (${st.size} bytes; expected > 1 KiB)`);
+
+  const buf = await readFile(iconPath);
+  const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (!buf.subarray(0, 8).equals(pngMagic)) {
+    throw new Error('build/icon.png does not start with the PNG signature');
+  }
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  if (width < 256 || height < 256) {
+    throw new Error(`icon dimensions ${width}x${height} are below the 256x256 minimum electron-builder expects for win/mac conversion`);
+  }
+
+  const pkgRaw = await readFile(path.join(harnessRoot, 'package.json'), 'utf8');
+  let pkg;
+  try {
+    pkg = JSON.parse(pkgRaw);
+  } catch (e) {
+    throw new Error(`package.json is not valid JSON: ${e.message}`);
+  }
+  const build = pkg && pkg.build;
+  if (!build || typeof build !== 'object') {
+    throw new Error('package.json missing top-level "build" object (electron-builder config)');
+  }
+  for (const platform of ['win', 'mac', 'linux']) {
+    const cfg = build[platform];
+    if (!cfg || typeof cfg !== 'object') {
+      throw new Error(`package.json build.${platform} missing — electron-builder won't package an icon for ${platform}`);
+    }
+    const ref = cfg.icon;
+    if (typeof ref !== 'string' || ref.length === 0) {
+      throw new Error(`package.json build.${platform}.icon is not set; ${platform} build will use Electron's default icon`);
+    }
+    const abs = path.resolve(harnessRoot, ref);
+    let refSt;
+    try {
+      refSt = await stat(abs);
+    } catch {
+      throw new Error(`package.json build.${platform}.icon points at "${ref}" but ${abs} does not exist`);
+    }
+    if (!refSt.isFile()) {
+      throw new Error(`package.json build.${platform}.icon "${ref}" resolves to ${abs} which is not a regular file`);
+    }
+  }
+
+  log(`${path.relative(harnessRoot, iconPath)} (${st.size} bytes, ${width}x${height}); build.{win,mac,linux}.icon all wired and resolvable`);
+}
+
+// ---------- group-add ----------
+// Per-group + button creates a session in THAT group, makes it active, does
+// not collapse the group, and is hidden on archived groups.
+async function caseGroupAdd({ win, log }) {
+  await seedStore(win, {
+    groups: [
+      { id: 'g1', name: 'Alpha', collapsed: false, kind: 'normal' },
+      { id: 'g2', name: 'Bravo', collapsed: false, kind: 'normal' },
+      { id: 'gA', name: 'Archived', collapsed: false, kind: 'archive' }
+    ],
+    sessions: [
+      { id: 's1', name: 'a-only', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }
+    ],
+    activeId: 's1',
+    focusedGroupId: 'g1'
+  });
+
+  const before = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
+  const g2Plus = win.locator('[data-group-header-id="g2"] button[aria-label*="new session" i], [data-group-header-id="g2"] button[aria-label*="新建" i]').first();
+  await g2Plus.waitFor({ state: 'visible', timeout: 3000 });
+  await g2Plus.click();
+  await win.waitForTimeout(300);
+  const after = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
+  const beforeIds = new Set(before.map((s) => s.id));
+  const fresh = after.filter((s) => !beforeIds.has(s.id));
+  if (fresh.length !== 1) throw new Error(`expected exactly 1 new session, got ${fresh.length}`);
+  if (fresh[0].groupId !== 'g2') throw new Error(`new session should land in g2, got ${fresh[0].groupId}`);
+
+  const activeId = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+  if (activeId !== fresh[0].id) throw new Error(`new session should be active; activeId=${activeId}, fresh.id=${fresh[0].id}`);
+
+  const g2Open = await win.evaluate(() => {
+    const header = document.querySelector('[data-group-header-id="g2"]');
+    return header?.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded') === 'true';
+  });
+  if (!g2Open) throw new Error('g2 collapsed after + click — the click should not propagate to header toggle');
+
+  const archivedPlus = await win.locator('[data-group-header-id="gA"] button[aria-label*="new session" i]').count();
+  if (archivedPlus !== 0) throw new Error(`archived group should not have a + button (got ${archivedPlus})`);
+
+  log(`+ on g2 created session ${fresh[0].id} in g2 (not g1) and made it active; archived has no +`);
+}
+
+// ---------- import-empty-groups ----------
+// Importing into a store with empty groups[] AND a stale groupId synthesizes
+// a default normal group (carrying nameKey) and parents the imported session
+// under it. setupBefore is unnecessary — we wipe in-case so the assertion
+// preconditions are explicit in the case body itself.
+async function caseImportEmptyGroups({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [],
+      sessions: [],
+      activeId: '',
+      focusedGroupId: null,
+      messagesBySession: {},
+      startedSessions: {},
+      runningSessions: {},
+      interruptedSessions: {},
+      messageQueues: {},
+      statsBySession: {},
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(150);
+
+  const beforeGroupCount = await win.evaluate(() => window.__ccsmStore.getState().groups.length);
+  if (beforeGroupCount !== 0) throw new Error(`expected 0 groups before import, got ${beforeGroupCount}`);
+
+  const newId = await win.evaluate(() =>
+    window.__ccsmStore.getState().importSession({
+      name: 'Imported into nothingness',
+      cwd: '/tmp/no-group-cwd',
+      groupId: 'g-stale-from-old-blob',
+      resumeSessionId: 'resume-xyz-123'
+    })
+  );
+
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    return { groups: s.groups, sessions: s.sessions, activeId: s.activeId };
+  });
+
+  if (after.groups.length !== 1) throw new Error(`expected 1 synthesized group, got ${after.groups.length}: ${JSON.stringify(after.groups)}`);
+  const synth = after.groups[0];
+  if (synth.kind !== 'normal') throw new Error(`synthesized group should be normal, got kind=${synth.kind}`);
+  if (synth.nameKey !== 'sidebar.defaultGroupName') throw new Error(`synthesized group should carry nameKey='sidebar.defaultGroupName', got '${synth.nameKey}'`);
+  if (after.sessions.length !== 1) throw new Error(`expected 1 imported session, got ${after.sessions.length}`);
+  const imported = after.sessions[0];
+  if (imported.id !== newId) throw new Error(`importSession returned id=${newId}, but sessions[0].id=${imported.id}`);
+  if (imported.groupId !== synth.id) throw new Error(`imported session not parented to synthesized group: groupId=${imported.groupId}, synth.id=${synth.id} — orphan regression`);
+  if (imported.resumeSessionId !== 'resume-xyz-123') throw new Error(`resumeSessionId lost: got '${imported.resumeSessionId}'`);
+  if (after.activeId !== newId) throw new Error(`activeId should follow the import: expected '${newId}', got '${after.activeId}'`);
+
+  const groupHeader = win.locator(`[data-group-header-id="${synth.id}"]`).first();
+  const headerVisible = await groupHeader.isVisible({ timeout: 3000 }).catch(() => false);
+  if (!headerVisible) throw new Error('synthesized group header not rendered in sidebar');
+  const sidebarRow = win.locator(`li[data-session-id="${imported.id}"]`).first();
+  const rowVisible = await sidebarRow.isVisible({ timeout: 3000 }).catch(() => false);
+  if (!rowVisible) throw new Error('imported session row not visible in sidebar');
+
+  log(`empty groups[] + stale groupId → synthesized group ${synth.id} (nameKey='${synth.nameKey}'); imported session parented + sidebar renders both`);
+}
+
+// ---------- rename ----------
+// Inline rename for sessions and groups via context menu. Covers the four
+// exit paths InlineRename supports plus IME composition guard.
+async function caseRename({ win, log }) {
+  await seedStore(win, {
+    groups: [
+      { id: 'g1', name: 'Alpha',  collapsed: false, kind: 'normal' },
+      { id: 'g2', name: 'Bravo',  collapsed: false, kind: 'normal' }
+    ],
+    sessions: [
+      { id: 's1', name: 'first',  state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+      { id: 's2', name: 'second', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+      { id: 's3', name: 'third',  state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g2', agentType: 'claude-code' }
+    ],
+    activeId: 's1'
+  });
+
+  async function sessionName(id) {
+    return await win.evaluate(
+      (sid) => window.__ccsmStore.getState().sessions.find((s) => s.id === sid)?.name ?? null,
+      id
+    );
+  }
+  async function groupName(id) {
+    return await win.evaluate(
+      (gid) => window.__ccsmStore.getState().groups.find((g) => g.id === gid)?.name ?? null,
+      id
+    );
+  }
+  async function openSessionRename(sessionId) {
+    const row = win.locator(`li[data-session-id="${sessionId}"]`).first();
+    await row.click({ button: 'right' });
+    await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
+    const input = win.locator(`li[data-session-id="${sessionId}"] input`).first();
+    await input.waitFor({ state: 'visible', timeout: 3000 });
+    await input.click();
+    return input;
+  }
+  async function openGroupRename(groupId) {
+    const header = win.locator(`[data-group-header-id="${groupId}"]`).first();
+    await header.click({ button: 'right' });
+    await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
+    const input = win.locator(`[data-group-header-id="${groupId}"] input`).first();
+    await input.waitFor({ state: 'visible', timeout: 3000 });
+    await input.click();
+    return input;
+  }
+
+  // Case 1: session Enter commits.
+  {
+    const input = await openSessionRename('s1');
+    await input.fill('first renamed');
+    await input.press('Enter');
+    await win.waitForTimeout(200);
+    const after = await sessionName('s1');
+    if (after !== 'first renamed') throw new Error(`session Enter commit: expected "first renamed", got "${after}"`);
+    const stillEditing = await win.locator('li[data-session-id="s1"] input').count();
+    if (stillEditing !== 0) throw new Error('session Enter commit: input still visible after commit');
+  }
+
+  // Case 2: session Escape cancels.
+  {
+    const input = await openSessionRename('s2');
+    await input.fill('should not stick');
+    await input.press('Escape');
+    await win.waitForTimeout(200);
+    const after = await sessionName('s2');
+    if (after !== 'second') throw new Error(`session Escape cancel: expected "second", got "${after}"`);
+  }
+
+  // Case 3: empty / whitespace draft + Enter cancels.
+  {
+    const input = await openSessionRename('s2');
+    await input.fill('   ');
+    await input.press('Enter');
+    await win.waitForTimeout(200);
+    const after = await sessionName('s2');
+    if (after !== 'second') throw new Error(`session whitespace Enter: expected name unchanged, got "${after}"`);
+  }
+
+  // Case 4: click outside commits.
+  {
+    const input = await openSessionRename('s3');
+    await input.fill('clicked away');
+    await win.locator('aside button:has-text("New session")').first().click({ force: true });
+    await win.waitForTimeout(250);
+    const after = await sessionName('s3');
+    if (after !== 'clicked away') throw new Error(`session click-outside commit: expected "clicked away", got "${after}"`);
+  }
+
+  // Case 5: IME composition — Enter during isComposing must NOT commit.
+  {
+    const input = await openSessionRename('s1');
+    await input.fill('');
+    await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s1"] input');
+      el.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    });
+    await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s1"] input');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(el, 'ni hao');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s1"] input');
+      const ev = new KeyboardEvent('keydown', {
+        key: 'Enter', code: 'Enter', bubbles: true, cancelable: true,
+        isComposing: true, keyCode: 229
+      });
+      el.dispatchEvent(ev);
+    });
+    await win.waitForTimeout(150);
+    const midComp = await sessionName('s1');
+    if (midComp !== 'first renamed') {
+      throw new Error(`session IME composition Enter must not commit; expected "first renamed", got "${midComp}"`);
+    }
+    await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s1"] input');
+      el.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'ni hao' }));
+    });
+    const valBefore = await win.locator('li[data-session-id="s1"] input').inputValue();
+    if (valBefore !== 'ni hao') throw new Error(`session post-IME: input value should be "ni hao" before Enter, got "${valBefore}"`);
+    await win.locator('li[data-session-id="s1"] input').focus();
+    await win.locator('li[data-session-id="s1"] input').press('Enter');
+    await win.waitForTimeout(200);
+    const afterComp = await sessionName('s1');
+    if (afterComp !== 'ni hao') {
+      throw new Error(`session post-IME Enter commit: expected "ni hao", got "${afterComp}"`);
+    }
+  }
+
+  // Case 6: group Enter commits + Escape cancels.
+  {
+    const input = await openGroupRename('g1');
+    await input.fill('Alpha+');
+    await input.press('Enter');
+    await win.waitForTimeout(200);
+    const after = await groupName('g1');
+    if (after !== 'Alpha+') throw new Error(`group Enter commit: expected "Alpha+", got "${after}"`);
+  }
+  {
+    const input = await openGroupRename('g2');
+    await input.fill('Charlie');
+    await input.press('Escape');
+    await win.waitForTimeout(200);
+    const after = await groupName('g2');
+    if (after !== 'Bravo') throw new Error(`group Escape cancel: expected "Bravo", got "${after}"`);
+  }
+
+  log('session: Enter / Escape / whitespace / click-outside / IME guard; group: Enter / Escape');
+}
+
+// ---------- terminal ----------
+// Seed a Bash tool block with ANSI-colored output, expand it, and verify the
+// xterm host renders with the payload visible.
+async function caseTerminal({ win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    if (!st.tutorialSeen && st.setTutorialSeen) st.setTutorialSeen(true);
+    const existing = st.sessions.find((s) => s.cwd === '~/terminal-probe');
+    if (!existing) st.createSession('~/terminal-probe');
+    const st2 = window.__ccsmStore.getState();
+    const probe = st2.sessions.find((s) => s.cwd === '~/terminal-probe') ?? st2.sessions[st2.sessions.length - 1];
+    if (probe && st2.activeId !== probe.id) st2.selectSession(probe.id);
+    return window.__ccsmStore.getState().activeId;
+  });
+  if (!sessionId) throw new Error('no active session id');
+
+  await win.evaluate((sid) => {
+    const ESC = String.fromCharCode(27);
+    const ansi = `total 8\r\n${ESC}[32mdrwxr-xr-x${ESC}[0m 2 user user 4096 Apr 21 10:00 ${ESC}[34msrc${ESC}[0m\r\n-rw-r--r-- 1 user user  123 Apr 21 10:00 ${ESC}[31merror.log${ESC}[0m\r\n`;
+    window.__ccsmStore.getState().appendBlocks(sid, [
+      {
+        kind: 'tool',
+        id: 'tu-probe',
+        name: 'Bash',
+        brief: 'ls -la --color=always',
+        expanded: false,
+        toolUseId: 'tu-probe',
+        input: { command: 'ls -la --color=always' },
+        result: ansi
+      }
+    ]);
+  }, sessionId);
+
+  await win.waitForTimeout(200);
+
+  const candidates = win.locator('[data-testid="tool-block-root"] button[aria-expanded]');
+  const btnCount = await candidates.count();
+  if (btnCount === 0) throw new Error('no ChatStream ToolBlock button found');
+  await candidates.first().click();
+  await win.waitForTimeout(500);
+
+  const hostCount = await win.locator('[data-testid="terminal-host"]').count();
+  if (hostCount !== 1) throw new Error(`expected 1 terminal-host, got ${hostCount}`);
+  const xtermCount = await win.locator('[data-testid="terminal-host"] .xterm').count();
+  if (xtermCount !== 1) throw new Error(`expected 1 .xterm inside host, got ${xtermCount}`);
+  const screenText = await win.locator('[data-testid="terminal-host"] .xterm-screen').innerText();
+  if (!screenText.includes('src')) throw new Error(`terminal missing 'src' text; got: ${screenText.slice(0, 200)}`);
+  if (!screenText.includes('error.log')) throw new Error(`terminal missing 'error.log'; got: ${screenText.slice(0, 200)}`);
+
+  log('terminal host mounted, xterm rendered, ANSI payload visible');
+}
+
+// ---------- tool-render-open-in-editor ----------
+// Long tool stdout shows "Open in editor"; clicking it writes a temp file via
+// the real IPC handler (which honors CCSM_OPEN_IN_EDITOR_NOOP, set on the
+// harness launch env, to skip the actual shell.openPath call).
+async function caseToolRenderOpenInEditor({ win, log }) {
+  async function seed(blocks) {
+    await win.evaluate(({ blocks }) => {
+      const store = window.__ccsmStore;
+      store.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{
+          id: 's-tool', name: 'tool-journey', state: 'idle', cwd: 'C:/x',
+          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+        }],
+        activeId: 's-tool',
+        messagesBySession: { 's-tool': blocks },
+        startedSessions: { 's-tool': true },
+        runningSessions: {},
+        messageQueues: {}
+      });
+    }, { blocks });
+    await win.waitForTimeout(250);
+  }
+
+  // Journey 1: short output (10 lines) → button absent.
+  {
+    const shortText = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n');
+    await seed([
+      { kind: 'tool', id: 't-short', toolUseId: 'tu_short', name: 'Read',
+        brief: 'short.log', expanded: true, result: shortText, isError: false }
+    ]);
+    await win.evaluate(() => {
+      document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
+    });
+    await win.waitForTimeout(150);
+    const present = await win.evaluate(() =>
+      !!document.querySelector('[data-testid="tool-output-open-in-editor"]'));
+    if (present !== false) throw new Error('short output (10 lines): "Open in editor" button should be absent');
+  }
+
+  // Journey 2: long output (60 lines) → button present and hover-hidden.
+  {
+    const longText = Array.from({ length: 60 }, (_, i) => `long-line ${i + 1}`).join('\n');
+    await seed([
+      { kind: 'tool', id: 't-long', toolUseId: 'tu_long', name: 'Read',
+        brief: 'long.log', expanded: true, result: longText, isError: false }
+    ]);
+    await win.evaluate(() => {
+      document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
+    });
+    await win.waitForTimeout(150);
+    const probe = await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-open-in-editor"]');
+      if (!btn) return { present: false };
+      const cs = getComputedStyle(btn);
+      return { present: true, opacityDefault: cs.opacity, text: btn.textContent?.trim() };
+    });
+    if (!(probe.present === true && probe.opacityDefault === '0')) {
+      throw new Error(`long output: expected button present + opacity 0, got ${JSON.stringify(probe)}`);
+    }
+  }
+
+  // Journey 3: clicking writes a temp file via the IPC NOOP path.
+  {
+    const longText = Array.from({ length: 80 }, (_, i) => `payload-line ${i + 1}`).join('\n');
+    await seed([
+      { kind: 'tool', id: 't-click', toolUseId: 'tu_click', name: 'Read',
+        brief: 'click.log', expanded: true, result: longText, isError: false }
+    ]);
+    await win.evaluate(() => {
+      document.querySelectorAll('main button[aria-expanded="false"]').forEach((b) => b.click());
+    });
+    await win.waitForTimeout(150);
+
+    const beforeFiles = new Set(
+      fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('claude-tool-output-'))
+    );
+    await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-open-in-editor"]');
+      btn?.click();
+    });
+    await win.waitForTimeout(500);
+
+    const buttonText = await win.evaluate(() => {
+      const btn = document.querySelector('[data-testid="tool-output-open-in-editor"]');
+      return btn?.textContent?.trim() ?? '';
+    });
+    const newFiles = fs
+      .readdirSync(os.tmpdir())
+      .filter((n) => n.startsWith('claude-tool-output-') && !beforeFiles.has(n));
+    let contentMatches = false;
+    let writtenLen = -1;
+    if (newFiles.length === 1) {
+      const txt = fs.readFileSync(path.join(os.tmpdir(), newFiles[0]), 'utf8');
+      writtenLen = txt.length;
+      contentMatches = txt === longText;
+      try { fs.unlinkSync(path.join(os.tmpdir(), newFiles[0])); } catch { /* ignored */ }
+    }
+    if (!(buttonText === 'Opened' && newFiles.length === 1 && contentMatches)) {
+      throw new Error(`click → expected button="Opened", 1 new file, content match. Got button="${buttonText}", newFiles=${JSON.stringify(newFiles)}, writtenLen=${writtenLen}`);
+    }
+  }
+
+  log('short→absent, long→present(opacity 0), click→temp file written, button → "Opened"');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -1744,6 +2236,20 @@ await runHarness({
     { id: 'language-toggle', run: caseLanguageToggle },
     { id: 'i18n-settings-zh', run: caseI18nSettingsZh },
     // ---- Per-case capability demo (task #223) ----
-    { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, run: caseSkipLaunchBundleShape }
-  ]
+    { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, run: caseSkipLaunchBundleShape },
+    // ---- Bucket-1 absorption (task #222) ----
+    { id: 'app-icon-present', skipLaunch: true, run: caseAppIconPresent },
+    { id: 'group-add', run: caseGroupAdd },
+    { id: 'import-empty-groups', run: caseImportEmptyGroups },
+    { id: 'rename', run: caseRename },
+    { id: 'terminal', run: caseTerminal },
+    { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor }
+  ],
+  launch: {
+    // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler
+    // (src/electron/main.ts) to write the temp file but skip the actual
+    // shell.openPath. The tool-render-open-in-editor case relies on this;
+    // other cases never trigger that IPC, so the env var is a no-op for them.
+    env: { CCSM_OPEN_IN_EDITOR_NOOP: '1' }
+  }
 });
