@@ -24,6 +24,9 @@
 //   - msg-queue
 //   - esc-interrupt
 //   - composer-morph-mention
+//   - sdk-stream-roundtrip
+//   - sdk-stream-event-partial
+//   - sdk-exit-error-surfaces
 //   - user-block-hover-menu
 //
 // Add new AGENT cases here by:
@@ -1573,6 +1576,221 @@ async function caseComposerMorphMention({ win, log, app, registerDispose }) {
   log('morph button send<->stop verified; @mention picker open/Esc-dismiss/Enter-commit verified');
 }
 
+// ---------- sdk-stream-roundtrip ----------
+// E2E coverage for PR #271 (SDK adapter PR-A). The SdkSessionRunner replaces
+// the legacy spawn-claude wrapper but preserves the wire shape: the four
+// big-bucket frames (system/assistant/user/result) flow through
+// translateSdkMessage unchanged and are emitted on the `agent:event` IPC
+// channel. This case injects a realistic post-translator frame sequence
+// (system init -> assistant text -> result/success) via the real IPC channel
+// — `webContents.send('agent:event', ...)`, the same path the SDK runner
+// uses in production — and asserts the renderer renders the assistant text
+// AND clears the running flag on result, proving the renderer-facing
+// contract of the adapter is intact.
+async function caseSdkStreamRoundtrip({ app, win, log }) {
+  const SID = 's-sdk-roundtrip';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'hello sdk' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // Inject the three big-bucket SDK frames via the SAME IPC channel
+  // SdkSessionRunner uses (manager.ts:131 `this.emit('agent:event', ...)` ->
+  // forwarded to `webContents.send('agent:event', ...)`). This exercises
+  // the real lifecycle.subscribeAgentEvents path end-to-end.
+  await app.evaluate(({ BrowserWindow }, sid) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    // 1) system init (post-translator passthrough — see translateSdkMessage)
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'system',
+        subtype: 'init',
+        session_id: sid,
+        model: 'claude-opus-4',
+        cwd: 'C:/x',
+        tools: ['Bash', 'Read'],
+      },
+    });
+    // 2) assistant text (post-translator passthrough)
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'assistant',
+        session_id: sid,
+        message: {
+          id: 'msg-sdk-1',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          content: [{ type: 'text', text: 'PROBE_SDK_REPLY ok' }],
+        },
+      },
+    });
+    // 3) result/success (post-translator passthrough)
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: sid,
+        duration_ms: 42,
+        num_turns: 1,
+        total_cost_usd: 0.0001,
+        usage: { input_tokens: 5, output_tokens: 7 },
+        result: 'PROBE_SDK_REPLY ok',
+      },
+    });
+  }, SID);
+  await win.waitForTimeout(400);
+
+  // Assertion 1: assistant block rendered with the SDK reply text.
+  const state = await win.evaluate((sid) => {
+    const s = window.__ccsmStore.getState();
+    const blocks = s.messagesBySession[sid] ?? [];
+    return {
+      blockKinds: blocks.map((b) => b.kind),
+      assistantTexts: blocks.filter((b) => b.kind === 'assistant' || b.kind === 'assistant-md').map((b) => b.text),
+      running: !!s.runningSessions[sid],
+    };
+  }, SID);
+  const hasAssistantWithText = state.assistantTexts.some((t) => typeof t === 'string' && t.includes('PROBE_SDK_REPLY ok'));
+  if (!hasAssistantWithText) {
+    throw new Error(`expected assistant block with PROBE_SDK_REPLY, got blocks=${JSON.stringify(state.blockKinds)} texts=${JSON.stringify(state.assistantTexts)}`);
+  }
+  // Assertion 2: result frame cleared running.
+  if (state.running) throw new Error('expected runningSessions cleared after result frame');
+
+  log('SDK frames system+assistant+result via real agent:event IPC -> rendered + running cleared');
+}
+
+// ---------- sdk-stream-event-partial ----------
+// E2E coverage for PR #271's `includePartialMessages: true` SDK option.
+// SdkSessionRunner enables partial streaming so long replies aren't frozen;
+// the SDK then emits `stream_event` frames carrying
+// `content_block_delta(text_delta)` payloads. translateSdkMessage passes
+// these through unchanged. The renderer's PartialAssistantStreamer
+// (lifecycle.ts:198) consumes them and incrementally appends text via
+// streamAssistantText. This case fires the real partial-frame shape over
+// the same `agent:event` IPC channel and asserts the streaming caret
+// appears AND the partial text accumulates into a streaming assistant block.
+async function caseSdkStreamEventPartial({ app, win, log }) {
+  const SID = 's-sdk-partial';
+  const BID = 'msg-sdk-partial';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk-partial', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'tell me a story' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // Emit message_start + 3x text_delta + message_stop, exactly as the SDK
+  // would in `--include-partial-messages` mode (matches the wire shape
+  // probe-e2e-streaming-partial-frames.mjs records from real claude.exe).
+  await app.evaluate(({ BrowserWindow }, [sid, bid]) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    const send = (event) => wc.send('agent:event', { sessionId: sid, message: { type: 'stream_event', session_id: sid, event } });
+    send({
+      type: 'message_start',
+      message: { id: bid, type: 'message', role: 'assistant', model: 'claude-opus-4', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } },
+    });
+    send({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Once ' } });
+    send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'upon ' } });
+    send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'a time.' } });
+  }, [SID, BID]);
+  await win.waitForTimeout(300);
+
+  // Wait for streaming caret to attach (AnimatePresence transition; same race
+  // the existing streaming case handles).
+  try {
+    await win.locator('span.animate-pulse').first().waitFor({ state: 'attached', timeout: 2000 });
+  } catch { /* fall through */ }
+  const caretCount = await win.locator('span.animate-pulse').count();
+  if (caretCount < 1) {
+    const dump = await win.evaluate((sid) => {
+      const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+      return blocks.map((b) => ({ id: b.id, kind: b.kind, text: b.text, streaming: b.streaming }));
+    }, SID);
+    throw new Error(`expected streaming caret after partial deltas; blocks=${JSON.stringify(dump)}`);
+  }
+
+  // Assert the deltas coalesced into a single streaming block with full text.
+  const partial = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    const streaming = blocks.filter((b) => b.streaming === true);
+    return streaming.map((b) => ({ id: b.id, kind: b.kind, text: b.text }));
+  }, SID);
+  if (partial.length !== 1) throw new Error(`expected exactly 1 streaming block, got ${partial.length}: ${JSON.stringify(partial)}`);
+  if (!partial[0].text || !partial[0].text.includes('Once upon a time.')) {
+    throw new Error(`expected streaming text 'Once upon a time.', got ${JSON.stringify(partial[0].text)}`);
+  }
+
+  log('SDK stream_event(text_delta) frames via real IPC -> caret visible + 3 deltas coalesced into streaming block');
+}
+
+// ---------- sdk-exit-error-surfaces ----------
+// E2E coverage for PR #271's exit-error path. SdkSessionRunner's consumer
+// loop (sessions.ts:418-429) wraps SDK iterator errors and forwards them to
+// `onExit({ error })`, which manager.ts emits as `agent:exit` IPC. The
+// renderer's lifecycle handler (lifecycle.ts:376-384) then appends an
+// `error` block to the chat AND flips runningSessions off — that's how SDK
+// errors become user-visible instead of silently disappearing. This case
+// fires a synthetic `agent:exit` with an error string over the real IPC
+// channel and asserts both observable effects.
+async function caseSdkExitErrorSurfaces({ app, win, log }) {
+  const SID = 's-sdk-exit';
+  const ERR = 'PROBE_SDK_FAILURE: anthropic api 503';
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'sdk-exit', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'do thing' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  await app.evaluate(({ BrowserWindow }, [sid, err]) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    wc.send('agent:exit', { sessionId: sid, error: err });
+  }, [SID, ERR]);
+  await win.waitForTimeout(300);
+
+  const state = await win.evaluate((sid) => {
+    const s = window.__ccsmStore.getState();
+    const blocks = s.messagesBySession[sid] ?? [];
+    return {
+      blockKinds: blocks.map((b) => b.kind),
+      errorTexts: blocks.filter((b) => b.kind === 'error').map((b) => b.text),
+      running: !!s.runningSessions[sid],
+    };
+  }, SID);
+  if (!state.errorTexts.some((t) => typeof t === 'string' && t.includes('PROBE_SDK_FAILURE'))) {
+    throw new Error(`expected error block carrying SDK failure text; got blocks=${JSON.stringify(state.blockKinds)} errorTexts=${JSON.stringify(state.errorTexts)}`);
+  }
+  if (state.running) throw new Error('expected runningSessions cleared after exit-with-error');
+
+  log('SDK exit-with-error via real agent:exit IPC -> error block surfaced + running cleared');
+}
+
 // ---------- user-block-hover-menu ----------
 // Absorbed from probe-e2e-user-block-hover-menu.mjs. Hover -> 4 action
 // buttons fade in (opacity 1); Copy lands text in clipboard; Truncate cuts
@@ -1690,6 +1908,9 @@ await runHarness({
     { id: 'msg-queue', run: caseMsgQueue },
     { id: 'esc-interrupt', run: caseEscInterrupt },
     { id: 'composer-morph-mention', run: caseComposerMorphMention },
+    { id: 'sdk-stream-roundtrip', run: caseSdkStreamRoundtrip },
+    { id: 'sdk-stream-event-partial', run: caseSdkStreamEventPartial },
+    { id: 'sdk-exit-error-surfaces', run: caseSdkExitErrorSurfaces },
     { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
   ]
 });
