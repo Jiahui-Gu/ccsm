@@ -273,7 +273,28 @@ async function caseStreaming({ win, log }) {
   const finalCaretCount = await win.locator('span.animate-pulse').count();
   if (finalCaretCount !== 0) throw new Error(`caret should disappear after finalize; found ${finalCaretCount}`);
 
-  log('3 deltas coalesced into 1 block; caret shown then hidden on finalize');
+  // Baseline-diagnostics-empty contract (task #88): a happy-path streaming
+  // turn must NOT push any non-dismissed diagnostics for the active session.
+  // The store's lifecycle (setRunning, streamAssistantText, appendBlocks)
+  // does not auto-clear diagnostics, so any leak here would persist across
+  // turns. Dual check: DOM (banner not rendered) AND store (no active
+  // entries scoped to this session). Brief settle for any TopBanner
+  // <AnimatePresence> exit transition.
+  await win.waitForTimeout(250);
+  const baselineBannerCount = await win.locator('[data-testid="agent-diagnostic-banner"]').count();
+  if (baselineBannerCount !== 0) {
+    throw new Error(`baseline diagnostics should be empty after happy-path streaming; banner count=${baselineBannerCount}`);
+  }
+  const baselineStoreActive = await win.evaluate((sid) => {
+    const st = window.__ccsmStore.getState();
+    const all = st.diagnostics ?? [];
+    return all.filter((d) => d.sessionId === sid && !d.dismissed).map((d) => ({ code: d.code, level: d.level, message: d.message }));
+  }, sessionId);
+  if (baselineStoreActive.length !== 0) {
+    throw new Error(`baseline diagnostics should be empty in store for active session; found ${baselineStoreActive.length}: ${JSON.stringify(baselineStoreActive)}`);
+  }
+
+  log('3 deltas coalesced into 1 block; caret shown then hidden on finalize; baseline diagnostics empty (DOM + store)');
 }
 
 // ---------- streaming-caret-lifecycle ----------
