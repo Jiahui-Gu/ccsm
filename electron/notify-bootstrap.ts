@@ -16,6 +16,11 @@
 // only ships a Windows adapter.
 
 import { BrowserWindow } from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { spawn } from 'child_process';
+import { app } from 'electron';
 import {
   configureNotify,
   isNotifyAvailable,
@@ -159,10 +164,10 @@ export function getNotifyRuntimeState(): Readonly<NotifyRuntimeState> {
 }
 
 /**
- * Combined gate evaluated at retry-fire time (#307). Returns true when the
- * caller should NOT fire — either the user globally disabled notifications,
- * or the user is focused on the question's own session (so the in-app
- * affordance is already visible and a fresh OS toast would be noise).
+ * Combined gate evaluated before firing question-style toasts. Returns true
+ * when the caller should NOT fire — either the user globally disabled
+ * notifications, or the user is focused on the originating session (so the
+ * in-app affordance is already visible and a fresh OS toast would be noise).
  *
  * Pure read against `runtimeState` + `BrowserWindow.isFocused()`; safe to
  * call repeatedly and from any module without circular-import risk.
@@ -186,15 +191,12 @@ export function __resetNotifyRuntimeStateForTests(): void {
 // Extracted from main.ts so the e2e probe can install the EXACT same
 // router behaviour rather than a hand-rolled copy that drifts from
 // production. The router consumes a few host capabilities (resolve
-// permission against the live session manager, cancel pending question
-// retries, look up the foreground window) injected as functions so this
-// module stays free of cyclic imports against `agent/sessions` and
-// `notify-retry`.
+// permission against the live session manager, look up the foreground
+// window) injected as functions so this module stays free of cyclic
+// imports against `agent/sessions`.
 export interface ToastActionRouterDeps {
   /** Resolve a CLI permission gate (typically `sessions.resolvePermission`). */
   resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => unknown;
-  /** Cancel a scheduled question retry (typically from `notify-retry`). */
-  cancelQuestionRetry: (toastId: string) => void;
   /** Returns the window to send `notify:toastAction` to, or null. */
   getMainWindow: () => { isDestroyed?: () => boolean; webContents?: { send: (channel: string, payload: unknown) => void }; isMinimized?: () => boolean; restore?: () => void; isVisible?: () => boolean; show?: () => void; focus?: () => void } | null;
 }
@@ -216,16 +218,6 @@ export function createDefaultToastActionRouter(
         deps.resolvePermission(target.sessionId, requestId, 'allow');
       } else if (event.action === 'reject') {
         deps.resolvePermission(target.sessionId, requestId, 'deny');
-        // Defensive cancel (#308): permission toasts don't schedule a retry
-        // today (only question events do), but if a future change ever
-        // routes question activations through the same toast-action path,
-        // a forgotten cancel would leak the timer past the user's explicit
-        // reject. Cheap belt-and-suspenders — `cancelQuestionRetry` is a
-        // safe no-op when no entry exists. Both id shapes are tried so
-        // either lifecycle convention (`q-${requestId}` or bare requestId)
-        // is covered.
-        deps.cancelQuestionRetry(`q-${requestId}`);
-        deps.cancelQuestionRetry(requestId);
       }
       if (win && win.webContents) {
         win.webContents.send('notify:toastAction', {
@@ -298,3 +290,59 @@ export function __resetBootstrapForTests(): void {
 export { isNotifyAvailable };
 export const NOTIFY_APP_ID = APP_ID;
 export const NOTIFY_APP_NAME = APP_NAME;
+
+// ── AUMID dev auto-setup ─────────────────────────────────────────────────
+//
+// Windows only routes Adaptive Toasts to a process whose AUMID matches the
+// AUMID stamped on a Start Menu shortcut. Packaged installers (NSIS) handle
+// this; for ad-hoc `npm run dev` the user has to run
+// `scripts/setup-aumid.ps1` once per machine. This helper automates that
+// step: at startup in dev mode, if the expected .lnk is missing, we spawn
+// the script fire-and-forget. Failures are logged but never block startup.
+
+const AUMID_SHORTCUT_NAME = 'CCSM Dev';
+
+function getExpectedAumidShortcutPath(): string {
+  // Mirrors `[Environment]::GetFolderPath('Programs')` from setup-aumid.ps1:
+  // current-user Start Menu Programs folder.
+  const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${AUMID_SHORTCUT_NAME}.lnk`);
+}
+
+/**
+ * On Windows in dev mode, ensure the Start Menu .lnk required for AUMID
+ * routing exists. If it doesn't, spawn `scripts/setup-aumid.ps1` detached
+ * fire-and-forget. NEVER blocks startup; never throws.
+ *
+ * Skipped in packaged builds — NSIS handles the shortcut via electron-builder.
+ */
+export function autoSetupAumid(): void {
+  try {
+    if (process.platform !== 'win32') return;
+    if (app.isPackaged) return;
+    const lnk = getExpectedAumidShortcutPath();
+    if (fs.existsSync(lnk)) return;
+    // Resolve the script relative to the repo root. In dev, __dirname points
+    // into `dist/electron/`, so go up two levels for the repo root.
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const scriptPath = path.join(repoRoot, 'scripts', 'setup-aumid.ps1');
+    if (!fs.existsSync(scriptPath)) {
+      console.warn(`[notify-bootstrap] setup-aumid.ps1 not found at ${scriptPath}; skipping AUMID auto-setup`);
+      return;
+    }
+    const child = spawn(
+      'powershell',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      { detached: true, stdio: 'ignore' },
+    );
+    child.on('error', (err) => {
+      console.warn(`[notify-bootstrap] AUMID setup spawn error: ${err.message}`);
+    });
+    child.unref();
+  } catch (err) {
+    console.warn(
+      `[notify-bootstrap] AUMID auto-setup failed: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
