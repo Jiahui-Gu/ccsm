@@ -173,10 +173,11 @@ declare global {
       recentCwds: () => Promise<string[]>;
 
       /**
-       * Most-frequently-used model across recent CLI transcripts. Seeds the
-       * new-session model default on fresh userData. Null if undeterminable.
+       * Default model from `~/.claude/settings.json`'s `model` field — the
+       * same value the CLI consults for `--model` defaulting. Seeds the
+       * new-session picker. Null when unset, missing, or unparseable.
        */
-      topModel: () => Promise<string | null>;
+      defaultModel: () => Promise<string | null>;
 
       /**
        * Read the raw frames of an importable `.jsonl` so the renderer can

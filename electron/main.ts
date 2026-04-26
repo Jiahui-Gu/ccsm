@@ -68,7 +68,6 @@ import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
   deriveRecentCwds,
-  deriveTopModel,
   type ScannableSession,
 } from './import-scanner';
 import { loadImportableHistory } from './import-history';
@@ -81,7 +80,7 @@ import {
   autoSetupAumid,
 } from './notify-bootstrap';
 import type { PermissionMode } from './agent/sessions';
-import { listModelsFromSettings } from './agent/list-models-from-settings';
+import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 import { loadPickerCommands } from './commands-loader';
 
@@ -135,7 +134,6 @@ const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 // default cwd (via the renderer store) — same goal, no second IPC.
 let importableCache: ScannableSession[] = [];
 let recentCwdsCache: string[] = [];
-let topModelCache: string | null = null;
 let importablePending: Promise<ScannableSession[]> | null = null;
 
 function refreshImportableCache(): Promise<ScannableSession[]> {
@@ -144,7 +142,6 @@ function refreshImportableCache(): Promise<ScannableSession[]> {
     .then((rows) => {
       importableCache = rows;
       recentCwdsCache = deriveRecentCwds(rows);
-      topModelCache = deriveTopModel(rows);
       return rows;
     })
     .catch((err) => {
@@ -174,14 +171,6 @@ async function getRecentCwds(): Promise<string[]> {
   }
   await refreshImportableCache();
   return recentCwdsCache;
-}
-
-async function getTopModel(): Promise<string | null> {
-  if (topModelCache !== null || importableCache.length > 0) {
-    return topModelCache;
-  }
-  await refreshImportableCache();
-  return topModelCache;
 }
 
 // We don't want a visible File/Edit/View menu bar — CCSM is a single-
@@ -1080,7 +1069,17 @@ app.whenReady().then(() => {
 
   ipcMain.handle('import:scan', () => getImportableSessions());
   ipcMain.handle('import:recentCwds', () => getRecentCwds());
-  ipcMain.handle('import:topModel', () => getTopModel());
+  // The new-session default model comes straight from the user's CLI
+  // settings.json — same source the CLI itself reads for `--model`. Replaces
+  // the old `import:topModel` frequency-vote IPC (PR #369), which produced
+  // model ids that weren't always in the picker list.
+  ipcMain.handle('settings:defaultModel', async () => {
+    try {
+      return await readDefaultModelFromSettings();
+    } catch {
+      return null;
+    }
+  });
   ipcMain.handle(
     'import:loadHistory',
     async (e, projectDir: unknown, sessionId: unknown) => {

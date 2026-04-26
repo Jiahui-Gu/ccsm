@@ -234,11 +234,13 @@ const api = {
   recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
 
   /**
-   * Most-frequently-observed model across recent CLI transcripts. Seeds the
-   * new-session model picker on fresh installs / fresh userData where the
-   * persisted `model` field is empty. Null if no model could be derived.
+   * The user's CLI default-model preference, read directly from
+   * `~/.claude/settings.json`'s `model` field. Seeds the new-session model
+   * picker so ccsm matches whatever the user already configured for the
+   * standalone CLI. Returns null when the field is unset, the file is
+   * missing, or it can't be parsed — caller falls back to the SDK default.
    */
-  topModel: (): Promise<string | null> => ipcRenderer.invoke('import:topModel'),
+  defaultModel: (): Promise<string | null> => ipcRenderer.invoke('settings:defaultModel'),
 
   /**
    * Read the raw frames of an importable session's `.jsonl` transcript so the

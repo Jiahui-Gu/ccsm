@@ -20,7 +20,7 @@ function stubCCSM() {
     pickDirectory: vi.fn().mockResolvedValue(null),
     pathsExist: vi.fn().mockResolvedValue({}),
     recentCwds: vi.fn().mockResolvedValue([]),
-    topModel: vi.fn().mockResolvedValue(null),
+    defaultModel: vi.fn().mockResolvedValue(null),
     onUpdateDownloaded: vi.fn().mockReturnValue(() => {}),
     onNotificationFocus: vi.fn().mockReturnValue(() => {}),
     cliCheck: vi.fn().mockResolvedValue({ state: 'found', binaryPath: '/usr/bin/claude' }),

@@ -27,7 +27,7 @@ async function freshStore(saveState: ReturnType<typeof vi.fn>) {
       loadHistory: vi.fn().mockResolvedValue({ ok: true, frames: [] }),
       pathsExist: vi.fn().mockResolvedValue({}),
       recentCwds: vi.fn().mockResolvedValue([]),
-      topModel: vi.fn().mockResolvedValue(null),
+      defaultModel: vi.fn().mockResolvedValue(null),
       models: { list: vi.fn().mockResolvedValue([]) },
       connection: { read: vi.fn().mockResolvedValue(null) }
     }

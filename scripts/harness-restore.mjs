@@ -1654,16 +1654,20 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// CASE: default-cwd-model-from-recent-history
+// CASE: default-cwd-from-recent-history
 // Pre-launch fixture: plant 10 JSONL transcripts under a sandboxed HOME with
-// controlled cwd/model frequency distributions. Boot the app, call
-// `createSession()`, assert the new session's `cwd` and `model` come from the
-// MOST-FREQUENT cwd/model in the last 10 CLI sessions — not the most recent.
+// controlled cwd frequency distributions. Boot the app, call
+// `createSession()`, assert the new session's `cwd` comes from the
+// MOST-FREQUENT cwd in the last 10 CLI sessions — not the most recent.
 //
-// Task #293: dogfood found that default cwd/model on a fresh session were
-// pulling from "most recently mtime'd" CLI session, which means a one-off
-// `cd` into a side project hijacks the default. Fix: derive defaults from
-// frequency over the last 10 sessions.
+// Task #293: dogfood found that default cwd on a fresh session was pulling
+// from "most recently mtime'd" CLI session, which means a one-off `cd` into
+// a side project hijacks the default. Fix: derive defaults from frequency
+// over the last 10 sessions.
+//
+// (The `model` half of #293's frequency vote was reverted — default model
+// now reads `~/.claude/settings.json` `model` instead. See the
+// `new-session-default-model-from-claude-settings` case below.)
 // ──────────────────────────────────────────────────────────────────────────
 async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-default-cwd-home-'));
@@ -1674,28 +1678,27 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
   // The frequency-ranked default sources from the last 10 jsonl files by mtime.
   // We design the 10 fixtures so:
   //   cwd  /path/A appears 6x, /path/B appears 4x  → expect default = /path/A
-  //   model claude-opus-4-7[1m] appears 7x,
-  //         claude-sonnet-4-6   appears 3x         → expect default = opus[1m]
   //
   // To prove this is FREQUENCY (not "most-recent mtime"), we make the SINGLE
-  // most-recent fixture be the (B, sonnet) pair — pure-recency code would
-  // pick those, frequency code picks (A, opus[1m]). That's the key bug
-  // signal from dogfood.
+  // most-recent fixture be cwd=/path/B — pure-recency code would pick /path/B,
+  // frequency code picks /path/A. That's the key bug signal from dogfood.
   //
   // mtime layout (newest → oldest):
-  //   t=10  → cwd /path/B, model sonnet  ← most recent (would win in old code)
-  //   t=9   → cwd /path/B, model opus[1m]
-  //   t=8   → cwd /path/A, model opus[1m]
-  //   t=7   → cwd /path/A, model opus[1m]
-  //   t=6   → cwd /path/B, model opus[1m]
-  //   t=5   → cwd /path/A, model opus[1m]
-  //   t=4   → cwd /path/A, model opus[1m]
-  //   t=3   → cwd /path/A, model opus[1m]
-  //   t=2   → cwd /path/B, model sonnet
-  //   t=1   → cwd /path/A, model sonnet
-  //   ─────────────────────────────────────
+  //   t=10  → cwd /path/B  ← most recent (would win in old code)
+  //   t=9   → cwd /path/B
+  //   t=8   → cwd /path/A
+  //   t=7   → cwd /path/A
+  //   t=6   → cwd /path/B
+  //   t=5   → cwd /path/A
+  //   t=4   → cwd /path/A
+  //   t=3   → cwd /path/A
+  //   t=2   → cwd /path/B
+  //   t=1   → cwd /path/A
+  //   ─────────────────────────
   //   /path/A: 6, /path/B: 4
-  //   opus[1m]: 7, sonnet: 3
+  //
+  // (Models are present in fixtures but no longer asserted — see the
+  // claude-settings case for default-model behaviour.)
   const fixtures = [
     { mtime: 10, cwd: '/path/B', model: 'claude-sonnet-4-6' },
     { mtime: 9,  cwd: '/path/B', model: 'claude-opus-4-7[1m]' },
@@ -1767,13 +1770,13 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
     const win = await waitReady(app);
 
     // Wait for the boot-time history scan IPC to populate the renderer
-    // store. The store seeds `historyRecentCwds` + `historyTopModel` from
-    // `window.ccsm.recentCwds()` + `topModel()` — both are async and not
-    // awaited by hydration, so we poll until the values land.
+    // store. The store seeds `historyRecentCwds` from
+    // `window.ccsm.recentCwds()` — async and not awaited by hydration, so
+    // we poll until the array lands.
     await win.waitForFunction(
       () => {
         const s = window.__ccsmStore?.getState?.();
-        return !!s && Array.isArray(s.historyRecentCwds) && s.historyRecentCwds.length > 0 && typeof s.historyTopModel === 'string';
+        return !!s && Array.isArray(s.historyRecentCwds) && s.historyRecentCwds.length > 0;
       },
       null,
       { timeout: 15_000 }
@@ -1787,7 +1790,6 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
       const s = window.__ccsmStore.getState();
       return {
         historyRecentCwds: s.historyRecentCwds,
-        historyTopModel: s.historyTopModel,
         // Also snapshot the in-memory store's `model` and `recentProjects`
         // — both should be empty on this fresh user-data dir, which is
         // what makes the history-derived defaults the actual source.
@@ -1795,19 +1797,16 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
         recentProjectsCount: (s.recentProjects ?? []).length,
       };
     });
-    log(`seeded defaults: historyRecentCwds[0]=${seeded.historyRecentCwds[0]} historyTopModel=${seeded.historyTopModel} (globalModel="${seeded.globalModel}", recentProjects=${seeded.recentProjectsCount})`);
+    log(`seeded defaults: historyRecentCwds[0]=${seeded.historyRecentCwds[0]} (globalModel="${seeded.globalModel}", recentProjects=${seeded.recentProjectsCount})`);
 
     if (seeded.historyRecentCwds[0] !== '/path/A') {
       throw new Error(`task#293: historyRecentCwds[0] should be the FREQUENCY-TOP cwd (/path/A appears 6x); got ${JSON.stringify(seeded.historyRecentCwds)}`);
     }
-    if (seeded.historyTopModel !== 'claude-opus-4-7[1m]') {
-      throw new Error(`task#293: historyTopModel should be the FREQUENCY-TOP model (claude-opus-4-7[1m] appears 7x); got ${seeded.historyTopModel}`);
-    }
 
     // Now drive createSession() and verify the new session inherits the
-    // frequency-top cwd + model. We zero out `sessions` first so the
-    // task328 group-recent-cwd path doesn't shadow the history default
-    // (no sessions in any group → falls through to historyRecentCwds[0]).
+    // frequency-top cwd. We zero out `sessions` first so the task328
+    // group-recent-cwd path doesn't shadow the history default (no
+    // sessions in any group → falls through to historyRecentCwds[0]).
     const created = await win.evaluate(() => {
       const st = window.__ccsmStore;
       st.setState({
@@ -1832,10 +1831,112 @@ async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
     if (created.cwd !== '/path/A') {
       throw new Error(`task#293: new session cwd should be /path/A (most-frequent in last 10 sessions); got ${created.cwd}`);
     }
-    if (created.model !== 'claude-opus-4-7[1m]') {
-      throw new Error(`task#293: new session model should be claude-opus-4-7[1m] (most-frequent in last 10 sessions); got ${created.model}`);
+    log(`task#293 PASS — default cwd derives from last-10 frequency`);
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CASE: new-session-default-model-from-claude-settings
+// Pre-launch fixture: plant a `~/.claude/settings.json` containing
+// `{"model":"opus[1m]"}` under a sandboxed HOME. Boot the app, call
+// `createSession()`, assert the new session's `model` is `"opus[1m]"`.
+//
+// Replaces the model half of PR #369's frequency vote: a CLI session
+// transcript holds whatever model the SDK happened to report on that turn
+// (`claude-opus-4`, full id with versioning, etc.) — those ids aren't
+// always in the picker list, so the dogfooded default ended up
+// unselectable. The CLI's own settings.json `model` field IS the user's
+// stable preference, and is exactly what `claude --model` defaults to;
+// reading it gives ccsm the same answer the CLI would.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseNewSessionDefaultModelFromClaudeSettings({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-default-model-home-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  const claudeDir = path.join(fakeHome, '.claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  // The exact value the user dogfooded — `opus[1m]` is one of the picker
+  // aliases the CLI ships, NOT a frequency-derived random id. Asserting
+  // this value end-to-end proves the new code reads settings.json verbatim.
+  fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({ model: 'opus[1m]' }, null, 2));
+  log(`planted ${path.join(claudeDir, 'settings.json')} with model="opus[1m]"`);
+
+  const ud = isolatedUserData('ccsm-harness-default-model-userdata');
+  registerDispose(ud.cleanup);
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome
     }
-    log(`task#293 PASS — default cwd/model derive from last-10 frequency`);
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+
+    // Wait for the boot read of `settings:defaultModel` to populate the
+    // store. The boot path awaits Promise.all([recentCwds, defaultModel])
+    // but the renderer doesn't block hydration on it — poll for the field.
+    await win.waitForFunction(
+      () => {
+        const s = window.__ccsmStore?.getState?.();
+        return !!s && typeof s.claudeSettingsDefaultModel === 'string';
+      },
+      null,
+      { timeout: 15_000 }
+    );
+
+    const seeded = await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return {
+        claudeSettingsDefaultModel: s.claudeSettingsDefaultModel,
+        globalModel: s.model,
+      };
+    });
+    log(`seeded defaults: claudeSettingsDefaultModel=${seeded.claudeSettingsDefaultModel} (globalModel="${seeded.globalModel}")`);
+
+    if (seeded.claudeSettingsDefaultModel !== 'opus[1m]') {
+      throw new Error(`expected claudeSettingsDefaultModel to be "opus[1m]" (read from settings.json); got ${JSON.stringify(seeded.claudeSettingsDefaultModel)}`);
+    }
+
+    const created = await win.evaluate(() => {
+      const st = window.__ccsmStore;
+      st.setState({
+        sessions: [],
+        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        activeId: '',
+        focusedGroupId: 'g-default',
+        // Critical: zero out the persisted global `model` so the fallback
+        // chain actually consults claudeSettingsDefaultModel. Otherwise
+        // a prior install's persisted pick would shadow the settings read.
+        model: '',
+        recentProjects: [],
+        // Also blank the connection profile / models list so the test isn't
+        // depending on which endpoint happens to be configured first.
+        connection: null,
+        models: [],
+      });
+      st.getState().createSession();
+      const s = st.getState();
+      const newSession = s.sessions[0];
+      return { model: newSession?.model };
+    });
+    log(`createSession() produced model=${created.model}`);
+
+    if (created.model !== 'opus[1m]') {
+      throw new Error(`new session model should be "opus[1m]" (from ~/.claude/settings.json); got ${JSON.stringify(created.model)}`);
+    }
+    log(`PASS — default model reads ~/.claude/settings.json`);
   } finally {
     closed = true;
     try { await app.close(); } catch {}
@@ -2032,7 +2133,7 @@ await runHarness({
     // with sandboxed CLAUDE_CONFIG_DIR + real claude.exe Bash invocation.
     // 桶 3 worker classified as restore-fits-the-multi-launch pattern.
     { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode },
-    // task#293: default cwd/model on a fresh session derive from frequency
+    // task#293: default cwd on a fresh session derives from frequency
     // over the last 10 CLI sessions. Pre-launch HOME sandbox + 10 jsonl
     // fixtures with controlled cwd/model distribution.
     { id: 'default-cwd-model-from-recent-history', skipLaunch: true, run: caseDefaultCwdModelFromRecentHistory },
@@ -2041,6 +2142,9 @@ await runHarness({
     // every "New session"). This case proves the new-session cwd resolves
     // to the frequency-top history cwd even when both stale sources are
     // present in the store.
-    { id: 'new-session-default-cwd-from-frequency', skipLaunch: true, run: caseNewSessionDefaultCwdFromFrequency }
+    { id: 'new-session-default-cwd-from-frequency', skipLaunch: true, run: caseNewSessionDefaultCwdFromFrequency },
+    // Default model reads ~/.claude/settings.json `model` (the CLI's own
+    // default-model setting) — replaces #369's frequency-vote model logic.
+    { id: 'new-session-default-model-from-claude-settings', skipLaunch: true, run: caseNewSessionDefaultModelFromClaudeSettings }
   ]
 });
