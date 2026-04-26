@@ -1033,6 +1033,90 @@ describe('store: importSession synthesis path', () => {
   });
 });
 
+describe('store: importSession reuses JSONL UUID', () => {
+  // Task #292: imported sessions must adopt the JSONL filename UUID as their
+  // ccsm runner id, otherwise the SDK's first init frame triggers a
+  // `session_id_mismatch` diagnostic and the in-app id diverges from the
+  // on-disk transcript filename (breaking the task #22 invariant that
+  // ccsm id == CLI sid == JSONL filename UUID).
+  it('uses resumeSessionId as the ccsm session id', () => {
+    useStore.setState({
+      groups: [{ id: 'g1', name: 'G', collapsed: false, kind: 'normal' }],
+      sessions: [],
+      activeId: ''
+    });
+    const id = useStore.getState().importSession({
+      name: 'Imported',
+      cwd: '/tmp/imp',
+      groupId: 'g1',
+      resumeSessionId: 'jsonl-uuid-aaaa'
+    });
+    expect(id).toBe('jsonl-uuid-aaaa');
+    const s = useStore.getState();
+    const session = s.sessions.find((x) => x.id === 'jsonl-uuid-aaaa');
+    expect(session).toBeDefined();
+    expect(session!.id).toBe('jsonl-uuid-aaaa');
+    expect(session!.resumeSessionId).toBe('jsonl-uuid-aaaa');
+    expect(s.activeId).toBe('jsonl-uuid-aaaa');
+  });
+
+  it('importing the same transcript twice de-dupes onto the existing session', () => {
+    useStore.setState({
+      groups: [{ id: 'g1', name: 'G', collapsed: false, kind: 'normal' }],
+      sessions: [],
+      activeId: 'something-else'
+    });
+    const first = useStore.getState().importSession({
+      name: 'Imported',
+      cwd: '/tmp/imp',
+      groupId: 'g1',
+      resumeSessionId: 'dup-uuid'
+    });
+    expect(useStore.getState().sessions).toHaveLength(1);
+
+    // Switch active off so we can verify importSession re-selects.
+    useStore.setState({ activeId: 'something-else' });
+
+    const second = useStore.getState().importSession({
+      name: 'Imported again',
+      cwd: '/tmp/imp-other',
+      groupId: 'g1',
+      resumeSessionId: 'dup-uuid'
+    });
+    expect(second).toBe(first);
+    const s = useStore.getState();
+    expect(s.sessions).toHaveLength(1);
+    expect(s.activeId).toBe('dup-uuid');
+    // Original session record untouched (name, cwd not overwritten).
+    expect(s.sessions[0].name).toBe('Imported');
+    expect(s.sessions[0].cwd).toBe('/tmp/imp');
+  });
+
+  it('importing a different resumeSessionId adds a new session', () => {
+    useStore.setState({
+      groups: [{ id: 'g1', name: 'G', collapsed: false, kind: 'normal' }],
+      sessions: [],
+      activeId: ''
+    });
+    useStore.getState().importSession({
+      name: 'A',
+      cwd: '/tmp/a',
+      groupId: 'g1',
+      resumeSessionId: 'uuid-A'
+    });
+    useStore.getState().importSession({
+      name: 'B',
+      cwd: '/tmp/b',
+      groupId: 'g1',
+      resumeSessionId: 'uuid-B'
+    });
+    const s = useStore.getState();
+    expect(s.sessions).toHaveLength(2);
+    expect(s.activeId).toBe('uuid-B');
+    expect(s.sessions.map((x) => x.id).sort()).toEqual(['uuid-A', 'uuid-B']);
+  });
+});
+
 describe('framesToBlocks', () => {
   it('returns [] for empty input', () => {
     expect(framesToBlocks([])).toEqual([]);
