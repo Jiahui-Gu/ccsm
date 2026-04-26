@@ -12,6 +12,11 @@ import {
 import { useStore } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { CwdPopover } from './CwdPopover';
+import {
+  EFFORT_LEVELS,
+  isEffortLevelSupported,
+  type EffortLevel,
+} from '../agent/effort';
 
 // Permission mode values match claude.exe's `--permission-mode` flag 1:1.
 // We use the official CLI names (title-cased for display) rather than
@@ -54,6 +59,15 @@ type ChipOption<V extends string> =
       primary: string;
       secondary?: string;
       icon?: React.ReactNode;
+      /**
+       * Render the row greyed-out and non-selectable. Used by the Effort
+       * chip to flag tiers the current model doesn't support — surfacing
+       * them visibly (rather than hiding) so users can see why a tier
+       * isn't selectable and understand model gating exists.
+       */
+      disabled?: boolean;
+      /** Tooltip surfaced on hover; primary use is explaining `disabled`. */
+      titleAttr?: string;
     }
   | { kind: 'separator' }
   | { kind: 'label'; primary: string };
@@ -66,6 +80,7 @@ type ChipMenuProps<V extends string> = {
   triggerLabel: string;
   triggerTitle?: string;
   triggerAccent?: 'warn';
+  triggerTestId?: string;
   options: ChipOption<V>[];
   onSelect: (value: V) => void;
 };
@@ -76,6 +91,7 @@ function ChipMenu<V extends string>({
   triggerLabel,
   triggerTitle,
   triggerAccent,
+  triggerTestId,
   options,
   onSelect
 }: ChipMenuProps<V>) {
@@ -100,7 +116,7 @@ function ChipMenu<V extends string>({
       }}
     >
       <DropdownMenuTrigger asChild>
-        <Chip title={triggerTitle} accent={triggerAccent}>{triggerLabel}</Chip>
+        <Chip title={triggerTitle} accent={triggerAccent} data-testid={triggerTestId}>{triggerLabel}</Chip>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="min-w-[240px] max-h-[360px] overflow-y-auto">
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
@@ -117,7 +133,15 @@ function ChipMenu<V extends string>({
             return (
               <DropdownMenuItem
                 key={o.value}
-                onSelect={() => onSelect(o.value)}
+                disabled={o.disabled}
+                title={o.titleAttr}
+                onSelect={(e) => {
+                  if (o.disabled) {
+                    e.preventDefault();
+                    return;
+                  }
+                  onSelect(o.value);
+                }}
                 className="flex-col items-start gap-0 h-auto py-1.5"
               >
                 <span className="truncate w-full text-fg-primary">{o.primary}</span>
@@ -128,7 +152,18 @@ function ChipMenu<V extends string>({
             );
           }
           return (
-            <DropdownMenuItem key={o.value} onSelect={() => onSelect(o.value)}>
+            <DropdownMenuItem
+              key={o.value}
+              disabled={o.disabled}
+              title={o.titleAttr}
+              onSelect={(e) => {
+                if (o.disabled) {
+                  e.preventDefault();
+                  return;
+                }
+                onSelect(o.value);
+              }}
+            >
               {o.icon}
               <span>{o.primary}</span>
             </DropdownMenuItem>
@@ -297,6 +332,13 @@ export function StatusBar({
   const models = useStore((s) => s.models);
   const modelsLoaded = useStore((s) => s.modelsLoaded);
   const contextUsage = useStore((s) => s.contextUsageBySession[sessionId]);
+  // 6-tier effort+thinking chip: per-session override falls back to the
+  // global default so a fresh session starts at 'high' (the unified chip's
+  // baseline) without any explicit user action.
+  const effortLevel = useStore(
+    (s) => s.effortLevelBySession[sessionId] ?? s.globalEffortLevel,
+  );
+  const setEffortLevel = useStore((s) => s.setEffortLevel);
   const contextChipVisible = (() => {
     if (!contextUsage || !contextUsage.contextWindow) return false;
     const pct = (contextUsage.totalTokens / contextUsage.contextWindow) * 100;
@@ -348,6 +390,39 @@ export function StatusBar({
   // Render the trigger as the model id, else a friendly placeholder.
   const modelTriggerLabel = model || t('statusBar.pickModel');
 
+  // 6-tier effort+thinking chip. Labels are localized; the underlying VALUES
+  // are the SDK's union literals and stay in English. Tiers the current
+  // model doesn't support are rendered disabled+tooltipped (rather than
+  // hidden) so users see model gating exists. Off is always selectable.
+  const effortLabels: Record<EffortLevel, string> = {
+    off: t('statusBar.effortOffLabel'),
+    low: t('statusBar.effortLowLabel'),
+    medium: t('statusBar.effortMediumLabel'),
+    high: t('statusBar.effortHighLabel'),
+    xhigh: t('statusBar.effortXhighLabel'),
+    max: t('statusBar.effortMaxLabel'),
+  };
+  const effortDescs: Record<EffortLevel, string> = {
+    off: t('statusBar.effortOffDesc'),
+    low: t('statusBar.effortLowDesc'),
+    medium: t('statusBar.effortMediumDesc'),
+    high: t('statusBar.effortHighDesc'),
+    xhigh: t('statusBar.effortXhighDesc'),
+    max: t('statusBar.effortMaxDesc'),
+  };
+  const gatedTooltip = t('statusBar.effortGatedTooltip');
+  const effortOptions: ChipOption<EffortLevel>[] = EFFORT_LEVELS.map((lvl) => {
+    const supported = isEffortLevelSupported(model, lvl);
+    return {
+      kind: 'item' as const,
+      value: lvl,
+      primary: effortLabels[lvl],
+      secondary: effortDescs[lvl],
+      disabled: !supported,
+      titleAttr: supported ? undefined : gatedTooltip,
+    };
+  });
+
   const chips: React.ReactNode[] = [
     cwdChip,
     <ChipMenu
@@ -367,6 +442,16 @@ export function StatusBar({
       triggerAccent={permission === 'bypassPermissions' ? 'warn' : undefined}
       options={permissionOptions}
       onSelect={onChangePermission}
+    />,
+    <ChipMenu
+      key="effort"
+      popoverId="effort"
+      label={t('statusBar.effort')}
+      triggerLabel={effortLabels[effortLevel]}
+      triggerTitle={effortDescs[effortLevel]}
+      triggerTestId="effort-chip"
+      options={effortOptions}
+      onSelect={(lvl: EffortLevel) => setEffortLevel(sessionId, lvl)}
     />
   ];
   if (contextChipVisible) {

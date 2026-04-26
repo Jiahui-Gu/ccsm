@@ -138,10 +138,10 @@ describe('dispatchSlashCommand', () => {
 });
 
 describe('registry shape', () => {
-  it('exposes /clear, /compact, /config, /think as built-ins', () => {
-    expect(BUILT_IN_COMMANDS.map((c) => c.name)).toEqual(['clear', 'compact', 'config', 'think']);
+  it('exposes /clear, /compact, /config as built-ins (no /think)', () => {
+    expect(BUILT_IN_COMMANDS.map((c) => c.name)).toEqual(['clear', 'compact', 'config']);
   });
-  it('/clear has a client handler, /compact does not, /config has one, /think has one', () => {
+  it('/clear + /config have client handlers, /compact passes through, /think no longer exists', () => {
     const clear = findSlashCommand(BUILT_IN_COMMANDS, 'clear');
     const compact = findSlashCommand(BUILT_IN_COMMANDS, 'compact');
     const config = findSlashCommand(BUILT_IN_COMMANDS, 'config');
@@ -152,8 +152,7 @@ describe('registry shape', () => {
     expect(compact?.clientHandler).toBeUndefined();
     expect(config?.passThrough).toBe(false);
     expect(typeof config?.clientHandler).toBe('function');
-    expect(think?.passThrough).toBe(false);
-    expect(typeof think?.clientHandler).toBe('function');
+    expect(think).toBeUndefined();
   });
 });
 

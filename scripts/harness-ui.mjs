@@ -2649,24 +2649,26 @@ async function caseToolRenderOpenInEditor({ win, log }) {
   log('short→absent, long→present(opacity 0), click→temp file written, button → "Opened"');
 }
 
-// ---------- thinking-toggle (was probe-e2e-thinking-toggle) ----------
-// /think slash-command picker → switch toggle → ipcMain spy on
-// agent:setMaxThinkingTokens. Single-launch UI flow; preMain installs the
-// ipcMain spy because window.ccsm is a frozen contextBridge.
-async function caseThinkingToggle({ app, win, log }) {
-  // Step 1: install ipcMain spy (preMain-equivalent done inline because we
-  // already have `app` here and the spy must reset between toggle reads).
+// ---------- effort-chip-toggle ----------
+// 6-tier effort+thinking chip in the StatusBar. Forward path: open dropdown
+// → assert 6 items → click Low → assert chip label flips and IPC fires
+// `agent:setEffort` with level='low'. Reverse path is documented in the PR
+// body: stash electron/agent-sdk/sessions.ts setEffort + IPC handler →
+// case fails (chip flips locally but no IPC arrives at the spy) → restore.
+async function caseEffortChipToggle({ app, win, log }) {
+  // Step 1: install ipcMain spy on agent:setEffort. preMain-equivalent done
+  // inline because window.ccsm is a frozen contextBridge.
   await app.evaluate(({ ipcMain }) => {
-    const calls = (global.__thinkingIpcCalls = []);
-    try { ipcMain.removeHandler('agent:setMaxThinkingTokens'); } catch {}
-    ipcMain.handle('agent:setMaxThinkingTokens', (_e, sessionId, tokens) => {
-      calls.push({ sessionId, tokens });
+    const calls = (global.__effortIpcCalls = []);
+    try { ipcMain.removeHandler('agent:setEffort'); } catch {}
+    ipcMain.handle('agent:setEffort', (_e, sessionId, level) => {
+      calls.push({ sessionId, level });
       return { ok: true };
     });
   });
 
-  // Step 2: seed an active session and mark it started so store.ts:setThinkingLevel
-  // fan-out actually dispatches the IPC (it short-circuits for un-started sessions).
+  // Step 2: seed an active session and mark it started so the store action's
+  // IPC fan-out actually fires (un-started sessions short-circuit).
   await win.evaluate(() => {
     const store = window.__ccsmStore;
     const s = store.getState();
@@ -2677,79 +2679,75 @@ async function caseThinkingToggle({ app, win, log }) {
     }));
   });
 
-  const textarea = win.locator('textarea[data-input-bar]');
-  await textarea.waitFor({ state: 'visible', timeout: 10_000 });
+  // Step 3: locate the chip trigger by data-testid and open the dropdown.
+  const chip = win.locator('[data-testid="effort-chip"]');
+  await chip.waitFor({ state: 'visible', timeout: 10_000 });
 
-  // Step 3: type `/think` so the live picker opens.
-  await textarea.click();
-  await textarea.fill('/think');
-
-  const switchEl = win.locator('[data-testid="slash-think-switch"]');
-  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
-  const stateBefore = await switchEl.getAttribute('data-state');
-  if (stateBefore !== 'unchecked') throw new Error(`switch initial state expected 'unchecked', got '${stateBefore}'`);
-
-  const pre = await win.evaluate(() => {
-    const s = window.__ccsmStore.getState();
-    const sid = s.activeId;
-    return { sid, level: s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault };
-  });
-  if (pre.level !== 'off') throw new Error(`pre store level expected 'off', got '${pre.level}'`);
-
-  await switchEl.click();
-  await win.waitForFunction(
-    (sid) => {
-      const s = window.__ccsmStore.getState();
-      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
-      return lvl === 'default_on';
-    },
-    pre.sid,
-    { timeout: 5_000 },
-  );
-
-  await textarea.click();
-  await textarea.fill('/think');
-  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
-  const stateAfterOn = await switchEl.getAttribute('data-state');
-  if (stateAfterOn !== 'checked') throw new Error(`after toggle-on switch state expected 'checked', got '${stateAfterOn}'`);
-
-  await switchEl.click();
-  await win.waitForFunction(
-    (sid) => {
-      const s = window.__ccsmStore.getState();
-      const lvl = s.thinkingLevelBySession[sid] ?? s.globalThinkingDefault;
-      return lvl === 'off';
-    },
-    pre.sid,
-    { timeout: 5_000 },
-  );
-
-  await textarea.click();
-  await textarea.fill('/think');
-  await switchEl.waitFor({ state: 'visible', timeout: 5_000 });
-  const stateAfterOff = await switchEl.getAttribute('data-state');
-  if (stateAfterOff !== 'unchecked') throw new Error(`after toggle-off switch state expected 'unchecked', got '${stateAfterOff}'`);
-
-  const ipcCalls = await app.evaluate(() => (global.__thinkingIpcCalls || []).slice());
-  if (ipcCalls.length < 2) {
-    throw new Error(`expected >=2 setMaxThinkingTokens IPC calls, got ${ipcCalls.length}: ${JSON.stringify(ipcCalls)}`);
+  // Default chip label is 'High'.
+  const labelBefore = (await chip.innerText()).trim();
+  if (!/^High\b/i.test(labelBefore)) {
+    throw new Error(`expected chip label 'High' before open, got '${labelBefore}'`);
   }
-  const onCall = ipcCalls[0];
-  const offCall = ipcCalls[1];
-  if (!(onCall.tokens > 0)) throw new Error(`first IPC call (toggle on) expected tokens > 0, got ${JSON.stringify(onCall)}`);
-  if (offCall.tokens !== 0) throw new Error(`second IPC call (toggle off) expected tokens === 0, got ${JSON.stringify(offCall)}`);
-  if (onCall.sessionId !== pre.sid || offCall.sessionId !== pre.sid) {
-    throw new Error(`IPC sessionId mismatch — expected ${pre.sid}, got on=${onCall.sessionId} off=${offCall.sessionId}`);
+
+  await chip.click();
+
+  // 6 items: Off / Low / Medium / High / Extra high / Max. Some may be
+  // disabled (model gating) but all must render.
+  const expectedItems = ['Off', 'Low', 'Medium', 'High', 'Extra high', 'Max'];
+  for (const label of expectedItems) {
+    // The dropdown content uses Radix Portal; query against the WHOLE doc
+    // not the chip subtree.
+    const item = win.getByRole('menuitem', { name: new RegExp(`^${label}\\b`) });
+    await item.first().waitFor({ state: 'visible', timeout: 3_000 });
+  }
+
+  // Step 4: pick Low. Click on the Low menuitem (use exact-prefix regex to
+  // avoid matching 'Low' inside other labels).
+  const lowItem = win.getByRole('menuitem', { name: /^Low\b/ }).first();
+  await lowItem.click();
+
+  // Chip label flips to 'Low'.
+  await win.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="effort-chip"]');
+      return el && /^Low\b/.test((el.textContent || '').trim());
+    },
+    null,
+    { timeout: 3_000 },
+  );
+
+  // Store reflects the flip.
+  const sid = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+  await win.waitForFunction(
+    (id) => {
+      const s = window.__ccsmStore.getState();
+      return (s.effortLevelBySession[id] ?? s.globalEffortLevel) === 'low';
+    },
+    sid,
+    { timeout: 3_000 },
+  );
+
+  // IPC was hit with the right level for the right session.
+  const calls = await app.evaluate(() => (global.__effortIpcCalls || []).slice());
+  if (calls.length < 1) {
+    throw new Error(`expected >=1 setEffort IPC call, got ${calls.length}: ${JSON.stringify(calls)}`);
+  }
+  const last = calls[calls.length - 1];
+  if (last.level !== 'low') {
+    throw new Error(`last setEffort IPC level expected 'low', got ${JSON.stringify(last)}`);
+  }
+  if (last.sessionId !== sid) {
+    throw new Error(`setEffort IPC sessionId mismatch — expected ${sid}, got ${last.sessionId}`);
   }
 
   // Restore the original handler so subsequent cases that send to a real
-  // claude don't have their setMaxThinkingTokens calls swallowed by our spy.
+  // claude don't have their setEffort calls swallowed by our spy.
   await app.evaluate(({ ipcMain }) => {
-    try { ipcMain.removeHandler('agent:setMaxThinkingTokens'); } catch {}
-    delete global.__thinkingIpcCalls;
+    try { ipcMain.removeHandler('agent:setEffort'); } catch {}
+    delete global.__effortIpcCalls;
   });
 
-  log(`/think live row toggles store off ↔ default_on; setMaxThinkingTokens IPC fired: on=${onCall.tokens}, off=${offCall.tokens}`);
+  log(`effort chip dropdown opens with 6 tiers; clicking Low flips chip + store + sets IPC level='low'`);
 }
 
 // ---------- dead-ui-cleanup ----------
@@ -2930,9 +2928,9 @@ await runHarness({
     { id: 'terminal', run: caseTerminal },
     { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor },
     // ---- Bucket-7 absorption (final cleanup pass) ----
-    // thinking-toggle: UI slash-command toggle that uses an ipcMain spy on
-    // agent:setMaxThinkingTokens. Pure UI, single launch, fits harness-ui.
-    { id: 'thinking-toggle', run: caseThinkingToggle },
+    // effort-chip-toggle: StatusBar 6-tier effort+thinking chip → ipcMain
+    // spy on agent:setEffort. Pure UI, single launch, fits harness-ui.
+    { id: 'effort-chip-toggle', run: caseEffortChipToggle },
     { id: 'dead-ui-cleanup', run: caseDeadUiCleanup },
     // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
     // contract — enabled=false → dispatched:false, reason:'global-disabled',

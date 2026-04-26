@@ -70,8 +70,8 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         "recentProjects",
         "tutorialSeen",
         "notificationSettings",
-        "globalThinkingDefault",
-        "thinkingLevelBySession",
+        "globalEffortLevel",
+        "effortLevelBySession",
       ]
     `);
     // Structural invariants that any future key must satisfy. Catches a
@@ -146,8 +146,8 @@ describe('persist: PERSISTED_KEYS is the single source of truth', () => {
         turnDone: false,
         sound: false
       },
-      globalThinkingDefault: 'default_on',
-      thinkingLevelBySession: { 's-test': 'default_on' }
+      globalEffortLevel: 'max',
+      effortLevelBySession: { 's-test': 'max' }
     };
 
     for (const k of PERSISTED_KEYS) {

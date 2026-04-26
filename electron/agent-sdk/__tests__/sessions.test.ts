@@ -27,6 +27,7 @@ function makeFakeSdk() {
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
   const setModel = vi.fn().mockResolvedValue(undefined);
   const setMaxThinkingTokens = vi.fn().mockResolvedValue(undefined);
+  const applyFlagSettings = vi.fn().mockResolvedValue(undefined);
   const close = vi.fn();
 
   const query = (args: unknown) => {
@@ -47,6 +48,7 @@ function makeFakeSdk() {
       setPermissionMode,
       setModel,
       setMaxThinkingTokens,
+      applyFlagSettings,
       close,
     };
     return iter;
@@ -76,6 +78,7 @@ function makeFakeSdk() {
     setPermissionMode,
     setModel,
     setMaxThinkingTokens,
+    applyFlagSettings,
     close,
   };
 }
@@ -280,6 +283,53 @@ describe('agent-sdk/SdkSessionRunner', () => {
     expect(fake.setMaxThinkingTokens).toHaveBeenCalledWith(0);
     await runner.setMaxThinkingTokens(31999);
     expect(fake.setMaxThinkingTokens).toHaveBeenLastCalledWith(31999);
+    runner.close();
+  });
+
+  it('start() forwards thinking + effort options for the default High chip', async () => {
+    const runner = new SdkSessionRunner('s7c', noop, noop, noop, noop);
+    await runner.start(baseStart);
+    const opts = fake.getOptions()?.options as
+      | { thinking?: unknown; effort?: unknown }
+      | undefined;
+    // Default chip is High → adaptive thinking + effort='high', sent
+    // explicitly so the chip is the single source of truth.
+    expect(opts?.thinking).toEqual({ type: 'adaptive' });
+    expect(opts?.effort).toBe('high');
+    runner.close();
+  });
+
+  it('start() emits thinking=disabled and omits effort when chip is Off', async () => {
+    const runner = new SdkSessionRunner('s7d', noop, noop, noop, noop);
+    await runner.start({ ...baseStart, effortLevel: 'off' });
+    const opts = fake.getOptions()?.options as
+      | { thinking?: unknown; effort?: unknown }
+      | undefined;
+    expect(opts?.thinking).toEqual({ type: 'disabled' });
+    expect(opts?.effort).toBeUndefined();
+    runner.close();
+  });
+
+  it('setEffort() concurrently dispatches setMaxThinkingTokens + applyFlagSettings', async () => {
+    const runner = new SdkSessionRunner('s7e', noop, noop, noop, noop);
+    await runner.start(baseStart);
+    fake.setMaxThinkingTokens.mockClear();
+    fake.applyFlagSettings.mockClear();
+
+    await runner.setEffort('xhigh');
+    // Thinking dimension: adaptive (null = enable adaptive thinking).
+    expect(fake.setMaxThinkingTokens).toHaveBeenCalledTimes(1);
+    expect(fake.setMaxThinkingTokens).toHaveBeenCalledWith(null);
+    // Effort dimension: applyFlagSettings({effortLevel}).
+    expect(fake.applyFlagSettings).toHaveBeenCalledTimes(1);
+    expect(fake.applyFlagSettings).toHaveBeenCalledWith({ effortLevel: 'xhigh' });
+
+    // Off flips thinking off (0) and parks effort at 'low' so a flip back
+    // ON re-syncs cleanly.
+    await runner.setEffort('off');
+    expect(fake.setMaxThinkingTokens).toHaveBeenLastCalledWith(0);
+    expect(fake.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: 'low' });
+
     runner.close();
   });
 

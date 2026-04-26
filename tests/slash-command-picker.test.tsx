@@ -115,53 +115,17 @@ describe('<SlashCommandPicker />', () => {
     expect(onSelect.mock.calls[0][0].name).toBe('clear');
   });
 
-  // The trailing-slot contract: built-in `/think` shows a Switch facsimile
-  // reflecting the active session's thinking level; other rows leave the
-  // slot empty (so the row layout doesn't shift). Driven by the live store
-  // so a user toggle elsewhere updates the picker without reopening.
-  it('renders the /think trailing Switch in the off state by default', async () => {
-    const { useStore, hydrateStore } = await import('../src/stores/store');
-    await hydrateStore();
-    useStore.getState().setGlobalThinkingDefault('off');
-    render(
-      <SlashCommandPicker
-        open
-        query=""
-        commands={ALL}
-        activeIndex={0}
-        onActiveIndexChange={() => {}}
-        onSelect={() => {}}
-      />
-    );
-    const sw = screen.getByTestId('slash-think-switch');
-    expect(sw.getAttribute('data-state')).toBe('unchecked');
-  });
-
-  it('renders the /think trailing Switch in the on state when default_on', async () => {
-    const { useStore, hydrateStore } = await import('../src/stores/store');
-    await hydrateStore();
-    useStore.getState().setGlobalThinkingDefault('default_on');
-    render(
-      <SlashCommandPicker
-        open
-        query=""
-        commands={ALL}
-        activeIndex={0}
-        onActiveIndexChange={() => {}}
-        onSelect={() => {}}
-      />
-    );
-    const sw = screen.getByTestId('slash-think-switch');
-    expect(sw.getAttribute('data-state')).toBe('checked');
-  });
-
-  it('does not render a trailing Switch on non-think built-ins (layout unchanged)', async () => {
+  // The 6-tier effort+thinking chip moved to the StatusBar; `/think` and
+  // its trailing Switch facsimile are gone. We pin that absence here so a
+  // future regression that adds another inline-toggle slash row doesn't
+  // sneak past review.
+  it('does not render a slash-think-switch trailing widget anywhere', async () => {
     const { hydrateStore } = await import('../src/stores/store');
     await hydrateStore();
     render(
       <SlashCommandPicker
         open
-        query="clear"
+        query=""
         commands={ALL}
         activeIndex={0}
         onActiveIndexChange={() => {}}
@@ -169,7 +133,10 @@ describe('<SlashCommandPicker />', () => {
       />
     );
     expect(screen.queryByTestId('slash-think-switch')).toBeNull();
-    // /clear row still renders normally.
+    // /clear and /config still render as built-ins.
     expect(screen.getByText('/clear')).toBeInTheDocument();
+    expect(screen.getByText('/config')).toBeInTheDocument();
+    // /think is gone from the registry entirely.
+    expect(screen.queryByText('/think')).toBeNull();
   });
 });

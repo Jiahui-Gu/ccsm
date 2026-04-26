@@ -7,8 +7,12 @@ import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { disposeStreamer } from '../agent/lifecycle';
 import { streamEventToTranslation } from '../agent/stream-to-blocks';
-import { getMaxThinkingTokensForModel, type ThinkingLevel } from '../agent/thinking';
-export type { ThinkingLevel };
+import {
+  coerceEffortLevel,
+  DEFAULT_EFFORT_LEVEL,
+  type EffortLevel,
+} from '../agent/effort';
+export type { EffortLevel };
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -189,19 +193,20 @@ type State = {
   model: ModelId;
   permission: PermissionMode;
   /**
-   * Global default extended-thinking level applied to NEW sessions and to
-   * any session without a per-session override in `thinkingLevelBySession`.
-   * Two values only — matches upstream's Switch (off vs default_on). The
-   * resolved `max_thinking_tokens` is computed from this + model id via
-   * `src/agent/thinking.ts:getMaxThinkingTokensForModel`.
+   * Global default effort level applied to NEW sessions and to any session
+   * without a per-session override in `effortLevelBySession`. Six values:
+   *  off | low | medium | high | xhigh | max  (default: 'high').
+   * Wire path projects this to SDK `thinking` + `effort` at launch and to
+   * concurrent `setMaxThinkingTokens` + `applyFlagSettings({effortLevel})`
+   * RPCs mid-session — see `src/agent/effort.ts`.
    */
-  globalThinkingDefault: ThinkingLevel;
+  globalEffortLevel: EffortLevel;
   /**
-   * Per-session thinking level. Absent ⇒ inherit `globalThinkingDefault`.
-   * Persisted alongside permission so a relaunch picks up the same toggle
-   * the user left each session in.
+   * Per-session effort level. Absent => inherit `globalEffortLevel`.
+   * Persisted alongside permission so a relaunch picks up the same chip
+   * value the user left each session in.
    */
-  thinkingLevelBySession: Record<string, ThinkingLevel>;
+  effortLevelBySession: Record<string, EffortLevel>;
   sidebarCollapsed: boolean;
   /**
    * Sidebar width in pixels. Persisted as px (not %) — for a fixed-content
@@ -458,18 +463,18 @@ type Actions = {
   setSessionModel: (sessionId: string, model: ModelId) => void;
   setPermission: (mode: PermissionMode) => void;
   /**
-   * Update the GLOBAL default thinking level. Does not retroactively touch
+   * Update the GLOBAL default effort level. Does not retroactively touch
    * any session that already has a per-session override; new sessions inherit
    * this value at launch time. Persisted.
    */
-  setGlobalThinkingDefault: (level: ThinkingLevel) => void;
+  setGlobalEffortLevel: (level: EffortLevel) => void;
   /**
-   * Update one session's thinking level and (if the session is started)
-   * push the resolved `max_thinking_tokens` value through IPC. Mirrors
-   * `setSessionModel` — local-only when the session hasn't started yet, IPC
-   * round-trip otherwise.
+   * Update one session's effort level and (if the session is started) push
+   * the change through IPC. The IPC handler fans out to two concurrent SDK
+   * control RPCs (setMaxThinkingTokens + applyFlagSettings) — see
+   * `electron/agent-sdk/sessions.ts:setEffort`.
    */
-  setThinkingLevel: (sessionId: string, level: ThinkingLevel) => void;
+  setEffortLevel: (sessionId: string, level: EffortLevel) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
@@ -722,17 +727,26 @@ export function migrateNotificationSettings(
 }
 
 /**
- * Coerce a persisted per-session thinking-level map back into the strict
- * `'off' | 'default_on'` union. Strips entries with malformed values rather
- * than throwing — a legacy snapshot with stray keys shouldn't block boot.
+ * Coerce a persisted per-session effort-level map back into the strict
+ * `EffortLevel` union. Strips entries with malformed values rather than
+ * throwing — a legacy snapshot with stray keys shouldn't block boot.
  */
-export function sanitizeThinkingLevelMap(
+export function sanitizeEffortLevelMap(
   raw: unknown,
-): Record<string, ThinkingLevel> {
+): Record<string, EffortLevel> {
   if (!raw || typeof raw !== 'object') return {};
-  const out: Record<string, ThinkingLevel> = {};
+  const out: Record<string, EffortLevel> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (v === 'off' || v === 'default_on') out[k] = v;
+    if (
+      v === 'off' ||
+      v === 'low' ||
+      v === 'medium' ||
+      v === 'high' ||
+      v === 'xhigh' ||
+      v === 'max'
+    ) {
+      out[k] = v;
+    }
   }
   return out;
 }
@@ -982,8 +996,8 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusedGroupId: null,
   model: '',
   permission: 'default',
-  globalThinkingDefault: 'off',
-  thinkingLevelBySession: {},
+  globalEffortLevel: DEFAULT_EFFORT_LEVEL,
+  effortLevelBySession: {},
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   theme: 'system',
@@ -1445,22 +1459,20 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
     for (const id of started) void api.agentSetPermissionMode(id, permission);
   },
-  setGlobalThinkingDefault: (level) => {
-    set({ globalThinkingDefault: level });
+  setGlobalEffortLevel: (level) => {
+    set({ globalEffortLevel: level });
     // Per design: global change does NOT retroactively rewrite per-session
-    // overrides. Existing sessions keep whatever the user last toggled them
+    // overrides. Existing sessions keep whatever the user last picked them
     // to; only fresh sessions inherit the new default at launch.
   },
-  setThinkingLevel: (sessionId, level) => {
+  setEffortLevel: (sessionId, level) => {
     set((s) => ({
-      thinkingLevelBySession: { ...s.thinkingLevelBySession, [sessionId]: level },
+      effortLevelBySession: { ...s.effortLevelBySession, [sessionId]: level },
     }));
     const api = window.ccsm;
     if (!api) return;
     if (!get().startedSessions[sessionId]) return;
-    const session = get().sessions.find((x) => x.id === sessionId);
-    const tokens = getMaxThinkingTokensForModel(session?.model || undefined, level);
-    void api.agentSetMaxThinkingTokens(sessionId, tokens);
+    void api.agentSetEffort(sessionId, level);
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -2548,9 +2560,19 @@ export async function hydrateStore(): Promise<void> {
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       notificationSettings: migrateNotificationSettings(persisted.notificationSettings),
-      globalThinkingDefault:
-        persisted.globalThinkingDefault === 'default_on' ? 'default_on' : 'off',
-      thinkingLevelBySession: sanitizeThinkingLevelMap(persisted.thinkingLevelBySession)
+      globalEffortLevel: coerceEffortLevel(
+        // Migration: any legacy `globalThinkingDefault` (off | default_on) on
+        // disk maps to the new chip's default 'high' regardless of value.
+        // Keeping a literal-by-literal mapping ('off' -> 'off', 'default_on'
+        // -> 'high') was tempting but rejected: the old toggle's `off` was a
+        // 2-state UI wart, not an explicit user preference for "no thinking
+        // ever" — most users left it on the default. Resetting everyone to
+        // 'high' is consistent with the new chip's default.
+        (persisted as { globalEffortLevel?: unknown }).globalEffortLevel,
+      ),
+      effortLevelBySession: sanitizeEffortLevelMap(
+        (persisted as { effortLevelBySession?: unknown }).effortLevelBySession,
+      ),
     });
   }
   hydrated = true;
