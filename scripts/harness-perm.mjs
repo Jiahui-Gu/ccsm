@@ -1474,6 +1474,77 @@ async function caseJsonlFilenameMatchesSession({ win, log }) {
   }
 }
 
+// ---------- bypass-mid-session-toggle ----------
+// Regression for the "Agent unresponsive" toast users hit when clicking the
+// bypassPermissions chip on a session launched in default mode. Root cause
+// (eval doc bypass-perm-eval-2026-04-26.md): the bundled CLI's
+// setPermissionMode handler refuses transitions INTO bypassPermissions
+// unless the session was started with --dangerously-skip-permissions. ccsm
+// previously only sent that flag when the INITIAL mode was bypass, so any
+// runtime upgrade was silently rejected and surfaced as a vague timeout
+// diagnostic. Fix: always pass allowDangerouslySkipPermissions:true at
+// launch (sessions.ts:391); the SDK gate is one-way so this is harmless
+// when the active mode isn't bypass.
+//
+// Forward verification: start a real SDK session in default mode, toggle
+// to bypass via IPC, assert ok:true. Toggle back to default to confirm
+// downgrade still works. Reverse-verified manually by reverting the
+// conditional flag — the case fails with `{ ok:false, error:'... was not
+// launched ...' }` from the rethrown SDK rejection.
+async function caseBypassMidSessionToggle({ win, log }) {
+  const TS = Date.now();
+  const SID = `b3c0d000-0000-4000-8000-${String(TS).padStart(12, '0').slice(-12)}`;
+  const PROBE_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-bypass-mid-'));
+
+  try {
+    await win.evaluate(({ sid, cwd }) => {
+      window.__ccsmStore.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{ id: sid, name: 'bypass-mid', state: 'idle', cwd, model: 'claude-sonnet-4', groupId: 'g1', agentType: 'claude-code' }],
+        activeId: sid,
+        messagesBySession: { [sid]: [] },
+        startedSessions: {},
+        runningSessions: {},
+      });
+    }, { sid: SID, cwd: PROBE_TMP });
+
+    // 1. Start in default mode — the failure case before the fix.
+    const startRes = await win.evaluate(async ({ sid, cwd }) =>
+      await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default', sessionId: sid }),
+      { sid: SID, cwd: PROBE_TMP });
+    if (!startRes || startRes.ok !== true) {
+      throw new Error(`agentStart(default) failed: ${JSON.stringify(startRes)}`);
+    }
+    log('session started in default mode');
+
+    // Brief settle so the SDK init handshake completes before the runtime
+    // mode change (matches what a real user toggling the chip looks like).
+    await win.waitForTimeout(500);
+
+    // 2. Toggle to bypassPermissions — pre-fix this rejected with
+    //    "session was not launched with --dangerously-skip-permissions".
+    const upRes = await win.evaluate(async (sid) =>
+      await window.ccsm.agentSetPermissionMode(sid, 'bypassPermissions'), SID);
+    if (!upRes || upRes.ok !== true) {
+      throw new Error(`agentSetPermissionMode(bypass) expected ok:true, got ${JSON.stringify(upRes)}`);
+    }
+    log('default → bypass accepted');
+
+    // 3. Toggle back to default — should always succeed (downgrade is
+    //    ungated by the SDK).
+    const downRes = await win.evaluate(async (sid) =>
+      await window.ccsm.agentSetPermissionMode(sid, 'default'), SID);
+    if (!downRes || downRes.ok !== true) {
+      throw new Error(`agentSetPermissionMode(default) expected ok:true, got ${JSON.stringify(downRes)}`);
+    }
+    log('bypass → default accepted');
+
+    await win.evaluate(async (sid) => await window.ccsm.agentClose(sid), SID);
+  } finally {
+    try { fs.rmSync(PROBE_TMP, { recursive: true, force: true }); } catch {}
+  }
+}
+
 // ---------- askuserquestion-no-dup-and-resolves ----------
 // Was: probe-e2e-askuserquestion-no-dup-and-resolves.mjs.
 // preMain installs ipcMain stubs to capture resolvePermission + send calls
@@ -1890,6 +1961,15 @@ await runHarness({
       userDataDir: 'fresh',
       requiresClaudeBin: true,
       run: caseJsonlFilenameMatchesSession,
+    },
+    // bypass-mid-session-toggle: regression for "Agent unresponsive" toast
+    // when toggling default→bypass via the chip. Real session, real SDK,
+    // both directions verified.
+    {
+      id: 'bypass-mid-session-toggle',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: caseBypassMidSessionToggle,
     },
     // env-passthrough: ANTHROPIC_API_KEY/AUTH_TOKEN must flow through to
     // claude.exe so the CLI authenticates without an isolated CLAUDE_CONFIG_DIR
