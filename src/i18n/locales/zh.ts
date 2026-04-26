@@ -511,8 +511,7 @@ const zh: EnCatalog = {
     effortMediumDesc: '兼顾速度与深度。',
     effortHighDesc: '更深入思考（默认）。',
     effortXhighDesc: '更长时间的推理。Opus 4.7。',
-    effortMaxDesc: '最大推理强度。Opus 4.6/4.7。',
-    effortGatedTooltip: '当前模型不支持此档位。'
+    effortMaxDesc: '最大推理强度。Opus 4.6/4.7。'
   },
   cwdPopover: {
     placeholder: '输入筛选或粘贴路径…',

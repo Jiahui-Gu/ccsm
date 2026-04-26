@@ -100,18 +100,4 @@ export type DiagnosticHandler = (d: {
   message: string;
 }) => void;
 
-/**
- * Per-model capability metadata reported by the SDK's `query.supportedModels()`
- * shortly after session start. Today ccsm only consumes
- * `supportedEffortLevels` (powers the StatusBar effort chip's gating —
- * see src/agent/effort.ts::supportedEffortLevelsForModel) and uses the
- * hardcoded fallback for any model the SDK doesn't report.
- */
-export type AgentModelInfo = {
-  modelId: string;
-  supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
-};
-
-export type ModelInfoHandler = (info: { models: AgentModelInfo[] }) => void;
-
 export type { ClaudeStreamEvent };

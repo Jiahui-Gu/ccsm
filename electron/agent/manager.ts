@@ -49,20 +49,6 @@ export type AgentDiagnostic = {
   message: string;
 };
 
-/**
- * Per-model capability metadata reported by the SDK after session start.
- * Drives the StatusBar effort chip's tier gating — see
- * `src/agent/effort.ts::supportedEffortLevelsForModel` for the
- * fallback table used when a model is absent from this report.
- */
-export type AgentModelInfoEvent = {
-  sessionId: string;
-  models: Array<{
-    modelId: string;
-    supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
-  }>;
-};
-
 class SessionsManager {
   private runners = new Map<string, Runner>();
   private sender: Sender | null = null;
@@ -163,19 +149,14 @@ class SessionsManager {
           if (this.runners.has(sessionId)) this.selfExitCount += 1;
           this.runners.delete(sessionId);
         },
-        (req) => this.emit('agent:permissionRequest', { sessionId, ...req }),
-        (diag) =>
-          this.emit('agent:diagnostic', {
-            sessionId,
-            level: diag.level,
-            code: diag.code,
-            message: diag.message,
-          } satisfies AgentDiagnostic),
-        (info) =>
-          this.emit('agent:modelInfo', {
-            sessionId,
-            models: info.models,
-          } satisfies AgentModelInfoEvent)
+          (req) => this.emit('agent:permissionRequest', { sessionId, ...req }),
+          (diag) =>
+            this.emit('agent:diagnostic', {
+              sessionId,
+              level: diag.level,
+              code: diag.code,
+              message: diag.message,
+            } satisfies AgentDiagnostic)
       );
       await runner.start(opts);
       await Promise.race([firstSignal, new Promise<void>((r) => setTimeout(r, 800))]);

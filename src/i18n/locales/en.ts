@@ -543,8 +543,7 @@ const en = {
     effortMediumDesc: 'Balanced reasoning.',
     effortHighDesc: 'Deeper thinking (default).',
     effortXhighDesc: 'Extended deliberation. Opus 4.7.',
-    effortMaxDesc: 'Maximum effort. Opus 4.6/4.7.',
-    effortGatedTooltip: 'Not supported by current model.'
+    effortMaxDesc: 'Maximum effort. Opus 4.6/4.7.'
   },
   cwdPopover: {
     placeholder: 'Type to filter or paste a path…',

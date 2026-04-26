@@ -33,13 +33,6 @@ type AgentDiagnostic = {
   code: string;
   message: string;
 };
-type AgentModelInfoEvent = {
-  sessionId: string;
-  models: Array<{
-    modelId: string;
-    supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
-  }>;
-};
 type AgentPermissionRequest = {
   sessionId: string;
   requestId: string;
@@ -220,11 +213,6 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: AgentDiagnostic) => handler(payload);
     ipcRenderer.on('agent:diagnostic', wrap);
     return () => ipcRenderer.removeListener('agent:diagnostic', wrap);
-  },
-  onAgentModelInfo: (handler: (e: AgentModelInfoEvent) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: AgentModelInfoEvent) => handler(payload);
-    ipcRenderer.on('agent:modelInfo', wrap);
-    return () => ipcRenderer.removeListener('agent:modelInfo', wrap);
   },
   onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: AgentPermissionRequest) => handler(payload);
