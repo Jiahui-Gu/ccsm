@@ -4244,17 +4244,69 @@ async function caseAskUserQuestionFull({ app, win, log }) {
       } catch {}
     }
   }
+  // ── J7 ────────────────────────────────────────────────────────────────
+  // Repro for "AskUserQuestion: Enter doesn't submit when all answered".
+  // Two questions (single-select + multi-select). After answering both, the
+  // last interaction leaves focus on a freshly-clicked option chip; pressing
+  // Enter (no modifier) on the QuestionBlock root must fire submit, matching
+  // the Submit button's onClick. Before the fix, Enter on the focused chip
+  // re-routed through togglePick — single-select with the same label is a
+  // no-op, multi-select toggles the selection OFF — so submit never fired.
+  async function j7() {
+    const sessionId = await ensureSession('J7');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await injectQuestion(sessionId, 'q-J7', [
+      { question: 'Q1 lang', options: [{ label: 'Python' }, { label: 'TypeScript' }] },
+      { question: 'Q2 features', multiSelect: true, options: [{ label: 'Auth' }, { label: 'Billing' }, { label: 'Search' }] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    // Q1 single-select: clicking Python auto-advances to Q2 after 300ms.
+    await win.locator('[data-question-option][data-question-label="Python"]').first().click();
+    await win.waitForTimeout(450);
+    const onQ2 = await win.evaluate(() =>
+      document.querySelector('[data-testid="question-tab-1"]')?.getAttribute('data-active') === 'true'
+    );
+    if (!onQ2) return record('J7', false, 'after picking Q1.Python, expected auto-advance to Q2 tab');
+    // Q2 multi-select: click two options. No auto-advance for multi-select.
+    await win.locator('[data-question-option][data-question-label="Auth"]').first().click();
+    await win.waitForTimeout(80);
+    await win.locator('[data-question-option][data-question-label="Billing"]').first().click();
+    await win.waitForTimeout(120);
+    // All answered → Submit button enabled.
+    const submit = questionSubmitButton();
+    if (await submit.isDisabled()) return record('J7', false, 'Submit disabled after picking Q1+Q2 options');
+    // Simulate the user's flow: focus is on the last clicked option chip.
+    // Press Enter on the QuestionBlock root — must fire submit.
+    await win.locator('[data-question-option][data-question-label="Billing"]').first().focus();
+    await win.waitForTimeout(40);
+    await win.keyboard.press('Enter');
+    await win.waitForTimeout(350);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1) return record('J7', false, `expected 1 send after Enter-on-all-answered, got ${sent.length}`);
+    if (!/Python/.test(sent[0].text || '')) return record('J7', false, `payload missing Python: ${JSON.stringify(sent[0])}`);
+    if (!/Auth/.test(sent[0].text || '') || !/Billing/.test(sent[0].text || '')) {
+      return record('J7', false, `payload missing Auth/Billing: ${JSON.stringify(sent[0])}`);
+    }
+    if (sent[0].sessionId !== sessionId) return record('J7', false, `wrong sessionId: ${sent[0].sessionId}`);
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J7', true, 'Enter on focused option submitted when all questions answered (single+multi)');
+  }
+
   await safeRun('J1', j1);
   await safeRun('J2', j2);
   await safeRun('J3', j3);
   await safeRun('J4', j4);
   await safeRun('J5', j5);
   await safeRun('J6', j6);
+  await safeRun('J7', j7);
 
   if (failures.length > 0) {
     throw new Error(`${failures.length} journey failure(s):\n  - ${failures.join('\n  - ')}`);
   }
-  log('all 6 journeys matched expected behavior');
+  log('all 7 journeys matched expected behavior');
 }
 
 // ---------- sidebar-journey-create-delete (was probe-e2e-sidebar-journey-create-delete) ----------

@@ -305,6 +305,24 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       return;
     }
     if (e.key === 'Enter') {
+      // When every question is answered, plain Enter (no modifier) submits
+      // from anywhere inside the card — even if focus still sits on the
+      // last clicked option chip. Without this, Enter on a focused chip
+      // routes through togglePick (single-select repick = no-op,
+      // multi-select = toggles the selection OFF), so the user's "I'm
+      // done" Enter silently does nothing.
+      if (allAnswered && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const ae = document.activeElement as HTMLElement | null;
+        // Don't hijack Enter inside the Other contenteditable — it has its
+        // own handler (paginates / submits depending on which question).
+        const inOther = ae && otherInputRef.current?.contains(ae);
+        if (!inOther) {
+          e.preventDefault();
+          e.stopPropagation();
+          submit();
+          return;
+        }
+      }
       const ae = document.activeElement as HTMLElement | null;
       if (ae && ae.closest('[data-question-option]')) {
         const label = (ae as HTMLElement).dataset.questionLabel;
