@@ -388,7 +388,15 @@ export class SdkSessionRunner {
         }),
         model: opts.model,
         permissionMode: sdkPermissionMode,
-        allowDangerouslySkipPermissions: sdkPermissionMode === 'bypassPermissions' ? true : undefined,
+        // Always pass allowDangerouslySkipPermissions: true so users can
+        // switch to bypassPermissions mid-session via the chip without
+        // restarting. The SDK gate is one-way: the launch flag is only
+        // required to ENTER bypassPermissions; switching out of bypass
+        // needs no flag. Without this, sessions launched in `default`
+        // mode hit "was not launched with --dangerously-skip-permissions"
+        // when the user clicks the bypass chip, surfacing as a vague
+        // "Agent unresponsive" toast.
+        allowDangerouslySkipPermissions: true,
         resume: opts.resumeSessionId,
         sessionId: presetSessionId,
         pathToClaudeCodeExecutable: binaryPath,
@@ -674,19 +682,20 @@ export class SdkSessionRunner {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // Distinguish hard SDK rejection (unsupported mode for this
-      // account/model — typically `auto` research-preview gating) from a
+      // account/model — typically `auto` research-preview gating, or
+      // `bypassPermissions` when the launch flag was withheld) from a
       // transient timeout. Hard rejections are re-thrown so manager.ts /
       // main.ts can surface `{ ok: false, error }` to the renderer, which
       // falls back to 'default' with a toast. Timeouts stay as
       // diagnostics — the user already sees session-level "unresponsive"
       // affordances and we don't want to flap the picker on a slow turn.
-      if (/unsupported|not supported|requires|capability|gated|forbidden|denied/i.test(msg)) {
+      if (/unsupported|not supported|requires|capability|gated|forbidden|denied|was not launched|dangerously-skip-permissions/i.test(msg)) {
         throw err;
       }
       this.onDiagnostic({
         level: 'warn',
         code: 'set_permission_mode_timeout',
-        message: `Agent unresponsive to permission-mode change (${msg}).`,
+        message: `Permission mode change timed out (${msg}).`,
       });
     }
   }

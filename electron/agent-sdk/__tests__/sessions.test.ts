@@ -202,6 +202,67 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
+  it('always passes allowDangerouslySkipPermissions: true regardless of initial mode', async () => {
+    // Regression: SDK gate on switching INTO bypassPermissions mid-session
+    // requires the launch flag. ccsm previously only set the flag when the
+    // initial mode was bypass, so default→bypass toggles via the chip
+    // failed with a vague "Agent unresponsive" toast. The flag is harmless
+    // when the active mode isn't bypass (SDK only consults it on mode
+    // transitions into bypass), so we set it unconditionally.
+    for (const mode of ['default', 'plan', 'acceptEdits', 'bypassPermissions'] as const) {
+      const local = makeFakeSdk();
+      __setSdkModuleForTests(
+        local.sdk as unknown as typeof import('@anthropic-ai/claude-agent-sdk'),
+      );
+      const runner = new SdkSessionRunner('s6a-' + mode, noop, noop, noop, noop);
+      await runner.start({ ...baseStart, permissionMode: mode });
+      const opts = local.getOptions()?.options ?? {};
+      expect(opts.allowDangerouslySkipPermissions).toBe(true);
+      runner.close();
+    }
+  });
+
+  it('setPermissionMode() rethrows when SDK rejects with "was not launched" message', async () => {
+    // Hard SDK rejections (e.g. capability gates, "was not launched with
+    // --dangerously-skip-permissions") must propagate so main.ts can
+    // surface { ok:false, error } to the renderer toast. The launch-flag
+    // case is now defensive — improvement #1 prevents it from triggering
+    // in practice — but other SDK rejection wordings reuse this path.
+    const diags: Array<{ code: string; message: string }> = [];
+    const runner = new SdkSessionRunner(
+      's6b',
+      noop,
+      noop,
+      noop,
+      (d) => diags.push(d as { code: string; message: string }),
+    );
+    await runner.start(baseStart);
+    fake.setPermissionMode.mockRejectedValueOnce(
+      new Error('session was not launched with --dangerously-skip-permissions'),
+    );
+    await expect(runner.setPermissionMode('bypassPermissions')).rejects.toThrow(/was not launched/);
+    expect(diags).toHaveLength(0);
+    runner.close();
+  });
+
+  it('setPermissionMode() emits diagnostic (no throw) on transient timeouts', async () => {
+    const diags: Array<{ code: string; message: string }> = [];
+    const runner = new SdkSessionRunner(
+      's6c',
+      noop,
+      noop,
+      noop,
+      (d) => diags.push(d as { code: string; message: string }),
+    );
+    await runner.start(baseStart);
+    fake.setPermissionMode.mockRejectedValueOnce(new Error('timeout waiting for ack'));
+    await runner.setPermissionMode('plan');
+    expect(diags).toHaveLength(1);
+    expect(diags[0].code).toBe('set_permission_mode_timeout');
+    expect(diags[0].message).not.toMatch(/Agent unresponsive/);
+    runner.close();
+  });
+
   it('setModel() delegates only if model is provided', async () => {
     const runner = new SdkSessionRunner('s7', noop, noop, noop, noop);
     await runner.start(baseStart);
