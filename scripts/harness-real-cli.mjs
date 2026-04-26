@@ -541,11 +541,347 @@ async function caseNamespacedCommandActuallyRuns({ log }) {
   });
 }
 
+/**
+ * Bug #288 / #309: "Truncate from here" then re-send produces SDK exit 1
+ * ("Failed to start Claude") AND/OR an off-by-one truncation that drops the
+ * clicked block too.
+ *
+ * Repro path the user reported (issue #288 / #309):
+ *   1. fresh session, send 3 turns: "你好" / wait / "你好" / wait / "你好" / wait
+ *   2. hover the SECOND user message → click "Truncate from here"
+ *   3. send "你好" again — observe SDK error / agent never replies
+ *
+ * Why this lives in harness-real-cli (not harness-agent):
+ *   The mock CLI used by harness-agent never exits with a non-zero code on
+ *   re-spawn for a session_id whose JSONL already exists, so the previous
+ *   bug-fix worker could not reproduce. The real bundled CLI binary owns
+ *   session_id collision behaviour, JSONL state validation, and the resume
+ *   handshake — all of which are bypassed by the mock.
+ *
+ * What this case does:
+ *   1. Reserve a fresh UUID session_id under a temp cwd.
+ *   2. Run THREE conversation turns by spawning the real bundled CLI with
+ *      `--session-id <fixed-uuid>` + stream-json IO and a single
+ *      "say only the word OK" prompt per turn (~1.5s/turn). Each turn
+ *      writes user+assistant frames to `~/.claude/projects/<key>/<uuid>.jsonl`.
+ *   3. Read the JSONL and assert it has 3 user lines + 3 assistant lines —
+ *      proves the 3-turn baseline.
+ *   4. Simulate ccsm's "Truncate from here on the 2nd user message" the way
+ *      `src/stores/store.ts` `rewindToBlock` does it — i.e. update the
+ *      in-memory view but DO NOT modify the JSONL on disk (current ccsm
+ *      design: "The CLI's on-disk JSONL is intentionally untouched"). We
+ *      ALSO do not write a `--session-id` collision check, because that is
+ *      the same call ccsm makes via the SDK on the next agentStart.
+ *   5. Spawn the CLI a fourth time with the SAME `--session-id` and send
+ *      one more "say only the word OK" turn — this is what
+ *      `startSessionAndReconcile` triggers when the user resends after
+ *      truncate. Capture stderr + exit code + result frame.
+ *
+ * Assertions (current code → expected to FAIL, surfacing the bugs):
+ *   A) After turn 3, JSONL has 3 user + 3 assistant frames. (baseline)
+ *   B) The JSONL truncation simulation is a no-op (current ccsm behavior).
+ *   C) The 4th spawn produces a `result` frame within budget AND exits 0
+ *      AND emits no "Failed to start Claude" / spawn-error stderr.
+ *
+ * Failure mode A would mean repro env can't even drive 3 turns — bail.
+ * Failure mode C is the #288 reproduction.
+ *
+ * Note on bug #309 (off-by-one): the off-by-one is purely a renderer-side
+ * `Array.slice` boundary in `rewindToBlock` (`prev.slice(0, idx)` keeps
+ * blocks BEFORE idx, dropping the clicked block itself). It cannot be
+ * exercised from a CLI-only harness because the renderer is the one
+ * computing the cut. It IS covered by a unit test added in this PR
+ * (`tests/store-rewind-to-block.test.ts`), and reverse-verified by reverting
+ * the slice to the pre-fix expression. The harness-real-cli case is the
+ * #288-side reproduction (CLI-side state interaction).
+ *
+ * Hard timeout: 60s for the whole case (4 spawns × ~1.5s warmup +
+ * ~1-3s per turn). Skips silently on missing bundled CLI per the standard
+ * harness convention.
+ */
+async function caseTruncateFromHereThenResendRealCli({ log }) {
+  // Resolve the bundled CLI binary (matches sessions.ts'
+  // resolveClaudeInvocation default path).
+  const platformPkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  const { createRequire } = await import('node:module');
+  const require_ = createRequire(import.meta.url);
+  let exe;
+  try {
+    const pkgRoot = path.dirname(require_.resolve(`${platformPkg}/package.json`));
+    exe = path.join(pkgRoot, process.platform === 'win32' ? 'claude.exe' : 'claude');
+  } catch {
+    log(`SKIP: ${platformPkg} not installed`);
+    return;
+  }
+  if (!fs.existsSync(exe)) {
+    log(`SKIP: ${exe} not found`);
+    return;
+  }
+
+  // Use a temp cwd so the JSONL file we create is isolated from any real
+  // user history. The CLI derives the project-key from cwd by replacing
+  // [\\/:] with '-' (see jsonl-loader.ts projectKeyFromCwd).
+  const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-truncate-'));
+  const sessionId = randomUUID();
+  const projectKey = tmpCwd.replace(/[\\/:]/g, '-');
+  const jsonlPath = path.join(CONFIG_DIR, 'projects', projectKey, `${sessionId}.jsonl`);
+  log(`tmp cwd: ${tmpCwd}`);
+  log(`session_id: ${sessionId}`);
+  log(`expected jsonl: ${jsonlPath}`);
+
+  const PER_TURN_BUDGET_MS = 30_000;
+  const PROMPT = 'Reply with only the word OK and nothing else.';
+
+  /**
+   * Spawn one CLI process and stream `nTurns` user messages through it.
+   * Resolves with { exitCode, stderr, results[], errors }.
+   *
+   * `mode` controls how the conversation is keyed:
+   *   - 'preset': `--session-id <uuid>` (fresh-session flow). REJECTED by
+   *     the bundled CLI on respawn when the JSONL already exists with
+   *     `"Error: Session ID <uuid> is already in use."` (exit 1).
+   *   - 'resume': `--resume <uuid>` (the post-truncate flow after the
+   *     `rewindToBlock` fix in `src/stores/store.ts`).
+   */
+  async function runConversation(label, nTurns, mode = 'preset') {
+    const args = [
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--input-format', 'stream-json',
+      '--permission-mode', 'bypassPermissions',
+      '--allow-dangerously-skip-permissions',
+      ...(mode === 'resume' ? ['--resume', sessionId] : ['--session-id', sessionId]),
+    ];
+    log(`[${label}] spawn ${path.basename(exe)} ${args.join(' ')} (turns=${nTurns})`);
+    const child = spawn(exe, args, {
+      cwd: tmpCwd,
+      env: claudeEnv(),
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    return await new Promise((resolve) => {
+      let finished = false;
+      const results = [];
+      let stderrBuf = '';
+      let exitCode = null;
+      let exitSignal = null;
+      let turnsSent = 0;
+      let initSeen = false;
+      let assistantTextThisTurn = '';
+
+      function done(reason) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(hardTimer);
+        try { child.kill(); } catch { /* ignore */ }
+        setTimeout(() => {
+          resolve({
+            exitCode,
+            exitSignal,
+            stderr: stderrBuf,
+            results,
+            reason,
+          });
+        }, 80);
+      }
+
+      const hardTimer = setTimeout(
+        () => done(`hard timeout ${PER_TURN_BUDGET_MS * nTurns}ms`),
+        PER_TURN_BUDGET_MS * nTurns,
+      );
+
+      child.stderr.on('data', (d) => { stderrBuf += d.toString('utf8'); });
+      child.on('exit', (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+        if (!finished) done(`process exit code=${code} signal=${signal}`);
+      });
+      child.on('error', (err) => {
+        stderrBuf += `\n[spawn error] ${err.message}`;
+        done(`spawn error: ${err.message}`);
+      });
+
+      // initialize handshake
+      try {
+        child.stdin.write(JSON.stringify({
+          type: 'control_request',
+          request_id: `req_${randomUUID()}`,
+          request: { subtype: 'initialize', hooks: {} },
+        }) + '\n');
+      } catch (e) {
+        return done(`failed to write initialize: ${e.message}`);
+      }
+
+      function sendNextTurn() {
+        if (turnsSent >= nTurns) return;
+        turnsSent += 1;
+        assistantTextThisTurn = '';
+        const userMsg = {
+          type: 'user',
+          message: { role: 'user', content: PROMPT },
+          parent_tool_use_id: null,
+          session_id: sessionId,
+        };
+        log(`[${label}] sending turn ${turnsSent}/${nTurns}`);
+        try {
+          child.stdin.write(JSON.stringify(userMsg) + '\n');
+        } catch (e) {
+          done(`failed to write user message: ${e.message}`);
+        }
+      }
+
+      let buf = '';
+      child.stdout.on('data', (chunk) => {
+        buf += chunk.toString('utf8');
+        let idx;
+        while ((idx = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          let parsed;
+          try { parsed = JSON.parse(line); } catch { continue; }
+
+          if (parsed.type === 'control_response' && !initSeen) {
+            initSeen = true;
+            sendNextTurn();
+            continue;
+          }
+          if (parsed.type === 'system' && parsed.subtype === 'init' && !initSeen) {
+            initSeen = true;
+            sendNextTurn();
+            continue;
+          }
+          if (parsed.type === 'assistant' && parsed.message?.content) {
+            for (const c of parsed.message.content) {
+              if (c.type === 'text' && typeof c.text === 'string') {
+                assistantTextThisTurn += c.text;
+              }
+            }
+          }
+          if (parsed.type === 'result') {
+            results.push({
+              turn: turnsSent,
+              isError: parsed.is_error === true || parsed.subtype === 'error',
+              text: assistantTextThisTurn,
+            });
+            if (turnsSent < nTurns) {
+              // Schedule next turn after a short pause to let CLI settle.
+              setTimeout(() => sendNextTurn(), 200);
+            } else {
+              setTimeout(() => done('all turns complete'), 800);
+            }
+          }
+        }
+      });
+    });
+  }
+
+  function countJsonlMessages() {
+    if (!fs.existsSync(jsonlPath)) return { user: 0, assistant: 0, total: 0, exists: false };
+    const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n').filter((l) => l.trim());
+    let user = 0, assistant = 0;
+    for (const line of lines) {
+      try {
+        const f = JSON.parse(line);
+        if (f.type === 'user') user += 1;
+        else if (f.type === 'assistant') assistant += 1;
+      } catch { /* skip */ }
+    }
+    return { user, assistant, total: lines.length, exists: true };
+  }
+
+  // ---- Phase 1: 3-turn baseline in a single CLI process ----
+  const baselineRun = await runConversation('baseline', 3, 'preset');
+  log(`baseline: ${baselineRun.results.length} result frames, exit=${baselineRun.exitCode} reason="${baselineRun.reason}"`);
+  if (baselineRun.stderr.trim()) log(`baseline stderr tail: ${baselineRun.stderr.slice(-300).replace(/\n/g, ' | ')}`);
+  if (baselineRun.results.length < 3) {
+    try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw new Error(
+      `baseline did not produce 3 result frames (got ${baselineRun.results.length}). ` +
+      `env can't drive 3-turn baseline. exit=${baselineRun.exitCode} reason=${baselineRun.reason} ` +
+      `stderr: ${baselineRun.stderr.slice(-400)}`,
+    );
+  }
+  if (baselineRun.results.some((r) => r.isError)) {
+    try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw new Error(`baseline turn(s) returned is_error: ${JSON.stringify(baselineRun.results)}`);
+  }
+
+  const baseline = countJsonlMessages();
+  log(`baseline JSONL: user=${baseline.user} assistant=${baseline.assistant} total=${baseline.total}`);
+  if (baseline.user < 3 || baseline.assistant < 3) {
+    try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw new Error(
+      `baseline JSONL incomplete: expected >=3 user + >=3 assistant, got user=${baseline.user} assistant=${baseline.assistant}.`,
+    );
+  }
+
+  // ---- Phase 2: simulate ccsm "Truncate from here" — JSONL untouched ----
+  // ccsm's rewindToBlock intentionally does NOT modify the on-disk JSONL —
+  // it only mutates the in-memory store + persists a marker. From the CLI's
+  // perspective the disk state is still the full transcript when the next
+  // agentStart fires. We replicate that by doing nothing here.
+  log(`truncate step: JSONL left intact at ${baseline.total} lines (mirrors store.rewindToBlock)`);
+
+  // ---- Phase 3a: pre-fix path — respawn with --session-id (collision) ----
+  // This is the BROKEN behavior: ccsm's pre-fix `rewindToBlock` cleared
+  // `resumeSessionId`, so `startSessionAndReconcile` fell into the
+  // `sessionId: <ccsm-uuid>` branch on the next agentStart. The bundled CLI
+  // rejects that with "Session ID is already in use." (exit 1) when the
+  // JSONL exists. This phase asserts the bug actually exists in the CLI
+  // (otherwise the fix is solving a non-problem).
+  const preFix = await runConversation('resend-pre-fix', 1, 'preset');
+  log(`resend-pre-fix: results=${preFix.results.length} exit=${preFix.exitCode} reason="${preFix.reason}"`);
+  if (preFix.stderr.trim()) log(`resend-pre-fix stderr: ${preFix.stderr.trim()}`);
+
+  const preFixSawCollision = /Session ID .* is already in use/i.test(preFix.stderr);
+  if (preFix.results.length > 0 || !preFixSawCollision) {
+    try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+    throw new Error(
+      `BUG #288 NOT REPRODUCED: respawning with --session-id after JSONL exists did NOT trigger ` +
+      `"Session ID is already in use." This case can't validate the fix. ` +
+      `preFix.results=${preFix.results.length} stderr=${preFix.stderr.slice(-400)}`,
+    );
+  }
+  log(`#288 reproduced: pre-fix path produces "Session ID is already in use" (exit ${preFix.exitCode}) — confirms bug`);
+
+  // ---- Phase 3b: post-fix path — respawn with --resume (success) ----
+  // This is the FIXED behavior: post-fix `rewindToBlock` sets
+  // `resumeSessionId = sidOnDisk`, so `startSessionAndReconcile` falls into
+  // the `resume: <uuid>` branch and the CLI accepts the existing JSONL.
+  const postFix = await runConversation('resend-post-fix', 1, 'resume');
+  log(`resend-post-fix: results=${postFix.results.length} exit=${postFix.exitCode} reason="${postFix.reason}"`);
+  if (postFix.stderr.trim()) log(`resend-post-fix stderr tail: ${postFix.stderr.slice(-300).replace(/\n/g, ' | ')}`);
+
+  // Cleanup temp cwd. JSONL under ~/.claude/projects/ stays for forensics.
+  try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
+
+  if (postFix.results.length < 1) {
+    throw new Error(
+      `BUG #288 FIX BROKEN: respawn with --resume did NOT produce a result. ` +
+      `exit=${postFix.exitCode} reason=${postFix.reason} stderr: ${postFix.stderr.slice(-500)}`,
+    );
+  }
+  if (postFix.results[0].isError) {
+    throw new Error(
+      `BUG #288 FIX BROKEN: respawn with --resume returned is_error result. ` +
+      `text: ${postFix.results[0].text.slice(0, 200)} stderr: ${postFix.stderr.slice(-300)}`,
+    );
+  }
+  if (/Session ID .* is already in use/i.test(postFix.stderr)) {
+    throw new Error(`BUG #288 FIX BROKEN: --resume path still hit the session-id collision`);
+  }
+
+  log(`PASS: pre-fix path repros #288; post-fix path resumes cleanly with new result`);
+}
+
 // ---------- runner ----------
 const cases = [
   { id: 'control-response-no-timeout', run: caseControlResponseNoTimeout },
   { id: 'ide-auto-connect-kill-switch-present', run: caseIdeAutoConnectKillSwitchPresent },
   { id: 'namespaced-command-actually-runs', run: caseNamespacedCommandActuallyRuns },
+  { id: 'truncate-from-here-then-resend-real-cli', run: caseTruncateFromHereThenResendRealCli },
 ];
 
 const selected = onlyId ? cases.filter((c) => c.id === onlyId) : cases;

@@ -134,7 +134,7 @@ describe('<UserBlock /> hover menu', () => {
     expect(useStore.getState().runningSessions['s1']).toBe(true);
   });
 
-  it('Truncate from here: truncates the conversation to before this block, drops resumeSessionId, calls agentClose', () => {
+  it('Truncate from here: truncates the conversation to before this block, pins resumeSessionId to the on-disk session id, calls agentClose', () => {
     const blocks = [
       { kind: 'assistant' as const, id: 'a0', text: 'previous reply' },
       { kind: 'user' as const, id: 'u1', text: 'this one' },
@@ -142,7 +142,14 @@ describe('<UserBlock /> hover menu', () => {
       { kind: 'tool' as const, id: 't1', name: 'Read', brief: 'foo', expanded: false }
     ];
     freshStoreWithSession('s1', blocks);
-    // Pin a resumeSessionId so we can verify it's dropped.
+    // Pin a resumeSessionId so we can verify it stays pinned (not dropped).
+    // Bug #288 fix: post-truncate `agentStart` MUST go through the `--resume`
+    // CLI path, not `--session-id` — otherwise the bundled CLI rejects the
+    // respawn with "Session ID is already in use." (exit 1) because the
+    // JSONL from the prior conversation still exists on disk. The store
+    // therefore pins `resumeSessionId` to the on-disk session id (= existing
+    // resumeSessionId, or the ccsm session id if this is the first turn's
+    // worth of JSONL).
     useStore.setState((s) => ({
       sessions: s.sessions.map((x) =>
         x.id === 's1' ? { ...x, resumeSessionId: 'old-claude-uuid' } : x
@@ -157,9 +164,36 @@ describe('<UserBlock /> hover menu', () => {
     expect(after.messagesBySession['s1']).toHaveLength(1);
     expect(after.messagesBySession['s1'][0].id).toBe('a0');
     const sess = after.sessions.find((x) => x.id === 's1');
-    expect(sess?.resumeSessionId).toBeUndefined();
+    // resumeSessionId stays pinned to whatever was already on disk so the
+    // next agentStart re-uses it via `--resume` instead of fighting the CLI
+    // for the same `--session-id`.
+    expect(sess?.resumeSessionId).toBe('old-claude-uuid');
     expect(after.startedSessions['s1']).toBeFalsy();
     expect(api.agentClose).toHaveBeenCalledWith('s1');
+  });
+
+  it('Truncate from here on a fresh (no-resume) session: pins resumeSessionId to the ccsm session id', () => {
+    // First-turn case: the session has no `resumeSessionId` yet because the
+    // CLI hasn't issued one — its JSONL on disk is keyed by the ccsm id
+    // itself (see `sidOnDisk = session.resumeSessionId || session.id` in
+    // store.ts loadMessages). After truncate the next agentStart still has
+    // to use `--resume <ccsm-id>` to avoid the "Session ID is already in
+    // use." rejection. So the store seeds resumeSessionId with the ccsm id.
+    const blocks = [
+      { kind: 'user' as const, id: 'u-first', text: 'opener' },
+      { kind: 'assistant' as const, id: 'a-first', text: 'reply' },
+      { kind: 'user' as const, id: 'u-second', text: 'follow-up' }
+    ];
+    freshStoreWithSession('s1', blocks);
+    // Confirm there's no resumeSessionId baseline.
+    expect(useStore.getState().sessions.find((x) => x.id === 's1')?.resumeSessionId).toBeUndefined();
+    stubCCSM();
+    render(<UserBlock id="u-second" text="follow-up" sessionId="s1" />);
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /truncate from here/i }));
+    });
+    const sess = useStore.getState().sessions.find((x) => x.id === 's1');
+    expect(sess?.resumeSessionId).toBe('s1');
   });
 
   // Reviewer Fix #2: truncation only mutated `messagesBySession` in memory.
