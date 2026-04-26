@@ -2092,6 +2092,251 @@ async function caseConnectionPane({ win, log, registerDispose }) {
   log('OK: settings.json read, no token leak, Open IPC fired');
 }
 
+// ---------- permission-focus-returns-to-textarea ----------
+// Task #291 part B: after the user resolves a permission prompt (allow / reject),
+// keyboard focus should return to the composer textarea so the next keystroke
+// types into the chat. PR #357 fixed the *mount* race (Reject focused on
+// arrival); this case covers the *response* → textarea contract.
+//
+// Reproduces the user-reported bug: "permission appears, I press n, focus
+// stays on the (now-unmounted) Reject button → next keystroke goes nowhere".
+async function casePermissionFocusReturnsToTextarea({ win, log }) {
+  await seedSession(win);
+
+  const textarea = win.locator('[data-input-bar]').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5_000 });
+  // Empty composer — within the existing PermissionPromptBlock contract this
+  // means the prompt MAY steal focus on mount (composer-empty exception).
+  await textarea.click();
+  await textarea.fill('');
+
+  await injectWaiting(win, {
+    id: 'wait-FOCUS-RETURN',
+    requestId: 'FOCUS-RETURN',
+    toolInput: { command: 'echo hi' },
+    prompt: 'Bash: echo hi'
+  });
+
+  const heading = win.locator('[role="alertdialog"]').first();
+  await heading.waitFor({ state: 'visible', timeout: 5_000 });
+  // Wait for the autoFocus effect to land on Reject so 'n' is consumed by the
+  // global hotkey handler (not by the textarea) — same defensive wait used in
+  // casePermissionPrompt.
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el?.getAttribute?.('data-perm-action') === 'reject';
+  }, null, { timeout: 2000 });
+
+  await win.keyboard.press('n');
+
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3_000 });
+  } catch {
+    throw new Error('permission prompt still visible after pressing N');
+  }
+
+  // Wait briefly for the focusInputNonce → InputBar effect to commit.
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const after = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isInputBarTextarea: el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar')
+    };
+  });
+  if (!after.isInputBarTextarea) {
+    throw new Error(`expected focus to return to composer textarea after Reject (empty composer); got ${JSON.stringify(after)}`);
+  }
+
+  // Smoke test: typing now lands in the textarea.
+  await win.keyboard.type('after-reject');
+  await win.waitForTimeout(80);
+  const value = await textarea.inputValue();
+  if (!value.endsWith('after-reject')) {
+    throw new Error(`expected textarea to receive keystrokes after reject; got value=${JSON.stringify(value)}`);
+  }
+
+  // ----- Round 2: composer was non-empty when the prompt arrived. The
+  // existing "composer focused + non-empty → don't steal" exception in
+  // PermissionPromptBlock means Reject is NOT focused on mount — focus stays
+  // on the textarea. The user clicks Reject (or Allow) instead of the 'n'
+  // hotkey path. After the prompt resolves the focus contract is the same:
+  // composer textarea is the resting focus surface for the next keystroke.
+  await textarea.click();
+  await textarea.fill('mid-typed message');
+
+  await injectWaiting(win, {
+    id: 'wait-FOCUS-RETURN-2',
+    requestId: 'FOCUS-RETURN-2',
+    toolInput: { command: 'echo hi2' },
+    prompt: 'Bash: echo hi2'
+  });
+  await heading.waitFor({ state: 'visible', timeout: 5_000 });
+  // Pre-click sanity: focus retained on textarea (composer-empty exception
+  // does NOT apply when composer has content).
+  const preClick = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      isInputBarTextarea: el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar'),
+      val: el instanceof HTMLTextAreaElement ? el.value : null
+    };
+  });
+  if (!preClick.isInputBarTextarea || preClick.val !== 'mid-typed message') {
+    throw new Error(`round2: expected focus retained on typed textarea pre-click; got ${JSON.stringify(preClick)}`);
+  }
+
+  // Click Reject explicitly — focus moves into the alertdialog button.
+  await win.locator('[data-perm-action="reject"]').click();
+
+  try {
+    await heading.waitFor({ state: 'detached', timeout: 3_000 });
+  } catch {
+    throw new Error('round2: permission prompt still visible after clicking Reject');
+  }
+
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const after2 = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isInputBarTextarea: el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar'),
+      val: el instanceof HTMLTextAreaElement ? el.value : null
+    };
+  });
+  if (!after2.isInputBarTextarea) {
+    throw new Error(`round2: expected focus to return to composer textarea after click-Reject; got ${JSON.stringify(after2)}`);
+  }
+  if (after2.val !== 'mid-typed message') {
+    throw new Error(`round2: textarea draft changed; got ${JSON.stringify(after2.val)}`);
+  }
+
+  log('focus returned to textarea after permission reject in both empty + typed composer cases');
+}
+
+// ---------- question-focus-on-mount ----------
+// Task #291 part A: when an AskUserQuestion card mounts, keyboard focus should
+// move to the first option even if the user was typing in the composer at the
+// moment the question arrived. The composer draft is a controlled value and
+// won't be lost; the user's expectation (per real-use feedback) is that ↑/↓
+// + Enter just work without an extra Tab.
+//
+// PR #305 deliberately set autoFocus={false} on the QuestionStickyHost ("no
+// focus theft") — this case codifies the reversal: question takes focus on
+// mount unconditionally.
+async function caseQuestionFocusOnMount({ win, log }) {
+  await seedSession(win);
+
+  const textarea = win.locator('[data-input-bar]').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5_000 });
+  await textarea.click();
+  await textarea.fill('half-typed message');
+
+  // Sanity: textarea actually focused with content before the question lands.
+  const before = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isTextarea: el instanceof HTMLTextAreaElement,
+      value: el instanceof HTMLTextAreaElement ? el.value : null
+    };
+  });
+  if (!before.isTextarea || before.value !== 'half-typed message') {
+    throw new Error(`pre-mount focus expected typed textarea; got ${JSON.stringify(before)}`);
+  }
+
+  // Inject a question block.
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-FOCUS-MOUNT',
+      requestId: 'q-FOCUS-MOUNT',
+      questions: [{
+        question: 'Pick a stack',
+        options: [{ label: 'TypeScript' }, { label: 'Rust' }, { label: 'Go' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+
+  // The mount-focus effect runs on rAF; wait until activeElement is a question
+  // option (or until the timeout — we then snapshot to produce a clear failure).
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const onMount = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isOption: el instanceof HTMLElement && el.hasAttribute('data-question-option'),
+      label: el instanceof HTMLElement ? el.getAttribute('data-question-label') : null,
+      isTextarea: el instanceof HTMLTextAreaElement
+    };
+  });
+  if (onMount.isTextarea) {
+    throw new Error(`question mount did not move focus off textarea: ${JSON.stringify(onMount)}`);
+  }
+  if (!onMount.isOption) {
+    throw new Error(`expected first question option focused on mount; got ${JSON.stringify(onMount)}`);
+  }
+  if (onMount.label !== 'TypeScript') {
+    throw new Error(`expected first option (TypeScript) focused, got label=${onMount.label}`);
+  }
+
+  // ↓ moves to the next option.
+  await win.keyboard.press('ArrowDown');
+  await win.waitForTimeout(80);
+  const afterDown = await win.evaluate(() =>
+    document.activeElement instanceof HTMLElement
+      ? document.activeElement.getAttribute('data-question-label')
+      : null
+  );
+  if (afterDown !== 'Rust') {
+    throw new Error(`expected ArrowDown to move focus to Rust, got ${afterDown}`);
+  }
+
+  // Space to toggle the radio (Enter on a single-select w/ auto-advance is
+  // tricky; Space is the deterministic pick path inside QuestionBlock).
+  await win.keyboard.press(' ');
+  await win.waitForTimeout(80);
+
+  // Submit via the Submit button — clicking is more deterministic than
+  // synthesising Enter while focus is on the option (single-question form
+  // doesn't auto-submit on Enter).
+  await win.locator('[data-testid="question-submit"]').click();
+
+  // After submit, QuestionStickyHost calls bumpComposerFocus → focus should
+  // return to the textarea.
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar');
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const afterSubmit = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isInputBarTextarea: el instanceof HTMLTextAreaElement && el.hasAttribute('data-input-bar')
+    };
+  });
+  if (!afterSubmit.isInputBarTextarea) {
+    throw new Error(`expected focus back on composer textarea after submit; got ${JSON.stringify(afterSubmit)}`);
+  }
+
+  log('question stole focus from typed textarea on mount; ↑/↓ navigated; submit returned focus to textarea');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -2122,6 +2367,8 @@ await runHarness({
     { id: 'permission-prompt', run: casePermissionPrompt },
     { id: 'permission-mode-strict', run: casePermissionModeStrict },
     { id: 'permission-focus-not-stolen', run: casePermissionFocusNotStolen },
+    { id: 'permission-focus-returns-to-textarea', run: casePermissionFocusReturnsToTextarea },
+    { id: 'question-focus-on-mount', run: caseQuestionFocusOnMount },
     { id: 'permission-shortcut-scope', run: casePermissionShortcutScope },
     { id: 'permission-nested-input', run: casePermissionNestedInput },
     { id: 'permission-truncate-width', run: casePermissionTruncateWidth },
