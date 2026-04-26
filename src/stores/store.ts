@@ -1094,14 +1094,20 @@ export const useStore = create<State & Actions>((set, get) => ({
     // prefer the most-recent session in the target group that has a usable
     // cwd. `sessions` is ordered newest-first (createSession prepends), so
     // the first match is the most recent. Falls through to the global
-    // recentProjects/historyRecentCwds defaults when the group is empty or
+    // historyRecentCwds/recentProjects defaults when the group is empty or
     // none of its sessions have a cwd. `(none)` chip placeholder appears
     // only when ALL of these resolve to empty.
+    //
+    // task#293: `historyRecentCwds[0]` (now frequency-ranked from the last
+    // 10 CLI sessions) takes precedence over `recentProjects[0]?.path` (a
+    // pure recency list of in-app picks). If the user works in a directory
+    // 9 out of 10 sessions, that's their default — a one-off chip pick
+    // shouldn't override it.
     const groupRecentCwd = sessions.find(
       (x) => x.groupId === targetGroupId && !!x.cwd
     )?.cwd;
     const defaultCwd =
-      groupRecentCwd ?? recentProjects[0]?.path ?? historyRecentCwds[0] ?? '';
+      groupRecentCwd ?? historyRecentCwds[0] ?? recentProjects[0]?.path ?? '';
     let initialModel = model;
     if (!initialModel) initialModel = historyTopModel ?? '';
     if (!initialModel) initialModel = connection?.model ?? '';

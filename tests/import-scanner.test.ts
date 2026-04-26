@@ -186,22 +186,28 @@ describe('deriveRecentCwds', () => {
     expect(deriveRecentCwds([])).toEqual([]);
   });
 
-  it('orders by mtime descending', () => {
+  it('ranks by frequency in the recent window, ties broken by recency', () => {
+    // /a appears 3x, /b 2x, /c 1x → frequency order /a, /b, /c.
     expect(
       deriveRecentCwds([
         { cwd: '/a', mtime: 100 },
-        { cwd: '/b', mtime: 300 },
-        { cwd: '/c', mtime: 200 },
+        { cwd: '/b', mtime: 90 },
+        { cwd: '/a', mtime: 80 },
+        { cwd: '/b', mtime: 70 },
+        { cwd: '/a', mtime: 60 },
+        { cwd: '/c', mtime: 50 },
       ])
-    ).toEqual(['/b', '/c', '/a']);
+    ).toEqual(['/a', '/b', '/c']);
   });
 
-  it('dedupes repeated cwds, keeping the most-recent occurrence', () => {
+  it('breaks frequency ties by most-recent occurrence', () => {
+    // /a + /b each 2x; /a's most recent mtime is 100, /b's is 90 → /a wins.
     expect(
       deriveRecentCwds([
         { cwd: '/a', mtime: 100 },
-        { cwd: '/a', mtime: 500 },
-        { cwd: '/b', mtime: 300 },
+        { cwd: '/b', mtime: 90 },
+        { cwd: '/a', mtime: 50 },
+        { cwd: '/b', mtime: 40 },
       ])
     ).toEqual(['/a', '/b']);
   });
@@ -224,24 +230,36 @@ describe('deriveRecentCwds', () => {
     ).toEqual(['/real']);
   });
 
-  it('caps at the requested max', () => {
-    const sessions = Array.from({ length: 25 }, (_, i) => ({
-      cwd: `/p${i}`,
-      mtime: 1000 - i,
-    }));
-    const cwds = deriveRecentCwds(sessions, 10);
-    expect(cwds).toHaveLength(10);
-    // mtime descending → /p0 is newest
-    expect(cwds[0]).toBe('/p0');
-    expect(cwds[9]).toBe('/p9');
+  it('only counts the most-recent windowSize sessions (default 10)', () => {
+    // Older /b appears 100x, but only the 10 most-recent enter the window
+    // and those 10 are all /a. Frequency in window: /a=10, /b=0.
+    const sessions = [
+      ...Array.from({ length: 10 }, (_, i) => ({ cwd: '/a', mtime: 1000 - i })),
+      ...Array.from({ length: 100 }, (_, i) => ({ cwd: '/b', mtime: 100 - i })),
+    ];
+    expect(deriveRecentCwds(sessions)).toEqual(['/a']);
   });
 
-  it('defaults max to 10', () => {
-    const sessions = Array.from({ length: 15 }, (_, i) => ({
+  it('honours a custom windowSize', () => {
+    // windowSize=3 → only the 3 newest sessions count: /b, /b, /a → /b wins.
+    const sessions = [
+      { cwd: '/b', mtime: 300 },
+      { cwd: '/b', mtime: 200 },
+      { cwd: '/a', mtime: 100 },
+      { cwd: '/a', mtime: 50 },
+      { cwd: '/a', mtime: 10 },
+    ];
+    expect(deriveRecentCwds(sessions, 10, 3)).toEqual(['/b', '/a']);
+  });
+
+  it('caps the output at max entries', () => {
+    // 12 distinct cwds, each appears once in the window. Default windowSize=10
+    // takes the 10 most-recent, max=5 returns top 5.
+    const sessions = Array.from({ length: 12 }, (_, i) => ({
       cwd: `/p${i}`,
       mtime: 1000 - i,
     }));
-    expect(deriveRecentCwds(sessions)).toHaveLength(10);
+    expect(deriveRecentCwds(sessions, 5)).toHaveLength(5);
   });
 });
 
@@ -308,6 +326,8 @@ describe('deriveTopModel', () => {
   });
 
   it('honours the max window — older entries past the cap are ignored', () => {
+    // Default cap is 10 (matches deriveRecentCwds for consistent default-
+    // sourcing). With a tiny cap of 1, only the single newest entry counts.
     const sessions = [
       { model: 'recent-model', mtime: 500 },
       ...Array.from({ length: 60 }, (_, i) => ({
@@ -316,5 +336,23 @@ describe('deriveTopModel', () => {
       })),
     ];
     expect(deriveTopModel(sessions, 1)).toBe('recent-model');
+  });
+
+  it('default max=10 means older sessions past the 10th are ignored', () => {
+    // 9 newest sessions are all 'opus[1m]', the 10th newest is 'sonnet',
+    // and there are 100 ancient 'haiku' sessions. Within the last-10 window
+    // opus has 9 hits, sonnet has 1, haiku has 0 → opus wins.
+    const sessions = [
+      ...Array.from({ length: 9 }, (_, i) => ({
+        model: 'claude-opus-4-7[1m]',
+        mtime: 1000 - i,
+      })),
+      { model: 'claude-sonnet-4-6', mtime: 990 },
+      ...Array.from({ length: 100 }, (_, i) => ({
+        model: 'claude-haiku-4-5',
+        mtime: 100 - i,
+      })),
+    ];
+    expect(deriveTopModel(sessions)).toBe('claude-opus-4-7[1m]');
   });
 });
