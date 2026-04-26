@@ -52,7 +52,7 @@ export function SettingsDialog({
   }, [open, initialTab]);
 
   // a11y: restore focus to the element that opened this dialog on close.
-  // Settings is opened via Cmd+, / context menu / palette — none of which
+  // Settings is opened via Ctrl+, / context menu / palette — none of which
   // use Radix's <Dialog.Trigger>, so its built-in restore doesn't fire.
   // Falls back to the active session row in the sidebar.
   const { handleCloseAutoFocus } = useFocusRestore(open, {

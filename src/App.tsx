@@ -155,8 +155,8 @@ export default function App() {
   }, [resolvedLanguage]);
 
   // Exit animation (UI-10 / #213):
-  // When the user closes the window (Cmd/Ctrl+W, X button, OS X red dot)
-  // the Electron main process hides-to-tray instead of destroying. It sends
+  // When the user closes the window (Ctrl+W, X button) the Electron main
+  // process hides-to-tray instead of destroying. It sends
   // `window:beforeHide` with a duration first so we can fade the whole
   // document out, then hides ~180ms later — giving the user a graceful
   // exit rather than an abrupt disappearance. On restore, `window:afterShow`
@@ -210,8 +210,8 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      // Cmd/Ctrl+/ opens the shortcuts overlay. We handle it BEFORE the
+      const mod = e.ctrlKey;
+      // Ctrl+/ opens the shortcuts overlay. We handle it BEFORE the
       // `if (!mod) return` guard below so it sits alongside the other
       // modified-key bindings, even though the `?` alternative handled
       // further down is modifier-free.
@@ -234,7 +234,7 @@ export default function App() {
       }
       const k = e.key.toLowerCase();
       if (k === 'f' && !e.shiftKey) {
-        // Cmd/Ctrl+F opens the global Search / Command Palette. We
+        // Ctrl+F opens the global Search / Command Palette. We
         // explicitly preventDefault so the browser/Electron's default
         // find-in-page (when present) doesn't also fire.
         e.preventDefault();

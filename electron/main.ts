@@ -197,10 +197,6 @@ async function getTopModel(): Promise<string | null> {
 // `applyTrayLocale()` pattern below). The submenu items use Electron
 // `role`s and are localized by the OS automatically.
 function applyAppMenuLocale() {
-  if (process.platform === 'darwin') {
-    // Let Electron use its default macOS menu.
-    return;
-  }
   // Local require keeps the import graph linear (see the longer comment
   // near the `ccsm:set-language` handler below).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -282,15 +278,14 @@ function createWindow() {
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
     backgroundColor: '#0B0B0C',
-    // On macOS: `hiddenInset` keeps OS-drawn traffic lights (top-left) and
-    //   hides the title bar. On Windows/Linux: fully frameless — we self-
-    //   draw the three controls inside the right pane (see WindowControls).
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    frame: process.platform === 'darwin',
+    // Windows: fully frameless — we self-draw the three controls inside
+    //   the right pane (see WindowControls).
+    titleBarStyle: 'hidden',
+    frame: false,
     // Windows 11: ask DWM to round the outer corners so the window edge
     //   matches the radii of our internal panels. Without this the window
     //   is a sharp rectangle and rounded interior surfaces look clipped
-    //   where they meet it. Ignored on macOS/Linux/<Win11.
+    //   where they meet it. Ignored on <Win11.
     roundedCorners: true,
     autoHideMenuBar: true,
     webPreferences: {
@@ -400,13 +395,13 @@ function createWindow() {
   // Minimize-to-tray: clicking close (or the OS X red dot, our own custom
   // close button via window:close IPC) hides the window instead of quitting.
   // The user can still really quit via the tray menu's Quit item, the
-  // app menu's Quit, or Cmd/Ctrl-Q.
+  // app menu's Quit, or Ctrl-Q.
   //
   // Fade-to-hide: before actually calling `win.hide()` we send a
   // `window:beforeHide` event so the renderer can run a short opacity
   // fade-out. `HIDE_FADE_MS` matches `DURATION.standard` (180ms) from the
   // shared motion tokens — kept short so closing still feels responsive.
-  // Guarded by `fadePending` so repeated Cmd/Ctrl+W presses don't stack
+  // Guarded by `fadePending` so repeated Ctrl+W presses don't stack
   // timers. On real quit (`isQuitting === true`) we skip the fade entirely
   // so shutdown stays fast.
   const HIDE_FADE_MS = 180;
@@ -427,7 +422,6 @@ function createWindow() {
       fadePending = false;
       if (win.isDestroyed()) return;
       win.hide();
-      if (process.platform === 'darwin') app.dock?.hide?.();
     }, HIDE_FADE_MS);
   });
 
@@ -441,9 +435,8 @@ let tray: Tray | null = null;
 let isQuitting = false;
 
 function buildTrayIcon() {
-  // Tiny 16×16 placeholder (white square on transparent). On Windows/Linux
-  // the OS uses this directly; macOS auto-templates monochrome images.
-  // Replace with a real branded asset once we have one.
+  // Tiny 16×16 placeholder (white square on transparent). Windows
+  // uses this directly. Replace with a real branded asset once we have one.
   const size = 16;
   const buffer = Buffer.alloc(size * size * 4);
   for (let i = 0; i < size * size; i++) {
@@ -453,7 +446,6 @@ function buildTrayIcon() {
     buffer[i * 4 + 3] = 220;
   }
   const img = nativeImage.createFromBuffer(buffer, { width: size, height: size });
-  if (process.platform === 'darwin') img.setTemplateImage(true);
   return img;
 }
 
@@ -488,7 +480,6 @@ function showTrayWindow() {
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
-  if (process.platform === 'darwin') app.dock?.show?.();
 }
 
 function ensureTray() {
@@ -1349,15 +1340,13 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  // Tray-resident: do NOT quit on Windows/Linux when the window closes;
-  // the user explicitly chose minimize-to-tray. macOS keeps its dock icon
-  // by convention. Real quit goes through tray Quit / Cmd-Q.
-  if (process.platform !== 'darwin' && isQuitting) {
+  // Tray-resident: do NOT quit on Windows when the window closes; the user
+  // explicitly chose minimize-to-tray. Real quit goes through tray Quit /
+  // Ctrl-Q.
+  if (isQuitting) {
     sessions.closeAll();
     closeDb();
     app.quit();
-  } else if (process.platform === 'darwin') {
-    // mac convention: keep app alive even when window closes; only quit on Cmd-Q
   }
 });
 

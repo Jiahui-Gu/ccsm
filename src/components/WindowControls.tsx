@@ -5,16 +5,15 @@ import { useTranslation } from '../i18n/useTranslation';
 
 // Cross-platform window chrome pieces.
 //
-// The app window is frameless on win/linux and `hiddenInset` on macOS, so
-// we self-draw everything except the macOS traffic lights. We expose two
-// small primitives so the shell can place them per-pane:
+// The app is Windows-only today and runs frameless — we self-draw all
+// window chrome. We expose two small primitives so the shell can place
+// them per-pane:
 //
 //   - `<DragRegion />` — a transparent strip with `-webkit-app-region: drag`
 //     you can drop anywhere (sidebar top, right-pane top) to make that area
 //     behave like a native title bar (drag, double-click maximize).
-//   - `<WindowControls />` — the three Windows/Linux buttons (min / max-or-
-//     restore / close). On macOS this renders nothing (the OS draws the
-//     traffic lights in the `hiddenInset` reserved region).
+//   - `<WindowControls />` — the three Windows buttons (min / max-or-
+//     restore / close).
 //
 // Keeping these separate means the right pane can own the controls while
 // the sidebar still participates in window dragging — the old global
@@ -90,8 +89,6 @@ function TitleButton({
 
 export function WindowControls({ className }: { className?: string }) {
   const api = window.ccsm;
-  const platform = api?.window.platform ?? 'win32';
-  const isMac = platform === 'darwin';
   const [isMax, setIsMax] = useState(false);
   const { t } = useTranslation('window');
 
@@ -100,11 +97,6 @@ export function WindowControls({ className }: { className?: string }) {
     api.window.isMaximized().then(setIsMax);
     return api.window.onMaximizedChanged(setIsMax);
   }, [api]);
-
-  // macOS: nothing to draw. Traffic lights are reserved/drawn by the OS in
-  // the top-left via `titleBarStyle: 'hiddenInset'`. Consumers should use
-  // `<MacTrafficLightSpacer />` to keep layout aligned.
-  if (isMac) return null;
 
   return (
     <NoDragRegion className={cn('flex h-full items-stretch shrink-0', className)}>
@@ -126,16 +118,4 @@ export function WindowControls({ className }: { className?: string }) {
       </TitleButton>
     </NoDragRegion>
   );
-}
-
-// Reserves the 78px the OS uses for traffic lights on macOS `hiddenInset`
-// windows. On other platforms, collapses to zero width.
-export function MacTrafficLightSpacer() {
-  const platform = window.ccsm?.window.platform ?? 'win32';
-  if (platform !== 'darwin') return null;
-  return <div aria-hidden className="w-[78px] shrink-0" />;
-}
-
-export function isMacPlatform(): boolean {
-  return (window.ccsm?.window.platform ?? 'win32') === 'darwin';
 }

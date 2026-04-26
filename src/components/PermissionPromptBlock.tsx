@@ -217,7 +217,7 @@ export function PermissionPromptBlock({
       // Focus trap: Tab cycling between Reject / Allow always / Allow while
       // focus is inside the prompt. Plain `.focus()` is enough — the buttons
       // share DOM order (Reject -> [Allow always] -> Allow).
-      if (e.key === 'Tab' && focusInside && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'Tab' && focusInside && !e.ctrlKey && !e.altKey) {
         const focusables = [rejectRef.current, allowAlwaysRef.current, allowRef.current].filter(
           (b): b is HTMLButtonElement => !!b
         );
@@ -235,7 +235,7 @@ export function PermissionPromptBlock({
       }
 
       // Esc -> reject (standard alertdialog dismiss).
-      if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'Escape' && !e.ctrlKey && !e.altKey) {
         if (focusInside) {
           e.preventDefault();
           onReject?.();
@@ -243,7 +243,7 @@ export function PermissionPromptBlock({
         }
       }
 
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.ctrlKey || e.altKey) return;
       const typing =
         active instanceof HTMLElement &&
         (active.tagName === 'INPUT' ||

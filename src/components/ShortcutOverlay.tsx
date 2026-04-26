@@ -2,23 +2,17 @@ import React, { useMemo } from 'react';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { useTranslation } from '../i18n/useTranslation';
 
-// Platform-aware modifier glyph. We detect once on module eval — the platform
-// doesn't change during a session. Falls back to "Ctrl" for anything that
-// isn't obviously macOS (Windows, Linux, unknown UA).
-const IS_MAC =
-  typeof navigator !== 'undefined' &&
-  /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
-
-const MOD = IS_MAC ? '\u2318' : 'Ctrl'; // ⌘ on mac, Ctrl elsewhere
-const SHIFT = IS_MAC ? '\u21E7' : 'Shift'; // ⇧ on mac
+// Windows-only shortcut labels. The app currently ships Windows-first;
+// we don't carry mac glyphs here. If macOS support returns later, this is
+// the place to introduce platform-aware modifier resolution again.
+const MOD = 'Ctrl';
+const SHIFT = 'Shift';
 
 type Row = { keys: string; actionKey: string };
 type Group = { titleKey: string; rows: Row[] };
 
 // Shortcuts discovered by grepping the codebase. Keep this list in sync
 // with the real handlers — comment next to each row points at the source.
-// Platform modifier is resolved at render time so the overlay always
-// shows the keys the user actually needs to press.
 function buildGroups(): Group[] {
   return [
     {
@@ -36,22 +30,22 @@ function buildGroups(): Group[] {
     {
       titleKey: 'shortcuts.groupSidebar',
       rows: [
-        // App.tsx:169 — Cmd/Ctrl+B toggles the sidebar.
+        // App.tsx:169 — Ctrl+B toggles the sidebar.
         { keys: `${MOD} + B`, actionKey: 'shortcuts.actionToggleSidebar' },
-        // App.tsx:179 — Cmd/Ctrl+N creates a new session.
+        // App.tsx:179 — Ctrl+N creates a new session.
         { keys: `${MOD} + N`, actionKey: 'shortcuts.actionNewSession' },
-        // App.tsx:175 — Cmd/Ctrl+Shift+N creates a new group.
+        // App.tsx:175 — Ctrl+Shift+N creates a new group.
         { keys: `${MOD} + ${SHIFT} + N`, actionKey: 'shortcuts.actionNewGroup' }
       ]
     },
     {
       titleKey: 'shortcuts.groupNavigation',
       rows: [
-        // App.tsx:163 — Cmd/Ctrl+F opens the palette.
+        // App.tsx:163 — Ctrl+F opens the palette.
         { keys: `${MOD} + F`, actionKey: 'shortcuts.actionSearch' },
-        // App.tsx:172 — Cmd/Ctrl+, opens Settings.
+        // App.tsx:172 — Ctrl+, opens Settings.
         { keys: `${MOD} + ,`, actionKey: 'shortcuts.actionSettings' },
-        // This PR — ? or Cmd/Ctrl+/ opens this overlay.
+        // This PR — ? or Ctrl+/ opens this overlay.
         { keys: `?  ·  ${MOD} + /`, actionKey: 'shortcuts.actionShortcuts' }
       ]
     }
