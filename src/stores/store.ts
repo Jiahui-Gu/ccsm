@@ -118,17 +118,11 @@ export type { ConnectionInfo };
 // the rest of app state.
 export interface NotificationSettings {
   enabled: boolean;
-  permission: boolean;
-  question: boolean;
-  turnDone: boolean;
   sound: boolean;
 }
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
-  permission: true,
-  question: true,
-  turnDone: true,
   sound: true
 };
 
@@ -485,7 +479,6 @@ type Actions = {
   resetSidebarWidth: () => void;
   markTutorialSeen: () => void;
   setNotificationSettings: (patch: Partial<NotificationSettings>) => void;
-  setSessionNotificationsMuted: (sessionId: string, muted: boolean) => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -708,6 +701,24 @@ export function migratePermission(raw: unknown): PermissionMode {
     default:
       return 'default';
   }
+}
+
+/**
+ * Coerce a persisted notification-settings blob into the current
+ * `{ enabled, sound }` shape. The pre-simplification shape carried per-event
+ * toggles (`permission` / `question` / `turnDone`) plus a global `enabled`
+ * and `sound`. Strip any unknown keys, fill missing fields with defaults
+ * (true) so a partial blob doesn't silently mute the user.
+ */
+export function migrateNotificationSettings(
+  raw: unknown
+): NotificationSettings {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_NOTIFICATION_SETTINGS };
+  const r = raw as Record<string, unknown>;
+  return {
+    enabled: typeof r.enabled === 'boolean' ? r.enabled : true,
+    sound: typeof r.sound === 'boolean' ? r.sound : true
+  };
 }
 
 /**
@@ -1462,13 +1473,6 @@ export const useStore = create<State & Actions>((set, get) => ({
 
   setNotificationSettings: (patch) =>
     set((s) => ({ notificationSettings: { ...s.notificationSettings, ...patch } })),
-
-  setSessionNotificationsMuted: (sessionId, muted) =>
-    set((s) => ({
-      sessions: s.sessions.map((x) =>
-        x.id === sessionId ? { ...x, notificationsMuted: muted } : x
-      )
-    })),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -2543,10 +2547,7 @@ export async function hydrateStore(): Promise<void> {
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
-      notificationSettings: {
-        ...DEFAULT_NOTIFICATION_SETTINGS,
-        ...(persisted.notificationSettings ?? {})
-      },
+      notificationSettings: migrateNotificationSettings(persisted.notificationSettings),
       globalThinkingDefault:
         persisted.globalThinkingDefault === 'default_on' ? 'default_on' : 'off',
       thinkingLevelBySession: sanitizeThinkingLevelMap(persisted.thinkingLevelBySession)

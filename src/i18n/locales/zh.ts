@@ -186,10 +186,7 @@ const zh: EnCatalog = {
     importAriaShort: '导入会话',
     settingsTooltip: '设置  ⌘,',
     settingsAria: '设置',
-    notificationsMutedAria: '通知已静音',
     cwdMissingTooltip: '工作目录已不存在: {{cwd}}。打开此会话后，用状态栏的 cwd 按钮重新选择目录。',
-    muteNotifications: '静音通知',
-    unmuteNotifications: '取消静音',
     resizerAriaLabel: '调整侧边栏宽度',
     resizerTooltip: '拖动调整宽度 · 双击重置（{{default}}px）'
   },
@@ -246,24 +243,8 @@ const zh: EnCatalog = {
       intro:
         '当某个会话需要你处理时，弹出系统级通知。如果窗口正聚焦在该会话上会自动抑制；同一事件类型按会话做了去抖，避免话痨 agent 刷屏。',
       enable: '启用通知',
-      permission: '权限请求',
-      permissionHint: '当某个工具调用在等待你的批准时。',
-      question: '提问',
-      questionHint: 'agent 通过 AskUserQuestion 提问时。',
-      turnDone: '本轮完成',
-      turnDoneHint: '只在长时间（>15s）、出错或非聚焦的轮次触发，常规快速轮次会被跳过。',
       sound: '声音',
-      soundHint: '播放系统默认通知声。',
-      testButton: '发送测试通知',
-      testTitle: 'CCSM 测试通知',
-      testBody: '能看到这条消息说明系统通知正常工作。',
-      testIpcUnavailable: 'IPC 不可用。',
-      testSent: '已发送。',
-      testFailed: '失败 — 系统通知不可用。',
-      moduleAvailable: '富文本 Windows 通知可用。',
-      moduleUnavailable:
-        '当前环境无法使用富文本 Windows 通知 — 可选的原生通知模块未安装。CCSM 会降级到应用内横幅和标准系统通知。',
-      moduleChecking: '正在检查通知模块…'
+      soundHint: '播放系统默认通知声。'
     },
     connection: {
       intro:

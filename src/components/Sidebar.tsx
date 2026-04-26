@@ -5,8 +5,7 @@ import {
   Download,
   Plus,
   Search,
-  Settings,
-  BellOff
+  Settings
 } from 'lucide-react';
 import {
   DndContext,
@@ -319,7 +318,6 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
   const restoreSession = useStore((s) => s.restoreSession);
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
-  const setSessionNotificationsMuted = useStore((s) => s.setSessionNotificationsMuted);
   const toast = useToast();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
@@ -443,13 +441,6 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               </>
             )}
           </span>
-          {session.notificationsMuted && (
-            <BellOff
-              size={12}
-              className="stroke-[1.5] text-fg-tertiary shrink-0"
-              aria-label={t('sidebar.notificationsMutedAria')}
-            />
-          )}
           {active && (
             <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
               <span
@@ -462,13 +453,6 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
-        <ContextMenuItem
-          onSelect={() =>
-            setSessionNotificationsMuted(session.id, !session.notificationsMuted)
-          }
-        >
-          {session.notificationsMuted ? t('sidebar.unmuteNotifications') : t('sidebar.muteNotifications')}
-        </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
           <ContextMenuSubContent>

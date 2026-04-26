@@ -204,11 +204,8 @@ const en = {
     importAriaShort: 'Import session',
     settingsTooltip: 'Settings  ⌘,',
     settingsAria: 'Settings',
-    notificationsMutedAria: 'Notifications muted',
     cwdMissingTooltip:
       'Working directory no longer exists: {{cwd}}. Open this session and repick the folder via the cwd button in the status bar.',
-    muteNotifications: 'Mute notifications',
-    unmuteNotifications: 'Unmute notifications',
     resizerAriaLabel: 'Resize sidebar',
     resizerTooltip: 'Drag to resize · double-click to reset ({{default}}px)'
   },
@@ -266,25 +263,8 @@ const en = {
       intro:
         'OS-level toasts when a session needs your attention. Suppressed when the window is focused on that same session, and debounced per session per event type so a chatty agent cannot spam you.',
       enable: 'Enable notifications',
-      permission: 'Permission prompts',
-      permissionHint: 'When a tool call is waiting on your approval.',
-      question: 'Questions',
-      questionHint: 'When the agent uses AskUserQuestion to ask you something.',
-      turnDone: 'Turn done',
-      turnDoneHint:
-        'Only fires for long (>15s), errored, or unfocused turns - routine fast turns are skipped.',
       sound: 'Sound',
-      soundHint: 'Play the OS default notification sound.',
-      testButton: 'Test notification',
-      testTitle: 'CCSM test notification',
-      testBody: 'If you can read this, OS notifications are working.',
-      testIpcUnavailable: 'IPC unavailable.',
-      testSent: 'Sent.',
-      testFailed: 'Failed - OS notifications unavailable.',
-      moduleAvailable: 'Rich Windows toasts are available.',
-      moduleUnavailable:
-        'Rich Windows toasts are unavailable on this machine — the optional native notification module did not install. CCSM will fall back to in-app banners and standard system notifications.',
-      moduleChecking: 'Checking notification module…'
+      soundHint: 'Play the OS default notification sound.'
     },
     connection: {
       intro:

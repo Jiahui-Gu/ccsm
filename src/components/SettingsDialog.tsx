@@ -358,141 +358,28 @@ function Segmented<T extends string>({
 function NotificationsPane() {
   const settings = useStore((s) => s.notificationSettings);
   const setNotificationSettings = useStore((s) => s.setNotificationSettings);
-  const activeId = useStore((s) => s.activeId);
-  const [testStatus, setTestStatus] = useState<string | null>(null);
-  const [moduleStatus, setModuleStatus] = useState<
-    { available: boolean; error: string | null } | null
-  >(null);
   const { t } = useTranslation('settings');
-
-  useEffect(() => {
-    let cancelled = false;
-    const api = window.ccsm;
-    if (!api?.notifyAvailability) return;
-    api.notifyAvailability().then((res) => {
-      if (!cancelled) setModuleStatus(res);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const Toggle = ({
-    checked,
-    onChange,
-    disabled,
-    ariaLabel
-  }: {
-    checked: boolean;
-    onChange: (v: boolean) => void;
-    disabled?: boolean;
-    ariaLabel?: string;
-  }) => (
-    <Switch
-      checked={checked}
-      disabled={disabled}
-      aria-label={ariaLabel}
-      onCheckedChange={onChange}
-    />
-  );
-
-  const onTest = async () => {
-    const api = window.ccsm;
-    if (!api) {
-      setTestStatus(t('notifications.testIpcUnavailable'));
-      setTimeout(() => setTestStatus(null), 2000);
-      return;
-    }
-    const ok = await api.notify({
-      sessionId: activeId,
-      title: t('notifications.testTitle'),
-      body: t('notifications.testBody'),
-      eventType: 'test',
-      silent: !settings.sound
-    });
-    setTestStatus(ok ? t('notifications.testSent') : t('notifications.testFailed'));
-    setTimeout(() => setTestStatus(null), 2500);
-  };
-
-  const disableChildren = !settings.enabled;
 
   return (
     <>
       <div className="text-meta text-fg-tertiary mb-4">
         {t('notifications.intro')}
       </div>
-      <div
-        data-testid="notifications-module-status"
-        data-available={
-          moduleStatus === null ? 'unknown' : moduleStatus.available ? 'true' : 'false'
-        }
-        className={cn(
-          'text-meta mb-4 rounded-md border px-3 py-2',
-          moduleStatus === null && 'border-border-subtle text-fg-tertiary',
-          moduleStatus?.available && 'border-border-subtle text-fg-secondary',
-          moduleStatus && !moduleStatus.available &&
-            'border-amber-500/40 bg-amber-500/5 text-fg-secondary'
-        )}
-      >
-        {moduleStatus === null
-          ? t('notifications.moduleChecking')
-          : moduleStatus.available
-            ? t('notifications.moduleAvailable')
-            : t('notifications.moduleUnavailable')}
-      </div>
       <Field label={t('notifications.enable')}>
-        <Toggle
+        <Switch
           checked={settings.enabled}
-          onChange={(v) => setNotificationSettings({ enabled: v })}
-          ariaLabel={t('notifications.enable')}
-        />
-      </Field>
-      <Field label={t('notifications.permission')} hint={t('notifications.permissionHint')}>
-        <Toggle
-          checked={settings.permission}
-          disabled={disableChildren}
-          onChange={(v) => setNotificationSettings({ permission: v })}
-          ariaLabel={t('notifications.permission')}
-        />
-      </Field>
-      <Field label={t('notifications.question')} hint={t('notifications.questionHint')}>
-        <Toggle
-          checked={settings.question}
-          disabled={disableChildren}
-          onChange={(v) => setNotificationSettings({ question: v })}
-          ariaLabel={t('notifications.question')}
-        />
-      </Field>
-      <Field label={t('notifications.turnDone')} hint={t('notifications.turnDoneHint')}>
-        <Toggle
-          checked={settings.turnDone}
-          disabled={disableChildren}
-          onChange={(v) => setNotificationSettings({ turnDone: v })}
-          ariaLabel={t('notifications.turnDone')}
+          aria-label={t('notifications.enable')}
+          onCheckedChange={(v) => setNotificationSettings({ enabled: v })}
         />
       </Field>
       <Field label={t('notifications.sound')} hint={t('notifications.soundHint')}>
-        <Toggle
+        <Switch
           checked={settings.sound}
-          disabled={disableChildren}
-          onChange={(v) => setNotificationSettings({ sound: v })}
-          ariaLabel={t('notifications.sound')}
+          disabled={!settings.enabled}
+          aria-label={t('notifications.sound')}
+          onCheckedChange={(v) => setNotificationSettings({ sound: v })}
         />
       </Field>
-      <div className="flex items-center gap-3">
-        <Button variant="secondary" size="md" onClick={onTest} disabled={disableChildren}>
-          {t('notifications.testButton')}
-        </Button>
-        <span
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          data-testid="notifications-test-status"
-          className="text-meta text-fg-secondary"
-        >
-          {testStatus ?? ''}
-        </span>
-      </div>
       <div className="mt-6 pt-5 border-t border-border-subtle">
         <CrashReportingField />
       </div>
