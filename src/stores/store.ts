@@ -495,6 +495,14 @@ type Actions = {
   restoreGroup: (snapshot: GroupSnapshot) => void;
   archiveGroup: (id: string) => void;
   unarchiveGroup: (id: string) => void;
+  /** Move a session into an archive-kind group. Auto-creates an "Archive"
+   *  group on first use if no archive group exists. Inverse of
+   *  `unarchiveSession`. The bottom Archived Groups panel renders the
+   *  resulting group; the user finds the session there. */
+  archiveSession: (id: string) => void;
+  /** Move an archived session back into a normal-kind group (the first
+   *  available, or a freshly created one). Inverse of `archiveSession`. */
+  unarchiveSession: (id: string) => void;
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
 
   appendBlocks: (sessionId: string, blocks: MessageBlock[]) => void;
@@ -1667,6 +1675,67 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       groups: s.groups.map((g) => (g.id === id ? { ...g, kind: 'normal' } : g))
     }));
+  },
+
+  // BUG-2: session-level archive. Moves the session into an archive-kind
+  // group so it lands in the sidebar's bottom "Archived Groups" panel
+  // (read-only viewer). If no archive group exists, lazily create one named
+  // "Archive" — keeps the data shape uniform (sessions always live under a
+  // group) and avoids introducing a separate per-session `archived` flag.
+  archiveSession: (id) => {
+    set((s) => {
+      const session = s.sessions.find((x) => x.id === id);
+      if (!session) return s;
+      const currentGroup = s.groups.find((g) => g.id === session.groupId);
+      if (currentGroup?.kind === 'archive') return s; // already archived
+      let archiveGroup = s.groups.find((g) => g.kind === 'archive');
+      let groups = s.groups;
+      if (!archiveGroup) {
+        archiveGroup = {
+          id: nextId('g'),
+          name: 'Archive',
+          collapsed: false,
+          kind: 'archive'
+        };
+        groups = [...s.groups, archiveGroup];
+      }
+      const without = s.sessions.filter((x) => x.id !== id);
+      const updated: Session = { ...session, groupId: archiveGroup.id };
+      return { groups, sessions: [...without, updated] };
+    });
+  },
+
+  unarchiveSession: (id) => {
+    set((s) => {
+      const session = s.sessions.find((x) => x.id === id);
+      if (!session) return s;
+      const currentGroup = s.groups.find((g) => g.id === session.groupId);
+      if (currentGroup?.kind !== 'archive') return s; // not archived
+      let target = s.groups.find((g) => g.kind === 'normal');
+      let groups = s.groups;
+      if (!target) {
+        target = {
+          id: nextId('g'),
+          name: 'New group',
+          collapsed: false,
+          kind: 'normal'
+        };
+        groups = [target, ...s.groups];
+      }
+      const without = s.sessions.filter((x) => x.id !== id);
+      const updated: Session = { ...session, groupId: target.id };
+      // Append at the end of the target group so the restored row is visible
+      // at the bottom rather than inserted at index 0 of the global array.
+      let lastIdx = -1;
+      without.forEach((x, i) => {
+        if (x.groupId === target!.id) lastIdx = i;
+      });
+      const insertAt = lastIdx === -1 ? without.length : lastIdx + 1;
+      return {
+        groups,
+        sessions: [...without.slice(0, insertAt), updated, ...without.slice(insertAt)]
+      };
+    });
   },
 
   setGroupCollapsed: (id, collapsed) => {
