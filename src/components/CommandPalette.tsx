@@ -209,6 +209,9 @@ export function CommandPalette({
       <DialogPortal>
         <DialogOverlay />
         <RD.Content
+          // Marker for InputBar's global Esc handler — modal dialogs own Esc.
+          data-modal-dialog=""
+          aria-modal="true"
           onKeyDown={onKeyDown}
           onOpenAutoFocus={(e) => {
             // Let Radix's FocusScope own the focus handoff (so it knows

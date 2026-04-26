@@ -15,6 +15,7 @@ import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import { InputBar } from '../src/components/InputBar';
+import { ToastProvider } from '../src/components/ui/Toast';
 import { useStore } from '../src/stores/store';
 import { clearDraft } from '../src/stores/drafts';
 import type { MessageBlock } from '../src/types';
@@ -92,7 +93,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('↑ on empty composer fills the most recent user prompt', () => {
     freshStoreWithSession(SID, ['first prompt', 'second prompt', 'third prompt'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     expect(ta.value).toBe('');
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
@@ -102,7 +103,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('repeated ↑ walks backwards through history', () => {
     freshStoreWithSession(SID, ['first', 'second', 'third'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
     expect(ta.value).toBe('third');
@@ -115,7 +116,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('↑ at the oldest prompt is a no-op (stays put)', () => {
     freshStoreWithSession(SID, ['only one'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
     expect(ta.value).toBe('only one');
@@ -127,7 +128,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('↓ walks back toward the most recent prompt', () => {
     freshStoreWithSession(SID, ['first', 'second', 'third'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' }); // third
     fireEvent.keyDown(ta, { key: 'ArrowUp' }); // second
@@ -141,7 +142,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('↓ from the most recent prompt clears the composer back to idle', () => {
     freshStoreWithSession(SID, ['first', 'second'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
     expect(ta.value).toBe('second');
@@ -155,7 +156,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('↑ on a non-empty composer (not in recall) does NOT trigger recall', () => {
     freshStoreWithSession(SID, ['old prompt'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     // Simulate the user typing some draft.
     fireEvent.change(ta, { target: { value: 'draft\nmulti\nline' } });
@@ -168,7 +169,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('typing while in recall exits recall mode (next ↑ restarts at newest)', () => {
     freshStoreWithSession(SID, ['first', 'second'], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' }); // second
     fireEvent.keyDown(ta, { key: 'ArrowUp' }); // first
@@ -189,7 +190,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('switching sessions resets the recall index', () => {
     freshStoreWithSession(SID, ['a1', 'a2'], { started: true });
     stubCCSM();
-    const { rerender } = render(<InputBar sessionId={SID} />);
+    const { rerender } = render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const taA = getTextarea();
     fireEvent.keyDown(taA, { key: 'ArrowUp' });
     fireEvent.keyDown(taA, { key: 'ArrowUp' });
@@ -218,7 +219,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
         activeId: 's-other',
       }));
     });
-    rerender(<InputBar sessionId={'s-other'} />);
+    rerender(<ToastProvider><InputBar sessionId={'s-other'} /></ToastProvider>);
     const taB = getTextarea();
     expect(taB.value).toBe('');
     // Recall index reset — first ↑ in the new session pulls the new session's
@@ -230,7 +231,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('ignores empty / whitespace-only past prompts', () => {
     freshStoreWithSession(SID, ['real prompt', '   ', ''], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
     expect(ta.value).toBe('real prompt');
@@ -239,7 +240,7 @@ describe('InputBar: ↑/↓ history recall (PR-N)', () => {
   it('does nothing when there is no user history at all', () => {
     freshStoreWithSession(SID, [], { started: true });
     stubCCSM();
-    render(<InputBar sessionId={SID} />);
+    render(<ToastProvider><InputBar sessionId={SID} /></ToastProvider>);
     const ta = getTextarea();
     fireEvent.keyDown(ta, { key: 'ArrowUp' });
     expect(ta.value).toBe('');

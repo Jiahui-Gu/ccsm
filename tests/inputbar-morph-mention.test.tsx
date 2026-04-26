@@ -13,6 +13,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { InputBar } from '../src/components/InputBar';
+import { ToastProvider } from '../src/components/ui/Toast';
 import { useStore } from '../src/stores/store';
 
 const initial = useStore.getState();
@@ -72,7 +73,7 @@ describe('InputBar: send/stop morph button', () => {
   it('renders the Send affordance when the session is idle', () => {
     freshStoreWithSession('s-morph-idle', { running: false, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-morph-idle" />);
+    render(<ToastProvider><InputBar sessionId="s-morph-idle" /></ToastProvider>);
     const morph = screen.getByRole('button', { name: /send message/i });
     expect(morph).toBeInTheDocument();
     expect(morph).toHaveAttribute('data-morph-state', 'send');
@@ -82,7 +83,7 @@ describe('InputBar: send/stop morph button', () => {
   it('morphs to the Stop affordance when the session is running', () => {
     freshStoreWithSession('s-morph-run', { running: true, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-morph-run" />);
+    render(<ToastProvider><InputBar sessionId="s-morph-run" /></ToastProvider>);
     const morph = screen.getByRole('button', { name: /^stop$/i });
     expect(morph).toBeInTheDocument();
     expect(morph).toHaveAttribute('data-morph-state', 'stop');
@@ -92,7 +93,7 @@ describe('InputBar: send/stop morph button', () => {
   it('clicking the morph button while running fires agentInterrupt', () => {
     freshStoreWithSession('s-morph-stop', { running: true, started: true });
     const api = stubCCSM();
-    render(<InputBar sessionId="s-morph-stop" />);
+    render(<ToastProvider><InputBar sessionId="s-morph-stop" /></ToastProvider>);
     const stop = screen.getByRole('button', { name: /^stop$/i });
     act(() => {
       fireEvent.click(stop);
@@ -105,7 +106,7 @@ describe('InputBar: @file mention picker', () => {
   it('opens the mention picker when the user types @', async () => {
     freshStoreWithSession('s-at', { running: false, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-at" />);
+    render(<ToastProvider><InputBar sessionId="s-at" /></ToastProvider>);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     act(() => {
       fireEvent.change(ta, { target: { value: '@' } });
@@ -125,7 +126,7 @@ describe('InputBar: @file mention picker', () => {
   it('Esc dismisses the mention picker without changing the textarea', async () => {
     freshStoreWithSession('s-at-esc', { running: false, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-at-esc" />);
+    render(<ToastProvider><InputBar sessionId="s-at-esc" /></ToastProvider>);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     act(() => {
       fireEvent.change(ta, { target: { value: '@' } });
@@ -143,7 +144,7 @@ describe('InputBar: @file mention picker', () => {
   it('Enter on a highlighted row splices @<path> into the textarea', async () => {
     freshStoreWithSession('s-at-pick', { running: false, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-at-pick" />);
+    render(<ToastProvider><InputBar sessionId="s-at-pick" /></ToastProvider>);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
     act(() => {
       fireEvent.change(ta, { target: { value: '@' } });
@@ -175,7 +176,7 @@ describe('InputBar: @file mention picker', () => {
     const user = userEvent.setup();
     freshStoreWithSession('s-at-rearm', { running: false, started: true });
     stubCCSM();
-    render(<InputBar sessionId="s-at-rearm" />);
+    render(<ToastProvider><InputBar sessionId="s-at-rearm" /></ToastProvider>);
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;
 
     await user.click(ta);
