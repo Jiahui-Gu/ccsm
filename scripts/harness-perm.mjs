@@ -2337,6 +2337,503 @@ async function caseQuestionFocusOnMount({ win, log }) {
   log('question stole focus from typed textarea on mount; ↑/↓ navigated; submit returned focus to textarea');
 }
 
+// ---------- question-tab-trap-cycles ----------
+// Task #307 bug 1: Tab key inside the question card must cycle through
+// option buttons + Submit instead of escaping to the composer textarea.
+// Mirrors the focus-trap on PermissionPromptBlock (lines 249-263).
+async function caseQuestionTabTrapCycles({ win, log }) {
+  await seedSession(win);
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-TAB-TRAP',
+      requestId: 'q-TAB-TRAP',
+      questions: [{
+        question: 'Pick a stack',
+        options: [{ label: 'TypeScript' }, { label: 'Rust' }, { label: 'Go' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  // Wait for autoFocus to land on first option.
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 });
+
+  // 4 options (TS, Rust, Go, Other) + 1 submit button = 5 stops.
+  // Tab 5 times: should wrap back to first option.
+  // Also verify focus never leaves card.
+  const stops = [];
+  for (let i = 0; i < 6; i++) {
+    const here = await win.evaluate(() => {
+      const el = document.activeElement;
+      const inCard = !!el?.closest?.('[data-question-sticky]');
+      return {
+        inCard,
+        label: el instanceof HTMLElement ? el.getAttribute('data-question-label') : null,
+        testid: el instanceof HTMLElement ? el.getAttribute('data-testid') : null,
+        tag: el?.tagName?.toLowerCase() ?? null
+      };
+    });
+    stops.push(here);
+    if (!here.inCard) {
+      throw new Error(`Tab #${i} escaped the question card; focus=${JSON.stringify(here)}; trail=${JSON.stringify(stops)}`);
+    }
+    await win.keyboard.press('Tab');
+    await win.waitForTimeout(50);
+  }
+
+  // Final stop after 6 Tabs should be back on first option (cycled).
+  const final = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      label: el instanceof HTMLElement ? el.getAttribute('data-question-label') : null,
+      inCard: !!el?.closest?.('[data-question-sticky]')
+    };
+  });
+  if (!final.inCard) {
+    throw new Error(`final Tab escaped card: ${JSON.stringify(final)}`);
+  }
+
+  log(`tab cycled 6 times within question card; trail=${stops.map(s => s.label ?? s.testid ?? s.tag).join(' -> ')}`);
+}
+
+// ---------- question-yn-hotkey ----------
+// Task #307 bug 2: Y/N hotkeys should pick first/last option for a binary
+// Yes/No single-select. Only enabled when single-select + 2 options +
+// labels start with Y / N (case-insensitive) — otherwise we don't hijack.
+async function caseQuestionYNHotkey({ win, log }) {
+  await seedSession(win);
+
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-YN',
+      requestId: 'q-YN',
+      questions: [{
+        question: 'Confirm action?',
+        options: [{ label: 'Yes' }, { label: 'No' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 });
+
+  // Press Y → should pick "Yes". Single-question form does NOT auto-submit
+  // (auto-advance only triggers between questions); but selection should land.
+  await win.keyboard.press('y');
+  await win.waitForTimeout(120);
+  const afterY = await win.evaluate(() => {
+    const el = document.querySelector('[data-question-option][data-question-label="Yes"]');
+    return el?.getAttribute('aria-checked');
+  });
+  if (afterY !== 'true') {
+    throw new Error(`expected Yes selected after pressing Y; got aria-checked=${afterY}`);
+  }
+
+  // Press N → should switch selection to "No".
+  await win.keyboard.press('n');
+  await win.waitForTimeout(120);
+  const afterN = await win.evaluate(() => {
+    const yes = document.querySelector('[data-question-option][data-question-label="Yes"]')?.getAttribute('aria-checked');
+    const no = document.querySelector('[data-question-option][data-question-label="No"]')?.getAttribute('aria-checked');
+    return { yes, no };
+  });
+  if (afterN.no !== 'true' || afterN.yes !== 'false') {
+    throw new Error(`expected No selected, Yes deselected after N; got ${JSON.stringify(afterN)}`);
+  }
+
+  log('Y picked Yes, N switched to No on a binary single-select question');
+}
+
+// ---------- question-enter-on-submit-button ----------
+// Task #305: Tab to Submit button, press Enter, onSubmit should fire.
+async function caseQuestionEnterOnSubmitButton({ win, log }) {
+  await seedSession(win);
+
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-ENTER-SUBMIT',
+      requestId: 'q-ENTER-SUBMIT',
+      questions: [{
+        question: 'Pick one',
+        options: [{ label: 'A' }, { label: 'B' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 });
+
+  // Pick first option via Space; single-question doesn't auto-advance.
+  await win.keyboard.press(' ');
+  await win.waitForTimeout(150);
+
+  // Sanity check: option got selected and submit became enabled.
+  const stateAfterPick = await win.evaluate(() => {
+    const a = document.querySelector('[data-question-option][data-question-label="A"]');
+    const submit = document.querySelector('[data-testid="question-submit"]');
+    return {
+      aChecked: a?.getAttribute('aria-checked'),
+      submitDisabled: submit?.hasAttribute('disabled'),
+    };
+  });
+  if (stateAfterPick.aChecked !== 'true' || stateAfterPick.submitDisabled) {
+    throw new Error(`pre-Enter sanity failed: ${JSON.stringify(stateAfterPick)}`);
+  }
+
+  // Move focus directly to Submit button and press Enter.
+  await win.locator('[data-testid="question-submit"]').focus();
+  await win.waitForTimeout(80);
+  const focusSnap = await win.evaluate(() => ({
+    isSubmit: document.activeElement?.getAttribute?.('data-testid') === 'question-submit',
+  }));
+  if (!focusSnap.isSubmit) {
+    throw new Error(`could not focus submit button; ${JSON.stringify(focusSnap)}`);
+  }
+  await win.keyboard.press('Enter');
+
+  // Detect submit via the store: QuestionStickyHost calls
+  // markQuestionAnswered → block.answered=true. This bypasses the
+  // contextBridge stubbing trickery (window.ccsm methods are read-only via
+  // contextBridge in production builds) and asserts the user-visible effect.
+  await win.waitForFunction(() => {
+    const s = window.__ccsmStore.getState();
+    for (const b of s.messagesBySession[s.activeId] ?? []) {
+      if (b.id === 'q-ENTER-SUBMIT' && b.answered) return true;
+    }
+    return false;
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const b = (s.messagesBySession[s.activeId] ?? []).find((x) => x.id === 'q-ENTER-SUBMIT');
+    return {
+      answered: b?.answered,
+      rejected: b?.rejected,
+      cardGone: !document.querySelector('[data-testid="question-submit"]'),
+    };
+  });
+  if (!after.answered || after.rejected) {
+    throw new Error(`expected submit fired (answered=true, rejected=false) on Enter; got ${JSON.stringify(after)}`);
+  }
+
+  log(`Enter on Submit button fired onSubmit (answered=${after.answered}, cardGone=${after.cardGone})`);
+}
+
+// ---------- question-focus-ring-visible ----------
+// Task #307 bug 4: focus ring on options must be visible on the
+// state-waiting/[0.06] tinted bg. Check that focused option has a non-none
+// outline whose color has decent contrast against the row bg.
+async function caseQuestionFocusRingVisible({ win, log }) {
+  await seedSession(win);
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-RING',
+      requestId: 'q-RING',
+      questions: [{
+        question: 'Pick',
+        options: [{ label: 'A' }, { label: 'B' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 });
+
+  // Move focus to second option to ensure :focus-visible applies (keyboard nav).
+  await win.keyboard.press('ArrowDown');
+  await win.waitForTimeout(80);
+
+  const ring = await win.evaluate(() => {
+    const el = document.activeElement;
+    if (!(el instanceof HTMLElement)) return { ok: false, why: 'no active' };
+    const cs = getComputedStyle(el);
+    const outline = cs.outlineStyle;
+    const w = parseFloat(cs.outlineWidth);
+    const color = cs.outlineColor;
+    return { outline, w, color, label: el.getAttribute('data-question-label') };
+  });
+
+  if (!ring) throw new Error('no ring snapshot');
+  if (ring.outline === 'none' || !(ring.w > 0)) {
+    throw new Error(`focus ring not visible: outline=${ring.outline} width=${ring.w} color=${ring.color}`);
+  }
+  // Width should be at least 1.5px or color should be near-opaque (alpha-ish).
+  // Crude visibility check: outlineWidth must be >= 1.5 OR alpha approx 1.
+  // We can't easily luminance-compare against the bg; assert width >= 1.5px
+  // (the fix bumps it from 1px to 1.5px / 2px) OR use a non-translucent color.
+  // The audit says alpha 0.6 is too low; require >= 0.8 OR width >= 2.
+  let alpha = 1;
+  // Match rgba(r,g,b,a) or oklab(L a b / alpha) or oklch(L c h / alpha).
+  let m = /rgba?\(([^)]+)\)/.exec(ring.color);
+  if (m) {
+    const parts = m[1].split(',').map((s) => s.trim());
+    if (parts.length === 4) alpha = parseFloat(parts[3]);
+  } else {
+    m = /(?:oklab|oklch|lab|lch|hsl|hsla)\([^)]*\/\s*([0-9.]+)\)/.exec(ring.color);
+    if (m) alpha = parseFloat(m[1]);
+  }
+  // The audit says alpha 0.6 is too low on the waiting tint bg. Require
+  // alpha >= 0.9 OR outline-width >= 2px (the fix doubles outline density).
+  if (alpha < 0.9 && ring.w < 2) {
+    throw new Error(`focus ring contrast too low on tinted bg: alpha=${alpha} width=${ring.w} color=${ring.color}`);
+  }
+  log(`focus ring on option "${ring.label}": outline=${ring.outline} width=${ring.w} color=${ring.color} alpha=${alpha}`);
+}
+
+// ---------- question-other-page-flip-preserves-focus ----------
+// Task #307 bug 5: switching question and switching back should NOT steal
+// focus from the Other input if it has been selected + has typed content.
+async function caseQuestionOtherPageFlipPreservesFocus({ win, log }) {
+  await seedSession(win);
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-PAGE-FLIP',
+      requestId: 'q-PAGE-FLIP',
+      questions: [
+        { question: 'Q1', options: [{ label: 'Python' }, { label: 'Ruby' }] },
+        { question: 'Q2', options: [{ label: 'X' }, { label: 'Y' }] }
+      ]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  await win.waitForFunction(() => {
+    const el = document.activeElement;
+    return el instanceof HTMLElement && el.hasAttribute('data-question-option');
+  }, null, { timeout: 2_000 });
+
+  // Click Other (3rd, last option) on Q1.
+  const other = win.locator('[data-question-option][data-question-label="Other"]').first();
+  await other.click();
+  await win.waitForTimeout(150);
+
+  // Type into the Other input.
+  const otherInput = win.locator('[data-testid="question-other-input"]').first();
+  await otherInput.click();
+  await win.waitForTimeout(50);
+  await win.keyboard.type('abc');
+  await win.waitForTimeout(80);
+
+  // Confirm Other input has 'abc'.
+  const before = await win.evaluate(() => {
+    const inp = document.querySelector('[data-testid="question-other-input"]');
+    return { txt: inp?.textContent, isFocused: document.activeElement === inp };
+  });
+  if (before.txt !== 'abc' || !before.isFocused) {
+    throw new Error(`pre-flip: Other input expected 'abc' + focused, got ${JSON.stringify(before)}`);
+  }
+
+  // Click tab Q2 (page right).
+  await win.locator('[data-testid="question-tab-1"]').click();
+  await win.waitForTimeout(200);
+
+  // Click tab Q1 (page back).
+  await win.locator('[data-testid="question-tab-0"]').click();
+  await win.waitForTimeout(300);
+
+  // Active element should be the Other input again, not "Python".
+  const after = await win.evaluate(() => {
+    const el = document.activeElement;
+    return {
+      tag: el?.tagName?.toLowerCase() ?? null,
+      isOtherInput: el?.getAttribute?.('data-testid') === 'question-other-input',
+      label: el instanceof HTMLElement ? el.getAttribute('data-question-label') : null,
+      otherTxt: document.querySelector('[data-testid="question-other-input"]')?.textContent
+    };
+  });
+
+  if (after.otherTxt !== 'abc') {
+    throw new Error(`Other text lost on page flip; got '${after.otherTxt}'`);
+  }
+  if (!after.isOtherInput) {
+    throw new Error(`page flip stole focus from Other input; got ${JSON.stringify(after)}`);
+  }
+  log('page flip preserved Other-input focus + typed text');
+}
+
+// ---------- question-other-esc-dismisses ----------
+// Task #302: Esc inside the Other contenteditable must dismiss the question
+// (currently stopPropagation in onKeyDown swallows Escape).
+async function caseQuestionOtherEscDismisses({ win, log }) {
+  await seedSession(win);
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-OTHER-ESC',
+      requestId: 'q-OTHER-ESC',
+      questions: [{
+        question: 'Q',
+        options: [{ label: 'A' }]
+      }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  // Click Other to expand input + focus it.
+  await win.locator('[data-question-option][data-question-label="Other"]').first().click();
+  await win.waitForTimeout(150);
+  await win.locator('[data-testid="question-other-input"]').first().click();
+  await win.waitForTimeout(80);
+  await win.keyboard.type('hi');
+  await win.waitForTimeout(50);
+
+  // Press Esc — should close the question.
+  await win.keyboard.press('Escape');
+  await win.waitForTimeout(300);
+
+  const dismissed = await win.evaluate(() => {
+    const card = document.querySelector('[data-question-sticky]');
+    const block = window.__ccsmStore?.getState()?.messagesBySession?.['s-perm']?.find?.(b => b.id === 'q-OTHER-ESC');
+    return {
+      cardGone: !card,
+      answered: block?.answered,
+      rejected: block?.rejected
+    };
+  });
+
+  if (!dismissed.cardGone || !dismissed.answered) {
+    throw new Error(`Esc in Other input did not dismiss; ${JSON.stringify(dismissed)}`);
+  }
+  log(`Esc inside Other input dismissed the question (rejected=${dismissed.rejected})`);
+}
+
+// ---------- question-last-question-other-enter-submits ----------
+// Task #307 bug 7: pressing Enter inside Other input on the LAST question
+// should submit (not no-op via active+1 clamp).
+async function caseQuestionLastQuestionOtherEnterSubmits({ win, log }) {
+  await seedSession(win);
+
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-LAST-OTHER-ENTER',
+      requestId: 'q-LAST-OTHER-ENTER',
+      questions: [
+        { question: 'Q1', options: [{ label: 'A' }] },
+        { question: 'Q2', options: [{ label: 'B' }] },
+        { question: 'Q3', options: [{ label: 'C' }] }
+      ]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  // Pick Q1.A.
+  await win.locator('[data-question-option][data-question-label="A"]').first().click();
+  await win.waitForTimeout(450); // auto-advance
+  // Pick Q2.B.
+  await win.locator('[data-question-option][data-question-label="B"]').first().click();
+  await win.waitForTimeout(450);
+  // On Q3: click Other.
+  await win.locator('[data-testid="question-tab-2"]').click();
+  await win.waitForTimeout(150);
+  await win.locator('[data-question-option][data-question-label="Other"]').first().click();
+  await win.waitForTimeout(150);
+  await win.locator('[data-testid="question-other-input"]').first().click();
+  await win.waitForTimeout(80);
+  await win.keyboard.type('xyz');
+  await win.waitForTimeout(80);
+
+  // Press Enter inside Other on the last question — should fire submit.
+  await win.keyboard.press('Enter');
+  // Assert via store: markQuestionAnswered records `answers` keyed by
+  // question text. Bypasses contextBridge stubbing limitations.
+  await win.waitForFunction(() => {
+    const s = window.__ccsmStore.getState();
+    for (const b of s.messagesBySession[s.activeId] ?? []) {
+      if (b.id === 'q-LAST-OTHER-ENTER' && b.answered) return true;
+    }
+    return false;
+  }, null, { timeout: 2_000 }).catch(() => {});
+
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const b = (s.messagesBySession[s.activeId] ?? []).find((x) => x.id === 'q-LAST-OTHER-ENTER');
+    return {
+      answered: b?.answered,
+      rejected: b?.rejected,
+      answers: b?.answers,
+    };
+  });
+  if (!after.answered || after.rejected) {
+    throw new Error(`expected submit fired on last-question Other Enter; got ${JSON.stringify(after)}`);
+  }
+  // Q3 answer should be 'xyz' (Other replaced with typed text).
+  if (after.answers?.['Q3'] !== 'xyz') {
+    throw new Error(`expected Q3 answer 'xyz'; got '${after.answers?.['Q3']}' (full=${JSON.stringify(after.answers)})`);
+  }
+  log(`Enter on Other input of last question submitted; Q3='${after.answers['Q3']}'`);
+}
+
+// ---------- question-many-options-scrolls ----------
+// Task #307 bug 8: a question with many options should make the options
+// container scroll, not blow out the page height.
+async function caseQuestionManyOptionsScrolls({ win, log }) {
+  await seedSession(win);
+  await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const opts = Array.from({ length: 25 }, (_, i) => ({ label: `option-${i + 1}` }));
+    s.appendBlocks(s.activeId, [{
+      kind: 'question',
+      id: 'q-MANY',
+      requestId: 'q-MANY',
+      questions: [{ question: 'Pick', options: opts }]
+    }]);
+  });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
+  await win.waitForTimeout(200);
+
+  const scrollInfo = await win.evaluate(() => {
+    const card = document.querySelector('[data-question-sticky]');
+    if (!card) return null;
+    // The options container has role=radiogroup or =group inside the card.
+    const grp = card.querySelector('[role="radiogroup"], [role="group"]');
+    if (!grp) return { reason: 'no group' };
+    const cs = getComputedStyle(grp);
+    return {
+      scrollHeight: grp.scrollHeight,
+      clientHeight: grp.clientHeight,
+      overflowY: cs.overflowY,
+      overflow: cs.overflow,
+      maxHeight: cs.maxHeight
+    };
+  });
+  if (!scrollInfo || scrollInfo.reason) {
+    throw new Error(`couldn't find options group: ${JSON.stringify(scrollInfo)}`);
+  }
+  if (scrollInfo.overflowY !== 'auto' && scrollInfo.overflowY !== 'scroll') {
+    throw new Error(`options group overflowY should be auto/scroll; got '${scrollInfo.overflowY}' max-height='${scrollInfo.maxHeight}'`);
+  }
+  if (!(scrollInfo.scrollHeight > scrollInfo.clientHeight)) {
+    throw new Error(`expected scrollable overflow; scrollHeight=${scrollInfo.scrollHeight} clientHeight=${scrollInfo.clientHeight}`);
+  }
+  log(`many-options scrollable: ${scrollInfo.scrollHeight}px content / ${scrollInfo.clientHeight}px visible, overflow-y=${scrollInfo.overflowY}`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -2369,6 +2866,15 @@ await runHarness({
     { id: 'permission-focus-not-stolen', run: casePermissionFocusNotStolen },
     { id: 'permission-focus-returns-to-textarea', run: casePermissionFocusReturnsToTextarea },
     { id: 'question-focus-on-mount', run: caseQuestionFocusOnMount },
+    // Task #307 batch — QuestionBlock UX parity with PermissionPromptBlock.
+    { id: 'question-tab-trap-cycles', run: caseQuestionTabTrapCycles },
+    { id: 'question-yn-hotkey', run: caseQuestionYNHotkey },
+    { id: 'question-enter-on-submit-button', run: caseQuestionEnterOnSubmitButton },
+    { id: 'question-focus-ring-visible', run: caseQuestionFocusRingVisible },
+    { id: 'question-other-page-flip-preserves-focus', run: caseQuestionOtherPageFlipPreservesFocus },
+    { id: 'question-other-esc-dismisses', run: caseQuestionOtherEscDismisses },
+    { id: 'question-last-question-other-enter-submits', run: caseQuestionLastQuestionOtherEnterSubmits },
+    { id: 'question-many-options-scrolls', run: caseQuestionManyOptionsScrolls },
     { id: 'permission-shortcut-scope', run: casePermissionShortcutScope },
     { id: 'permission-nested-input', run: casePermissionNestedInput },
     { id: 'permission-truncate-width', run: casePermissionTruncateWidth },
