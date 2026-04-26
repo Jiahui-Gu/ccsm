@@ -1081,6 +1081,88 @@ async function caseSlashPickerClaudeConfigDir({ win, log }) {
   log(`picker showed /local-test; suppressed superpowers:brainstorm (env-scoped fake ~/.claude)`);
 }
 
+// ---------- slash-namespaced-unknown-toast ----------
+// Follow-up to PR #346: typing a namespaced-shape unknown slash command
+// (e.g. `/plugin`, `/superpowers:brainstorm`) and pressing Enter must
+// surface a local error toast and NOT append a user message to the
+// transcript (forwarding the raw text to the SDK ends up as plain prose
+// that the model misinterprets — the user-side bug PR #346 paired with
+// the picker filter).
+//
+// Reverse-verification: stash the 'unknown-namespaced' branch in
+// dispatchSlashCommand (or the toast handler in InputBar) → /plugin
+// falls through to the local-echo append path → no toast + a user
+// block appears → case fails.
+async function caseSlashNamespacedUnknownToast({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g-slash-tn', name: 'G', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: 's-slash-tn-1', name: 'slash-tn', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g-slash-tn', agentType: 'claude-code'
+      }],
+      activeId: 's-slash-tn-1',
+      messagesBySession: { 's-slash-tn-1': [] },
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(150);
+
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  await textarea.click();
+
+  // Two namespaced shapes the dispatcher should bounce locally:
+  //   - `/plugin`              (CLI plugin manager — SDK can't run it)
+  //   - `/superpowers:foo`     (colon-namespaced plugin/skill)
+  const cases = [
+    { input: '/plugin', expectedTitle: 'Unknown command: /plugin' },
+    { input: '/superpowers:foo', expectedTitle: 'Unknown command: /superpowers:foo' }
+  ];
+
+  for (const { input, expectedTitle } of cases) {
+    await textarea.fill(input);
+    await win.waitForTimeout(80);
+    // Picker may be open showing "No matching command" — Esc dismisses it
+    // so the next Enter fires send() instead of committing a picker row.
+    await win.keyboard.press('Escape');
+    await win.waitForTimeout(60);
+    await win.keyboard.press('Enter');
+    await win.waitForTimeout(200);
+
+    // Assert error toast surfaced with the exact title.
+    const toast = win.locator('[data-testid="toast-error"]', { hasText: expectedTitle });
+    await toast.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {
+      throw new Error(`expected error toast titled "${expectedTitle}" for ${input}; not visible`);
+    });
+
+    // Assert NO user message was appended (would mean the slash text fell
+    // through to the regular send path).
+    const userBlockCount = await win.evaluate((sid) => {
+      const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+      return blocks.filter((b) => b.kind === 'user').length;
+    }, 's-slash-tn-1');
+    if (userBlockCount !== 0) {
+      throw new Error(
+        `expected 0 user blocks after typing ${input} (toast path); found ${userBlockCount}`
+      );
+    }
+
+    // Composer must be cleared so the user can keep typing.
+    const value = await textarea.inputValue();
+    if (value !== '') {
+      throw new Error(`expected textarea cleared after ${input}; still has "${value}"`);
+    }
+
+    // Dismiss the toast so the next iteration's wait isn't satisfied by a
+    // stale one. Esc dismisses the most recent toast.
+    await win.keyboard.press('Escape');
+    await win.waitForTimeout(60);
+  }
+
+  log(`namespaced unknown slashes (${cases.map((c) => c.input).join(', ')}) bounced locally with toast; no user messages forwarded`);
+}
+
 // ---------- palette-empty ----------
 // CommandPalette empty state (#117): on open, NO results shown until user
 // types. Plus #258 CP3 (no-matches block) and CP4 (kbd hint footer).
@@ -2727,6 +2809,7 @@ await runHarness({
       },
       run: caseSlashPickerClaudeConfigDir,
     },
+    { id: 'slash-namespaced-unknown-toast', run: caseSlashNamespacedUnknownToast },
     { id: 'settings-open', run: caseSettingsOpen },
     { id: 'search-shortcut-f', run: caseSearchShortcutF },
     { id: 'tutorial', run: caseTutorial },

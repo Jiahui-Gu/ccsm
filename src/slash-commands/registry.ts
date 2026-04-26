@@ -133,16 +133,46 @@ export function findSlashCommand(
   return all.find((c) => c.name === name);
 }
 
-export type DispatchOutcome = 'handled' | 'pass-through' | 'unknown';
+export type DispatchOutcome =
+  | 'handled'
+  | 'pass-through'
+  | 'unknown'
+  | 'unknown-namespaced';
+
+// Names whose shape advertises "this is a CLI / plugin command" but which
+// the SDK transport cannot execute. Two cases:
+//
+//   1. Colon-namespaced (`/superpowers:brainstorm`, `/pua:kpi`) — always a
+//      plugin / skill / agent command discovered on disk. PR #346 already
+//      hides these from the picker, but a user who types one by hand still
+//      needs a clear local rejection instead of having the raw text sent
+//      to the model (which then replies "deprecated, use the skill" or
+//      similar — the bug PR #346 surfaced from the user side).
+//   2. `/plugin` — the CLI's own plugin manager. The SDK doesn't load it;
+//      forwarding "/plugin" to claude.exe via the agent transport ends up
+//      as plain user prose, not a command invocation.
+//
+// Anything else (e.g. `/nope`, `/help`) is left as plain `'unknown'` so
+// the existing forward-compat path keeps working — those names might be
+// valid CLI commands ccsm hasn't catalogued yet.
+export function isUnsupportedSlashShape(name: string): boolean {
+  if (name.includes(':')) return true;
+  if (name === 'plugin') return true;
+  return false;
+}
 
 // Dispatch a parsed slash command. The caller passes the merged command
 // list (built-ins ⊕ disk-discovered).
 //
-// - 'handled'      — local clientHandler ran; do NOT forward.
-// - 'pass-through' — known dynamic / pass-through command; forward to claude.exe.
-// - 'unknown'      — name doesn't match anything we know; caller decides
-//                    (current InputBar still forwards so future CLI commands
-//                    keep working before our registry catches up).
+// - 'handled'            — local clientHandler ran; do NOT forward.
+// - 'pass-through'       — known dynamic / pass-through command; forward to claude.exe.
+// - 'unknown-namespaced' — unknown command whose shape (`/x:y` or `/plugin`)
+//                          marks it as plugin/skill/CLI-only. Caller should
+//                          show a local "Unknown command" toast and NOT
+//                          forward — the SDK can't run it.
+// - 'unknown'            — unrecognised plain name; caller decides
+//                          (current InputBar still forwards so future CLI
+//                          commands keep working before our registry catches up).
 export async function dispatchSlashCommand(
   raw: string,
   all: SlashCommand[],
@@ -151,7 +181,9 @@ export async function dispatchSlashCommand(
   const parsed = parseSlashInvocation(raw);
   if (!parsed) return 'unknown';
   const cmd = findSlashCommand(all, parsed.name);
-  if (!cmd) return 'unknown';
+  if (!cmd) {
+    return isUnsupportedSlashShape(parsed.name) ? 'unknown-namespaced' : 'unknown';
+  }
   if (cmd.clientHandler) {
     await cmd.clientHandler({ ...ctx, args: parsed.args });
     return 'handled';

@@ -86,6 +86,38 @@ describe('dispatchSlashCommand', () => {
     );
     expect(outcome).toBe('unknown');
   });
+  it('returns unknown-namespaced for colon-namespaced unknowns', async () => {
+    const outcome = await dispatchSlashCommand(
+      '/superpowers:brainstorm idea',
+      BUILT_IN_COMMANDS,
+      { sessionId: 's1', args: '' }
+    );
+    expect(outcome).toBe('unknown-namespaced');
+  });
+  it('returns unknown-namespaced for /plugin (CLI-only manager)', async () => {
+    const outcome = await dispatchSlashCommand(
+      '/plugin',
+      BUILT_IN_COMMANDS,
+      { sessionId: 's1', args: '' }
+    );
+    expect(outcome).toBe('unknown-namespaced');
+  });
+  it('still returns pass-through when a colon-namespaced command IS in the merged list', async () => {
+    const merged = [
+      ...BUILT_IN_COMMANDS,
+      {
+        name: 'foo:bar',
+        source: 'plugin' as const,
+        passThrough: true,
+      },
+    ];
+    const outcome = await dispatchSlashCommand(
+      '/foo:bar',
+      merged,
+      { sessionId: 's1', args: '' }
+    );
+    expect(outcome).toBe('pass-through');
+  });
   it('respects a dynamic command in the merged list (pass-through)', async () => {
     const merged = [
       ...BUILT_IN_COMMANDS,
