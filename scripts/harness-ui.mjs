@@ -1420,10 +1420,12 @@ async function caseTitlebar({ app, win, log }) {
   if (dragRegions.length < 2) {
     throw new Error(`expected >=2 top drag regions, got ${dragRegions.length}: ${JSON.stringify(dragRegions)}`);
   }
-  const EXPECTED_STRIP = 32;
+  // After PR #347: sidebar drag region is 8px (macOS traffic-lights spacer removed),
+  // right pane stays 32px to host WindowControls.
   for (const r of dragRegions) {
-    if (Math.abs(r.height - EXPECTED_STRIP) > 2) {
-      throw new Error(`drag region height expected ~${EXPECTED_STRIP}, got ${r.height}. all=${JSON.stringify(dragRegions)}`);
+    const expected = r.left === 0 ? 8 : 32;
+    if (Math.abs(r.height - expected) > 2) {
+      throw new Error(`drag region height expected ~${expected} (left=${r.left}), got ${r.height}. all=${JSON.stringify(dragRegions)}`);
     }
   }
 
