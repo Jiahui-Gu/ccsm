@@ -14,12 +14,10 @@ const streamers = new Map<string, PartialAssistantStreamer>();
 // so subsequent assistant text blocks in the same turn carry `viaSkill` for
 // the AssistantBlock badge (Task #318).
 const activeSkillBySession = new Map<string, SkillProvenance | null>();
-// Wall-clock timestamps for currently-running turns. We use elapsed time as
-// one of the signals for whether a `turn_done` is worth notifying about — a
-// fast turn that wraps in <15s is rarely worth surfacing, but a long-running
-// one almost always is.
+// Wall-clock timestamps for currently-running turns. Kept around so other
+// future signals (e.g. duration logging) have access; the turn_done
+// notification itself fires unconditionally now.
 const turnStartedAt = new Map<string, number>();
-const TURN_DONE_THRESHOLD_MS = 15_000;
 function streamerFor(sessionId: string): PartialAssistantStreamer {
   let s = streamers.get(sessionId);
   if (!s) {
@@ -305,48 +303,27 @@ export function subscribeAgentEvents(): void {
       // as it streams; we just read from there on load. The previous
       // `saveMessages` call here was a redundant secondary write that
       // mirrored the SDK's own transcript into ccsm's SQLite.
-      // `turn_done` notification policy: only ping when the turn meaningfully
-      // consumed the user's patience — long (>15s), or errored, or this
-      // session isn't the one being watched. Fast, successful, focused turns
-      // are noise; we skip them.
-      const startedAt = turnStartedAt.get(e.sessionId);
+      // turn_done notification: fires unconditionally on every result frame
+      // (subject only to the global enabled gate inside dispatchNotification).
+      // The user explicitly wants to be pinged whenever a turn ends — focus,
+      // duration, and per-event toggles all removed.
       turnStartedAt.delete(e.sessionId);
-      const durationMs = startedAt ? Date.now() - startedAt : 0;
-      const result = e.message as { subtype?: string; is_error?: boolean };
-      const errored =
-        !!result.is_error ||
-        result.subtype === 'error_max_turns' ||
-        result.subtype === 'error_during_execution';
       const isActive = store.activeId === e.sessionId;
       const windowFocused = typeof document !== 'undefined' && document.hasFocus();
       const sessionFocused = isActive && windowFocused;
       // Pulse the sidebar icon when the user isn't actively watching this
-      // session's chat. Cleared by selectSession on click. Same focus rule as
-      // the OS notification below — if the user has eyes on it, no pulse.
+      // session's chat. Cleared by selectSession on click.
       if (!sessionFocused) {
         store.setSessionState(e.sessionId, 'waiting');
       }
-      if (errored || durationMs >= TURN_DONE_THRESHOLD_MS || !sessionFocused) {
+      {
         const session = store.sessions.find((s) => s.id === e.sessionId);
         const sessionName = session?.name ?? 'Session';
-        const title = errored
-          ? i18next.t('notifications.turnErrorTitle', { name: sessionName })
-          : i18next.t('notifications.turnDoneTitle', { name: sessionName });
-        const body = errored ? i18next.t('notifications.turnErrorBody') : undefined;
-        // Wave 1D: build extras for the inlined notify module Adaptive Toast pipeline.
-        // Last user / assistant message previews come from the in-store block
-        // history; we cap them to 200 chars to keep the toast body readable.
-        const blocks = useStore.getState().messagesBySession[e.sessionId] ?? [];
-        const lastUser = [...blocks].reverse().find((b) => b.kind === 'user');
-        const lastAssistant = [...blocks]
-          .reverse()
-          .find((b) => b.kind === 'assistant');
-        const truncate = (s: string, n = 200): string =>
-          s.length > n ? `${s.slice(0, n - 1)}…` : s;
         const groupName = session
           ? store.groups.find((g) => g.id === session.groupId)?.name ?? ''
           : '';
-        const toolCount = blocks.filter((b) => b.kind === 'tool').length;
+        const title = groupName ? `${groupName} / ${sessionName}` : sessionName;
+        const body = i18next.t('notifications.turnDoneBody');
         void dispatchNotification({
           sessionId: e.sessionId,
           eventType: 'turn_done',
@@ -356,17 +333,7 @@ export function subscribeAgentEvents(): void {
             toastId: `done-${e.sessionId}-${Date.now().toString(36)}`,
             sessionName,
             groupName,
-            cwd: session?.cwd,
-            elapsedMs: durationMs,
-            toolCount,
-            lastUserMsg:
-              lastUser && 'text' in lastUser && typeof lastUser.text === 'string'
-                ? truncate(lastUser.text)
-                : '',
-            lastAssistantMsg:
-              lastAssistant && 'text' in lastAssistant && typeof lastAssistant.text === 'string'
-                ? truncate(lastAssistant.text)
-                : '',
+            eventType: 'turn_done',
           },
         });
       }
@@ -422,48 +389,30 @@ export function subscribeAgentEvents(): void {
       const sessionName = session?.name ?? i18next.t('notifications.backgroundSessionFallback');
       backgroundWaitingHandler({ sessionId: req.sessionId, sessionName, prompt });
     }
-    // OS-level notification dispatch is deduped/suppressed inside dispatch:
-    // mute, focus, debounce, and per-event-type toggles all live there. We
-    // just hand it the semantic event and let it decide whether to ping the OS.
+    // OS-level notification: the only suppression that remains is the global
+    // enabled toggle, applied inside dispatchNotification.
     const session = store.sessions.find((s) => s.id === req.sessionId);
     const sessionName = session?.name ?? i18next.t('notifications.backgroundSessionFallback');
+    const groupName = session
+      ? store.groups.find((g) => g.id === session.groupId)?.name ?? ''
+      : '';
     const eventType = block.kind === 'question' ? 'question' : 'permission';
-    const title =
-      block.kind === 'question'
-        ? i18next.t('notifications.questionTitle', { name: sessionName })
-        : i18next.t('notifications.inputNeededTitle', { name: sessionName });
-    let body: string | undefined;
-    if (block.kind === 'question') {
-      body = block.questions[0]?.question;
-    } else if (block.kind === 'waiting') {
-      body = block.intent === 'plan' ? i18next.t('chat.planTitle') : block.prompt;
-    }
+    const title = groupName ? `${groupName} / ${sessionName}` : sessionName;
+    const body =
+      eventType === 'question'
+        ? i18next.t('notifications.questionBody')
+        : i18next.t('notifications.permissionBody');
     void dispatchNotification({
       sessionId: req.sessionId,
       eventType,
       title,
       body,
-      // Wave 1D: rich extras for the inlined notify module Adaptive Toast. The toastId
-      // for permission events is the requestId itself so the main-process
-      // action router can resolve back into the same agent permission gate.
-      // For question events we prefix with `q-` to mirror the in-app block id.
-      extras:
-        block.kind === 'question'
-          ? {
-              toastId: `q-${req.requestId}`,
-              sessionName,
-              cwd: session?.cwd,
-              question: block.questions[0]?.question ?? '',
-              selectionKind: block.questions[0]?.multiSelect ? 'multi' : 'single',
-              optionCount: block.questions[0]?.options.length ?? 0,
-            }
-          : {
-              toastId: req.requestId,
-              sessionName,
-              cwd: session?.cwd,
-              toolName: req.toolName,
-              toolBrief: typeof body === 'string' ? body : '',
-            },
+      extras: {
+        toastId: block.kind === 'question' ? `q-${req.requestId}` : req.requestId,
+        sessionName,
+        groupName,
+        eventType,
+      },
     });
   });
 
