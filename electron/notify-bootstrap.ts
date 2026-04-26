@@ -163,29 +163,6 @@ export function getNotifyRuntimeState(): Readonly<NotifyRuntimeState> {
   return runtimeState;
 }
 
-/**
- * Combined gate evaluated before firing question-style toasts. Returns true
- * when the caller should NOT fire — either the user globally disabled
- * notifications, or the user is focused on the originating session (so the
- * in-app affordance is already visible and a fresh OS toast would be noise).
- *
- * Pure read against `runtimeState` + `BrowserWindow.isFocused()`; safe to
- * call repeatedly and from any module without circular-import risk.
- */
-export function shouldSuppressRetry(sessionId: string | null | undefined): boolean {
-  if (!runtimeState.notificationsEnabled) return true;
-  if (sessionId && runtimeState.activeSessionId === sessionId) {
-    if (shouldSuppressForFocus()) return true;
-  }
-  return false;
-}
-
-/** Test-only — restore mirror to defaults between unit tests. */
-export function __resetNotifyRuntimeStateForTests(): void {
-  runtimeState.notificationsEnabled = true;
-  runtimeState.activeSessionId = null;
-}
-
 // ── Default toast-action router factory (#308) ───────────────────────────
 //
 // Extracted from main.ts so the e2e probe can install the EXACT same
