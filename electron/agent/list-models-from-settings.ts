@@ -152,7 +152,8 @@ export async function readDefaultModelFromSettings(
 export async function listModelsFromSettings(
   opts: ListModelsFromSettingsOpts = {},
 ): Promise<ListModelsResult> {
-  const configDir = opts.configDir ?? path.join(os.homedir(), '.claude');
+  const configDir =
+    opts.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
   const env = opts.env ?? process.env;
 
   const settings = await readSettings(configDir);
