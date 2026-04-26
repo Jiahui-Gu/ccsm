@@ -315,23 +315,41 @@ describe('agent-sdk/SdkSessionRunner', () => {
     },
   );
 
-  it('canUseTool short-circuits AskUserQuestion (passthrough tool)', async () => {
+  it('canUseTool emits onPermissionRequest for AskUserQuestion (passthrough tool routes to renderer UI)', async () => {
+    // Regression for "agent invoked AskUserQuestion but no question card showed
+    // up in the UI": the SDK runner originally short-circuited PASSTHROUGH_TOOLS
+    // to `behavior: 'allow'` here, never notifying the renderer — so no
+    // QuestionStickyHost card mounted, the SDK got an instant allow with empty
+    // input, and the model received an empty tool_result body. The contract is:
+    // PASSTHROUGH tools MUST surface through onPermissionRequest so the
+    // renderer's bespoke question / plan UI is the single source of truth.
     const onPerm = vi.fn();
     const runner = new SdkSessionRunner('s12', noop, noop, onPerm, noop);
     await runner.start({ ...baseStart, permissionMode: 'default' });
 
     const canUseTool = (fake.getOptions()?.options as { canUseTool?: (toolName: string, input: unknown, ctx: { signal: AbortSignal; toolUseID: string }) => Promise<unknown> }).canUseTool!;
     const ac = new AbortController();
-    const input = { question: 'y/n?' };
-    const decision = (await canUseTool(
-      'AskUserQuestion',
-      input,
-      { signal: ac.signal, toolUseID: 't4' },
-    )) as { behavior: string; updatedInput?: unknown };
-    expect(decision.behavior).toBe('allow');
-    // PASSTHROUGH_TOOLS allow path also requires `updatedInput` (Bug #169).
-    expect(decision.updatedInput).toBe(input);
-    expect(onPerm).not.toHaveBeenCalled();
+    const input = { questions: [{ question: 'y/n?', options: [{ label: 'y' }, { label: 'n' }] }] };
+    // Kick off the canUseTool call but don't await — it should suspend on the
+    // pending permission promise until we resolve it.
+    const decisionPromise = canUseTool('AskUserQuestion', input, {
+      signal: ac.signal,
+      toolUseID: 't4',
+    });
+    // Yield so the runner has a chance to call onPermissionRequest synchronously.
+    await new Promise((r) => setImmediate(r));
+    expect(onPerm).toHaveBeenCalledTimes(1);
+    const req = onPerm.mock.calls[0][0] as { requestId: string; toolName: string; input: unknown };
+    expect(req.toolName).toBe('AskUserQuestion');
+    expect(req.input).toBe(input);
+    expect(typeof req.requestId).toBe('string');
+
+    // Renderer settles the request via resolvePermission — the question UI's
+    // submit/reject path always denies the canUseTool gate (then sends the
+    // user's answers as the next user message). See QuestionStickyHost.
+    runner.resolvePermission(req.requestId, 'deny');
+    const decision = (await decisionPromise) as { behavior: string; message?: string };
+    expect(decision.behavior).toBe('deny');
     runner.close();
   });
 
@@ -371,7 +389,11 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
-  it('PreToolUse hook returns allow for passthrough tools (#94)', async () => {
+  it('PreToolUse hook returns ask for passthrough tools so canUseTool fires (#94)', async () => {
+    // PASSTHROUGH tools must reach canUseTool so onPermissionRequest can mount
+    // the renderer's question / plan UI. Returning 'allow' here would let the
+    // CLI bypass canUseTool and synthesize an empty tool_result — exactly the
+    // bug "agent asked but nothing showed up in UI".
     const runner = new SdkSessionRunner('s12-pt-pass', noop, noop, noop, noop);
     await runner.start({ ...baseStart, permissionMode: 'default' });
     const hook = getPreToolUseHook();
@@ -382,9 +404,30 @@ describe('agent-sdk/SdkSessionRunner', () => {
         'tu-pass',
         { signal: ac.signal },
       );
-      expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
     }
     runner.close();
+  });
+
+  it('PreToolUse hook returns ask for passthrough tools even in bypass modes', async () => {
+    // bypassPermissions / acceptEdits / auto skip the host round-trip for
+    // ordinary tools, but passthrough tools (AskUserQuestion / ExitPlanMode)
+    // must always reach canUseTool — the user explicitly opted into those
+    // interactions; bypass mode applies to "tools the agent uses without
+    // asking", not "questions the agent asks the user".
+    for (const mode of ['bypassPermissions', 'acceptEdits', 'auto'] as const) {
+      const runner = new SdkSessionRunner(`s12-pt-pass-${mode}`, noop, noop, noop, noop);
+      await runner.start({ ...baseStart, permissionMode: mode });
+      const hook = getPreToolUseHook();
+      const ac = new AbortController();
+      const out = await hook(
+        { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' },
+        'tu-aq',
+        { signal: ac.signal },
+      );
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
+      runner.close();
+    }
   });
 
   it.each(['bypassPermissions', 'acceptEdits', 'auto'] as const)(

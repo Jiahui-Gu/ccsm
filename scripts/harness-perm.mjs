@@ -1556,6 +1556,84 @@ async function caseAskUserQuestionNoDupAndResolves({ app, win, log }) {
   log('AskUserQuestion dedup + resolve routing locked down');
 }
 
+// ---------- askuserquestion-routes-via-permission-request ----------
+// Regression for: "agent invoked AskUserQuestion but no question card showed
+// up in the UI". The SDK runner used to short-circuit PASSTHROUGH_TOOLS in
+// canUseTool / PreToolUse to `behavior: 'allow'`, which skipped
+// onPermissionRequest entirely. Result: SDK got synthetic allow with empty
+// input, no `agent:permissionRequest` IPC frame ever fired, no question card
+// ever mounted, and the agent received an empty tool_result body.
+//
+// This case asserts the IPC frame the renderer relies on actually mounts a
+// question card. We send the frame directly from main's webContents to skip
+// the cost of spawning real claude and getting the model to call AskUser-
+// Question — but the renderer-side wiring (lifecycle.ts permissionRequest →
+// permissionRequestToWaitingBlock → store.appendBlocks → QuestionStickyHost)
+// is exercised end-to-end exactly as it would be from a real SDK call.
+//
+// If the SDK runner regresses to swallowing PASSTHROUGH_TOOLS, the unit
+// test in electron/agent-sdk/__tests__/sessions.test.ts catches the SDK side;
+// this case catches the renderer-IPC side.
+async function caseAskUserQuestionRoutesViaPermissionRequest({ app, win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+    s.createSession({ name: 'aq-route-probe' });
+    return window.__ccsmStore.getState().activeId;
+  });
+  // Simulate "agent is running" so the renderer doesn't reject the in-flight
+  // permission frame as orphaned.
+  await win.evaluate((sid) => window.__ccsmStore.getState().setRunning(sid, true), sessionId);
+
+  const REQUEST_ID = 'perm-aq-route-1';
+  const QUESTION = 'Pick a color';
+  // Emit the IPC frame the SDK runner's onPermissionRequest path produces.
+  // Mirrors manager.ts L146: `this.emit('agent:permissionRequest', { sessionId, ...req })`.
+  await app.evaluate(({ BrowserWindow }, payload) => {
+    const wcs = BrowserWindow.getAllWindows().map((w) => w.webContents);
+    for (const wc of wcs) {
+      if (!wc.isDestroyed()) wc.send('agent:permissionRequest', payload);
+    }
+  }, {
+    sessionId,
+    requestId: REQUEST_ID,
+    toolName: 'AskUserQuestion',
+    input: {
+      questions: [
+        { question: QUESTION, options: [{ label: 'red' }, { label: 'blue' }] },
+      ],
+    },
+  });
+
+  // Question card MUST mount. Before the fix nothing rendered — the
+  // PASSTHROUGH short-circuit skipped onPermissionRequest, so this IPC frame
+  // never fired in production and the bug went undetected by every existing
+  // probe (all of which inject blocks directly into the store).
+  await win.waitForSelector('[data-question-sticky] [data-question-option]', { timeout: 5000 });
+
+  const observed = await win.evaluate(({ sid, q }) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] || [];
+    const qb = blocks.find((b) => b.kind === 'question');
+    return {
+      hasQuestionBlock: !!qb,
+      requestId: qb?.requestId,
+      firstQuestion: qb?.questions?.[0]?.question,
+      optionCount: qb?.questions?.[0]?.options?.length,
+      domQuestionText: document.querySelector('[data-question-sticky]')?.innerText?.includes(q) ?? false,
+      genericPermBlock: blocks.some((b) => b.kind === 'waiting' && b.toolName === 'AskUserQuestion'),
+    };
+  }, { sid: sessionId, q: QUESTION });
+
+  if (!observed.hasQuestionBlock) throw new Error('expected question block in store, got none');
+  if (observed.requestId !== REQUEST_ID) throw new Error(`requestId not threaded into block: got ${observed.requestId}`);
+  if (observed.firstQuestion !== QUESTION) throw new Error(`question text mismatch: ${observed.firstQuestion}`);
+  if (observed.optionCount !== 2) throw new Error(`expected 2 options, got ${observed.optionCount}`);
+  if (!observed.domQuestionText) throw new Error('question text not visible in QuestionStickyHost DOM');
+  if (observed.genericPermBlock) throw new Error('AskUserQuestion fell through to generic waiting/permission block — parseQuestions failed?');
+
+  log('AskUserQuestion permission-request frame mounts a question card');
+}
+
 // ---------- env-passthrough ----------
 // Was: probe-e2e-env-passthrough.mjs.
 // Auth env (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN) flows through
@@ -1761,6 +1839,19 @@ await runHarness({
         });
       },
       run: caseAskUserQuestionNoDupAndResolves,
+    },
+    // askuserquestion-routes-via-permission-request: regression for
+    // "agent asked but no question card showed up". Fires the
+    // agent:permissionRequest IPC frame the SDK runner emits in production
+    // (after the PASSTHROUGH short-circuit was removed) and asserts a
+    // question card mounts in the renderer. Pure renderer-IPC contract — no
+    // real claude needed; pairs with the SDK-side unit test in
+    // electron/agent-sdk/__tests__/sessions.test.ts that asserts onPermission-
+    // Request is invoked for AskUserQuestion.
+    {
+      id: 'askuserquestion-routes-via-permission-request',
+      userDataDir: 'fresh',
+      run: caseAskUserQuestionRoutesViaPermissionRequest,
     },
     // permission-allow-bash: requires real claude.exe to round-trip the
     // nested control_response envelope (Bug L). Fresh udd so the renderer's
