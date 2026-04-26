@@ -96,3 +96,17 @@ export function _resetForTests(): void {
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = null;
 }
+
+// E2E debug affordance — mirrors `window.__ccsmStore` / `window.__ccsmI18n`.
+// Themed harnesses run multiple cases inside one Electron process; the
+// module-scope `cache` survives the per-case store reset, so a draft typed
+// during case N (e.g. the "n" keypress in casePermissionPrompt) leaks into
+// the InputBar's initial value for case N+1, focuses the composer, and steals
+// focus from the next permission prompt (see PR #320 root-cause writeup).
+// Exposing `_resetForTests` on the window lets the harness scrub the cache
+// without going through DOM input events that introduce focus races.
+if (typeof window !== 'undefined') {
+  (window as unknown as { __ccsmDrafts?: { _resetForTests: () => void } }).__ccsmDrafts = {
+    _resetForTests
+  };
+}
