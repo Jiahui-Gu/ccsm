@@ -17,7 +17,7 @@
 //     in-app QuestionBlock onSubmit and the toast focus action follow-up),
 //     which is the only path that ends a question's pending state.
 //   * Timer state lives in the main process — same lifetime as the
-//     `@ccsm/notify` notifier — so a renderer reload doesn't orphan it.
+//     the inlined notify module notifier — so a renderer reload doesn't orphan it.
 //   * Re-emission re-runs `notifyQuestion` with the SAME toastId so the
 //     SDK's dedupe / activation routing stays coherent (the action router
 //     in main.ts looks up by toastId).

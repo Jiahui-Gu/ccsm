@@ -108,7 +108,7 @@
     "webpack-dev-server": "^5.2.0"
   },
   "optionalDependencies": {
-    "@ccsm/notify": "github:Jiahui-Gu/ccsm-notify#v0.1.1"
+    "electron-windows-notifications": "^3.0.8"
   },
   "build": {
     "appId": "com.ccsm.app",

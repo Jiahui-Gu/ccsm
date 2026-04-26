@@ -333,7 +333,7 @@ export function subscribeAgentEvents(): void {
           ? i18next.t('notifications.turnErrorTitle', { name: sessionName })
           : i18next.t('notifications.turnDoneTitle', { name: sessionName });
         const body = errored ? i18next.t('notifications.turnErrorBody') : undefined;
-        // Wave 1D: build extras for the @ccsm/notify Adaptive Toast pipeline.
+        // Wave 1D: build extras for the the inlined notify module Adaptive Toast pipeline.
         // Last user / assistant message previews come from the in-store block
         // history; we cap them to 200 chars to keep the toast body readable.
         const blocks = useStore.getState().messagesBySession[e.sessionId] ?? [];
@@ -443,7 +443,7 @@ export function subscribeAgentEvents(): void {
       eventType,
       title,
       body,
-      // Wave 1D: rich extras for the @ccsm/notify Adaptive Toast. The toastId
+      // Wave 1D: rich extras for the the inlined notify module Adaptive Toast. The toastId
       // for permission events is the requestId itself so the main-process
       // action router can resolve back into the same agent permission gate.
       // For question events we prefix with `q-` to mirror the in-app block id.

@@ -290,7 +290,7 @@ const en = {
       testFailed: 'Failed - OS notifications unavailable.',
       moduleAvailable: 'Rich Windows toasts are available.',
       moduleUnavailable:
-        'Rich Windows toasts are unavailable on this machine — the optional @ccsm/notify native module did not install. CCSM will fall back to in-app banners and standard system notifications.',
+        'Rich Windows toasts are unavailable on this machine — the optional native notification module did not install. CCSM will fall back to in-app banners and standard system notifications.',
       moduleChecking: 'Checking notification module…'
     },
     connection: {

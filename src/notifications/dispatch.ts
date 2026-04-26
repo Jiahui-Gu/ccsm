@@ -8,7 +8,7 @@ export interface DispatchInput {
   title: string;
   body?: string;
   /**
-   * Optional rich metadata forwarded to `@ccsm/notify` Adaptive Toasts in
+   * Optional rich metadata forwarded to the inlined notify module Adaptive Toasts in
    * the main process (Wave 1D). Plain Electron Notification toasts ignore
    * this — they only need `title` + `body`. Routing the action callback
    * (Allow / Allow always / Reject) back to the renderer relies on
