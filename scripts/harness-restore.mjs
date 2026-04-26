@@ -1944,6 +1944,97 @@ async function caseNewSessionDefaultModelFromClaudeSettings({ log, registerDispo
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// CASE: new-session-default-model-honors-claude-config-dir
+// Same intent as the case above, but verifies the read honors
+// `CLAUDE_CONFIG_DIR` instead of falling back to `~/.claude`. ccsm itself
+// pins `CLAUDE_CONFIG_DIR=~/.claude/` so production happens to be fine,
+// but `readDefaultModelFromSettings()` previously hard-coded
+// `path.join(os.homedir(), '.claude', 'settings.json')` — meaning if a user
+// (or future ccsm release) ever points the env var elsewhere, the model
+// read silently falls behind every other config-dir consumer (commands,
+// CLI, etc.). The fix mirrors `commands-loader.ts:231`.
+//
+// Setup: HOME points at sandbox A (containing a *decoy* `~/.claude/`
+// without a model field), CLAUDE_CONFIG_DIR points at sandbox B
+// (containing the real settings.json with `model: claude-sonnet-4-6`).
+// WITHOUT the fix, the read picks A → null → assertion fails. WITH the
+// fix, it picks B → `claude-sonnet-4-6`.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseNewSessionDefaultModelHonorsClaudeConfigDir({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-cfgdir-home-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  // Decoy `~/.claude/settings.json` in HOME with NO model field so a
+  // homedir-fallback read returns null (not the value we expect).
+  const decoyClaudeDir = path.join(fakeHome, '.claude');
+  fs.mkdirSync(decoyClaudeDir, { recursive: true });
+  fs.writeFileSync(path.join(decoyClaudeDir, 'settings.json'), JSON.stringify({}, null, 2));
+
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-cfgdir-real-'));
+  registerDispose(() => { try { fs.rmSync(cfgDir, { recursive: true, force: true }); } catch {} });
+  fs.writeFileSync(path.join(cfgDir, 'settings.json'), JSON.stringify({ model: 'claude-sonnet-4-6' }, null, 2));
+  log(`HOME=${fakeHome} (decoy empty settings) | CLAUDE_CONFIG_DIR=${cfgDir} (model="claude-sonnet-4-6")`);
+
+  const ud = isolatedUserData('ccsm-harness-cfgdir-userdata');
+  registerDispose(ud.cleanup);
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome,
+      CLAUDE_CONFIG_DIR: cfgDir
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+
+    await win.waitForFunction(
+      () => {
+        const s = window.__ccsmStore?.getState?.();
+        // Wait until either the field is non-null OR the boot completed.
+        // (Boot resolves Promise.all so the field will be set even when null,
+        // but we poll a generous timeout to avoid flake.)
+        return !!s && Object.prototype.hasOwnProperty.call(s, 'claudeSettingsDefaultModel');
+      },
+      null,
+      { timeout: 15_000 }
+    );
+    // Give the IPC settings:defaultModel a moment to land — it's awaited at
+    // boot but the renderer doesn't block on it.
+    await win.waitForFunction(
+      () => {
+        const s = window.__ccsmStore?.getState?.();
+        return typeof s?.claudeSettingsDefaultModel === 'string';
+      },
+      null,
+      { timeout: 15_000 }
+    );
+
+    const seeded = await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return { claudeSettingsDefaultModel: s.claudeSettingsDefaultModel };
+    });
+    log(`seeded claudeSettingsDefaultModel=${JSON.stringify(seeded.claudeSettingsDefaultModel)}`);
+
+    if (seeded.claudeSettingsDefaultModel !== 'claude-sonnet-4-6') {
+      throw new Error(`expected claudeSettingsDefaultModel to honor CLAUDE_CONFIG_DIR ("claude-sonnet-4-6"); got ${JSON.stringify(seeded.claudeSettingsDefaultModel)}. readDefaultModelFromSettings() should consult process.env.CLAUDE_CONFIG_DIR like commands-loader.ts does.`);
+    }
+    log(`PASS — readDefaultModelFromSettings honors CLAUDE_CONFIG_DIR`);
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // CASE: new-session-default-cwd-from-frequency
 //
 // Bug repro (post-#369): in the wild, "新建 session" still produces a default
@@ -2145,6 +2236,10 @@ await runHarness({
     { id: 'new-session-default-cwd-from-frequency', skipLaunch: true, run: caseNewSessionDefaultCwdFromFrequency },
     // Default model reads ~/.claude/settings.json `model` (the CLI's own
     // default-model setting) — replaces #369's frequency-vote model logic.
-    { id: 'new-session-default-model-from-claude-settings', skipLaunch: true, run: caseNewSessionDefaultModelFromClaudeSettings }
+    { id: 'new-session-default-model-from-claude-settings', skipLaunch: true, run: caseNewSessionDefaultModelFromClaudeSettings },
+    // The same read must honor `CLAUDE_CONFIG_DIR` (commands-loader.ts:231
+    // already does). ccsm pins this env var in production; this case
+    // guards against future drift between the two readers.
+    { id: 'new-session-default-model-honors-claude-config-dir', skipLaunch: true, run: caseNewSessionDefaultModelHonorsClaudeConfigDir }
   ]
 });

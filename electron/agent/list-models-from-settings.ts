@@ -136,7 +136,8 @@ function collectFromEnvLike(envLike: Record<string, unknown> | undefined): strin
 export async function readDefaultModelFromSettings(
   configDir?: string,
 ): Promise<string | null> {
-  const dir = configDir ?? path.join(os.homedir(), '.claude');
+  const dir =
+    configDir ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
   const settings = await readSettings(dir);
   if (!settings) return null;
   if (typeof settings.model !== 'string') return null;
