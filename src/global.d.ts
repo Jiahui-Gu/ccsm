@@ -49,6 +49,13 @@ type AgentDiagnostic = {
   code: string;
   message: string;
 };
+type AgentModelInfoEvent = {
+  sessionId: string;
+  models: Array<{
+    modelId: string;
+    supportedEffortLevels?: ReadonlyArray<'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
+  }>;
+};
 type AgentPermissionRequest = {
   sessionId: string;
   requestId: string;
@@ -158,6 +165,7 @@ declare global {
       onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
       onAgentExit: (handler: (e: AgentExit) => void) => () => void;
       onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void) => () => void;
+      onAgentModelInfo: (handler: (e: AgentModelInfoEvent) => void) => () => void;
       onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
       scanImportable: () => Promise<

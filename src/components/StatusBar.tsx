@@ -331,6 +331,11 @@ export function StatusBar({
   const { t } = useTranslation();
   const models = useStore((s) => s.models);
   const modelsLoaded = useStore((s) => s.modelsLoaded);
+  // SDK-reported per-model effort tiers (populated from the `agent:modelInfo`
+  // IPC channel in src/agent/lifecycle.ts). Empty until at least one session
+  // has started; supportedEffortLevelsForModel falls back to its hardcoded
+  // table for any model not yet reported.
+  const supportedEffortLevelsByModel = useStore((s) => s.supportedEffortLevelsByModel);
   const contextUsage = useStore((s) => s.contextUsageBySession[sessionId]);
   // 6-tier effort+thinking chip: per-session override falls back to the
   // global default so a fresh session starts at 'high' (the unified chip's
@@ -412,7 +417,7 @@ export function StatusBar({
   };
   const gatedTooltip = t('statusBar.effortGatedTooltip');
   const effortOptions: ChipOption<EffortLevel>[] = EFFORT_LEVELS.map((lvl) => {
-    const supported = isEffortLevelSupported(model, lvl);
+    const supported = isEffortLevelSupported(model, lvl, supportedEffortLevelsByModel);
     return {
       kind: 'item' as const,
       value: lvl,
