@@ -67,6 +67,10 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
 
   // Page index (active question).
   const [active, setActive] = useState(0);
+  // Track previous active so the page-change focus effect can detect "we came
+  // back to a question whose Other input the user already filled in" — in
+  // which case we focus the Other input, not the first option (#307 bug 5).
+  const prevActiveRef = useRef(0);
   // Per-question selection set. Key = question.question, value = Set of
   // labels (NOT indices — matches upstream's `selectedAnswers` shape; lets
   // "Other" coexist with named options without index tricks).
@@ -87,6 +91,7 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
   const rootRef = useRef<HTMLDivElement>(null);
   const optionsRef = useRef<HTMLDivElement>(null);
   const otherInputRef = useRef<HTMLDivElement>(null);
+  const submitBtnRef = useRef<HTMLButtonElement>(null);
 
   const current = questions[active];
 
@@ -142,11 +147,37 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
   // INSIDE the question (e.g. a freshly-mounted "Other" contenteditable)
   // because re-running on `active` change shouldn't yank focus off something
   // the user is currently typing into.
+  //
+  // Task #307 bug 5: when the user pages back to a question they already
+  // engaged with via Other (Other selected + non-empty typed text), focus the
+  // Other contenteditable instead of the first option. Without this guard,
+  // every page flip yanks focus to "Python" / "TypeScript" / etc. and erodes
+  // the trust that paging is non-destructive.
   useEffect(() => {
-    if (!autoFocus || submitted) return;
+    if (!autoFocus || submitted) {
+      prevActiveRef.current = active;
+      return;
+    }
     const root = optionsRef.current;
-    if (!root) return;
+    if (!root) {
+      prevActiveRef.current = active;
+      return;
+    }
     const id = requestAnimationFrame(() => {
+      // If THIS question already has Other selected + non-empty text, send
+      // focus to the Other input instead of stealing to the first option.
+      const q = questions[active];
+      const hasOther =
+        q && (picks[q.question]?.has(OTHER_LABEL) ?? false) && (otherText[q.question]?.trim().length ?? 0) > 0;
+      if (hasOther && otherInputRef.current) {
+        const ae = document.activeElement as HTMLElement | null;
+        // If focus is already inside this question's options group, don't
+        // disturb it (covers the freshly-clicked Other case where the click
+        // handler will move focus naturally).
+        if (ae && root.contains(ae)) return;
+        otherInputRef.current.focus({ preventScroll: true });
+        return;
+      }
       const target = root.querySelector<HTMLElement>('[data-question-option]');
       if (!target) return;
       const ae = document.activeElement as HTMLElement | null;
@@ -157,8 +188,9 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       if (ae && root.contains(ae) && ae !== target) return;
       target.focus({ preventScroll: true });
     });
+    prevActiveRef.current = active;
     return () => cancelAnimationFrame(id);
-  }, [active, autoFocus, submitted]);
+  }, [active, autoFocus, submitted, questions, picks, otherText]);
 
   // ---- Selection + auto-advance -------------------------------------------
   const togglePick = useCallback(
@@ -214,6 +246,37 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       onReject?.();
       return;
     }
+    // Task #307 bug 1: Tab focus trap. Cycle between every option in the
+    // active question (data-question-option) + the Submit button. Mirrors
+    // PermissionPromptBlock:249-263. Only engages while focus is already
+    // inside the card — Tab from outside lands on the first focusable as
+    // usual.
+    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey) {
+      const root = rootRef.current;
+      if (!root) return;
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae || !root.contains(ae)) return;
+      const opts = optionsRef.current
+        ? Array.from(optionsRef.current.querySelectorAll<HTMLElement>('[data-question-option]'))
+        : [];
+      const submit = submitBtnRef.current;
+      const trap: HTMLElement[] = submit ? [...opts, submit] : opts;
+      if (trap.length === 0) return;
+      const idx = trap.indexOf(ae);
+      // Special case: focus is on the Other contenteditable — treat as if
+      // we're on the Other option (parent container) for trap purposes.
+      const fallbackIdx = idx === -1 && otherInputRef.current?.contains(ae)
+        ? trap.findIndex((el) => el.dataset.questionLabel === OTHER_LABEL)
+        : idx;
+      if (fallbackIdx === -1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const nextIdx = e.shiftKey
+        ? (fallbackIdx - 1 + trap.length) % trap.length
+        : (fallbackIdx + 1) % trap.length;
+      trap[nextIdx]?.focus({ preventScroll: true });
+      return;
+    }
     if (otherFocused) return;
     if (e.key === 'ArrowLeft' && active > 0) {
       e.preventDefault();
@@ -253,6 +316,71 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
       }
     }
   };
+
+  // Task #307 bug 2: Y/N hotkey for binary single-select questions.
+  // Mirrors PermissionPromptBlock:284-293. We only hijack Y/N when:
+  //   - current question is single-select
+  //   - it has exactly 2 user options (Other doesn't count)
+  //   - first option's label starts with 'y' (case-insensitive) and second's
+  //     starts with 'n' — i.e. the model framed an actual yes/no question.
+  // Also skip if the user is typing into a text-entry surface anywhere.
+  useEffect(() => {
+    if (submitted) return;
+    if (!current || current.multiSelect) return;
+    if (current.options.length !== 2) return;
+    const first = current.options[0]?.label ?? '';
+    const second = current.options[1]?.label ?? '';
+    if (!/^y/i.test(first) || !/^n/i.test(second)) return;
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      const root = rootRef.current;
+      if (!root) return;
+      const ae = document.activeElement;
+      const focusInside = ae instanceof HTMLElement && root.contains(ae);
+      const typing =
+        ae instanceof HTMLElement &&
+        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+      // Don't hijack while focus is in any text-entry surface (composer,
+      // Other contenteditable, external rename input, …).
+      if (typing) return;
+      // And only act when the question card is mounted + visible (focus
+      // anywhere doesn't matter as long as we're not eating someone else's
+      // typing — already gated above).
+      if (!focusInside && document.activeElement !== document.body) {
+        // Allow body-focus (no-one is typing) — common case after autoFocus
+        // hands focus to a div option but a stray re-render reset it.
+      }
+      const key = e.key.toLowerCase();
+      if (key !== 'y' && key !== 'n') return;
+      e.preventDefault();
+      togglePick(current, key === 'y' ? first : second);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [current, submitted, togglePick]);
+
+  // Sync persisted Other-input text back into the contenteditable when the
+  // question is re-rendered (e.g. after paging away and back). The Other
+  // input is uncontrolled — React doesn't manage textContent for
+  // contenteditable — so without this effect the typed text disappears
+  // visually on page flip even though `otherText[q.question]` still holds
+  // the value (#307 bug 5 part 2).
+  useEffect(() => {
+    if (!current) return;
+    const inp = otherInputRef.current;
+    if (!inp) return;
+    const stored = otherText[current.question] ?? '';
+    if ((inp.textContent ?? '') !== stored) {
+      inp.textContent = stored;
+    }
+    // We intentionally only run this when the active question changes or when
+    // Other is freshly selected (the input element exists or doesn't); during
+    // typing the user's keystrokes drive the DOM and `otherText` state, so we
+    // don't want to clobber the caret on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, current?.question, picks[current?.question ?? '']?.has(OTHER_LABEL)]);
 
   if (!current) return null;
 
@@ -325,7 +453,7 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
         <div className="text-body text-fg-primary mb-3">{current.question}</div>
         <div
           ref={optionsRef}
-          className="space-y-1"
+          className="space-y-1 max-h-[clamp(40vh,calc(100vh-300px),60vh)] overflow-y-auto"
           role={current.multiSelect ? 'group' : 'radiogroup'}
           aria-label={current.question}
         >
@@ -399,10 +527,23 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
                       }}
                       onKeyDown={(e) => {
                         if (e.nativeEvent.isComposing) return;
+                        // Esc must dismiss (#302). Don't stopPropagation —
+                        // let the root onKeyDown handle the reject path.
+                        if (e.key === 'Escape') {
+                          // Fall through to root handler.
+                          return;
+                        }
                         e.stopPropagation();
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
-                          if (active < questions.length - 1) setActive(active + 1);
+                          // Last question: Enter inside Other = submit
+                          // (matches the Submit button). Earlier questions
+                          // page forward.
+                          if (active < questions.length - 1) {
+                            setActive(active + 1);
+                          } else {
+                            submit();
+                          }
                         }
                       }}
                       className="mt-2 min-h-[28px] px-2 py-1 rounded-sm border border-border-default bg-bg-app text-body text-fg-primary outline-none focus-ring-waiting empty:before:content-[attr(data-placeholder)] empty:before:text-fg-tertiary"
@@ -423,10 +564,22 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
             : t('questionBlock.singleHint')}
         </span>
         <button
+          ref={submitBtnRef}
           type="button"
           data-testid="question-submit"
           disabled={!allAnswered || submitted}
           onClick={submit}
+          onKeyDown={(e) => {
+            // #305: Enter on the submit button must trigger submit. Native
+            // <button> usually fires onClick on Enter, but the root's
+            // onKeyDown sees Enter first; we handle it here explicitly so
+            // it works whether the root handler claims the event or not.
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              submit();
+            }
+          }}
           className={
             'inline-flex items-center px-3 py-1.5 rounded-sm text-body font-medium outline-none focus-ring-waiting transition-colors duration-150 ease-out ' +
             (allAnswered && !submitted

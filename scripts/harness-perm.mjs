@@ -2408,21 +2408,6 @@ async function caseQuestionTabTrapCycles({ win, log }) {
 async function caseQuestionYNHotkey({ win, log }) {
   await seedSession(win);
 
-  // Stub agent:send + agent:resolvePermission so submit doesn't fan out.
-  const submitsCaptured = await win.evaluate(() => {
-    const captured = { sends: [], resolves: [] };
-    window.__ccsmTestCapture = captured;
-    const orig = window.ccsm;
-    window.ccsm = new Proxy(orig, {
-      get(t, k) {
-        if (k === 'agentSend') return async (...a) => { captured.sends.push(a); };
-        if (k === 'agentResolvePermission') return async (...a) => { captured.resolves.push(a); };
-        return Reflect.get(t, k);
-      }
-    });
-    return true;
-  });
-
   await win.evaluate(() => {
     const s = window.__ccsmStore.getState();
     s.appendBlocks(s.activeId, [{
@@ -2474,20 +2459,6 @@ async function caseQuestionYNHotkey({ win, log }) {
 async function caseQuestionEnterOnSubmitButton({ win, log }) {
   await seedSession(win);
 
-  // Stub agentSend so we can detect submit.
-  await win.evaluate(() => {
-    const captured = { sends: [], resolves: [] };
-    window.__ccsmTestCapture = captured;
-    const orig = window.ccsm;
-    window.ccsm = new Proxy(orig, {
-      get(t, k) {
-        if (k === 'agentSend') return async (...a) => { captured.sends.push(a); };
-        if (k === 'agentResolvePermission') return async (...a) => { captured.resolves.push(a); };
-        return Reflect.get(t, k);
-      }
-    });
-  });
-
   await win.evaluate(() => {
     const s = window.__ccsmStore.getState();
     s.appendBlocks(s.activeId, [{
@@ -2509,21 +2480,58 @@ async function caseQuestionEnterOnSubmitButton({ win, log }) {
 
   // Pick first option via Space; single-question doesn't auto-advance.
   await win.keyboard.press(' ');
-  await win.waitForTimeout(80);
+  await win.waitForTimeout(150);
+
+  // Sanity check: option got selected and submit became enabled.
+  const stateAfterPick = await win.evaluate(() => {
+    const a = document.querySelector('[data-question-option][data-question-label="A"]');
+    const submit = document.querySelector('[data-testid="question-submit"]');
+    return {
+      aChecked: a?.getAttribute('aria-checked'),
+      submitDisabled: submit?.hasAttribute('disabled'),
+    };
+  });
+  if (stateAfterPick.aChecked !== 'true' || stateAfterPick.submitDisabled) {
+    throw new Error(`pre-Enter sanity failed: ${JSON.stringify(stateAfterPick)}`);
+  }
 
   // Move focus directly to Submit button and press Enter.
   await win.locator('[data-testid="question-submit"]').focus();
   await win.waitForTimeout(80);
+  const focusSnap = await win.evaluate(() => ({
+    isSubmit: document.activeElement?.getAttribute?.('data-testid') === 'question-submit',
+  }));
+  if (!focusSnap.isSubmit) {
+    throw new Error(`could not focus submit button; ${JSON.stringify(focusSnap)}`);
+  }
   await win.keyboard.press('Enter');
 
-  await win.waitForFunction(() => (window.__ccsmTestCapture?.sends?.length ?? 0) > 0, null, { timeout: 2_000 }).catch(() => {});
+  // Detect submit via the store: QuestionStickyHost calls
+  // markQuestionAnswered → block.answered=true. This bypasses the
+  // contextBridge stubbing trickery (window.ccsm methods are read-only via
+  // contextBridge in production builds) and asserts the user-visible effect.
+  await win.waitForFunction(() => {
+    const s = window.__ccsmStore.getState();
+    for (const b of s.messagesBySession[s.activeId] ?? []) {
+      if (b.id === 'q-ENTER-SUBMIT' && b.answered) return true;
+    }
+    return false;
+  }, null, { timeout: 2_000 }).catch(() => {});
 
-  const cap = await win.evaluate(() => window.__ccsmTestCapture);
-  if (!cap.sends.length) {
-    throw new Error(`expected agentSend after Enter on Submit button; sends=${cap.sends.length} resolves=${cap.resolves.length}`);
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const b = (s.messagesBySession[s.activeId] ?? []).find((x) => x.id === 'q-ENTER-SUBMIT');
+    return {
+      answered: b?.answered,
+      rejected: b?.rejected,
+      cardGone: !document.querySelector('[data-testid="question-submit"]'),
+    };
+  });
+  if (!after.answered || after.rejected) {
+    throw new Error(`expected submit fired (answered=true, rejected=false) on Enter; got ${JSON.stringify(after)}`);
   }
 
-  log(`Enter on Submit button fired onSubmit (${cap.sends.length} send call captured)`);
+  log(`Enter on Submit button fired onSubmit (answered=${after.answered}, cardGone=${after.cardGone})`);
 }
 
 // ---------- question-focus-ring-visible ----------
@@ -2719,19 +2727,6 @@ async function caseQuestionLastQuestionOtherEnterSubmits({ win, log }) {
   await seedSession(win);
 
   await win.evaluate(() => {
-    const captured = { sends: [], resolves: [] };
-    window.__ccsmTestCapture = captured;
-    const orig = window.ccsm;
-    window.ccsm = new Proxy(orig, {
-      get(t, k) {
-        if (k === 'agentSend') return async (...a) => { captured.sends.push(a); };
-        if (k === 'agentResolvePermission') return async (...a) => { captured.resolves.push(a); };
-        return Reflect.get(t, k);
-      }
-    });
-  });
-
-  await win.evaluate(() => {
     const s = window.__ccsmStore.getState();
     s.appendBlocks(s.activeId, [{
       kind: 'question',
@@ -2748,10 +2743,10 @@ async function caseQuestionLastQuestionOtherEnterSubmits({ win, log }) {
   await win.waitForSelector('[data-question-option]', { timeout: 5_000 });
   // Pick Q1.A.
   await win.locator('[data-question-option][data-question-label="A"]').first().click();
-  await win.waitForTimeout(400); // auto-advance
+  await win.waitForTimeout(450); // auto-advance
   // Pick Q2.B.
   await win.locator('[data-question-option][data-question-label="B"]').first().click();
-  await win.waitForTimeout(400);
+  await win.waitForTimeout(450);
   // On Q3: click Other.
   await win.locator('[data-testid="question-tab-2"]').click();
   await win.waitForTimeout(150);
@@ -2764,18 +2759,33 @@ async function caseQuestionLastQuestionOtherEnterSubmits({ win, log }) {
 
   // Press Enter inside Other on the last question — should fire submit.
   await win.keyboard.press('Enter');
-  await win.waitForFunction(() => (window.__ccsmTestCapture?.sends?.length ?? 0) > 0, null, { timeout: 2_000 }).catch(() => {});
+  // Assert via store: markQuestionAnswered records `answers` keyed by
+  // question text. Bypasses contextBridge stubbing limitations.
+  await win.waitForFunction(() => {
+    const s = window.__ccsmStore.getState();
+    for (const b of s.messagesBySession[s.activeId] ?? []) {
+      if (b.id === 'q-LAST-OTHER-ENTER' && b.answered) return true;
+    }
+    return false;
+  }, null, { timeout: 2_000 }).catch(() => {});
 
-  const cap = await win.evaluate(() => window.__ccsmTestCapture);
-  if (!cap.sends.length) {
-    throw new Error(`expected agentSend on last-question Other Enter; sends=${cap.sends.length}`);
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const b = (s.messagesBySession[s.activeId] ?? []).find((x) => x.id === 'q-LAST-OTHER-ENTER');
+    return {
+      answered: b?.answered,
+      rejected: b?.rejected,
+      answers: b?.answers,
+    };
+  });
+  if (!after.answered || after.rejected) {
+    throw new Error(`expected submit fired on last-question Other Enter; got ${JSON.stringify(after)}`);
   }
-  // Confirm payload contains 'xyz' under Q3.
-  const text = cap.sends[0]?.[1] ?? '';
-  if (!text.includes('xyz')) {
-    throw new Error(`expected 'xyz' in submitted text; got "${text}"`);
+  // Q3 answer should be 'xyz' (Other replaced with typed text).
+  if (after.answers?.['Q3'] !== 'xyz') {
+    throw new Error(`expected Q3 answer 'xyz'; got '${after.answers?.['Q3']}' (full=${JSON.stringify(after.answers)})`);
   }
-  log(`Enter on Other input of last question submitted with payload containing 'xyz'`);
+  log(`Enter on Other input of last question submitted; Q3='${after.answers['Q3']}'`);
 }
 
 // ---------- question-many-options-scrolls ----------
