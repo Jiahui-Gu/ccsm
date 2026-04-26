@@ -4,7 +4,6 @@ import type {
   Theme,
   FontSize,
   FontSizePx,
-  Density,
   NotificationSettings,
   ThinkingLevel
 } from './store';
@@ -44,7 +43,6 @@ export const PERSISTED_KEYS = [
   'theme',
   'fontSize',
   'fontSizePx',
-  'density',
   'recentProjects',
   'tutorialSeen',
   'notificationSettings',
@@ -77,8 +75,6 @@ export interface PersistedState {
   fontSize?: FontSize;
   /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
   fontSizePx?: FontSizePx;
-  /** UI density (compact/normal/comfortable). */
-  density?: Density;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
   notificationSettings?: NotificationSettings;

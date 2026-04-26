@@ -54,9 +54,6 @@ export type Theme = 'system' | 'light' | 'dark';
 export type FontSize = 'sm' | 'md' | 'lg';
 /** Root font-size in px. One of 12/13/14/15/16. */
 export type FontSizePx = 12 | 13 | 14 | 15 | 16;
-/** UI density — drives row padding / line height / block spacing via
- * `--density-scale` CSS variable. Compact = tighter, Comfortable = airier. */
-export type Density = 'compact' | 'normal' | 'comfortable';
 
 export type EndpointKind =
   | 'anthropic'
@@ -223,7 +220,6 @@ type State = {
   theme: Theme;
   fontSize: FontSize;
   fontSizePx: FontSizePx;
-  density: Density;
   tutorialSeen: boolean;
   notificationSettings: NotificationSettings;
   messagesBySession: Record<string, MessageBlock[]>;
@@ -485,7 +481,6 @@ type Actions = {
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
   setFontSizePx: (px: FontSizePx) => void;
-  setDensity: (density: Density) => void;
   setSidebarWidth: (px: number) => void;
   resetSidebarWidth: () => void;
   markTutorialSeen: () => void;
@@ -799,11 +794,6 @@ export function sanitizeFontSizePx(raw: unknown): FontSizePx {
   return 14;
 }
 
-export function sanitizeDensity(raw: unknown): Density {
-  if (raw === 'compact' || raw === 'normal' || raw === 'comfortable') return raw;
-  return 'normal';
-}
-
 export const SIDEBAR_WIDTH_DEFAULT = 260;
 export const SIDEBAR_WIDTH_MIN = 200;
 export const SIDEBAR_WIDTH_MAX = 480;
@@ -988,7 +978,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   theme: 'system',
   fontSize: 'md',
   fontSizePx: 14,
-  density: 'normal',
   tutorialSeen: false,
   notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
   messagesBySession: {},
@@ -1467,7 +1456,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   setTheme: (theme) => set({ theme }),
   setFontSize: (fontSize) => set({ fontSize, fontSizePx: legacyFontSizeToPx(fontSize) }),
   setFontSizePx: (fontSizePx) => set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
-  setDensity: (density) => set({ density }),
   setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
   resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
   markTutorialSeen: () => set({ tutorialSeen: true }),
@@ -2553,7 +2541,6 @@ export async function hydrateStore(): Promise<void> {
       fontSizePx: persisted.fontSizePx !== undefined
         ? sanitizeFontSizePx(persisted.fontSizePx)
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
-      density: sanitizeDensity(persisted.density),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       notificationSettings: {

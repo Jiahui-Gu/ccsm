@@ -1,11 +1,10 @@
 // E2E: appearance polish probe.
 //
-// Exercises the four polish features without needing an API key:
+// Exercises the polish features without needing an API key:
 //   1. Theme toggle → verify <html> class flips (dark ⇄ theme-light)
 //   2. Font-size slider → verify --app-font-size CSS var updates
-//   3. Density segmented → verify html.density-* class updates
-//   4. Sidebar drag → verify sidebarWidthPct persists across reload
-//   5. Memory tab → create/edit CLAUDE.md in a temp cwd, verify file written
+//   3. Sidebar drag → verify sidebarWidthPct persists across reload
+//   4. Memory tab → create/edit CLAUDE.md in a temp cwd, verify file written
 //
 // Pure black-box where possible; uses store introspection only for the
 // persist-round-trip step (which otherwise needs a full app restart to see).
@@ -85,18 +84,7 @@ await win.keyboard.press('ArrowRight');
 await win.keyboard.press('ArrowRight');
 await win.waitForTimeout(150);
 
-// ── 3. Density ─────────────────────────────────────────────────────────────
-await win.getByRole('radio', { name: /^compact$/i }).click();
-await win.waitForTimeout(200);
-const isCompact = await win.evaluate(() =>
-  document.documentElement.classList.contains('density-compact')
-);
-if (!isCompact) fail('density-compact class not applied');
-ok('density → compact');
-await win.getByRole('radio', { name: /^normal$/i }).click();
-await win.waitForTimeout(150);
-
-// ── 4. Memory tab ──────────────────────────────────────────────────────────
+// ── 3. Memory tab ──────────────────────────────────────────────────────────
 // Close settings first; create a session pinned to tmpRepo so project memory is active.
 await win.keyboard.press('Escape');
 await win.waitForTimeout(200);
@@ -159,7 +147,7 @@ if (!content.includes('written by probe-appearance-polish')) {
 }
 ok(`CLAUDE.md written at ${memoryPath}`);
 
-// ── 5. Sidebar width persistence ───────────────────────────────────────────
+// ── 4. Sidebar width persistence ───────────────────────────────────────────
 // Close settings.
 await win.keyboard.press('Escape');
 await win.waitForTimeout(200);

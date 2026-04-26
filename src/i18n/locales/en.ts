@@ -237,13 +237,6 @@ const en = {
       md: 'Medium (13px, default)',
       lg: 'Large (14px)'
     },
-    density: 'Density',
-    densityHint: 'Tightens or loosens row padding and spacing across the app.',
-    densityOptions: {
-      compact: 'Compact',
-      normal: 'Normal',
-      comfortable: 'Comfortable'
-    },
     windowTint: 'Window tint',
     windowTintHint:
       'Faint accent on this window\u2019s title bar to tell parallel CCSM windows apart at a glance. Local to this window only.',

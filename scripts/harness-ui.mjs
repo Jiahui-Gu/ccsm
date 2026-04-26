@@ -1664,9 +1664,7 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   let txt = await paneText();
   assertHasText(txt, '主题', 'appearance');
   assertHasText(txt, '字号', 'appearance');
-  assertHasText(txt, '密度', 'appearance');
   assertNotHasText(txt, 'Theme', 'appearance');
-  assertNotHasText(txt, 'Density', 'appearance');
 
   // Notifications.
   await switchTab(/^通知$/);

@@ -193,10 +193,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 function AppearancePane() {
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
-  const density = useStore((s) => s.density);
   const setTheme = useStore((s) => s.setTheme);
   const setFontSizePx = useStore((s) => s.setFontSizePx);
-  const setDensity = useStore((s) => s.setDensity);
   const language = usePreferences((s) => s.language);
   const setLanguage = usePreferences((s) => s.setLanguage);
   const [windowTint, setWindowTint] = useWindowTint();
@@ -247,17 +245,6 @@ function AppearancePane() {
           />
           <span className="text-meta font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
         </div>
-      </Field>
-      <Field label={t('density')} hint={t('densityHint')}>
-        <Segmented
-          value={density}
-          onChange={setDensity}
-          options={[
-            { value: 'compact', label: t('densityOptions.compact') },
-            { value: 'normal', label: t('densityOptions.normal') },
-            { value: 'comfortable', label: t('densityOptions.comfortable') },
-          ]}
-        />
       </Field>
       <Field label={t('windowTint')} hint={t('windowTintHint')}>
         <WindowTintPicker value={windowTint} onChange={setWindowTint} t={t} />

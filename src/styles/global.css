@@ -230,19 +230,6 @@ html, body, #root {
 }
 
 /*
-  Density scale. Multiplies padding / row heights in density-aware utilities
-  (see `.density-row` below). The three stops are intentionally narrow —
-  beyond ±15% the sidebar reads as broken, not "cozy". Applied to the
-  <html> element via JS based on user preference.
-*/
-html {
-  --density-scale: 1;
-}
-html.density-compact     { --density-scale: 0.88; }
-html.density-normal      { --density-scale: 1; }
-html.density-comfortable { --density-scale: 1.15; }
-
-/*
   Sidebar right-rail X axis. The 5 right-anchored affordances (search button,
   new-group +, in-group new-session +, selected-session blue dot, import
   button) all share a single vertical line so the eye reads them as one

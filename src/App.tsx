@@ -90,7 +90,6 @@ export default function App() {
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
-  const density = useStore((s) => s.density);
   const tutorialSeen = useStore((s) => s.tutorialSeen);
   const markTutorialSeen = useStore((s) => s.markTutorialSeen);
 
@@ -126,14 +125,6 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--app-font-size', `${fontSizePx}px`);
   }, [fontSizePx]);
-
-  // Density class on <html>. Components consume `--density-scale` via
-  // .density-row / inline calc() — see global.css.
-  useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove('density-compact', 'density-normal', 'density-comfortable');
-    root.classList.add(`density-${density}`);
-  }, [density]);
 
   // Locale: ask main for the OS locale, feed it into the preferences store
   // so a "system" preference resolves correctly. Falls back to navigator.

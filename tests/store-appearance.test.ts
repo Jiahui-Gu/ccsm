@@ -24,9 +24,7 @@ describe('appearance setters', () => {
     expect(useStore.getState().fontSizePx).toBe(16);
   });
 
-  it('setDensity writes and setTheme writes', () => {
-    useStore.getState().setDensity('compact');
-    expect(useStore.getState().density).toBe('compact');
+  it('setTheme writes', () => {
     useStore.getState().setTheme('light');
     expect(useStore.getState().theme).toBe('light');
   });

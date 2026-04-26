@@ -218,13 +218,6 @@ const zh: EnCatalog = {
       md: '中 (13px，默认)',
       lg: '大 (14px)'
     },
-    density: '密度',
-    densityHint: '调整全局行间距与内边距的紧凑程度。',
-    densityOptions: {
-      compact: '紧凑',
-      normal: '常规',
-      comfortable: '宽松'
-    },
     windowTint: '窗口色调',
     windowTintHint: '为当前窗口的标题栏添加一抹淡色，便于在多开 CCSM 窗口时一眼区分。仅作用于当前窗口。',
     windowTintOptions: {
