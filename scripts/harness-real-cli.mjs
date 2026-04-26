@@ -24,6 +24,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -216,9 +217,88 @@ async function caseControlResponseNoTimeout({ log }) {
   });
 }
 
+/**
+ * Bug: agent self-reports as "Claude Code (VS Code integration)" when the
+ * user has the official Claude Code VS Code extension running, because the
+ * bundled CLI scans `${CLAUDE_CONFIG_DIR}/ide/*.lock` and auto-attaches to
+ * any companion whose workspaceFolders include the session cwd. ccsm sets
+ * `CLAUDE_CODE_AUTO_CONNECT_IDE=false` in `electron/agent-sdk/sessions.ts`
+ * `buildSdkEnv` to kill that gate. The unit test on the env-construction
+ * path proves the env var lands on options.env, but does NOT prove the
+ * bundled CLI still recognises the kill-switch — an SDK bump that renamed
+ * or removed the env var would let the unit test stay green while the bug
+ * recurs.
+ *
+ * Why this case scans the bundle instead of spawning + asserting on the
+ * `system/init` `mcp_servers` array:
+ *   - Triggering a real auto-attach requires a live websocket server that
+ *     answers the bundled CLI's IDE handshake (the lockfile alone is not
+ *     enough; the bundle's gate also requires
+ *     `M.workspaceFolders.some(P => Hh.resolve(P).normalize("NFC") === cwd)`
+ *     plus a successful `ws://127.0.0.1:<port>` connect with a matching
+ *     `authToken`). On a clean dev machine without a real VS Code/Claude
+ *     extension running, even removing the kill-switch leaves
+ *     `mcp_servers: []` — so the negative assertion is vacuously true and
+ *     would not detect a regression. Verified empirically by spawning the
+ *     real CLI with `autoConnectIde:true` + a fake lockfile pointing at a
+ *     bound TCP server: no handshake attempt was made.
+ *   - The SDK ships the CLI as a single SEA executable
+ *     (`@anthropic-ai/claude-agent-sdk-{platform}-{arch}/claude.exe`).
+ *     The string `CLAUDE_CODE_AUTO_CONNECT_IDE` is embedded in that bundle
+ *     and is the SAME literal the kill-switch path reads at runtime
+ *     (`yH(process.env.CLAUDE_CODE_AUTO_CONNECT_IDE)` /
+ *     `a7(process.env.CLAUDE_CODE_AUTO_CONNECT_IDE)`). If a future SDK
+ *     bump renames or removes the env var, the literal disappears from
+ *     the bundle and this case fails — exactly the regression class the
+ *     unit test misses.
+ *
+ * Run cost: ~250ms (one ReadFileSync + indexOf, no spawn).
+ */
+async function caseIdeAutoConnectKillSwitchPresent({ log }) {
+  // Resolve the bundled CLI binary the SDK would actually spawn. We pin
+  // to the platform package next to @anthropic-ai/claude-agent-sdk so this
+  // tracks whatever version package.json locked in.
+  const platformPkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  const { createRequire } = await import('node:module');
+  const require_ = createRequire(import.meta.url);
+  let pkgRoot;
+  try {
+    pkgRoot = path.dirname(require_.resolve(`${platformPkg}/package.json`));
+  } catch {
+    log(`SKIP: ${platformPkg} not installed (no bundled CLI to scan)`);
+    return;
+  }
+  const exe = path.join(pkgRoot, process.platform === 'win32' ? 'claude.exe' : 'claude');
+  if (!fs.existsSync(exe)) {
+    log(`SKIP: ${exe} not found (bundled CLI absent)`);
+    return;
+  }
+
+  // ASCII string scan — the env var is referenced as a property access
+  // on `process.env`, so it appears as a contiguous ASCII literal in the
+  // SEA bundle. indexOf is fast even on a 250 MB binary (~200ms).
+  const needle = 'CLAUDE_CODE_AUTO_CONNECT_IDE';
+  const buf = fs.readFileSync(exe);
+  // toString('binary') maps each byte 1:1 to a JS char so indexOf works
+  // on arbitrary binary content without UTF-8 decoding cost or corruption.
+  const text = buf.toString('binary');
+  const at = text.indexOf(needle);
+  if (at < 0) {
+    throw new Error(
+      `bundled CLI at ${exe} no longer references "${needle}". ` +
+      `The SDK likely renamed or removed the IDE auto-connect kill-switch — ` +
+      `ccsm's fix in electron/agent-sdk/sessions.ts buildSdkEnv is now a no-op ` +
+      `and "agent self-reports as VS Code integration" will recur. ` +
+      `Re-scan claude.exe for the current opt-out and update buildSdkEnv to match.`,
+    );
+  }
+  log(`bundled CLI references "${needle}" at offset ${at} (${(buf.length / 1e6).toFixed(0)} MB scanned) — kill-switch still recognised`);
+}
+
 // ---------- runner ----------
 const cases = [
   { id: 'control-response-no-timeout', run: caseControlResponseNoTimeout },
+  { id: 'ide-auto-connect-kill-switch-present', run: caseIdeAutoConnectKillSwitchPresent },
 ];
 
 const selected = onlyId ? cases.filter((c) => c.id === onlyId) : cases;

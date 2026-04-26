@@ -126,6 +126,25 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
+  it('disables CLI IDE auto-connect so VS Code lockfiles do not bind to ccsm sessions', async () => {
+    // Regression: with a VS Code Claude Code extension running, a lockfile
+    // at $CLAUDE_CONFIG_DIR/ide/<pid>.lock advertises ideName="Visual
+    // Studio Code" + workspaceFolders. The bundled CLI auto-connects when
+    // a lockfile's workspaceFolders include the session cwd, and the agent
+    // then identifies itself as "Claude Code (VS Code integration)" — wrong
+    // for ccsm, an independent Electron app. Setting
+    // CLAUDE_CODE_AUTO_CONNECT_IDE=false trips the bundled-CLI kill-switch
+    // (`!a7(env)` in the IDE-attach gate) and forces standalone identity.
+    const runner = new SdkSessionRunner('s2b', noop, noop, noop, noop);
+    await runner.start(baseStart);
+    const opts = fake.getOptions()?.options ?? {};
+    const env = (opts.env ?? {}) as Record<string, string>;
+    expect(env.CLAUDE_CODE_AUTO_CONNECT_IDE).toBe('false');
+    expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('ccsm-desktop');
+    expect(env.CLAUDE_AGENT_SDK_CLIENT_APP).toBe('ccsm-desktop/0.1.0');
+    runner.close();
+  });
+
   it('emits translated SDK messages to onEvent and captures cliSessionId from init', async () => {
     const events: unknown[] = [];
     const runner = new SdkSessionRunner('s3', (e) => events.push(e), noop, noop, noop);
