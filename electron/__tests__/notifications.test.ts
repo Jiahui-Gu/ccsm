@@ -1,6 +1,24 @@
+// Tests for `electron/notifications.ts` after the W3 simplification.
+//
+// Behaviour locked in by W3:
+//   - No Electron `Notification` cross-platform fallback. The only delivery
+//     path is the inlined notify wrapper (`./notify`).
+//   - Permission / question / turn_done dispatch into the wrapper based on
+//     `payload.eventType`. Each call hands the wrapper a structured payload
+//     plus registers a toastTarget so the action router can route activations
+//     back to the right session.
+//   - `shouldSuppressForFocus()` (main-process window focus de-dup) still
+//     applies — that gate is *separate* from the deleted W1 renderer focus
+//     gate. Spec note from W5: keep this gate, only the renderer gate was
+//     removed.
+//   - `eventType === 'test'` bypasses the focus suppression so a user-driven
+//     "Send test notification" still fires when the window is focused.
+//   - `dismissNotification` is a no-op when the wrapper is unavailable.
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   showNotification,
+  dismissNotification,
   type ShowNotificationPayload,
 } from '../notifications';
 import {
@@ -9,191 +27,261 @@ import {
   probeNotifyAvailability,
 } from '../notify';
 import { __resetBootstrapForTests } from '../notify-bootstrap';
-import {
-  __resetRetryStateForTests,
-  __setRetrySchedulerForTests,
-  __pendingRetryCountForTests,
-} from '../notify-retry';
 
-// Mock electron's BrowserWindow + Notification surface — the test harness
-// is plain node so we can't pull in real Electron. We capture every
-// Notification constructor call so the showNotification pipeline can be
-// asserted end-to-end (legacy body composition + adaptive payload).
-let lastNotificationCtor: { title: string; body: string; silent: boolean } | undefined;
-const showSpy = vi.fn();
-const onClickSpy = vi.fn();
+// Track which BrowserWindow.getAllWindows() value the test wants — flipped
+// per-test so we can simulate focused vs unfocused without remocking.
+let focusedWindowsForTest: Array<{
+  isDestroyed: () => boolean;
+  isFocused: () => boolean;
+  isVisible: () => boolean;
+}> = [];
 
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [] },
-  Notification: class FakeNotification {
-    title: string;
-    body: string;
-    silent: boolean;
-    constructor(opts: { title: string; body: string; silent: boolean }) {
-      this.title = opts.title;
-      this.body = opts.body;
-      this.silent = opts.silent;
-      lastNotificationCtor = opts;
-    }
-    static isSupported() {
-      return true;
-    }
-    on(event: string, cb: () => void) {
-      if (event === 'click') onClickSpy.mockImplementation(cb);
-    }
-    show() {
-      showSpy();
-    }
+  BrowserWindow: {
+    getAllWindows: () => focusedWindowsForTest,
   },
 }));
 
-describe('showNotification — done rich content (#252)', () => {
-  let donePayloads: Array<Record<string, unknown>>;
+type Call = { kind: 'permission' | 'question' | 'done' | 'dismiss'; payload: unknown };
+
+async function installFakeNotifier(): Promise<Call[]> {
+  const calls: Call[] = [];
+  __setNotifyImporter(async () => ({
+    Notifier: {
+      create: async () => ({
+        permission: (p: unknown) => calls.push({ kind: 'permission', payload: p }),
+        question: (p: unknown) => calls.push({ kind: 'question', payload: p }),
+        done: (p: unknown) => calls.push({ kind: 'done', payload: p }),
+        dismiss: (id: string) => calls.push({ kind: 'dismiss', payload: id }),
+      }),
+    },
+  }));
+  configureNotify({ appId: 'test', appName: 'Test', onAction: () => {} });
+  await probeNotifyAvailability();
+  return calls;
+}
+
+describe('showNotification (post-W3, inlined-notify only)', () => {
+  let calls: Call[];
 
   beforeEach(async () => {
-    lastNotificationCtor = undefined;
-    showSpy.mockClear();
-    onClickSpy.mockReset();
-    donePayloads = [];
+    focusedWindowsForTest = []; // unfocused by default
     __resetBootstrapForTests();
-    __resetRetryStateForTests();
-    __setRetrySchedulerForTests(
-      // Swallow timers so the retry can't actually fire during these tests.
-      // notifyDone tests below don't exercise question retries; question
-      // tests use the same swallow-and-record fake from notify-retry.test.ts.
-      () => 0 as unknown as ReturnType<typeof setTimeout>,
-      () => {},
-    );
-    __setNotifyImporter(async () => ({
-      Notifier: {
-        create: async () => ({
-          permission: () => {},
-          question: () => {},
-          done: (p: Record<string, unknown>) => donePayloads.push(p),
-          dismiss: () => {},
-        }),
-      },
-    }));
-    configureNotify({
-      appId: 'test',
-      appName: 'Test',
-      onAction: () => {},
-    });
-    // Force the dynamic import to resolve so `isNotifyAvailable()` flips
-    // true before we call showNotification.
-    await probeNotifyAvailability();
+    calls = await installFakeNotifier();
   });
 
   afterEach(() => {
     __setNotifyImporter(null);
-    __setRetrySchedulerForTests(null, null);
-    __resetRetryStateForTests();
   });
 
-  it('legacy toast body falls back to truncated lastAssistantMsg when host gives no body', () => {
-    const longMsg = 'a'.repeat(120); // > 80 cap
+  it('routes a permission event into notifyPermission with the structured payload', async () => {
     const payload: ShowNotificationPayload = {
       sessionId: 's1',
-      title: 'session is done',
-      eventType: 'turn_done',
+      title: 'g / sess',
+      body: 'Permission',
+      eventType: 'permission',
       extras: {
-        toastId: 'done-1',
-        sessionName: 'session',
+        toastId: 'req-1',
+        sessionName: 'sess',
         groupName: 'g',
-        lastAssistantMsg: longMsg,
+        toolName: 'Bash',
+        toolBrief: 'ls -la',
+        cwd: '/tmp/proj',
       },
     };
-    showNotification(payload, null);
-    expect(lastNotificationCtor).toBeDefined();
-    // 80 cap, last char becomes ellipsis ⇒ length === 80 with U+2026.
-    expect(lastNotificationCtor!.body.length).toBe(80);
-    expect(lastNotificationCtor!.body.endsWith('\u2026')).toBe(true);
-    expect(lastNotificationCtor!.body.startsWith('aaaa')).toBe(true);
-  });
-
-  it('legacy toast body unchanged when the host already supplied a body', () => {
-    const payload: ShowNotificationPayload = {
-      sessionId: 's1',
-      title: 'session finished with an error',
-      body: 'finished with an error',
-      eventType: 'turn_done',
-      extras: {
-        toastId: 'done-2',
-        sessionName: 'session',
-        groupName: 'g',
-        lastAssistantMsg: 'a long assistant trace that we DO NOT want to clobber the explicit body with',
-      },
-    };
-    showNotification(payload, null);
-    expect(lastNotificationCtor!.body).toBe('finished with an error');
-  });
-
-  it('adaptive toast done payload truncates lastAssistantMsg to 80 chars with ellipsis', async () => {
-    const longMsg = 'b'.repeat(200);
-    const payload: ShowNotificationPayload = {
-      sessionId: 's1',
-      title: 'done',
-      eventType: 'turn_done',
-      extras: {
-        toastId: 'done-3',
-        sessionName: 'session',
-        groupName: 'group',
-        lastAssistantMsg: longMsg,
-        lastUserMsg: 'go',
-        elapsedMs: 1234,
-        toolCount: 2,
-      },
-    };
-    showNotification(payload, null);
-    // emitAdaptiveToast is fire-and-forget — flush the microtask queue.
+    const fired = showNotification(payload, null);
+    expect(fired).toBe(true);
     await new Promise((r) => setImmediate(r));
-    expect(donePayloads.length).toBe(1);
-    const done = donePayloads[0];
-    expect((done.lastAssistantMsg as string).length).toBe(80);
-    expect((done.lastAssistantMsg as string).endsWith('\u2026')).toBe(true);
-    expect(done.groupName).toBe('group');
-    expect(done.sessionName).toBe('session');
-    expect(done.lastUserMsg).toBe('go');
-    expect(done.elapsedMs).toBe(1234);
-    expect(done.toolCount).toBe(2);
+
+    const perm = calls.find((c) => c.kind === 'permission');
+    expect(perm).toBeDefined();
+    expect(perm!.payload).toMatchObject({
+      toastId: 'req-1',
+      sessionName: 'sess',
+      toolName: 'Bash',
+      toolBrief: 'ls -la',
+      cwdBasename: 'proj',
+    });
   });
 
-  it('adaptive toast done payload passes through short messages untouched', async () => {
-    const payload: ShowNotificationPayload = {
-      sessionId: 's1',
-      title: 'done',
-      eventType: 'turn_done',
-      extras: {
-        toastId: 'done-4',
-        sessionName: 'session',
-        groupName: 'group',
-        lastAssistantMsg: 'short reply',
-      },
-    };
-    showNotification(payload, null);
-    await new Promise((r) => setImmediate(r));
-    expect(donePayloads[0].lastAssistantMsg).toBe('short reply');
-  });
-
-  it('question event schedules a single retry via the notify-retry seam', async () => {
-    expect(__pendingRetryCountForTests()).toBe(0);
+  it('routes a question event into notifyQuestion', async () => {
     showNotification(
       {
         sessionId: 's1',
-        title: 'q',
-        body: 'pick',
+        title: 'g / sess',
+        body: 'Question',
         eventType: 'question',
         extras: {
-          toastId: 'q-req-1',
-          sessionName: 'session',
-          question: 'pick',
+          toastId: 'q-req-2',
+          sessionName: 'sess',
+          groupName: 'g',
+          question: 'Pick one',
           selectionKind: 'single',
           optionCount: 2,
+          cwd: '/tmp/proj',
         },
       },
       null,
     );
     await new Promise((r) => setImmediate(r));
-    expect(__pendingRetryCountForTests()).toBe(1);
+    const q = calls.find((c) => c.kind === 'question');
+    expect(q).toBeDefined();
+    expect(q!.payload).toMatchObject({
+      toastId: 'q-req-2',
+      sessionName: 'sess',
+      question: 'Pick one',
+      selectionKind: 'single',
+      optionCount: 2,
+    });
+  });
+
+  it('routes a turn_done event into notifyDone with truncated lastAssistantMsg (≤80)', async () => {
+    const longMsg = 'x'.repeat(200);
+    showNotification(
+      {
+        sessionId: 's1',
+        title: 'g / sess',
+        body: 'Turn done',
+        eventType: 'turn_done',
+        extras: {
+          toastId: 'done-1',
+          sessionName: 'sess',
+          groupName: 'g',
+          lastUserMsg: 'go',
+          lastAssistantMsg: longMsg,
+          elapsedMs: 1234,
+          toolCount: 3,
+          cwd: '/tmp/proj',
+        },
+      },
+      null,
+    );
+    await new Promise((r) => setImmediate(r));
+    const done = calls.find((c) => c.kind === 'done');
+    expect(done).toBeDefined();
+    const p = done!.payload as { lastAssistantMsg: string; groupName: string; toolCount: number };
+    expect(p.lastAssistantMsg.length).toBe(80);
+    expect(p.lastAssistantMsg.endsWith('…')).toBe(true);
+    expect(p.groupName).toBe('g');
+    expect(p.toolCount).toBe(3);
+  });
+
+  it('passes through a short lastAssistantMsg untouched', async () => {
+    showNotification(
+      {
+        sessionId: 's1',
+        title: 'g / sess',
+        eventType: 'turn_done',
+        extras: {
+          toastId: 'done-2',
+          sessionName: 'sess',
+          groupName: 'g',
+          lastAssistantMsg: 'short reply',
+        },
+      },
+      null,
+    );
+    await new Promise((r) => setImmediate(r));
+    const done = calls.find((c) => c.kind === 'done');
+    expect((done!.payload as { lastAssistantMsg: string }).lastAssistantMsg).toBe('short reply');
+  });
+
+  it('suppresses (returns false, no wrapper call) when a window is focused and visible', async () => {
+    focusedWindowsForTest = [
+      {
+        isDestroyed: () => false,
+        isFocused: () => true,
+        isVisible: () => true,
+      },
+    ];
+    const fired = showNotification(
+      {
+        sessionId: 's1',
+        title: 'g / sess',
+        eventType: 'permission',
+        extras: {
+          toastId: 'req-suppressed',
+          sessionName: 'sess',
+          groupName: 'g',
+          toolName: 'Bash',
+          toolBrief: 'ls',
+        },
+      },
+      null,
+    );
+    expect(fired).toBe(false);
+    await new Promise((r) => setImmediate(r));
+    expect(calls.find((c) => c.kind === 'permission')).toBeUndefined();
+  });
+
+  it("eventType === 'test' bypasses the main-process focus suppression", async () => {
+    focusedWindowsForTest = [
+      {
+        isDestroyed: () => false,
+        isFocused: () => true,
+        isVisible: () => true,
+      },
+    ];
+    const fired = showNotification(
+      {
+        sessionId: 's1',
+        title: 'g / sess',
+        eventType: 'test',
+        extras: { toastId: 't-test', sessionName: 'sess', groupName: 'g' },
+      },
+      null,
+    );
+    // The 'test' branch bypasses focus suppression but the switch in
+    // emitAdaptiveToast doesn't have a `test` case — so showNotification
+    // returns true (passed the focus gate) but no wrapper call is emitted.
+    expect(fired).toBe(true);
+  });
+
+  it('returns false when the wrapper is unavailable (no notify-impl loaded)', async () => {
+    __setNotifyImporter(async () => {
+      throw new Error('module missing');
+    });
+    // Suppress the wrapper warning during the unavailability flip.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Re-probe so isNotifyAvailable flips back to false.
+    await probeNotifyAvailability();
+    const fired = showNotification(
+      {
+        sessionId: 's1',
+        title: 't',
+        eventType: 'permission',
+        extras: { toastId: 'r1', sessionName: 's', groupName: 'g', toolName: 'Bash', toolBrief: 'ls' },
+      },
+      null,
+    );
+    expect(fired).toBe(false);
+  });
+});
+
+describe('dismissNotification', () => {
+  beforeEach(() => {
+    focusedWindowsForTest = [];
+    __resetBootstrapForTests();
+  });
+
+  afterEach(() => {
+    __setNotifyImporter(null);
+  });
+
+  it('is a no-op when the wrapper is unavailable (does not throw)', async () => {
+    __setNotifyImporter(async () => {
+      throw new Error('module missing');
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await probeNotifyAvailability();
+    await expect(dismissNotification('toast-x')).resolves.toBeUndefined();
+  });
+
+  it('forwards to wrapper.dismiss when the wrapper is loaded', async () => {
+    const calls = await installFakeNotifier();
+    await dismissNotification('toast-y');
+    const dismiss = calls.find((c) => c.kind === 'dismiss');
+    expect(dismiss).toBeDefined();
+    expect(dismiss!.payload).toBe('toast-y');
   });
 });

@@ -17,7 +17,14 @@ type Harness = {
   exitHandler: (e: AgentExit) => void;
   store: typeof import('../src/stores/store').useStore;
   setBackgroundWaitingHandler: typeof import('../src/agent/lifecycle').setBackgroundWaitingHandler;
-  notifyCalls: Array<{ sessionId: string; title: string; body?: string }>;
+  notifyCalls: Array<{
+    sessionId: string;
+    title: string;
+    body?: string;
+    eventType?: string;
+    silent?: boolean;
+    extras?: Record<string, unknown>;
+  }>;
 };
 
 async function freshHarness(): Promise<Harness> {
@@ -27,7 +34,14 @@ async function freshHarness(): Promise<Harness> {
   let permHandler: ((r: PermReq) => void) | null = null;
   let eventHandler: ((e: AgentEvent) => void) | null = null;
   let exitHandler: ((e: AgentExit) => void) | null = null;
-  const notifyCalls: Array<{ sessionId: string; title: string; body?: string }> = [];
+  const notifyCalls: Array<{
+    sessionId: string;
+    title: string;
+    body?: string;
+    eventType?: string;
+    silent?: boolean;
+    extras?: Record<string, unknown>;
+  }> = [];
   (globalThis as unknown as { window: { ccsm: unknown } }).window = {
     ccsm: {
       onAgentEvent: (h: (e: AgentEvent) => void) => {
@@ -42,10 +56,21 @@ async function freshHarness(): Promise<Harness> {
         permHandler = h;
         return () => {};
       },
-      notify: async (payload: { sessionId: string; title: string; body?: string }) => {
+      notify: async (payload: {
+        sessionId: string;
+        title: string;
+        body?: string;
+        eventType?: string;
+        silent?: boolean;
+        extras?: Record<string, unknown>;
+      }) => {
         notifyCalls.push(payload);
         return true;
-      }
+      },
+      // Lifecycle wires `notifySetRuntimeState` whenever notification settings
+      // or the active session change. The test harness only cares that the
+      // call doesn't crash; we accept and discard the patch.
+      notifySetRuntimeState: async () => {}
     }
   };
   const lifecycle = await import('../src/agent/lifecycle');
@@ -231,7 +256,7 @@ describe('lifecycle: background waiting bridge', () => {
     expect(block).toMatchObject({ kind: 'waiting', intent: 'permission' });
   });
 
-  it('fires an OS notification for a NON-active session permission request', async () => {
+  it('fires an OS notification with the post-W1 title/body/extras shape for a permission request', async () => {
     const h = await freshHarness();
     h.store.getState().createSession('~/active');
     const activeId = h.store.getState().activeId;
@@ -239,6 +264,9 @@ describe('lifecycle: background waiting bridge', () => {
     const bgId = h.store.getState().sessions[0].id;
     h.store.getState().selectSession(activeId);
     h.store.getState().renameSession(bgId, 'Background work');
+    // Default group exists for both — title format is `{group} / {session}`.
+    const bg = h.store.getState().sessions.find((s) => s.id === bgId)!;
+    const groupName = h.store.getState().groups.find((g) => g.id === bg.groupId)?.name ?? '';
 
     h.permHandler({
       sessionId: bgId,
@@ -248,33 +276,115 @@ describe('lifecycle: background waiting bridge', () => {
     });
 
     expect(h.notifyCalls).toHaveLength(1);
-    expect(h.notifyCalls[0].sessionId).toBe(bgId);
-    expect(h.notifyCalls[0].title).toBe('Background work needs your input');
-    expect(h.notifyCalls[0].body).toBe('Bash: ls');
+    const call = h.notifyCalls[0] as typeof h.notifyCalls[number] & {
+      eventType?: string;
+      extras?: Record<string, unknown>;
+    };
+    expect(call.sessionId).toBe(bgId);
+    expect(call.eventType).toBe('permission');
+    expect(call.title).toBe(groupName ? `${groupName} / Background work` : 'Background work');
+    // Body is the i18n key value. Tests run with i18next uninitialized; the
+    // fallback returns the raw key string. Either form is acceptable as long
+    // as it's the SAME value the production code computed via i18next.t().
+    expect(call.body).toBeTruthy();
+    // Extras must carry toastId === requestId for permission, plus eventType
+    // + sessionName + groupName for the main-process router.
+    expect(call.extras).toMatchObject({
+      toastId: 'req-n',
+      eventType: 'permission',
+      sessionName: 'Background work'
+    });
   });
 
-  it('does not fire OS notification for the ACTIVE session when window is focused', async () => {
+  it('fires a question-typed notification for AskUserQuestion with toastId=`q-${requestId}`', async () => {
     const h = await freshHarness();
-    // jsdom defaults to hasFocus()===false; force focused for this test.
-    const orig = (globalThis as unknown as { document?: Document }).document?.hasFocus;
-    if ((globalThis as unknown as { document?: Document }).document) {
-      (globalThis as unknown as { document: Document }).document.hasFocus = () => true;
-    }
-    h.store.getState().createSession('~/only');
+    h.store.getState().createSession('~/bg');
     const sid = h.store.getState().activeId;
 
     h.permHandler({
       sessionId: sid,
       requestId: 'req-q',
-      toolName: 'Read',
-      input: { file_path: '/etc/hosts' }
+      toolName: 'AskUserQuestion',
+      input: {
+        questions: [
+          {
+            header: 'Auth',
+            question: 'Which?',
+            multiSelect: false,
+            options: [{ label: 'A' }, { label: 'B' }]
+          }
+        ]
+      }
+    });
+
+    expect(h.notifyCalls).toHaveLength(1);
+    const call = h.notifyCalls[0] as typeof h.notifyCalls[number] & {
+      eventType?: string;
+      extras?: Record<string, unknown>;
+    };
+    expect(call.eventType).toBe('question');
+    expect(call.extras).toMatchObject({ toastId: 'q-req-q', eventType: 'question' });
+  });
+
+  it('fires a turn_done notification on every result frame, regardless of focus', async () => {
+    const h = await freshHarness();
+    // Force document.hasFocus → true to prove the focus gate is gone.
+    if ((globalThis as unknown as { document?: Document }).document) {
+      (globalThis as unknown as { document: Document }).document.hasFocus = () => true;
+    }
+    h.store.getState().createSession('~/only');
+    const sid = h.store.getState().activeId;
+    const session = h.store.getState().sessions.find((s) => s.id === sid)!;
+    const groupName = h.store.getState().groups.find((g) => g.id === session.groupId)?.name ?? '';
+    const expectedTitle = groupName ? `${groupName} / ${session.name}` : session.name;
+
+    h.eventHandler({
+      sessionId: sid,
+      message: {
+        type: 'result',
+        subtype: 'success',
+        usage: {},
+        num_turns: 1,
+        duration_ms: 100
+      } as never
+    });
+
+    expect(h.notifyCalls).toHaveLength(1);
+    const call = h.notifyCalls[0] as typeof h.notifyCalls[number] & {
+      eventType?: string;
+      extras?: Record<string, unknown>;
+    };
+    expect(call.eventType).toBe('turn_done');
+    expect(call.title).toBe(expectedTitle);
+    expect(call.extras).toMatchObject({ eventType: 'turn_done', sessionName: session.name });
+    expect(typeof (call.extras as { toastId?: unknown }).toastId).toBe('string');
+    expect((call.extras as { toastId: string }).toastId.startsWith('done-')).toBe(true);
+  });
+
+  it('does not fire OS notification when global enabled=false (single-gate suppression)', async () => {
+    const h = await freshHarness();
+    h.store.getState().setNotificationSettings({ enabled: false });
+    h.store.getState().createSession('~/bg');
+    const sid = h.store.getState().activeId;
+
+    h.permHandler({
+      sessionId: sid,
+      requestId: 'req-disabled',
+      toolName: 'Bash',
+      input: { command: 'ls' }
+    });
+    h.eventHandler({
+      sessionId: sid,
+      message: {
+        type: 'result',
+        subtype: 'success',
+        usage: {},
+        num_turns: 1,
+        duration_ms: 50
+      } as never
     });
 
     expect(h.notifyCalls).toEqual([]);
-
-    if (orig && (globalThis as unknown as { document?: Document }).document) {
-      (globalThis as unknown as { document: Document }).document.hasFocus = orig;
-    }
   });
 });
 

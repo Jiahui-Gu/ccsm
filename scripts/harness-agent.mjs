@@ -3174,7 +3174,16 @@ async function caseStreamingPartialFrames({ win, log }) {
 }
 
 // ---------- notify-integration (was probe-e2e-notify-integration) ----------
-// the inlined notify module pipeline + retry/cancel/gate behaviors.
+// Verifies the inlined notify module pipeline end-to-end:
+//   - permission / question / turn_done emit through the wrapper with the
+//     post-W1 payload shape (toastId, sessionName, groupName, eventType).
+//   - allow-always activation routes back into the renderer store.
+//   - main-process focus suppression (`shouldSuppressForFocus`) drops a
+//     duplicate emit when a window is focused and visible.
+//   - rich done payload truncates lastAssistantMsg to 80 chars w/ ellipsis.
+// W4 removed the question-retry / reject-cancel / fire-time-gate probes that
+// previously shipped here.
+//
 // Uses preMain to install the mock importer + bootstrapNotify. After this case
 // runs, bootstrapNotify state is mutated; pair with `relaunch: true` on the
 // NEXT case (or rely on case ordering — placed near end of cases array).
@@ -3367,7 +3376,7 @@ async function caseNotifyIntegration({ app, win, log }) {
   if (richDone.payload.lastAssistantMsg.length !== 80) throw new Error(`lastAssistantMsg length: ${richDone.payload.lastAssistantMsg.length}`);
   if (!richDone.payload.lastAssistantMsg.endsWith('…')) throw new Error('expected ellipsis at end of truncated lastAssistantMsg');
 
-  log('all 11 notify checkpoints passed (perm/question/done emit, allow-always routing, focus suppress, retry, cancel, fire-time gate, reject cancel, rich done)');
+  log('all notify checkpoints passed (perm/question/done emit, allow-always routing, focus suppress, rich done)');
 }
 
 // ---------- delete-session-kills-process (was probe-e2e-delete-session-kills-process) ----------

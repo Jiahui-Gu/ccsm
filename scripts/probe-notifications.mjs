@@ -1,15 +1,15 @@
-// Probe: OS notifications IPC wiring and click routing.
+// Probe: OS notifications IPC wiring and click routing (post-W1..W4 spec).
 //
 // Scope: black-box verification that
-//   a) the renderer->main IPC path for `notification:show` is reachable and
-//      delivers the full payload (sessionId, title, eventType, silent),
-//   b) main listens for window close/focus events and a click-through would
-//      route via `notification:focusSession` (we bypass the real OS toast).
+//   a) the renderer→main IPC path for `notification:show` is reachable and
+//      delivers the post-W1 payload (sessionId, title, body, eventType,
+//      silent, extras),
+//   b) main routes a click-through via `notification:focusSession` back to
+//      the renderer (we bypass the real OS toast).
 //
-// Focus-suppression and debounce rules are exhaustively covered by
-// tests/notifications-dispatch.test.ts; this probe intentionally does NOT
-// re-run those in the live app — the renderer doesn't expose the dispatch
-// module on `window`, and the unit tests already pin the logic.
+// All gating logic (single global enabled gate; no debounce, no per-event,
+// no per-session mute) is covered by tests/notifications-dispatch.test.ts;
+// this probe only verifies the IPC contract end-to-end.
 //
 // Run: `CCSM_DEV_PORT=4182 npm run dev` in one terminal, then
 //      `node scripts/probe-notifications.mjs` in another.
@@ -53,9 +53,9 @@ await app.evaluate(async ({ ipcMain, BrowserWindow }) => {
     // Simulate the click-through branch: send `notification:focusSession`
     // back to the renderer immediately. In real life this happens only on
     // the user clicking the toast, but we want to verify the round-trip.
-    const win = BrowserWindow.fromWebContents(e.sender);
-    if (win) {
-      win.webContents.send('notification:focusSession', payload.sessionId);
+    const sender = BrowserWindow.fromWebContents(e.sender);
+    if (sender) {
+      sender.webContents.send('notification:focusSession', payload.sessionId);
       focusSent.push(payload.sessionId);
     }
     return true;
@@ -71,25 +71,34 @@ await win.evaluate(() => {
   const w = window;
   w.__probeFocusReceived = [];
   if (w.ccsm?.onNotificationFocus) {
-    w.agentory.onNotificationFocus((sessionId) => {
+    w.ccsm.onNotificationFocus((sessionId) => {
       w.__probeFocusReceived.push(sessionId);
     });
   }
 });
 
-// Drive: fire the IPC call the same way dispatch does after passing its gates.
+// Drive: fire the IPC call the same way dispatch does after passing its single
+// global-enabled gate. Payload mirrors the post-W1 shape: title is
+// `{group} / {session}`, body is the i18n string, extras carry toastId +
+// eventType + sessionName + groupName.
 const drive = await win.evaluate(async () => {
   /** @type {any} */
   const w = window;
-  if (!w.agentory || typeof w.agentory.notify !== 'function') {
+  if (!w.ccsm || typeof w.ccsm.notify !== 'function') {
     return { ok: false, reason: 'window.ccsm.notify missing' };
   }
-  await w.agentory.notify({
+  await w.ccsm.notify({
     sessionId: 's-probe-1',
-    title: 'probe permission',
-    body: 'renderer -> main',
+    title: 'Probe Group / Probe Session',
+    body: 'Permission',
     eventType: 'permission',
-    silent: true
+    silent: true,
+    extras: {
+      toastId: 'req-probe-1',
+      sessionName: 'Probe Session',
+      groupName: 'Probe Group',
+      eventType: 'permission'
+    }
   });
   return { ok: true };
 });
@@ -113,10 +122,21 @@ if (
   call.sessionId !== 's-probe-1' ||
   call.eventType !== 'permission' ||
   call.silent !== true ||
-  call.title !== 'probe permission'
+  call.title !== 'Probe Group / Probe Session' ||
+  call.body !== 'Permission'
 ) {
   await app.close();
   fail(`main received unexpected payload: ${JSON.stringify(call)}`);
+}
+if (
+  !call.extras ||
+  call.extras.toastId !== 'req-probe-1' ||
+  call.extras.sessionName !== 'Probe Session' ||
+  call.extras.groupName !== 'Probe Group' ||
+  call.extras.eventType !== 'permission'
+) {
+  await app.close();
+  fail(`main received unexpected extras: ${JSON.stringify(call.extras)}`);
 }
 
 const received = await win.evaluate(
