@@ -3056,6 +3056,126 @@ async function caseSidebarVerticalSymmetry({ win, log }) {
   );
 }
 
+// ---------- icon-size-canon ----------
+// UX audit Group D — pin lucide icon sizes in Sidebar (collapsed rail +
+// expanded top/bottom action buttons) and StatusBar chip chevron to the
+// canonical 14px. Catches regressions where size={13} or size={10} sneak
+// back into the rail, which previously created a visible icon-size jitter
+// across otherwise identical h-8 buttons.
+async function caseIconSizeCanon({ win, log }) {
+  // Need an active session so the StatusBar (and thus the effort-chip)
+  // renders. Use the same minimal seed pattern as caseEffortChipToggle.
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    const s = store.getState();
+    if (s.sessions.length === 0) s.createSession('~');
+    const sid = store.getState().activeId;
+    store.setState((prev) => ({
+      startedSessions: { ...prev.startedSessions, [sid]: true },
+    }));
+  });
+  await win.waitForTimeout(200);
+
+  // --- Expanded sidebar measurements (default state) ---
+  const expanded = await win.evaluate(() => {
+    const aside = document.querySelector('aside');
+    if (!aside) return null;
+    const buttons = Array.from(aside.querySelectorAll('button'));
+    function svgWidthIn(btn) {
+      if (!btn) return null;
+      const svg = btn.querySelector('svg');
+      if (!svg) return null;
+      const w = svg.getAttribute('width');
+      return w == null ? null : Number(w);
+    }
+    const newSession = buttons.find((b) => /^New Session$/i.test(b.textContent?.trim() ?? ''));
+    const settings = buttons.find((b) => /^Settings$/i.test(b.textContent?.trim() ?? ''));
+    // Search and Import (Download) are icon-only; identify by aria-label.
+    const search = buttons.find((b) => /search/i.test(b.getAttribute('aria-label') ?? ''));
+    const importBtn = buttons.find((b) => /import/i.test(b.getAttribute('aria-label') ?? ''));
+    return {
+      newSession: svgWidthIn(newSession),
+      settings: svgWidthIn(settings),
+      search: svgWidthIn(search),
+      importBtn: svgWidthIn(importBtn),
+    };
+  });
+  if (!expanded) throw new Error('expanded sidebar not found');
+
+  // --- StatusBar effort-chip chevron measurement ---
+  const chipChevron = await win.evaluate(() => {
+    const chip = document.querySelector('[data-testid="effort-chip"]');
+    if (!chip) return null;
+    const svg = chip.querySelector('svg');
+    if (!svg) return null;
+    const w = svg.getAttribute('width');
+    return w == null ? null : Number(w);
+  });
+  if (chipChevron == null) throw new Error('StatusBar effort-chip chevron not found');
+
+  // --- Collapse the sidebar and measure the rail icons ---
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({ sidebarCollapsed: true });
+  });
+  await win.waitForTimeout(300);
+
+  const rail = await win.evaluate(() => {
+    const aside = document.querySelector('aside');
+    if (!aside) return null;
+    const buttons = Array.from(aside.querySelectorAll('button'));
+    function svgWidthInBtn(matcher) {
+      const btn = buttons.find((b) => matcher(b.getAttribute('aria-label') ?? ''));
+      if (!btn) return null;
+      const svg = btn.querySelector('svg');
+      if (!svg) return null;
+      const w = svg.getAttribute('width');
+      return w == null ? null : Number(w);
+    }
+    return {
+      expand: svgWidthInBtn((l) => /expand/i.test(l)),
+      newSession: svgWidthInBtn((l) => /new session/i.test(l)),
+      search: svgWidthInBtn((l) => /search/i.test(l)),
+      importBtn: svgWidthInBtn((l) => /import/i.test(l)),
+      settings: svgWidthInBtn((l) => /settings/i.test(l)),
+    };
+  });
+  if (!rail) throw new Error('collapsed rail not found');
+
+  // Restore for subsequent cases.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({ sidebarCollapsed: false });
+  });
+
+  const CANON = 14;
+  const measurements = {
+    'expanded.newSession': expanded.newSession,
+    'expanded.search': expanded.search,
+    'expanded.settings': expanded.settings,
+    'expanded.import': expanded.importBtn,
+    'rail.expand': rail.expand,
+    'rail.newSession': rail.newSession,
+    'rail.search': rail.search,
+    'rail.import': rail.importBtn,
+    'rail.settings': rail.settings,
+    'statusbar.chipChevron': chipChevron,
+  };
+
+  const offenders = Object.entries(measurements)
+    .filter(([, v]) => v !== CANON)
+    .map(([k, v]) => `${k}=${v}`);
+  if (offenders.length) {
+    throw new Error(
+      `icon size drift (canon=${CANON}px): ${offenders.join(', ')}`
+    );
+  }
+
+  log(
+    Object.entries(measurements)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ')
+  );
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -3082,6 +3202,10 @@ await runHarness({
     // (2) Sidebar internal top/bottom symmetry.
     { id: 'sidebar-inputbar-bottom-align', run: caseSidebarInputbarBottomAlign },
     { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
+    // UX audit Group D — task #310. Pin lucide icon sizes (Sidebar collapsed
+    // rail + expanded action buttons + StatusBar chip chevron) to canonical
+    // 14px so 13/10 mismatches don't sneak back in.
+    { id: 'icon-size-canon', run: caseIconSizeCanon },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
