@@ -9,24 +9,18 @@
 // but the bash never executed and no tool_result arrived. Post-fix the
 // nested control_response envelope reaches claude.exe and the bash runs.
 //
-// known-incomplete: PreToolUse missing (#94)
-// ─────────────────────────────────────────
+// PreToolUse hook restored (#94 fix, post PR #271 SDK migration)
+// ──────────────────────────────────────────────────────────────
 // The Claude Code CLI's local rule engine handles built-in `Bash` tool
-// invocations entirely client-side and does NOT route them through
-// `canUseTool` (the SDK callback ccsm hooks into). Pre-#94 the legacy
-// runner registered a `PreToolUse` hook with matcher `.*` to bridge every
-// tool invocation through the permission flow regardless of CLI internal
-// rules. The SDK migration dropped that hook; the SDK has no equivalent
-// API surface yet (verified against
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts).
-//
-// Net effect: in default permission mode no Allow button ever appears for
-// Bash. Per ccsm e2e policy ("never skip — degrade with a labeled
-// assertion") this probe degrades to: tool block lands with a tool_result
-// regardless of whether the prompt rendered. The original strict
-// "Allow-clicked → result lands" assertion is preserved as a soft check
-// that LOGS rather than fails when the prompt doesn't fire. Once #94
-// lands the soft check should be promoted back to a hard assert.
+// invocations entirely client-side; in default mode it will auto-allow many
+// Bash calls based on its safe-command heuristics and never consult
+// `canUseTool` (the SDK callback ccsm hooks into). To force every tool
+// invocation through ccsm's permission flow, the runner registers a
+// `PreToolUse` SDK hook (`options.hooks.PreToolUse`, matcher `.*`,
+// `permissionDecision: 'ask'`) — see electron/agent-sdk/sessions.ts. With
+// that hook the CLI defers Bash to canUseTool deterministically, the
+// renderer alertdialog renders, and Allow → tool_result is the strict
+// assertion below.
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -117,14 +111,12 @@ await ta.fill(PROMPT);
 await win.keyboard.press('Enter');
 log('prompt sent');
 
-// Race: either an Allow button appears (strict path — assert on it) OR the
-// Bash tool block lands a tool_result without ever prompting (degraded
-// path — log and continue, mark known-incomplete (#94)).
+// With the PreToolUse hook (#94) installed in the SDK runner, the Allow
+// button MUST appear and a click MUST land before the tool_result arrives.
 const allowSel = '[data-perm-action="allow"]';
 const waitDl = Date.now() + 90_000;
 let allowClicked = false;
 let storeHit = null;
-let knownIncomplete = false;
 while (Date.now() < waitDl) {
   await win.waitForTimeout(1000);
   // Strict path — click Allow if rendered.
@@ -173,15 +165,10 @@ if (storeHit.isError)
   fail(`Bash tool block received an ERROR result: ${storeHit.head}`, app);
 
 if (!allowClicked) {
-  knownIncomplete = true;
-  log('known-incomplete: PreToolUse missing (#94) — Bash auto-allowed by CLI without firing canUseTool; tool result still landed, so degraded assertion passes.');
+  fail('Allow button never rendered — PreToolUse hook (#94) regression? CLI auto-allowed Bash without firing canUseTool.', app);
 }
 
-console.log(
-  knownIncomplete
-    ? '[probe-bugl-bash] OK (known-incomplete: PreToolUse missing #94): bash executed, tool_result delivered; permission prompt never fired (CLI client-side auto-allow)'
-    : '[probe-bugl-bash] OK: bash executed, tool_result delivered'
-);
+console.log('[probe-bugl-bash] OK: Allow clicked, bash executed, tool_result delivered');
 await app.close();
 cfg.cleanup();
 process.exit(0);

@@ -378,6 +378,28 @@ export class SdkSessionRunner {
         sessionId: presetSessionId,
         pathToClaudeCodeExecutable: binaryPath,
         canUseTool: (toolName, input, ctx) => this.handleCanUseTool(toolName, input, ctx),
+        // PreToolUse hook (#94): the CLI's local rule engine handles built-in
+        // tools (Bash/Write/Edit/...) entirely client-side and only routes
+        // "ask" tools (AskUserQuestion / ExitPlanMode) through canUseTool.
+        // Without an external signal, Bash in `default` mode auto-allows
+        // based on the CLI's safe-command heuristics — so the renderer's
+        // PermissionPromptBlock never renders and probes can't assert the
+        // permission flow ran. The legacy wrapper used `--pretool-use-hook`
+        // to force every tool through our handler; the SDK exposes the same
+        // mechanism via `options.hooks`. Returning `permissionDecision:'ask'`
+        // makes the CLI defer to canUseTool. PASSTHROUGH_TOOLS get an
+        // explicit `allow` so we don't double-prompt over the renderer's
+        // own AskUserQuestion / ExitPlanMode UI (which uses canUseTool too;
+        // the canUseTool short-circuit at the top of handleCanUseTool stays
+        // as defence-in-depth).
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: '.*',
+              hooks: [this.makePreToolUseHook()],
+            },
+          ],
+        },
         // Match the legacy spawner: we want partial-message streaming so
         // long replies don't appear frozen.
         includePartialMessages: true,
@@ -545,6 +567,42 @@ export class SdkSessionRunner {
     return {
       behavior: 'deny',
       message: decision.deny_reason ?? 'User denied tool use.',
+    };
+  }
+
+  /**
+   * Build the PreToolUse hook callback (#94). Fires for EVERY tool invocation
+   * (matcher `.*`) and forces the CLI to consult our canUseTool callback
+   * instead of auto-allowing built-in tools via its safe-command heuristics.
+   *
+   * Returned shape: `SyncHookJSONOutput` with a `PreToolUseHookSpecificOutput`
+   * payload. `permissionDecision: 'ask'` tells the CLI "delegate to the host's
+   * canUseTool"; `'allow'` tells it "skip canUseTool and run the tool". We use
+   * 'allow' for passthrough tools (AskUserQuestion / ExitPlanMode) so the
+   * renderer's bespoke UI stays the single source of truth for those — same
+   * rationale as the PASSTHROUGH_TOOLS short-circuit at the top of
+   * handleCanUseTool. Bypass-style modes are also fast-pathed to 'allow' so
+   * we don't pay a host round-trip per tool invocation when the user has
+   * explicitly opted out of prompting.
+   */
+  private makePreToolUseHook(): import('@anthropic-ai/claude-agent-sdk').HookCallback {
+    return async (input) => {
+      const toolName =
+        input.hook_event_name === 'PreToolUse' ? input.tool_name : '';
+      const decision: import('@anthropic-ai/claude-agent-sdk').HookPermissionDecision =
+        this.permissionMode === 'bypassPermissions' ||
+        this.permissionMode === 'yolo' ||
+        this.permissionMode === 'acceptEdits' ||
+        this.permissionMode === 'auto' ||
+        PASSTHROUGH_TOOLS.has(toolName)
+          ? 'allow'
+          : 'ask';
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: decision,
+        },
+      };
     };
   }
 
