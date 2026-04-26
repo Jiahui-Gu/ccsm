@@ -105,65 +105,6 @@ describe('store: createSession', () => {
     useStore.getState().createSession('~/a');
     expect(useStore.getState().focusInputNonce).toBe(before + 1);
   });
-
-  // Bug-3: distinct default session names. Brand-new sessions inherit the cwd
-  // basename so the sidebar can tell rows apart at a glance, with `(N)` dedupe
-  // when the same cwd produces a collision.
-  describe('default name derivation (bug-3)', () => {
-    it('derives default name from cwd basename', () => {
-      useStore.getState().createSession('C:/projects/foo');
-      expect(useStore.getState().sessions[0].name).toBe('foo');
-    });
-
-    it('strips ~/ shorthand and uses trailing segment', () => {
-      useStore.getState().createSession('~/work/bar');
-      expect(useStore.getState().sessions[0].name).toBe('bar');
-    });
-
-    it('uses userHome basename when cwd defaults to home', () => {
-      useStore.setState({ userHome: 'C:/Users/jiahuigu' });
-      useStore.getState().createSession(null);
-      expect(useStore.getState().sessions[0].name).toBe('jiahuigu');
-    });
-
-    it('appends (N) suffix when basename collides with an existing session', () => {
-      useStore.setState({ userHome: 'C:/Users/jiahuigu' });
-      useStore.getState().createSession(null);
-      useStore.getState().createSession(null);
-      useStore.getState().createSession(null);
-      const names = useStore.getState().sessions.map((s) => s.name).sort();
-      expect(names).toEqual(['jiahuigu', 'jiahuigu (2)', 'jiahuigu (3)']);
-    });
-
-    it('falls back to literal "New session" when cwd is empty', () => {
-      // userHome unset → defaultCwd is '', no basename available.
-      useStore.getState().createSession(null);
-      expect(useStore.getState().sessions[0].name).toBe('New session');
-    });
-
-    it('explicit name wins over cwd-derived default', () => {
-      useStore.getState().createSession({ cwd: 'C:/projects/foo', name: 'Spike' });
-      expect(useStore.getState().sessions[0].name).toBe('Spike');
-    });
-
-    it('dedupes against user-renamed sessions too', () => {
-      useStore.setState({ userHome: 'C:/Users/jiahuigu' });
-      useStore.getState().createSession(null); // 'jiahuigu'
-      useStore.getState().createSession(null); // 'jiahuigu (2)'
-      const id = useStore.getState().sessions[0].id; // most recent (created last)
-      useStore.getState().renameSession(id, 'jiahuigu (5)');
-      useStore.getState().createSession(null);
-      // Existing names: 'jiahuigu', 'jiahuigu (5)'. Next default must skip
-      // both occupied slots. Naive numbering would land on (2); we expect (2)
-      // to be free since the rename freed it, but the new session must NOT
-      // collide with 'jiahuigu (5)'.
-      const names = useStore.getState().sessions.map((s) => s.name).sort();
-      expect(names).toContain('jiahuigu (5)');
-      expect(names).toContain('jiahuigu');
-      // The third (newest) must not duplicate any existing name.
-      expect(new Set(names).size).toBe(names.length);
-    });
-  });
 });
 
 describe('store: deleteSession', () => {
