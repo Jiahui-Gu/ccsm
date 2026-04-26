@@ -335,6 +335,75 @@ describe('agent-sdk/SdkSessionRunner', () => {
     runner.close();
   });
 
+  // PreToolUse hook (#94): forces the CLI to defer built-in tools (Bash etc.)
+  // to canUseTool instead of auto-allowing via its safe-command heuristics.
+  // The CLI sees `permissionDecision: 'ask'` for non-passthrough tools and
+  // `'allow'` for passthrough/bypass paths.
+  type HookFn = (
+    input: { hook_event_name: 'PreToolUse'; tool_name: string },
+    toolUseID: string | undefined,
+    options: { signal: AbortSignal },
+  ) => Promise<{
+    hookSpecificOutput?: { hookEventName: string; permissionDecision?: string };
+  }>;
+  const getPreToolUseHook = (): HookFn => {
+    const opts = fake.getOptions()?.options as {
+      hooks?: { PreToolUse?: Array<{ matcher?: string; hooks: HookFn[] }> };
+    };
+    const matcher = opts.hooks?.PreToolUse?.[0];
+    if (!matcher) throw new Error('PreToolUse hook matcher not registered');
+    expect(matcher.matcher).toBe('.*');
+    return matcher.hooks[0];
+  };
+
+  it('PreToolUse hook returns ask for built-in tools in default mode (#94)', async () => {
+    const runner = new SdkSessionRunner('s12-pt-default', noop, noop, noop, noop);
+    await runner.start({ ...baseStart, permissionMode: 'default' });
+    const hook = getPreToolUseHook();
+    const ac = new AbortController();
+    const out = await hook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash' },
+      'tu-bash',
+      { signal: ac.signal },
+    );
+    expect(out.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
+    runner.close();
+  });
+
+  it('PreToolUse hook returns allow for passthrough tools (#94)', async () => {
+    const runner = new SdkSessionRunner('s12-pt-pass', noop, noop, noop, noop);
+    await runner.start({ ...baseStart, permissionMode: 'default' });
+    const hook = getPreToolUseHook();
+    const ac = new AbortController();
+    for (const tool of ['AskUserQuestion', 'ExitPlanMode']) {
+      const out = await hook(
+        { hook_event_name: 'PreToolUse', tool_name: tool },
+        'tu-pass',
+        { signal: ac.signal },
+      );
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
+    }
+    runner.close();
+  });
+
+  it.each(['bypassPermissions', 'acceptEdits', 'auto'] as const)(
+    'PreToolUse hook returns allow in %s mode (no host round-trip needed)',
+    async (mode) => {
+      const runner = new SdkSessionRunner(`s12-pt-${mode}`, noop, noop, noop, noop);
+      await runner.start({ ...baseStart, permissionMode: mode });
+      const hook = getPreToolUseHook();
+      const ac = new AbortController();
+      const out = await hook(
+        { hook_event_name: 'PreToolUse', tool_name: 'Bash' },
+        'tu-bypass',
+        { signal: ac.signal },
+      );
+      expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
+      runner.close();
+    },
+  );
+
   it('close() resolves outstanding permission requests as denied', async () => {
     let capturedReq: { requestId: string } | null = null;
     const runner = new SdkSessionRunner(

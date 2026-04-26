@@ -19,18 +19,16 @@
 //      unique `tool_use.id`. See `assistantBlocks` in
 //      `src/agent/stream-to-blocks.ts`.
 //
-// known-incomplete: PreToolUse missing (#94)
-// ─────────────────────────────────────────
+// PreToolUse hook restored (#94 fix, post PR #271 SDK migration)
+// ──────────────────────────────────────────────────────────────
 // In default mode the CLI auto-allows built-in `Bash` (and often `Read`)
-// invocations client-side, so no permission prompt fires and `clicks`
-// will be 0. The actual Bug L invariant (`N tool_use blocks → N tool
-// blocks in store → N tool_results`) is independent of whether a prompt
-// rendered — IPC envelope correctness applies equally to the auto-allow
-// path. So this probe degrades to: assert N parallel tool blocks exist
-// AND each carries a tool_result. The strict-equality `clicks === N`
-// assertion is preserved as a soft check that LOGS "known-incomplete:
-// PreToolUse missing (#94)" rather than failing when the prompt doesn't
-// fire. Once #94 lands the strict path should be re-enabled.
+// invocations client-side via its safe-command heuristics. To force every
+// invocation through ccsm's permission flow, the runner registers a
+// `PreToolUse` SDK hook (`options.hooks.PreToolUse`, matcher `.*`,
+// `permissionDecision: 'ask'`) — see electron/agent-sdk/sessions.ts. With
+// that hook in place, this probe re-asserts strict equality
+// `clicks === expectedClicks` (every parallel tool_use → every Allow
+// click → every tool_result).
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -196,25 +194,17 @@ async function runCase({ caseName, files, prompt, toolName, expectedClicks }) {
   log(`[${caseName}] final snapshot: tools=${JSON.stringify(snap.tools)} resolvedTraces=${snap.resolvedTraces}`);
   log(`[${caseName}] final allBlocks=${JSON.stringify(snap.allBlockKinds)}`);
 
-  // Strict equality `clicks === expectedClicks` is degraded to a SOFT check
-  // when the CLI auto-allowed (clicks === 0). See "known-incomplete: #94".
-  let knownIncomplete = false;
+  // Strict equality `clicks === expectedClicks` — with the PreToolUse hook
+  // (#94) installed, every parallel tool_use must surface an Allow click.
   if (expectedClicks && clicks !== expectedClicks) {
-    if (clicks === 0) {
-      knownIncomplete = true;
-      console.warn(
-        `[${caseName}] known-incomplete: PreToolUse missing (#94) — expected ${expectedClicks} Allow clicks, observed 0. CLI auto-allowed all ${expectedClicks} ${toolName} calls client-side without firing canUseTool. Falling through to the N-tool-block invariant assertion (the actual Bug L target).`
-      );
-    } else {
-      fail(
-        `[${caseName}] expected ${expectedClicks} Allow clicks but observed ${clicks} (partial — neither the strict path nor the auto-allow path). ` +
-          `Did the model serialize the calls instead of issuing them in parallel?`,
-        app,
-      );
-    }
+    fail(
+      `[${caseName}] expected ${expectedClicks} Allow clicks but observed ${clicks}. ` +
+        `Either the model serialized the calls (didn't issue them in parallel) OR the PreToolUse hook (#94) regressed.`,
+      app,
+    );
   }
 
-  if (!knownIncomplete && snap.resolvedTraces < clicks)
+  if (snap.resolvedTraces < clicks)
     fail(
       `[${caseName}] Bug L renderer regression: clicked Allow ${clicks}x but only ${snap.resolvedTraces} permission-resolved traces appeared in store.`,
       app,
@@ -243,9 +233,9 @@ async function runCase({ caseName, files, prompt, toolName, expectedClicks }) {
     fail(`[${caseName}] one or more ${toolName} tool blocks errored: ${JSON.stringify(errored)}`, app);
 
   log(
-    `[${caseName}] OK${knownIncomplete ? ' (known-incomplete: PreToolUse missing #94)' : ''}: ${clicks} Allow clicks → ${snap.resolvedTraces} resolved traces, ${succeeded.length}/${targetN} ${toolName} blocks have tool_result.`,
+    `[${caseName}] OK: ${clicks} Allow clicks → ${snap.resolvedTraces} resolved traces, ${succeeded.length}/${targetN} ${toolName} blocks have tool_result.`,
   );
-  return { clicks, snap, knownIncomplete };
+  return { clicks, snap };
 }
 
 // === case: parallel-bash-N4 ===
@@ -315,8 +305,9 @@ const READ_PROMPT =
   log(`[${caseName}] prompt sent`);
 
   const allowSel = '[data-perm-action="allow"]';
-  // Same combined click+poll loop as runCase (see comment there for why
-  // this can't gate on `clicks > 0` post-#94 SDK migration).
+  // Same combined click+poll loop as runCase. With the PreToolUse hook
+  // (#94) wired into the SDK runner, the CLI defers every Read to
+  // canUseTool deterministically, so `clicks` should equal `snap.reads.length`.
   const totalDl = Date.now() + 180_000;
   let clicks = 0;
   let snap = null;
@@ -376,28 +367,21 @@ const READ_PROMPT =
 
   // We expect ~5 parallel Read calls. The model occasionally folds two reads
   // into one batch with sequential follow-ups; tolerate a small undercount
-  // (≥4 reads end-to-end). With #94 missing the CLI may auto-allow Reads
-  // and clicks==0 is acceptable so long as the N reads land.
-  let knownIncomplete = false;
+  // (≥4 reads end-to-end). With the PreToolUse hook (#94) installed,
+  // `clicks` should match `snap.reads.length`.
   if (snap.reads.length < 4)
     fail(
       `[${caseName}] expected ~5 parallel Read tool blocks (model declined to parallelize?); only saw ${snap.reads.length}.`,
       app,
     );
-  if (clicks === 0) {
-    knownIncomplete = true;
-    console.warn(
-      `[${caseName}] known-incomplete: PreToolUse missing (#94) — observed 0 Allow clicks, ${snap.reads.length} Read blocks. CLI auto-allowed all Reads client-side.`
-    );
-  } else if (clicks < snap.reads.length - 1) {
-    // partial — neither path. e.g. 2 clicks for 5 reads is suspicious.
+  if (clicks < snap.reads.length - 1) {
     fail(
-      `[${caseName}] saw ${clicks} Allow clicks for ${snap.reads.length} Read tool blocks — partial click coverage. Either the prompt UI dropped some prompts or some auto-allowed and others didn't.`,
+      `[${caseName}] saw ${clicks} Allow clicks for ${snap.reads.length} Read tool blocks — partial click coverage. PreToolUse hook (#94) regression?`,
       app,
     );
   }
 
-  if (!knownIncomplete && snap.resolvedTraces < clicks)
+  if (snap.resolvedTraces < clicks)
     fail(
       `[${caseName}] renderer regression: clicked Allow ${clicks}x but only ${snap.resolvedTraces} permission-resolved traces appeared.`,
       app,
@@ -416,7 +400,7 @@ const READ_PROMPT =
     fail(`[${caseName}] one or more Read tool blocks errored: ${JSON.stringify(errored)}`, app);
 
   log(
-    `[${caseName}] OK${knownIncomplete ? ' (known-incomplete: PreToolUse missing #94)' : ''}: ${clicks} Allow clicks → ${snap.resolvedTraces} resolved traces, ${succeeded.length}/${snap.reads.length} Read blocks have tool_result.`,
+    `[${caseName}] OK: ${clicks} Allow clicks → ${snap.resolvedTraces} resolved traces, ${succeeded.length}/${snap.reads.length} Read blocks have tool_result.`,
   );
 }
 
