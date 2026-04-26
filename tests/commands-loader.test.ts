@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { loadCommands, parseFrontmatter } from '../electron/commands-loader';
+import { loadCommands, loadPickerCommands, parseFrontmatter } from '../electron/commands-loader';
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -221,6 +221,64 @@ describe('loadCommands', () => {
     expect(cmds.map((c) => c.name)).toEqual(['a']);
   });
 
+  // ─── CLAUDE_CONFIG_DIR env fallback (PR #346 review) ────────────────────
+  //
+  // Production code path: ccsm sets `CLAUDE_CONFIG_DIR=~/.claude` so the
+  // claude.exe binary and the GUI loader read the same tree (see project
+  // memory `project_cli_config_reuse`). Before the env-fallback patch the
+  // loader hard-coded `os.homedir()/.claude`, silently desyncing the picker
+  // from what the binary actually executed. These tests pin the env path:
+  //   - explicit `homeDir` opt always wins (test override beats env)
+  //   - env var resolved when no opt provided
+  //   - falls back to os.homedir() when neither is set
+
+  it('honors process.env.CLAUDE_CONFIG_DIR when no homeDir opt is passed', () => {
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'should-not-load.md'),
+      `---\n---\n`
+    );
+    // Build a separate fake root and point the env var at it. Because we
+    // omit `homeDir`, the env var should win and the loader should read
+    // from the fake root, NOT tmpHome.
+    const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-cmds-env-'));
+    write(
+      path.join(fakeRoot, 'commands', 'env-cmd.md'),
+      `---\ndescription: from-env\n---\n`
+    );
+    const prior = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = fakeRoot;
+    try {
+      const cmds = loadCommands({ cwd: tmpCwd });
+      expect(cmds.map((c) => c.name)).toEqual(['env-cmd']);
+    } finally {
+      if (prior == null) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prior;
+      fs.rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('opt.homeDir wins over CLAUDE_CONFIG_DIR when both are set', () => {
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'from-opt.md'),
+      `---\n---\n`
+    );
+    const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-cmds-env2-'));
+    write(
+      path.join(fakeRoot, 'commands', 'from-env.md'),
+      `---\n---\n`
+    );
+    const prior = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = fakeRoot;
+    try {
+      const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+      expect(cmds.map((c) => c.name)).toEqual(['from-opt']);
+    } finally {
+      if (prior == null) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prior;
+      fs.rmSync(fakeRoot, { recursive: true, force: true });
+    }
+  });
+
   // ─── agents loading (PR-E shipped this; PR-L adds the missing tests) ───
   //
   // The loader scans both ~/.claude/agents and <cwd>/.claude/agents and tags
@@ -309,5 +367,90 @@ describe('loadCommands', () => {
     const agents = cmds.filter((c) => c.source === 'agent');
     expect(agents.map((c) => c.name)).toEqual(['empty']);
     expect(agents[0].description).toBeUndefined();
+  });
+});
+
+// ─── loadPickerCommands ────────────────────────────────────────────────────
+//
+// Picker-visible filter: hides plugin / skill / agent sources because the
+// agent SDK transport ccsm uses cannot execute them without configuration
+// ccsm doesn't supply. These tests pin that contract so a future
+// refactor doesn't silently re-surface broken slash entries to users.
+
+describe('loadPickerCommands', () => {
+  it('keeps user and project sources, drops plugin / skill / agent', () => {
+    // user
+    write(
+      path.join(tmpHome, '.claude', 'commands', 'user-cmd.md'),
+      `---\ndescription: u\n---\n`
+    );
+    // project
+    write(
+      path.join(tmpCwd, '.claude', 'commands', 'project-cmd.md'),
+      `---\ndescription: p\n---\n`
+    );
+    // plugin
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginA',
+        '1.0.0',
+        'commands',
+        'plugin-cmd.md'
+      ),
+      `---\ndescription: pl\n---\n`
+    );
+    // skill
+    write(
+      path.join(tmpHome, '.claude', 'skills', 'skill-cmd.md'),
+      `---\ndescription: sk\n---\n`
+    );
+    // agent
+    write(
+      path.join(tmpHome, '.claude', 'agents', 'agent-cmd.md'),
+      `---\ndescription: ag\n---\n`
+    );
+
+    const all = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const picker = loadPickerCommands({ homeDir: tmpHome, cwd: tmpCwd });
+
+    // sanity: full loader still returns every source
+    const allSources = new Set(all.map((c) => c.source));
+    expect(allSources).toEqual(new Set(['user', 'project', 'plugin', 'skill', 'agent']));
+
+    // picker filter: only user + project survive
+    const pickerNames = picker.map((c) => `${c.source}/${c.name}`).sort();
+    expect(pickerNames).toEqual(['project/project-cmd', 'user/user-cmd']);
+  });
+
+  it('returns an empty list when only plugin / skill / agent entries exist', () => {
+    // Real-world scenario: a fresh user with the superpowers + pua plugins
+    // installed but no personal `~/.claude/commands` of their own. The
+    // picker must NOT show plugin entries — that's the whole bug.
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'superpowers',
+        '1.0.0',
+        'commands',
+        'brainstorm.md'
+      ),
+      `---\ndescription: deprecated\n---\n`
+    );
+    write(
+      path.join(tmpHome, '.claude', 'skills', 'helpful.md'),
+      `---\ndescription: a skill\n---\n`
+    );
+
+    const picker = loadPickerCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(picker).toEqual([]);
   });
 });

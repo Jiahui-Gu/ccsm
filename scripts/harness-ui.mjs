@@ -20,6 +20,7 @@
 //   - cwd-popover-recent-unfiltered        (probe-e2e-cwd-popover-recent-unfiltered)
 //   - palette-empty                        (probe-e2e-palette-empty, #117 / #258)
 //   - palette-nav                          (probe-e2e-palette-nav)
+//   - slash-picker-claude-config-dir       (PR #346, env-scoped fake ~/.claude)
 //   - settings-open                        (probe-e2e-settings-open)
 //   - search-shortcut-f                    (probe-e2e-search-shortcut-f)
 //   - tutorial                             (probe-e2e-tutorial)
@@ -896,6 +897,81 @@ async function caseCwdPopoverRecentUnfiltered({ app, win, log, registerDispose }
   if (recentOffender) throw new Error(`"Recent" header is CSS-uppercased — forbidden`);
 
   log(`open with cwd "${ACTIVE_CWD}" → all ${RECENT.length} visible; "bar" filters to 1; clear restores`);
+}
+
+// ---------- slash-picker-claude-config-dir ----------
+// Loader honors `CLAUDE_CONFIG_DIR`. Seeds a fake `<tmp>/.claude`-shaped
+// tree via the env var (NOT $HOME) and asserts the in-chat slash picker:
+//   - surfaces the user-level command (`local-test`)
+//   - hides plugin-cache commands (`brainstorm`, `superpowers:brainstorm`)
+//
+// This pins both gates simultaneously:
+//   1. commands-loader.ts reads `process.env.CLAUDE_CONFIG_DIR` (fall-through
+//      to `os.homedir()` would scan the dev's real ~/.claude, populating
+//      the picker with whatever they have installed and breaking the
+//      assertions). The `superpowers:brainstorm` row is the canary —
+//      the dev's real ~/.claude has it, the fake tree must NOT surface it.
+//   2. PICKER_VISIBLE_SOURCES filter still excludes `plugin` (the seeded
+//      brainstorm.md sits under plugins/cache/...).
+//
+// preMain wires the env on the main process (where the IPC handler reads
+// `process.env.CLAUDE_CONFIG_DIR`). Disposers restore env and rm -rf the
+// fake tree.
+//
+// Reverse-verification: stash PICKER_VISIBLE_SOURCES filter (set it to
+// include all sources) → `superpowers:brainstorm` appears → case fails.
+async function caseSlashPickerClaudeConfigDir({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g-slash', name: 'G', collapsed: false, kind: 'normal' }],
+      sessions: [{
+        id: 's-slash-1', name: 'slash-pick', state: 'idle', cwd: 'C:/x',
+        model: 'claude-opus-4', groupId: 'g-slash', agentType: 'claude-code'
+      }],
+      activeId: 's-slash-1',
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(200);
+
+  const textarea = win.locator('textarea').first();
+  await textarea.waitFor({ state: 'visible', timeout: 5000 });
+  // Defocus then focus so the InputBar's onFocus refreshDynamic() fires
+  // AFTER preMain set CLAUDE_CONFIG_DIR (the harness boots before preMain).
+  await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+  await textarea.click();
+  await win.waitForTimeout(150);
+  await textarea.fill('/');
+  await win.waitForTimeout(200);
+
+  const picker = win.locator('[role="listbox"][aria-label="Slash commands"]');
+  await picker.waitFor({ state: 'visible', timeout: 3000 });
+
+  const optionTexts = await picker.locator('[role="option"]').allInnerTexts();
+  const flat = optionTexts.join(' | ');
+
+  // Positive: the seeded user command must be there.
+  if (!flat.includes('/local-test')) {
+    throw new Error(`expected /local-test in picker; got: ${flat}`);
+  }
+
+  // Negative: plugin-source commands must be filtered out. The seeded
+  // plugin is "superpowers" with command "brainstorm" — the loader emits
+  // it as `superpowers:brainstorm`. Bare `brainstorm` is also forbidden.
+  for (const forbidden of ['superpowers:brainstorm', '/brainstorm ', '/brainstorm\n', '/brainstorm$']) {
+    if (forbidden.startsWith('/brainstorm')) {
+      // Match `/brainstorm` only as a whole token (not as a prefix of
+      // another name, though we don't seed any). Use a regex.
+      const re = new RegExp(`/brainstorm(?![a-zA-Z0-9._:-])`);
+      if (re.test(flat)) {
+        throw new Error(`forbidden plugin command surfaced: /brainstorm in ${flat}`);
+      }
+    } else if (flat.includes(forbidden)) {
+      throw new Error(`forbidden plugin command surfaced: ${forbidden} in ${flat}`);
+    }
+  }
+
+  log(`picker showed /local-test; suppressed superpowers:brainstorm (env-scoped fake ~/.claude)`);
 }
 
 // ---------- palette-empty ----------
@@ -2417,6 +2493,57 @@ await runHarness({
     { id: 'cwd-popover-recent-unfiltered', run: caseCwdPopoverRecentUnfiltered },
     { id: 'palette-empty', run: casePaletteEmpty },
     { id: 'palette-nav', run: casePaletteNav },
+    // slash-picker-claude-config-dir: pins (a) loader honoring CLAUDE_CONFIG_DIR
+    // and (b) picker filtering plugin-source commands. preMain seeds a fake
+    // `<tmp>/.claude` tree with one user command (`local-test`, must appear)
+    // and one plugin command (`brainstorm` under `superpowers`, must NOT
+    // appear), then sets process.env.CLAUDE_CONFIG_DIR on the main process so
+    // the loader's IPC handler resolves to the fixture instead of the dev's
+    // real ~/.claude. Disposers restore env + rm -rf tmp tree.
+    {
+      id: 'slash-picker-claude-config-dir',
+      preMain: async (app, ctx) => {
+        const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-e2e-fake-claude-'));
+        // user command — should surface in the picker.
+        const userDir = path.join(fakeRoot, 'commands');
+        fs.mkdirSync(userDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(userDir, 'local-test.md'),
+          `---\ndescription: seeded user command\n---\nbody\n`,
+          'utf8'
+        );
+        // plugin command — should be hidden by PICKER_VISIBLE_SOURCES.
+        const pluginCmdDir = path.join(
+          fakeRoot, 'plugins', 'cache', 'mkt', 'superpowers', '1.0.0', 'commands'
+        );
+        fs.mkdirSync(pluginCmdDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(pluginCmdDir, 'brainstorm.md'),
+          `---\ndescription: deprecated plugin command\n---\nbody\n`,
+          'utf8'
+        );
+
+        // Set CLAUDE_CONFIG_DIR on the main process so the loader's IPC
+        // handler reads the fixture. Snapshot the prior value so the
+        // disposer can restore it (env may legitimately be set in dev).
+        const prior = await app.evaluate((_mod, args) => {
+          const before = process.env.CLAUDE_CONFIG_DIR;
+          process.env.CLAUDE_CONFIG_DIR = args.fakeRoot;
+          return before ?? null;
+        }, { fakeRoot });
+
+        ctx.registerDispose(async () => {
+          try {
+            await app.evaluate((_mod, args) => {
+              if (args.prior == null) delete process.env.CLAUDE_CONFIG_DIR;
+              else process.env.CLAUDE_CONFIG_DIR = args.prior;
+            }, { prior });
+          } catch { /* app may already be torn down */ }
+          try { fs.rmSync(fakeRoot, { recursive: true, force: true }); } catch {}
+        });
+      },
+      run: caseSlashPickerClaudeConfigDir,
+    },
     { id: 'settings-open', run: caseSettingsOpen },
     { id: 'search-shortcut-f', run: caseSearchShortcutF },
     { id: 'tutorial', run: caseTutorial },
