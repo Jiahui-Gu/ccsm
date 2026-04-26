@@ -30,6 +30,18 @@ import { runHarness } from './probe-helpers/harness-runner.mjs';
 
 // Shared helper: ensure a session exists with a usable cwd so InputBar enables
 // the textarea. Mirrors the seed pattern used across the source probes.
+//
+// Also scrubs any persisted composer draft for `sid`. Drafts live in a
+// renderer module-scope cache (src/stores/drafts.ts) hydrated on app boot
+// from the `drafts` row in `app_state` — `resetBetweenCases` wipes the DB
+// row but only AFTER each case, so a draft persisted by a previous full run
+// still hydrates into case #1 of a `--only=` run. Without this scrub, a
+// stale draft like "n" or "ny" left over from `casePermissionPrompt` keeps
+// the composer non-empty, which trips PermissionPromptBlock's intentional
+// "don't steal focus when user is mid-typing" guard the second time a
+// prompt mounts in the same case (composer auto-focuses between prompts
+// via the resolvePermission focus bump). Symptom: second injectWaiting →
+// `data-perm-action=reject` never receives focus → 2s timeout.
 async function seedSession(win, { sid = 's-perm', cwd = 'C:/x' } = {}) {
   await win.evaluate(({ sid, cwd }) => {
     window.__ccsmStore.setState({
@@ -40,6 +52,21 @@ async function seedSession(win, { sid = 's-perm', cwd = 'C:/x' } = {}) {
     });
   }, { sid, cwd });
   await win.waitForTimeout(200);
+  // Scrub composer textarea via React-aware `.fill('')` so the controlled
+  // value + the draft cache (onChange -> setDraft) both clear. `.first()`
+  // because the chat composer is the only data-input-bar textarea on screen.
+  try {
+    const ta = win.locator('textarea[data-input-bar]').first();
+    await ta.waitFor({ state: 'visible', timeout: 1000 });
+    await ta.fill('');
+  } catch { /* no composer rendered yet — nothing to scrub */ }
+  // Move focus off the composer so the first injected prompt's auto-focus
+  // hits the BODY-fast-path and lands on Reject without consulting the
+  // composer-empty exception clause.
+  await win.evaluate(() => {
+    const el = document.activeElement;
+    if (el && typeof el.blur === 'function') el.blur();
+  });
   return sid;
 }
 
