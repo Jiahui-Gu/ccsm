@@ -2,8 +2,9 @@
 //
 // Notifications are Windows-only in the current MVP. This stub exists so the
 // dispatcher can `new DarwinAdapter()` on macOS without resolving Windows-only
-// native bindings; every method throws so callers see a clear "not
-// implemented" failure instead of a silent drop.
+// native bindings. Construction + shutdown paths are no-ops; emit methods
+// throw "Not implemented" so callers see a clear failure instead of a silent
+// drop.
 
 import type { PlatformAdapter, ActivationCallback } from './windows';
 import type {
@@ -36,11 +37,13 @@ export class DarwinAdapter implements PlatformAdapter {
     throw new Error(NOT_IMPLEMENTED);
   }
 
+  // No-op: shutdown path (Notifier.dispose → adapter.dismiss/dispose) must
+  // not throw on platforms where notifications were never emitted.
   dismiss(_toastId: string): void {
-    throw new Error(NOT_IMPLEMENTED);
+    /* not implemented */
   }
 
   dispose(): void {
-    throw new Error(NOT_IMPLEMENTED);
+    /* not implemented */
   }
 }

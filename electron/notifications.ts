@@ -8,7 +8,6 @@ import {
   isNotifyAvailable,
 } from './notify';
 import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap';
-import { scheduleQuestionRetry } from './notify-retry';
 
 // Cap the assistant-message preview that the Done toast renders. The inlined
 // notify module's xml/done.ts ASSISTANT_LINE_MAX = 80 re-truncates inside the
@@ -147,10 +146,6 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
         cwdBasename: cwdBase,
       };
       await notifyQuestion(questionPayload);
-      // Schedule a single re-emit after ~30s in case the user missed the
-      // first banner. Cancelled by the `agent:resolvePermission` IPC handler
-      // when the question is answered.
-      scheduleQuestionRetry(questionPayload, payload.sessionId);
       return;
     }
     case 'turn_done': {
