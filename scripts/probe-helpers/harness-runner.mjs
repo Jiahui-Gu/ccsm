@@ -13,6 +13,11 @@
 //   4. caseScope — gives each case (a) a `log()` that adds the prefix,
 //      (b) a `dispose()` registry the runner drains in `resetBetweenCases`.
 //
+// Per-case capability extensions (task #223 — five-bucket migration prep):
+//   See "Per-case capabilities" section below for the documented contract.
+//   Each capability is opt-in; cases that omit the new fields run on the
+//   pre-existing single-launch shared-electron path with no behavior change.
+//
 // Each harness file imports `runHarness` and provides:
 //   - `name`: harness id used as artifact subdir + log tag.
 //   - `setup({ app, win })`: optional one-time prep after Electron launches
@@ -20,11 +25,15 @@
 //   - `cases`: array of `{ id, run({ app, win, log, registerDispose }) }`.
 //
 // The runner returns a non-zero exit if ANY case fails (after attempting to
-// run the rest, so one regression doesn't mask another).
+// run the rest, so one regression doesn't mask another). Skipped cases (via
+// `requiresClaudeBin` when no claude binary is on PATH) do NOT count as
+// failures — they're listed separately in the summary so coverage gaps stay
+// visible without breaking CI on dev machines that lack the CLI.
 
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { appWindow } from '../probe-utils.mjs';
 import { resetBetweenCases } from './reset-between-cases.mjs';
@@ -111,21 +120,184 @@ function parseOnly(argv) {
 }
 
 /**
- * @typedef {object} HarnessCase
- * @property {string} id  Unique within the harness; goes into log prefix +
- *                        artifact path.
- * @property {(ctx: HarnessCaseCtx) => Promise<void>} run
+ * Detect whether the upstream `claude` binary is reachable. Used to decide
+ * whether `requiresClaudeBin: true` cases run or skip.
+ *
+ * Resolution order (matches what cases that exec the binary actually do):
+ *   1. `CCSM_CLAUDE_BIN` env override — explicit absolute path.
+ *   2. Walk `PATH` looking for `claude` / `claude.exe` / `claude.cmd`.
+ *
+ * Returns the resolved path on hit, null on miss. Result is memoized for the
+ * lifetime of the harness process so we don't re-stat per case.
+ *
+ * @returns {string | null}
  */
+let _claudeBinCache;
+function resolveClaudeBin() {
+  if (_claudeBinCache !== undefined) return _claudeBinCache;
+  const override = process.env.CCSM_CLAUDE_BIN;
+  if (override && fs.existsSync(override)) {
+    _claudeBinCache = override;
+    return _claudeBinCache;
+  }
+  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  for (const d of dirs) {
+    for (const ext of exts) {
+      const p = path.join(d, `claude${ext}`);
+      try {
+        if (fs.statSync(p).isFile()) {
+          _claudeBinCache = p;
+          return _claudeBinCache;
+        }
+      } catch { /* miss */ }
+    }
+  }
+  _claudeBinCache = null;
+  return _claudeBinCache;
+}
+
+/**
+ * Allocate a fresh electron user-data directory under tmpdir. Returns the
+ * path plus a cleanup hook the runner invokes after the case (or after the
+ * next relaunch consumes the dir, whichever comes first).
+ *
+ * @param {string} tag  Dir-name prefix for triage; usually `<harness>-<case>`.
+ * @returns {{ dir: string, cleanup: () => void }}
+ */
+function freshUserDataDir(tag) {
+  const safeTag = tag.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ccsm-harness-${safeTag}-`));
+  return {
+    dir,
+    cleanup() {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* swallow */ }
+    }
+  };
+}
 
 /**
  * @typedef {object} HarnessCaseCtx
- * @property {import('playwright').ElectronApplication} app
- * @property {import('playwright').Page} win
+ * @property {import('playwright').ElectronApplication | null} app
+ *   Null only when the case set `skipLaunch: true`.
+ * @property {import('playwright').Page | null} win
+ *   Null only when the case set `skipLaunch: true`.
  * @property {(...args: unknown[]) => void} log  Emits `[case=<id>] ...` to
  *                                              stdout; use instead of console.log.
  * @property {(fn: () => void | Promise<void>) => void} registerDispose
  *           Push a cleanup; runner awaits all of these in reverse order
- *           inside resetBetweenCases.
+ *           inside resetBetweenCases (or directly for skipLaunch cases).
+ * @property {string} harnessRoot  Absolute path to the repo root. Convenient
+ *           for `skipLaunch` cases doing fs / json checks under `dist/`,
+ *           `package.json`, etc.
+ */
+
+/**
+ * Per-case capabilities (all optional; defaults preserve pre-existing
+ * single-launch shared-electron semantics):
+ *
+ * @typedef {object} HarnessCase
+ * @property {string} id
+ *   Unique within the harness; goes into log prefix + artifact path.
+ *
+ * @property {(ctx: HarnessCaseCtx) => Promise<void>} run
+ *   Throw to fail. Use `log()` not console.log.
+ *
+ * @property {'fresh' | 'shared'} [userDataDir]
+ *   - 'shared' (default): reuse the long-lived electron user-data directory
+ *     that the harness booted with. Cheap; no relaunch needed.
+ *   - 'fresh': allocate a brand-new mktemp directory for this case, force
+ *     a relaunch into it, and rm -rf the dir after the case finishes (or
+ *     after the next relaunch consumes it).
+ *   Setting `userDataDir: 'fresh'` implies `relaunch: true`.
+ *
+ *   Example (probe-e2e-installer-corrupt style — first-launch detection):
+ *     {
+ *       id: 'installer-corrupt-detection',
+ *       userDataDir: 'fresh',
+ *       run: async ({ win }) => { ... cold-launch assertions ... }
+ *     }
+ *
+ * @property {boolean} [relaunch]
+ *   Close the running electron app and launch a new one before the case.
+ *   The new launch reuses the harness's `launch.args`/`launch.env` plus any
+ *   per-case `userDataDir: 'fresh'`. Ignored when `skipLaunch: true`.
+ *
+ *   Example (window-close-aborts-sessions: needs a fresh process to assert
+ *   a fresh exit code):
+ *     { id: 'close-aborts-sessions', relaunch: true, run: async ({ app }) => { ... } }
+ *
+ * @property {boolean} [requiresClaudeBin]
+ *   Mark the case skippable when no upstream `claude` binary is reachable
+ *   (see `resolveClaudeBin` for resolution order). Skipped cases show up in
+ *   the summary as `[--]` and do NOT count toward the failure exit code.
+ *   Override via `CCSM_CLAUDE_BIN` env or by symlinking onto PATH.
+ *
+ *   Example (probe-e2e-permission-allow-bash style — needs real subprocess
+ *   to verify the IPC frame round-trips through claude.exe):
+ *     { id: 'permission-allow-bash', requiresClaudeBin: true, run: ... }
+ *
+ * @property {(app: import('playwright').ElectronApplication, ctx: HarnessCaseCtx) => Promise<void>} [preMain]
+ *   Run BEFORE the case body, in the electron MAIN process via `app.evaluate`.
+ *   Use for monkey-patching main-process modules (e.g. `notify.ts`'s
+ *   `__setNotifyImporter` test seam, dialog stubs, fake transports).
+ *
+ *   Caller is responsible for restoring via `registerDispose` if the patch
+ *   must not leak into subsequent cases. For `userDataDir: 'fresh'` cases
+ *   the relaunch makes restore a no-op, so dispose is optional there.
+ *
+ *   Example (probe-e2e-notify-integration style):
+ *     {
+ *       id: 'notify-importer-swap',
+ *       preMain: async (app) => {
+ *         await app.evaluate(async () => {
+ *           const mod = await import('./electron/notify.js');
+ *           globalThis.__notifyCalls = [];
+ *           mod.__setNotifyImporter(async () => ({ default: class { constructor(o) { globalThis.__notifyCalls.push(o); } show() {} } }));
+ *         });
+ *       },
+ *       run: async ({ app, win }) => { ... assert globalThis.__notifyCalls ... }
+ *     }
+ *
+ * @property {boolean} [skipLaunch]
+ *   Don't launch electron at all. The case receives `{ app: null, win: null,
+ *   harnessRoot, log, registerDispose }` and runs as a pure Node script.
+ *   Useful for fs / package.json / dist bundle / config-loader checks that
+ *   would otherwise pay 1-2s of electron boot for nothing.
+ *
+ *   Disposers registered by skipLaunch cases run inline AFTER the case body
+ *   (no resetBetweenCases — there is no renderer to reset).
+ *
+ *   Example (probe-e2e-installer-bundle-shape style):
+ *     {
+ *       id: 'bundle-has-required-files',
+ *       skipLaunch: true,
+ *       run: async ({ harnessRoot }) => {
+ *         const pkg = JSON.parse(fs.readFileSync(path.join(harnessRoot, 'package.json'), 'utf8'));
+ *         if (!pkg.main) throw new Error('package.json missing "main"');
+ *       }
+ *     }
+ *
+ * @property {(ctx: HarnessCaseCtx) => Promise<void>} [setupBefore]
+ *   Run BEFORE the case body, in the RENDERER context. Distinct from
+ *   `preMain` (main-process). Use to reset language, theme, or any
+ *   renderer-side global the case depends on but doesn't itself own.
+ *
+ *   Differs from harness-level `setup` in that `setupBefore` runs every
+ *   case, not just on first launch. Differs from inlining the same code at
+ *   the top of `run` in that it can't accidentally be skipped when a case
+ *   is rewritten — the runner promise-chains it before each `run()`.
+ *
+ *   Example (any case that asserts on English-anchored i18n strings):
+ *     {
+ *       id: 'english-only-assertions',
+ *       setupBefore: async ({ win }) => {
+ *         await win.evaluate(async () => {
+ *           if (window.__ccsmI18n?.changeLanguage) await window.__ccsmI18n.changeLanguage('en');
+ *         });
+ *       },
+ *       run: async ({ win }) => { ... }
+ *     }
  */
 
 /**
@@ -135,6 +307,29 @@ function parseOnly(argv) {
  * @property {HarnessCase[]} cases
  * @property {{ args?: string[], env?: Record<string, string> }} [launch]
  */
+
+/**
+ * Build the launch options used for both the initial boot and any per-case
+ * relaunch. Pulled out so `userDataDir` overrides can be applied uniformly.
+ *
+ * @param {HarnessSpec} spec
+ * @param {string | null} userDataDirOverride
+ */
+function buildLaunchOpts(spec, userDataDirOverride) {
+  const args = ['.', ...(spec.launch?.args ?? [])];
+  if (userDataDirOverride) {
+    // Electron honors `--user-data-dir=<path>` as a CLI flag; this is the
+    // same mechanism CCSM_USER_DATA_DIR-style overrides ultimately land on.
+    args.push(`--user-data-dir=${userDataDirOverride}`);
+  }
+  const env = {
+    ...process.env,
+    NODE_ENV: 'production',
+    CCSM_PROD_BUNDLE: '1',
+    ...(spec.launch?.env ?? {})
+  };
+  return { args, env };
+}
 
 /**
  * Drive a themed harness. See file comment.
@@ -157,49 +352,151 @@ export async function runHarness(spec) {
   const harnessArtifactDir = path.join(ARTIFACTS_ROOT, spec.name);
   fs.mkdirSync(harnessArtifactDir, { recursive: true });
 
-  console.log(`[harness=${spec.name}] launching electron — ${filtered.length}/${spec.cases.length} case(s)`);
+  // Note totals: if every case is skipLaunch we never boot electron.
+  const needsAnyLaunch = filtered.some((c) => !c.skipLaunch);
+  console.log(`[harness=${spec.name}] ${needsAnyLaunch ? 'launching electron — ' : 'no electron required — '}${filtered.length}/${spec.cases.length} case(s)`);
 
-  const launchArgs = ['.', ...(spec.launch?.args ?? [])];
-  // CCSM_PROD_BUNDLE=1 forces electron/main.ts to loadFile from
-  // dist/renderer instead of expecting a dev server on localhost:4100.
-  // Harness runs are CI-like by definition — no dev server is up.
-  const launchEnv = {
-    ...process.env,
-    NODE_ENV: 'production',
-    CCSM_PROD_BUNDLE: '1',
-    ...(spec.launch?.env ?? {})
-  };
+  /** @type {import('playwright').ElectronApplication | null} */
+  let app = null;
+  /** @type {import('playwright').Page | null} */
+  let win = null;
+  /** @type {{ dir: string, cleanup: () => void } | null} */
+  let activeUserDataDir = null;
 
-  const tStart = Date.now();
-  const app = await electron.launch({ args: launchArgs, cwd: REPO_ROOT, env: launchEnv });
-
-  /** @type {Array<{ id: string, status: 'passed'|'failed', ms: number, error?: string }>} */
-  const results = [];
-
-  let win;
-  try {
+  // Boot once up front IF any case needs the shared electron. Fresh-userData /
+  // relaunch cases will tear this down and rebuild as they're encountered.
+  if (needsAnyLaunch && filtered.some((c) => !c.skipLaunch && c.userDataDir !== 'fresh' && !c.relaunch)) {
+    const opts = buildLaunchOpts(spec, null);
+    app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
     win = await appWindow(app);
     await win.waitForLoadState('domcontentloaded');
     await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
-
     if (spec.setup) {
       await spec.setup({ app, win });
     }
+  }
 
+  /** @type {Array<{ id: string, status: 'passed'|'failed'|'skipped', ms: number, error?: string, reason?: string }>} */
+  const results = [];
+
+  const tStart = Date.now();
+  try {
     for (const c of filtered) {
+      const caseStart = Date.now();
+      const log = (...args) => console.log(`[case=${c.id}]`, ...args);
       /** @type {Array<() => void | Promise<void>>} */
       const disposers = [];
-      const log = (...args) => console.log(`[case=${c.id}]`, ...args);
       const registerDispose = (fn) => { disposers.push(fn); };
-
       const caseDir = path.join(harnessArtifactDir, c.id);
-      const caseStart = Date.now();
+
       console.log(`\n[harness=${spec.name}] >>> case ${c.id}`);
 
+      // ---- Capability: requiresClaudeBin ----
+      if (c.requiresClaudeBin && !resolveClaudeBin()) {
+        const reason = 'no `claude` binary on PATH (set CCSM_CLAUDE_BIN or install the upstream CLI)';
+        console.log(`[case=${c.id}] SKIPPED: ${reason}`);
+        results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
+        continue;
+      }
+
+      // ---- Capability: skipLaunch ----
+      if (c.skipLaunch) {
+        const ctx = { app: null, win: null, log, registerDispose, harnessRoot: REPO_ROOT };
+        let caseError = null;
+        try {
+          await c.run(ctx);
+          log('OK');
+        } catch (err) {
+          caseError = err instanceof Error ? err : new Error(String(err));
+          console.error(`[case=${c.id}] FAIL: ${caseError.message}`);
+        }
+        // Inline disposers — no renderer to drain through resetBetweenCases.
+        for (const fn of disposers.splice(0).reverse()) {
+          try { await fn(); } catch { /* swallow */ }
+        }
+        const ms = Date.now() - caseStart;
+        if (caseError) {
+          results.push({ id: c.id, status: 'failed', ms, error: caseError.stack ?? caseError.message });
+        } else {
+          results.push({ id: c.id, status: 'passed', ms });
+        }
+        continue;
+      }
+
+      // ---- Capabilities: userDataDir + relaunch ----
+      const wantsFreshDir = c.userDataDir === 'fresh';
+      const wantsRelaunch = wantsFreshDir || c.relaunch === true;
+
+      if (wantsRelaunch) {
+        // Tear down current app first so the next launch is genuinely fresh.
+        if (app) {
+          try { await app.close(); } catch { /* ignore */ }
+          app = null;
+          win = null;
+        }
+        // Drop the previous fresh dir if we owned one. Done AFTER close so
+        // electron has released the lock files.
+        if (activeUserDataDir) {
+          activeUserDataDir.cleanup();
+          activeUserDataDir = null;
+        }
+        if (wantsFreshDir) {
+          activeUserDataDir = freshUserDataDir(`${spec.name}-${c.id}`);
+        }
+        const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
+        app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
+        win = await appWindow(app);
+        await win.waitForLoadState('domcontentloaded');
+        await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        if (spec.setup) {
+          await spec.setup({ app, win });
+        }
+      }
+
+      // Defensive: if we got here and still don't have an app, the harness
+      // spec mixes shared+relaunch in a way the boot logic above missed.
+      // Lazy-launch once now so the case can run.
+      if (!app || !win) {
+        const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
+        app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
+        win = await appWindow(app);
+        await win.waitForLoadState('domcontentloaded');
+        await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        if (spec.setup) {
+          await spec.setup({ app, win });
+        }
+      }
+
+      const ctx = { app, win, log, registerDispose, harnessRoot: REPO_ROOT };
+
+      // ---- Capability: preMain (main-process setup) ----
+      if (c.preMain) {
+        try {
+          await c.preMain(app, ctx);
+        } catch (err) {
+          const e = err instanceof Error ? err : new Error(String(err));
+          console.error(`[case=${c.id}] preMain FAIL: ${e.message}`);
+          results.push({ id: c.id, status: 'failed', ms: Date.now() - caseStart, error: `preMain threw: ${e.stack ?? e.message}` });
+          continue;
+        }
+      }
+
+      // ---- Capability: setupBefore (renderer-side per-case setup) ----
+      if (c.setupBefore) {
+        try {
+          await c.setupBefore(ctx);
+        } catch (err) {
+          const e = err instanceof Error ? err : new Error(String(err));
+          console.error(`[case=${c.id}] setupBefore FAIL: ${e.message}`);
+          results.push({ id: c.id, status: 'failed', ms: Date.now() - caseStart, error: `setupBefore threw: ${e.stack ?? e.message}` });
+          continue;
+        }
+      }
+
       // Per-case Playwright trace. Only persisted on failure (see catch below).
-      const ctx = win.context();
+      const playwrightCtx = win.context();
       try {
-        await ctx.tracing.start({ screenshots: true, snapshots: true, sources: false, title: c.id });
+        await playwrightCtx.tracing.start({ screenshots: true, snapshots: true, sources: false, title: c.id });
       } catch {
         // Tracing may already be active if a previous case crashed mid-stop;
         // ignore and continue without trace.
@@ -207,7 +504,7 @@ export async function runHarness(spec) {
 
       let caseError = null;
       try {
-        await c.run({ app, win, log, registerDispose });
+        await c.run(ctx);
         log('OK');
       } catch (err) {
         caseError = err instanceof Error ? err : new Error(String(err));
@@ -218,11 +515,11 @@ export async function runHarness(spec) {
       try {
         if (caseError) {
           fs.mkdirSync(caseDir, { recursive: true });
-          await ctx.tracing.stop({ path: path.join(caseDir, 'trace.zip') });
+          await playwrightCtx.tracing.stop({ path: path.join(caseDir, 'trace.zip') });
           // Also dump page screenshot for fast triage without unzipping.
           try { await win.screenshot({ path: path.join(caseDir, 'failure.png'), fullPage: true }); } catch {}
         } else {
-          await ctx.tracing.stop();
+          await playwrightCtx.tracing.stop();
         }
       } catch {
         // Ignore tracing teardown errors — they shouldn't mask the case status.
@@ -245,17 +542,22 @@ export async function runHarness(spec) {
       }
     }
   } finally {
-    try { await app.close(); } catch {}
+    if (app) { try { await app.close(); } catch {} }
+    if (activeUserDataDir) activeUserDataDir.cleanup();
   }
 
   const wallMs = Date.now() - tStart;
   const passed = results.filter((r) => r.status === 'passed').length;
   const failed = results.filter((r) => r.status === 'failed');
+  const skipped = results.filter((r) => r.status === 'skipped');
 
   console.log(`\n=== harness=${spec.name} summary (${wallMs}ms wall) ===`);
   for (const r of results) {
-    const tag = r.status === 'passed' ? '[OK]' : '[XX]';
-    console.log(`  ${tag} ${r.id.padEnd(40)} ${String(r.ms).padStart(6)}ms`);
+    let tag;
+    if (r.status === 'passed') tag = '[OK]';
+    else if (r.status === 'failed') tag = '[XX]';
+    else tag = '[--]';
+    console.log(`  ${tag} ${r.id.padEnd(40)} ${String(r.ms).padStart(6)}ms${r.reason ? `  (${r.reason})` : ''}`);
   }
   if (failed.length > 0) {
     console.log(`\n=== failures (${failed.length}) ===`);
@@ -263,7 +565,7 @@ export async function runHarness(spec) {
       console.log(`\n--- ${r.id} ---\n${r.error}`);
     }
   }
-  console.log(`\n=== totals: ${passed} passed, ${failed.length} failed, ${results.length} total ===`);
+  console.log(`\n=== totals: ${passed} passed, ${failed.length} failed, ${skipped.length} skipped, ${results.length} total ===`);
 
   process.exit(failed.length === 0 ? 0 : 1);
 }
