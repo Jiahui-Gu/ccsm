@@ -4,11 +4,10 @@ export function EmptyState() {
   const { t } = useTranslation();
   return (
     <div className="h-full flex flex-col items-center justify-center px-6 gap-2">
-      <div className="font-mono text-chrome text-fg-tertiary">{t('chat.ready')}</div>
-      {/* One terse CTA hint below the ready line. We deliberately keep it to
-          a single sentence — adding pseudo-suggestions ("Try asking…") here
-          encourages users to type meaningless prompts; this just tells them
-          the basic mechanic. The kbd chip mirrors the shortcut hints under
+      {/* One terse CTA hint. We deliberately keep it to a single sentence
+          — adding pseudo-suggestions ("Try asking…") here encourages
+          users to type meaningless prompts; this just tells them the
+          basic mechanic. The kbd chip mirrors the shortcut hints under
           the composer so the visual vocabulary stays consistent. */}
       <div
         className="font-mono text-mono-xs text-fg-disabled flex items-center gap-1.5 select-none"

@@ -2309,17 +2309,21 @@ async function caseInterruptBanner({ win, log }) {
   });
   if (!sessionId) throw new Error('no active session id after createSession');
 
+  // EmptyState renders the composer hint ("type a message and press [Enter]")
+  // when no messages exist. Old "Ready when you are." greeting was removed
+  // from EmptyState (dogfood: redundant with placeholder/hint). The hint
+  // span itself is `select-none` by design, so we only assert it rendered;
+  // user-selectable copy is exercised by banner/error checks elsewhere.
   await win.waitForFunction(
-    () => Array.from(document.querySelectorAll('div')).some((d) => d.textContent === 'Ready when you are.'),
-    null, { timeout: 5000 }
-  ).catch(() => { throw new Error('EmptyState "Ready when you are." not rendered'); });
-  const emptyStateSelectable = await win.evaluate(() => {
-    const el = Array.from(document.querySelectorAll('div')).find((d) => d.textContent === 'Ready when you are.');
-    if (!el) return { found: false };
-    return { found: true, userSelect: getComputedStyle(el).userSelect };
+    () =>
+      Array.from(document.querySelectorAll('span')).some((s) =>
+        /type a message and press/i.test(s.textContent || '')
+      ),
+    null,
+    { timeout: 5000 }
+  ).catch(() => {
+    throw new Error('EmptyState composer hint not rendered');
   });
-  if (!emptyStateSelectable.found) throw new Error('EmptyState not rendered');
-  if (emptyStateSelectable.userSelect === 'none') throw new Error(`EmptyState user-select is 'none'`);
 
   await win.evaluate((id) => {
     const st = window.__ccsmStore.getState();

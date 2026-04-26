@@ -51,12 +51,9 @@ const en = {
     sendMessage: 'Send message',
     sendButton: 'Send',
     inputPlaceholder: 'Reply…',
-    enterToSend: 'Enter send · Shift+Enter newline',
-    escToStop: 'Esc to stop · Enter to queue',
     tokenUsage: '{{used}}k / {{total}}k tokens · {{percent}}% used',
     emptyTitle: 'No messages yet',
     emptySubtitle: 'Start typing to begin a conversation.',
-    ready: 'Ready when you are.',
     jumpToLatest: 'Jump to latest',
     planTitle: 'Plan ready for review',
     planApprove: 'Approve plan',
@@ -236,18 +233,6 @@ const en = {
       sm: 'Small (12px)',
       md: 'Medium (13px, default)',
       lg: 'Large (14px)'
-    },
-    windowTint: 'Window tint',
-    windowTintHint:
-      'Faint accent on this window\u2019s title bar to tell parallel CCSM windows apart at a glance. Local to this window only.',
-    windowTintOptions: {
-      none: 'None',
-      slate: 'Slate',
-      sky: 'Sky',
-      mint: 'Mint',
-      amber: 'Amber',
-      rose: 'Rose',
-      violet: 'Violet'
     },
     language: 'Language',
     languageHint: 'Choose the interface language. Changes apply immediately.',

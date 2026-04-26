@@ -189,25 +189,6 @@
   --color-syntax-tag: oklch(0.72 0.15 20);
   --color-syntax-variable: oklch(0.82 0 0);
   --color-syntax-regex: oklch(0.72 0.15 300);
-
-  /* ── Per-window tint palette (UI-10c). Faint accent washes layered on
-     top of the title-bar drag strip so users can tell parallel CCSM
-     windows apart at a glance. Six hues plus `none` (handled by JS as
-     "no overlay"). Alphas are deliberately tiny — tint is a *secondary*
-     cue, the window title is still the load-bearing identifier.
-
-     Each color carries its own alpha so vivid hues (rose, violet) don't
-     visually outweigh muted ones (slate, mint). Calibrated against the
-     dark `--color-bg-app` (oklch 0.16) so the tint reads as a wash, not
-     a highlight. Light mode uses higher chroma/lower lightness in the
-     `html.theme-light` block below to land roughly the same perceived
-     intensity on a white sidebar. ── */
-  --color-tint-slate: oklch(0.78 0.04 240 / 0.10);
-  --color-tint-sky: oklch(0.78 0.13 215 / 0.10);
-  --color-tint-mint: oklch(0.82 0.13 165 / 0.09);
-  --color-tint-amber: oklch(0.82 0.13 75 / 0.09);
-  --color-tint-rose: oklch(0.74 0.16 15 / 0.08);
-  --color-tint-violet: oklch(0.72 0.15 295 / 0.10);
 }
 
 html, body, #root {
@@ -363,16 +344,6 @@ html.theme-light {
   --color-syntax-tag: oklch(0.48 0.18 25);
   --color-syntax-variable: oklch(0.32 0.01 240);
   --color-syntax-regex: oklch(0.48 0.18 300);
-
-  /* Per-window tint palette — light mode. Boost chroma and drop lightness
-     vs. the dark block so the wash holds up on a near-white sidebar. Same
-     alpha-per-hue calibration logic. */
-  --color-tint-slate: oklch(0.55 0.04 240 / 0.10);
-  --color-tint-sky: oklch(0.55 0.16 225 / 0.10);
-  --color-tint-mint: oklch(0.58 0.14 165 / 0.09);
-  --color-tint-amber: oklch(0.62 0.15 75 / 0.10);
-  --color-tint-rose: oklch(0.55 0.20 15 / 0.09);
-  --color-tint-violet: oklch(0.52 0.18 295 / 0.10);
 }
 
 html.theme-light ::selection {
