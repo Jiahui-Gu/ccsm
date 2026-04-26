@@ -1,0 +1,49 @@
+{
+  "tag": "after",
+  "sidebar": {
+    "top": 0,
+    "bottom": 800,
+    "left": 0,
+    "right": 260,
+    "height": 800
+  },
+  "newSession": {
+    "top": 10.5,
+    "bottom": 38.5,
+    "left": 10.5,
+    "right": 214.5,
+    "height": 28
+  },
+  "settings": {
+    "top": 761.5,
+    "bottom": 789.5,
+    "left": 10.5,
+    "right": 214.5,
+    "height": 28
+  },
+  "import": {
+    "top": 761.5,
+    "bottom": 789.5,
+    "left": 221.5,
+    "right": 249.5,
+    "height": 28
+  },
+  "inputBar": {
+    "top": 701.17,
+    "bottom": 800,
+    "left": 264,
+    "right": 1280,
+    "height": 98.83
+  },
+  "inputBox": {
+    "top": 708.17,
+    "bottom": 789.5,
+    "left": 274.5,
+    "right": 1269.5,
+    "height": 81.33
+  },
+  "topPadding": 10.5,
+  "bottomPadding": 10.5,
+  "alignGap": 0,
+  "alignGapOuter": 10.5
+}

@@ -610,12 +610,20 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
       className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
       {/* Top drag strip — Windows-only build, so we only need a thin
-          drag-to-move band (8px) to preserve OS window-drag affordance.
+          drag-to-move band (7px) to preserve OS window-drag affordance.
           The right pane keeps its 32px band because it must host
           WindowControls (min/max/close buttons). The slight misalignment
           is intentional: dogfood flagged the 32px gap above "new session"
-          as visually empty. */}
-      <DragRegion className="shrink-0 w-full" style={{ height: 8 }} />
+          as visually empty.
+
+          Symmetric chrome: DragRegion(7) + container `pt-1` (4) ≈ 11px
+          above the New Session button matches the bottom action row's
+          `pb-3` (12px) below the Settings/Import buttons within sub-pixel
+          rendering. This makes the sidebar's top and bottom rows sit
+          equally inset from the sidebar edges, and the Settings/Import
+          bottom edge aligns with the InputBar's visible input box bottom
+          edge. (Task #308.) */}
+      <DragRegion className="shrink-0 w-full" style={{ height: 7 }} />
       {collapsed ? (
         <div className="flex flex-col items-center w-full h-full py-3 gap-2">
           <IconButton
