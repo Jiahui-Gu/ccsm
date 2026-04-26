@@ -587,12 +587,11 @@ async function caseNamespacedCommandActuallyRuns({ log }) {
  * Failure mode C is the #288 reproduction.
  *
  * Note on bug #309 (off-by-one): the off-by-one is purely a renderer-side
- * `Array.slice` boundary in `rewindToBlock` (`prev.slice(0, idx)` keeps
- * blocks BEFORE idx, dropping the clicked block itself). It cannot be
- * exercised from a CLI-only harness because the renderer is the one
- * computing the cut. It IS covered by a unit test added in this PR
- * (`tests/store-rewind-to-block.test.ts`), and reverse-verified by reverting
- * the slice to the pre-fix expression. The harness-real-cli case is the
+ * `Array.slice` boundary in `rewindToBlock`. It cannot be exercised from a
+ * CLI-only harness because the renderer is the one computing the cut. It is
+ * covered by `scripts/harness-agent.mjs` case `user-block-hover-menu` (real
+ * Playwright-driven store + UI) and the unit tests in
+ * `tests/user-block-hover-menu.test.tsx`. The harness-real-cli case is the
  * #288-side reproduction (CLI-side state interaction).
  *
  * Hard timeout: 60s for the whole case (4 spawns × ~1.5s warmup +

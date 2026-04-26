@@ -2226,17 +2226,27 @@ async function caseUserBlockHoverMenu({ win, log }) {
       started: !!s.startedSessions[sid]
     };
   }, SID);
-  if (after.blockIds.length !== 1 || after.blockIds[0] !== 'a0') {
-    throw new Error(`expected blocks=[a0] after Truncate, got ${JSON.stringify(after.blockIds)}`);
+  // Bug #309 ("Rewind from here keeps clicked user message"): the clicked
+  // user block (`u-rewind`) MUST remain after the cut — the rewind
+  // semantics are "go back to right after this message was sent, before
+  // the agent replied", not "delete this message too". Pre-fix
+  // `prev.slice(0, idx)` (exclusive) wrongly dropped `u-rewind` and left
+  // only `[a0]`; post-fix `prev.slice(0, idx + 1)` (inclusive) keeps it.
+  if (after.blockIds.length !== 2 || after.blockIds[0] !== 'a0' || after.blockIds[1] !== 'u-rewind') {
+    throw new Error(`expected blocks=[a0, u-rewind] after Truncate (#309: clicked user msg preserved), got ${JSON.stringify(after.blockIds)}`);
   }
-  if (after.resume !== null) {
-    throw new Error(`expected resumeSessionId=null after Truncate, got ${JSON.stringify(after.resume)}`);
+  // Bug #288 fix (preserved): `resumeSessionId` is pinned to the on-disk
+  // session id (= existing resumeSessionId, here 'old-uuid') so the next
+  // `agentStart` resumes via `--resume` instead of colliding on
+  // `--session-id`. Do NOT regress to `null`.
+  if (after.resume !== 'old-uuid') {
+    throw new Error(`expected resumeSessionId='old-uuid' (pinned per #288 fix) after Truncate, got ${JSON.stringify(after.resume)}`);
   }
   if (after.started) {
     throw new Error(`expected startedSessions cleared after Truncate, got true`);
   }
 
-  log('hover reveals 4 actions; Copy -> clipboard; Truncate -> cut + clear resume');
+  log('hover reveals 4 actions; Copy -> clipboard; Truncate -> cut keeps clicked user msg + pinned resume');
 }
 
 // ---------- cap-pre-main-injects-global (capability demo) ----------

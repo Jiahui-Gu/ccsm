@@ -134,7 +134,7 @@ describe('<UserBlock /> hover menu', () => {
     expect(useStore.getState().runningSessions['s1']).toBe(true);
   });
 
-  it('Truncate from here: truncates the conversation to before this block, pins resumeSessionId to the on-disk session id, calls agentClose', () => {
+  it('Truncate from here: keeps clicked user msg, drops everything after, pins resumeSessionId, calls agentClose', () => {
     const blocks = [
       { kind: 'assistant' as const, id: 'a0', text: 'previous reply' },
       { kind: 'user' as const, id: 'u1', text: 'this one' },
@@ -161,8 +161,12 @@ describe('<UserBlock /> hover menu', () => {
       fireEvent.click(screen.getByRole('button', { name: /truncate from here/i }));
     });
     const after = useStore.getState();
-    expect(after.messagesBySession['s1']).toHaveLength(1);
+    // Bug #309: clicked user message is PRESERVED ([a0, u1]); only blocks
+    // AFTER it (a1, t1) are dropped. "Rewind from here" = "go back to right
+    // after this message was sent, before the agent replied".
+    expect(after.messagesBySession['s1']).toHaveLength(2);
     expect(after.messagesBySession['s1'][0].id).toBe('a0');
+    expect(after.messagesBySession['s1'][1].id).toBe('u1');
     const sess = after.sessions.find((x) => x.id === 's1');
     // resumeSessionId stays pinned to whatever was already on disk so the
     // next agentStart re-uses it via `--resume` instead of fighting the CLI
@@ -235,8 +239,9 @@ describe('<UserBlock /> hover menu', () => {
     ];
     const api = stubCCSM({
       loadHistory: vi.fn().mockResolvedValue({ ok: true, frames }),
-      // Marker says: cut at the SECOND user message, so only the first
-      // should remain.
+      // Marker says: cut at the SECOND user message — inclusive cut keeps
+      // the marker block itself (#309), so 'first' AND 'second' should
+      // remain; only 'third' is dropped.
       truncationGet: vi.fn().mockResolvedValue({ blockId: 'u-two', truncatedAt: 1 }),
       truncationSet: vi.fn().mockResolvedValue({ ok: true })
     });
@@ -247,7 +252,8 @@ describe('<UserBlock /> hover menu', () => {
     const userBlocks = blocks.filter((b) => b.kind === 'user');
     expect(api.loadHistory).toHaveBeenCalled();
     expect(api.truncationGet).toHaveBeenCalledWith(sessionId);
-    // Only the first user message survives. The second/third are cut.
-    expect(userBlocks.map((b) => b.text)).toEqual(['first']);
+    // Inclusive cut: the second user message (the marker) stays, the third
+    // is dropped.
+    expect(userBlocks.map((b) => b.text)).toEqual(['first', 'second']);
   });
 });
