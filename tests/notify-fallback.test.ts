@@ -1,8 +1,8 @@
-// Unit tests for the @ccsm/notify lazy-load wrapper. Tests cover both branches:
-//   1. Optional native module fails to load (e.g. install was skipped because
-//      its electron-windows-notifications native deps couldn't build) — every
-//      wrapper function must resolve to undefined without throwing, and
-//      isNotifyAvailable() must report false.
+// Unit tests for the notify lazy-load wrapper. Tests cover both branches:
+//   1. The inlined notify implementation fails to load (e.g. install was
+//      skipped because the electron-windows-notifications native deps
+//      couldn't build) — every wrapper function must resolve to undefined
+//      without throwing, and isNotifyAvailable() must report false.
 //   2. Module loads and exposes a Notifier — wrappers must delegate to the
 //      created notifier.
 //
@@ -23,14 +23,14 @@ describe('electron/notify wrapper', () => {
     vi.restoreAllMocks();
   });
 
-  describe('when @ccsm/notify is unavailable (optional install skipped)', () => {
+  describe('when the notify implementation is unavailable (optional native dep missing)', () => {
     it('does not throw, returns resolved promises, isNotifyAvailable=false', async () => {
       const wrapper = await freshWrapper();
       // Simulate dynamic import failure (e.g. ERR_MODULE_NOT_FOUND).
-      const importErr = new Error("Cannot find package '@ccsm/notify'");
+      const importErr = new Error("Cannot find module 'electron-windows-notifications'");
       wrapper.__setNotifyImporter(() => Promise.reject(importErr));
 
-      // Suppress the "@ccsm/notify unavailable" warning the wrapper logs.
+      // Suppress the "native notification module unavailable" warning the wrapper logs.
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       // Even without a configured notifier, all emits must complete cleanly.
@@ -79,10 +79,10 @@ describe('electron/notify wrapper', () => {
 
       expect(wrapper.isNotifyAvailable()).toBe(false);
       expect(await wrapper.probeNotifyAvailability()).toBe(false);
-      expect(wrapper.notifyLastError()).toContain("Cannot find package '@ccsm/notify'");
+      expect(wrapper.notifyLastError()).toContain("Cannot find module 'electron-windows-notifications'");
       expect(warnSpy).toHaveBeenCalled();
       const warnText = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(warnText).toContain('@ccsm/notify unavailable, falling back to in-app only');
+      expect(warnText).toContain('native notification module unavailable, falling back to in-app only');
     });
 
     it('does not retry the import after the first failure', async () => {
@@ -108,7 +108,7 @@ describe('electron/notify wrapper', () => {
     });
   });
 
-  describe('when @ccsm/notify loads successfully', () => {
+  describe('when the notify implementation loads successfully', () => {
     it('delegates wrapper calls to the created notifier', async () => {
       const wrapper = await freshWrapper();
 

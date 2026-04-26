@@ -1,4 +1,4 @@
-// E2E: Wave 1D notify integration. The `@ccsm/notify` Adaptive Toast
+// E2E: Wave 1D notify integration. The the inlined notify module Adaptive Toast
 // pipeline can't fire real Windows toasts under playwright (no AUMID
 // shortcut, no winrt under headless), so we mock the wrapper's underlying
 // dynamic import via the `__setNotifyImporter` test seam exposed in
@@ -113,7 +113,7 @@ try {
   // ── 1. Install mock importer in main and re-bootstrap notify ────────────
   //
   // The `notify.ts` wrapper exposes `__setNotifyImporter` so tests can swap
-  // the dynamic `import('@ccsm/notify')` resolution for a fake. The fake
+  // the dynamic `import('the inlined notify module')` resolution for a fake. The fake
   // returns a Notifier whose methods record into a global array we can
   // observe from the probe via `app.evaluate`.
   const installed = await app.evaluate(async ({ BrowserWindow }) => {
@@ -176,8 +176,8 @@ try {
 
   // ── 3. Blur the window so focus suppression doesn't gate the probe ──────
   // The legacy electron Notification path is gated by `BrowserWindow.isFocused()`
-  // in main; we explicitly drop focus so emits fan out to the @ccsm/notify
-  // wrapper. (We re-test focus suppression at step 7 by re-focusing.)
+  // in main; we explicitly drop focus so emits fan out to the inlined notify
+  // module wrapper. (We re-test focus suppression at step 7 by re-focusing.)
   // See `blurAndWaitUnfocused` for the rationale on polling.
   await blurAndWaitUnfocused(app);
 
@@ -301,7 +301,7 @@ try {
     ]);
   }, { sessionId, requestId: REQUEST_ID });
 
-  // Synthesize the host-side onAction call (what @ccsm/notify would do when
+  // Synthesize the host-side onAction call (what the inlined notify module would do when
   // the user clicks "Allow always" in the toast).
   await app.evaluate(({ ipcMain }, args) => {
     const cb = globalThis.__notifyOnAction;

@@ -1,4 +1,4 @@
-// Wave 1D — bootstrap integration for the optional `@ccsm/notify` package.
+// Wave 1D — bootstrap integration for the optional the inlined notify module package.
 //
 // The thin wrapper in `electron/notify.ts` (#267) exposes typed no-op
 // fallbacks so the rest of the app can call notify functions without caring
@@ -12,7 +12,7 @@
 //   3. Wraps everything in try/catch so a bad install (missing native deps,
 //      AUMID not registered, etc.) cannot block app startup.
 //
-// All entry points are no-ops on non-win32 platforms — phase 1 of @ccsm/notify
+// All entry points are no-ops on non-win32 platforms — phase 1 of the inlined notify module
 // only ships a Windows adapter.
 
 import { BrowserWindow } from 'electron';
@@ -27,12 +27,12 @@ import {
 // route adaptive toast activations unless the host process AUMID matches the
 // AUMID stamped on the Start Menu shortcut. In packaged builds NSIS sets the
 // shortcut up; for ad-hoc dev runs, see `scripts/setup-aumid.ps1` in the
-// `@ccsm/notify` package.
+// the inlined notify module package.
 const APP_ID = 'com.ccsm.app';
 const APP_NAME = 'CCSM';
 
 /**
- * Callback the bootstrap hands to `@ccsm/notify` so toast-button activations
+ * Callback the bootstrap hands to the inlined notify module so toast-button activations
  * can be routed back into the host. Wired by main.ts at app `ready`.
  *
  *  - `permission` toasts use `toastId === requestId` for the underlying
@@ -47,7 +47,7 @@ export type NotifyActionRouter = (event: ActionEvent) => void;
 let bootstrapped = false;
 
 /**
- * Configure the @ccsm/notify wrapper. Safe to call multiple times — only the
+ * Configure the the inlined notify module wrapper. Safe to call multiple times — only the
  * first invocation actually configures; subsequent calls are no-ops so the
  * onAction callback isn't replaced mid-flight (which would orphan in-flight
  * toasts).

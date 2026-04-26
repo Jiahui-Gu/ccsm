@@ -11,7 +11,7 @@ import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap'
 import { scheduleQuestionRetry } from './notify-retry';
 
 // Wave 3 polish (#252): cap the assistant-message preview that the legacy
-// Electron Notification body renders. The @ccsm/notify Adaptive Toast
+// Electron Notification body renders. The the inlined notify module Adaptive Toast
 // re-truncates inside the SDK (xml/done.ts ASSISTANT_LINE_MAX = 80), so we
 // match the same budget here for consistency. Anything longer just waste
 // pixels in the OS banner.
@@ -26,12 +26,12 @@ export type NotificationEventType = 'permission' | 'question' | 'turn_done' | 't
 
 /**
  * Optional rich metadata callers (the renderer's `dispatchNotification`)
- * provide so we can fire a `@ccsm/notify` Adaptive Toast in parallel with
+ * provide so we can fire a the inlined notify module Adaptive Toast in parallel with
  * the basic `electron.Notification`. None of these fields are required — when
  * absent, only the legacy toast fires.
  */
 export interface NotifyExtras {
-  /** Stable id used by @ccsm/notify to dedupe + route activations. */
+  /** Stable id used by the inlined notify module to dedupe + route activations. */
   toastId?: string;
   sessionName?: string;
   groupName?: string;
@@ -63,7 +63,7 @@ export interface ShowNotificationPayload {
   body?: string;
   eventType?: NotificationEventType;
   silent?: boolean;
-  /** Optional rich metadata for the @ccsm/notify Adaptive Toast pipeline. */
+  /** Optional rich metadata for the the inlined notify module Adaptive Toast pipeline. */
   extras?: NotifyExtras;
 }
 
@@ -82,7 +82,7 @@ function cwdBasename(cwd: string | undefined): string {
 // suppressed because the window is already focused).
 //
 // Wave 1D: in addition to the legacy Electron Notification, fan out to the
-// optional `@ccsm/notify` Adaptive Toast pipeline when extras are supplied
+// optional the inlined notify module Adaptive Toast pipeline when extras are supplied
 // and the wrapper has loaded. Both fire in parallel with the in-app render —
 // failure of either path never blocks the other.
 export function showNotification(
@@ -109,7 +109,7 @@ export function showNotification(
   // chars as the legacy toast body so the OS banner conveys real context
   // instead of just "{name} is done". The Adaptive Toast pipeline already
   // does this via `xml/done.ts`; we mirror it here for parity on machines
-  // where @ccsm/notify is unavailable (non-win32, missing native deps).
+  // where the inlined notify module is unavailable (non-win32, missing native deps).
   let body = payload.body ?? '';
   if (
     payload.eventType === 'turn_done' &&
@@ -134,7 +134,7 @@ export function showNotification(
   });
   n.show();
 
-  // Fan out to @ccsm/notify if available + we have enough metadata. All four
+  // Fan out to the inlined notify module if available + we have enough metadata. All four
   // wrapper functions are async-no-throw; we fire-and-forget so the legacy
   // toast (already shown) isn't blocked by a slow native call.
   void emitAdaptiveToast(payload).catch(() => {
