@@ -160,7 +160,7 @@ export function ChatStream() {
                 duration: MOTION_SESSION_SWITCH_DURATION,
                 ease: MOTION_STANDARD_EASING
               }}
-              className="px-4 py-3 flex flex-col gap-1.5 max-w-[1100px]"
+              className="px-4 py-3 flex flex-col gap-2 max-w-[1100px]"
             >
               {loadError && (
                 <LoadHistoryErrorBlock

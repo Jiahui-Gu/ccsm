@@ -557,7 +557,7 @@ export function QuestionBlock({ questions, onSubmit, onReject, autoFocus = true 
         </div>
       </div>
 
-      <div className="px-3 pb-3 flex items-center justify-between gap-2">
+      <div className="px-4 pb-3 flex items-center justify-between gap-2">
         <span className="text-meta text-fg-tertiary font-mono">
           {questions.length > 1
             ? t('questionBlock.pageHint', { current: active + 1, total: questions.length })
