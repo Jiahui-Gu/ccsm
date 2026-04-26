@@ -987,11 +987,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
   }, [value, attachments.length, MIN_HEIGHT, MAX_HEIGHT]);
 
   return (
-    // Wrapper pb-1.5 (was pb-3) — coupled with Send's `absolute bottom-1.5`,
-    // this places the Send button bottom edge 12px above the window bottom,
-    // matching the Sidebar bottom action row's `pb-3` inset. UX audit Group A
-    // — task #311.
-    <div className="relative px-3 pt-2 pb-1.5">
+    <div className="relative px-3 pt-2 pb-3">
       <DropOverlay show={isDragging} />
 
       <AnimatePresence>
@@ -1040,6 +1036,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       )}
 
       <div
+        data-input-bar-wrapper
         className={cn(
           'relative rounded-md border bg-bg-elevated surface-highlight',
           'transition-[border-color,box-shadow] duration-200',
@@ -1207,7 +1204,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
           <Button
             data-morph-state={running ? 'stop' : 'send'}
             variant={running ? 'danger' : 'primary'}
-            size="md"
+            size="sm"
             aria-label={running ? t('chat.stopAria') : t('chat.sendMessage')}
             title={running ? t('chat.stopBtn') : t('chat.sendButton')}
             disabled={running ? false : sendDisabled}

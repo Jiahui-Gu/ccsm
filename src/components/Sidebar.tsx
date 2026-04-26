@@ -612,14 +612,10 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
       {/* Top drag strip — Windows-only build, so we only need a thin
           drag-to-move band (8px) to preserve OS window-drag affordance.
           The right pane keeps its 32px band because it must host
-          WindowControls (min/max/close buttons). */}
+          WindowControls (min/max/close buttons). The slight misalignment
+          is intentional: dogfood flagged the 32px gap above "new session"
+          as visually empty. */}
       <DragRegion className="shrink-0 w-full" style={{ height: 8 }} />
-      {/* Non-drag spacer — pads the sidebar's first interactive row down
-          so it shares a Y with the right pane's first interactive row
-          (WindowControls inside the 32px DragRegion). 8px DragRegion +
-          24px spacer = 32px = right-pane DragRegion height. UX audit
-          Group A — task #311. */}
-      <div aria-hidden className="shrink-0 w-full" style={{ height: 24 }} />
       {collapsed ? (
         <div className="flex flex-col items-center w-full h-full py-3 gap-2">
           <IconButton
@@ -688,7 +684,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               bg-bg-sidebar/80 + backdrop-blur, so the buttons read as
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
-          <div className="px-3 py-3 flex items-center gap-2">
+          <div className="px-3 pt-1 pb-3 flex items-center gap-2">
             <NewSessionButton onCreateSession={onCreateSession} />
             <IconButton
               variant="raised"
@@ -790,8 +786,14 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
 
           {/* Settings — its own zone at the bottom. Mirrors the top zone's
               two-button rhythm (flex-1 text Button + fixed-width IconButton)
-              so the sidebar's top and bottom action rows feel symmetrical. */}
-          <div className="px-3 py-3 border-t border-border-subtle flex items-center gap-2">
+              so the sidebar's top and bottom action rows feel symmetrical.
+              pb-3 (12px) — matches the InputBar wrapper's pb-3, which puts
+              the textarea wrapper's bottom edge 12px above the window bottom.
+              The Settings/Import button bottoms align to that same Y.
+              The 8px DragRegion above + pt-1 (4px) on the top wrapper give
+              12px from sidebar.top to New Session.top — symmetric with this
+              12px from sidebar.bottom to Settings.bottom. UX audit Group A. */}
+          <div className="px-3 pt-3 pb-3 border-t border-border-subtle flex items-center gap-2">
             <Button
               variant="raised"
               size="md"

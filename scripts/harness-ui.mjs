@@ -2929,11 +2929,11 @@ async function caseDeadUiCleanup({ win, log, registerDispose }) {
 }
 
 // ---------- sidebar-inputbar-bottom-align ----------
-// UX audit Group A — fix #1 + #5. The Sidebar's bottom-row buttons
-// (Settings + Import) and the InputBar's Send button must share a single
-// Y for their bottom edges, so the eye reads the entire bottom strip
-// as one row across both panes. Pre-fix delta was ~6px (Send sat higher
-// than Settings); the audit allows ≤1px tolerance.
+// UX audit Group A. The Sidebar's bottom-row buttons (Settings + Import)
+// must share a Y for their bottom edges with the InputBar's TEXTAREA
+// WRAPPER (the rounded-border box around the textarea + Send button) —
+// NOT with the Send button itself. The Send button is internal layout
+// inside the wrapper and is out of scope for this alignment.
 async function caseSidebarInputbarBottomAlign({ win, log }) {
   await win.evaluate(() => {
     window.__ccsmStore.setState({
@@ -2957,46 +2957,39 @@ async function caseSidebarInputbarBottomAlign({ win, log }) {
   const aside = win.locator('aside');
   const main = win.locator('main');
   const settingsBtn = aside.getByRole('button', { name: /^Settings$/ }).first();
-  const sendBtn = main.locator('[data-morph-state="send"]').first();
+  const inputWrapper = main.locator('[data-input-bar-wrapper]').first();
   await settingsBtn.waitFor({ state: 'visible', timeout: 5000 });
-  await sendBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await inputWrapper.waitFor({ state: 'visible', timeout: 5000 });
 
-  const [settingsBox, sendBox] = await Promise.all([
+  const [settingsBox, wrapperBox] = await Promise.all([
     settingsBtn.boundingBox(),
-    sendBtn.boundingBox()
+    inputWrapper.boundingBox()
   ]);
-  if (!settingsBox || !sendBox) throw new Error('button box missing');
+  if (!settingsBox || !wrapperBox) throw new Error('box missing');
 
   const settingsBottom = settingsBox.y + settingsBox.height;
-  const sendBottom = sendBox.y + sendBox.height;
-  const delta = Math.abs(settingsBottom - sendBottom);
+  const wrapperBottom = wrapperBox.y + wrapperBox.height;
+  const delta = Math.abs(settingsBottom - wrapperBottom);
   const TOLERANCE = 1;
   if (delta > TOLERANCE) {
     throw new Error(
       `bottom edges misaligned: Sidebar Settings bottom=${settingsBottom.toFixed(1)} ` +
-      `Send bottom=${sendBottom.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
+      `InputBar wrapper bottom=${wrapperBottom.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
     );
   }
 
-  // Fix #5: Send button must be size="md" (h-7 = 28px), matching Sidebar
-  // h-8 row. The current `size="sm"` gives h-6 = 24px, leaving Send
-  // visually undersized next to the Sidebar action row.
-  if (sendBox.height < 26) {
-    throw new Error(`Send button height=${sendBox.height.toFixed(1)} — expected ≥26 (size="md" → 28px)`);
-  }
-
   log(
-    `Settings bottom=${settingsBottom.toFixed(1)} Send bottom=${sendBottom.toFixed(1)} ` +
-    `delta=${delta.toFixed(1)} sendH=${sendBox.height.toFixed(1)}`
+    `Settings bottom=${settingsBottom.toFixed(1)} InputBar wrapper bottom=${wrapperBottom.toFixed(1)} ` +
+    `delta=${delta.toFixed(1)}`
   );
 }
 
 // ---------- sidebar-vertical-symmetry ----------
-// UX audit Group A — fix #2. The Sidebar's top action wrapper (New
-// Session + Search) and bottom action wrapper (Settings + Import)
-// must each have symmetric vertical padding (top === bottom) AND the
-// two wrappers should share the same padding so the rhythm reads as
-// one design system, not two ad-hoc choices.
+// UX audit Group A. Sidebar internal top/bottom symmetry: the gap from
+// the sidebar's top edge to the New Session button's top edge must equal
+// the gap from the Settings button's bottom edge to the sidebar's bottom
+// edge. This is purely intra-sidebar — has nothing to do with the right
+// pane's DragRegion.
 async function caseSidebarVerticalSymmetry({ win, log }) {
   await win.evaluate(() => {
     window.__ccsmStore.setState({
@@ -3013,123 +3006,34 @@ async function caseSidebarVerticalSymmetry({ win, log }) {
   });
   await win.waitForTimeout(300);
 
-  const wrappers = await win.evaluate(() => {
+  const m = await win.evaluate(() => {
     const aside = document.querySelector('aside');
     if (!aside) return null;
-    // Top wrapper: contains the "New Session" Button.
     const newSessionBtn = Array.from(aside.querySelectorAll('button'))
       .find((b) => /^New Session$/i.test(b.textContent?.trim() ?? ''));
-    // Bottom wrapper: contains the "Settings" Button.
     const settingsBtn = Array.from(aside.querySelectorAll('button'))
       .find((b) => /^Settings$/i.test(b.textContent?.trim() ?? ''));
     if (!newSessionBtn || !settingsBtn) return null;
-    const topWrap = newSessionBtn.parentElement;
-    const botWrap = settingsBtn.parentElement;
-    if (!topWrap || !botWrap) return null;
-    const tcs = window.getComputedStyle(topWrap);
-    const bcs = window.getComputedStyle(botWrap);
+    const aRect = aside.getBoundingClientRect();
+    const nRect = newSessionBtn.getBoundingClientRect();
+    const sRect = settingsBtn.getBoundingClientRect();
     return {
-      topPt: parseFloat(tcs.paddingTop),
-      topPb: parseFloat(tcs.paddingBottom),
-      botPt: parseFloat(bcs.paddingTop),
-      botPb: parseFloat(bcs.paddingBottom)
+      topGap: nRect.top - aRect.top,
+      bottomGap: aRect.bottom - sRect.bottom
     };
   });
-  if (!wrappers) throw new Error('could not locate top/bottom action wrappers');
+  if (!m) throw new Error('could not locate New Session / Settings buttons');
 
-  if (wrappers.topPt !== wrappers.topPb) {
-    throw new Error(
-      `top wrapper asymmetric: pt=${wrappers.topPt} pb=${wrappers.topPb}`
-    );
-  }
-  if (wrappers.botPt !== wrappers.botPb) {
-    throw new Error(
-      `bottom wrapper asymmetric: pt=${wrappers.botPt} pb=${wrappers.botPb}`
-    );
-  }
-  if (wrappers.topPt !== wrappers.botPt) {
-    throw new Error(
-      `top vs bottom wrapper differ: top=${wrappers.topPt} bot=${wrappers.botPt}`
-    );
-  }
-  log(
-    `top=${wrappers.topPt}/${wrappers.topPb} bottom=${wrappers.botPt}/${wrappers.botPb} (all equal)`
-  );
-}
-
-// ---------- sidebar-top-aligned-with-pane ----------
-// UX audit Group A — fix #3 + #4. The Sidebar's content area (the first
-// child below its 8px DragRegion) and the right pane's content area
-// (the first child below its 32px DragRegion) must start at the same Y.
-// Pre-fix the sidebar content started 24px higher than the right pane;
-// fixed by adding a 24px non-drag spacer above the sidebar's first
-// content row so 8 + 24 = 32 matches the right pane's DragRegion.
-async function caseSidebarTopAlignedWithPane({ win, log }) {
-  await win.evaluate(() => {
-    window.__ccsmStore.setState({
-      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
-      sessions: [
-        {
-          id: 's-top-1', name: 's', state: 'idle', cwd: 'C:/x',
-          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
-        }
-      ],
-      activeId: 's-top-1',
-      messagesBySession: { 's-top-1': [] }
-    });
-  });
-  await win.waitForTimeout(300);
-
-  const tops = await win.evaluate(() => {
-    const aside = document.querySelector('aside');
-    const main = document.querySelector('main');
-    if (!aside || !main) return null;
-    // Walk children of aside / main looking for the first non-DragRegion,
-    // non-spacer node that has actual content to render. We treat any
-    // element with role="presentation"/"separator" or a width-only
-    // 8px/24px height-only spacer as chrome.
-    function firstContentChild(parent) {
-      const kids = Array.from(parent.children);
-      for (const el of kids) {
-        const r = el.getBoundingClientRect();
-        // Skip zero-height (collapsed banners).
-        if (r.height < 4) continue;
-        // Skip drag chrome (uses WebkitAppRegion: 'drag') and the
-        // explicit 24px aria-hidden non-drag spacer above the sidebar
-        // first row.
-        const cs = window.getComputedStyle(el);
-        const region = cs.getPropertyValue('-webkit-app-region') ||
-                       el.style.getPropertyValue('-webkit-app-region');
-        if (region === 'drag') continue;
-        const isAriaHidden = el.getAttribute('aria-hidden') === 'true' &&
-                             r.height <= 24;
-        if (isAriaHidden) continue;
-        return r;
-      }
-      return null;
-    }
-    // Sidebar children include the DragRegion + spacer + main column div;
-    // the sidebar's "first content" is the inner column's first row.
-    // Easier: descend into the sidebar's column wrapper.
-    const sidebarColumn = aside.querySelector('div.flex.flex-col.w-full.h-full')
-      ?? aside; // fallback to aside itself when collapsed
-    const sidebarRow = firstContentChild(sidebarColumn);
-    const mainRow = firstContentChild(main);
-    if (!sidebarRow || !mainRow) return null;
-    return { sidebarTop: sidebarRow.top, mainTop: mainRow.top };
-  });
-  if (!tops) throw new Error('could not locate first content child of sidebar/main');
-
-  const delta = Math.abs(tops.sidebarTop - tops.mainTop);
-  const TOLERANCE = 2;
+  const TOLERANCE = 1;
+  const delta = Math.abs(m.topGap - m.bottomGap);
   if (delta > TOLERANCE) {
     throw new Error(
-      `sidebar/main first-content-row mismatch: sidebar.top=${tops.sidebarTop.toFixed(1)} ` +
-      `main.top=${tops.mainTop.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
+      `sidebar vertical asymmetry: topGap=${m.topGap.toFixed(1)} ` +
+      `bottomGap=${m.bottomGap.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
     );
   }
   log(
-    `sidebar.top=${tops.sidebarTop.toFixed(1)} main.top=${tops.mainTop.toFixed(1)} ` +
+    `topGap=${m.topGap.toFixed(1)} bottomGap=${m.bottomGap.toFixed(1)} ` +
     `delta=${delta.toFixed(1)}`
   );
 }
@@ -3155,12 +3059,11 @@ await runHarness({
   },
   cases: [
     { id: 'sidebar-align', run: caseSidebarAlign },
-    // UX audit Group A — task #311. Three regression cases pinning the
-    // sidebar/InputBar bottom alignment, sidebar vertical symmetry, and
-    // sidebar/right-pane top-row alignment.
+    // UX audit Group A — task #311. Two regression cases pinning
+    // (1) Sidebar bottom buttons aligned with InputBar wrapper bottom edge,
+    // (2) Sidebar internal top/bottom symmetry.
     { id: 'sidebar-inputbar-bottom-align', run: caseSidebarInputbarBottomAlign },
     { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
-    { id: 'sidebar-top-aligned-with-pane', run: caseSidebarTopAlignedWithPane },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },
