@@ -2019,15 +2019,38 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   // Per-event toggle ('权限请求') and the test-notification button
   // ('发送测试通知') were removed; assert they're gone so a regression that
   // re-introduces either is caught here.
+  //
+  // NOTE: the per-event-toggle / test-notification absence checks are scoped
+  // to actual interactive controls (role=switch / role=button) instead of a
+  // raw page-text scan — the zh `notifications.intro` prose mentions
+  // "权限请求" as part of an explanatory sentence, which would false-positive
+  // a substring blacklist. The regression we actually care about is a
+  // re-introduced Field/Switch or button, not the word appearing in copy.
   await switchTab(/^通知$/);
   txt = await paneText();
   assertHasText(txt, '启用通知', 'notifications');
   assertHasText(txt, '声音', 'notifications');
   assertNotHasText(txt, 'Enable notifications', 'notifications');
   assertNotHasText(txt, 'Sound', 'notifications');
-  assertNotHasText(txt, '权限请求', 'notifications');
-  assertNotHasText(txt, '发送测试通知', 'notifications');
-  assertNotHasText(txt, 'Test notification', 'notifications');
+
+  const notifSwitchCount = await dialog
+    .getByRole('switch', { name: /权限请求/ })
+    .count();
+  if (notifSwitchCount > 0) {
+    throw new Error(
+      `notifications: per-event toggle (role=switch name="权限请求") regressed — should not exist post-W2`,
+    );
+  }
+  for (const buttonName of [/发送测试通知/, /Test notification/i]) {
+    const btnCount = await dialog
+      .getByRole('button', { name: buttonName })
+      .count();
+    if (btnCount > 0) {
+      throw new Error(
+        `notifications: test-notification button (name=${buttonName}) regressed — should not exist post-W2`,
+      );
+    }
+  }
 
   // Updates.
   await switchTab(/^更新$/);
