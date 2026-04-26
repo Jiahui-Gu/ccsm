@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { BrowserWindow, Notification } from 'electron';
+import type { BrowserWindow } from 'electron';
 import {
   notifyPermission,
   notifyQuestion,
@@ -10,25 +10,22 @@ import {
 import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap';
 import { scheduleQuestionRetry } from './notify-retry';
 
-// Wave 3 polish (#252): cap the assistant-message preview that the legacy
-// Electron Notification body renders. The the inlined notify module Adaptive Toast
-// re-truncates inside the SDK (xml/done.ts ASSISTANT_LINE_MAX = 80), so we
-// match the same budget here for consistency. Anything longer just waste
+// Cap the assistant-message preview that the Done toast renders. The inlined
+// notify module's xml/done.ts ASSISTANT_LINE_MAX = 80 re-truncates inside the
+// SDK; we match that budget here for consistency. Anything longer just wastes
 // pixels in the OS banner.
 const DONE_BODY_PREVIEW_MAX = 80;
 
 function truncatePreview(s: string, n = DONE_BODY_PREVIEW_MAX): string {
   if (!s) return '';
-  return s.length > n ? `${s.slice(0, n - 1)}\u2026` : s;
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 export type NotificationEventType = 'permission' | 'question' | 'turn_done' | 'test';
 
 /**
  * Optional rich metadata callers (the renderer's `dispatchNotification`)
- * provide so we can fire a the inlined notify module Adaptive Toast in parallel with
- * the basic `electron.Notification`. None of these fields are required — when
- * absent, only the legacy toast fires.
+ * provide so the inlined notify module's Adaptive Toast can render correctly.
  */
 export interface NotifyExtras {
   /** Stable id used by the inlined notify module to dedupe + route activations. */
@@ -76,21 +73,21 @@ function cwdBasename(cwd: string | undefined): string {
   }
 }
 
-// Show an OS-level notification. Click brings the window forward and asks the
-// renderer to navigate to the originating session. Returns whether a toast was
-// actually shown (false if the platform reports notifications unsupported, or
-// suppressed because the window is already focused).
+// Show an OS-level notification (Windows-only). Returns whether a toast was
+// emitted (false when notify-impl is unavailable, the platform is unsupported,
+// or the focused-window suppression gate fired).
 //
-// Wave 1D: in addition to the legacy Electron Notification, fan out to the
-// optional the inlined notify module Adaptive Toast pipeline when extras are supplied
-// and the wrapper has loaded. Both fire in parallel with the in-app render —
-// failure of either path never blocks the other.
+// There is no cross-platform fallback: the legacy Electron `Notification` path
+// has been removed. macOS / Linux platform adapters are stubbed to throw — the
+// `isNotifyAvailable()` gate keeps non-Windows callers silent.
+//
+// Click-to-focus: when the user clicks the toast, `notify-bootstrap.ts`'s
+// onAction handler receives the activation and sends `notification:focusSession`
+// through to the renderer.
 export function showNotification(
   payload: ShowNotificationPayload,
-  win: BrowserWindow | null,
+  _win: BrowserWindow | null,
 ): boolean {
-  if (!Notification.isSupported()) return false;
-
   // Defensive doubled focus gate. The renderer-side dispatch already checks
   // `document.hasFocus() && activeId === sessionId`, but `document.hasFocus`
   // can lie under devtools / playwright, and a non-active session that's still
@@ -105,46 +102,14 @@ export function showNotification(
     // where a notify was unexpectedly dropped looked indistinguishable from
     // a wrapper failure. Log every focus-suppress with enough context
     // (event type, session, title) to disambiguate during diagnosis.
-    // eslint-disable-next-line no-console
     console.warn(
       `[notify] suppressed: a window is focused, dropping notification: eventType=${payload.eventType ?? 'unknown'} sessionId=${payload.sessionId} title=${JSON.stringify(payload.title)}`,
     );
     return false;
   }
 
-  // Wave 3 polish (#252): for turn_done events, if the host didn't supply
-  // a body but did pass `extras.lastAssistantMsg`, surface the first ~80
-  // chars as the legacy toast body so the OS banner conveys real context
-  // instead of just "{name} is done". The Adaptive Toast pipeline already
-  // does this via `xml/done.ts`; we mirror it here for parity on machines
-  // where the inlined notify module is unavailable (non-win32, missing native deps).
-  let body = payload.body ?? '';
-  if (
-    payload.eventType === 'turn_done' &&
-    !payload.body &&
-    payload.extras?.lastAssistantMsg
-  ) {
-    body = truncatePreview(payload.extras.lastAssistantMsg);
-  }
+  if (!isNotifyAvailable()) return false;
 
-  const n = new Notification({
-    title: payload.title,
-    body,
-    silent: !!payload.silent,
-  });
-  n.on('click', () => {
-    const target = win && !win.isDestroyed() ? win : BrowserWindow.getAllWindows()[0];
-    if (!target || target.isDestroyed()) return;
-    if (target.isMinimized()) target.restore();
-    if (!target.isVisible()) target.show();
-    target.focus();
-    target.webContents.send('notification:focusSession', payload.sessionId);
-  });
-  n.show();
-
-  // Fan out to the inlined notify module if available + we have enough metadata. All four
-  // wrapper functions are async-no-throw; we fire-and-forget so the legacy
-  // toast (already shown) isn't blocked by a slow native call.
   void emitAdaptiveToast(payload).catch(() => {
     /* wrapper logs internally */
   });
@@ -182,14 +147,9 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
         cwdBasename: cwdBase,
       };
       await notifyQuestion(questionPayload);
-      // Wave 3 polish (#252): schedule a single re-emit after ~30s in case
-      // the user missed the first banner. Cancelled by the
-      // `agent:resolvePermission` IPC handler when the question is answered
-      // (in-app QuestionBlock submit calls agentResolvePermission with
-      // decision='deny' to release the underlying CLI gate).
-      // sessionId is forwarded so the retry's fire-time gate (#307) can
-      // suppress the re-emit when the user has since focused this session
-      // or globally disabled notifications.
+      // Schedule a single re-emit after ~30s in case the user missed the
+      // first banner. Cancelled by the `agent:resolvePermission` IPC handler
+      // when the question is answered.
       scheduleQuestionRetry(questionPayload, payload.sessionId);
       return;
     }
@@ -197,9 +157,7 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
       registerToastTarget(e.toastId, payload.sessionId, 'turn_done');
       // Mirror the SDK's xml/done.ts ASSISTANT_LINE_MAX (80) here so the
       // wrapper sees a payload that matches what the toast will actually
-      // render. Defensive duplication: callers (lifecycle.ts) currently
-      // truncate to 200; the SDK re-truncates to 80; we tighten on this
-      // hop too so any future caller gets the same treatment.
+      // render.
       await notifyDone({
         toastId: e.toastId,
         groupName: e.groupName ?? '',
