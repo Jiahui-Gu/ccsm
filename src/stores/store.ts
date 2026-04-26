@@ -1061,29 +1061,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       cwdOrOpts == null || typeof cwdOrOpts === 'string'
         ? { cwd: cwdOrOpts ?? null }
         : cwdOrOpts;
-    // Bug-3: distinct default session names. Without this, every brand-new
-    // session shows "New session" in the sidebar and the user can't tell rows
-    // apart. We derive the default from the cwd basename (matches the cwd chip
-    // label produced by `lastSegment` in CwdPopover) and append `(2)`, `(3)`
-    // ... when a peer session in the store already uses that same label.
-    // Imported sessions and explicit-name callers bypass this entirely.
-    const deriveDefaultName = (cwd: string, takenNames: ReadonlyArray<string>): string => {
-      // Strip `~/` shorthand and trailing slashes, then pick the trailing path
-      // segment. `~` alone or empty cwd → 'New session' literal fallback.
-      const stripped = cwd.replace(/^~[\\/]?/, '').replace(/[\\/]+$/, '');
-      const segs = stripped.split(/[\\/]/).filter(Boolean);
-      const base = segs[segs.length - 1] ?? '';
-      const seed = base || 'New session';
-      const taken = new Set(takenNames);
-      if (!taken.has(seed)) return seed;
-      // Bump `(N)` suffix until unique. We scan against ALL session names (not
-      // just defaults) so a user-renamed session also blocks collisions.
-      for (let n = 2; n < 1000; n++) {
-        const candidate = `${seed} (${n})`;
-        if (!taken.has(candidate)) return candidate;
-      }
-      return seed;
-    };
     const {
       sessions,
       groups,
@@ -1132,12 +1109,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     if (!initialModel) initialModel = claudeSettingsDefaultModel ?? '';
     const newSession: Session = {
       id,
-      name:
-        opts.name?.trim() ||
-        deriveDefaultName(
-          opts.cwd ?? defaultCwd,
-          sessions.map((s) => s.name),
-        ),
+      name: opts.name?.trim() || 'New session',
       state: 'idle',
       cwd: opts.cwd ?? defaultCwd,
       model: initialModel,

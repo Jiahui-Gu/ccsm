@@ -2457,82 +2457,6 @@ async function caseImportEmptyGroups({ win, log }) {
   log(`empty groups[] + stale groupId → synthesized group ${synth.id} (nameKey='${synth.nameKey}'); imported session parented + sidebar renders both`);
 }
 
-// ---------- session-default-name-distinct (bug-3) ----------
-// Brand-new sessions used to all show as "New session" in the sidebar — three
-// rows = three identical labels, no way to tell them apart. We now derive the
-// default name from the cwd basename and append `(2)`, `(3)` for collisions.
-// This case drives `createSession` through the store (the same entry point the
-// "New Session" button uses) and asserts the rendered <span> text the user
-// actually sees in the sidebar is unique per row.
-async function caseSessionDefaultNameDistinct({ win, log }) {
-  // Reset to a clean group + no sessions, with a deterministic userHome so
-  // basename is reproducible regardless of dev box.
-  await seedStore(win, {
-    groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-    sessions: [],
-    activeId: '',
-    focusedGroupId: null,
-    userHome: 'C:/Users/jiahuigu',
-  });
-
-  // Helper: read the rendered name span for a given session id.
-  async function rowNameText(sessionId) {
-    return await win.evaluate((sid) => {
-      const li = document.querySelector(`li[data-session-id="${sid}"]`);
-      // First inner span is the name (see SessionRow render). Tolerate the
-      // inline-rename input by falling back to li.textContent.
-      const span = li?.querySelector('span.truncate');
-      return (span?.textContent ?? li?.textContent ?? '').trim();
-    }, sessionId);
-  }
-
-  // Step 1: two new sessions in the home cwd → distinct labels.
-  await win.evaluate(() => {
-    window.__ccsmStore.getState().createSession(null);
-    window.__ccsmStore.getState().createSession(null);
-  });
-  await win.waitForTimeout(150);
-
-  const ids2 = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => s.id));
-  if (ids2.length !== 2) throw new Error(`expected 2 sessions, got ${ids2.length}`);
-  const names2 = await Promise.all(ids2.map(rowNameText));
-  const set2 = new Set(names2);
-  if (set2.size !== 2) {
-    throw new Error(`sidebar names not distinct after 2 home sessions: ${JSON.stringify(names2)}`);
-  }
-  if (!names2.includes('jiahuigu') || !names2.includes('jiahuigu (2)')) {
-    throw new Error(`expected names ['jiahuigu', 'jiahuigu (2)'], got ${JSON.stringify(names2)}`);
-  }
-  // Neither row may show the legacy literal.
-  for (const n of names2) {
-    if (n === 'New session') throw new Error(`row still shows literal 'New session': ${JSON.stringify(names2)}`);
-  }
-
-  // Step 2: third session at a different cwd → its own basename.
-  await win.evaluate(() => {
-    window.__ccsmStore.getState().createSession('C:/temp');
-  });
-  await win.waitForTimeout(150);
-  const ids3 = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => s.id));
-  const names3 = await Promise.all(ids3.map(rowNameText));
-  if (!names3.includes('temp')) {
-    throw new Error(`expected a row named 'temp' from cwd=C:/temp, got ${JSON.stringify(names3)}`);
-  }
-  if (new Set(names3).size !== names3.length) {
-    throw new Error(`sidebar names not distinct after 3 sessions: ${JSON.stringify(names3)}`);
-  }
-
-  // Step 3: cleanup so subsequent cases start with a clean slate.
-  await seedStore(win, {
-    groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-    sessions: [],
-    activeId: '',
-    focusedGroupId: null,
-  });
-
-  log(`distinct names ok: ${JSON.stringify(names2)} → ${JSON.stringify(names3)}`);
-}
-
 // ---------- rename ----------
 // Inline rename for sessions and groups via context menu. Covers the four
 // exit paths InlineRename supports plus IME composition guard.
@@ -3626,7 +3550,6 @@ await runHarness({
     { id: 'group-add', run: caseGroupAdd },
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
-    { id: 'session-default-name-distinct', run: caseSessionDefaultNameDistinct },
     { id: 'terminal', run: caseTerminal },
     { id: 'tool-render-open-in-editor', run: caseToolRenderOpenInEditor },
     // ---- Bucket-7 absorption (final cleanup pass) ----
