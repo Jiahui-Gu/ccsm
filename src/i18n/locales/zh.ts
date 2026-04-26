@@ -65,6 +65,7 @@ const zh: EnCatalog = {
     toolFailedTag: '失败',
     runningEllipsis: '（执行中…）',
     toolNoResult: '（无结果）',
+    toolInputRejectedRetried: '入参不合法，已自动重试',
     toolTakingLonger: '（耗时较长…）',
     toolStallEscalated: '工具已运行 90 秒以上，仍无结果。',
     toolStallCancel: '取消',

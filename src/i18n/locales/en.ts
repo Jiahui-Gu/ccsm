@@ -65,6 +65,7 @@ const en = {
     toolFailedTag: 'failed',
     runningEllipsis: '(running…)',
     toolNoResult: '(no result)',
+    toolInputRejectedRetried: 'input rejected, retried',
     toolTakingLonger: '(taking longer than usual…)',
     toolStallEscalated: 'Tool has been running 90s+ — still no result.',
     toolStallCancel: 'Cancel',

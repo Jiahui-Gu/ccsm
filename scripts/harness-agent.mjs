@@ -2015,6 +2015,297 @@ async function caseSdkToolUseRoundtrip({ app, win, log }) {
   log('SDK assistant(tool_use)+user(tool_result) via real agent:event IPC -> tool block coalesced with result');
 }
 
+// ---------- tool-failure-input-validation-collapsed ----------
+// Bug: AskUserQuestion (and any tool) whose `input` fails CLI-side Zod
+// validation streams a normal assistant `tool_use` block followed by a
+// synthetic user `tool_result` carrying
+// `<tool_use_error>InputValidationError: …</tool_use_error>` with
+// is_error=true. ccsm previously rendered the failed tool_use as a tool
+// block whose auto-expand-on-error path called PrettyInput on the
+// malformed payload — printing the rejected JSON ("questions", "options",
+// "header" keys) at the user. The retry's correct card landed too, so the
+// chat ended up with a useless raw-JSON dump above the real question.
+//
+// Fix A (scoped): drop the AskUserQuestion fallback tool block entirely
+// when parseQuestions returns []. Fix B (generic): in ToolBlock, render a
+// collapsed pill (no PrettyInput, no auto-expand) when isError && result
+// matches `<tool_use_error>` / contains `InputValidationError`. Existing
+// behavior for OTHER tool errors (non-validation) must remain unchanged
+// (auto-expand + PrettyInput).
+async function caseToolFailureInputValidationCollapsed({ app, win, log }) {
+  const SID = 's-tool-fail-iv';
+  const ASKQ_TUID = 'toolu_iv_askq_failed';
+  const ASKQ_RETRY_TUID = 'toolu_iv_askq_retry';
+  const BASH_TUID = 'toolu_iv_bash_failed';
+  const GENUINE_TUID = 'toolu_iv_bash_genuine_failed';
+
+  await win.evaluate((sid) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 'tool-fail-iv', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: { [sid]: [{ kind: 'user', id: 'u-1', text: 'ask me something' }] },
+      startedSessions: { [sid]: true },
+      runningSessions: { [sid]: true },
+    });
+  }, SID);
+  await win.waitForTimeout(150);
+
+  // Inject the failure pair via real agent:event IPC, mirroring what the
+  // CLI streams on InputValidationError. The malformed input is
+  // exactly the dogfood-observed shape: questions[].header + options
+  // present, questions[].question MISSING.
+  await app.evaluate(({ BrowserWindow }, [sid, askqTuid, askqRetryTuid, bashTuid, genuineTuid]) => {
+    const wc = BrowserWindow.getAllWindows()[0]?.webContents;
+    if (!wc) throw new Error('no BrowserWindow available');
+    // 1) failed AskUserQuestion tool_use (malformed payload — missing
+    // `question` field on every entry; has the diagnostic keys we'll
+    // assert NOT visible: "options", "header").
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'assistant',
+        session_id: sid,
+        message: {
+          id: 'msg-iv-1',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          content: [
+            {
+              type: 'tool_use',
+              id: askqTuid,
+              name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  { header: 'iv-h1', options: [{ label: 'iv-opt-A' }, { label: 'iv-opt-B' }] }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    });
+    // 2) the synthetic user tool_result with InputValidationError envelope.
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'user',
+        session_id: sid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: askqTuid,
+              is_error: true,
+              content: '<tool_use_error>InputValidationError: questions[0].question is missing</tool_use_error>'
+            }
+          ]
+        }
+      }
+    });
+    // 3) generic non-AskUserQuestion validation failure (Bash with bogus
+    // args, simulating CLI Zod rejection). Used to verify Fix B applies
+    // generically — collapsed pill, no PrettyInput.
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'assistant',
+        session_id: sid,
+        message: {
+          id: 'msg-iv-2',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          content: [
+            {
+              type: 'tool_use',
+              id: bashTuid,
+              name: 'Bash',
+              input: { iv_bash_marker_key: 'iv_bash_marker_value' }
+            }
+          ]
+        }
+      }
+    });
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'user',
+        session_id: sid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: bashTuid,
+              is_error: true,
+              content: '<tool_use_error>InputValidationError: command is required</tool_use_error>'
+            }
+          ]
+        }
+      }
+    });
+    // 4) genuinely-failing Bash (non-validation error — e.g. command not
+    // found). Must keep existing auto-expand + PrettyInput behavior so we
+    // don't regress visibility of real failures.
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'assistant',
+        session_id: sid,
+        message: {
+          id: 'msg-iv-3',
+          role: 'assistant',
+          model: 'claude-opus-4',
+          content: [
+            {
+              type: 'tool_use',
+              id: genuineTuid,
+              name: 'Bash',
+              input: { command: 'iv_genuine_marker_command' }
+            }
+          ]
+        }
+      }
+    });
+    wc.send('agent:event', {
+      sessionId: sid,
+      message: {
+        type: 'user',
+        session_id: sid,
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: genuineTuid,
+              is_error: true,
+              content: 'iv_genuine_marker_stderr: command not found'
+            }
+          ]
+        }
+      }
+    });
+    // The AskUserQuestion retry's question card is mounted via the
+    // can_use_tool permission path (lifecycle.ts →
+    // permissionRequestToWaitingBlock), NOT via assistantBlocks (which
+    // deliberately drops AskUserQuestion tool_use — see comment in
+    // stream-to-blocks.ts). We don't simulate the full permission RPC
+    // handshake here; the test appends the retry's `question` block
+    // directly to the store after this app.evaluate returns.
+  }, [SID, ASKQ_TUID, ASKQ_RETRY_TUID, BASH_TUID, GENUINE_TUID]);
+  await win.waitForTimeout(300);
+
+  // Append the retry's question card directly (see comment above —
+  // lifecycle's permission path is what mounts this in production; we
+  // shortcut it for the harness).
+  await win.evaluate(({ sid, blockId }) => {
+    window.__ccsmStore.getState().appendBlocks(sid, [
+      {
+        kind: 'question',
+        id: blockId,
+        questions: [
+          {
+            question: 'iv-retry-question-prompt',
+            header: 'iv-h2',
+            options: [{ label: 'iv-retry-opt-A' }, { label: 'iv-retry-opt-B' }]
+          }
+        ]
+      }
+    ]);
+  }, { sid: SID, blockId: 'q-iv-retry' });
+  await win.waitForTimeout(300);
+
+  const blockSummary = await win.evaluate((sid) => {
+    const blocks = window.__ccsmStore.getState().messagesBySession[sid] ?? [];
+    return blocks.map((b) => ({
+      kind: b.kind,
+      id: b.id,
+      name: b.name,
+      toolUseId: b.toolUseId,
+      isError: b.isError,
+      resultPreview: typeof b.result === 'string' ? b.result.slice(0, 80) : undefined,
+    }));
+  }, SID);
+
+  // Fix A: the AskUserQuestion failed tool_use must NOT have produced a
+  // tool block in the store at all. parseQuestions returned [] → drop.
+  const failedAskQBlock = blockSummary.find(
+    (b) => b.kind === 'tool' && b.toolUseId === ASKQ_TUID
+  );
+  if (failedAskQBlock) {
+    throw new Error(
+      `Fix A: expected NO tool block for failed AskUserQuestion (parseQuestions=[]); got: ${JSON.stringify(failedAskQBlock)}`
+    );
+  }
+
+  // Generic validation-error Bash: tool block must exist (so we can show
+  // a pill), but it MUST NOT render PrettyInput payload in the DOM.
+  const failedBashBlock = blockSummary.find(
+    (b) => b.kind === 'tool' && b.toolUseId === BASH_TUID
+  );
+  if (!failedBashBlock) {
+    throw new Error(`expected tool block for validation-failed Bash; got blocks=${JSON.stringify(blockSummary)}`);
+  }
+  if (!failedBashBlock.isError) {
+    throw new Error(`validation-failed Bash block expected isError=true; got ${JSON.stringify(failedBashBlock)}`);
+  }
+
+  // Genuinely-failing Bash block must exist + isError=true (regression
+  // guard for Fix B's overreach).
+  const genuineBashBlock = blockSummary.find(
+    (b) => b.kind === 'tool' && b.toolUseId === GENUINE_TUID
+  );
+  if (!genuineBashBlock) {
+    throw new Error(`expected tool block for genuinely-failing Bash; got blocks=${JSON.stringify(blockSummary)}`);
+  }
+
+  // DOM assertions.
+  const chatText = await win.evaluate(() => document.body.innerText);
+
+  // Fix A consequence: the malformed AskUserQuestion payload's diagnostic
+  // keys ("options" / "header") must NOT appear anywhere — neither
+  // because of an AskUserQuestion fallback tool block (Fix A) nor because
+  // a generic tool block expanded its PrettyInput (Fix B).
+  if (chatText.includes('iv-opt-A') || chatText.includes('iv-opt-B')) {
+    throw new Error('Fix A: malformed AskUserQuestion option labels leaked into chat (PrettyInput dumped them)');
+  }
+  if (chatText.includes('iv-h1')) {
+    throw new Error('Fix A: malformed AskUserQuestion header value leaked into chat');
+  }
+
+  // Fix B: validation-failed Bash must NOT show its raw input payload.
+  if (chatText.includes('iv_bash_marker_key') || chatText.includes('iv_bash_marker_value')) {
+    throw new Error('Fix B: validation-error tool block expanded PrettyInput; raw input leaked');
+  }
+  if (chatText.includes('InputValidationError')) {
+    throw new Error('Fix B: raw <tool_use_error> envelope leaked into chat (collapsed pill should suppress LongOutputView too)');
+  }
+
+  // Fix B regression guard: genuinely-failing Bash MUST still surface its
+  // input + result text. Otherwise we've over-collapsed real failures.
+  if (!chatText.includes('iv_genuine_marker_command')) {
+    throw new Error('Fix B regression: genuinely-failing Bash no longer shows its command (auto-expand on real errors broke)');
+  }
+  if (!chatText.includes('iv_genuine_marker_stderr')) {
+    throw new Error('Fix B regression: genuinely-failing Bash no longer shows its stderr');
+  }
+
+  // The retry's question card must have rendered.
+  await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+  const retryQuestionVisible = await win.evaluate(() => document.body.innerText.includes('iv-retry-question-prompt'));
+  if (!retryQuestionVisible) {
+    throw new Error('expected the AskUserQuestion retry card to render with its corrected question text');
+  }
+  // And the retry's options should be reachable.
+  const retryOptCount = await win.locator('[data-question-option][data-question-label="iv-retry-opt-A"]').count();
+  if (retryOptCount === 0) {
+    throw new Error('expected retry option A to be rendered');
+  }
+
+  log('AskUserQuestion validation failure: no fallback tool block; generic validation pill suppresses PrettyInput; non-validation Bash error still expands; retry card renders');
+}
+
 // ---------- sdk-system-subtypes ----------
 // Follow-up to PR #326. translateSdkMessage allow-lists three system
 // subtypes (init, compact_boundary, api_retry) and drops the rest. The 3
@@ -4610,6 +4901,7 @@ await runHarness({
     { id: 'sdk-stream-event-partial', run: caseSdkStreamEventPartial },
     { id: 'sdk-exit-error-surfaces', run: caseSdkExitErrorSurfaces },
     { id: 'sdk-tool-use-roundtrip', run: caseSdkToolUseRoundtrip },
+    { id: 'tool-failure-input-validation-collapsed', run: caseToolFailureInputValidationCollapsed },
     { id: 'sdk-system-subtypes', run: caseSdkSystemSubtypes },
     { id: 'sdk-abort-on-disposed', run: caseSdkAbortOnDisposed },
     { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
