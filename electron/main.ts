@@ -1135,11 +1135,10 @@ app.whenReady().then(() => {
   // selecting one inserts `/<name>` into the textarea, which the existing
   // send path forwards to claude.exe. We never parse the body.
   //
-  // `loadPickerCommands` filters out plugin / skill / agent sources because
-  // the @anthropic-ai/claude-agent-sdk transport doesn't execute them
-  // without explicit configuration ccsm doesn't currently provide; listing
-  // them in the picker misled users into invocations that fell through to
-  // the model as plain text. See commands-loader.ts for the full rationale.
+  // `loadPickerCommands` returns every disk-discovered source (user /
+  // project / plugin / skill / agent). Plugin and skill commands are
+  // executed by the bundled CLI itself — see commands-loader.ts
+  // PICKER_VISIBLE_SOURCES for the empirical rationale.
   ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) => {
     // commands-loader does its own fs reads against the supplied cwd; UNC or
     // relative inputs get filtered out here so we don't leak NTLM (Windows)

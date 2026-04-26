@@ -309,34 +309,44 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
 
 // ────────────────────── picker-visible filter ──────────────────────────────
 //
-// Subset of `loadCommands` surfaced to the slash-command picker. Three
-// sources are deliberately hidden:
+// Subset of `loadCommands` surfaced to the slash-command picker. All five
+// disk-discovered sources are visible.
 //
-//   - PLUGIN commands (`/<plugin>:<name>` from ~/.claude/plugins/cache/...).
-//     The CLI binary loads them in its own REPL but the
-//     @anthropic-ai/claude-agent-sdk transport ccsm uses requires plugins
-//     to be declared via `query({ options: { plugins: [...] } })`, which
-//     ccsm doesn't pass. Forwarding `/superpowers:brainstorm` to the SDK
-//     therefore arrives as plain user text and the model replies with the
-//     deprecated-skill stub instead of running the plugin command.
+// Why every source is included (reversal of PR #346, see #290):
 //
-//   - SKILL entries (from ~/.claude/skills/) are loaded by the SDK as
-//     description-keyed system-prompt extensions ("when X happens, use this
-//     skill") — the agent invokes them on its own, the user cannot trigger
-//     them with `/skill-name`. Listing them in the picker created the same
-//     false affordance.
+//   - PLUGIN commands (`/<plugin>:<name>` from ~/.claude/plugins/cache/...)
+//     are loaded automatically by the bundled CLI from the user's
+//     `enabledPlugins` setting in ~/.claude/settings.json. The SDK
+//     `query()` defaults to `settingSources: ['user','project','local']`
+//     when the option is omitted (which ccsm intentionally does), so the
+//     CLI subprocess discovers and registers every enabled plugin command.
+//     Empirically verified: spawning the SDK-bundled claude.exe with
+//     stream-json and sending `/superpowers:brainstorming <q>` runs the
+//     plugin and produces real output. The "deprecated, use the skill"
+//     reply that PR #346 attributed to a transport gap is in fact the
+//     CONTENT of the deprecated `/superpowers:brainstorm` plugin command
+//     itself — the plugin authors deprecated that name in favour of the
+//     `superpowers:brainstorming` skill. PR #346 misdiagnosed user-visible
+//     plugin output as a missing feature.
 //
-//   - AGENT entries are subagent definitions invoked by the main agent via
-//     the Task tool. There is no user-facing slash form, so they had no
-//     business in the picker either.
+//   - SKILL entries (from ~/.claude/skills/) are also loaded by the
+//     bundled CLI; invoking `/<skill-name>` in the composer triggers the
+//     skill (the CLI's own command resolution recognises these).
 //
-// `loadCommands` itself still returns every source — keeps the discovery
-// complete for future wiring (e.g. surfacing skills in a separate UI). Add
-// a source to PICKER_VISIBLE_SOURCES once the corresponding execution path
-// is actually wired through the SDK.
+//   - AGENT entries (subagent definitions) are invocable as
+//     `/<agent-name>` — the CLI exposes them as commands too.
+//
+// All disk-discovered commands are forwarded to claude.exe via the existing
+// pass-through path (`passThrough: true` in registry.ts loadDynamicCommands).
+// The unknown-namespaced toast (PR #359, src/components/InputBar.tsx) still
+// catches genuinely-missing namespaced commands because it only fires when
+// the name is NOT found in the merged command list.
 export const PICKER_VISIBLE_SOURCES: ReadonlySet<CommandSource> = new Set([
   'user',
   'project',
+  'plugin',
+  'skill',
+  'agent',
 ]);
 
 export function loadPickerCommands(opts: LoadOpts = {}): LoadedCommand[] {
