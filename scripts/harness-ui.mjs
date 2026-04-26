@@ -1010,23 +1010,25 @@ async function caseCwdPopoverRecentUnfiltered({ app, win, log, registerDispose }
 // Loader honors `CLAUDE_CONFIG_DIR`. Seeds a fake `<tmp>/.claude`-shaped
 // tree via the env var (NOT $HOME) and asserts the in-chat slash picker:
 //   - surfaces the user-level command (`local-test`)
-//   - hides plugin-cache commands (`brainstorm`, `superpowers:brainstorm`)
+//   - surfaces plugin-cache commands (`superpowers:brainstorm`) — these
+//     are loaded by the bundled CLI itself via the user's settings.json
+//     `enabledPlugins` map; ccsm just has to NOT hide them from the picker.
 //
 // This pins both gates simultaneously:
 //   1. commands-loader.ts reads `process.env.CLAUDE_CONFIG_DIR` (fall-through
-//      to `os.homedir()` would scan the dev's real ~/.claude, populating
-//      the picker with whatever they have installed and breaking the
-//      assertions). The `superpowers:brainstorm` row is the canary —
-//      the dev's real ~/.claude has it, the fake tree must NOT surface it.
-//   2. PICKER_VISIBLE_SOURCES filter still excludes `plugin` (the seeded
-//      brainstorm.md sits under plugins/cache/...).
+//      to `os.homedir()` would scan the dev's real ~/.claude, polluting
+//      the assertions with whatever the dev has installed locally).
+//   2. PICKER_VISIBLE_SOURCES INCLUDES `plugin` (post-#290 — see
+//      commands-loader.ts for the rationale and the empirical SDK probe
+//      that confirmed plugins run end-to-end via stream-json).
 //
 // preMain wires the env on the main process (where the IPC handler reads
 // `process.env.CLAUDE_CONFIG_DIR`). Disposers restore env and rm -rf the
 // fake tree.
 //
-// Reverse-verification: stash PICKER_VISIBLE_SOURCES filter (set it to
-// include all sources) → `superpowers:brainstorm` appears → case fails.
+// Reverse-verification: shrink PICKER_VISIBLE_SOURCES back to ['user',
+// 'project'] → `superpowers:brainstorm` disappears from the picker → case
+// fails on the positive assertion.
 async function caseSlashPickerClaudeConfigDir({ win, log }) {
   await win.evaluate(() => {
     window.__ccsmStore.setState({
@@ -1062,23 +1064,16 @@ async function caseSlashPickerClaudeConfigDir({ win, log }) {
     throw new Error(`expected /local-test in picker; got: ${flat}`);
   }
 
-  // Negative: plugin-source commands must be filtered out. The seeded
-  // plugin is "superpowers" with command "brainstorm" — the loader emits
-  // it as `superpowers:brainstorm`. Bare `brainstorm` is also forbidden.
-  for (const forbidden of ['superpowers:brainstorm', '/brainstorm ', '/brainstorm\n', '/brainstorm$']) {
-    if (forbidden.startsWith('/brainstorm')) {
-      // Match `/brainstorm` only as a whole token (not as a prefix of
-      // another name, though we don't seed any). Use a regex.
-      const re = new RegExp(`/brainstorm(?![a-zA-Z0-9._:-])`);
-      if (re.test(flat)) {
-        throw new Error(`forbidden plugin command surfaced: /brainstorm in ${flat}`);
-      }
-    } else if (flat.includes(forbidden)) {
-      throw new Error(`forbidden plugin command surfaced: ${forbidden} in ${flat}`);
-    }
+  // Positive (post-#290): the seeded plugin-cache command MUST surface.
+  // The seeded plugin is "superpowers" with command "brainstorm" — the
+  // loader emits it as `superpowers:brainstorm`.
+  if (!flat.includes('superpowers:brainstorm')) {
+    throw new Error(
+      `expected /superpowers:brainstorm in picker (plugin source must be visible post-#290); got: ${flat}`
+    );
   }
 
-  log(`picker showed /local-test; suppressed superpowers:brainstorm (env-scoped fake ~/.claude)`);
+  log(`picker showed /local-test and /superpowers:brainstorm (plugin source restored, env-scoped fake ~/.claude)`);
 }
 
 // ---------- slash-namespaced-unknown-toast ----------

@@ -295,10 +295,257 @@ async function caseIdeAutoConnectKillSwitchPresent({ log }) {
   log(`bundled CLI references "${needle}" at offset ${at} (${(buf.length / 1e6).toFixed(0)} MB scanned) — kill-switch still recognised`);
 }
 
+/**
+ * Task #312 / closes #290 / reopens what PR #346 hid.
+ *
+ * Regression guard: when the SDK-bundled CLI is launched with default
+ * settingSources (i.e. ccsm omits the option, which loads user + project +
+ * local settings — see node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts
+ * `Options.settingSources`), namespaced plugin commands declared via the
+ * user's `~/.claude/settings.json` `enabledPlugins` map MUST execute via
+ * the standard pass-through path. The CLI itself owns plugin discovery
+ * and registration; the SDK's `plugins` option is only for SDK consumers
+ * to inject EXTRA plugin paths.
+ *
+ * If a future SDK change moves plugin loading behind an opt-in flag, this
+ * case fails — and ccsm has to wire `query({ options: { plugins: [...] }})`
+ * to feed the user's installed plugin paths from commands-loader.ts.
+ *
+ * Why this case probes via stream-json instead of `--print`:
+ *   - It mirrors what `electron/agent-sdk/sessions.ts` actually does (the
+ *     SDK's own transport is stream-json over stdio).
+ *   - `--print` shells out through the OS command line, which on Windows
+ *     mangles `/superpowers:brainstorming` into a path. stream-json sends
+ *     the literal string in a JSON-quoted `user` message — same as ccsm.
+ *
+ * Choice of test command: `/superpowers:brainstorming` (a SKILL command,
+ * exposed as a slash because the user's `~/.claude/skills/` and the
+ * superpowers plugin's bundled skills are loaded by the CLI). The
+ * deprecated `/superpowers:brainstorm` (plugin command) returns a
+ * deprecation banner that LOOKS like a "transport gap" — the canary phrase
+ * in this case is therefore the absence of "deprecated and will be
+ * removed", which is the literal banner the deprecated command emits.
+ *
+ * Pre-fix (PR #346 era): namespaced commands never reached the user
+ * because the picker hid them and the InputBar bounced them locally with
+ * an "Unknown command" toast. So the regression case here covers the
+ * EXECUTION layer, not the UI layer (which the harness-ui case covers).
+ *
+ * Skips when no plugins/skills are installed in the test env's
+ * CLAUDE_CONFIG_DIR — ccsm dev machines have them, CI may not.
+ */
+async function caseNamespacedCommandActuallyRuns({ log }) {
+  // Pre-flight: confirm the user has the plugin installed. If not, skip
+  // (don't fail) — we cover the contract on dev machines where it's set
+  // up, and we'd rather know about a real regression than chase missing
+  // test fixtures in CI.
+  const installedManifest = path.join(CONFIG_DIR, 'plugins', 'installed_plugins.json');
+  if (!fs.existsSync(installedManifest)) {
+    log(`SKIP: ${installedManifest} not present — no plugins installed in test env`);
+    return;
+  }
+  const manifest = JSON.parse(fs.readFileSync(installedManifest, 'utf8'));
+  const hasSuperpowers = Object.keys(manifest.plugins ?? {}).some((k) =>
+    k.startsWith('superpowers@')
+  );
+  if (!hasSuperpowers) {
+    log(`SKIP: superpowers plugin not in ${installedManifest}`);
+    return;
+  }
+
+  // Use the SDK-bundled binary (matches electron/agent-sdk/sessions.ts'
+  // resolveClaudeInvocation when no system claude is present).
+  const platformPkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  const { createRequire } = await import('node:module');
+  const require_ = createRequire(import.meta.url);
+  let exe;
+  try {
+    const pkgRoot = path.dirname(require_.resolve(`${platformPkg}/package.json`));
+    exe = path.join(pkgRoot, process.platform === 'win32' ? 'claude.exe' : 'claude');
+  } catch {
+    log(`SKIP: ${platformPkg} not installed`);
+    return;
+  }
+  if (!fs.existsSync(exe)) {
+    log(`SKIP: ${exe} not found`);
+    return;
+  }
+
+  const HARD_TIMEOUT_MS = 90_000;
+
+  const args = [
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--input-format', 'stream-json',
+    '--permission-mode', 'bypassPermissions',
+    '--allow-dangerously-skip-permissions',
+  ];
+
+  log(`spawning ${path.basename(exe)} ${args.join(' ')}`);
+  const child = spawn(exe, args, {
+    cwd: process.cwd(),
+    env: claudeEnv(),
+    shell: false,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  return await new Promise((resolve, reject) => {
+    let finished = false;
+    let assistantText = '';
+    let resultPayload = null;
+    let initSeen = false;
+    let userSent = false;
+
+    function done(err) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(hardTimer);
+      try { child.kill(); } catch { /* ignore */ }
+      if (err) reject(err);
+      else resolve();
+    }
+
+    const hardTimer = setTimeout(() => {
+      done(new Error(
+        `hard timeout (${HARD_TIMEOUT_MS}ms) — CLI never produced a result frame. ` +
+        `initSeen=${initSeen} userSent=${userSent} assistantText so far: ${assistantText.slice(0, 200)} ` +
+        `stderr tail: ${stderrBuf.slice(-300)}`,
+      ));
+    }, HARD_TIMEOUT_MS);
+
+    let stderrBuf = '';
+    child.stderr.on('data', (d) => { stderrBuf += d.toString('utf8'); });
+
+    // Handshake: send a control_request initialize (matches what
+    // electron/agent-sdk/sessions.ts does via the SDK transport). Without
+    // it the CLI sits in input-format=stream-json mode waiting for the
+    // initialize frame and never emits the `system/init` message.
+    const initId = `req_${randomUUID()}`;
+    try {
+      child.stdin.write(JSON.stringify({
+        type: 'control_request',
+        request_id: initId,
+        request: { subtype: 'initialize', hooks: {} },
+      }) + '\n');
+    } catch (e) {
+      return done(new Error(`failed to write initialize: ${e.message}`));
+    }
+
+    // Send the user message immediately after init — the CLI buffers it
+    // until handshake completes.
+    function sendUser() {
+      if (userSent) return;
+      userSent = true;
+      const userMsg = {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: '/superpowers:brainstorming I want to build a small CLI tool',
+        },
+        parent_tool_use_id: null,
+        session_id: '00000000-0000-0000-0000-000000000000',
+      };
+      try { child.stdin.write(JSON.stringify(userMsg) + '\n'); } catch (e) {
+        return done(new Error(`failed to write user message: ${e.message}`));
+      }
+    }
+
+    let buf = '';
+    child.stdout.on('data', (chunk) => {
+      buf += chunk.toString('utf8');
+      let idx;
+      while ((idx = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let parsed;
+        try { parsed = JSON.parse(line); } catch { continue; }
+
+        if (parsed.type === 'control_response') {
+          // Handshake complete — fire the user message.
+          sendUser();
+          continue;
+        }
+
+        if (parsed.type === 'system' && parsed.subtype === 'init') {
+          initSeen = true;
+          // Some CLI versions emit init unsolicited; send if we haven't yet.
+          sendUser();
+          continue;
+        }
+
+        if (parsed.type === 'assistant' && parsed.message?.content) {
+          for (const c of parsed.message.content) {
+            if (c.type === 'text' && typeof c.text === 'string') {
+              assistantText += c.text;
+            }
+          }
+        }
+
+        if (parsed.type === 'result') {
+          resultPayload = parsed;
+          // The deprecated /superpowers:brainstorm plugin command's
+          // canonical reply is "deprecated and will be removed" — this is
+          // the SAME phrase PR #346 misread as a transport failure. The
+          // brainstorming SKILL invocation should NOT contain it.
+          const lc = (assistantText + ' ' + (parsed.result ?? '')).toLowerCase();
+          const sawDeprecationStub = lc.includes('deprecated and will be removed');
+          // We also want a sign the slash command was UNDERSTOOD (not
+          // bounced as plain text). Skill output varies wildly; threshold
+          // is "any successful non-error result with non-empty text" —
+          // pre-fix the model would have replied "I don't understand
+          // /superpowers:..." or echoed back the prompt. The deprecation
+          // canary above is the harder test.
+          const isError = parsed.is_error === true || parsed.subtype === 'error';
+          const hasContent = assistantText.trim().length > 0 ||
+            (typeof parsed.result === 'string' && parsed.result.trim().length > 0);
+
+          if (!userSent) {
+            return done(new Error('result arrived before we sent the slash command'));
+          }
+          if (isError) {
+            return done(new Error(
+              `CLI returned error result: ${JSON.stringify(parsed).slice(0, 400)}`,
+            ));
+          }
+          if (sawDeprecationStub) {
+            return done(new Error(
+              `assistant reply contained the "deprecated and will be removed" canary — ` +
+              `either the wrong command was invoked, or the plugin/skill loading regressed. ` +
+              `text: ${assistantText.slice(0, 300)}`,
+            ));
+          }
+          if (!hasContent) {
+            return done(new Error(
+              `assistant produced no real content — likely the slash command was treated ` +
+              `as plain prose. text: ${assistantText.slice(0, 300)} / result: ${String(parsed.result).slice(0, 200)}`,
+            ));
+          }
+          log(`namespaced command produced ${assistantText.length}-char reply, no deprecation canary`);
+          return done();
+        }
+      }
+    });
+
+    child.on('exit', (code, signal) => {
+      if (finished) return;
+      done(new Error(
+        `CLI exited unexpectedly (code=${code}, signal=${signal}) before result. ` +
+        `stderr tail: ${stderrBuf.slice(-400)}`,
+      ));
+    });
+
+    child.on('error', (err) => {
+      done(new Error(`spawn error: ${err.message}`));
+    });
+  });
+}
+
 // ---------- runner ----------
 const cases = [
   { id: 'control-response-no-timeout', run: caseControlResponseNoTimeout },
   { id: 'ide-auto-connect-kill-switch-present', run: caseIdeAutoConnectKillSwitchPresent },
+  { id: 'namespaced-command-actually-runs', run: caseNamespacedCommandActuallyRuns },
 ];
 
 const selected = onlyId ? cases.filter((c) => c.id === onlyId) : cases;

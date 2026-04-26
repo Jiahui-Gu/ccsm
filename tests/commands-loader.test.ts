@@ -372,13 +372,13 @@ describe('loadCommands', () => {
 
 // ─── loadPickerCommands ────────────────────────────────────────────────────
 //
-// Picker-visible filter: hides plugin / skill / agent sources because the
-// agent SDK transport ccsm uses cannot execute them without configuration
-// ccsm doesn't supply. These tests pin that contract so a future
-// refactor doesn't silently re-surface broken slash entries to users.
-
+// Picker-visible filter: surfaces every disk-discovered source (user,
+// project, plugin, skill, agent). Reversal of PR #346 — see #290 and the
+// `PICKER_VISIBLE_SOURCES` block in commands-loader.ts for the empirical
+// rationale (the SDK-bundled CLI loads plugins/skills automatically via
+// the user's ~/.claude/settings.json `enabledPlugins` map).
 describe('loadPickerCommands', () => {
-  it('keeps user and project sources, drops plugin / skill / agent', () => {
+  it('surfaces user, project, plugin, skill, and agent sources', () => {
     // user
     write(
       path.join(tmpHome, '.claude', 'commands', 'user-cmd.md'),
@@ -422,15 +422,23 @@ describe('loadPickerCommands', () => {
     const allSources = new Set(all.map((c) => c.source));
     expect(allSources).toEqual(new Set(['user', 'project', 'plugin', 'skill', 'agent']));
 
-    // picker filter: only user + project survive
+    // picker filter: every disk source survives (no built-ins; those are
+    // merged in by the renderer separately).
     const pickerNames = picker.map((c) => `${c.source}/${c.name}`).sort();
-    expect(pickerNames).toEqual(['project/project-cmd', 'user/user-cmd']);
+    expect(pickerNames).toEqual([
+      'agent/agent-cmd',
+      'plugin/pluginA:plugin-cmd',
+      'project/project-cmd',
+      'skill/skill-cmd',
+      'user/user-cmd',
+    ]);
   });
 
-  it('returns an empty list when only plugin / skill / agent entries exist', () => {
+  it('returns plugin / skill entries even when no user commands exist', () => {
     // Real-world scenario: a fresh user with the superpowers + pua plugins
     // installed but no personal `~/.claude/commands` of their own. The
-    // picker must NOT show plugin entries — that's the whole bug.
+    // picker MUST show plugin entries — the bundled CLI loads them via
+    // settings.json `enabledPlugins`, so they're real, runnable commands.
     write(
       path.join(
         tmpHome,
@@ -451,6 +459,10 @@ describe('loadPickerCommands', () => {
     );
 
     const picker = loadPickerCommands({ homeDir: tmpHome, cwd: tmpCwd });
-    expect(picker).toEqual([]);
+    const names = picker.map((c) => `${c.source}/${c.name}`).sort();
+    expect(names).toEqual([
+      'plugin/superpowers:brainstorm',
+      'skill/helpful',
+    ]);
   });
 });

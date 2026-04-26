@@ -136,17 +136,21 @@ export type DispatchOutcome =
   | 'unknown-namespaced';
 
 // Names whose shape advertises "this is a CLI / plugin command" but which
-// the SDK transport cannot execute. Two cases:
+// are NOT in the merged command list. Two cases:
 //
-//   1. Colon-namespaced (`/superpowers:brainstorm`, `/pua:kpi`) — always a
-//      plugin / skill / agent command discovered on disk. PR #346 already
-//      hides these from the picker, but a user who types one by hand still
-//      needs a clear local rejection instead of having the raw text sent
-//      to the model (which then replies "deprecated, use the skill" or
-//      similar — the bug PR #346 surfaced from the user side).
-//   2. `/plugin` — the CLI's own plugin manager. The SDK doesn't load it;
-//      forwarding "/plugin" to claude.exe via the agent transport ends up
-//      as plain user prose, not a command invocation.
+//   1. Colon-namespaced (`/superpowers:brainstrom` typo, `/pua:kpi` for an
+//      uninstalled plugin) — colon-shape strongly implies plugin / skill /
+//      agent, none of which would ever be defined as a built-in. If the
+//      name isn't in the disk-discovered list, it doesn't exist anywhere
+//      we can route it. Bouncing locally is better than forwarding the
+//      raw text and getting a confused model reply. KNOWN namespaced
+//      commands (those returned by loadPickerCommands as plugin/skill/
+//      agent — see PICKER_VISIBLE_SOURCES, restored in #290) are matched
+//      by `findSlashCommand` before this function is consulted, so they
+//      route through the normal pass-through path.
+//   2. `/plugin` — the CLI's own plugin manager. The SDK transport
+//      doesn't surface it; forwarding "/plugin" via the agent stream
+//      ends up as plain user prose, not a command invocation.
 //
 // Anything else (e.g. `/nope`, `/help`) is left as plain `'unknown'` so
 // the existing forward-compat path keeps working — those names might be
