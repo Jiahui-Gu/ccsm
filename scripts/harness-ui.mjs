@@ -30,7 +30,7 @@
 //   - theme-toggle                         (probe-e2e-theme-toggle)
 //   - language-toggle                      (probe-e2e-language-toggle)
 //   - i18n-settings-zh                     (probe-e2e-i18n-settings-zh)
-//   - app-icon-present                     (probe-e2e-app-icon-present, skipLaunch)
+//   - app-icon-default                     (probe-e2e-app-icon-default, skipLaunch)
 //   - group-add                            (probe-e2e-group-add)
 //   - import-empty-groups                  (probe-e2e-import-empty-groups)
 //   - rename                               (probe-e2e-rename)
@@ -2295,32 +2295,33 @@ async function caseSkipLaunchBundleShape({ harnessRoot, log }) {
   log(`pkg.main=${pkg.main} bundle=${path.relative(harnessRoot, bundlePath)}`);
 }
 
-// ---------- app-icon-present (skipLaunch) ----------
-// Pure fs/json check: build/icon.png is a valid PNG >= 256x256 AND
-// package.json build.{win,mac,linux}.icon all reference an existing file.
-// No electron needed — runs as a Node script under the skipLaunch capability.
-async function caseAppIconPresent({ harnessRoot, log }) {
-  const iconPath = path.join(harnessRoot, 'build', 'icon.png');
-  let st;
-  try {
-    st = await stat(iconPath);
-  } catch {
-    throw new Error(`build/icon.png not found at ${iconPath} — run: node scripts/generate-app-icon.mjs`);
+// ---------- app-icon-default (skipLaunch) ----------
+// Inverse of the previous "app-icon-present" probe (bug #332): we removed the
+// custom "A" app icon and now rely on Electron's default branding everywhere.
+// This probe locks that decision: no build/icon.* asset, no electron-builder
+// icon: field, no BrowserWindow `icon:` option in main.ts. If anyone re-adds
+// a custom icon they have to consciously update this case.
+async function caseAppIconDefault({ harnessRoot, log }) {
+  // 1) build/ must not contain any icon.{png,ico,icns,svg} — electron-builder
+  //    auto-picks any of those names from buildResources, so each is a
+  //    separate way to silently re-introduce a custom icon.
+  const buildDir = path.join(harnessRoot, 'build');
+  for (const name of ['icon.png', 'icon.ico', 'icon.icns', 'icon.svg']) {
+    const p = path.join(buildDir, name);
+    let exists = false;
+    try {
+      await stat(p);
+      exists = true;
+    } catch {
+      // missing is the desired state
+    }
+    if (exists) {
+      throw new Error(`${path.relative(harnessRoot, p)} exists; bug #332 requires falling back to Electron's default app icon`);
+    }
   }
-  if (!st.isFile()) throw new Error(`${iconPath} is not a regular file`);
-  if (st.size < 1024) throw new Error(`build/icon.png is suspiciously small (${st.size} bytes; expected > 1 KiB)`);
 
-  const buf = await readFile(iconPath);
-  const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (!buf.subarray(0, 8).equals(pngMagic)) {
-    throw new Error('build/icon.png does not start with the PNG signature');
-  }
-  const width = buf.readUInt32BE(16);
-  const height = buf.readUInt32BE(20);
-  if (width < 256 || height < 256) {
-    throw new Error(`icon dimensions ${width}x${height} are below the 256x256 minimum electron-builder expects for win/mac conversion`);
-  }
-
+  // 2) package.json build.{win,mac,linux} must NOT set `icon:` — leaving the
+  //    field unset lets electron-builder fall back to its packaged default.
   const pkgRaw = await readFile(path.join(harnessRoot, 'package.json'), 'utf8');
   let pkg;
   try {
@@ -2329,31 +2330,27 @@ async function caseAppIconPresent({ harnessRoot, log }) {
     throw new Error(`package.json is not valid JSON: ${e.message}`);
   }
   const build = pkg && pkg.build;
-  if (!build || typeof build !== 'object') {
-    throw new Error('package.json missing top-level "build" object (electron-builder config)');
-  }
-  for (const platform of ['win', 'mac', 'linux']) {
-    const cfg = build[platform];
-    if (!cfg || typeof cfg !== 'object') {
-      throw new Error(`package.json build.${platform} missing — electron-builder won't package an icon for ${platform}`);
-    }
-    const ref = cfg.icon;
-    if (typeof ref !== 'string' || ref.length === 0) {
-      throw new Error(`package.json build.${platform}.icon is not set; ${platform} build will use Electron's default icon`);
-    }
-    const abs = path.resolve(harnessRoot, ref);
-    let refSt;
-    try {
-      refSt = await stat(abs);
-    } catch {
-      throw new Error(`package.json build.${platform}.icon points at "${ref}" but ${abs} does not exist`);
-    }
-    if (!refSt.isFile()) {
-      throw new Error(`package.json build.${platform}.icon "${ref}" resolves to ${abs} which is not a regular file`);
+  if (build && typeof build === 'object') {
+    for (const platform of ['win', 'mac', 'linux']) {
+      const cfg = build[platform];
+      if (cfg && typeof cfg === 'object' && Object.prototype.hasOwnProperty.call(cfg, 'icon')) {
+        throw new Error(`package.json build.${platform}.icon is set to ${JSON.stringify(cfg.icon)}; bug #332 requires omitting this field so electron-builder uses its default icon`);
+      }
     }
   }
 
-  log(`${path.relative(harnessRoot, iconPath)} (${st.size} bytes, ${width}x${height}); build.{win,mac,linux}.icon all wired and resolvable`);
+  // 3) electron/main.ts must NOT pass `icon:` to BrowserWindow — that would
+  //    override the OS default in the running app even if the build config
+  //    is clean.
+  const mainSrc = await readFile(path.join(harnessRoot, 'electron', 'main.ts'), 'utf8');
+  // Match `icon:` only inside a `new BrowserWindow({...})` call so an
+  // unrelated `icon:` (e.g. tray placeholder, menu item) isn't a false hit.
+  const bwMatch = mainSrc.match(/new\s+BrowserWindow\s*\(\s*\{([\s\S]*?)\}\s*\)/);
+  if (bwMatch && /\bicon\s*:/.test(bwMatch[1])) {
+    throw new Error('electron/main.ts passes `icon:` to BrowserWindow; bug #332 requires letting Electron use its default window icon');
+  }
+
+  log('no build/icon.* asset; package.json build.{win,mac,linux}.icon unset; BrowserWindow uses Electron default');
 }
 
 // ---------- group-add ----------
@@ -3549,7 +3546,7 @@ await runHarness({
     // ---- Per-case capability demo (task #223) ----
     { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, run: caseSkipLaunchBundleShape },
     // ---- Bucket-1 absorption (task #222) ----
-    { id: 'app-icon-present', skipLaunch: true, run: caseAppIconPresent },
+    { id: 'app-icon-default', skipLaunch: true, run: caseAppIconDefault },
     { id: 'group-add', run: caseGroupAdd },
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },

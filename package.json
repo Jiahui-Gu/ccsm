@@ -149,7 +149,6 @@
           ]
         }
       ],
-      "icon": "build/icon.png",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
@@ -182,7 +181,6 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "dmg": {
@@ -212,7 +210,6 @@
       "category": "Development",
       "maintainer": "Jiahui Gu <noreply@ccsm.dev>",
       "synopsis": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
-      "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }

@@ -98,14 +98,12 @@ Known caveats:
 
 ## Icons
 
-Place branded icons under `build/` (the `buildResources` directory). Required:
-
-- `build/icon.icns` — macOS, 512×512 and 1024×1024 bitmaps.
-- `build/icon.ico` — Windows, multi-size ICO (16/32/48/256).
-- `build/icon.png` — Linux, 512×512 PNG.
-
-Until real icons land, `electron-builder` falls back to a generic Electron
-icon. That's fine for dry-runs; swap before the first public release.
+We intentionally ship without a custom app icon (bug #332). With no
+`build/icon.{icns,ico,png}` present and no `build.{win,mac,linux}.icon`
+field in `package.json`, `electron-builder` falls back to its bundled
+default Electron icon and the runtime `BrowserWindow` uses the OS default.
+Drop a real branded asset into `build/` (and re-add the corresponding
+`icon:` fields) when one exists.
 
 ## Native modules
 
