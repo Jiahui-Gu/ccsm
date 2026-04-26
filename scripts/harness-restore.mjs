@@ -20,7 +20,7 @@
 //     skipLaunch but the runner still wires the disposers)
 //   - one CI-discovered file instead of N
 //
-// Scope (8 cases):
+// Scope (9 cases):
 //   - restore                            (seed JSONL fixture, 2-launch)
 //   - restore-journey-plan               (ExitPlanMode tool_use, 2-launch)
 //   - restore-journey-question           (AskUserQuestion suppression, 2-launch)
@@ -29,15 +29,20 @@
 //   - db-corruption-recovery             (pre-launch garbage-write to ccsm.db)
 //   - notify-fallback                    (pre-launch node_modules rename + sandboxed HOME)
 //   - import-session                     (pre-launch HOME sandboxing + multi-fixture plant)
+//   - permission-prompt-default-mode     (2-launch + sandboxed CLAUDE_CONFIG_DIR + real claude.exe)
 //
-// Probes intentionally NOT merged here (see PR body for full rationale):
+// Bucket-7 cleanup-pass classifications:
 //   - restore-session-undo, restore-group-undo, askuserquestion-full,
-//     sidebar-journey-create-delete   → reclassified to `harness-agent`
-//     (single-launch, no fixture; current restore-classification was a
-//     misnomer based on filename, not capability requirement)
-//   - streaming-partial-frames          → reclassified to `harness-real-cli`
-//     (needs the real claude binary; was tagged as "restore-journey-streaming"
-//     in planning but file is single-launch CLI-bound)
+//     sidebar-journey-create-delete   → harness-agent (single-launch,
+//     pure-store; original "restore-*" naming was misleading)
+//   - permission-prompt-default-mode  → THIS harness (multi-launch with
+//     pre-launch CLAUDE_CONFIG_DIR sandbox; can't fold into harness-agent
+//     because the runner doesn't allow per-case env overrides)
+//   - streaming-partial-frames        → KEPT in harness-agent (push back on
+//     桶 4 reviewer's harness-real-cli reclassification: the case asserts
+//     on Electron renderer state — chat-thinking-dots, window.__probeFrames
+//     subscription via window.ccsm.onAgentEvent — and harness-real-cli
+//     boots no Electron at all, only spawns claude.exe directly)
 //
 // Probes named in planning but absent from the tree (no action):
 //   - restore-journey-permission, tray (no source file ever existed)
@@ -52,7 +57,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { runHarness } from './probe-helpers/harness-runner.mjs';
-import { appWindow, dndDrag, isolatedUserData, seedStore, startBundleServer } from './probe-utils.mjs';
+import { appWindow, dndDrag, isolatedClaudeConfigDir, isolatedUserData, seedStore, startBundleServer } from './probe-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -1468,6 +1473,171 @@ async function caseSidebarRenameDndState({ log, registerDispose }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// CASE: permission-prompt-default-mode
+// 2-launch with sandboxed CLAUDE_CONFIG_DIR (empty allowlist) so the Bash
+// permission prompt UI MUST appear. Verifies PreToolUse hook (#94) wires
+// can_use_tool through the renderer's <PermissionPromptBlock>.
+// Bucket-7 absorption from probe-e2e-permission-prompt-default-mode.mjs.
+// ──────────────────────────────────────────────────────────────────────────
+async function casePermissionPromptDefaultMode({ log, registerDispose }) {
+  const MARKER = 'permhook-perm-test-91827';
+  const SESSION_ID = crypto.randomUUID();
+  const GROUP_ID = 'g-default';
+
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-perm-default-'));
+  registerDispose(() => { try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {} });
+
+  // Sandbox CLAUDE_CONFIG_DIR — without this, the dev's real ~/.claude
+  // settings.json's Bash allowlist could auto-allow the prompt and
+  // false-green the assertion.
+  const cfg = isolatedClaudeConfigDir('ccsm-harness-perm-default');
+  registerDispose(cfg.cleanup);
+  log(`sandboxed CLAUDE_CONFIG_DIR = ${cfg.dir}`);
+
+  // Strip CLAUDECODE so the spawned claude.exe doesn't refuse-to-launch
+  // with "cannot run inside another Claude Code session".
+  const env = {
+    ...process.env,
+    CCSM_PROD_BUNDLE: '1',
+    CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
+  };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+
+  // Launch #1: seed state via saveState API + close so #2 restores from disk.
+  {
+    const app1 = await electron.launch({
+      args: ['.', `--user-data-dir=${userDataDir}`],
+      cwd: ROOT,
+      env,
+    });
+    let closed = false;
+    registerDispose(async () => { if (!closed) try { await app1.close(); } catch {} });
+    try {
+      const win1 = await appWindow(app1, { timeout: 30_000 });
+      await win1.waitForLoadState('domcontentloaded');
+      await win1.waitForTimeout(1500);
+      const seeded = await win1.evaluate(
+        async ({ sid, gid }) => {
+          const api = window.ccsm;
+          if (!api) return { ok: false, err: 'no window.ccsm' };
+          const state = {
+            version: 1,
+            sessions: [
+              { id: sid, name: 'Permission default-mode probe', state: 'idle',
+                cwd: '~', model: 'claude-opus-4', groupId: gid, agentType: 'claude-code' },
+            ],
+            groups: [{ id: gid, name: 'Sessions', collapsed: false, kind: 'normal' }],
+            activeId: sid,
+            model: 'claude-opus-4',
+            permission: 'default',
+            sidebarCollapsed: false,
+            theme: 'system',
+            fontSize: 'md',
+            recentProjects: [],
+            tutorialSeen: true,
+          };
+          await api.saveState('main', JSON.stringify(state));
+          return { ok: true };
+        },
+        { sid: SESSION_ID, gid: GROUP_ID }
+      );
+      if (!seeded.ok) throw new Error(`seed failed: ${seeded.err}`);
+      log('launch #1: state seeded with permission=default');
+    } finally {
+      try { await app1.close(); closed = true; } catch {}
+    }
+  }
+
+  // Launch #2: relaunch reads persisted state; drive the Bash prompt.
+  {
+    const app2 = await electron.launch({
+      args: ['.', `--user-data-dir=${userDataDir}`],
+      cwd: ROOT,
+      env,
+    });
+    let closed = false;
+    registerDispose(async () => { if (!closed) try { await app2.close(); } catch {} });
+    try {
+      const win2 = await appWindow(app2, { timeout: 30_000 });
+      await win2.waitForLoadState('domcontentloaded');
+      await win2.waitForTimeout(3500);
+
+      await win2.evaluate((sid) => {
+        const s = window.__ccsmStore?.getState();
+        if (s && typeof s.selectSession === 'function' && s.activeId !== sid) {
+          s.selectSession(sid);
+        }
+      }, SESSION_ID);
+      await win2.waitForTimeout(500);
+
+      const verifyMode = await win2.evaluate(() => {
+        const s = window.__ccsmStore?.getState();
+        return { permission: s?.permission, activeId: s?.activeId };
+      });
+      if (verifyMode.permission !== 'default') {
+        throw new Error(`permission mode did not restore to 'default'; got ${verifyMode.permission}`);
+      }
+      if (verifyMode.activeId !== SESSION_ID) {
+        throw new Error(`activeId did not restore; got ${verifyMode.activeId}`);
+      }
+
+      const textarea = win2.locator('textarea').first();
+      await textarea.waitFor({ state: 'visible', timeout: 15_000 });
+      await textarea.click();
+      await textarea.fill(
+        `Please run the bash command \`echo ${MARKER}\` using the Bash tool. I want to verify the permission prompt works.`
+      );
+      await win2.keyboard.press('Enter');
+
+      const dialog = win2.locator('[role="alertdialog"]').first();
+      try {
+        await dialog.waitFor({ state: 'visible', timeout: 30_000 });
+      } catch {
+        throw new Error('no [role="alertdialog"] permission prompt UI within 30s — PreToolUse hook (#94) regression?');
+      }
+
+      const headingHits = await dialog
+        .locator('text=/Permission required|Allow this bash command\\?/')
+        .first()
+        .count();
+      if (headingHits === 0) throw new Error('alertdialog visible but no recognisable permission heading');
+      const dialogText = (await dialog.innerText()).toLowerCase();
+      if (!dialogText.includes('bash') && !dialogText.includes(MARKER)) {
+        throw new Error(`prompt does not mention Bash or the marker; saw: ${dialogText.slice(0, 400)}`);
+      }
+
+      const allowBtn = win2.locator('[data-perm-action="allow"]').first();
+      await allowBtn.waitFor({ state: 'visible', timeout: 5_000 });
+      await allowBtn.click();
+
+      try {
+        await dialog.waitFor({ state: 'detached', timeout: 10_000 });
+      } catch {
+        throw new Error('alertdialog still attached 10s after clicking Allow');
+      }
+
+      const markerSeen = await (async () => {
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+          const has = await win2.evaluate((m) => document.body.innerText.includes(m), MARKER);
+          if (has) return true;
+          await win2.waitForTimeout(500);
+        }
+        return false;
+      })();
+      if (!markerSeen) {
+        throw new Error(`marker "${MARKER}" never appeared in conversation within 30s of Allow click`);
+      }
+
+      log(`permission prompt rendered, allow clicked, marker "${MARKER}" appeared in chat`);
+    } finally {
+      try { await app2.close(); closed = true; } catch {}
+    }
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Harness spec.
 // ──────────────────────────────────────────────────────────────────────────
 await runHarness({
@@ -1484,6 +1654,11 @@ await runHarness({
     { id: 'sidebar-rename-dnd-state', skipLaunch: true, run: caseSidebarRenameDndState },
     { id: 'db-corruption-recovery',   skipLaunch: true, run: caseDbCorruptionRecovery },
     { id: 'notify-fallback',          skipLaunch: true, run: caseNotifyFallback },
-    { id: 'import-session',           skipLaunch: true, run: caseImportSession }
+    { id: 'import-session',           skipLaunch: true, run: caseImportSession },
+    // ---- Bucket-7 absorption (final cleanup pass) ----
+    // permission-prompt-default-mode: 2-launch (seed → close → relaunch)
+    // with sandboxed CLAUDE_CONFIG_DIR + real claude.exe Bash invocation.
+    // 桶 3 worker classified as restore-fits-the-multi-launch pattern.
+    { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode }
   ]
 });

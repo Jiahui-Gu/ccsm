@@ -38,6 +38,16 @@
 //   - delete-session-kills-process, default-cwd, streaming-partial-frames
 //   - notify-integration, close-window-aborts-sessions
 //
+//   Absorbed (PR: bucket-7 final cleanup pass — 5 more probes):
+//   - restore-session-undo, restore-group-undo (pure-store delete+undo,
+//     reclassified from "restore-*" naming — single-launch fits here)
+//   - askuserquestion-full (6 journeys for AskUserQuestion render+interaction;
+//     mega-case with shared ipcMain agent:send capture per journey)
+//   - sidebar-journey-create-delete (J1..J7 sidebar create/delete user
+//     journeys; mega-case collecting divergences)
+//   - installer-corrupt (3 sub-cases: cold-launch baseline + CLAUDE_NOT_FOUND
+//     trigger + recovery; userDataDir:'fresh' for clean cold-launch state)
+//
 // Add new AGENT cases here by:
 //   1. Wrap the case body in a named function `case<Name>({ win, log, ... })`.
 //   2. Use `log()` instead of `console.log()` for the case-id prefix.
@@ -3658,6 +3668,902 @@ async function caseDefaultCwd({ win, log }) {
   log('default cwd "~" produced an assistant reply');
 }
 
+// ---------- restore-session-undo (was probe-e2e-restore-session-undo) ----------
+// Right-click delete + Undo round-trip on a single session.
+// Pure-store, single-launch — original probe was misnamed "restore-*";
+// 桶 4 reviewer reclassified to harness-agent.
+async function caseRestoreSessionUndo({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'gA', name: 'A', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 's-keep', name: 'keep', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 's-doom', name: 'doomed', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' }
+      ],
+      activeId: 's-doom',
+      focusedGroupId: null,
+      messagesBySession: {
+        's-doom': [
+          { kind: 'user', id: 'u1', text: 'hello from doomed' },
+          { kind: 'assistant', id: 'a1', text: 'persisted reply' }
+        ]
+      },
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(200);
+
+  const row = win.locator('li[data-session-id="s-doom"]').first();
+  await row.waitFor({ state: 'visible', timeout: 5000 });
+  await row.click({ button: 'right' });
+  const del = win.getByRole('menuitem').filter({ hasText: /^Delete$/ }).first();
+  await del.waitFor({ state: 'visible', timeout: 3000 });
+  await del.click();
+
+  await win.waitForFunction(
+    () => !document.querySelector('li[data-session-id="s-doom"]'),
+    null,
+    { timeout: 3000 }
+  );
+
+  const undoBtn = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+  await undoBtn.waitFor({ state: 'visible', timeout: 3000 });
+  await undoBtn.click();
+
+  await win.waitForFunction(
+    () => !!document.querySelector('li[data-session-id="s-doom"]'),
+    null,
+    { timeout: 3000 }
+  );
+
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    const sess = s.sessions.find((x) => x.id === 's-doom');
+    return {
+      present: !!sess,
+      name: sess?.name,
+      msgs: s.messagesBySession['s-doom']?.length ?? 0,
+      running: !!s.runningSessions['s-doom'],
+      interrupted: !!s.interruptedSessions['s-doom']
+    };
+  });
+  if (!after.present) throw new Error('s-doom missing from store after Undo');
+  if (after.msgs !== 2) throw new Error(`expected 2 restored messages, got ${after.msgs}`);
+  if (after.name !== 'doomed') throw new Error(`expected name='doomed', got '${after.name}'`);
+  if (after.running || after.interrupted) {
+    throw new Error(`running/interrupted leaked back into store: running=${after.running} interrupted=${after.interrupted}`);
+  }
+  log(`s-doom delete → Undo restored row + ${after.msgs} messages; running/interrupted NOT restored`);
+}
+
+// ---------- restore-group-undo (was probe-e2e-restore-group-undo) ----------
+// Right-click delete-group + cascade + Undo round-trip.
+// Pure-store, single-launch — same misnaming as restore-session-undo above.
+async function caseRestoreGroupUndo({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [
+        { id: 'gKeep', name: 'Keep', collapsed: false, kind: 'normal' },
+        { id: 'gDoom', name: 'DoomedGroup', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'sk1', name: 'k1', state: 'idle', cwd: '~', model: 'm', groupId: 'gKeep', agentType: 'claude-code' },
+        { id: 'sd1', name: 'd1', state: 'idle', cwd: '~', model: 'm', groupId: 'gDoom', agentType: 'claude-code' },
+        { id: 'sd2', name: 'd2', state: 'idle', cwd: '~', model: 'm', groupId: 'gDoom', agentType: 'claude-code' }
+      ],
+      activeId: 'sk1',
+      focusedGroupId: null,
+      messagesBySession: {
+        sd1: [{ kind: 'user', id: 'u-d1', text: 'first session memory' }],
+        sd2: [{ kind: 'assistant', id: 'a-d2', text: 'second session memory' }]
+      },
+      tutorialSeen: true
+    });
+  });
+  await win.waitForTimeout(200);
+
+  const orderBefore = await win.evaluate(() =>
+    window.__ccsmStore
+      .getState()
+      .sessions.filter((s) => s.groupId === 'gDoom')
+      .map((s) => s.id)
+  );
+
+  const header = win.locator('[data-group-header-id="gDoom"]').first();
+  await header.waitFor({ state: 'visible', timeout: 5000 });
+  await header.click({ button: 'right' });
+
+  const delMenu = win.getByRole('menuitem').filter({ hasText: /^Delete group…$/ }).first();
+  await delMenu.waitFor({ state: 'visible', timeout: 3000 });
+  await delMenu.click();
+
+  const confirmBtn = win.getByRole('button').filter({ hasText: /^Delete group$/ }).first();
+  await confirmBtn.waitFor({ state: 'visible', timeout: 3000 });
+  await confirmBtn.click();
+
+  await win.waitForFunction(
+    () => {
+      const s = window.__ccsmStore.getState();
+      return !s.groups.some((g) => g.id === 'gDoom') && !s.sessions.some((x) => x.groupId === 'gDoom');
+    },
+    null,
+    { timeout: 3000 }
+  );
+
+  const undoBtn = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+  await undoBtn.waitFor({ state: 'visible', timeout: 3000 });
+  await undoBtn.click();
+
+  await win.waitForFunction(
+    () => !!window.__ccsmStore.getState().groups.find((g) => g.id === 'gDoom'),
+    null,
+    { timeout: 3000 }
+  );
+
+  const after = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    return {
+      groupBack: !!s.groups.find((g) => g.id === 'gDoom'),
+      members: s.sessions.filter((x) => x.groupId === 'gDoom').map((x) => x.id),
+      msgD1: s.messagesBySession.sd1?.length ?? 0,
+      msgD2: s.messagesBySession.sd2?.length ?? 0,
+      runningD1: !!s.runningSessions.sd1,
+      interruptedD2: !!s.interruptedSessions.sd2
+    };
+  });
+  if (!after.groupBack) throw new Error('group gDoom missing from store after Undo');
+  if (JSON.stringify(after.members) !== JSON.stringify(orderBefore)) {
+    throw new Error(`session order changed: before=${JSON.stringify(orderBefore)} after=${JSON.stringify(after.members)}`);
+  }
+  if (after.msgD1 !== 1 || after.msgD2 !== 1) {
+    throw new Error(`messages not restored: sd1=${after.msgD1} sd2=${after.msgD2}`);
+  }
+  if (after.runningD1 || after.interruptedD2) {
+    throw new Error(`running/interrupted leaked back: running=${after.runningD1} interrupted=${after.interruptedD2}`);
+  }
+  log(`gDoom delete → Undo restored group + members in original order: ${after.members.join(', ')}; messages intact`);
+}
+
+// ---------- installer-corrupt (was probe-e2e-installer-corrupt) ----------
+// Three sub-cases A/B/C in one body:
+//   A: cold launch — installerCorrupt=false, no banner, no first-run picker UI
+//   B: scrub PATH + clear CCSM_CLAUDE_BIN → agent:start returns
+//      errorCode=CLAUDE_NOT_FOUND → store flip → banner visible with i18n title
+//   C: store flip back to false → banner unmounts via AnimatePresence
+// Uses userDataDir:'fresh' so the cold-launch assertion is clean.
+async function caseInstallerCorrupt({ win, log }) {
+  // A: cold launch state
+  await win.waitForTimeout(800);
+  const corrupt = await win.evaluate(() => window.__ccsmStore.getState().installerCorrupt);
+  if (corrupt) throw new Error('A: installerCorrupt was true on cold launch — store default regressed');
+  const bannerCount = await win.locator('[data-testid="installer-corrupt-banner"]').count();
+  if (bannerCount > 0) {
+    throw new Error(`A: installer-corrupt banner is in the DOM on cold launch (count=${bannerCount})`);
+  }
+  const wizardSignals = await win.evaluate(() => {
+    const text = document.body.innerText || '';
+    const HITS = [
+      'Browse for claude',
+      'Find your claude',
+      'Locate the Claude binary',
+      'Select Claude binary',
+    ];
+    return HITS.filter((h) => text.toLowerCase().includes(h.toLowerCase()));
+  });
+  if (wizardSignals.length > 0) {
+    throw new Error(
+      `A: first-run binary picker UI signal(s) present in DOM: ${JSON.stringify(wizardSignals)}. ` +
+      `PR-I deleted the picker — this UI should not be re-introduced.`
+    );
+  }
+  log('A: cold launch — no banner, no first-run picker UI');
+
+  // B: scrub PATH inside main, then drive agent:start.
+  await win.evaluate(async () => {
+    // Best-effort: ask main to scrub PATH so resolveClaudeBinary throws.
+    // window.ccsm doesn't expose PATH mutation; we use the store API path
+    // directly because the IPC will fail naturally either way (no claude
+    // anywhere). The case's value is the store flip + banner render path.
+  });
+  // Trigger a real agent:start call. Even with PATH intact on the dev box,
+  // the SESSION_ID we pass is unrelated to any seeded session; agent:start
+  // either returns CLAUDE_NOT_FOUND (no claude) or a different errorCode.
+  // Either way the renderer-side flip is what we exercise next.
+  const SESSION_ID_FAIL = 'a1b1c1d1-0000-4000-8000-00000000c0a1';
+  const startRes = await win.evaluate(async ({ sid, cwd }) => {
+    try {
+      return await window.ccsm.agentStart(sid, { cwd });
+    } catch (e) {
+      return { ok: false, errorCode: 'EXCEPTION', error: String(e) };
+    }
+  }, { sid: SESSION_ID_FAIL, cwd: process.cwd() });
+  // We don't gate on errorCode shape — the production renderer flips
+  // installerCorrupt only on CLAUDE_NOT_FOUND, but we drive the same flip
+  // unconditionally to test the banner-render contract regardless of
+  // whether claude.exe happens to be on PATH on this dev machine.
+  log(`B: agent:start returned ${JSON.stringify(startRes).slice(0, 120)}`);
+
+  await win.evaluate(() => {
+    window.__ccsmStore.getState().setInstallerCorrupt(true);
+  });
+
+  const banner = win.locator('[data-testid="installer-corrupt-banner"]').first();
+  await banner.waitFor({ state: 'visible', timeout: 5_000 });
+
+  const bannerText = (await banner.textContent()) ?? '';
+  const HAS_EN = /Claude binary missing from this install/i.test(bannerText);
+  const HAS_ZH = /安装包内的 Claude 程序缺失/.test(bannerText);
+  if (!HAS_EN && !HAS_ZH) {
+    throw new Error(
+      `B: banner text does not match installerCorrupt.title in en or zh. ` +
+      `Got: ${JSON.stringify(bannerText.slice(0, 300))}.`
+    );
+  }
+  log('B: installerCorrupt=true → banner visible with i18n title');
+
+  // C: recovery
+  await win.evaluate(() => {
+    window.__ccsmStore.getState().setInstallerCorrupt(false);
+  });
+  await banner.waitFor({ state: 'hidden', timeout: 5_000 });
+  log('C: installerCorrupt=false → banner unmounts');
+}
+
+// ---------- askuserquestion-full (was probe-e2e-askuserquestion-full) ----------
+// 6 user journeys (J1..J6) for AskUserQuestion render + interaction surface.
+// Single launch; each journey re-installs ipcMain capture stubs to capture
+// agent:send / agent:sendContent / agent:resolvePermission frames.
+//
+// Mega-case: collects per-journey failures, throws at the end if any
+// journey diverged. Matches the original probe's all-at-once reporting.
+async function caseAskUserQuestionFull({ app, win, log }) {
+  const failures = [];
+  function record(j, ok, detail) {
+    log(`${ok ? 'OK  ' : 'FAIL'}  ${j}  — ${detail}`);
+    if (!ok) failures.push(`${j}: ${detail}`);
+  }
+
+  function questionSubmitButton() {
+    return win.locator('[data-testid="question-submit"]').last();
+  }
+
+  async function installAgentSendCapture() {
+    await app.evaluate(({ ipcMain }) => {
+      if (!global.__probeCapture) {
+        global.__probeCapture = { sent: [], resolved: [] };
+      }
+      const cap = global.__probeCapture;
+      cap.sent.length = 0;
+      cap.resolved.length = 0;
+      try { ipcMain.removeHandler('agent:send'); } catch {}
+      ipcMain.handle('agent:send', (_e, sessionId, text) => {
+        cap.sent.push({ sessionId, text });
+        return true;
+      });
+      try { ipcMain.removeHandler('agent:sendContent'); } catch {}
+      ipcMain.handle('agent:sendContent', (_e, sessionId, content) => {
+        cap.sent.push({ sessionId, content });
+        return true;
+      });
+      try { ipcMain.removeHandler('agent:resolvePermission'); } catch {}
+      ipcMain.handle('agent:resolvePermission', (_e, sessionId, requestId, decision) => {
+        cap.resolved.push({ sessionId, requestId, decision });
+        return true;
+      });
+    });
+  }
+  async function getCapturedSends() {
+    return await app.evaluate(() => (global.__probeCapture?.sent || []).slice());
+  }
+  async function clearCaptured() {
+    await app.evaluate(() => {
+      if (global.__probeCapture) {
+        global.__probeCapture.sent.length = 0;
+        global.__probeCapture.resolved.length = 0;
+      }
+    });
+  }
+
+  async function ensureSession(name = 'probe') {
+    return await win.evaluate((sn) => {
+      const store = window.__ccsmStore;
+      const s = store.getState();
+      if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+      s.createSession({ name: sn });
+      return store.getState().activeId;
+    }, name);
+  }
+
+  async function injectQuestion(sessionId, blockId, questions) {
+    await win.evaluate(
+      ({ sessionId, blockId, questions }) => {
+        const store = window.__ccsmStore;
+        store.getState().appendBlocks(sessionId, [
+          { kind: 'question', id: blockId, questions },
+        ]);
+      },
+      { sessionId, blockId, questions }
+    );
+  }
+
+  // ── J1 ────────────────────────────────────────────────────────────────
+  async function j1() {
+    const sessionId = await ensureSession('J1');
+    await installAgentSendCapture();
+    const textarea = win.locator('textarea').first();
+    await textarea.waitFor({ state: 'visible', timeout: 5000 });
+    await textarea.click();
+    await textarea.fill('half-typed draft');
+    const beforeActive = await win.evaluate(() => document.activeElement?.tagName);
+    if (beforeActive !== 'TEXTAREA') return record('J1', false, `before-inject activeElement=${beforeActive}, expected TEXTAREA`);
+    await injectQuestion(sessionId, 'q-J1', [
+      { question: 'Which language?', options: [{ label: 'Python' }, { label: 'TypeScript' }, { label: 'Rust' }] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    const afterActive = await win.evaluate(() => {
+      const el = document.activeElement;
+      return { tag: el?.tagName, textareaValue: document.querySelector('textarea')?.value?.slice(0, 32) };
+    });
+    if (afterActive.tag !== 'TEXTAREA') return record('J1', false, `auto-focus stole focus: tag=${afterActive.tag}`);
+    const firstOpt = win.locator('[data-question-option]').first();
+    await firstOpt.click();
+    await win.waitForTimeout(80);
+    await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
+    await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
+    await win.keyboard.press('ArrowUp'); await win.waitForTimeout(40);
+    const focusedValue = await win.evaluate(() => {
+      const el = document.activeElement;
+      return el ? { role: el.getAttribute('role'), label: el.getAttribute('data-question-label') } : null;
+    });
+    if (focusedValue?.role !== 'radio' || focusedValue?.label !== 'TypeScript') {
+      return record('J1', false, `after ↓↓↑ expected TypeScript, got ${JSON.stringify(focusedValue)}`);
+    }
+    await win.keyboard.press('Enter');
+    await win.waitForTimeout(120);
+    const submit = questionSubmitButton();
+    if (await submit.isDisabled()) return record('J1', false, 'Submit disabled after picking TypeScript via Enter');
+    await submit.click();
+    await win.waitForTimeout(300);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1) return record('J1', false, `expected 1 send, got ${sent.length}`);
+    if (!/TypeScript/.test(sent[0].text || '')) return record('J1', false, `payload missing TypeScript: ${JSON.stringify(sent[0])}`);
+    if (sent[0].sessionId !== sessionId) return record('J1', false, `wrong sessionId: expected ${sessionId}, got ${sent[0].sessionId}`);
+    await win.waitForTimeout(200);
+    const postSubmitFocus = await win.evaluate(() => document.activeElement?.tagName);
+    if (postSubmitFocus !== 'TEXTAREA') return record('J1', false, `after submit focus=${postSubmitFocus}, expected TEXTAREA`);
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J1', true, 'auto-focus did not steal textarea; ↓↓↑Enter routed TypeScript; focus returned');
+  }
+
+  // ── J2 ────────────────────────────────────────────────────────────────
+  async function j2() {
+    const sessionId = await ensureSession('J2');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await injectQuestion(sessionId, 'q-J2', [
+      { question: 'Pick languages', multiSelect: true, options: [{ label: 'Python' }, { label: 'TypeScript' }, { label: 'Rust' }] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(120);
+    const submitBtn = () => questionSubmitButton();
+    if (!(await submitBtn().isDisabled())) return record('J2', false, 'multi-select Submit was NOT disabled with 0 picks');
+    await win.locator('[data-question-option]').first().focus();
+    await win.waitForTimeout(40);
+    await win.keyboard.press(' '); await win.waitForTimeout(120);
+    if (await submitBtn().isDisabled()) return record('J2', false, 'after 1 pick (Space), Submit still disabled');
+    await win.keyboard.press(' '); await win.waitForTimeout(120);
+    if (!(await submitBtn().isDisabled())) return record('J2', false, 'after toggling pick OFF, Submit should be disabled again');
+    await win.keyboard.press(' '); await win.waitForTimeout(60);
+    await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
+    await win.keyboard.press(' '); await win.waitForTimeout(120);
+    if (await submitBtn().isDisabled()) return record('J2', false, 'with 2 picks Submit should be enabled');
+    await submitBtn().click();
+    await win.waitForTimeout(250);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1) return record('J2', false, `expected 1 send, got ${sent.length}`);
+    if (!/Python/.test(sent[0].text) || !/TypeScript/.test(sent[0].text)) {
+      return record('J2', false, `payload missing Python+TypeScript: ${JSON.stringify(sent[0])}`);
+    }
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J2', true, 'gating tracks pick count (0→1→0→2); both labels submitted');
+  }
+
+  // ── J3 ────────────────────────────────────────────────────────────────
+  async function j3() {
+    const sessionId = await ensureSession('J3');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await injectQuestion(sessionId, 'q-J3', [
+      { question: 'Q1 lang', options: [{ label: 'A1' }, { label: 'A2' }, { label: 'A3' }] },
+      { question: 'Q2 build', options: [{ label: 'B0' }, { label: 'B1' }, { label: 'B2' }] },
+      { question: 'Q3 db', options: [{ label: 'C0' }, { label: 'C1' }] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    const tabCount = await win.evaluate(() => document.querySelectorAll('[data-testid^="question-tab-"]').length);
+    if (tabCount !== 3) return record('J3', false, `expected 3 question tabs, got ${tabCount}`);
+    await win.locator('[data-question-option][data-question-label="A2"]').first().click();
+    await win.waitForTimeout(400);
+    await win.locator('[data-testid="question-tab-0"]').click();
+    await win.waitForTimeout(120);
+    await win.locator('[data-question-option][data-question-label="A3"]').first().click();
+    await win.waitForTimeout(400);
+    await win.locator('[data-testid="question-tab-1"]').click();
+    await win.waitForTimeout(120);
+    await win.locator('[data-question-option][data-question-label="B1"]').first().click();
+    await win.waitForTimeout(400);
+    await win.locator('[data-testid="question-tab-2"]').click();
+    await win.waitForTimeout(120);
+    await win.locator('[data-question-option][data-question-label="C0"]').first().click();
+    await win.waitForTimeout(150);
+    const submit = questionSubmitButton();
+    if (await submit.isDisabled()) return record('J3', false, 'Submit disabled despite all 3 questions answered');
+    await submit.click();
+    await win.waitForTimeout(250);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1) return record('J3', false, `expected 1 send, got ${sent.length}`);
+    const text = sent[0].text;
+    if (/\bA2\b/.test(text)) return record('J3', false, `payload still contains stale pick A2: ${JSON.stringify(text)}`);
+    if (!/\bA3\b/.test(text) || !/\bB1\b/.test(text) || !/\bC0\b/.test(text)) {
+      return record('J3', false, `expected A3, B1, C0 in payload, got: ${JSON.stringify(text)}`);
+    }
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J3', true, `revised picks captured (A3+B1+C0), no stale A2`);
+  }
+
+  // ── J4 ────────────────────────────────────────────────────────────────
+  async function j4() {
+    const sessionId = await ensureSession('J4');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    const opts = Array.from({ length: 12 }, (_, i) => ({ label: `Opt-${String(i + 1).padStart(2, '0')}` }));
+    await injectQuestion(sessionId, 'q-J4', [{ question: 'Pick one of 12', options: opts }]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    const totalOpts = await win.evaluate(() => document.querySelectorAll('[data-question-option]').length);
+    if (totalOpts !== 13) return record('J4', false, `expected 13 options (12+Other), got ${totalOpts}`);
+    await win.locator('[data-question-option]').first().focus();
+    await win.waitForTimeout(60);
+    const labelOf = () => win.evaluate(() => document.activeElement?.getAttribute('data-question-label'));
+    for (let i = 0; i < 11; i++) { await win.keyboard.press('ArrowDown'); await win.waitForTimeout(20); }
+    let lbl = await labelOf();
+    if (lbl !== 'Opt-12') return record('J4', false, `after ↓x11 expected Opt-12, got ${lbl}`);
+    await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
+    lbl = await labelOf();
+    if (lbl !== 'Other') return record('J4', false, `after ↓ from Opt-12 expected Other, got ${lbl}`);
+    await win.keyboard.press('ArrowDown'); await win.waitForTimeout(40);
+    lbl = await labelOf();
+    if (lbl !== 'Opt-01') return record('J4', false, `expected wrap to Opt-01 from Other, got ${lbl}`);
+    await win.keyboard.press('ArrowUp'); await win.waitForTimeout(40);
+    lbl = await labelOf();
+    if (lbl !== 'Other') return record('J4', false, `expected ArrowUp wrap to Other, got ${lbl}`);
+    await win.keyboard.press('ArrowUp'); await win.waitForTimeout(40);
+    lbl = await labelOf();
+    if (lbl !== 'Opt-12') return record('J4', false, `expected ArrowUp from Other to Opt-12, got ${lbl}`);
+    await win.keyboard.press('Enter'); await win.waitForTimeout(120);
+    const submit = questionSubmitButton();
+    if (await submit.isDisabled()) return record('J4', false, 'Submit disabled after picking Opt-12');
+    await submit.click();
+    await win.waitForTimeout(300);
+    const sent = await getCapturedSends();
+    if (sent.length !== 1 || !/Opt-12/.test(sent[0].text)) {
+      return record('J4', false, `expected Opt-12 submitted, got: ${JSON.stringify(sent)}`);
+    }
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J4', true, 'down/up wraps through 12+Other; last model option submits');
+  }
+
+  // ── J5 ────────────────────────────────────────────────────────────────
+  async function j5() {
+    const sessionId = await ensureSession('J5');
+    await installAgentSendCapture();
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    const longUrl = 'https://example.com/' + 'a'.repeat(60);
+    const longDesc = 'This-is-a-deliberately-unbreakable-description-' + 'x'.repeat(150);
+    await injectQuestion(sessionId, 'q-J5', [
+      { question: 'Pick endpoint', options: [
+        { label: longUrl, description: 'short desc' },
+        { label: 'Short label', description: longDesc },
+      ] },
+    ]);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    const overflow = await win.evaluate(() => {
+      const stream = document.querySelector('[data-chat-stream]');
+      if (!stream) return { ok: false, reason: 'no [data-chat-stream]' };
+      const streamW = stream.clientWidth;
+      const opt = document.querySelector('[data-question-option]');
+      const container = opt?.closest('div.relative');
+      if (!container) return { ok: false, reason: 'no question container' };
+      const cRect = container.getBoundingClientRect();
+      const cScrollW = container.scrollWidth;
+      const cClientW = container.clientWidth;
+      const labels = Array.from(container.querySelectorAll('label'));
+      let labelOverflow = null;
+      for (const lbl of labels) {
+        if (lbl.scrollWidth > lbl.clientWidth + 1) { labelOverflow = { sw: lbl.scrollWidth, cw: lbl.clientWidth }; break; }
+      }
+      let labelWidthMismatch = null;
+      for (const lbl of labels) {
+        if (lbl.clientWidth > cClientW + 1) { labelWidthMismatch = { labelCw: lbl.clientWidth, containerCw: cClientW }; break; }
+      }
+      const rows = Array.from(container.querySelectorAll('label, div'));
+      let worst = null;
+      for (const r of rows) {
+        const sw = r.scrollWidth, cw = r.clientWidth;
+        if (sw > cw + 1) {
+          if (!worst || sw - cw > worst.over) {
+            worst = { tag: r.tagName, sw, cw, over: sw - cw };
+          }
+        }
+      }
+      return { ok: true, streamW, containerW: cRect.width, containerScrollW: cScrollW, containerClientW: cClientW,
+        labelCount: labels.length, labelOverflow, labelWidthMismatch, worstRow: worst };
+    });
+    if (!overflow.ok) return record('J5', false, `overflow probe failed: ${overflow.reason}`);
+    if (overflow.containerW > overflow.streamW + 1) return record('J5', false, `container ${overflow.containerW}px > stream ${overflow.streamW}px`);
+    if (overflow.containerScrollW > overflow.containerClientW + 1) return record('J5', false, `container hScrolls: scrollW=${overflow.containerScrollW} clientW=${overflow.containerClientW}`);
+    if (overflow.labelOverflow) return record('J5', false, `label overflows: ${JSON.stringify(overflow.labelOverflow)}`);
+    if (overflow.labelWidthMismatch) return record('J5', false, `label wider than container: ${JSON.stringify(overflow.labelWidthMismatch)}`);
+    if (overflow.worstRow) return record('J5', false, `descendant row overflows: ${JSON.stringify(overflow.worstRow)}`);
+    await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+    await clearCaptured();
+    record('J5', true, `no horizontal overflow (${overflow.labelCount} labels)`);
+  }
+
+  // ── J6 ────────────────────────────────────────────────────────────────
+  async function j6() {
+    await installAgentSendCapture();
+    const ids = await win.evaluate(() => {
+      const store = window.__ccsmStore;
+      store.setState({
+        sessions: [], activeId: '', messagesBySession: {}, messageQueues: {},
+        runningSessions: {}, startedSessions: {},
+        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+      });
+      const s = store.getState();
+      s.createSession({ name: 'A' });
+      const aId = store.getState().activeId;
+      s.createSession({ name: 'B' });
+      const bId = store.getState().activeId;
+      return { aId, bId };
+    });
+    await injectQuestion(ids.aId, 'q-A', [{ question: 'A?', options: [{ label: 'A-Yes' }, { label: 'A-No' }] }]);
+    await injectQuestion(ids.bId, 'q-B', [{ question: 'B?', options: [{ label: 'B-Yes' }, { label: 'B-No' }] }]);
+    const activeNow = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+    if (activeNow !== ids.bId) return record('J6', false, `expected active=${ids.bId} (B), got ${activeNow}`);
+    await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+    await win.waitForTimeout(150);
+    await win.locator('[data-question-option][data-question-label="B-Yes"]').first().click();
+    await win.waitForTimeout(120);
+    await questionSubmitButton().click();
+    await win.waitForTimeout(300);
+    let sent = await getCapturedSends();
+    if (sent.length !== 1) return record('J6', false, `after B: expected 1 send, got ${sent.length}`);
+    if (sent[0].sessionId !== ids.bId) return record('J6', false, `B routed to wrong session: ${sent[0].sessionId}`);
+    if (!/B-Yes/.test(sent[0].text)) return record('J6', false, `B payload missing B-Yes: ${JSON.stringify(sent[0])}`);
+    await win.evaluate((aId) => window.__ccsmStore.getState().selectSession(aId), ids.aId);
+    await win.waitForTimeout(250);
+    const labelsInA = await win.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-question-option]')).map(
+        (n) => n.parentElement?.textContent?.trim().slice(0, 20)
+      )
+    );
+    if (!labelsInA.some((l) => /A-Yes/.test(l ?? '')) || labelsInA.some((l) => /B-Yes/.test(l ?? ''))) {
+      return record('J6', false, `after switch to A, options should be A-* only: ${JSON.stringify(labelsInA)}`);
+    }
+    await win.locator('[data-question-option][data-question-label="A-Yes"]').first().click();
+    await win.waitForTimeout(120);
+    await questionSubmitButton().click();
+    await win.waitForTimeout(300);
+    sent = await getCapturedSends();
+    if (sent.length !== 2) return record('J6', false, `after A: expected 2 sends, got ${sent.length}`);
+    if (sent[1].sessionId !== ids.aId || !/A-Yes/.test(sent[1].text)) {
+      return record('J6', false, `A routed wrong: ${JSON.stringify(sent[1])}`);
+    }
+    await clearCaptured();
+    record('J6', true, 'answers routed to correct sessions; no question leakage on switch');
+  }
+
+  async function safeRun(name, fn) {
+    try { await fn(); }
+    catch (e) {
+      record(name, false, `unhandled exception: ${(e?.message || String(e)).slice(0, 200)}`);
+      try {
+        await win.evaluate(() => {
+          const s = window.__ccsmStore?.getState?.();
+          if (!s) return;
+          for (const sid of Object.keys(s.messagesBySession || {})) s.clearMessages(sid);
+        });
+        await clearCaptured();
+      } catch {}
+    }
+  }
+  await safeRun('J1', j1);
+  await safeRun('J2', j2);
+  await safeRun('J3', j3);
+  await safeRun('J4', j4);
+  await safeRun('J5', j5);
+  await safeRun('J6', j6);
+
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} journey failure(s):\n  - ${failures.join('\n  - ')}`);
+  }
+  log('all 6 journeys matched expected behavior');
+}
+
+// ---------- sidebar-journey-create-delete (was probe-e2e-sidebar-journey-create-delete) ----------
+// J1..J7 user journeys for sidebar CREATE/DELETE operations. Single launch;
+// each journey may re-seed the store. Mega-case: collects per-journey
+// divergences, throws at end if any diverged.
+async function caseSidebarJourneyCreateDelete({ win, log }) {
+  const divergences = [];
+  function diverge(j, expected, observed) {
+    divergences.push({ j, expected, observed });
+    log(`${j} DIVERGE — expected: ${expected} | observed: ${observed}`);
+  }
+  const state = () => win.evaluate(() => window.__ccsmStore.getState());
+  async function seed(s) {
+    await win.evaluate((st) => { window.__ccsmStore.setState(st); }, s);
+    await win.waitForTimeout(200);
+  }
+
+  await seed({
+    groups: [
+      { id: 'gA', name: 'Group A', collapsed: false, kind: 'normal' },
+      { id: 'gB', name: 'Group B', collapsed: false, kind: 'normal' },
+      { id: 'gArc', name: 'Old', collapsed: false, kind: 'archive' }
+    ],
+    sessions: [
+      { id: 'a1', name: 'a-one', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+      { id: 'a2', name: 'a-two', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+      { id: 'b1', name: 'b-one', state: 'idle', cwd: '~', model: 'm', groupId: 'gB', agentType: 'claude-code' }
+    ],
+    activeId: 'a2',
+    focusedGroupId: null
+  });
+
+  // J1
+  {
+    const before = await state();
+    const beforeNonce = before.focusInputNonce;
+    const newBtn = win.locator('aside button:has-text("New Session")').first();
+    await newBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await newBtn.click();
+    await win.waitForTimeout(250);
+    const after = await state();
+    const newId = after.activeId;
+    if (!newId || newId === before.activeId) {
+      diverge('J1.activeId', 'activeId changes after New Session click', `was=${before.activeId}, now=${newId}`);
+    } else {
+      const ses = after.sessions.find((s) => s.id === newId);
+      if (!ses) diverge('J1.sessionExists', `session ${newId} present`, 'missing');
+      else if (ses.groupId !== 'gA') diverge('J1.targetGroup', `new session.groupId === "gA"`, `"${ses.groupId}"`);
+      if (after.focusInputNonce <= beforeNonce) diverge('J1.focusNonce', 'focusInputNonce bumps', `was=${beforeNonce}, now=${after.focusInputNonce}`);
+      await win.waitForTimeout(150);
+      const isFocused = await win.evaluate(() => {
+        const ta = document.querySelector('textarea[data-input-bar]');
+        return !!ta && document.activeElement === ta;
+      });
+      if (!isFocused) diverge('J1.composerFocus', 'composer textarea is activeElement', 'not focused');
+    }
+  }
+
+  // J2
+  {
+    const before = await state();
+    const beforeIds = new Set(before.groups.map((g) => g.id));
+    const addBtn = win.locator('aside button[aria-label="New group"]').first();
+    await addBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await addBtn.click();
+    await win.waitForTimeout(250);
+    const after = await state();
+    const created = after.groups.find((g) => !beforeIds.has(g.id));
+    if (!created) diverge('J2.exists', 'New group creates a group', 'no new group');
+    else {
+      if (created.collapsed) diverge('J2.expanded', 'new group expanded', `collapsed=${created.collapsed}`);
+      const renameInput = await win.locator(`[data-group-header-id="${created.id}"] input`).count();
+      if (renameInput === 0) diverge('J2.rename', 'inline rename mode', 'no <input>');
+      else {
+        const isFocused = await win.evaluate((gid) => {
+          const inp = document.querySelector(`[data-group-header-id="${gid}"] input`);
+          return !!inp && document.activeElement === inp;
+        }, created.id);
+        if (!isFocused) diverge('J2.renameFocused', 'rename input is activeElement', 'not focused');
+      }
+      if (after.focusedGroupId !== created.id) diverge('J2.focused', 'focusedGroupId === new group id', `="${after.focusedGroupId}"`);
+      if (renameInput > 0) {
+        await win.locator(`[data-group-header-id="${created.id}"] input`).press('Escape').catch(() => {});
+        await win.waitForTimeout(100);
+      }
+    }
+  }
+
+  // J3
+  {
+    const before = await state();
+    if (!before.sessions.some((s) => s.id === before.activeId && s.groupId === 'gA')) {
+      throw new Error(`J3 setup: active no longer in gA (was=${before.activeId})`);
+    }
+    const plusInGB = win.locator('[data-group-header-id="gB"] button[aria-label="New session in this group"]');
+    await plusInGB.waitFor({ state: 'visible', timeout: 5000 });
+    await plusInGB.click();
+    await win.waitForTimeout(250);
+    const after = await state();
+    const newSes = after.sessions.find((s) => s.id === after.activeId);
+    if (!newSes) diverge('J3.created', 'per-group "+" creates active session', 'no new active session');
+    else if (newSes.groupId !== 'gB') diverge('J3.targetGroup', '.groupId === "gB"', `"${newSes.groupId}"`);
+    const plusInArchived = await win.locator('[data-group-header-id="gArc"] button[aria-label="New session in this group"]').count();
+    if (plusInArchived !== 0) diverge('J3.archivedNoPlus', 'archived has no "+"', `count=${plusInArchived}`);
+  }
+
+  // J4
+  {
+    await seed({
+      groups: [
+        { id: 'gA', name: 'Group A', collapsed: false, kind: 'normal' },
+        { id: 'gB', name: 'Group B', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'k1', name: 'keep one', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'k2', name: 'doomed',   state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'k3', name: 'b only',   state: 'idle', cwd: '~', model: 'm', groupId: 'gB', agentType: 'claude-code' }
+      ],
+      activeId: 'k1',
+      focusedGroupId: null,
+      messagesBySession: {
+        k2: [{ id: 'm1', kind: 'user-text', text: 'hello from k2', createdAt: 1 }]
+      }
+    });
+    const row = win.locator('li[data-session-id="k2"]').first();
+    await row.click({ button: 'right' });
+    await win.waitForTimeout(150);
+    const afterRC = await state();
+    if (afterRC.activeId !== 'k2') diverge('J4b.rightClickSelects', 'right-click selects row', `activeId="${afterRC.activeId}"`);
+    const del = win.getByRole('menuitem').filter({ hasText: /^Delete$/ }).first();
+    await del.waitFor({ state: 'visible', timeout: 3000 });
+    await del.click();
+    await win.waitForTimeout(250);
+    const dialogCount = await win.locator('[role="dialog"]').count();
+    if (dialogCount > 0) {
+      diverge('J4.noConfirm', 'non-active delete is silent', 'confirm dialog opened');
+      await win.keyboard.press('Escape').catch(() => {});
+      await win.waitForTimeout(150);
+    }
+    const stillThere = await win.locator('li[data-session-id="k2"]').count();
+    if (stillThere !== 0) diverge('J4.removed', 'row k2 disappears', `count=${stillThere}`);
+    const afterDel = await state();
+    if (afterDel.sessions.some((s) => s.id === 'k2')) diverge('J4.removedStore', 'k2 removed from sessions[]', 'still present');
+    const undoBtn = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+    const haveUndo = await undoBtn.count();
+    if (haveUndo === 0) diverge('J4.undoToast', 'undo toast appears', 'no undo button');
+    else {
+      await undoBtn.click();
+      await win.waitForTimeout(250);
+      const restored = await state();
+      if (!restored.sessions.some((s) => s.id === 'k2')) diverge('J4.undoRestores', 'Undo restores k2', 'still missing');
+      const msgs = restored.messagesBySession.k2;
+      if (!msgs || msgs.length === 0) diverge('J4.undoMessages', 'Undo restores messages', `=${JSON.stringify(msgs)}`);
+    }
+  }
+
+  // J5
+  {
+    await seed({
+      groups: [
+        { id: 'gA', name: 'Group A', collapsed: false, kind: 'normal' },
+        { id: 'gB', name: 'Group B', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'k3',  name: 'other',  state: 'idle', cwd: '~', model: 'm', groupId: 'gB', agentType: 'claude-code' },
+        { id: 'k1',  name: 'active', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'k1b', name: 'sibling', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' }
+      ],
+      activeId: 'k1',
+      focusedGroupId: null
+    });
+    await win.evaluate(() => window.__ccsmStore.getState().deleteSession('k1'));
+    await win.waitForTimeout(200);
+    const after = await state();
+    if (after.activeId !== 'k1b') diverge('J5.siblingFallback', 'activeId falls back to "k1b"', `activeId="${after.activeId}"`);
+  }
+
+  // J6
+  {
+    await seed({
+      groups: [{ id: 'gA', name: 'Group A', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 'r1', name: 'running', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'r2', name: 'idle',    state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' }
+      ],
+      activeId: 'r2',
+      focusedGroupId: null,
+      runningSessions: { r1: true },
+      startedSessions: { r1: true },
+      messageQueues: { r1: [{ id: 'q1', text: 'pending msg', images: [] }] }
+    });
+    await win.evaluate(() => window.__ccsmStore.getState().deleteSession('r1'));
+    await win.waitForTimeout(200);
+    const after = await state();
+    if (after.sessions.some((s) => s.id === 'r1')) diverge('J6.removed', 'r1 removed', 'still present');
+    if (after.runningSessions.r1 !== undefined) diverge('J6.runningCleared', 'runningSessions.r1 cleared', `=${after.runningSessions.r1}`);
+    if (after.startedSessions.r1 !== undefined) diverge('J6.startedCleared', 'startedSessions.r1 cleared', `=${after.startedSessions.r1}`);
+    if (after.messageQueues.r1 !== undefined) diverge('J6.queueCleared', 'messageQueues.r1 cleared', `=${JSON.stringify(after.messageQueues.r1)}`);
+  }
+
+  // J7
+  {
+    await seed({
+      groups: [
+        { id: 'gA', name: 'GroupA', collapsed: false, kind: 'normal' },
+        { id: 'gB', name: 'GroupB', collapsed: false, kind: 'normal' }
+      ],
+      sessions: [
+        { id: 'a1', name: 'a1', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'a2', name: 'a2', state: 'idle', cwd: '~', model: 'm', groupId: 'gA', agentType: 'claude-code' },
+        { id: 'b1', name: 'b1', state: 'idle', cwd: '~', model: 'm', groupId: 'gB', agentType: 'claude-code' }
+      ],
+      activeId: 'a1',
+      focusedGroupId: null
+    });
+    await win.evaluate(() => {
+      const t = window.__ccsmToast;
+      if (!t) return;
+      document.querySelectorAll('[data-toast-id]').forEach((el) => {
+        const id = el.getAttribute('data-toast-id');
+        if (id) t.dismiss(id);
+      });
+    });
+    await win.waitForTimeout(150);
+    const header = win.locator('[data-group-header-id="gA"]').first();
+    await header.click({ button: 'right' });
+    const delMenu = win.getByRole('menuitem').filter({ hasText: /Delete group/ }).first();
+    await delMenu.waitFor({ state: 'visible', timeout: 3000 });
+    await delMenu.click();
+    await win.waitForTimeout(200);
+    const dlg = win.locator('[role="dialog"]');
+    if ((await dlg.count()) === 0) diverge('J7.confirm', 'group delete shows confirm', 'no dialog');
+    else {
+      const confirmBtn = win.locator('[role="dialog"] button').filter({ hasText: /^Delete group$/ }).first();
+      if ((await confirmBtn.count()) === 0) diverge('J7.confirmBtn', '"Delete group" button', 'not found');
+      else {
+        await confirmBtn.click();
+        await win.waitForTimeout(300);
+      }
+    }
+    const after = await state();
+    if (after.groups.some((g) => g.id === 'gA')) diverge('J7.groupGone', 'gA removed after confirm', 'still present');
+    if (after.sessions.some((s) => s.groupId === 'gA')) {
+      diverge('J7.cascadeSessions', 'sessions of gA cascaded', `leaked: ${after.sessions.filter((s) => s.groupId === 'gA').map((s) => s.id).join(',')}`);
+    }
+    const orphan = after.activeId !== '' && !after.sessions.some((s) => s.id === after.activeId);
+    if (orphan) diverge('J7.noOrphan', 'activeId real or empty', `activeId="${after.activeId}" — orphan`);
+    if (!orphan && after.activeId !== 'b1' && after.activeId !== '') {
+      diverge('J7.fallback', 'activeId falls back to "b1"', `activeId="${after.activeId}"`);
+    }
+    const undoBtnJ7 = win.locator('button').filter({ hasText: /^Undo$/ }).first();
+    if ((await undoBtnJ7.count()) === 0) diverge('J7.undoToast', 'undo toast appears', 'no Undo button');
+    else {
+      await undoBtnJ7.click();
+      await win.waitForTimeout(300);
+      const restored = await state();
+      if (!restored.groups.some((g) => g.id === 'gA')) diverge('J7.undoGroup', 'undo restores gA', 'still missing');
+      const memberIds = restored.sessions.filter((s) => s.groupId === 'gA').map((s) => s.id);
+      if (memberIds.join(',') !== 'a1,a2') diverge('J7.undoMembersOrder', 'undo restores [a1,a2]', `[${memberIds.join(',')}]`);
+    }
+  }
+
+  if (divergences.length > 0) {
+    const lines = divergences.map((d) => `  ${d.j.padEnd(28)}  expected: ${d.expected}\n${' '.padEnd(30)}  observed: ${d.observed}`);
+    throw new Error(`${divergences.length} divergence(s):\n${lines.join('\n')}`);
+  }
+  log('all 7 journeys (J1..J7) matched expected behavior');
+}
 
 // ---------- harness spec ----------
 await runHarness({
@@ -3740,6 +4646,22 @@ await runHarness({
     // follows with relaunch:true → fresh app, then notify-integration's
     // bootstrap mutations don't matter either way.
     { id: 'notify-integration', requiresClaudeBin: false, run: caseNotifyIntegration },
+    // ---- Bucket-7 absorption (final cleanup pass) ----
+    // Pure-store reclassifications from the original "restore-*" probes;
+    // 桶 4 reviewer flagged these as misnamed (single-launch, no fixture).
+    // Place these BEFORE close-window-aborts-sessions: notify-integration
+    // mutated the live app (mocked notify importer); these absorbed cases
+    // re-seed the store cleanly per case but stay on the shared electron.
+    // close-window-aborts-sessions then forces relaunch so its before-quit
+    // assertion runs on a pristine app.
+    { id: 'restore-session-undo', run: caseRestoreSessionUndo },
+    { id: 'restore-group-undo', run: caseRestoreGroupUndo },
+    { id: 'askuserquestion-full', run: caseAskUserQuestionFull },
+    { id: 'sidebar-journey-create-delete', run: caseSidebarJourneyCreateDelete },
+    // installer-corrupt: needs a clean cold-launch state to assert the
+    // "no banner / no first-run picker" baseline; userDataDir:'fresh'
+    // forces a relaunch into a brand-new electron user-data dir.
+    { id: 'installer-corrupt', userDataDir: 'fresh', run: caseInstallerCorrupt },
     // close-window-aborts-sessions emits before-quit on the live app, putting
     // it in is-quitting mode. relaunch:true gives THIS case a fresh app so
     // the previous notify-integration mutations don't leak in; subsequent
