@@ -177,18 +177,18 @@ type State = {
   groups: Group[];
   recentProjects: RecentProject[];
   /**
-   * Recent cwds derived from CLI transcripts at boot — fallback for fresh
-   * userData where `recentProjects` is empty. Not persisted; rederived each
-   * boot from `~/.claude/projects` via `window.ccsm.recentCwds()`.
+   * Resolved `os.homedir()` from the main process. Seeded once at boot via
+   * `window.ccsm.userHome()`; empty string until the IPC resolves. Used as
+   * the new-session default cwd — replaces the old CLI-history-derived
+   * default per spec: "default cwd is always home, no fallback chains".
    */
-  historyRecentCwds: string[];
+  userHome: string;
   /**
    * Default model from `~/.claude/settings.json` (the CLI's own `--model`
    * default). Seeds the new-session model picker so ccsm picks the same
    * model the user already configured for the CLI. Null until the boot
-   * read resolves or if no `model` field is set — in which case createSession
-   * falls through to the connection profile / first discovered model / SDK
-   * default.
+   * read resolves or if no `model` field is set — in which case
+   * createSession leaves `model` empty and the SDK applies its own default.
    */
   claudeSettingsDefaultModel: string | null;
   activeId: string;
@@ -993,7 +993,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   sessions: [],
   groups: defaultGroups,
   recentProjects: [],
-  historyRecentCwds: [],
+  userHome: '',
   claudeSettingsDefaultModel: null,
   activeId: '',
   focusedGroupId: null,
@@ -1066,12 +1066,8 @@ export const useStore = create<State & Actions>((set, get) => ({
       groups,
       focusedGroupId,
       activeId,
-      model,
-      recentProjects,
-      historyRecentCwds,
+      userHome,
       claudeSettingsDefaultModel,
-      models,
-      connection,
     } = get();
     const isUsable = (gid: string | null | undefined) => {
       if (!gid) return false;
@@ -1093,37 +1089,24 @@ export const useStore = create<State & Actions>((set, get) => ({
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
     const id = newSessionId();
-    // task#293 (post-#369 dogfood follow-up): the frequency vote over the
-    // last 10 CLI sessions IS the answer to "where does this user actually
-    // work" — it must win over `groupRecentCwd` (a single stale prior
-    // session in the focused group can otherwise shadow the user's actual
-    // working directory; dogfood hit `c:/x` on every "New session" because
-    // a long-forgotten session in the focused group held that cwd) AND
-    // over `recentProjects[0]?.path` (a one-off chip pick).
-    //
-    // `groupRecentCwd` stays in the chain as a tertiary fallback for the
-    // case where `historyRecentCwds` is empty (fresh-install with no CLI
-    // history) AND `recentProjects` is empty — better to inherit the
-    // group's own recent cwd than fall to ''.
-    const groupRecentCwd = sessions.find(
-      (x) => x.groupId === targetGroupId && !!x.cwd
-    )?.cwd;
-    const defaultCwd =
-      historyRecentCwds[0] ?? recentProjects[0]?.path ?? groupRecentCwd ?? '';
-    let initialModel = model;
-    // Default-model source order:
-    //   1. persisted global `model` (the user's most-recent explicit pick)
-    //   2. CLI `~/.claude/settings.json` `model` — the same value the CLI
-    //      itself reads for `--model` defaulting. Replaces the old PR #369
-    //      frequency vote over recent transcripts, which produced model ids
-    //      that weren't always in our picker list (dogfood: defaulted to
-    //      "claude-opus-4" which doesn't appear anywhere).
-    //   3. connection profile model (endpoint-pinned default)
-    //   4. first discovered model (last-resort, never empty)
-    // When all four are empty the SDK applies its own default at session start.
+    // Default cwd is ALWAYS the user's home directory — no fallback chain,
+    // no inheritance from prior sessions, no derivation from CLI history.
+    // Per spec ("default cwd is home, no fallback chains"): the previous
+    // historyRecentCwds → recentProjects → groupRecentCwd cascade silently
+    // hijacked the new-session cwd from stale state, so we replaced it with
+    // a single deterministic source. The user can repick via the StatusBar
+    // cwd popover; that pick lands in the ccsm-owned `userCwds` LRU and
+    // surfaces in the popover's recent column.
+    const defaultCwd = userHome ?? '';
+    // Default model reads `~/.claude/settings.json` `model` field — the SAME
+    // value the CLI itself reads for `--model` defaulting (PR #386 made the
+    // read CLAUDE_CONFIG_DIR-aware). When unset, leave `model` empty so the
+    // SDK applies its own default at session start. Per spec we explicitly
+    // do NOT consult the persisted global `model`, the connection profile,
+    // or the first discovered model — those silently shadow the CLI default
+    // and produced unselectable picker values in the wild.
+    let initialModel = '';
     if (!initialModel) initialModel = claudeSettingsDefaultModel ?? '';
-    if (!initialModel) initialModel = connection?.model ?? '';
-    if (!initialModel) initialModel = models[0]?.id ?? '';
     const newSession: Session = {
       id,
       name: opts.name?.trim() || 'New session',
@@ -1149,6 +1132,16 @@ export const useStore = create<State & Actions>((set, get) => ({
       groups: nextGroups,
       focusInputNonce: s.focusInputNonce + 1
     }));
+    // If the user explicitly created the session against a non-default cwd
+    // (cwd override differs from home), record it in the ccsm-owned LRU so
+    // it shows in the popover's recent column on subsequent opens. Fire-and-
+    // forget — the IPC is best-effort and the renderer doesn't need the
+    // post-update list (the popover refetches on each open).
+    const finalCwd = newSession.cwd;
+    if (finalCwd && userHome && finalCwd !== userHome) {
+      const api = window.ccsm;
+      void api?.userCwds?.push(finalCwd).catch(() => {});
+    }
   },
 
   renameSession: (id, name) => {
@@ -1415,6 +1408,16 @@ export const useStore = create<State & Actions>((set, get) => ({
         x.id === s.activeId ? { ...x, cwd, cwdMissing: false } : x
       )
     }));
+    // Cwd picks via the StatusBar popover or Browse... button are the
+    // canonical "user explicitly chose this cwd" signal — feed them into
+    // the ccsm-owned LRU so they surface in the popover's recent column on
+    // future opens. Skip the home entry: it's the always-default and lives
+    // in the list as the implicit fallback.
+    const userHome = get().userHome;
+    if (cwd && cwd !== userHome) {
+      const api = window.ccsm;
+      void api?.userCwds?.push(cwd).catch(() => {});
+    }
   },
 
   markSessionCwdMissing: (sessionId, missing) => {
@@ -2660,20 +2663,20 @@ export async function hydrateStore(): Promise<void> {
     }));
   })();
 
-  // Seed history-derived defaults from CLI transcripts + settings. Fresh
-  // Electron userData starts with empty `recentProjects` and no `model`;
-  // without this the new-session picker falls back to '' (chip `(none)`
-  // placeholder) and the first endpoint's first model regardless of what
-  // the user actually uses in the CLI.
+  // Seed boot defaults from main: `userHome` is the always-true default cwd
+  // for new sessions, and `claudeSettingsDefaultModel` is the CLI's own
+  // `--model` default (read from `~/.claude/settings.json`). Both are
+  // best-effort — if the IPC fails, the renderer keeps its empty defaults
+  // and the SDK falls back to its built-ins.
   try {
     const api = window.ccsm;
-    if (api?.recentCwds && api?.defaultModel) {
-      const [recentCwds, defaultModel] = await Promise.all([
-        api.recentCwds(),
+    if (api?.userHome && api?.defaultModel) {
+      const [userHome, defaultModel] = await Promise.all([
+        api.userHome(),
         api.defaultModel(),
       ]);
       useStore.setState({
-        historyRecentCwds: Array.isArray(recentCwds) ? recentCwds : [],
+        userHome: typeof userHome === 'string' ? userHome : '',
         claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
       });
     }

@@ -202,11 +202,11 @@ export default function App() {
   const [importOpen, setImportOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
-  // New sessions are created in-place — no modal. The store seeds `cwd`
-  // from the per-group last-used cwd, falling through to
-  // `recentProjects[0]?.path ?? historyRecentCwds[0] ?? ''` (empty → chip
-  // renders the `(none)` placeholder). Users repick via the StatusBar cwd
-  // chip. See createSession() in stores/store.ts.
+  // New sessions are created in-place — no modal. The store seeds `cwd` from
+  // `userHome` (always-true default per spec). Users repick via the StatusBar
+  // cwd chip; the chosen path lands in the ccsm-owned `userCwds` LRU and
+  // surfaces in the popover's recent column on subsequent opens. See
+  // createSession() in stores/store.ts.
   const newSession = React.useCallback(() => {
     createSession(null);
   }, [createSession]);

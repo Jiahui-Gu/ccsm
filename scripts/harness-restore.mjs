@@ -109,12 +109,7 @@ async function launch({ userDataDir, env = {}, extraArgs = [] }) {
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`, ...extraArgs],
     cwd: ROOT,
-    // Mirror harness-runner.mjs:334 — default CCSM_E2E_HIDDEN=1 so standalone
-    // `node scripts/harness-restore.mjs --only=<case>` runs don't pop a window
-    // and steal focus. Order matters: default first, then process.env (user
-    // can opt out with CCSM_E2E_HIDDEN=0 in shell), then per-case env wins
-    // last (caseSidebarResize sets '0' to force visible).
-    env: { CCSM_E2E_HIDDEN: '1', ...process.env, CCSM_PROD_BUNDLE: '1', ...env }
+    env: { ...process.env, CCSM_PROD_BUNDLE: '1', ...env }
   });
   return app;
 }
@@ -830,7 +825,6 @@ async function caseNotifyFallback({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${userDataDir}`],
     cwd: ROOT,
     env: {
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'development',
       CCSM_DEV_PORT: String(server.port),
@@ -1003,7 +997,6 @@ async function caseImportSession({ log, registerDispose }) {
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -1520,7 +1513,6 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
   // Strip CLAUDECODE so the spawned claude.exe doesn't refuse-to-launch
   // with "cannot run inside another Claude Code session".
   const env = {
-    CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
     ...process.env,
     CCSM_PROD_BUNDLE: '1',
     CCSM_CLAUDE_CONFIG_DIR: cfg.dir,
@@ -1661,191 +1653,6 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// CASE: default-cwd-from-recent-history
-// Pre-launch fixture: plant 10 JSONL transcripts under a sandboxed HOME with
-// controlled cwd frequency distributions. Boot the app, call
-// `createSession()`, assert the new session's `cwd` comes from the
-// MOST-FREQUENT cwd in the last 10 CLI sessions — not the most recent.
-//
-// Task #293: dogfood found that default cwd on a fresh session was pulling
-// from "most recently mtime'd" CLI session, which means a one-off `cd` into
-// a side project hijacks the default. Fix: derive defaults from frequency
-// over the last 10 sessions.
-//
-// (The `model` half of #293's frequency vote was reverted — default model
-// now reads `~/.claude/settings.json` `model` instead. See the
-// `new-session-default-model-from-claude-settings` case below.)
-// ──────────────────────────────────────────────────────────────────────────
-async function caseDefaultCwdModelFromRecentHistory({ log, registerDispose }) {
-  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-default-cwd-home-'));
-  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
-  const projectsRoot = path.join(fakeHome, '.claude', 'projects');
-  fs.mkdirSync(projectsRoot, { recursive: true });
-
-  // The frequency-ranked default sources from the last 10 jsonl files by mtime.
-  // We design the 10 fixtures so:
-  //   cwd  /path/A appears 6x, /path/B appears 4x  → expect default = /path/A
-  //
-  // To prove this is FREQUENCY (not "most-recent mtime"), we make the SINGLE
-  // most-recent fixture be cwd=/path/B — pure-recency code would pick /path/B,
-  // frequency code picks /path/A. That's the key bug signal from dogfood.
-  //
-  // mtime layout (newest → oldest):
-  //   t=10  → cwd /path/B  ← most recent (would win in old code)
-  //   t=9   → cwd /path/B
-  //   t=8   → cwd /path/A
-  //   t=7   → cwd /path/A
-  //   t=6   → cwd /path/B
-  //   t=5   → cwd /path/A
-  //   t=4   → cwd /path/A
-  //   t=3   → cwd /path/A
-  //   t=2   → cwd /path/B
-  //   t=1   → cwd /path/A
-  //   ─────────────────────────
-  //   /path/A: 6, /path/B: 4
-  //
-  // (Models are present in fixtures but no longer asserted — see the
-  // claude-settings case for default-model behaviour.)
-  const fixtures = [
-    { mtime: 10, cwd: '/path/B', model: 'claude-sonnet-4-6' },
-    { mtime: 9,  cwd: '/path/B', model: 'claude-opus-4-7[1m]' },
-    { mtime: 8,  cwd: '/path/A', model: 'claude-opus-4-7[1m]' },
-    { mtime: 7,  cwd: '/path/A', model: 'claude-opus-4-7[1m]' },
-    { mtime: 6,  cwd: '/path/B', model: 'claude-opus-4-7[1m]' },
-    { mtime: 5,  cwd: '/path/A', model: 'claude-opus-4-7[1m]' },
-    { mtime: 4,  cwd: '/path/A', model: 'claude-opus-4-7[1m]' },
-    { mtime: 3,  cwd: '/path/A', model: 'claude-opus-4-7[1m]' },
-    { mtime: 2,  cwd: '/path/B', model: 'claude-sonnet-4-6' },
-    { mtime: 1,  cwd: '/path/A', model: 'claude-sonnet-4-6' },
-  ];
-
-  // Plant each fixture as a separate jsonl, under the projectKey-from-cwd
-  // directory the scanner reads from. Each session needs the cwd field on
-  // the first user frame (so parseHead picks it up) and the model field on
-  // an assistant frame.
-  const baseTime = Date.now() - 10 * 60_000; // 10 min ago, drift-safe
-  for (let i = 0; i < fixtures.length; i++) {
-    const f = fixtures[i];
-    const sid = `00000000-0000-4000-8000-00000000000${(i + 1).toString(16)}`;
-    const projDir = path.join(projectsRoot, projectKeyFromCwd(f.cwd));
-    fs.mkdirSync(projDir, { recursive: true });
-    const filePath = path.join(projDir, `${sid}.jsonl`);
-    const ts = new Date(baseTime + f.mtime * 1000).toISOString();
-    const frames = [
-      {
-        type: 'user', parentUuid: null, isSidechain: false, uuid: `u-${i}`,
-        cwd: f.cwd, sessionId: sid, timestamp: ts,
-        message: { role: 'user', content: [{ type: 'text', text: `probe ${i}` }] }
-      },
-      {
-        type: 'assistant', session_id: sid, parentUuid: `u-${i}`, isSidechain: false,
-        uuid: `a-${i}`, cwd: f.cwd, timestamp: ts,
-        message: {
-          id: `msg-${i}`, role: 'assistant', model: f.model,
-          content: [{ type: 'text', text: `reply ${i}` }]
-        }
-      }
-    ];
-    fs.writeFileSync(filePath, frames.map((fr) => JSON.stringify(fr)).join('\n') + '\n');
-    // Force the file mtime to match the intended ordering — fs.writeFileSync
-    // uses wallclock and a 10-fixture loop can complete inside one ms tick,
-    // collapsing the ordering. Explicit utimes nails it down.
-    const wantMs = baseTime + f.mtime * 1000;
-    fs.utimesSync(filePath, wantMs / 1000, wantMs / 1000);
-  }
-  log(`planted 10 fixtures under ${projectsRoot} (cwd /path/A:6 /path/B:4; model opus[1m]:7 sonnet:3)`);
-
-  const ud = isolatedUserData('ccsm-harness-default-cwd-userdata');
-  registerDispose(ud.cleanup);
-
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
-    cwd: ROOT,
-    env: {
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
-      ...process.env,
-      NODE_ENV: 'production',
-      CCSM_PROD_BUNDLE: '1',
-      HOME: fakeHome,
-      USERPROFILE: fakeHome,
-      CLAUDE_HOME: fakeHome
-    }
-  });
-  let closed = false;
-  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
-
-  try {
-    const win = await waitReady(app);
-
-    // Wait for the boot-time history scan IPC to populate the renderer
-    // store. The store seeds `historyRecentCwds` from
-    // `window.ccsm.recentCwds()` — async and not awaited by hydration, so
-    // we poll until the array lands.
-    await win.waitForFunction(
-      () => {
-        const s = window.__ccsmStore?.getState?.();
-        return !!s && Array.isArray(s.historyRecentCwds) && s.historyRecentCwds.length > 0;
-      },
-      null,
-      { timeout: 15_000 }
-    );
-
-    // Snapshot what the renderer thinks the history defaults are, before
-    // we exercise createSession. If THIS is wrong, the createSession
-    // assertion below will fail too, but the snapshot lets us pinpoint
-    // whether the regression is in the IPC scan or in the store fallback.
-    const seeded = await win.evaluate(() => {
-      const s = window.__ccsmStore.getState();
-      return {
-        historyRecentCwds: s.historyRecentCwds,
-        // Also snapshot the in-memory store's `model` and `recentProjects`
-        // — both should be empty on this fresh user-data dir, which is
-        // what makes the history-derived defaults the actual source.
-        globalModel: s.model,
-        recentProjectsCount: (s.recentProjects ?? []).length,
-      };
-    });
-    log(`seeded defaults: historyRecentCwds[0]=${seeded.historyRecentCwds[0]} (globalModel="${seeded.globalModel}", recentProjects=${seeded.recentProjectsCount})`);
-
-    if (seeded.historyRecentCwds[0] !== '/path/A') {
-      throw new Error(`task#293: historyRecentCwds[0] should be the FREQUENCY-TOP cwd (/path/A appears 6x); got ${JSON.stringify(seeded.historyRecentCwds)}`);
-    }
-
-    // Now drive createSession() and verify the new session inherits the
-    // frequency-top cwd. We zero out `sessions` first so the task328
-    // group-recent-cwd path doesn't shadow the history default (no
-    // sessions in any group → falls through to historyRecentCwds[0]).
-    const created = await win.evaluate(() => {
-      const st = window.__ccsmStore;
-      st.setState({
-        sessions: [],
-        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-        activeId: '',
-        focusedGroupId: 'g-default',
-        // Defensive: belt-and-suspenders zero-out for a possibly-persisted
-        // global model from a prior install. With the user-data dir freshly
-        // created this is already '', but stating it makes the assertion
-        // about "frequency-default wins" unambiguous.
-        model: '',
-        recentProjects: [],
-      });
-      st.getState().createSession();
-      const s = st.getState();
-      const newSession = s.sessions[0];
-      return { cwd: newSession?.cwd, model: newSession?.model };
-    });
-    log(`createSession() produced cwd=${created.cwd} model=${created.model}`);
-
-    if (created.cwd !== '/path/A') {
-      throw new Error(`task#293: new session cwd should be /path/A (most-frequent in last 10 sessions); got ${created.cwd}`);
-    }
-    log(`task#293 PASS — default cwd derives from last-10 frequency`);
-  } finally {
-    closed = true;
-    try { await app.close(); } catch {}
-  }
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // CASE: new-session-default-model-from-claude-settings
@@ -1879,7 +1686,6 @@ async function caseNewSessionDefaultModelFromClaudeSettings({ log, registerDispo
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -2044,183 +1850,27 @@ async function caseNewSessionDefaultModelHonorsClaudeConfigDir({ log, registerDi
   }
 }
 
+
 // ──────────────────────────────────────────────────────────────────────────
-// CASE: model-picker-list-honors-claude-config-dir
-// Bug #328 follow-up to PR #386. `listModelsFromSettings()` (the source for
-// the model picker list, exposed via IPC `models:list` →
-// `window.ccsm.models.list()`) had the same `os.homedir() + '.claude'`
-// hard-code that `readDefaultModelFromSettings()` had pre-#386. So under a
-// custom `CLAUDE_CONFIG_DIR`, any sentinel model id placed in the real
-// settings.json was silently dropped from the picker — the picker only
-// surfaced the static fallback / cli-picker entries instead.
-//
-// Setup mirrors `new-session-default-model-honors-claude-config-dir`:
-// HOME → decoy `~/.claude/settings.json` (no model fields);
-// CLAUDE_CONFIG_DIR → sandbox B with a sentinel model id.
-//
-// Without the fix: `models:list` returns the fallback list with NO sentinel.
-// With the fix: the sentinel id is present, tagged source 'settings'.
+// CASE: new-session-default-cwd-is-home
+// Spec: default cwd is ALWAYS `os.homedir()` regardless of CLI history,
+// recentProjects, sibling sessions, or any other state. This probe sandboxes
+// HOME (no ~/.claude/projects history at all), boots ccsm, calls
+// `createSession()`, and asserts the new session's `cwd` === sandboxed HOME.
 // ──────────────────────────────────────────────────────────────────────────
-async function caseModelPickerListHonorsClaudeConfigDir({ log, registerDispose }) {
-  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-models-cfgdir-home-'));
+async function caseNewSessionDefaultCwdIsHome({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-default-cwd-home-'));
   registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
-  // Decoy `~/.claude/settings.json` in HOME with NO model field. If the
-  // picker list reader fell back to homedir, it would see only the static
-  // fallback + cli-picker entries — never the sentinel below.
-  const decoyClaudeDir = path.join(fakeHome, '.claude');
-  fs.mkdirSync(decoyClaudeDir, { recursive: true });
-  fs.writeFileSync(path.join(decoyClaudeDir, 'settings.json'), JSON.stringify({}, null, 2));
+  // Empty HOME — no ~/.claude/projects, no settings.json. Proves the new
+  // default doesn't depend on any history source.
 
-  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-models-cfgdir-real-'));
-  registerDispose(() => { try { fs.rmSync(cfgDir, { recursive: true, force: true }); } catch {} });
-  // Sentinel id is intentionally a string that cannot collide with any
-  // CLI_PICKER_MODELS / FALLBACK_MODELS / env-derived id, so its presence
-  // proves the read consulted CLAUDE_CONFIG_DIR.
-  const SENTINEL = 'sentinel-cfgdir-model-9zq';
-  fs.writeFileSync(
-    path.join(cfgDir, 'settings.json'),
-    JSON.stringify({ model: SENTINEL }, null, 2)
-  );
-  log(`HOME=${fakeHome} (decoy empty settings) | CLAUDE_CONFIG_DIR=${cfgDir} (model="${SENTINEL}")`);
-
-  const ud = isolatedUserData('ccsm-harness-models-cfgdir-userdata');
+  const ud = isolatedUserData('ccsm-default-cwd-home-userdata');
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
-      ...process.env,
-      NODE_ENV: 'production',
-      CCSM_PROD_BUNDLE: '1',
-      HOME: fakeHome,
-      USERPROFILE: fakeHome,
-      CLAUDE_HOME: fakeHome,
-      CLAUDE_CONFIG_DIR: cfgDir
-    }
-  });
-  let closed = false;
-  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
-
-  try {
-    const win = await waitReady(app);
-
-    // Invoke the same IPC that the model picker UI uses.
-    const models = await win.evaluate(async () => {
-      // @ts-expect-error renderer global injected by preload
-      return await window.ccsm.models.list();
-    });
-    log(`models:list returned ${models.length} entries (first 3: ${JSON.stringify(models.slice(0, 3))})`);
-
-    const sentinelEntry = models.find((m) => m.id === SENTINEL);
-    if (!sentinelEntry) {
-      throw new Error(
-        `expected models:list to contain sentinel id "${SENTINEL}" sourced from CLAUDE_CONFIG_DIR/settings.json; ` +
-        `got ids=${JSON.stringify(models.map((m) => m.id))}. ` +
-        `listModelsFromSettings() should consult process.env.CLAUDE_CONFIG_DIR like readDefaultModelFromSettings() and commands-loader.ts do.`
-      );
-    }
-    if (sentinelEntry.source !== 'settings') {
-      throw new Error(
-        `sentinel "${SENTINEL}" found but source=${sentinelEntry.source}; expected 'settings' (top-level model field).`
-      );
-    }
-    log(`PASS — listModelsFromSettings honors CLAUDE_CONFIG_DIR (sentinel present, source='settings')`);
-  } finally {
-    closed = true;
-    try { await app.close(); } catch {}
-  }
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// CASE: new-session-default-cwd-from-frequency
-//
-// Bug repro (post-#369): in the wild, "新建 session" still produces a default
-// cwd that has nothing to do with the user's frequency-top CLI directory.
-// The user reported the picker landing on `c:/x` — a stale value that lives
-// only inside their already-open ccsm session.
-//
-// Root cause: the `createSession` cwd fallback chain still prefers
-// `groupRecentCwd` (the cwd of the most-recent existing session in the
-// target group) BEFORE `historyRecentCwds[0]` (frequency vote over the last
-// 10 CLI sessions). So if the user has any prior session in the focused
-// group whose cwd happens to be a stray throwaway dir, every "New session"
-// click in that group inherits that stray cwd — completely shadowing #369's
-// frequency-vote default the user explicitly asked for.
-//
-// Expected per user direction: frequency vote wins over both
-// `groupRecentCwd` and `recentProjects`. The CLI transcript history is the
-// ONLY "where do you actually work" signal — neither a one-off chip pick
-// nor a stray cwd inherited from a prior in-app session should override it.
-//
-// This probe plants:
-//   - 10 jsonl history fixtures with frequency-top cwd `D:/work/repo-a` (×7)
-//     and `D:/work/repo-b` (×3) — same pattern as the #369 case but using
-//     Windows-style paths to match what the user actually hit.
-//   - An existing in-app session in the focused group with a stale cwd
-//     `c:/x` (the literal value the user reported).
-//   - A persisted `recentProjects` entry of `c:/x` so even if the
-//     groupRecentCwd path didn't fire, the second-best wrong-source would.
-//
-// Then triggers `createSession()` and asserts the new session's cwd ===
-// `D:/work/repo-a` (frequency winner).
-// ──────────────────────────────────────────────────────────────────────────
-async function caseNewSessionDefaultCwdFromFrequency({ log, registerDispose }) {
-  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-new-session-cwd-home-'));
-  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
-  const projectsRoot = path.join(fakeHome, '.claude', 'projects');
-  fs.mkdirSync(projectsRoot, { recursive: true });
-
-  // Frequency layout: D:/work/repo-a 7x, D:/work/repo-b 3x in last 10.
-  const fixtures = [
-    { mtime: 10, cwd: 'D:/work/repo-b' },
-    { mtime: 9,  cwd: 'D:/work/repo-a' },
-    { mtime: 8,  cwd: 'D:/work/repo-a' },
-    { mtime: 7,  cwd: 'D:/work/repo-a' },
-    { mtime: 6,  cwd: 'D:/work/repo-b' },
-    { mtime: 5,  cwd: 'D:/work/repo-a' },
-    { mtime: 4,  cwd: 'D:/work/repo-a' },
-    { mtime: 3,  cwd: 'D:/work/repo-a' },
-    { mtime: 2,  cwd: 'D:/work/repo-b' },
-    { mtime: 1,  cwd: 'D:/work/repo-a' },
-  ];
-  const baseTime = Date.now() - 10 * 60_000;
-  for (let i = 0; i < fixtures.length; i++) {
-    const f = fixtures[i];
-    const sid = `00000000-0000-4000-8000-00000000010${(i + 1).toString(16)}`;
-    const projDir = path.join(projectsRoot, projectKeyFromCwd(f.cwd));
-    fs.mkdirSync(projDir, { recursive: true });
-    const filePath = path.join(projDir, `${sid}.jsonl`);
-    const ts = new Date(baseTime + f.mtime * 1000).toISOString();
-    const frames = [
-      {
-        type: 'user', parentUuid: null, isSidechain: false, uuid: `nu-${i}`,
-        cwd: f.cwd, sessionId: sid, timestamp: ts,
-        message: { role: 'user', content: [{ type: 'text', text: `probe ${i}` }] }
-      },
-      {
-        type: 'assistant', session_id: sid, parentUuid: `nu-${i}`, isSidechain: false,
-        uuid: `na-${i}`, cwd: f.cwd, timestamp: ts,
-        message: {
-          id: `nmsg-${i}`, role: 'assistant', model: 'claude-opus-4-7[1m]',
-          content: [{ type: 'text', text: `reply ${i}` }]
-        }
-      }
-    ];
-    fs.writeFileSync(filePath, frames.map((fr) => JSON.stringify(fr)).join('\n') + '\n');
-    const wantMs = baseTime + f.mtime * 1000;
-    fs.utimesSync(filePath, wantMs / 1000, wantMs / 1000);
-  }
-  log(`planted 10 fixtures: D:/work/repo-a:7 D:/work/repo-b:3 under ${projectsRoot}`);
-
-  const ud = isolatedUserData('ccsm-harness-new-session-cwd-userdata');
-  registerDispose(ud.cleanup);
-
-  const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
-    cwd: ROOT,
-    env: {
-      CCSM_E2E_HIDDEN: process.env.CCSM_E2E_HIDDEN ?? '1',
       ...process.env,
       NODE_ENV: 'production',
       CCSM_PROD_BUNDLE: '1',
@@ -2235,72 +1885,407 @@ async function caseNewSessionDefaultCwdFromFrequency({ log, registerDispose }) {
   try {
     const win = await waitReady(app);
 
-    // Wait for the boot-time history scan IPC to populate the renderer store.
+    // Wait for the boot read of `app:userHome` to populate the store.
     await win.waitForFunction(
       () => {
         const s = window.__ccsmStore?.getState?.();
-        return !!s && Array.isArray(s.historyRecentCwds) && s.historyRecentCwds.length > 0;
+        return !!s && typeof s.userHome === 'string' && s.userHome.length > 0;
       },
       null,
       { timeout: 15_000 }
     );
 
-    // Sanity-check that the IPC ranked frequency-top correctly. If THIS
-    // fails, the bug is in the scanner / deriveRecentCwds, not in the
-    // store fallback chain.
     const seeded = await win.evaluate(() => {
       const s = window.__ccsmStore.getState();
-      return { historyRecentCwds: s.historyRecentCwds };
+      return { userHome: s.userHome };
     });
-    log(`seeded historyRecentCwds[0]=${seeded.historyRecentCwds[0]}`);
-    if (seeded.historyRecentCwds[0] !== 'D:/work/repo-a') {
-      throw new Error(`scanner regression: historyRecentCwds[0] should be D:/work/repo-a; got ${JSON.stringify(seeded.historyRecentCwds)}`);
+    log(`seeded userHome=${seeded.userHome}`);
+    if (seeded.userHome !== fakeHome && seeded.userHome.replace(/\\/g, '/') !== fakeHome.replace(/\\/g, '/')) {
+      throw new Error(`expected userHome to be sandboxed HOME ${fakeHome}; got ${seeded.userHome}`);
     }
 
-    // Now plant the bug-repro state in the store:
-    //  1. an existing session in the focused group with cwd 'c:/x'
-    //     (mimics user's stale prior session that's leaking via groupRecentCwd)
-    //  2. recentProjects[0].path === 'c:/x' (mimics a stale chip pick)
-    //  3. focusedGroupId points to that group so createSession targets it
-    //
-    // The freq-vote winner is `D:/work/repo-a`; assertion below requires the
-    // new session to land on that, NOT on `c:/x`.
     const created = await win.evaluate(() => {
       const st = window.__ccsmStore;
+      // Plant adversarial state: a stale prior session in the focused group
+      // with a non-home cwd, plus a recentProjects entry. Per spec, NONE of
+      // those should leak into the new-session default — only userHome wins.
       st.setState({
         sessions: [{
-          id: 's-stale',
-          name: 'stale prior',
-          state: 'idle',
-          cwd: 'c:/x',
-          model: 'claude-opus-4-7[1m]',
-          groupId: 'g-default',
-          agentType: 'claude-code',
+          id: 's-stale', name: 'stale', state: 'idle', cwd: 'C:/some-old-dir',
+          model: 'claude-opus-4-7[1m]', groupId: 'g-default', agentType: 'claude-code',
         }],
         groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
         activeId: 's-stale',
         focusedGroupId: 'g-default',
-        model: '',
-        recentProjects: [{ id: 'p-stale', name: 'x', path: 'c:/x' }],
+        model: 'persisted-old-model',
+        recentProjects: [{ id: 'p-stale', name: 'old', path: 'D:/stale-proj' }],
       });
       st.getState().createSession();
       const s = st.getState();
-      // createSession prepends, so the new session is index 0; the stale
-      // one is index 1.
       const newSession = s.sessions[0];
-      return { cwd: newSession?.cwd, allCwds: s.sessions.map(x => x.cwd) };
+      return { cwd: newSession?.cwd, userHome: s.userHome };
     });
-    log(`createSession() produced cwd=${created.cwd} (all session cwds: ${JSON.stringify(created.allCwds)})`);
+    log(`createSession() produced cwd=${created.cwd} (userHome=${created.userHome})`);
 
-    if (created.cwd !== 'D:/work/repo-a') {
-      throw new Error(`new-session-default-cwd-from-frequency: new session cwd should be the frequency-top D:/work/repo-a; got ${created.cwd}. The stale 'c:/x' from groupRecentCwd / recentProjects shadowed the frequency vote — fix createSession's fallback chain so historyRecentCwds wins.`);
+    if (created.cwd !== created.userHome) {
+      throw new Error(`new session cwd should be userHome (${created.userHome}); got ${created.cwd}. Stale sessions / recentProjects must NOT leak into the default per spec.`);
     }
-    log(`PASS — new session cwd derived from frequency vote, not from stale groupRecentCwd/recentProjects`);
+    log(`PASS — new-session default cwd === userHome`);
   } finally {
     closed = true;
     try { await app.close(); } catch {}
   }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// CASE: cwd-popover-recent-only-home-on-fresh
+// Fresh sandbox HOME (no prior cwd picks). Open the StatusBar cwd popover
+// and assert the recent list contains exactly one row, equal to userHome.
+// Verifies the popover's recent column is sourced from the ccsm-owned LRU
+// (which falls back to `[homedir()]` when empty), NOT from CLI JSONL scans.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseCwdPopoverRecentOnlyHomeOnFresh({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-popover-fresh-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  // Plant CLI JSONL with a totally unrelated cwd to prove it does NOT leak
+  // into the popover's recent column.
+  const projectsRoot = path.join(fakeHome, '.claude', 'projects');
+  fs.mkdirSync(projectsRoot, { recursive: true });
+  const cliCwd = path.join(fakeHome, 'cli-only-dir');
+  const projDir = path.join(projectsRoot, projectKeyFromCwd(cliCwd));
+  fs.mkdirSync(projDir, { recursive: true });
+  const sid = '00000000-0000-4000-8000-000000000aaa';
+  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), JSON.stringify({
+    type: 'user', parentUuid: null, isSidechain: false, uuid: 'u-1',
+    cwd: cliCwd, sessionId: sid, timestamp: new Date().toISOString(),
+    message: { role: 'user', content: [{ type: 'text', text: 'hi' }] }
+  }) + '\n');
+  log(`planted CLI JSONL fixture with cwd=${cliCwd} (must NOT leak into popover recent)`);
+
+  const ud = isolatedUserData('ccsm-popover-fresh-userdata');
+  registerDispose(ud.cleanup);
+
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app);
+
+    // Plant a session so the StatusBar (and its CwdPopover) actually mounts.
+    await win.evaluate(() => {
+      window.__ccsmStore.setState({
+        groups: [{ id: 'g1', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        sessions: [{
+          id: 's1', groupId: 'g1', name: 'Test', state: 'idle',
+          cwd: window.__ccsmStore.getState().userHome,
+          cwdMissing: false, model: 'claude-opus-4-7[1m]', agentType: 'claude-code'
+        }],
+        activeId: 's1',
+        tutorialSeen: true,
+      });
+    });
+    await win.waitForTimeout(200);
+
+    const trigger = win.locator('[data-cwd-chip]').first();
+    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
+    await trigger.click();
+
+    const dialog = win.getByRole('dialog');
+    await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+
+    // Wait for recent list to render (loadRecent IPC is async).
+    await win.waitForFunction(
+      () => {
+        const dlg = document.querySelector('[role="dialog"]');
+        if (!dlg) return false;
+        return dlg.querySelectorAll('[role="option"]').length >= 1;
+      },
+      null,
+      { timeout: 5_000 }
+    );
+
+    const options = await dialog.locator('[role="option"]').allTextContents();
+    log(`popover recent options: ${JSON.stringify(options)}`);
+    if (options.length !== 1) {
+      throw new Error(`fresh-install popover should have exactly 1 recent entry (home); got ${options.length}: ${JSON.stringify(options)}. CLI JSONL entries must NOT leak into the popover.`);
+    }
+    // The visible label is `truncateMiddle(homedir())`; assert it ends with
+    // the last segment of fakeHome so we don't depend on truncation specifics.
+    const segs = fakeHome.split(/[\\/]/).filter(Boolean);
+    const tail = segs[segs.length - 1];
+    if (!options[0].includes(tail)) {
+      throw new Error(`fresh-install popover entry should reference home (${fakeHome}, tail "${tail}"); got "${options[0]}"`);
+    }
+    log(`PASS — fresh popover shows only home`);
+  } finally {
+    closed = true;
+    try { await app.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CASE: cwd-popover-lru-after-user-pick
+// Two-launch probe:
+//   1. Boot with sandboxed HOME, plant a userCwds.push for a non-default
+//      path, close the app.
+//   2. Relaunch into the same user-data dir, open the popover, assert
+//      list[0] = the user-picked path AND list[1] = home.
+// Pins the LRU semantics: user-explicit picks land at the head; home stays
+// as the implicit fallback at the tail.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseCwdPopoverLruAfterUserPick({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-popover-lru-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  const ud = isolatedUserData('ccsm-popover-lru-userdata');
+  registerDispose(ud.cleanup);
+
+  const pickedCwd = path.join(fakeHome, 'picked-by-user');
+  fs.mkdirSync(pickedCwd, { recursive: true });
+
+  // ----- Launch 1: seed the pick -----
+  {
+    const app1 = await electron.launch({
+      args: ['.', `--user-data-dir=${ud.dir}`],
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        CCSM_PROD_BUNDLE: '1',
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        CLAUDE_HOME: fakeHome
+      }
+    });
+    try {
+      const win = await waitReady(app1);
+      await win.waitForFunction(
+        () => {
+          const s = window.__ccsmStore?.getState?.();
+          return !!s && typeof s.userHome === 'string' && s.userHome.length > 0;
+        },
+        null,
+        { timeout: 15_000 }
+      );
+      const pushed = await win.evaluate(async (p) => {
+        return await window.ccsm.userCwds.push(p);
+      }, pickedCwd);
+      log(`launch-1: userCwds.push(${pickedCwd}) -> ${JSON.stringify(pushed)}`);
+      if (!Array.isArray(pushed) || pushed[0] !== pickedCwd) {
+        throw new Error(`launch-1 push did not put picked cwd at head; got ${JSON.stringify(pushed)}`);
+      }
+    } finally {
+      try { await app1.close(); } catch {}
+    }
+  }
+
+  // ----- Launch 2: assert popover shows pick at head, home at index 1 -----
+  const app2 = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app2.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app2);
+    await win.waitForFunction(
+      () => {
+        const s = window.__ccsmStore?.getState?.();
+        return !!s && typeof s.userHome === 'string' && s.userHome.length > 0;
+      },
+      null,
+      { timeout: 15_000 }
+    );
+
+    const list = await win.evaluate(async () => await window.ccsm.userCwds.get());
+    log(`launch-2 userCwds.get() -> ${JSON.stringify(list)}`);
+    if (!Array.isArray(list) || list.length < 2) {
+      throw new Error(`expected userCwds.get() to return [pickedCwd, ...] including home; got ${JSON.stringify(list)}`);
+    }
+    if (list[0] !== pickedCwd) {
+      throw new Error(`expected list[0] === ${pickedCwd}; got ${list[0]}`);
+    }
+    // Plant a session so popover mounts, then open it and assert visible
+    // ordering matches.
+    await win.evaluate(() => {
+      window.__ccsmStore.setState({
+        groups: [{ id: 'g1', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        sessions: [{
+          id: 's1', groupId: 'g1', name: 'Test', state: 'idle',
+          cwd: window.__ccsmStore.getState().userHome,
+          cwdMissing: false, model: 'claude-opus-4-7[1m]', agentType: 'claude-code'
+        }],
+        activeId: 's1',
+        tutorialSeen: true,
+      });
+    });
+    await win.waitForTimeout(200);
+
+    const trigger = win.locator('[data-cwd-chip]').first();
+    await trigger.waitFor({ state: 'visible', timeout: 10_000 });
+    await trigger.click();
+    const dialog = win.getByRole('dialog');
+    await dialog.waitFor({ state: 'visible', timeout: 5_000 });
+    await win.waitForFunction(
+      () => document.querySelectorAll('[role="dialog"] [role="option"]').length >= 2,
+      null,
+      { timeout: 5_000 }
+    );
+    const options = await dialog.locator('[role="option"]').allTextContents();
+    log(`popover options: ${JSON.stringify(options)}`);
+    const pickedTail = pickedCwd.split(/[\\/]/).filter(Boolean).slice(-1)[0];
+    const homeTail = fakeHome.split(/[\\/]/).filter(Boolean).slice(-1)[0];
+    if (!options[0].includes(pickedTail)) {
+      throw new Error(`popover[0] should reference picked cwd (tail "${pickedTail}"); got "${options[0]}"`);
+    }
+    if (!options[1] || !options[1].includes(homeTail)) {
+      throw new Error(`popover[1] should reference home (tail "${homeTail}"); got "${options[1]}"`);
+    }
+    log(`PASS — popover LRU shows picked cwd at head, home at index 1`);
+  } finally {
+    closed = true;
+    try { await app2.close(); } catch {}
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// CASE: new-session-default-model-ignores-last-pick
+// Spec: in-session model swaps must NOT become the next-NewSession default.
+// settings.json is the only source. Two-launch probe:
+//   1. settings.json `model: "opus[1m]"` → fresh launch → set persisted
+//      global `model` to "claude-sonnet-4-6" (mimics prior pick) → close.
+//   2. Relaunch → createSession → assert new session model === "opus[1m]".
+// ──────────────────────────────────────────────────────────────────────────
+async function caseNewSessionDefaultModelIgnoresLastPick({ log, registerDispose }) {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-model-ignore-'));
+  registerDispose(() => { try { fs.rmSync(fakeHome, { recursive: true, force: true }); } catch {} });
+  const claudeDir = path.join(fakeHome, '.claude');
+  fs.mkdirSync(claudeDir, { recursive: true });
+  fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({ model: 'opus[1m]' }, null, 2));
+
+  const ud = isolatedUserData('ccsm-model-ignore-userdata');
+  registerDispose(ud.cleanup);
+
+  // ----- Launch 1: stash a stale persisted global model -----
+  {
+    const app1 = await electron.launch({
+      args: ['.', `--user-data-dir=${ud.dir}`],
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        CCSM_PROD_BUNDLE: '1',
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        CLAUDE_HOME: fakeHome
+      }
+    });
+    try {
+      const win = await waitReady(app1);
+      // Wait for boot to finish so persistence subscriber is wired up.
+      await win.waitForFunction(
+        () => typeof window.__ccsmStore?.getState?.()?.userHome === 'string',
+        null,
+        { timeout: 15_000 }
+      );
+      await win.evaluate(() => {
+        // Mimic a user picking a non-settings model in the StatusBar — the
+        // store's persisted `model` field would catch it.
+        window.__ccsmStore.setState({ model: 'claude-sonnet-4-6' });
+      });
+      // Give the persist debounce time to fire (250ms).
+      await win.waitForTimeout(600);
+      log(`launch-1: stashed persisted global model = "claude-sonnet-4-6"`);
+    } finally {
+      try { await app1.close(); } catch {}
+    }
+  }
+
+  // ----- Launch 2: assert new-session default ignores stash -----
+  const app2 = await electron.launch({
+    args: ['.', `--user-data-dir=${ud.dir}`],
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      CLAUDE_HOME: fakeHome
+    }
+  });
+  let closed = false;
+  registerDispose(async () => { if (!closed) try { await app2.close(); } catch {} });
+
+  try {
+    const win = await waitReady(app2);
+    await win.waitForFunction(
+      () => typeof window.__ccsmStore?.getState?.()?.claudeSettingsDefaultModel === 'string',
+      null,
+      { timeout: 15_000 }
+    );
+
+    const seeded = await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      return {
+        claudeSettings: s.claudeSettingsDefaultModel,
+        persistedModel: s.model,
+      };
+    });
+    log(`launch-2 seeded: claudeSettings=${seeded.claudeSettings} persistedModel="${seeded.persistedModel}"`);
+    if (seeded.claudeSettings !== 'opus[1m]') {
+      throw new Error(`expected claudeSettingsDefaultModel="opus[1m]"; got ${JSON.stringify(seeded.claudeSettings)}`);
+    }
+    if (seeded.persistedModel !== 'claude-sonnet-4-6') {
+      throw new Error(`launch-2 should have rehydrated persisted global model "claude-sonnet-4-6"; got ${JSON.stringify(seeded.persistedModel)}. Persist round-trip is broken — fix that first.`);
+    }
+
+    const created = await win.evaluate(() => {
+      const st = window.__ccsmStore;
+      st.setState({
+        sessions: [],
+        groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+        activeId: '',
+        focusedGroupId: 'g-default',
+        // Leave persisted `model` as "claude-sonnet-4-6" — the WHOLE point of
+        // this case is to prove createSession ignores it.
+      });
+      st.getState().createSession();
+      const s = st.getState();
+      return { newModel: s.sessions[0]?.model };
+    });
+    log(`createSession() produced model=${created.newModel}`);
+
+    if (created.newModel !== 'opus[1m]') {
+      throw new Error(`new session model should be "opus[1m]" (settings.json), NOT the persisted "claude-sonnet-4-6"; got ${JSON.stringify(created.newModel)}. createSession must read claudeSettingsDefaultModel only.`);
+    }
+    log(`PASS — new-session default model ignores stale persisted global pick`);
+  } finally {
+    closed = true;
+    try { await app2.close(); } catch {}
+  }
+}
+
 
 
 await runHarness({
@@ -2323,30 +2308,33 @@ await runHarness({
     // with sandboxed CLAUDE_CONFIG_DIR + real claude.exe Bash invocation.
     // 桶 3 worker classified as restore-fits-the-multi-launch pattern.
     { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode },
-    // task#293: default cwd on a fresh session derives from frequency
-    // over the last 10 CLI sessions. Pre-launch HOME sandbox + 10 jsonl
-    // fixtures with controlled cwd/model distribution.
-    { id: 'default-cwd-model-from-recent-history', skipLaunch: true, run: caseDefaultCwdModelFromRecentHistory },
-    // dogfood-reported: post-#369, stale `groupRecentCwd` / `recentProjects`
-    // were still shadowing the frequency-vote default (user hit `c:/x` on
-    // every "New session"). This case proves the new-session cwd resolves
-    // to the frequency-top history cwd even when both stale sources are
-    // present in the store.
-    { id: 'new-session-default-cwd-from-frequency', skipLaunch: true, run: caseNewSessionDefaultCwdFromFrequency },
+    // Default cwd is ALWAYS the user's home directory — no fallback chain,
+    // no derivation from CLI history, no inheritance from prior sessions.
+    // (PR fix-default-cwd-home-and-model-settings-only.) Replaces the old
+    // `default-cwd-model-from-recent-history` + `new-session-default-cwd-
+    // from-frequency` cases, which asserted on the now-deleted frequency
+    // vote / recentProjects fallback chain.
+    { id: 'new-session-default-cwd-is-home', skipLaunch: true, run: caseNewSessionDefaultCwdIsHome },
+    // CwdPopover recent column: empty user-cwds list → render `[homedir()]`
+    // only, NOT every cwd that ever appeared in CLI JSONL.
+    { id: 'cwd-popover-recent-only-home-on-fresh', skipLaunch: true, run: caseCwdPopoverRecentOnlyHomeOnFresh },
+    // CwdPopover LRU: picking a non-default cwd lands at the head of the
+    // recent list; home stays as the implicit fallback at index 1.
+    // 2-launch: seed pick → close → relaunch into same user-data dir →
+    // assert popover ordering.
+    { id: 'cwd-popover-lru-after-user-pick', skipLaunch: true, run: caseCwdPopoverLruAfterUserPick },
     // Default model reads ~/.claude/settings.json `model` (the CLI's own
-    // default-model setting) — replaces #369's frequency-vote model logic.
+    // default-model setting). Spec: this is the ONLY source for new-session
+    // default model — no fallback to persisted global pick / connection
+    // profile / first discovered model.
     { id: 'new-session-default-model-from-claude-settings', skipLaunch: true, run: caseNewSessionDefaultModelFromClaudeSettings },
     // The same read must honor `CLAUDE_CONFIG_DIR` (commands-loader.ts:231
     // already does). ccsm pins this env var in production; this case
     // guards against future drift between the two readers.
     { id: 'new-session-default-model-honors-claude-config-dir', skipLaunch: true, run: caseNewSessionDefaultModelHonorsClaudeConfigDir },
-    // Bug #328 follow-up: `listModelsFromSettings()` in list-models-from-settings.ts
-    // is the second consumer of `<configDir>/settings.json` in this module and
-    // had the SAME hard-coded `os.homedir() + '.claude'` fallback that
-    // `readDefaultModelFromSettings()` had pre-#386. The model picker list
-    // therefore silently ignores settings.json under a custom CLAUDE_CONFIG_DIR.
-    // This case mirrors the case above but asserts the IPC `models:list`
-    // result (what populates the picker UI) reflects the sandbox-B settings.
-    { id: 'model-picker-list-honors-claude-config-dir', skipLaunch: true, run: caseModelPickerListHonorsClaudeConfigDir }
+    // In-session model swap (e.g. user picks sonnet for one turn) must NOT
+    // become the next-NewSession default — settings.json is still the
+    // source of truth. Drops the old "persisted global model wins" path.
+    { id: 'new-session-default-model-ignores-last-pick', skipLaunch: true, run: caseNewSessionDefaultModelIgnoresLastPick }
   ]
 });

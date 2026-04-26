@@ -225,13 +225,33 @@ const api = {
   > => ipcRenderer.invoke('import:scan'),
 
   /**
-   * Most-recently-used cwds derived from the eager scan that runs on app
-   * `ready`. Returns immediately from cache after the first scan completes;
-   * the call itself is cheap (no fs work in the renderer round-trip).
-   * Empty array means the scan is still in flight or `~/.claude/projects`
-   * has nothing usable.
+   * Most-recently-used cwds shown in the StatusBar cwd popover. Sourced from
+   * the ccsm-owned LRU (`app:userCwds`), NOT from CLI JSONL scans — the user's
+   * CLI history is not their ccsm working-set. Always includes the user's
+   * home directory as a fallback so the list is never empty on a fresh
+   * install. Use `userCwds.push` to extend the list when the user explicitly
+   * picks a non-default cwd.
    */
   recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
+
+  /**
+   * Path to the user's home directory (`os.homedir()` on the main process).
+   * Used as the always-true default cwd for new sessions, regardless of CLI
+   * history. Resolved once at boot and cached in the renderer store.
+   */
+  userHome: (): Promise<string> => ipcRenderer.invoke('app:userHome'),
+
+  /**
+   * ccsm-owned LRU of cwds the user has explicitly chosen. Persisted in the
+   * `app_state` SQLite table; capped at 20 entries. The default-cwd source for
+   * new sessions is `userHome()` — this list only seeds the popover's recent
+   * column.
+   */
+  userCwds: {
+    get: (): Promise<string[]> => ipcRenderer.invoke('app:userCwds:get'),
+    push: (p: string): Promise<string[]> =>
+      ipcRenderer.invoke('app:userCwds:push', p),
+  },
 
   /**
    * The user's CLI default-model preference, read directly from

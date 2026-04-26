@@ -486,10 +486,10 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
 }
 
 export type SidebarProps = {
-  /** Create a new session in-place. The store seeds `cwd` from the
-   *  per-group last-used cwd (falling through to recentProjects, then ''
-   *  which renders the chip's `(none)` placeholder); the user repicks via
-   *  the StatusBar cwd chip. No modal involved — see App.tsx::newSession. */
+  /** Create a new session in-place. The store seeds `cwd` from the user's
+   *  home directory (the always-true default per the new spec); the user
+   *  repicks via the StatusBar cwd chip. No modal involved — see
+   *  App.tsx::newSession. */
   onCreateSession?: () => void;
   onOpenSettings?: () => void;
   onOpenPalette?: () => void;

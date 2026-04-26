@@ -165,12 +165,28 @@ declare global {
       >;
 
       /**
-       * Most-recently-used cwds derived from CLI transcripts. Cached in main
-       * via an eager scan at app `ready`, so this resolves quickly even on
-       * first call after window load. Empty array if the scan is still in
-       * flight or no transcripts are present.
+       * Most-recently-used cwds for the StatusBar cwd popover. Sourced from
+       * the ccsm-owned LRU (NOT CLI JSONL scans). Never empty: returns
+       * `[homedir()]` when the user hasn't picked anything yet.
        */
       recentCwds: () => Promise<string[]>;
+
+      /**
+       * `os.homedir()` from the main process. Seeds the always-true default
+       * cwd for new sessions (replaces the old recent-history-derived
+       * default). Resolved once at boot and cached in the renderer store.
+       */
+      userHome: () => Promise<string>;
+
+      /**
+       * ccsm-owned LRU of cwds explicitly chosen by the user. Lives in the
+       * `app_state` SQLite table; capped at 20 entries. Push returns the
+       * post-update list so callers can update local UI without a round-trip.
+       */
+      userCwds: {
+        get: () => Promise<string[]>;
+        push: (p: string) => Promise<string[]>;
+      };
 
       /**
        * Default model from `~/.claude/settings.json`'s `model` field — the
