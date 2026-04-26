@@ -2923,6 +2923,116 @@ async function caseDeadUiCleanup({ win, log, registerDispose }) {
   log('greeting gone, kbd hint gone, Window tint field gone');
 }
 
+// ---------- sidebar-inputbar-bottom-align ----------
+// UX audit Group A. The Sidebar's bottom-row buttons (Settings + Import)
+// must share a Y for their bottom edges with the InputBar's TEXTAREA
+// WRAPPER (the rounded-border box around the textarea + Send button) —
+// NOT with the Send button itself. The Send button is internal layout
+// inside the wrapper and is out of scope for this alignment.
+async function caseSidebarInputbarBottomAlign({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        {
+          id: 's-align-1', name: 's', state: 'idle', cwd: 'C:/x',
+          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+        }
+      ],
+      activeId: 's-align-1',
+      messagesBySession: { 's-align-1': [] }
+    });
+  });
+  await win.waitForTimeout(300);
+
+  // Sidebar Settings button — text 'Settings'. There's also a header
+  // tooltip-only "Settings" iconbutton in the collapsed-rail variant; we
+  // pin the expanded sidebar Button by aria role + exact name and take
+  // the first match scoped to the <aside>.
+  const aside = win.locator('aside');
+  const main = win.locator('main');
+  const settingsBtn = aside.getByRole('button', { name: /^Settings$/ }).first();
+  const inputWrapper = main.locator('[data-input-bar-wrapper]').first();
+  await settingsBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await inputWrapper.waitFor({ state: 'visible', timeout: 5000 });
+
+  const [settingsBox, wrapperBox] = await Promise.all([
+    settingsBtn.boundingBox(),
+    inputWrapper.boundingBox()
+  ]);
+  if (!settingsBox || !wrapperBox) throw new Error('box missing');
+
+  const settingsBottom = settingsBox.y + settingsBox.height;
+  const wrapperBottom = wrapperBox.y + wrapperBox.height;
+  const delta = Math.abs(settingsBottom - wrapperBottom);
+  const TOLERANCE = 1;
+  if (delta > TOLERANCE) {
+    throw new Error(
+      `bottom edges misaligned: Sidebar Settings bottom=${settingsBottom.toFixed(1)} ` +
+      `InputBar wrapper bottom=${wrapperBottom.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
+    );
+  }
+
+  log(
+    `Settings bottom=${settingsBottom.toFixed(1)} InputBar wrapper bottom=${wrapperBottom.toFixed(1)} ` +
+    `delta=${delta.toFixed(1)}`
+  );
+}
+
+// ---------- sidebar-vertical-symmetry ----------
+// UX audit Group A. Sidebar internal top/bottom symmetry: the gap from
+// the sidebar's top edge to the New Session button's top edge must equal
+// the gap from the Settings button's bottom edge to the sidebar's bottom
+// edge. This is purely intra-sidebar — has nothing to do with the right
+// pane's DragRegion.
+async function caseSidebarVerticalSymmetry({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        {
+          id: 's-sym-1', name: 's', state: 'idle', cwd: 'C:/x',
+          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
+        }
+      ],
+      activeId: 's-sym-1',
+      messagesBySession: { 's-sym-1': [] }
+    });
+  });
+  await win.waitForTimeout(300);
+
+  const m = await win.evaluate(() => {
+    const aside = document.querySelector('aside');
+    if (!aside) return null;
+    const newSessionBtn = Array.from(aside.querySelectorAll('button'))
+      .find((b) => /^New Session$/i.test(b.textContent?.trim() ?? ''));
+    const settingsBtn = Array.from(aside.querySelectorAll('button'))
+      .find((b) => /^Settings$/i.test(b.textContent?.trim() ?? ''));
+    if (!newSessionBtn || !settingsBtn) return null;
+    const aRect = aside.getBoundingClientRect();
+    const nRect = newSessionBtn.getBoundingClientRect();
+    const sRect = settingsBtn.getBoundingClientRect();
+    return {
+      topGap: nRect.top - aRect.top,
+      bottomGap: aRect.bottom - sRect.bottom
+    };
+  });
+  if (!m) throw new Error('could not locate New Session / Settings buttons');
+
+  const TOLERANCE = 1;
+  const delta = Math.abs(m.topGap - m.bottomGap);
+  if (delta > TOLERANCE) {
+    throw new Error(
+      `sidebar vertical asymmetry: topGap=${m.topGap.toFixed(1)} ` +
+      `bottomGap=${m.bottomGap.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
+    );
+  }
+  log(
+    `topGap=${m.topGap.toFixed(1)} bottomGap=${m.bottomGap.toFixed(1)} ` +
+    `delta=${delta.toFixed(1)}`
+  );
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -2944,6 +3054,11 @@ await runHarness({
   },
   cases: [
     { id: 'sidebar-align', run: caseSidebarAlign },
+    // UX audit Group A — task #311. Two regression cases pinning
+    // (1) Sidebar bottom buttons aligned with InputBar wrapper bottom edge,
+    // (2) Sidebar internal top/bottom symmetry.
+    { id: 'sidebar-inputbar-bottom-align', run: caseSidebarInputbarBottomAlign },
+    { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'empty-state-minimal', run: caseEmptyStateMinimal },
     { id: 'a11y-focus-restore', run: caseA11yFocusRestore },

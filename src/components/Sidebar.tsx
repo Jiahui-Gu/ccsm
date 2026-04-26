@@ -684,7 +684,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               bg-bg-sidebar/80 + backdrop-blur, so the buttons read as
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
-          <div className="px-3 pt-1 pb-2 flex items-center gap-2">
+          <div className="px-3 pt-1 pb-3 flex items-center gap-2">
             <NewSessionButton onCreateSession={onCreateSession} />
             <IconButton
               variant="raised"
@@ -786,8 +786,14 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
 
           {/* Settings — its own zone at the bottom. Mirrors the top zone's
               two-button rhythm (flex-1 text Button + fixed-width IconButton)
-              so the sidebar's top and bottom action rows feel symmetrical. */}
-          <div className="px-3 pt-2 pb-3 border-t border-border-subtle flex items-center gap-2">
+              so the sidebar's top and bottom action rows feel symmetrical.
+              pb-3 (12px) — matches the InputBar wrapper's pb-3, which puts
+              the textarea wrapper's bottom edge 12px above the window bottom.
+              The Settings/Import button bottoms align to that same Y.
+              The 8px DragRegion above + pt-1 (4px) on the top wrapper give
+              12px from sidebar.top to New Session.top — symmetric with this
+              12px from sidebar.bottom to Settings.bottom. UX audit Group A. */}
+          <div className="px-3 pt-3 pb-3 border-t border-border-subtle flex items-center gap-2">
             <Button
               variant="raised"
               size="md"

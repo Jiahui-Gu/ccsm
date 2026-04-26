@@ -1036,6 +1036,7 @@ export function InputBar({ sessionId }: { sessionId: string }) {
       )}
 
       <div
+        data-input-bar-wrapper
         className={cn(
           'relative rounded-md border bg-bg-elevated surface-highlight',
           'transition-[border-color,box-shadow] duration-200',
