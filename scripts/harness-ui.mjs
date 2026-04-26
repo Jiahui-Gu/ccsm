@@ -2020,13 +2020,18 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   assertHasText(txt, '字号', 'appearance');
   assertNotHasText(txt, 'Theme', 'appearance');
 
-  // Notifications.
+  // Notifications. Post-W2 the tab only renders two toggles: enable + sound.
+  // Per-event toggle ('权限请求') and the test-notification button
+  // ('发送测试通知') were removed; assert they're gone so a regression that
+  // re-introduces either is caught here.
   await switchTab(/^通知$/);
   txt = await paneText();
   assertHasText(txt, '启用通知', 'notifications');
-  assertHasText(txt, '权限请求', 'notifications');
-  assertHasText(txt, '发送测试通知', 'notifications');
+  assertHasText(txt, '声音', 'notifications');
   assertNotHasText(txt, 'Enable notifications', 'notifications');
+  assertNotHasText(txt, 'Sound', 'notifications');
+  assertNotHasText(txt, '权限请求', 'notifications');
+  assertNotHasText(txt, '发送测试通知', 'notifications');
   assertNotHasText(txt, 'Test notification', 'notifications');
 
   // Updates.
@@ -2050,6 +2055,102 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   await closeDialog();
 
   log('Appearance / Notifications / Updates / Connection panes all render Chinese labels');
+}
+
+// ---------- notif-disabled-suppress (W5) ----------
+// Verifies the post-W1 single-gate dispatch contract end-to-end: when the
+// renderer's `notificationSettings.enabled` is false, `dispatchNotification`
+// returns `{ dispatched: false, reason: 'global-disabled' }` and the
+// `window.ccsm.notify` IPC is NEVER fired. Drives `__ccsmDispatchNotification`
+// (debug seam in App.tsx) directly so the test doesn't need a real agent
+// permission request — pure renderer flow.
+async function caseNotifDisabledSuppress({ app, win, log }) {
+  // Replace the main-process `notification:show` handler with a recorder so a
+  // regression that DOES dispatch lands somewhere we can observe.
+  await app.evaluate(({ ipcMain }) => {
+    /** @type {any} */ (globalThis).__notifDisabledRecorderCalls = [];
+    ipcMain.removeHandler('notification:show');
+    ipcMain.handle('notification:show', (_e, payload) => {
+      /** @type {any} */ (globalThis).__notifDisabledRecorderCalls.push(payload);
+      return true;
+    });
+  });
+
+  // Seed a session and flip enabled=false.
+  await win.evaluate(() => {
+    const store = /** @type {any} */ (window).__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      tutorialSeen: true,
+    });
+    store.getState().setNotificationSettings({ enabled: false });
+  });
+
+  // Drive dispatch via the debug seam.
+  const result = await win.evaluate(async () => {
+    const w = /** @type {any} */ (window);
+    if (typeof w.__ccsmDispatchNotification !== 'function') {
+      return { ok: false, reason: 'no-seam' };
+    }
+    const res = await w.__ccsmDispatchNotification({
+      sessionId: 's1',
+      eventType: 'permission',
+      title: 'g / s',
+      body: 'Permission',
+      extras: { toastId: 'r1', sessionName: 's', groupName: 'g', eventType: 'permission' },
+    });
+    return { ok: true, res };
+  });
+  if (!result.ok) throw new Error(`dispatch seam unavailable: ${result.reason}`);
+  if (result.res.dispatched !== false) {
+    throw new Error(`expected dispatched=false, got ${JSON.stringify(result.res)}`);
+  }
+  if (result.res.reason !== 'global-disabled') {
+    throw new Error(`expected reason='global-disabled', got ${JSON.stringify(result.res)}`);
+  }
+
+  // Give the IPC a beat (it should NEVER land but verifying takes time).
+  await win.waitForTimeout(200);
+  const calls = await app.evaluate(
+    () => /** @type {any} */ (globalThis).__notifDisabledRecorderCalls ?? []
+  );
+  if (calls.length !== 0) {
+    throw new Error(`enabled=false suppressed dispatch but IPC fired ${calls.length} time(s): ${JSON.stringify(calls)}`);
+  }
+
+  // Now flip enabled=true and verify the same call DOES fire — proves the
+  // recorder is wired and the suppression was due to the gate, not a test bug.
+  await win.evaluate(() => {
+    /** @type {any} */ (window).__ccsmStore.getState().setNotificationSettings({ enabled: true });
+  });
+  const second = await win.evaluate(async () => {
+    const w = /** @type {any} */ (window);
+    return await w.__ccsmDispatchNotification({
+      sessionId: 's1',
+      eventType: 'permission',
+      title: 'g / s',
+      body: 'Permission',
+      extras: { toastId: 'r2', sessionName: 's', groupName: 'g', eventType: 'permission' },
+    });
+  });
+  if (second.dispatched !== true) {
+    throw new Error(`expected dispatched=true with enabled=true, got ${JSON.stringify(second)}`);
+  }
+  await win.waitForTimeout(200);
+  const calls2 = await app.evaluate(
+    () => /** @type {any} */ (globalThis).__notifDisabledRecorderCalls ?? []
+  );
+  if (calls2.length !== 1) {
+    throw new Error(`expected exactly 1 IPC call after re-enable, got ${calls2.length}`);
+  }
+  if (calls2[0].sessionId !== 's1' || calls2[0].eventType !== 'permission') {
+    throw new Error(`unexpected IPC payload: ${JSON.stringify(calls2[0])}`);
+  }
+
+  log('enabled=false suppressed dispatch with reason=global-disabled; re-enable fired exactly once');
 }
 
 // ---------- cap-skip-launch-bundle-shape (capability demo) ----------
@@ -2832,7 +2933,11 @@ await runHarness({
     // thinking-toggle: UI slash-command toggle that uses an ipcMain spy on
     // agent:setMaxThinkingTokens. Pure UI, single launch, fits harness-ui.
     { id: 'thinking-toggle', run: caseThinkingToggle },
-    { id: 'dead-ui-cleanup', run: caseDeadUiCleanup }
+    { id: 'dead-ui-cleanup', run: caseDeadUiCleanup },
+    // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
+    // contract — enabled=false → dispatched:false, reason:'global-disabled',
+    // zero notification:show IPC. Re-enabling proves recorder is wired.
+    { id: 'notif-disabled-suppress', run: caseNotifDisabledSuppress }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

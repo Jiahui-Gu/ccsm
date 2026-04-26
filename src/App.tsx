@@ -23,6 +23,7 @@ import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
 import { subscribeAgentEvents, setBackgroundWaitingHandler, maybeAutoResolveAllowAlways } from './agent/lifecycle';
+import { dispatchNotification } from './notifications/dispatch';
 import { initI18n } from './i18n';
 import { i18next } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
@@ -47,6 +48,13 @@ if (typeof window !== 'undefined') {
   (window as unknown as {
     __ccsmMaybeAutoResolveAllowAlways?: typeof maybeAutoResolveAllowAlways;
   }).__ccsmMaybeAutoResolveAllowAlways = maybeAutoResolveAllowAlways;
+  // E2E seam: harnesses drive dispatchNotification directly to verify the
+  // single-gate `enabled` suppression without spinning up a real agent. Same
+  // trade-off as `__ccsmMaybeAutoResolveAllowAlways` — debug affordance, not
+  // a security boundary.
+  (window as unknown as {
+    __ccsmDispatchNotification?: typeof dispatchNotification;
+  }).__ccsmDispatchNotification = dispatchNotification;
 }
 
 /**

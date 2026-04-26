@@ -1,4 +1,7 @@
-// Unit tests for the notify lazy-load wrapper. Tests cover both branches:
+// Unit tests for the inlined-notify lazy-load wrapper (`electron/notify.ts`).
+// Renamed from notify-fallback.test.ts in W5 — the file never tested the
+// removed Electron Notification cross-platform fallback; it tests the
+// optional native notify wrapper. Two branches are covered:
 //   1. The inlined notify implementation fails to load (e.g. install was
 //      skipped because the electron-windows-notifications native deps
 //      couldn't build) — every wrapper function must resolve to undefined
@@ -18,7 +21,7 @@ async function freshWrapper(): Promise<typeof import('../electron/notify')> {
   return await import('../electron/notify');
 }
 
-describe('electron/notify wrapper', () => {
+describe('electron/notify wrapper (inlined-notify lazy loader)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
