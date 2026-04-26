@@ -1,11 +1,11 @@
-// Themed harness — PERMISSION cluster, Phase-3.
+// Themed harness — PERMISSION cluster, Phase-3 + Phase-4 (#223 capability absorption).
 //
 // Per docs/e2e/single-harness-brainstorm.md §8 (option B + C). Each case
 // below is the de-duplicated body of one of the per-file probes in
 // scripts/probe-e2e-*.mjs. Absorbed probe files have been deleted (#72
 // no-skipped-e2e rule — no breadcrumb files).
 //
-// Scope (12 cases — all pure-store / no real claude.exe required):
+// Phase-3 scope (pure-store / no real claude.exe required):
 //   - permission-prompt              (probe-e2e-permission-prompt)
 //   - permission-mode-strict         (probe-e2e-permission-mode-strict)
 //   - permission-focus-not-stolen    (probe-e2e-permission-focus-not-stolen)
@@ -19,14 +19,65 @@
 //   - permission-auto-and-titles     (probe-e2e-permission-auto-and-titles)
 //   - permission-reject-stops-agent  (probe-e2e-permission-reject-stops-agent)
 //
-// Probes intentionally NOT merged (require real claude.exe subprocess):
-//   - permission-allow-write, permission-allow-bash,
-//     permission-allow-parallel-batch, permission-prompt-default-mode
+// Phase-4 absorption (#223 per-case capability rollout — bucket 3):
+//   Cases below use the new `userDataDir: 'fresh'`, `relaunch`,
+//   `requiresClaudeBin`, and `preMain` capabilities. First production use of
+//   the harness-runner cap surface — bucket 4 (harness-restore) waits on this
+//   to verify the contract is stable.
+//
+//   - permission-allow-bash             fresh + requiresClaudeBin
+//   - permission-allow-write            fresh + requiresClaudeBin
+//   - permission-allow-parallel-batch   fresh + requiresClaudeBin
+//   - ipc-unc-rejection                 (shared launch — pure IPC contract)
+//   - jsonl-filename-matches-session    fresh + requiresClaudeBin
+//   - askuserquestion-no-dup-and-resolves  preMain (ipcMain stubs)
+//   - env-passthrough                   fresh + requiresClaudeBin (skips on no auth env)
+//   - connection-pane                   fresh + preMain (HOME/USERPROFILE override)
+//
+// Probes deferred to bucket 4 (multi-launch with state hand-off):
+//   - permission-prompt-default-mode (seed-via-saveState then close+relaunch)
+//   - askuserquestion-full           (3-launch lifecycle)
 //
 // Run: `node scripts/harness-perm.mjs`
 // Run one case: `node scripts/harness-perm.mjs --only=permission-prompt`
 
 import { runHarness } from './probe-helpers/harness-runner.mjs';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+
+// Spec-wide CLAUDE_CONFIG_DIR sandbox — shared across all cases that need a
+// real `claude` subprocess. Empty allowlist + copied credentials so the dev's
+// real `~/.claude/settings.json` allowlist can't auto-allow the tool calls
+// we're trying to test. Allow-list state inside the renderer (`allowAlwaysTools`)
+// is reset by per-case `userDataDir: 'fresh'`; this sandbox handles the
+// CLI-side allowlist orthogonally.
+const HARNESS_CONFIG_DIR = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-perm-cfg-'));
+  // Inherit the `env` block from real settings.json (ANTHROPIC_BASE_URL etc.)
+  // and ALWAYS empty allowlist.
+  const sandbox = { permissions: { allow: [], deny: [] } };
+  try {
+    const realSettings = path.join(os.homedir(), '.claude', 'settings.json');
+    if (fs.existsSync(realSettings)) {
+      const raw = JSON.parse(fs.readFileSync(realSettings, 'utf8'));
+      if (raw && typeof raw === 'object' && raw.env && typeof raw.env === 'object') {
+        sandbox.env = raw.env;
+      }
+    }
+  } catch { /* ignore */ }
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(sandbox, null, 2), 'utf8');
+  // Inherit credentials so spawned CLI can authenticate.
+  const realCreds = path.join(os.homedir(), '.claude', '.credentials.json');
+  if (fs.existsSync(realCreds)) {
+    try { fs.copyFileSync(realCreds, path.join(dir, '.credentials.json')); } catch {}
+  }
+  // Best-effort cleanup at process exit — runner doesn't expose a post-run hook.
+  process.on('exit', () => {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+  return dir;
+})();
 
 // Shared helper: ensure a session exists with a usable cwd so InputBar enables
 // the textarea. Mirrors the seed pattern used across the source probes.
@@ -1003,6 +1054,629 @@ async function caseSetupBeforeI18nPin({ win, log }) {
   log('setupBefore pinned i18n to en; English-anchored key resolves');
 }
 
+// =============================================================================
+// Phase-4 absorbed cases (#223 capability rollout — bucket 3).
+// Each case below corresponds 1:1 to a deleted probe-e2e-*.mjs file.
+// =============================================================================
+
+// ---------- shared helpers for absorbed cases ----------
+
+/**
+ * Wait for a renderer Allow button to appear, click it, optionally observing
+ * the underlying tool name via the store. Used by the Bug-L family.
+ */
+async function clickAllowOnce(win) {
+  const visible = await win.locator('[data-perm-action="allow"]').first()
+    .isVisible({ timeout: 200 }).catch(() => false);
+  if (visible) {
+    await win.locator('[data-perm-action="allow"]').first().click().catch(() => {});
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Drive a New Session click + cwd seed. The harness boot does NOT auto-select
+ * a session, so each absorbed claude-spawn case must press the button itself.
+ */
+async function newSessionWithCwd(win, cwd) {
+  await win.getByRole('button', { name: /new session/i }).first().click();
+  await win.waitForTimeout(1000);
+  await win.evaluate((p) => {
+    const st = window.__ccsmStore?.getState?.();
+    if (st && typeof st.changeCwd === 'function') st.changeCwd(p);
+  }, cwd);
+  await win.waitForTimeout(400);
+}
+
+// ---------- permission-allow-bash ----------
+// Was: probe-e2e-permission-allow-bash.mjs.
+// Asserts: clicking Allow on a Bash permission prompt actually delivers the
+// nested control_response envelope to claude.exe (Bug L) AND the PreToolUse
+// hook (#94 fix) defers Bash to canUseTool so the prompt fires at all.
+async function casePermissionAllowBash({ win, log }) {
+  const TS = new Date().toISOString().replace(/[:.]/g, '-');
+  const proj = path.join(os.tmpdir(), `ccsm-harness-perm-bash-proj-${TS}`);
+  fs.mkdirSync(proj, { recursive: true });
+  await newSessionWithCwd(win, proj);
+
+  const PROMPT = 'Run the bash command `node --version` and tell me the version number.';
+  const ta = win.locator('textarea').first();
+  await ta.waitFor({ state: 'visible', timeout: 8000 });
+  await ta.click();
+  await ta.fill(PROMPT);
+  await win.keyboard.press('Enter');
+  log('prompt sent');
+
+  const waitDl = Date.now() + 90_000;
+  let allowClicked = false;
+  let storeHit = null;
+  while (Date.now() < waitDl) {
+    await win.waitForTimeout(1000);
+    if (!allowClicked && await clickAllowOnce(win)) {
+      allowClicked = true;
+      log('clicked Allow');
+    }
+    const snap = await win.evaluate(() => {
+      const st = window.__ccsmStore?.getState?.();
+      const sid = st?.activeId;
+      const blocks = st?.messagesBySession?.[sid] || [];
+      const b = blocks.find((x) => x.kind === 'tool' && (x.toolName || x.name) === 'Bash');
+      return b ? {
+        hasResult: typeof b.result === 'string' && b.result.length > 0,
+        isError: b.isError === true,
+        head: typeof b.result === 'string' ? b.result.slice(0, 200) : null,
+      } : null;
+    }).catch(() => null);
+    if (snap?.hasResult) { storeHit = snap; break; }
+  }
+
+  if (!storeHit) throw new Error('Bash tool block never received tool_result (Bug L regression)');
+  if (storeHit.isError) throw new Error(`Bash tool returned error: ${storeHit.head}`);
+  if (!allowClicked) throw new Error('Allow button never rendered — PreToolUse hook (#94) regression');
+  log(`OK: bash executed, tool_result delivered`);
+}
+
+// ---------- permission-allow-write ----------
+// Was: probe-e2e-permission-allow-write.mjs.
+// Same Bug L assertion via the Write tool: clicking Allow must actually let
+// the file land on disk AND the tool_result must reach the renderer.
+async function casePermissionAllowWrite({ win, log }) {
+  const TS = new Date().toISOString().replace(/[:.]/g, '-');
+  const proj = path.join(os.tmpdir(), `ccsm-harness-perm-write-proj-${TS}`);
+  fs.mkdirSync(proj, { recursive: true });
+  await newSessionWithCwd(win, proj);
+
+  const PROMPT = "Use the Write tool to create a NEW file at ./hello.txt with exactly the content 'world' (no trailing newline). Do not use Edit or MultiEdit.";
+  const ta = win.locator('textarea').first();
+  await ta.waitFor({ state: 'visible', timeout: 8000 });
+  await ta.click();
+  await ta.fill(PROMPT);
+  await win.keyboard.press('Enter');
+  log('prompt sent');
+
+  const filePath = path.join(proj, 'hello.txt');
+  const WRITE_LIKE = new Set(['Write', 'Edit', 'MultiEdit']);
+  const dl = Date.now() + 90_000;
+  let firstAllowAt = null;
+  let fsHit = null;
+  let storeHit = null;
+  while (Date.now() < dl) {
+    await win.waitForTimeout(1000);
+    if (await clickAllowOnce(win)) {
+      if (!firstAllowAt) firstAllowAt = Date.now();
+      log('clicked Allow');
+      await win.waitForTimeout(400);
+    }
+    if (!fsHit && fs.existsSync(filePath)) {
+      fsHit = { content: fs.readFileSync(filePath, 'utf8') };
+    }
+    const snap = await win.evaluate(() => {
+      const st = window.__ccsmStore?.getState?.();
+      const sid = st?.activeId;
+      const blocks = st?.messagesBySession?.[sid] || [];
+      const w = blocks.find((b) => b.kind === 'tool' && ['Write','Edit','MultiEdit'].includes(b.toolName || b.name));
+      return w ? {
+        hasResult: typeof w.result === 'string' && w.result.length > 0,
+        isError: w.isError === true,
+        toolName: w.toolName || w.name,
+      } : null;
+    }).catch(() => null);
+    if (!storeHit && snap?.hasResult) storeHit = snap;
+    if (fsHit && storeHit) break;
+  }
+
+  if (!firstAllowAt) throw new Error('never saw Allow button within 90s');
+  if (!fsHit) throw new Error(`Write never executed — file ${filePath} missing`);
+  if (fsHit.content.trim() !== 'world') throw new Error(`unexpected content: ${JSON.stringify(fsHit.content)}`);
+  if (!storeHit) throw new Error('Write block never received tool_result');
+  if (storeHit.isError) throw new Error('Write block returned error');
+  log(`OK: file written, tool_result delivered (${storeHit.toolName})`);
+}
+
+// ---------- permission-allow-parallel-batch ----------
+// Was: probe-e2e-permission-allow-parallel-batch.mjs.
+// Two sub-cases (parallel-bash-N4 and parallel-read-N5) preserved as they
+// jointly assert the renderer block-id fix + the Bug L IPC envelope fix
+// stay alive for both Bash and Read.
+async function casePermissionAllowParallelBatch({ win, log }) {
+  const TS = new Date().toISOString().replace(/[:.]/g, '-');
+
+  async function runSubCase({ caseName, files, prompt, toolName, expectedClicks, minTools }) {
+    log(`-- sub: ${caseName} --`);
+    const proj = path.join(os.tmpdir(), `ccsm-harness-perm-par-${caseName}-${TS}`);
+    fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+    for (const [i, f] of files.entries()) {
+      fs.writeFileSync(path.join(proj, f), `// file-${i}: ${path.basename(f)} placeholder\n`);
+    }
+    await newSessionWithCwd(win, proj);
+    const ta = win.locator('textarea').first();
+    await ta.waitFor({ state: 'visible', timeout: 8000 });
+    await ta.click();
+    const filledPrompt = prompt.replace(/\{\{ABSPATH:([^}]+)\}\}/g, (_, rel) => path.resolve(proj, rel));
+    await ta.fill(filledPrompt);
+    await win.keyboard.press('Enter');
+
+    const dl = Date.now() + 180_000;
+    let clicks = 0;
+    let snap = null;
+    let lastProgressAt = Date.now();
+    const targetN = expectedClicks ?? 0;
+    while (Date.now() < dl) {
+      await win.waitForTimeout(750);
+      if (await clickAllowOnce(win)) {
+        clicks += 1;
+        lastProgressAt = Date.now();
+        log(`[${caseName}] clicked Allow #${clicks}`);
+        continue;
+      }
+      snap = await win.evaluate((tn) => {
+        const st = window.__ccsmStore?.getState?.();
+        const sid = st?.activeId;
+        const blocks = st?.messagesBySession?.[sid] || [];
+        const tools = blocks.filter((b) => b.kind === 'tool' && (b.toolName || b.name) === tn)
+          .map((b) => ({
+            hasResult: typeof b.result === 'string' && b.result.length > 0,
+            isError: b.isError === true,
+          }));
+        const resolvedTraces = blocks.filter((b) =>
+          b.kind === 'system' && b.subkind === 'permission-resolved' &&
+          (b.decision === 'allowed' || b.decision === 'allow')).length;
+        return { tools, resolvedTraces, totalBlocks: blocks.length };
+      }, toolName).catch(() => null);
+      const succeeded = snap?.tools.filter((t) => t.hasResult).length ?? 0;
+      const reqN = targetN || minTools || 1;
+      if (snap && snap.tools.length >= reqN && succeeded >= reqN) break;
+      if (succeeded > 0 && Date.now() - lastProgressAt > 12_000) break;
+      if (succeeded > 0) lastProgressAt = Date.now();
+    }
+    if (!snap) throw new Error(`[${caseName}] could not snapshot store`);
+    if (expectedClicks && clicks !== expectedClicks) {
+      throw new Error(`[${caseName}] expected ${expectedClicks} Allow clicks, got ${clicks}`);
+    }
+    if (snap.resolvedTraces < clicks) {
+      throw new Error(`[${caseName}] clicked Allow ${clicks}x but only ${snap.resolvedTraces} resolved traces`);
+    }
+    const ttarget = expectedClicks ?? Math.max(clicks, minTools ?? 0);
+    if (snap.tools.length < ttarget) {
+      throw new Error(`[${caseName}] expected >=${ttarget} ${toolName} blocks, got ${snap.tools.length}`);
+    }
+    const succeeded = snap.tools.filter((t) => t.hasResult);
+    if (succeeded.length < ttarget) {
+      throw new Error(`[${caseName}] expected >=${ttarget} blocks with tool_result, got ${succeeded.length}`);
+    }
+    if (snap.tools.some((t) => t.isError)) {
+      throw new Error(`[${caseName}] one or more ${toolName} blocks errored`);
+    }
+    log(`[${caseName}] OK: ${clicks} clicks, ${succeeded.length}/${ttarget} results`);
+  }
+
+  await runSubCase({
+    caseName: 'parallel-bash-N4',
+    files: ['a.txt', 'b.txt', 'c.txt', 'd.txt'],
+    prompt: 'Run these four bash commands IN PARALLEL in a SINGLE message containing FOUR tool_use blocks: `cat a.txt`, `cat b.txt`, `cat c.txt`, `cat d.txt`. Do NOT serialize. Emit all four Bash tool_use blocks in the SAME assistant message.',
+    toolName: 'Bash',
+    expectedClicks: 4,
+  });
+
+  await runSubCase({
+    caseName: 'parallel-read-N5',
+    files: ['README.md', 'package.json', 'src/strings.js', 'src/math.js', 'src/cart.js'],
+    prompt:
+      'Use the Read tool to read the following files IN PARALLEL — emit FIVE Read tool_use blocks in a SINGLE assistant message. Do NOT serialize.\n\n' +
+      'IMPORTANT: the Read tool requires ABSOLUTE file paths. Use these exact absolute paths (already on disk):\n' +
+      '- {{ABSPATH:README.md}}\n- {{ABSPATH:package.json}}\n- {{ABSPATH:src/strings.js}}\n- {{ABSPATH:src/math.js}}\n- {{ABSPATH:src/cart.js}}\n',
+    toolName: 'Read',
+    minTools: 4, // model occasionally folds; tolerate 4-5
+  });
+
+  log('OK: parallel batches deliver every tool_result');
+}
+
+// ---------- ipc-unc-rejection ----------
+// Was: probe-e2e-ipc-unc-rejection.mjs.
+// Pure renderer-IPC contract — runs on the shared launch.
+async function caseIpcUncRejection({ win, log }) {
+  const benign = process.platform === 'win32' ? 'C:\\Windows' : '/tmp';
+  const benignExists = fs.existsSync(benign);
+  const result = await win.evaluate(async ({ benign }) => {
+    const uncWin = '\\\\evil-host\\share\\probe';
+    const uncPosix = '//evil-host/share/probe';
+    const relativ = 'relative/path';
+    const pathsRes = await window.ccsm.pathsExist([uncWin, uncPosix, relativ, benign]);
+    const cmdsUnc = await window.ccsm.commands.list(uncWin);
+    const cmdsPosixUnc = await window.ccsm.commands.list(uncPosix);
+    return { pathsRes, cmdsUnc, cmdsPosixUnc };
+  }, { benign });
+
+  const uncWin = '\\\\evil-host\\share\\probe';
+  const uncPosix = '//evil-host/share/probe';
+  const relativ = 'relative/path';
+  if (result.pathsRes[uncWin] !== false) throw new Error(`paths:exist UNC win expected false, got ${result.pathsRes[uncWin]}`);
+  if (result.pathsRes[uncPosix] !== false) throw new Error(`paths:exist UNC posix expected false`);
+  if (result.pathsRes[relativ] !== false) throw new Error(`paths:exist relative expected false`);
+  if (result.pathsRes[benign] !== benignExists) throw new Error(`paths:exist benign mismatch (over-eager guard?)`);
+  if (!Array.isArray(result.cmdsUnc) || result.cmdsUnc.length !== 0) throw new Error(`commands:list UNC expected []`);
+  if (!Array.isArray(result.cmdsPosixUnc) || result.cmdsPosixUnc.length !== 0) throw new Error(`commands:list // UNC expected []`);
+  log('UNC inputs rejected before fs');
+}
+
+// ---------- jsonl-filename-matches-session ----------
+// Was: probe-e2e-jsonl-filename-matches-session.mjs.
+// Asserts PR-D contract: SDK respects sessionId option (positive case) AND
+// rejects malformed presets via defence-in-depth gate (negative case).
+async function caseJsonlFilenameMatchesSession({ win, log }) {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const POSITIVE_SID = 'b2c0d000-0000-4000-8000-000000000001';
+  const NEGATIVE_RUNNER_SID = 'b2c0d000-0000-4000-8000-000000000002';
+  const NEGATIVE_BAD_PRESET = 's-bad-not-a-uuid';
+
+  const PROBE_TMP_BASE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-jsonl-cwd-'));
+  const POSITIVE_CWD = path.join(PROBE_TMP_BASE, 'positive');
+  const NEGATIVE_CWD = path.join(PROBE_TMP_BASE, 'negative');
+  fs.mkdirSync(POSITIVE_CWD, { recursive: true });
+  fs.mkdirSync(NEGATIVE_CWD, { recursive: true });
+  const projectsRoot = path.join(HARNESS_CONFIG_DIR, 'projects');
+  const createdProjectDirs = new Set();
+
+  function findJsonlFor(sid) {
+    let dirs;
+    try { dirs = fs.readdirSync(projectsRoot); } catch { return null; }
+    for (const dir of dirs) {
+      const candidate = path.join(projectsRoot, dir, `${sid}.jsonl`);
+      if (fs.existsSync(candidate)) return { file: candidate, projectDir: dir };
+    }
+    return null;
+  }
+  function scanProjectsForCwdSegment(seg) {
+    const out = [];
+    let dirs;
+    try { dirs = fs.readdirSync(projectsRoot); } catch { return out; }
+    for (const dir of dirs) {
+      if (!dir.includes(seg)) continue;
+      let entries;
+      try { entries = fs.readdirSync(path.join(projectsRoot, dir)); } catch { continue; }
+      for (const f of entries) {
+        if (f.endsWith('.jsonl')) out.push({ file: path.join(projectsRoot, dir, f), projectDir: dir });
+      }
+    }
+    return out;
+  }
+
+  try {
+    await win.evaluate(() => {
+      window.__probeDiag = [];
+      window.ccsm.onAgentDiagnostic((d) => window.__probeDiag.push(d));
+    });
+
+    // ── POSITIVE ──
+    await win.evaluate(({ sid, cwd }) => {
+      window.__ccsmStore.setState({
+        groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+        sessions: [{ id: sid, name: 'jsonl-pos', state: 'idle', cwd, model: 'claude-sonnet-4', groupId: 'g1', agentType: 'claude-code' }],
+        activeId: sid,
+        messagesBySession: { [sid]: [] },
+        startedSessions: {},
+        runningSessions: {},
+      });
+    }, { sid: POSITIVE_SID, cwd: POSITIVE_CWD });
+
+    const startRes = await win.evaluate(async ({ sid, cwd }) =>
+      await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default', sessionId: sid }),
+      { sid: POSITIVE_SID, cwd: POSITIVE_CWD });
+    if (!startRes || startRes.ok !== true) {
+      throw new Error(`positive agentStart failed: ${JSON.stringify(startRes)}`);
+    }
+    await win.evaluate(async (sid) => await window.ccsm.agentSend(sid, 'hi'), POSITIVE_SID);
+
+    const activeIdAfter = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+    if (activeIdAfter !== POSITIVE_SID) throw new Error(`store.activeId drifted: ${activeIdAfter}`);
+
+    let positiveHit = null;
+    const flushDl = Date.now() + 30_000;
+    while (Date.now() < flushDl) {
+      positiveHit = findJsonlFor(POSITIVE_SID);
+      if (positiveHit) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!positiveHit) throw new Error(`positive: no <projectKey>/${POSITIVE_SID}.jsonl appeared in 30s`);
+    createdProjectDirs.add(positiveHit.projectDir);
+
+    const buf = fs.readFileSync(positiveHit.file, 'utf8');
+    const firstLines = buf.split(/\r?\n/).slice(0, 50);
+    let foundIdBearing = 0;
+    let mismatch = null;
+    for (const line of firstLines) {
+      if (!line) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      const id = parsed?.sessionId ?? parsed?.session_id;
+      if (typeof id !== 'string') continue;
+      foundIdBearing++;
+      if (id !== POSITIVE_SID) { mismatch = { id, line: line.slice(0, 200) }; break; }
+    }
+    if (foundIdBearing === 0) throw new Error('positive: no id-bearing records in first 50 lines');
+    if (mismatch) throw new Error(`positive: jsonl record id=${mismatch.id} != filename ${POSITIVE_SID}`);
+    log(`positive jsonl=${path.relative(projectsRoot, positiveHit.file)}, ${foundIdBearing} ids match`);
+
+    await win.evaluate(async (sid) => await window.ccsm.agentClose(sid), POSITIVE_SID);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // ── NEGATIVE ──
+    await win.evaluate(({ sid, cwd }) => {
+      window.__ccsmStore.setState({
+        sessions: [{ id: sid, name: 'jsonl-neg', state: 'idle', cwd, model: 'claude-sonnet-4', groupId: 'g1', agentType: 'claude-code' }],
+        activeId: sid,
+        messagesBySession: { [sid]: [] },
+        startedSessions: {},
+        runningSessions: {},
+      });
+      window.__probeDiag.length = 0;
+    }, { sid: NEGATIVE_RUNNER_SID, cwd: NEGATIVE_CWD });
+
+    const negStart = await win.evaluate(async ({ sid, badPreset, cwd }) =>
+      await window.ccsm.agentStart(sid, { cwd, permissionMode: 'default', sessionId: badPreset }),
+      { sid: NEGATIVE_RUNNER_SID, badPreset: NEGATIVE_BAD_PRESET, cwd: NEGATIVE_CWD });
+    if (!negStart || negStart.ok !== true) {
+      throw new Error(`negative: agentStart failed unexpectedly: ${JSON.stringify(negStart)}`);
+    }
+    await win.evaluate(async (sid) => await window.ccsm.agentSend(sid, 'hi'), NEGATIVE_RUNNER_SID);
+
+    let negDiag = null;
+    const diagDl = Date.now() + 5_000;
+    while (Date.now() < diagDl) {
+      const diags = await win.evaluate((sid) =>
+        (window.__probeDiag || []).filter((d) => d?.sessionId === sid && d?.code === 'preset_session_id_invalid'),
+        NEGATIVE_RUNNER_SID);
+      if (diags.length > 0) { negDiag = diags[0]; break; }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!negDiag) throw new Error(`negative: no 'preset_session_id_invalid' diagnostic emitted`);
+
+    await new Promise((r) => setTimeout(r, 5_000));
+    const negFiles = scanProjectsForCwdSegment(path.basename(NEGATIVE_CWD));
+    if (negFiles.length === 0) throw new Error(`negative: no jsonl found for cwd 'negative'`);
+    for (const f of negFiles) createdProjectDirs.add(f.projectDir);
+    for (const f of negFiles) {
+      const sid = path.basename(f.file, '.jsonl');
+      if (sid === NEGATIVE_RUNNER_SID) throw new Error(`negative: jsonl named after runner id (binding leaked)`);
+      if (sid === NEGATIVE_BAD_PRESET) throw new Error(`negative: jsonl named after bad preset (SDK accepted it)`);
+      if (!UUID_RE.test(sid)) throw new Error(`negative: filename ${sid} not UUID-shaped`);
+    }
+    log(`negative: ${negFiles.length} jsonl(s), all UUID-shaped, none == runner/bad-preset`);
+
+    await win.evaluate(async (sid) => await window.ccsm.agentClose(sid), NEGATIVE_RUNNER_SID);
+  } finally {
+    try { fs.rmSync(PROBE_TMP_BASE, { recursive: true, force: true }); } catch {}
+    for (const dir of createdProjectDirs) {
+      try { fs.rmSync(path.join(projectsRoot, dir), { recursive: true, force: true }); } catch {}
+    }
+  }
+}
+
+// ---------- askuserquestion-no-dup-and-resolves ----------
+// Was: probe-e2e-askuserquestion-no-dup-and-resolves.mjs.
+// preMain installs ipcMain stubs to capture resolvePermission + send calls
+// without spawning real claude.exe. After the case, registerDispose restores
+// (the next case's userDataDir/launch handles cleanup of the override here
+// since the IPC handlers are global-process state — see preMain restore
+// pattern in harness-runner doc).
+async function caseAskUserQuestionNoDupAndResolves({ app, win, log }) {
+  const sessionId = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    if (s.activeId && s.sessions.some((x) => x.id === s.activeId)) return s.activeId;
+    s.createSession({ name: 'no-dup-probe' });
+    return window.__ccsmStore.getState().activeId;
+  });
+  await win.evaluate((sid) => window.__ccsmStore.getState().setRunning(sid, true), sessionId);
+
+  // J1: same requestId duplicate
+  const Q1 = [{ question: 'Pick a stack', options: [{ label: 'TypeScript' }, { label: 'Rust' }, { label: 'Go' }] }];
+  await win.evaluate(({ sid, q }) => {
+    const store = window.__ccsmStore.getState();
+    store.appendBlocks(sid, [{ kind: 'question', id: 'q-perm-J1', requestId: 'perm-J1', questions: q }]);
+    store.appendBlocks(sid, [{ kind: 'question', id: 'q-perm-J1-DUP', requestId: 'perm-J1', questions: q }]);
+  }, { sid: sessionId, q: Q1 });
+
+  await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+  await win.waitForTimeout(150);
+
+  const j1 = await win.evaluate(() => ({
+    groups: document.querySelectorAll('[role="radiogroup"], [role="group"]').length,
+    opts: document.querySelectorAll('[data-question-option]').length,
+  }));
+  if (j1.groups !== 1) throw new Error(`J1: expected 1 question card, got ${j1.groups} (opts=${j1.opts})`);
+  const storeQ1 = await win.evaluate((sid) => (window.__ccsmStore.getState().messagesBySession[sid] || [])
+    .filter((b) => b.kind === 'question').length, sessionId);
+  if (storeQ1 !== 1) throw new Error(`J1: expected 1 question block in store, got ${storeQ1}`);
+
+  await win.locator('[data-question-option][data-question-label="TypeScript"]').first().click();
+  await win.waitForTimeout(120);
+  const submit = win.locator('[data-testid="question-submit"]');
+  if (await submit.isDisabled()) throw new Error('J1: Submit disabled after pick — block was rendered as duplicate/read-only');
+  await submit.click();
+  await win.waitForTimeout(400);
+
+  const captured = await app.evaluate(() => ({
+    resolved: global.__probeNoDup.resolved.slice(),
+    sent: global.__probeNoDup.sent.slice(),
+  }));
+  if (captured.resolved.length !== 1) throw new Error(`J1: expected 1 resolvePermission, got ${captured.resolved.length}`);
+  if (captured.resolved[0].requestId !== 'perm-J1' || captured.resolved[0].decision !== 'deny') {
+    throw new Error(`J1: wrong resolve payload: ${JSON.stringify(captured.resolved[0])}`);
+  }
+  if (captured.sent.length !== 1) throw new Error(`J1: expected 1 agentSend, got ${captured.sent.length}`);
+  if (!/TypeScript/.test(captured.sent[0].text || '')) throw new Error(`J1: agentSend missing TypeScript: ${JSON.stringify(captured.sent[0])}`);
+
+  // simulate lifecycle drop
+  await win.evaluate((sid) => window.__ccsmStore.getState().setRunning(sid, false), sessionId);
+  const stillRunning = await win.evaluate((sid) => !!window.__ccsmStore.getState().runningSessions[sid], sessionId);
+  if (stillRunning) throw new Error('J1: runningSessions[sid] still true after setRunning(false)');
+
+  // J2: same toolUseId duplicate
+  await win.evaluate((sid) => window.__ccsmStore.getState().clearMessages(sid), sessionId);
+  await app.evaluate(() => { global.__probeNoDup.resolved.length = 0; global.__probeNoDup.sent.length = 0; });
+  await win.waitForTimeout(120);
+
+  const Q2 = [{ question: 'Pick a build tool', options: [{ label: 'esbuild' }, { label: 'rollup' }] }];
+  await win.evaluate(({ sid, q }) => {
+    const store = window.__ccsmStore.getState();
+    store.appendBlocks(sid, [{ kind: 'question', id: 'q-J2-A', toolUseId: 'tu-J2', questions: q }]);
+    store.appendBlocks(sid, [{ kind: 'question', id: 'q-J2-B', toolUseId: 'tu-J2', questions: q }]);
+  }, { sid: sessionId, q: Q2 });
+  await win.waitForSelector('[data-question-option]', { timeout: 5000 });
+  await win.waitForTimeout(150);
+
+  const groupsJ2 = await win.evaluate(() => document.querySelectorAll('[role="radiogroup"], [role="group"]').length);
+  const storeQ2 = await win.evaluate((sid) => (window.__ccsmStore.getState().messagesBySession[sid] || [])
+    .filter((b) => b.kind === 'question').length, sessionId);
+  if (groupsJ2 !== 1) throw new Error(`J2: expected 1 card for same-toolUseId duplicate, got ${groupsJ2}`);
+  if (storeQ2 !== 1) throw new Error(`J2: expected 1 question block in store, got ${storeQ2}`);
+
+  log('AskUserQuestion dedup + resolve routing locked down');
+}
+
+// ---------- env-passthrough ----------
+// Was: probe-e2e-env-passthrough.mjs.
+// Auth env (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN) flows through
+// buildSpawnEnv to claude.exe. Skips when neither is set in the parent env
+// (treated as inability to test, not a failure).
+async function caseEnvPassthrough({ win, log }) {
+  const hasAuth =
+    (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.length > 0) ||
+    (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_AUTH_TOKEN.length > 0);
+  if (!hasAuth) {
+    log('SKIP: neither ANTHROPIC_API_KEY nor ANTHROPIC_AUTH_TOKEN in parent env');
+    return;
+  }
+  const PROMPT = 'Reply with exactly the single word OK and nothing else.';
+
+  const newBtn = win.getByRole('button', { name: /new session/i }).first();
+  await newBtn.waitFor({ state: 'visible', timeout: 15_000 });
+  await newBtn.click();
+  const ta = win.locator('textarea').first();
+  await ta.waitFor({ state: 'visible', timeout: 5000 });
+  await ta.click();
+  await ta.fill(PROMPT);
+  await win.keyboard.press('Enter');
+
+  const dl = Date.now() + 60_000;
+  let assistantSeen = false;
+  let lastDump = '';
+  while (Date.now() < dl) {
+    const snap = await win.evaluate(() => {
+      const m = document.querySelector('main');
+      return m ? m.innerText : '';
+    });
+    lastDump = snap;
+    if (/not logged in/i.test(snap) || /please run .*\/login/i.test(snap)) {
+      throw new Error(`"Not logged in" banner — env did not reach claude.exe: ${snap.slice(0, 500)}`);
+    }
+    const idx = snap.indexOf(PROMPT);
+    const after = idx >= 0 ? snap.slice(idx + PROMPT.length) : snap;
+    if (/\bOK\b/i.test(after) && after.trim().length > 2) { assistantSeen = true; break; }
+    await win.waitForTimeout(500);
+  }
+  if (!assistantSeen) throw new Error(`no assistant "OK" reply within 60s. Last dump: ${lastDump.slice(0, 500)}`);
+  log('OK: assistant replied, env passthrough working');
+}
+
+// ---------- connection-pane ----------
+// Was: probe-e2e-connection-pane.mjs.
+// preMain swaps process.env.HOME/USERPROFILE so the IPC handler's
+// `os.homedir()` resolves to a fresh fixture dir. The connection IPC reads
+// settings.json on demand, so the swap takes effect before the case clicks
+// the Settings button. Cleanup via registerDispose restores HOME/USERPROFILE
+// (defensive — fresh-userData relaunch isolates from later cases anyway).
+async function caseConnectionPane({ win, log, registerDispose }) {
+  // The fixture file path must match what preMain created. We read the
+  // path back from the main process via a side channel (process.env).
+  const FIXTURE_BASE_URL = 'https://probe.example.com/v1';
+  const FIXTURE_MODEL = 'claude-probe-fixture-1';
+  const FIXTURE_TOKEN = 'sk-ant-PROBE-DO-NOT-LEAK-1234567890';
+
+  const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
+  await sidebarBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await sidebarBtn.click();
+  const dialog = win.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 3000 });
+
+  const connectionTab = dialog.getByRole('tab', { name: /^connection$/i });
+  await connectionTab.click();
+  const pane = win.locator('[data-connection-pane]');
+  await pane.waitFor({ state: 'visible', timeout: 3000 });
+
+  const baseUrlEl = win.locator('[data-connection-base-url]');
+  await baseUrlEl.waitFor({ state: 'visible', timeout: 3000 });
+  await win.waitForFunction((expected) => {
+    const el = document.querySelector('[data-connection-base-url]');
+    return el?.textContent?.includes(expected) ?? false;
+  }, FIXTURE_BASE_URL, { timeout: 5000 }).catch(async () => {
+    const got = await baseUrlEl.innerText().catch(() => '<unavailable>');
+    throw new Error(`base URL did not render fixture: got ${got.slice(0, 200)}`);
+  });
+
+  const modelText = await win.locator('[data-connection-model]').innerText();
+  if (!modelText.includes(FIXTURE_MODEL)) throw new Error(`model fixture mismatch: ${modelText.slice(0, 200)}`);
+
+  const configured = await dialog.getByText(/^configured$/i).first().isVisible().catch(() => false);
+  if (!configured) throw new Error('expected "Configured" status for auth token');
+
+  const screamingBadges = await win.evaluate(() => {
+    const list = document.querySelector('[data-connection-models]');
+    if (!list) return [];
+    const offenders = [];
+    list.querySelectorAll('*').forEach((el) => {
+      const txt = (el.textContent || '').trim();
+      if (!txt || el.children.length > 0) return;
+      const tt = window.getComputedStyle(el).textTransform;
+      if (tt === 'uppercase') offenders.push(`${el.tagName}: ${txt.slice(0, 60)}`);
+    });
+    return offenders;
+  });
+  if (screamingBadges.length > 0) throw new Error(`uppercase text in discovered-models: ${screamingBadges.join(', ')}`);
+
+  const fullText = await win.evaluate(() => document.body.innerText);
+  if (fullText.includes(FIXTURE_TOKEN)) throw new Error('FIXTURE_TOKEN leaked into DOM');
+  const fullHtml = await win.evaluate(() => document.documentElement.outerHTML);
+  if (fullHtml.includes(FIXTURE_TOKEN)) throw new Error('FIXTURE_TOKEN found in outerHTML');
+
+  const openBtn = win.locator('[data-connection-open-file]');
+  await openBtn.waitFor({ state: 'visible', timeout: 2000 });
+  if (await openBtn.isDisabled()) throw new Error('Open settings.json button starts disabled');
+  await openBtn.click();
+  await win.waitForFunction(() => {
+    const b = document.querySelector('[data-connection-open-file]');
+    return !!b && !b.hasAttribute('disabled');
+  }, null, { timeout: 5000 });
+  const errorMsg = await win
+    .locator('[data-connection-open-file] ~ .text-state-error, .text-state-error')
+    .filter({ hasText: /\S/ }).first().innerText().catch(() => '');
+  if (errorMsg && errorMsg.trim().length > 0) throw new Error(`Open settings.json IPC error: ${errorMsg}`);
+
+  log('OK: settings.json read, no token leak, Open IPC fired');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'perm',
@@ -1013,7 +1687,15 @@ await runHarness({
   // snapshot at line 88 sees no focused button. Visible window
   // restores deterministic focus delivery; the other 9 cases in this
   // harness still pass either way. ~2s window pop during run-all-e2e.
-  launch: { env: { CCSM_E2E_HIDDEN: '0' } },
+  launch: {
+    env: {
+      CCSM_E2E_HIDDEN: '0',
+      // Sandbox the upstream CLI's allowlist so dev's real ~/.claude/settings.json
+      // can't auto-allow tool calls that absorbed cases need to drive through
+      // the permission prompt path.
+      CCSM_CLAUDE_CONFIG_DIR: HARNESS_CONFIG_DIR,
+    },
+  },
   setup: async ({ win }) => {
     // Suppress the "Claude CLI not found" first-launch dialog.
     await win.evaluate(() => {
@@ -1043,6 +1725,145 @@ await runHarness({
         });
       },
       run: caseSetupBeforeI18nPin
-    }
+    },
+    // =========================================================================
+    // Phase-4 absorbed cases — first production use of fresh + relaunch +
+    // requiresClaudeBin + preMain capabilities (#223 bucket 3).
+    // Bucket 4 (harness-restore) waits on this to verify the cap surface.
+    // =========================================================================
+    // ipc-unc-rejection: pure renderer-IPC contract, runs on shared launch.
+    { id: 'ipc-unc-rejection', run: caseIpcUncRejection },
+    // askuserquestion-no-dup-and-resolves: preMain installs ipcMain stubs to
+    // capture resolvePermission + send without spawning real claude.exe. Uses
+    // fresh udd so the stubbed handlers + in-renderer state can't leak into
+    // later cases. registerDispose restores the IPC handlers (defence in
+    // depth — fresh-udd relaunch already re-registers main-side handlers
+    // because the electron app is torn down between cases).
+    {
+      id: 'askuserquestion-no-dup-and-resolves',
+      userDataDir: 'fresh',
+      preMain: async (app) => {
+        await app.evaluate(({ ipcMain }) => {
+          if (!global.__probeNoDup) global.__probeNoDup = { resolved: [], sent: [] };
+          const cap = global.__probeNoDup;
+          cap.resolved.length = 0;
+          cap.sent.length = 0;
+          try { ipcMain.removeHandler('agent:resolvePermission'); } catch {}
+          ipcMain.handle('agent:resolvePermission', (_e, sessionId, requestId, decision) => {
+            cap.resolved.push({ sessionId, requestId, decision });
+            return true;
+          });
+          try { ipcMain.removeHandler('agent:send'); } catch {}
+          ipcMain.handle('agent:send', (_e, sessionId, text) => {
+            cap.sent.push({ sessionId, text });
+            return true;
+          });
+        });
+      },
+      run: caseAskUserQuestionNoDupAndResolves,
+    },
+    // permission-allow-bash: requires real claude.exe to round-trip the
+    // nested control_response envelope (Bug L). Fresh udd so the renderer's
+    // allowAlwaysTools allow-list state from earlier cases can't auto-allow
+    // and bypass the prompt path.
+    {
+      id: 'permission-allow-bash',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: casePermissionAllowBash,
+    },
+    // permission-allow-write: same Bug L assertion via the Write tool —
+    // file must land on disk AND tool_result must reach the renderer.
+    {
+      id: 'permission-allow-write',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: casePermissionAllowWrite,
+    },
+    // permission-allow-parallel-batch: 4-Bash + 5-Read parallel batches —
+    // asserts renderer block-id derivation from tool_use.id (not msgId+pos)
+    // AND Bug L envelope holds for all N tool_results.
+    {
+      id: 'permission-allow-parallel-batch',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: casePermissionAllowParallelBatch,
+    },
+    // jsonl-filename-matches-session: asserts SDK respects sessionId option
+    // (positive UUID case) AND defence-in-depth gate rejects malformed
+    // presets (negative case). Writes into the user's real
+    // ~/.claude/projects via the spawned CLI; the case cleans up the project
+    // dirs it created. Fresh udd isolates renderer state across runs.
+    {
+      id: 'jsonl-filename-matches-session',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: caseJsonlFilenameMatchesSession,
+    },
+    // env-passthrough: ANTHROPIC_API_KEY/AUTH_TOKEN must flow through to
+    // claude.exe so the CLI authenticates without an isolated CLAUDE_CONFIG_DIR
+    // login. Fresh udd to start clean. SKIPS at runtime (does NOT fail) when
+    // neither auth env var is set in the parent process.
+    {
+      id: 'env-passthrough',
+      userDataDir: 'fresh',
+      requiresClaudeBin: true,
+      run: caseEnvPassthrough,
+    },
+    // connection-pane: Settings → Connection pane reads ~/.claude/settings.json
+    // via os.homedir(). preMain swaps process.env.HOME / USERPROFILE to a
+    // fixture dir BEFORE the renderer triggers the IPC, so the IPC handler
+    // resolves the fixture instead of the dev's real settings. Fresh udd
+    // because the swap is global to the electron main process and shouldn't
+    // leak into later cases.
+    {
+      id: 'connection-pane',
+      userDataDir: 'fresh',
+      preMain: async (app, ctx) => {
+        // The IPC handler reads `os.homedir()`, which on Windows resolves via
+        // SHGetFolderPath() and on POSIX via getpwuid_r() — both IGNORE the
+        // HOME / USERPROFILE env vars. Worse, the eval context that
+        // app.evaluate() uses blocks `require()` and dynamic `import()`, so
+        // we can't even load the `fs` module in main to redirect the read.
+        //
+        // Workaround: precompute the connection:read response payload on the
+        // harness side and have the monkey-patched handler return it verbatim.
+        // Same trick for openSettingsFile (it just calls shell.openPath, which
+        // IS available via the destructured first arg) and models:list (a
+        // static fixture is enough).
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-perm-conn-home-'));
+        fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+        const settingsPath = path.join(home, '.claude', 'settings.json');
+        fs.writeFileSync(settingsPath, JSON.stringify({
+          model: 'claude-probe-fixture-1',
+          env: {
+            ANTHROPIC_BASE_URL: 'https://probe.example.com/v1',
+            ANTHROPIC_AUTH_TOKEN: 'sk-ant-PROBE-DO-NOT-LEAK-1234567890',
+          },
+        }, null, 2), 'utf8');
+        const fixtureResponse = {
+          baseUrl: 'https://probe.example.com/v1',
+          model: 'claude-probe-fixture-1',
+          hasAuthToken: true,
+        };
+        await app.evaluate(({ ipcMain, shell }, args) => {
+          try { ipcMain.removeHandler('connection:read'); } catch {}
+          ipcMain.handle('connection:read', () => args.fixture);
+          try { ipcMain.removeHandler('connection:openSettingsFile'); } catch {}
+          ipcMain.handle('connection:openSettingsFile', async () => {
+            const result = await shell.openPath(args.settingsPath);
+            return result === '' ? { ok: true } : { ok: false, error: result };
+          });
+          try { ipcMain.removeHandler('models:list'); } catch {}
+          ipcMain.handle('models:list', async () => [
+            { id: 'claude-probe-fixture-1', source: 'settings', label: 'claude-probe-fixture-1' },
+          ]);
+        }, { fixture: fixtureResponse, settingsPath });
+        ctx.registerDispose(async () => {
+          try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+        });
+      },
+      run: caseConnectionPane,
+    },
   ]
 });

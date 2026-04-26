@@ -75,8 +75,6 @@ per-file probes** (one Electron launch per case):
 - `probe-e2e-db-corruption-recovery` (pre-seeds garbage DB before launch)
 - `probe-e2e-import-session` (depends on userData state at launch)
 - `probe-e2e-close-window-aborts-sessions` (asserts on app shutdown)
-- `probe-e2e-ipc-unc-rejection`, `probe-e2e-env-passthrough`
-  (process-launch concerns)
 - `probe-e2e-restore*` family (specifically test "what happens after
   restart" — they require a relaunch by definition)
 - `probe-e2e-dnd` (needs `CCSM_E2E_HIDDEN=0` for dnd-kit pointer
