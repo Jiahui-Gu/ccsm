@@ -9,7 +9,12 @@ import type {
   UserEvent
 } from '../../electron/agent/stream-json-types';
 import type { MessageBlock, SkillProvenance, TodoItem } from '../types';
-import { parseQuestions } from './ask-user-question';
+// `parseQuestions` previously sat here for the AskUserQuestion
+// malformed-input fallback (which dumped the rejected payload via
+// PrettyInput on top of the SDK retry's correct card — see
+// docs/tool-failure-render-research.md). That fallback was removed
+// 2026-04-26; lifecycle.ts imports parseQuestions directly from
+// ./ask-user-question for the can_use_tool permission path.
 
 export type ToolResultPatch = {
   toolUseId: string;
@@ -417,25 +422,24 @@ function assistantBlocks(msg: AssistantEvent, activeSkill?: SkillProvenance): Me
         // forever waiting for a `result` frame that never arrives.
         // (See feedback_bugfix_requires_e2e — Bugs A+B reported 2026-04-23.)
         //
-        // We only fall back to a generic tool block when the input is so
-        // malformed that `parseQuestions` returns nothing AND the
-        // permission path also wouldn't have rendered a usable card —
-        // gives the user at least SOMETHING to inspect rather than a
-        // silent skip. The permission-path block in this case is a
-        // generic Allow/Reject prompt, which we keep too; the tool block
-        // here is purely diagnostic.
-        const questions = parseQuestions(tu.input);
-        if (questions.length === 0) {
-          out.push({
-            kind: 'tool',
-            id: blockId,
-            toolUseId: tu.id,
-            name: tu.name,
-            brief: briefForTool(tu.name, tu.input),
-            expanded: false,
-            input: tu.input
-          });
-        }
+        // Malformed-input fallback REMOVED (tool-failure render dogfood,
+        // 2026-04-26): when `parseQuestions` returned [] (the model
+        // emitted `{header, options}` only, missing `question`), we used
+        // to push a generic tool block here so the user "had something
+        // to inspect". In practice that block paired with the CLI's
+        // synthetic `<tool_use_error>InputValidationError…` tool_result
+        // and auto-expanded into a 50-line PrettyInput dump of the
+        // rejected payload — directly above the SDK's correct retry
+        // card. Zero user value, lots of noise. The retry path
+        // guarantees the real question card lands; we drop the failed
+        // attempt entirely. Generic non-AskUserQuestion validation
+        // failures are still rendered (collapsed pill in ToolBlock,
+        // see Fix B for that branch).
+        //
+        // `parseQuestions` is intentionally NOT called here anymore —
+        // even when it returns a non-empty array, the can_use_tool
+        // permission path has already mounted the question card, so
+        // there is nothing for us to add.
       } else {
         out.push({
           kind: 'tool',

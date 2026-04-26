@@ -176,7 +176,15 @@ describe('streamEventToTranslation', () => {
     expect(out.append).toHaveLength(0);
   });
 
-  it('AskUserQuestion with malformed input falls back to a generic tool block', () => {
+  it('AskUserQuestion with malformed input is dropped entirely (no diagnostic tool block)', () => {
+    // Pre-2026-04-26 we used to push a fallback `tool` block here so the
+    // user "had something to inspect". In practice that block paired
+    // with the CLI's synthetic `<tool_use_error>InputValidationError…`
+    // tool_result and auto-expanded into a raw-JSON dump of the
+    // rejected payload — directly above the SDK's correct retry card.
+    // Fix A drops the fallback; the retry card is sufficient. See
+    // docs/tool-failure-render-research.md and the
+    // `tool-failure-input-validation-collapsed` harness probe.
     const out = streamEventToTranslation(
       asEvent({
         type: 'assistant',
@@ -196,10 +204,7 @@ describe('streamEventToTranslation', () => {
         }
       })
     );
-    expect(out.append).toHaveLength(1);
-    const b = out.append[0] as { kind: string; name?: string };
-    expect(b.kind).toBe('tool');
-    expect(b.name).toBe('AskUserQuestion');
+    expect(out.append).toHaveLength(0);
   });
 
   it('TodoWrite tool_use becomes a todo block (not generic tool)', () => {

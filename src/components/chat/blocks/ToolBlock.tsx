@@ -68,7 +68,28 @@ export function ToolBlock({
   streamingInput?: boolean;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState<boolean>(!!isError);
+  // Validation-error pill (#tool-failure-render dogfood, 2026-04-26).
+  // The bundled CLI emits a synthetic user `tool_result` carrying
+  //   "<tool_use_error>InputValidationError: …</tool_use_error>"
+  // with `is_error: true` whenever a tool_use's input fails the CLI-side
+  // Zod schema. The model retries on the next assistant turn and
+  // produces a correct invocation; the failed attempt has zero user
+  // value but its raw payload would otherwise be dumped via PrettyInput
+  // on the auto-expand-on-error path. We detect that envelope here and
+  // short-circuit to a tiny collapsed pill: tool name + a muted
+  // "input rejected, retried" subtitle, no body. Genuine tool failures
+  // (bash exit ≠ 0, file-not-found, etc.) do NOT match this pattern and
+  // keep their existing auto-expand behavior so users can see what
+  // actually went wrong. Match is intentionally narrow — both the
+  // envelope tag and the InputValidationError sentinel must appear, so
+  // a real shell error that happens to mention either substring won't
+  // accidentally collapse.
+  const isValidationError =
+    !!isError &&
+    typeof result === 'string' &&
+    result.includes('<tool_use_error>') &&
+    result.includes('InputValidationError');
+  const [open, setOpen] = useState<boolean>(!!isError && !isValidationError);
   const [cancelling, setCancelling] = useState(false);
   // Auto-expand precedence (#304): on transition into error or stall-escalation
   // we open the block automatically so the user doesn't have to hunt for the
@@ -131,6 +152,9 @@ export function ToolBlock({
   // without fighting users who deliberately collapse the block.
   useEffect(() => {
     if (userToggledRef.current) return;
+    // Validation-error pill never auto-expands — there is nothing useful
+    // inside (we suppress PrettyInput + the body branch entirely below).
+    if (isValidationError) return;
     // Error transition (false -> true). Initial-mount-with-error is handled
     // by useState's initializer; this branch only fires when a previously
     // healthy tool block flips to error mid-stream.
@@ -139,7 +163,7 @@ export function ToolBlock({
       setOpen(true);
     }
     prevIsErrorRef.current = !!isError;
-  }, [isError]);
+  }, [isError, isValidationError]);
   useEffect(() => {
     if (userToggledRef.current) return;
     if (escalated && !autoExpandedForEscalatedRef.current) {
@@ -174,6 +198,34 @@ export function ToolBlock({
   const diff = diffFromToolInput(name, input);
   const isFileTree = FILE_TREE_TOOLS.has(name) && hasResult && !isError;
   const isShellTool = SHELL_OUTPUT_TOOLS.has(name);
+  if (isValidationError) {
+    // Single-line collapsed pill. Reuses the same data-testid as the
+    // generic tool block so existing chat-stream queries still find it,
+    // but exposes data-validation-error for tests / styling that need
+    // to single it out. No <button>: this row is intentionally inert —
+    // expanding wouldn't reveal anything meaningful (the rejected
+    // payload is the bug, not the signal). The visual treatment is
+    // muted-tertiary, NOT the red error frame the auto-expanded error
+    // path uses, because the retry has already (or will shortly)
+    // surface the real artifact and we don't want to draw the eye.
+    return (
+      <div
+        data-testid="tool-block-root"
+        data-validation-error="true"
+        className="font-mono text-chrome flex items-baseline gap-2 text-fg-tertiary"
+      >
+        <span
+          data-type-scale-role="tool-name"
+          className="text-fg-tertiary text-meta"
+        >
+          {name}
+        </span>
+        <span className="text-fg-tertiary/80 text-meta italic">
+          {t('chat.toolInputRejectedRetried')}
+        </span>
+      </div>
+    );
+  }
   return (
     <div
       data-testid="tool-block-root"
