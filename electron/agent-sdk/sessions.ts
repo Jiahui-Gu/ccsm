@@ -178,6 +178,21 @@ function buildSdkEnv(opts: {
   env.CLAUDE_CONFIG_DIR = opts.configDir;
   env.CLAUDE_CODE_ENTRYPOINT = 'ccsm-desktop';
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'ccsm-desktop/0.1.0';
+  // Disable the CLI's IDE-companion auto-discovery. Without this, the
+  // bundled CLI scans `${CLAUDE_CONFIG_DIR}/ide/*.lock` (dropped there by
+  // the VS Code / JetBrains / Cursor Claude Code extension) and, when a
+  // lockfile's workspaceFolders match the session cwd, attaches itself as
+  // an IDE-integrated session — at which point the agent's system context
+  // identifies the run as "Claude Code (VS Code integration)" and the user
+  // gets editor-tab + diagnostics tools they have no UI for. ccsm is an
+  // independent Electron app, never a VS Code extension; we always want
+  // the standalone identity. Bundled-CLI gate is
+  // `(autoConnectIde || ... || CLAUDE_CODE_AUTO_CONNECT_IDE) && !a7(CLAUDE_CODE_AUTO_CONNECT_IDE)`
+  // — setting the env to a false-string makes `a7()` true, killing the
+  // whole condition regardless of the user's settings.json
+  // `autoConnectIde` value or any other heuristic. See PR fixing
+  // "agent self-reports as VS Code integration".
+  env.CLAUDE_CODE_AUTO_CONNECT_IDE = 'false';
   if (opts.envOverrides) {
     for (const [k, v] of Object.entries(opts.envOverrides)) {
       env[k] = v;
