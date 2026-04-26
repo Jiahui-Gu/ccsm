@@ -42,6 +42,51 @@ a top-of-file `// MERGED INTO scripts/harness-…mjs` marker.
    `scripts/run-all-e2e.mjs`, and prepend the breadcrumb header to the
    source file.
 
+## Harness-author gotchas
+
+### `app.evaluate()` cannot `require()` / `import()` inside the callback
+
+The function passed to `app.evaluate(async ({ ipcMain, ... }) => { ... })`
+runs in the Electron main process, which is already in-context — a dynamic
+`require()` or `await import()` inside the callback hangs (the loader is
+re-entrant against itself). Symptom: the case stalls until the harness
+timeout, no error.
+
+Pass any node-module data through the second arg (Playwright serializes it
+to the main process):
+
+```js
+// Bad — hangs.
+await app.evaluate(async () => {
+  const fs = require("fs");
+  return fs.readFileSync("/etc/hosts", "utf8");
+});
+
+// Good — read on the Node side, pass as closure arg.
+const hosts = require("fs").readFileSync("/etc/hosts", "utf8");
+await app.evaluate(async (_ctx, { hosts }) => {
+  // use `hosts` directly
+}, { hosts });
+```
+
+### `os.homedir()` ignores `HOME` / `USERPROFILE`
+
+`os.homedir()` calls `SHGetFolderPath` on Windows and `getpwuid_r` on POSIX
+— it does **not** read environment variables. So swapping `process.env.HOME`
+inside the harness will not redirect reads of `~/.claude` (e.g.
+`commands-loader.ts` keeps resolving the real user home).
+
+Either monkey-patch the IPC handler / loader to accept an injected
+`homeDir`, or set `CLAUDE_CONFIG_DIR` (added in PR #346 specifically as the
+env-overridable fallback for this case) before launching the app:
+
+```js
+const electronApp = await electron.launch({
+  args: [appMain],
+  env: { ...process.env, CLAUDE_CONFIG_DIR: tmpClaudeDir },
+});
+```
+
 ## Running locally
 
 ```bash
