@@ -46,7 +46,7 @@ const Chip = React.forwardRef<
       )}
     >
       {children}
-      <ChevronDown size={10} className="stroke-[1.75] opacity-70" />
+      <ChevronDown size={14} className="stroke-[1.75] opacity-70" />
     </button>
   );
 });

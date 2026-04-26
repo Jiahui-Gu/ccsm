@@ -661,7 +661,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             aria-label={t('sidebar.importAriaShort')}
             className="h-8 w-8"
           >
-            <Download size={13} className="stroke-[1.5]" />
+            <Download size={14} className="stroke-[1.5]" />
           </IconButton>
           <IconButton
             variant="raised"
@@ -672,7 +672,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             aria-label={t('sidebar.settingsAria')}
             className="h-8 w-8"
           >
-            <Settings size={13} className="stroke-[1.5]" />
+            <Settings size={14} className="stroke-[1.5]" />
           </IconButton>
         </div>
       ) : (
@@ -800,7 +800,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               onClick={onOpenSettings}
               className="flex-1 h-8 text-chrome gap-1.5"
             >
-              <Settings size={13} className="stroke-[1.5]" />
+              <Settings size={14} className="stroke-[1.5]" />
               <span>{t('common.settings')}</span>
             </Button>
             <IconButton
@@ -812,7 +812,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               aria-label={t('sidebar.importAriaShort')}
               className="h-8 w-8 shrink-0"
             >
-              <Download size={13} className="stroke-[1.5]" />
+              <Download size={14} className="stroke-[1.5]" />
             </IconButton>
           </div>
         </div>
