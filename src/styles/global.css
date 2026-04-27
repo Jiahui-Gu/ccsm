@@ -710,19 +710,10 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   /* Two-pane shell. The window itself is frameless (Windows/Linux) or
      `hiddenInset` (macOS); DWM/Aqua paints the rounded outer corners. The
      app shell is a flat flex row — no outer margin, no outer rounding —
-     so sidebar + right-pane meet the window edge flush. The only visible
+     so sidebar + terminal pane meet the window edge flush. The only visible
      internal seam is .sidebar-edge (the sidebar's right hairline). */
   .app-shell {
     padding: 0;
-  }
-
-  /* The right pane is the conversation surface. It reads as a panel with
-     no border of its own — its left edge is the sidebar's inset highlight,
-     its top/right/bottom are the window's DWM/Aqua edge. A 1px inset
-     highlight along the top provides the "light from above" cue. */
-  .right-pane-frame {
-    background: var(--color-bg-panel);
-    box-shadow: inset 0 1px 0 0 var(--surface-highlight);
   }
 }
 

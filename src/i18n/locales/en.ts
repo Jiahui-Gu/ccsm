@@ -40,121 +40,6 @@ const en = {
     dismiss: 'Dismiss',
     undo: 'Undo'
   },
-  chat: {
-    permissionRequested: 'Permission requested',
-    allow: 'Allow',
-    deny: 'Deny',
-    expandTool: 'Expand tool output',
-    collapseTool: 'Collapse tool output',
-    noOutput: '(no captured output yet)',
-    errorLabel: 'error',
-    sendMessage: 'Send message',
-    sendButton: 'Send',
-    inputPlaceholder: 'Reply…',
-    tokenUsage: '{{used}}k / {{total}}k tokens · {{percent}}% used',
-    emptyTitle: 'No messages yet',
-    emptySubtitle: 'Start typing to begin a conversation.',
-    jumpToLatest: 'Jump to latest',
-    planTitle: 'Plan ready for review',
-    planApprove: 'Approve plan',
-    planReject: 'Reject',
-    todoLabel: 'Todo',
-    infoLabel: 'Info',
-    warnLabel: 'Warn',
-    toolFailedAria: 'tool failed',
-    toolFailedTag: 'failed',
-    runningEllipsis: '(running…)',
-    toolNoResult: '(no result)',
-    toolInputRejectedRetried: 'input rejected, retried',
-    toolTakingLonger: '(taking longer than usual…)',
-    toolStallEscalated: 'Tool has been running 90s+ — still no result.',
-    toolStallCancel: 'Cancel',
-    toolStallCancelAria: 'Cancel tool',
-    toolStallCancelling: 'Cancelling…',
-    runningPlaceholder: 'Running… (Esc to interrupt, Enter to queue)',
-    askPlaceholder: 'Ask anything…',
-    attachImage: 'Attach image',
-    attachImageTitle: 'Attach image (also supports drag-drop & paste)',
-    attachCapReached: 'Attachment cap reached ({{max}})',
-    removeAttachment: 'Remove {{name}}',
-    dropImageHint: 'Drop image to attach',
-    attachmentFormatsHint: 'PNG · JPEG · GIF · WebP · up to {{size}}',
-    stopBtn: 'Stop',
-    stopAria: 'Stop',
-    queueChip: '+{{count}} queued',
-    queueButton: 'Queue',
-    queueAria: 'Queue message',
-    sendFailedToDeliver: 'Failed to deliver message to agent.',
-    cwdMissing:
-      'Working directory no longer exists: {{cwd}}. Pick a new folder using the cwd button in the status bar below, then send again.',
-    diffAccept: 'Accept',
-    diffReject: 'Reject',
-    diffAccepted: 'accepted',
-    diffRejected: 'rejected',
-    diffFileToggleAria: 'Toggle file: {{path}}',
-    diffCountsAria: '{{added}} added, {{removed}} removed',
-    permResolvedAllowed: 'Allowed',
-    permResolvedDenied: 'Denied',
-    inputBytes: 'input',
-    expandStringChars: '+{{count}} chars',
-    collapseString: 'collapse',
-    longOutputCopy: 'Copy all',
-    longOutputCopied: 'Copied',
-    codeBlockCopy: 'Copy code',
-    codeBlockCopied: 'Copied',
-    userMsgCopy: 'Copy message',
-    userMsgCopied: 'Copied',
-    userMsgEdit: 'Edit and resend',
-    userMsgEditDraftStashed: 'Draft saved to history',
-    userMsgRetry: 'Retry',
-    userMsgRetryQueued: 'Queued',
-    // Renamed from "Rewind from here" — "rewind" collides with the upstream
-    // SDK control RPC `canRewind` (which actually reverts file edits). This
-    // action only truncates the in-memory transcript + drops resumeSessionId
-    // so the next send starts a fresh CLI session; it does NOT roll files
-    // back. Use "Truncate" to set the right expectation. See UserBlock.tsx.
-    userMsgRewind: 'Truncate from here',
-    longOutputSave: 'Save as .log',
-    longOutputSaved: 'Saved',
-    longOutputSaveFailed: 'Save failed',
-    longOutputExpand: 'Expand',
-    longOutputCollapse: 'Collapse',
-    longOutputHidden: '── {{count}} lines hidden · click to expand ──',
-    longOutputTooLargeExpand: 'Too large to expand inline · use Save as .log',
-    longOutputTooLargeBadge: '{{size}} · {{lines}} lines',
-    longOutputOpenInEditor: 'Open in editor',
-    longOutputOpenedInEditor: 'Opened',
-    longOutputOpenInEditorFailed: 'Open failed',
-    prOpening: 'opening…',
-    prOpen: 'open',
-    prPolling: 'CI running…',
-    prDone: 'CI complete',
-    prFailed: 'failed',
-    prCheckRunning: 'running',
-    prCheckPassed: 'passed',
-    prCheckFailed: 'failed',
-    prOpenDetailsAria: 'Open details for {{name}}',
-    loadHistoryFailed: 'Failed to load history',
-    retry: 'Retry',
-    // task #320 — permission-mode-aware running placeholder. Each variant
-    // makes the active permission posture visible while a turn is in flight,
-    // so the user knows what to expect (will I be prompted? are edits being
-    // auto-applied? am I in plan-only mode?). The trailing affordance hint
-    // matches the original `runningPlaceholder` so muscle memory survives.
-    runningPlaceholderDefault: 'Running… will ask for permission on tool use (Esc to interrupt, Enter to queue)',
-    runningPlaceholderAcceptEdits: 'Running… auto-accepting edits (Esc to interrupt, Enter to queue)',
-    runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
-    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)',
-    // task322: continue-after-interrupt
-    continueAfterInterruptHint: 'Press Enter to continue, or type a new message',
-    // task328: shown in the cwd chip when the active session has no cwd set
-    // (no recent CLI history to default from, no per-group prior cwd). The
-    // popover does NOT auto-open in this state — the chip stays clickable.
-    cwdChipNoneLabel: '(none)'
-  },
-  chatStream: {
-    emptyHint: 'Type a message and press'
-  },
   assistantBlock: {
     // Sentence case — surfaced as a small badge above any assistant text
     // generated while a Skill tool invocation is active. Discoverability
@@ -324,32 +209,6 @@ const en = {
     autoUnsupportedTitle: 'Auto mode unavailable',
     autoUnsupportedBody: 'This account or model does not support auto mode yet. Reverted to default.'
   },
-  permissionPrompt: {
-    title: 'Permission required',
-    titleByTool: {
-      bash: 'Allow this bash command?',
-      webFetch: 'Allow fetching this URL?',
-      webSearch: 'Allow searching for this query?',
-      edit: 'Allow editing this file?',
-      skill: 'Allow running this skill?',
-      fallback: 'Permission required'
-    },
-    allowBtn: 'Allow (Y)',
-    // Scope-explicit copy. The fast-path keys off toolName only, and the
-    // allowlist lives in the in-memory store — so the truth is "all uses of
-    // this tool, this session". Mirror that, don't promise more.
-    allowAlwaysBtn: 'Always allow {{tool}} this session',
-    allowAlwaysBtnFallback: 'Always allow this tool this session',
-    allowAlwaysHint: 'Skip the prompt for any {{tool}} call until you quit the app. Resets next launch.',
-    allowAlwaysHintFallback: 'Skip the prompt for any call to this tool until you quit the app. Resets next launch.',
-    rejectBtn: 'Reject (N)',
-    selectAll: 'All',
-    selectNone: 'None',
-    hunkLabel: 'Hunk {{n}}',
-    allowSelected: 'Allow selected ({{selected}}/{{total}})',
-    rejectAll: 'Reject all',
-    applying: 'Applying…'
-  },
   questionBlock: {
     title: 'Question awaiting answer',
     submit: 'Submit answer',
@@ -363,34 +222,6 @@ const en = {
     timelineLabel: 'Asked',
     timelineAnswered: 'You answered',
     timelineRejected: 'Dismissed without answer'
-  },
-  slashCommands: {
-    pickerTitle: 'Slash commands',
-    pickerHint: 'Type to filter, Enter to run',
-    none: 'No matching command',
-    noneHint: 'No matching commands — press Enter to send as a regular message.',
-    navigate: 'navigate',
-    select: 'select',
-    section: 'section',
-    close: 'close',
-    runsLocally: 'Runs locally — not forwarded to claude.exe',
-    clientTag: 'client',
-    groupBuiltIn: 'Built-in',
-    groupUser: 'User commands',
-    groupProject: 'Project commands',
-    groupPlugin: 'Plugin commands',
-    groupSkill: 'Skills',
-    groupAgent: 'Agents',
-    unknownToast: 'Unknown command: /{{name}}'
-  },
-  mentions: {
-    pickerTitle: 'File mentions',
-    empty: 'No files in this workspace',
-    noMatch: 'No files match "{{query}}"',
-    navigate: 'navigate',
-    select: 'select',
-    close: 'close',
-    activeAnnouncement: 'Result {{index}} of {{total}}: {{name}}'
   },
   notifications: {
     sessionWaitingTitle: 'Session waiting',
@@ -510,6 +341,13 @@ const en = {
     spawnFailed: 'Failed to start terminal',
     retryButton: 'Retry'
   },
+  chat: {
+    cwdChipNoneLabel: '(none)',
+    runningPlaceholderDefault: 'Running… will ask for permission on tool use (Esc to interrupt, Enter to queue)',
+    runningPlaceholderAcceptEdits: 'Running… auto-accepting edits (Esc to interrupt, Enter to queue)',
+    runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
+    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)'
+  },
   statusBar: {
     workingDirectory: 'Working directory',
     model: 'Model',
@@ -603,20 +441,6 @@ const en = {
       titleWarning: 'Agent warning',
       dismiss: 'Dismiss diagnostic'
     }
-  },
-  // task #303 — per-line diff comment affordance.
-  // Comments queue locally on a DiffView line, then ride the next user
-  // prompt as `<diff-feedback file="…" line="N">…</diff-feedback>` blocks
-  // prepended to the prompt body. Kept as a separate top-level namespace
-  // (rather than added inline to `chat`) so the append site is at EOF and
-  // future task workers can see at a glance which strings #303 owns.
-  task303: {
-    diffAddCommentAria: 'Add a comment for the agent on this line',
-    diffEditCommentAria: 'Edit comment',
-    diffDeleteCommentAria: 'Delete comment',
-    diffCommentPlaceholder: 'Add a comment for the agent\u2026',
-    diffCommentSave: 'Save',
-    diffCommentsPendingChip: '{{count}} diff comments will be sent'
   },
   // task #329 — first-run empty-state CTA shown when there is no active
   // session (fresh install, or all sessions deleted). Sentence case per
