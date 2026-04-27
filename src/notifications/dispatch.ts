@@ -50,8 +50,8 @@ export async function dispatchNotification(input: DispatchInput): Promise<Dispat
 }
 
 // Triggered by clicking a notification (main → renderer IPC). Selects the
-// session, which bumps focusInputNonce so the InputBar pulls focus, and
-// scrolls the chat stream to the bottom so the latest activity is visible.
+// session and scrolls the chat stream to the bottom so the latest activity
+// is visible.
 export function handleNotificationFocus(sessionId: string): void {
   const state = useStore.getState();
   if (!state.sessions.some((s) => s.id === sessionId)) return;

@@ -7,9 +7,6 @@ import '@fontsource-variable/jetbrains-mono';
 import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
-// Import for its side-effect: attaches clientHandler fns onto the slash
-// command registry so InputBar can dispatch them.
-import './slash-commands/handlers';
 import './styles/global.css';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process

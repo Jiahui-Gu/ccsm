@@ -539,8 +539,8 @@ const en = {
     // wording so users who switch between surfaces see the same prompt.
     contextTooltip: '{{percent}}% used ({{used}} / {{limit}} tokens). Click to /compact.',
     contextAriaLabel: '{{percent}}% of context window used. Click to compact.',
-    // 6-tier effort+thinking chip. Labels mirror the SDK's EffortLevel
-    // union (low/medium/high/xhigh/max) plus an 'Off' tier that maps to
+    // 6-tier effort+thinking chip. Labels mirror the upstream CLI's effort
+    // levels (low/medium/high/xhigh/max) plus an 'Off' tier that maps to
     // thinking=disabled. Default tier is High; Extra high/Max are
     // model-gated.
     effort: 'Effort',

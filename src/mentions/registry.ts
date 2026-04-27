@@ -1,7 +1,5 @@
 // @file mention registry.
 //
-// Mirrors the shape of `src/slash-commands/registry.ts` so InputBar can
-// drive both pickers from one trigger-detection / fuzzy-match playbook.
 // Trigger pattern matches the upstream Anthropic Claude Code VS Code
 // extension (webview index.js): `/(?:^|\s)@[^\s]*/gm`. The picker only
 // shows files (no @symbol — upstream's only @mention surface is the

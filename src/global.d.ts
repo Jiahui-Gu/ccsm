@@ -33,19 +33,6 @@ declare global {
         getSystemLocale: () => Promise<string | undefined>;
         setLanguage: (l: 'en' | 'zh') => void;
       };
-      /**
-       * Truncation marker persistence — see preload.ts for full rationale.
-       * The user-message hover-menu's "Truncate from here" stores the chosen
-       * user-block id so a ccsm restart re-applies the truncation after
-       * re-hydrating from the CLI's JSONL.
-       */
-      truncationGet: (
-        sessionId: string
-      ) => Promise<{ blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null>;
-      truncationSet: (
-        sessionId: string,
-        marker: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;
       saveFile: (args: {
@@ -93,14 +80,6 @@ declare global {
        * new-session picker. Null when unset, missing, or unparseable.
        */
       defaultModel: () => Promise<string | null>;
-
-      /**
-       * Read the raw frames of an importable `.jsonl` so the renderer can
-       * project them through `streamEventToTranslation` and hydrate
-       * `messagesBySession` immediately at import time. Returns [] on any
-       * read error so the caller can fall back to the empty-chat behavior.
-       */
-      loadImportHistory: (projectDir: string, sessionId: string) => Promise<unknown[]>;
 
       /**
        * Best-effort batched existence check. Returns a map keyed by the
