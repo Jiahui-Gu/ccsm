@@ -473,21 +473,10 @@ async function caseShortcutOverlayOpens({ win, log }) {
       const dlg = document.querySelector('[role="dialog"]');
       return dlg ? dlg.textContent || '' : '';
     });
-    if (process.platform === 'darwin') {
-      // macOS: hints should use ⌘, not Ctrl.
-      if (/\bCtrl\b/.test(paletteText)) {
-        throw new Error('command palette renders "Ctrl" on macOS; text=' + paletteText.slice(0, 200));
-      }
-    } else {
-      if (/[⌘⇧]/.test(paletteText)) {
-        throw new Error('command palette still renders mac glyphs in hints; text=' + paletteText.slice(0, 200));
-      }
-      if (/\bCmd\b/.test(paletteText)) {
-        throw new Error('command palette still renders "Cmd" in hints; text=' + paletteText.slice(0, 200));
-      }
-      if (!/Ctrl/.test(paletteText)) {
-        throw new Error('expected "Ctrl" in command palette hints; text=' + paletteText.slice(0, 200));
-      }
+    // Navigator is spoofed to MacIntel above, so the renderer's MOD constant
+    // resolves to '⌘' regardless of the host OS.  Assert mac-style hints.
+    if (/\bCtrl\b/.test(paletteText)) {
+      throw new Error('command palette renders "Ctrl" despite navigator spoof to MacIntel; text=' + paletteText.slice(0, 200));
     }
     await win.keyboard.press('Escape');
   }
@@ -4075,7 +4064,6 @@ await runHarness({
     // real ~/.claude. Disposers restore env + rm -rf tmp tree.
     {
       id: 'slash-picker-claude-config-dir',
-      skipOnPlatform: ['darwin'],
       preMain: async (app, ctx) => {
         const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-e2e-fake-claude-'));
         // user command — should surface in the picker.

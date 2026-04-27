@@ -233,11 +233,10 @@ function freshUserDataDir(tag) {
  *   the summary as `[--]` and do NOT count toward the failure exit code.
  *   Override via `CCSM_CLAUDE_BIN` env or by symlinking onto PATH.
  *
- * @property {string[]} [skipOnPlatform]
- *   Skip this case when `process.platform` matches any entry in the array.
- *   Use for tests whose assertions are platform-specific (e.g. Windows-only
- *   notification modules, macOS-specific rendering differences).
- *   Example: `skipOnPlatform: ['darwin']` skips on macOS.
+ * @property {boolean} [windowsOnly]
+ *   Skip this case when `process.platform !== 'win32'`.
+ *   Use for tests that exercise Windows-only features (e.g. Windows
+ *   notification modules).
  *
  *   Example (probe-e2e-permission-allow-bash style — needs real subprocess
  *   to verify the IPC frame round-trips through claude.exe):
@@ -420,9 +419,9 @@ export async function runHarness(spec) {
         continue;
       }
 
-      // ---- Capability: skipOnPlatform ----
-      if (c.skipOnPlatform && c.skipOnPlatform.includes(process.platform)) {
-        const reason = `skipped on platform ${process.platform}`;
+      // ---- Capability: windowsOnly ----
+      if (c.windowsOnly && process.platform !== 'win32') {
+        const reason = `skipped: windowsOnly (current platform is ${process.platform})`;
         console.log(`[case=${c.id}] SKIPPED: ${reason}`);
         results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
         continue;

@@ -5206,7 +5206,7 @@ await runHarness({
     // contamination doesn't affect other cases. close-window-aborts-sessions
     // follows with relaunch:true → fresh app, then notify-integration's
     // bootstrap mutations don't matter either way.
-    { id: 'notify-integration', requiresClaudeBin: false, skipOnPlatform: ['darwin'], run: caseNotifyIntegration },
+    { id: 'notify-integration', requiresClaudeBin: false, windowsOnly: true, run: caseNotifyIntegration },
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // Pure-store reclassifications from the original "restore-*" probes;
     // 桶 4 reviewer flagged these as misnamed (single-launch, no fixture).

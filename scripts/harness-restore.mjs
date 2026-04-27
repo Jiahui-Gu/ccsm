@@ -2731,7 +2731,7 @@ await runHarness({
     { id: 'sidebar-resize',           skipLaunch: true, run: caseSidebarResize },
     { id: 'sidebar-rename-dnd-state', skipLaunch: true, run: caseSidebarRenameDndState },
     { id: 'db-corruption-recovery',   skipLaunch: true, run: caseDbCorruptionRecovery },
-    { id: 'notify-fallback',          skipLaunch: true, skipOnPlatform: ['darwin'], run: caseNotifyFallback },
+    { id: 'notify-fallback',          skipLaunch: true, windowsOnly: true, run: caseNotifyFallback },
     { id: 'import-session',           skipLaunch: true, run: caseImportSession },
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // permission-prompt-default-mode: 2-launch (seed → close → relaunch)
