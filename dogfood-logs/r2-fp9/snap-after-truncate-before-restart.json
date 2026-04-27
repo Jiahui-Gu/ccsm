@@ -1,0 +1,30 @@
+{
+  "activeId": "d2c277a3-352b-49f4-993a-ba22677eb791",
+  "sessionCount": 2,
+  "running": false,
+  "messageCount": 3,
+  "messageBlocks": [
+    {
+      "kind": "user",
+      "id": "u-mogrjqx8-yod6",
+      "text": "Reply with the single word: ALPHA"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268118311:c0",
+      "text": "ALPHA"
+    },
+    {
+      "kind": "user",
+      "id": "u-mogrjvqb-ahyl",
+      "text": "Reply with the single word: BETA"
+    }
+  ],
+  "statsCostUsd": 1.46806,
+  "contextUsage": {
+    "totalTokens": 32729,
+    "contextWindow": 1000000,
+    "model": "claude-opus-4-7[1m]"
+  },
+  "resumeSessionId": "d2c277a3-352b-49f4-993a-ba22677eb791"
+}

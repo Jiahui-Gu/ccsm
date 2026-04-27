@@ -1,0 +1,45 @@
+{
+  "activeId": "d2c277a3-352b-49f4-993a-ba22677eb791",
+  "sessionCount": 2,
+  "running": false,
+  "messageCount": 6,
+  "messageBlocks": [
+    {
+      "kind": "user",
+      "id": "u-mogrjqx8-yod6",
+      "text": "Reply with the single word: ALPHA"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268118311:c0",
+      "text": "ALPHA"
+    },
+    {
+      "kind": "user",
+      "id": "u-mogrjvqb-ahyl",
+      "text": "Reply with the single word: BETA"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268122260:c0",
+      "text": "BETA"
+    },
+    {
+      "kind": "user",
+      "id": "u-mogrjyjr-x8kt",
+      "text": "Reply with the single word: GAMMA"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268125917:c0",
+      "text": "GAMMA"
+    }
+  ],
+  "statsCostUsd": 0.9773999999999999,
+  "contextUsage": {
+    "totalTokens": 32631,
+    "contextWindow": 1000000,
+    "model": "claude-opus-4-7[1m]"
+  },
+  "resumeSessionId": null
+}

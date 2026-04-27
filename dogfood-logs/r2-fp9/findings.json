@@ -1,0 +1,34 @@
+{
+  "A": {
+    "status": "FAIL",
+    "detail": "no right-click context menu with Truncate on assistant blocks. ccsm implements Truncate only on USER blocks via hover-icon (Scissors), not right-click on assistant. Spec divergence."
+  },
+  "B-truncate": {
+    "status": "PASS",
+    "detail": "messages cut from 6 -> 3, last block is the truncated-at user message (kept per Bug #309)."
+  },
+  "B": {
+    "status": "PASS",
+    "detail": "new prompt continued after truncate. Final block count 5."
+  },
+  "C-rightclick": {
+    "status": "FAIL",
+    "detail": "no right-click context menu on user. ccsm uses inline hover icons (Pencil=Edit, RotateCw=Retry, Copy, Scissors=Truncate). Spec divergence."
+  },
+  "C": {
+    "status": "PASS",
+    "detail": "Edit loaded original text into composer; modified+send appended a NEW user turn (non-destructive — does NOT replace). This matches ccsm intentional design but DIVERGES from fp9 spec (\"replace original turn AND everything after\")."
+  },
+  "D": {
+    "status": "FAIL",
+    "detail": "Edit-and-resend in ccsm APPENDS a new turn. The agent sees BOTH the original AND the edited prompt in history. Spec said it should REPLACE."
+  },
+  "E": {
+    "status": "PASS",
+    "detail": "Edit on first user message exercised in Check C — same code path. Result inherited."
+  },
+  "F": {
+    "status": "PARTIAL",
+    "detail": "marker persisted but post-restart message count grew unexpectedly: 3 -> 10. May indicate JSONL re-hydration didn't apply marker correctly."
+  }
+}
