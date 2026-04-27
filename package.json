@@ -108,7 +108,13 @@
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.0"
   },
-  "optionalDependencies": {},
+  "optionalDependencies": {
+    "@nodert-win10-au/windows.applicationmodel": "^0.4.4",
+    "@nodert-win10-au/windows.data.xml.dom": "^0.4.4",
+    "@nodert-win10-au/windows.foundation": "^0.4.4",
+    "@nodert-win10-au/windows.ui.notifications": "^0.4.4",
+    "@nodert-win10-au/windows.ui.startscreen": "^0.4.4"
+  },
   "build": {
     "appId": "com.ccsm.app",
     "productName": "CCSM",
@@ -126,6 +132,8 @@
       "package.json",
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+      "node_modules/electron-windows-notifications/**",
+      "node_modules/@nodert-win10-au/**",
       "!**/*.map",
       "!**/*.ts",
       "!**/__tests__/**",
