@@ -9,11 +9,11 @@ import {
 } from './notify';
 import { shouldSuppressForFocus, registerToastTarget } from './notify-bootstrap';
 
-// Cap the assistant-message preview that the Done toast renders. The inlined
-// notify module's xml/done.ts ASSISTANT_LINE_MAX = 80 re-truncates inside the
-// SDK; we match that budget here for consistency. Anything longer just wastes
-// pixels in the OS banner.
+// Cap the assistant-message preview that the Done toast renders. Matches the
+// historical 80-char budget so anything longer doesn't waste pixels in the OS
+// banner.
 const DONE_BODY_PREVIEW_MAX = 80;
+const DONE_USER_PREVIEW_MAX = 80;
 
 function truncatePreview(s: string, n = DONE_BODY_PREVIEW_MAX): string {
   if (!s) return '';
@@ -24,10 +24,10 @@ export type NotificationEventType = 'permission' | 'question' | 'turn_done' | 't
 
 /**
  * Optional rich metadata callers (the renderer's `dispatchNotification`)
- * provide so the inlined notify module's Adaptive Toast can render correctly.
+ * provide so the notification can render a richer title/body.
  */
 export interface NotifyExtras {
-  /** Stable id used by the inlined notify module to dedupe + route activations. */
+  /** Stable id used to route activations back to the originating session. */
   toastId?: string;
   sessionName?: string;
   groupName?: string;
@@ -59,7 +59,7 @@ export interface ShowNotificationPayload {
   body?: string;
   eventType?: NotificationEventType;
   silent?: boolean;
-  /** Optional rich metadata for the inlined notify module Adaptive Toast pipeline. */
+  /** Optional rich metadata for the notification's title/body composition. */
   extras?: NotifyExtras;
 }
 
@@ -72,17 +72,14 @@ function cwdBasename(cwd: string | undefined): string {
   }
 }
 
-// Show an OS-level notification (Windows-only). Returns whether a toast was
-// emitted (false when notify-impl is unavailable, the platform is unsupported,
-// or the focused-window suppression gate fired).
+// Show an OS-level notification via Electron's built-in `Notification` API.
+// Returns whether a toast was emitted (false when the host OS has no
+// notification support, or the focused-window suppression gate fired).
 //
-// There is no cross-platform fallback: the legacy Electron `Notification` path
-// has been removed. macOS / Linux platform adapters are stubbed to throw — the
-// `isNotifyAvailable()` gate keeps non-Windows callers silent.
-//
-// Click-to-focus: when the user clicks the toast, `notify-bootstrap.ts`'s
-// onAction handler receives the activation and sends `notification:focusSession`
-// through to the renderer.
+// Click-to-focus: the underlying notify wrapper attaches a `click` handler
+// that fires `onAction({ action: 'focus', ... })`. The router installed by
+// `notify-bootstrap.ts` then raises the window and routes
+// `notification:focusSession` to the renderer.
 export function showNotification(
   payload: ShowNotificationPayload,
   _win: BrowserWindow | null,
@@ -119,12 +116,11 @@ export function showNotification(
 async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void> {
   if (!isNotifyAvailable()) return;
   const e = payload.extras;
-  if (!e || !e.toastId) return;
-  const cwdBase = cwdBasename(e.cwd);
-  const sessionName = e.sessionName ?? '';
+  const cwdBase = cwdBasename(e?.cwd);
+  const sessionName = e?.sessionName ?? '';
   switch (payload.eventType) {
     case 'permission': {
-      if (!e.toolName) return;
+      if (!e?.toolName || !e.toastId) return;
       registerToastTarget(e.toastId, payload.sessionId, 'permission');
       await notifyPermission({
         toastId: e.toastId,
@@ -136,6 +132,7 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
       return;
     }
     case 'question': {
+      if (!e?.toastId) return;
       registerToastTarget(e.toastId, payload.sessionId, 'question');
       const questionPayload = {
         toastId: e.toastId,
@@ -149,20 +146,37 @@ async function emitAdaptiveToast(payload: ShowNotificationPayload): Promise<void
       return;
     }
     case 'turn_done': {
+      if (!e?.toastId) return;
       registerToastTarget(e.toastId, payload.sessionId, 'turn_done');
-      // Mirror the SDK's xml/done.ts ASSISTANT_LINE_MAX (80) here so the
-      // wrapper sees a payload that matches what the toast will actually
-      // render.
       await notifyDone({
         toastId: e.toastId,
         groupName: e.groupName ?? '',
         sessionName,
-        lastUserMsg: e.lastUserMsg ?? '',
+        lastUserMsg: truncatePreview(e.lastUserMsg ?? '', DONE_USER_PREVIEW_MAX),
         lastAssistantMsg: truncatePreview(
           e.lastAssistantMsg ?? payload.body ?? '',
+          DONE_BODY_PREVIEW_MAX,
         ),
         elapsedMs: e.elapsedMs ?? 0,
         toolCount: e.toolCount ?? 0,
+        cwdBasename: cwdBase,
+      });
+      return;
+    }
+    case 'test': {
+      // User-driven "Send test notification" — fires regardless of focus
+      // (the focus-suppression gate already let us through above) so the
+      // user can confirm OS plumbing is wired correctly.
+      const toastId = e?.toastId ?? `test-${Date.now()}`;
+      registerToastTarget(toastId, payload.sessionId, 'turn_done');
+      await notifyDone({
+        toastId,
+        groupName: '',
+        sessionName: 'CCSM test notification',
+        lastUserMsg: '',
+        lastAssistantMsg: 'If you can see this, notifications work.',
+        elapsedMs: 0,
+        toolCount: 0,
         cwdBasename: cwdBase,
       });
       return;

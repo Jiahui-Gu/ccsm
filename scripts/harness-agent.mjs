@@ -2612,8 +2612,8 @@ async function caseAssistantCopyButton({ win, log }) {
 // Demonstrates `preMain`: stage state in the electron MAIN process via
 // app.evaluate before the case body runs. The case body then reads it back
 // via a second app.evaluate. Mirrors the pattern probe-e2e-notify-integration
-// uses to install a fake `__setNotifyImporter`. Pure capability demo —
-// asserts only that the value round-trips.
+// uses to install a Notification-prototype patch from preMain. Pure capability
+// demo — asserts only that the value round-trips.
 async function casePreMainInjectsGlobal({ app, log }) {
   const observed = await app.evaluate(() => globalThis.__ccsmHarnessCapDemo);
   if (observed !== 'preMain-was-here') {
@@ -3635,19 +3635,18 @@ async function caseStreamingPartialFrames({ win, log }) {
 }
 
 // ---------- notify-integration (was probe-e2e-notify-integration) ----------
-// Verifies the inlined notify module pipeline end-to-end:
-//   - permission / question / turn_done emit through the wrapper with the
-//     post-W1 payload shape (toastId, sessionName, groupName, eventType).
-//   - allow-always activation routes back into the renderer store.
+// Verifies the Electron-Notification pipeline end-to-end:
+//   - permission / question / turn_done emit through `showNotification`,
+//     which constructs an Electron `Notification` with composed title/body.
+//   - focus activation routes back into the renderer store via the toast
+//     action router (synthesized by simulating a `click` on the captured
+//     Notification instance).
 //   - main-process focus suppression (`shouldSuppressForFocus`) drops a
 //     duplicate emit when a window is focused and visible.
 //   - rich done payload truncates lastAssistantMsg to 80 chars w/ ellipsis.
-// W4 removed the question-retry / reject-cancel / fire-time-gate probes that
-// previously shipped here.
 //
-// Uses preMain to install the mock importer + bootstrapNotify. After this case
-// runs, bootstrapNotify state is mutated; pair with `relaunch: true` on the
-// NEXT case (or rely on case ordering — placed near end of cases array).
+// This case mutates main-process notify state — pair with `relaunch: true`
+// on the next case (or rely on case ordering by placing late in the array).
 async function caseNotifyIntegration({ app, win, log }) {
   async function blurAndWaitUnfocused() {
     await app.evaluate(async ({ BrowserWindow }) => {
@@ -3663,31 +3662,48 @@ async function caseNotifyIntegration({ app, win, log }) {
     });
   }
 
-  // Install mock importer + re-bootstrap notify.
-  const installed = await app.evaluate(async ({ BrowserWindow }) => {
+  // Patch Electron's `Notification` so every constructed notification is
+  // captured (title, body, click-handler) instead of routed to the OS. The
+  // notify wrapper still goes through its normal flow — we just intercept
+  // at the Electron API boundary.
+  const installed = await app.evaluate(async ({ Notification, BrowserWindow }) => {
     const g = globalThis;
     const dbg = g.__ccsmDebug;
     if (!dbg || !dbg.notify || !dbg.notifyBootstrap) {
       throw new Error('__ccsmDebug.notify / notifyBootstrap not exposed');
     }
     g.__notifyCalls = [];
-    g.__notifyOnAction = null;
-    const notifyMod = dbg.notify;
+    g.__notifyClickHandlers = {};
+
+    const proto = Notification.prototype;
+    if (!proto.__ccsmPatched) {
+      const origShow = proto.show;
+      const origOn = proto.on;
+      proto.show = function patchedShow() {
+        const entry = {
+          kind: 'show',
+          title: this.title,
+          body: this.body,
+          silent: this.silent,
+        };
+        g.__notifyCalls.push(entry);
+        // Don't actually call origShow — we don't want a real OS toast in CI.
+        // (origShow would be Notification.prototype.show.call(this).)
+        void origShow;
+      };
+      proto.on = function patchedOn(evt, cb) {
+        if (evt === 'click') {
+          // Index click handlers by title so we can fire them by name later.
+          g.__notifyClickHandlers[this.title] = cb;
+        }
+        return origOn.call(this, evt, cb);
+      };
+      proto.__ccsmPatched = true;
+    }
+
+    // Install router so click-handlers can resolve permissions through the
+    // same path production uses.
     const bootstrapMod = dbg.notifyBootstrap;
-    notifyMod.__setNotifyImporter(async () => ({
-      Notifier: {
-        create: async (opts) => {
-          g.__notifyOnAction = opts.onAction;
-          return {
-            permission: (p) => g.__notifyCalls.push({ kind: 'permission', payload: p }),
-            question: (p) => g.__notifyCalls.push({ kind: 'question', payload: p }),
-            done: (p) => g.__notifyCalls.push({ kind: 'done', payload: p }),
-            dismiss: (id) => g.__notifyCalls.push({ kind: 'dismiss', toastId: id }),
-            dispose: () => {},
-          };
-        },
-      },
-    }));
     bootstrapMod.__resetBootstrapForTests();
     bootstrapMod.bootstrapNotify((event) => {
       g.__notifyCalls.push({ kind: 'router', event });
@@ -3696,10 +3712,9 @@ async function caseNotifyIntegration({ app, win, log }) {
         getMainWindow: () => BrowserWindow.getAllWindows().find((x) => !x.isDestroyed()) ?? null,
       })(event);
     });
-    await notifyMod.probeNotifyAvailability();
-    return notifyMod.isNotifyAvailable();
+    return dbg.notify.isNotifyAvailable();
   });
-  if (installed !== true) throw new Error(`failed to install mock notify importer (isNotifyAvailable=${installed})`);
+  if (installed !== true) throw new Error(`Notification.isSupported() returned ${installed}; cannot run notify-integration`);
 
   // Seed session.
   await win.evaluate(() => {
@@ -3725,17 +3740,18 @@ async function caseNotifyIntegration({ app, win, log }) {
   await app.evaluate(async () => {
     const dl = Date.now() + 3000;
     while (Date.now() < dl) {
-      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'permission')) return;
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'show' && /Permission needed/.test(c.title))) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('timeout waiting for notifyPermission');
+    throw new Error('timeout waiting for permission Notification');
   });
   const calls1 = await app.evaluate(() => globalThis.__notifyCalls);
-  const perm = calls1.find((c) => c.kind === 'permission');
-  if (!perm) throw new Error('notifyPermission was never called');
-  if (perm.payload.toastId !== REQUEST_ID) throw new Error(`unexpected toastId: ${perm.payload.toastId}`);
-  if (perm.payload.toolName !== 'Bash') throw new Error(`unexpected toolName: ${perm.payload.toolName}`);
-  if (perm.payload.cwdBasename !== 'probe-cwd') throw new Error(`expected cwdBasename "probe-cwd", got ${perm.payload.cwdBasename}`);
+  const perm = calls1.find((c) => c.kind === 'show' && /Permission needed/.test(c.title));
+  if (!perm) throw new Error('permission Notification was never constructed');
+  if (!/Bash/.test(perm.title)) throw new Error(`expected toolName in title, got ${perm.title}`);
+  if (!/Test Session/.test(perm.body)) throw new Error(`expected sessionName in body, got ${perm.body}`);
+  if (!/ls -la/.test(perm.body)) throw new Error(`expected toolBrief in body, got ${perm.body}`);
+  if (!/probe-cwd/.test(perm.body)) throw new Error(`expected cwd basename in body, got ${perm.body}`);
 
   // Question.
   await win.evaluate((args) => window.ccsm.notify({
@@ -3745,15 +3761,15 @@ async function caseNotifyIntegration({ app, win, log }) {
   await app.evaluate(async () => {
     const dl = Date.now() + 3000;
     while (Date.now() < dl) {
-      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'question')) return;
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'show' && /Question:/.test(c.title))) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('timeout waiting for notifyQuestion');
+    throw new Error('timeout waiting for question Notification');
   });
   const calls2 = await app.evaluate(() => globalThis.__notifyCalls);
-  const question = calls2.find((c) => c.kind === 'question');
-  if (!question) throw new Error('notifyQuestion was never called');
-  if (question.payload.optionCount !== 3) throw new Error(`unexpected optionCount: ${question.payload.optionCount}`);
+  const question = calls2.find((c) => c.kind === 'show' && /Question:/.test(c.title));
+  if (!question) throw new Error('question Notification was never constructed');
+  if (!/Pick one/.test(question.body)) throw new Error(`expected question text in body, got ${question.body}`);
 
   // Turn done.
   await win.evaluate((args) => window.ccsm.notify({
@@ -3763,18 +3779,18 @@ async function caseNotifyIntegration({ app, win, log }) {
   await app.evaluate(async () => {
     const dl = Date.now() + 3000;
     while (Date.now() < dl) {
-      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'done')) return;
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'show' && c.title === 'Test Group / Test Session')) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('timeout waiting for notifyDone');
+    throw new Error('timeout waiting for turn_done Notification');
   });
   const calls3 = await app.evaluate(() => globalThis.__notifyCalls);
-  const done = calls3.find((c) => c.kind === 'done');
-  if (!done) throw new Error('notifyDone was never called');
-  if (done.payload.toolCount !== 4) throw new Error(`unexpected toolCount: ${done.payload.toolCount}`);
-  if (done.payload.elapsedMs !== 42_000) throw new Error(`unexpected elapsedMs: ${done.payload.elapsedMs}`);
+  const done = calls3.find((c) => c.kind === 'show' && c.title === 'Test Group / Test Session');
+  if (!done) throw new Error('turn_done Notification was never constructed');
+  if (!/build it/.test(done.body)) throw new Error(`expected lastUserMsg in body, got ${done.body}`);
+  if (!/Finished build/.test(done.body)) throw new Error(`expected lastAssistantMsg in body, got ${done.body}`);
 
-  // allow-always activation routes back to renderer.
+  // Focus activation routes through the toast action router.
   await win.evaluate((args) => {
     const s = window.__ccsmStore.getState();
     s.appendBlocks(args.sessionId, [{
@@ -3782,13 +3798,23 @@ async function caseNotifyIntegration({ app, win, log }) {
       intent: 'permission', requestId: args.requestId, toolName: 'Bash', toolInput: { command: 'ls -la' },
     }]);
   }, { sessionId, requestId: REQUEST_ID });
-  await app.evaluate(({ ipcMain }, args) => {
-    void ipcMain;
-    const cb = globalThis.__notifyOnAction;
-    if (!cb) throw new Error('onAction not captured');
-    cb({ toastId: args.requestId, action: 'allow-always', args: {} });
+  // Trigger the click handler captured for the permission Notification.
+  // After click, the router emits `notification:focusSession` on the
+  // renderer; we don't depend on the IPC roundtrip here, just verify the
+  // router records the activation.
+  const routerSawFocus = await app.evaluate((args) => {
+    const handlers = globalThis.__notifyClickHandlers || {};
+    const titleKey = Object.keys(handlers).find((k) => /Permission needed/.test(k));
+    if (!titleKey) return { ok: false, reason: 'no click handler captured' };
+    try {
+      handlers[titleKey]();
+    } catch (e) {
+      return { ok: false, reason: 'handler threw: ' + (e && e.message) };
+    }
+    const got = (globalThis.__notifyCalls || []).find((c) => c.kind === 'router' && c.event && c.event.toastId === args.requestId && c.event.action === 'focus');
+    return got ? { ok: true } : { ok: false, reason: 'router never saw focus event' };
   }, { requestId: REQUEST_ID });
-  await win.waitForFunction(() => window.__ccsmStore.getState().allowAlwaysTools.includes('Bash'), null, { timeout: 3000 });
+  if (!routerSawFocus.ok) throw new Error(`focus activation failed: ${routerSawFocus.reason}`);
 
   // Focus suppression.
   await app.evaluate(({ BrowserWindow }) => {
@@ -3802,42 +3828,43 @@ async function caseNotifyIntegration({ app, win, log }) {
     return dbg.notifyBootstrap.shouldSuppressForFocus();
   });
   if (!suppressed) throw new Error('shouldSuppressForFocus returned false with focused window');
-  const before = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'permission').length);
+  const before = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'show' && /Permission needed/.test(c.title)).length);
   await win.evaluate((args) => window.ccsm.notify({
     sessionId: args.sessionId, title: 'Should be suppressed', body: 'focus gate', eventType: 'permission',
     extras: { toastId: 'probe-req-suppressed', sessionName: 'Test Session', toolName: 'Bash', toolBrief: 'echo suppress', cwd: '/tmp/probe-cwd' },
   }), { sessionId });
   await new Promise((r) => setTimeout(r, 400));
-  const after = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'permission').length);
+  const after = await app.evaluate(() => (globalThis.__notifyCalls || []).filter((c) => c.kind === 'show' && /Permission needed/.test(c.title)).length);
   if (after !== before) throw new Error(`focus suppression failed — wrapper called ${after - before} extra times`);
 
-  // Rich done payload (#252).
+  // Rich done payload — assistant truncated to 80 chars + ellipsis.
   const longAssistant = 'x'.repeat(200);
   await blurAndWaitUnfocused();
   await win.evaluate((args) => window.ccsm.notify({
     sessionId: args.sessionId, title: 'Done (rich)', eventType: 'turn_done',
-    extras: { toastId: 'done-rich-1', sessionName: 'Test Session', groupName: 'Test Group',
+    extras: { toastId: 'done-rich-1', sessionName: 'Rich Session', groupName: 'Rich Group',
       lastUserMsg: 'do the thing', lastAssistantMsg: args.longAssistant,
       elapsedMs: 12_345, toolCount: 3, cwd: '/tmp/probe-cwd' },
   }), { sessionId, longAssistant });
   await app.evaluate(async () => {
     const dl = Date.now() + 3000;
     while (Date.now() < dl) {
-      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1')) return;
+      if ((globalThis.__notifyCalls || []).some((c) => c.kind === 'show' && c.title === 'Rich Group / Rich Session')) return;
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error('timeout waiting for rich done');
   });
   const richDone = await app.evaluate(() =>
-    (globalThis.__notifyCalls || []).find((c) => c.kind === 'done' && c.payload.toastId === 'done-rich-1'));
+    (globalThis.__notifyCalls || []).find((c) => c.kind === 'show' && c.title === 'Rich Group / Rich Session'));
   if (!richDone) throw new Error('rich done not captured');
-  if (richDone.payload.groupName !== 'Test Group') throw new Error(`groupName: ${richDone.payload.groupName}`);
-  if (richDone.payload.sessionName !== 'Test Session') throw new Error(`sessionName: ${richDone.payload.sessionName}`);
-  if (typeof richDone.payload.lastAssistantMsg !== 'string') throw new Error('lastAssistantMsg missing');
-  if (richDone.payload.lastAssistantMsg.length !== 80) throw new Error(`lastAssistantMsg length: ${richDone.payload.lastAssistantMsg.length}`);
-  if (!richDone.payload.lastAssistantMsg.endsWith('…')) throw new Error('expected ellipsis at end of truncated lastAssistantMsg');
+  // Body shape: `> do the thing\n<truncated assistant ≤ 80 chars>`
+  const lines = String(richDone.body).split('\n');
+  if (lines[0] !== '> do the thing') throw new Error(`expected user line "> do the thing", got ${lines[0]}`);
+  const assistantLine = lines[1] ?? '';
+  if (assistantLine.length !== 80) throw new Error(`assistant line length ${assistantLine.length}, expected 80`);
+  if (!assistantLine.endsWith('…')) throw new Error('expected ellipsis at end of truncated assistant line');
 
-  log('all notify checkpoints passed (perm/question/done emit, allow-always routing, focus suppress, rich done)');
+  log('all notify checkpoints passed (perm/question/done construct, focus activation, focus suppress, rich done)');
 }
 
 // ---------- delete-session-kills-process (was probe-e2e-delete-session-kills-process) ----------

@@ -27,7 +27,6 @@
 //   - sidebar-resize                     (drag + persistence, 2-launch)
 //   - sidebar-rename-dnd-state           (J8..J17, 3-launch)
 //   - db-corruption-recovery             (pre-launch garbage-write to ccsm.db)
-//   - notify-fallback                    (pre-launch node_modules rename + sandboxed HOME)
 //   - import-session                     (pre-launch HOME sandboxing + multi-fixture plant)
 //   - permission-prompt-default-mode     (2-launch + sandboxed CLAUDE_CONFIG_DIR + real claude.exe)
 //
@@ -777,114 +776,6 @@ async function caseDbCorruptionRecovery({ log, registerDispose }) {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────────
-// CASE: notify-fallback
-// Pre-launch fixture: rename `node_modules/electron-windows-notifications` so
-// the WindowsAdapter's require() throws MODULE_NOT_FOUND. Sandboxes HOME so
-// the dev's real ~/.claude isn't touched. From probe-e2e-notify-fallback.mjs.
-//
-// What this guards: the `notify:availability` IPC handler must report
-// available=false + a non-empty error string when the native module can't
-// load, so in-app banner fallback can take over silently. PR #354
-// deliberately removed the Settings → Notifications "module status" banner
-// (settings simplified to enabled+sound only — silent fallback is the design
-// intent). We no longer assert any user-facing UI for this case; the IPC
-// contract is the only contract.
-// ──────────────────────────────────────────────────────────────────────────
-async function caseNotifyFallback({ log, registerDispose }) {
-  const notifyDir = path.join(ROOT, 'node_modules', 'electron-windows-notifications');
-  const stashedDir = path.join(ROOT, 'node_modules', 'electron-windows-notifications.__harness_stash__');
-
-  let stashed = false;
-  if (fs.existsSync(notifyDir)) {
-    if (fs.existsSync(stashedDir)) {
-      fs.rmSync(stashedDir, { recursive: true, force: true });
-    }
-    fs.renameSync(notifyDir, stashedDir);
-    stashed = true;
-  }
-  registerDispose(() => {
-    if (!stashed) return;
-    if (!fs.existsSync(notifyDir) && fs.existsSync(stashedDir)) {
-      fs.renameSync(stashedDir, notifyDir);
-    } else if (fs.existsSync(stashedDir)) {
-      // notify dir already restored somehow — just nuke the stash.
-      fs.rmSync(stashedDir, { recursive: true, force: true });
-    }
-  });
-
-  if (fs.existsSync(notifyDir)) {
-    throw new Error(`failed to stash node_modules/electron-windows-notifications at ${notifyDir}`);
-  }
-
-  // Notify-fallback uses the dev bundle path (NODE_ENV=development +
-  // CCSM_DEV_PORT) in the original probe to exercise the same code path the
-  // dev sees. We start a tiny static server for the bundle.
-  const server = await startBundleServer(ROOT);
-  registerDispose(() => server.close());
-
-  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-notify-fb-ud-'));
-  registerDispose(() => { try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {} });
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-notify-fb-home-'));
-  registerDispose(() => { try { fs.rmSync(homeDir, { recursive: true, force: true }); } catch {} });
-  fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
-
-  const app = await electron.launch({
-    args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      NODE_ENV: 'development',
-      CCSM_DEV_PORT: String(server.port),
-      HOME: homeDir,
-      USERPROFILE: homeDir
-    }
-  });
-  let closed = false;
-  registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
-
-  const mainErrors = [];
-  app.process().on('exit', (code, signal) => {
-    if (code !== null && code !== 0) {
-      mainErrors.push(`main exited code=${code} signal=${signal}`);
-    }
-  });
-
-  try {
-    const win = await appWindow(app);
-    await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 15000 });
-
-    const rendererErrors = [];
-    win.on('pageerror', (err) => rendererErrors.push(`pageerror: ${err.message}`));
-    win.on('console', (msg) => { if (msg.type() === 'error') rendererErrors.push(`console.error: ${msg.text()}`); });
-
-    const ipcResult = await app.evaluate(async ({ ipcMain }, _arg) => {
-      // eslint-disable-next-line no-underscore-dangle
-      const handlers = ipcMain._invokeHandlers;
-      const fn = handlers.get('notify:availability');
-      if (typeof fn !== 'function') return { error: 'handler not registered' };
-      return await fn({ sender: null });
-    }, null);
-
-    if (!ipcResult || typeof ipcResult !== 'object') {
-      throw new Error(`notify:availability did not return an object — got ${JSON.stringify(ipcResult)}`);
-    }
-    if (ipcResult.available !== false) {
-      throw new Error(`expected available=false (module stashed) — got ${JSON.stringify(ipcResult)}`);
-    }
-    if (typeof ipcResult.error !== 'string' || !ipcResult.error) {
-      throw new Error(`expected error to be non-empty string — got ${JSON.stringify(ipcResult)}`);
-    }
-
-    if (rendererErrors.length > 0) throw new Error(`renderer logged errors:\n  ${rendererErrors.join('\n  ')}`);
-    if (mainErrors.length > 0) throw new Error(`main process errors:\n  ${mainErrors.join('\n  ')}`);
-    log(`notify:availability reports available=false with error: "${ipcResult.error}"`);
-  } finally {
-    closed = true;
-    try { await app.close(); } catch {}
-  }
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // CASE: import-session
@@ -2731,7 +2622,6 @@ await runHarness({
     { id: 'sidebar-resize',           skipLaunch: true, run: caseSidebarResize },
     { id: 'sidebar-rename-dnd-state', skipLaunch: true, run: caseSidebarRenameDndState },
     { id: 'db-corruption-recovery',   skipLaunch: true, run: caseDbCorruptionRecovery },
-    { id: 'notify-fallback',          skipLaunch: true, windowsOnly: true, run: caseNotifyFallback },
     { id: 'import-session',           skipLaunch: true, run: caseImportSession },
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // permission-prompt-default-mode: 2-launch (seed → close → relaunch)

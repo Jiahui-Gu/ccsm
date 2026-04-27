@@ -110,14 +110,12 @@ attention or a long-running turn finishes:
 - `turn_done` — a turn finished, and either took longer than 15 seconds,
   errored, or completed in a session that wasn't focused.
 
-On Windows, when the optional `electron-windows-notifications` native module
-is installed (it ships as an `optionalDependency` and may fail to build on
-machines without MSBuild — that's tolerated), CCSM uses Adaptive Toasts with
-inline buttons — clicking **Allow** / **Allow always** / **Reject** on the
-toast resolves the in-app permission prompt without bringing the window
-forward. On other platforms, or when the optional native module fails to
-load, CCSM falls back to plain Electron notifications (title + body, click
-to focus) — nothing crashes.
+CCSM uses Electron's built-in `Notification` API, which delivers OS-native
+toasts on Windows (via `ToastNotificationManager` + the AUMID stamped on the
+Start Menu shortcut), macOS, and Linux. Click a toast to bring CCSM forward
+and focus the originating session — no inline action buttons; permission
+approval flows through the in-app dialog where the command + cwd context is
+visible.
 
 **To disable**: open Settings → Notifications and toggle the master
 **Enable notifications** switch (or any of the per-event sub-toggles for
