@@ -16,6 +16,7 @@
 //   - type-scale-snapshot                  (#225, 4-step type token system)
 //   - chat-user-assistant-contrast         (#345, dogfood: user vs assistant rail)
 //   - assistant-long-line-wraps            (fp11 Check F, long unbreakable run wraps)
+//   - user-long-line-wraps                 (fp11-F follow-up, user prose long unbreakable run wraps)
 //   - banner-i18n-toggle                   (banner i18n)
 //   - toast-a11y                           (#298 follow-up)
 //   - cwd-popover-recent-unfiltered        (probe-e2e-cwd-popover-recent-unfiltered)
@@ -771,6 +772,76 @@ async function caseAssistantLongLineWraps({ win, log }) {
   }
 
   log(`block ${probe.blockScrollWidth}/${probe.blockClientWidth} p ${probe.pScrollWidth}/${probe.pClientWidth} overflow-wrap=${probe.pOverflowWrap}`);
+}
+
+// ---------- user-long-line-wraps ----------
+// fp11-F follow-up to PR #405: the same long-unbreakable-run vulnerability
+// also exists on the user prose `<span>` in UserBlock. A 500-char URL or
+// hash pasted as a user message would push the whole row into horizontal
+// scroll without `overflow-wrap: anywhere` on the span. Lower frequency
+// than assistant output, but real (reviewer-flagged scope extension while
+// reviewing #405).
+//
+// Reverse-verify: drop `[overflow-wrap:anywhere]` from the text `<span>`
+// className in src/components/chat/blocks/UserBlock.tsx; this case must
+// FAIL on the scrollWidth-overflow check.
+async function caseUserLongLineWraps({ win, log }) {
+  const longRun = 'a'.repeat(500);
+  await win.evaluate((text) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: {
+        s1: [
+          { kind: 'user', id: 'm-user-long', text }
+        ]
+      }
+    });
+  }, longRun);
+  await win.waitForTimeout(300);
+
+  const probe = await win.evaluate(() => {
+    const block = document.querySelector('[data-type-scale-role="user-body"]');
+    if (!block) return null;
+    // The text body is rendered as a `<span>` (not markdown <p>) inside the
+    // inner `min-w-0 flex-1 flex flex-col` column.
+    const span = block.querySelector('span.whitespace-pre-wrap');
+    return {
+      blockScrollWidth: block.scrollWidth,
+      blockClientWidth: block.clientWidth,
+      spanScrollWidth: span ? span.scrollWidth : null,
+      spanClientWidth: span ? span.clientWidth : null,
+      spanOverflowWrap: span ? getComputedStyle(span).overflowWrap : null
+    };
+  });
+
+  if (!probe) throw new Error('user-body block not found in DOM');
+
+  const failures = [];
+  // Allow 2px slack for sub-pixel rounding.
+  if (probe.blockScrollWidth > probe.blockClientWidth + 2) {
+    failures.push(
+      `user block horizontal overflow: scrollWidth=${probe.blockScrollWidth} > clientWidth=${probe.blockClientWidth} (expected wrap)`
+    );
+  }
+  if (probe.spanScrollWidth != null && probe.spanScrollWidth > probe.spanClientWidth + 2) {
+    failures.push(
+      `user <span> horizontal overflow: scrollWidth=${probe.spanScrollWidth} > clientWidth=${probe.spanClientWidth}`
+    );
+  }
+  if (probe.spanOverflowWrap !== 'anywhere') {
+    failures.push(`user <span> overflow-wrap should be 'anywhere', got '${probe.spanOverflowWrap}'`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      'user long-line wrap regression:\n  - ' + failures.join('\n  - ') +
+      '\n  probe=' + JSON.stringify(probe)
+    );
+  }
+
+  log(`block ${probe.blockScrollWidth}/${probe.blockClientWidth} span ${probe.spanScrollWidth}/${probe.spanClientWidth} overflow-wrap=${probe.spanOverflowWrap}`);
 }
 
 // ---------- banner-i18n-toggle ----------
@@ -3549,6 +3620,7 @@ await runHarness({
     { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot },
     { id: 'chat-user-assistant-contrast', run: caseChatUserAssistantContrast },
     { id: 'assistant-long-line-wraps', run: caseAssistantLongLineWraps },
+    { id: 'user-long-line-wraps', run: caseUserLongLineWraps },
     { id: 'banner-i18n-toggle', run: caseBannerI18nToggle },
     { id: 'toast-a11y', run: caseToastA11y },
     { id: 'cwd-popover-recent-unfiltered', run: caseCwdPopoverRecentUnfiltered },
