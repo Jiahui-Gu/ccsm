@@ -1,7 +1,7 @@
 # UI/UX Pro Max wave 2 screenshots — deferred
 
 The wave 2 audit at
-`docs/design/ui-ux-pro-max-audit-2026-04-24-wave2.md` is a code-pattern
+`docs/reference/ui-ux-pro-max-audit-2026-04-24-wave2.md` is a code-pattern
 audit; every finding is observable from source (file:line cited per
 finding) and does not need a repro screenshot to triage.
 

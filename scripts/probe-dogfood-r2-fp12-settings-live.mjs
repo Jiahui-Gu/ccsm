@@ -13,7 +13,7 @@
 //   F. Cross-restart: theme=light + lang=zh + fontsize=16 → close → reopen → all stuck
 //
 // Output: docs/screenshots/dogfood-r2/fp12-settings-live/check-{a..f}-*.png
-//         + report at docs/dogfood-r2-fp12-report.md
+//         + report at docs/dogfood/r2/fp12-report.md
 //
 // Run: node scripts/probe-dogfood-r2-fp12-settings-live.mjs
 import { _electron as electron } from 'playwright';
@@ -502,7 +502,7 @@ for (const [k, v] of Object.entries(results)) {
   console.log(`  ${k}: ${v.status} — ${v.notes}`);
 }
 
-const reportPath = path.join(REPO_ROOT, 'docs/dogfood-r2-fp12-report.md');
+const reportPath = path.join(REPO_ROOT, 'docs/dogfood/r2/fp12-report.md');
 const lines = [];
 lines.push('# Dogfood r2 fp12 — Settings live-apply');
 lines.push('');

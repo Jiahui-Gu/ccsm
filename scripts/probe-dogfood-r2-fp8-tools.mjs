@@ -3,7 +3,7 @@
 // permission dialog flow. NOT a regression probe — manual evidence capture.
 //
 // Output: docs/screenshots/dogfood-r2/fp8-tools/check-{a..f}-*.png
-//         + report at docs/dogfood-r2-fp8-report.md
+//         + report at docs/dogfood/r2/fp8-report.md
 //
 // Run: node scripts/probe-dogfood-r2-fp8-tools.mjs
 import { _electron as electron } from 'playwright';
@@ -283,7 +283,7 @@ await app.close();
 cfg.cleanup();
 
 // Write report
-const reportPath = path.join(REPO_ROOT, 'docs/dogfood-r2-fp8-report.md');
+const reportPath = path.join(REPO_ROOT, 'docs/dogfood/r2/fp8-report.md');
 const lines = [
   '# Dogfood r2 fp8 — tool-call rendering report',
   '',
