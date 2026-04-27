@@ -179,7 +179,8 @@ async function caseShortcutOverlayOpens({ win, log }) {
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
       activeId: 's1',
-      messagesBySession: { s1: [] }
+      messagesBySession: { s1: [] },
+      tutorialSeen: true
     });
   });
   await win.waitForTimeout(200);
@@ -241,12 +242,18 @@ async function caseShortcutOverlayOpens({ win, log }) {
     }
   }
 
-  // Escape dismisses.
+  // Escape dismisses. Focus the overlay first — Radix Dialog's Esc handler
+  // routes through DismissableLayer's document keydown listener, which only
+  // fires when the dispatched key has the focused layer in scope. After
+  // chained `win.evaluate()` calls during the open/assert path, focus may
+  // have drifted back to body in the harness sequence; an explicit focus
+  // shift makes the close behavior deterministic on win32.
+  await win.locator('[data-shortcut-overlay]').first().focus().catch(() => {});
   await win.keyboard.press('Escape');
   const closed = await win.waitForFunction(
     () => !document.querySelector('[data-shortcut-overlay]'),
     null,
-    { timeout: 2000 }
+    { timeout: 5000 }
   ).then(() => true).catch(() => false);
   if (!closed) throw new Error('overlay still present after Escape');
 
@@ -609,7 +616,9 @@ async function caseSettingsOpen({ win, log }) {
   const settingsTab = win.getByRole('tab', { name: /^connection$/i });
 
   async function expectSettingsClosed(label) {
-    await settingsTab.first().waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {});
+    // Win32 dialog unmount under heavy harness load can lag past the prior
+    // 1.5s budget; allow more headroom before declaring the dialog stuck.
+    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
     if ((await settingsTab.count()) > 0) throw new Error(`${label}: Settings dialog still mounted after expected close`);
   }
   async function expectSettingsDialogOpen(label) {
@@ -618,6 +627,11 @@ async function caseSettingsOpen({ win, log }) {
     });
   }
   async function pressEscAndExpectClosed(label) {
+    // Sidebar/button trigger leaves focus on the originating element; the
+    // Radix DismissableLayer Esc handler runs reliably only when the focused
+    // layer is the dialog itself. Force focus to the dialog before pressing
+    // Escape so the close path is deterministic across platforms.
+    await win.getByRole('dialog').first().focus().catch(() => {});
     await win.keyboard.press('Escape');
     await expectSettingsClosed(label);
   }

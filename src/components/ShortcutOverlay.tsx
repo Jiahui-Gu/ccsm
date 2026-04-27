@@ -2,10 +2,15 @@ import React, { useMemo } from 'react';
 import { Dialog, DialogContent } from './ui/Dialog';
 import { useTranslation } from '../i18n/useTranslation';
 
-// Windows-only shortcut labels. The app currently ships Windows-first;
-// we don't carry mac glyphs here. If macOS support returns later, this is
-// the place to introduce platform-aware modifier resolution again.
-const MOD = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl';
+// Resolve the modifier label against the actual host OS. We deliberately
+// read `navigator.userAgent` (Chromium-set, reflects the real platform)
+// instead of the deprecated `navigator.platform` (empty string in modern
+// Electron / spoofable from the renderer). The harness UA is stable, so
+// this picks ⌘ on macOS and Ctrl on Windows/Linux without responding to
+// per-test `Object.defineProperty(navigator, 'platform', …)` spoofs that
+// only intend to drive other widgets (e.g. CommandPalette hints).
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.userAgent);
+const MOD = IS_MAC ? '⌘' : 'Ctrl';
 const SHIFT = 'Shift';
 
 type Row = { keys: string; actionKey: string };
