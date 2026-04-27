@@ -1,4 +1,4 @@
-# Dogfood r2 fp13 — 细节抠 (truncate / cwd / token / cost / pill / effort)
+# Dogfood r2 fp13 — detail audit (truncate / cwd / token / cost / pill / effort)
 
 Branch: `dogfood-r2-fp13` off `origin/working` (HEAD c5d7209 — post #406)
 Binary: installed `C:/Users/jiahuigu/AppData/Local/Programs/CCSM/CCSM.exe` (older bundle, predates #397/#403/#405/#406)
