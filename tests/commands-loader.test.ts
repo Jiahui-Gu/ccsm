@@ -466,3 +466,158 @@ describe('loadPickerCommands', () => {
     ]);
   });
 });
+
+// ─── plugin-bundled skills (SKILL.md) ─────────────────────────────────────
+//
+// Plugins ship skills inside their version dir under either
+// `skills/<name>/SKILL.md` (document-skills, superpowers layout) or
+// `.claude/skills/<name>/SKILL.md` (ui-ux-pro-max layout). Both must be
+// surfaced as `<plugin>:<name>` with source='skill' to match the form the
+// SDK exposes in agent system reminders. Marketplace cache subdirs that
+// start with `temp_git_` are scratch checkouts and must be ignored.
+
+describe('plugin-bundled skill discovery', () => {
+  it('collects skills from both `skills/` and `.claude/skills/` layouts', () => {
+    // pluginA: only has commands/
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginA',
+        '1.0.0',
+        'commands',
+        'do-thing.md'
+      ),
+      `---\ndescription: command only\n---\n`
+    );
+    // pluginB: only has skills/<name>/SKILL.md (document-skills layout)
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginB',
+        '1.0.0',
+        'skills',
+        'docx',
+        'SKILL.md'
+      ),
+      `---\nname: docx\ndescription: word docs\n---\nbody`
+    );
+    // pluginC: only has .claude/skills/<name>/SKILL.md (ui-ux-pro-max layout)
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginC',
+        '2.5.0',
+        '.claude',
+        'skills',
+        'ui-ux-pro-max',
+        'SKILL.md'
+      ),
+      `---\nname: ui-ux-pro-max\ndescription: ui design\n---\nbody`
+    );
+    // temp_git_* marketplace MUST be ignored even if it contains real-looking
+    // plugin/skill content.
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'temp_git_1234_abc',
+        'pluginX',
+        '1.0.0',
+        'skills',
+        'ghost',
+        'SKILL.md'
+      ),
+      `---\nname: ghost\ndescription: should not appear\n---\n`
+    );
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'temp_git_1234_abc',
+        'pluginX',
+        '1.0.0',
+        'commands',
+        'ghost-cmd.md'
+      ),
+      `---\ndescription: should not appear\n---\n`
+    );
+
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    const byName = Object.fromEntries(cmds.map((c) => [c.name, c]));
+
+    // pluginA command surfaces as before
+    expect(byName['pluginA:do-thing']?.source).toBe('plugin');
+    // pluginB skill (skills/<name>/SKILL.md layout)
+    expect(byName['pluginB:docx']?.source).toBe('skill');
+    expect(byName['pluginB:docx']?.pluginId).toBe('pluginB');
+    expect(byName['pluginB:docx']?.description).toBe('word docs');
+    // pluginC skill (.claude/skills/<name>/SKILL.md layout)
+    expect(byName['pluginC:ui-ux-pro-max']?.source).toBe('skill');
+    expect(byName['pluginC:ui-ux-pro-max']?.pluginId).toBe('pluginC');
+    expect(byName['pluginC:ui-ux-pro-max']?.description).toBe('ui design');
+    // temp_git_* entries dropped entirely
+    expect(byName['pluginX:ghost']).toBeUndefined();
+    expect(byName['pluginX:ghost-cmd']).toBeUndefined();
+    expect(cmds.find((c) => c.name.startsWith('pluginX:'))).toBeUndefined();
+  });
+
+  it('uses the directory name (not frontmatter name) for the skill namespace', () => {
+    // Even if frontmatter declares a different name, the canonical id is
+    // derived from the subdir to match `<plugin>:<subdir>` format the SDK
+    // surfaces.
+    write(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginD',
+        '1.0.0',
+        'skills',
+        'real-name',
+        'SKILL.md'
+      ),
+      `---\nname: lying-name\ndescription: hi\n---\n`
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.find((c) => c.name === 'pluginD:real-name')).toBeDefined();
+    expect(cmds.find((c) => c.name === 'pluginD:lying-name')).toBeUndefined();
+  });
+
+  it('skips skill subdirs that lack SKILL.md', () => {
+    // A bare directory under skills/ with no SKILL.md is not a skill.
+    fs.mkdirSync(
+      path.join(
+        tmpHome,
+        '.claude',
+        'plugins',
+        'cache',
+        'mkt',
+        'pluginE',
+        '1.0.0',
+        'skills',
+        'not-a-skill'
+      ),
+      { recursive: true }
+    );
+    const cmds = loadCommands({ homeDir: tmpHome, cwd: tmpCwd });
+    expect(cmds.find((c) => c.name.startsWith('pluginE:'))).toBeUndefined();
+  });
+});
