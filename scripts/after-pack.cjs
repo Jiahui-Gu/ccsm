@@ -88,5 +88,82 @@ exports.default = async function afterPack(context) {
 
   const sizeMB = (fs.statSync(found).size / 1024 / 1024).toFixed(1);
   console.log(`[after-pack] OK win32/x64: claude.exe present (${sizeMB} MB) at ${found}`);
+
+  // Notifications native chain check (win32 only). Same failure mode as the
+  // SDK binary above: a missing electron-windows-notifications .node leaves
+  // the runtime wrapper permanently in fallback mode and the user gets ZERO
+  // OS toasts. The native addon MUST live under app.asar.unpacked since
+  // .node files cannot be loaded from inside an asar archive. We assert
+  // both the top-level package and at least one @nodert-win10-au peer (the
+  // package transitively requires the chain at module load time).
+  const notifyNativeDir = path.join(
+    appOutDir,
+    'resources',
+    'app.asar.unpacked',
+    'node_modules',
+    'electron-windows-notifications',
+  );
+  const notifyBuildRelease = path.join(notifyNativeDir, 'build', 'Release');
+  let notifyDotNodes = [];
+  try {
+    notifyDotNodes = fs
+      .readdirSync(notifyBuildRelease)
+      .filter((n) => n.endsWith('.node'));
+  } catch {
+    // directory missing — caught below
+  }
+  if (notifyDotNodes.length === 0) {
+    let nmListing = '<missing>';
+    try {
+      nmListing = fs
+        .readdirSync(path.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules'))
+        .join(', ') || '<empty>';
+    } catch {
+      // unpacked node_modules root missing entirely — listing stays <missing>
+    }
+    throw new Error(
+      `[after-pack] Expected at least one .node file under:\n` +
+        `  ${notifyBuildRelease}\n` +
+        `  but the directory is missing or empty.\n` +
+        `  app.asar.unpacked/node_modules contents: ${nmListing}\n` +
+        `Hint: ensure electron-windows-notifications is in dependencies (not ` +
+        `optionalDependencies), check that build.asarUnpack covers ` +
+        `**/node_modules/electron-windows-notifications/** and ` +
+        `**/node_modules/@nodert-win10-au/**, and verify postinstall ` +
+        `rebuilt the native chain successfully.`,
+    );
+  }
+
+  const nodertDir = path.join(
+    appOutDir,
+    'resources',
+    'app.asar.unpacked',
+    'node_modules',
+    '@nodert-win10-au',
+  );
+  let nodertPkgs = [];
+  try {
+    nodertPkgs = fs.readdirSync(nodertDir);
+  } catch {
+    // missing — caught below
+  }
+  if (nodertPkgs.length === 0) {
+    throw new Error(
+      `[after-pack] Expected @nodert-win10-au native packages under:\n` +
+        `  ${nodertDir}\n` +
+        `  but the directory is missing or empty. ` +
+        `electron-windows-notifications requires this chain at runtime; ` +
+        `without it require('electron-windows-notifications') throws and ` +
+        `no OS toast is ever emitted.\n` +
+        `Hint: confirm build.asarUnpack covers ` +
+        `**/node_modules/@nodert-win10-au/** and that the chain installed ` +
+        `successfully (postinstall step).`,
+    );
+  }
+
+  console.log(
+    `[after-pack] OK win32/x64: notifications native chain present ` +
+      `(${notifyDotNodes.join(', ')}; @nodert-win10-au peers: ${nodertPkgs.length}).`,
+  );
 };
 

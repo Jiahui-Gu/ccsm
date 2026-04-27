@@ -54,6 +54,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "electron-updater": "^6.8.3",
+    "electron-windows-notifications": "^3.0.8",
     "framer-motion": "^12.38.0",
     "fuse.js": "^7.0.0",
     "i18next": "^26.0.6",
@@ -106,9 +107,7 @@
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.0"
   },
-  "optionalDependencies": {
-    "electron-windows-notifications": "^3.0.8"
-  },
+  "optionalDependencies": {},
   "build": {
     "appId": "com.ccsm.app",
     "productName": "CCSM",
@@ -116,7 +115,9 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
-      "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+      "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**",
+      "**/node_modules/electron-windows-notifications/**",
+      "**/node_modules/@nodert-win10-au/**"
     ],
     "afterPack": "scripts/after-pack.cjs",
     "files": [
