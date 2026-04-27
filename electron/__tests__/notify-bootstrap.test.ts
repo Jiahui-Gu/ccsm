@@ -7,15 +7,24 @@ import {
   autoSetupAumid,
   __resetBootstrapForTests,
 } from '../notify-bootstrap';
-import { __setNotifyImporter } from '../notify';
 
-// Stub electron's BrowserWindow + app surface — the test process is plain
-// node so importing `electron` would attempt to resolve the binary. We only
-// need `getAllWindows` for `shouldSuppressForFocus` (covered in the e2e probe
-// instead) and `app.isPackaged` for `autoSetupAumid`.
+// Stub electron's BrowserWindow + app + Notification surface — the test
+// process is plain node so importing `electron` would attempt to resolve the
+// binary. We only need `getAllWindows` for `shouldSuppressForFocus` (covered
+// in the e2e probe instead), `app.isPackaged` for `autoSetupAumid`, and a
+// Notification stub so the wrapper's static `Notification.isSupported()` call
+// resolves cleanly.
 let isPackagedForTest = false;
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
+  Notification: class {
+    static isSupported(): boolean {
+      return true;
+    }
+    on(): void {}
+    show(): void {}
+    close(): void {}
+  },
   app: {
     get isPackaged() {
       return isPackagedForTest;
@@ -57,7 +66,6 @@ vi.mock('fs', async (importOriginal) => {
 describe('notify-bootstrap', () => {
   beforeEach(() => {
     __resetBootstrapForTests();
-    __setNotifyImporter(null);
   });
 
   it('bootstrapNotify is a no-op on non-win32 and never throws', () => {

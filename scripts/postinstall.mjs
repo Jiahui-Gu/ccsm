@@ -8,14 +8,9 @@
 // instead of Electron's ABI (e.g. 130), and the app would fail at runtime
 // with cryptic "renderer window didn't appear" errors.
 //
-// Now we fail loudly for ALL native deps required by the app. On Windows
-// that includes both better-sqlite3 (DB) and the
-// electron-windows-notifications -> @nodert-win10-au/* chain (Adaptive Toast
-// notifications). Shipping an installer without the notifications native
-// chain is a silent regression — the wrapper falls back to no toasts at all
-// (see #267 + notify-ship-native fix). On non-Windows the notifications
-// package is win32-only and absent by design; the rebuild only touches
-// better-sqlite3 there.
+// Now we fail loudly for native deps required by the app — currently just
+// better-sqlite3 (DB). Windows toast no longer requires a native rebuild;
+// it goes through Electron's built-in `Notification` API directly.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -24,16 +19,14 @@ import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 // Preflight: warn (don't block) when running on a Node major other than 20.
-// Native deps (better-sqlite3, electron-windows-notifications, @nodert-win10-au)
-// build cleanly on Node 20.x. node-gyp 10.x + Node >= 22 trips a `/std:c++20`
-// vs WinRT `/ZW` clash that surfaces as `error C1107: could not find assembly
-// 'platform.winmd'`, even with the full VS 2022 C++/CX SDK installed. We don't
-// pin engines.node so contributors who only touch UI/tests can still
-// `npm install` on newer Node; this warning gives them the clue if it breaks.
+// better-sqlite3 builds cleanly on Node 20.x; newer node-gyp + Node may need
+// extra toolchain. We don't pin engines.node so contributors who only touch
+// UI/tests can still `npm install` on newer Node; this warning gives them
+// the clue if it breaks.
 const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
 if (nodeMajor !== 20) {
   console.warn(
-    `[postinstall] WARNING: ccsm native deps (better-sqlite3, electron-windows-notifications, @nodert-win10-au) build cleanly on Node 20.x. You're on Node ${process.version}. If you only touch UI/tests, this is fine; if you hit \`node-gyp\` C1107 or \`/std:c++20 /ZW\` errors during install, switch with \`nvm use 20\` and re-run \`npm ci --legacy-peer-deps\`. CI uses Node 20.`,
+    `[postinstall] WARNING: ccsm native deps (better-sqlite3) build cleanly on Node 20.x. You're on Node ${process.version}. If you only touch UI/tests, this is fine; if you hit \`node-gyp\` errors during install, switch with \`nvm use 20\` and re-run \`npm ci --legacy-peer-deps\`. CI uses Node 20.`,
   );
 }
 
@@ -79,36 +72,13 @@ if (typeof fullRebuild.status === 'number' && fullRebuild.status !== 0) {
   process.exit(fullRebuild.status);
 }
 
-// On Windows verify the notifications native chain actually built. The
-// rebuild can sometimes report success while leaving a transitive
-// @nodert-win10-au addon broken; surface that here as a hard failure so the
-// installer never ships without OS notifications again.
-if (isWindows) {
-  const nativeNotifyDir = path.join(
-    repoRoot,
-    'node_modules',
-    'electron-windows-notifications',
-  );
-  if (!existsSync(nativeNotifyDir)) {
-    console.error(
-      '\n[postinstall] electron-windows-notifications is not installed. ' +
-        'It is a required dependency on Windows — `npm install` should have ' +
-        'placed it in node_modules.',
-    );
-    printHint();
-    process.exit(1);
-  }
-}
-
 function printHint() {
   console.error('');
-  console.error('Native modules (notably better-sqlite3 and');
-  console.error('electron-windows-notifications) must be rebuilt for the');
-  console.error('Electron ABI before the app can start. If automatic rebuild');
+  console.error('Native modules (notably better-sqlite3) must be rebuilt for');
+  console.error('the Electron ABI before the app can start. If automatic rebuild');
   console.error('fails, try running it manually:');
   console.error('');
   console.error('  npx @electron/rebuild -f -w better-sqlite3 --build-from-source');
-  console.error('  npx @electron/rebuild -f -w electron-windows-notifications --build-from-source');
   console.error('');
   console.error('On Windows you need Visual Studio Build Tools (C++ workload)');
   console.error('+ Python 3 on PATH. On macOS, Xcode Command Line Tools. On Linux,');

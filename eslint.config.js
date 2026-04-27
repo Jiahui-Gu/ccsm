@@ -122,6 +122,7 @@ export default [
         // Node.js types namespace (e.g. NodeJS.Timeout) and Web APIs
         // available in modern Node runtimes used by Electron main process.
         NodeJS: 'readonly',
+        Electron: 'readonly',
         AbortSignal: 'readonly',
         AbortController: 'readonly',
         URL: 'readonly',

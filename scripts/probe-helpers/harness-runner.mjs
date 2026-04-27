@@ -249,8 +249,9 @@ function freshUserDataDir(tag) {
  *
  * @property {(app: import('playwright').ElectronApplication, ctx: HarnessCaseCtx) => Promise<void>} [preMain]
  *   Run BEFORE the case body, in the electron MAIN process via `app.evaluate`.
- *   Use for monkey-patching main-process modules (e.g. `notify.ts`'s
- *   `__setNotifyImporter` test seam, dialog stubs, fake transports).
+ *   Use for monkey-patching main-process modules (e.g. patching
+ *   `Notification.prototype.show` to capture toast emissions, dialog stubs,
+ *   fake transports).
  *
  *   Caller is responsible for restoring via `registerDispose` if the patch
  *   must not leak into subsequent cases. For `userDataDir: 'fresh'` cases
@@ -258,12 +259,14 @@ function freshUserDataDir(tag) {
  *
  *   Example (probe-e2e-notify-integration style):
  *     {
- *       id: 'notify-importer-swap',
+ *       id: 'notify-capture',
  *       preMain: async (app) => {
- *         await app.evaluate(async () => {
- *           const mod = await import('./electron/notify.js');
+ *         await app.evaluate(async ({ Notification }) => {
  *           globalThis.__notifyCalls = [];
- *           mod.__setNotifyImporter(async () => ({ default: class { constructor(o) { globalThis.__notifyCalls.push(o); } show() {} } }));
+ *           const proto = Notification.prototype;
+ *           const origShow = proto.show;
+ *           proto.show = function () { globalThis.__notifyCalls.push({ title: this.title, body: this.body }); };
+ *           void origShow;
  *         });
  *       },
  *       run: async ({ app, win }) => { ... assert globalThis.__notifyCalls ... }
