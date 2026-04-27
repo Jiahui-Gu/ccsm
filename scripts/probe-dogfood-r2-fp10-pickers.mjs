@@ -23,7 +23,7 @@
 //   * Drives the input through the six checks.
 //
 // Output: docs/screenshots/dogfood-r2/fp10-pickers/check-{a..f}-*.png
-//         + report at docs/dogfood-r2-fp10-report.md
+//         + report at docs/dogfood/r2/fp10-report.md
 //
 // Run: node scripts/probe-dogfood-r2-fp10-pickers.mjs
 import { _electron as electron } from 'playwright';
@@ -420,7 +420,7 @@ await app.close().catch(() => {});
 try { fs.rmSync(cfgDir, { recursive: true, force: true }); } catch {}
 
 // ── Write report ────────────────────────────────────────────────────────────
-const reportPath = path.join(REPO_ROOT, 'docs/dogfood-r2-fp10-report.md');
+const reportPath = path.join(REPO_ROOT, 'docs/dogfood/r2/fp10-report.md');
 const allPass = Object.values(results).every((r) => r.status === 'PASS');
 const anyBug = Object.values(results).some((r) => r.status === 'BUG');
 const heading = anyBug ? '## fp10: BUG' : (allPass ? '## fp10: PASS' : '## fp10: PARTIAL');
