@@ -88,6 +88,8 @@ function TitleButton({
 }
 
 export function WindowControls({ className }: { className?: string }) {
+  if (window.ccsm?.window.platform === 'darwin') return null;
+
   const api = window.ccsm;
   const [isMax, setIsMax] = useState(false);
   const { t } = useTranslation('window');

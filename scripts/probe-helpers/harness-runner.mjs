@@ -238,6 +238,11 @@ function freshUserDataDir(tag) {
  *   Use for tests that exercise Windows-only features (e.g. Windows
  *   notification modules).
  *
+ * @property {boolean} [darwinOnly]
+ *   Skip this case when `process.platform !== 'darwin'`.
+ *   Use for tests that exercise macOS-only features (e.g. native macOS
+ *   notification modules).
+ *
  *   Example (probe-e2e-permission-allow-bash style — needs real subprocess
  *   to verify the IPC frame round-trips through claude.exe):
  *     { id: 'permission-allow-bash', requiresClaudeBin: true, run: ... }
@@ -422,6 +427,14 @@ export async function runHarness(spec) {
       // ---- Capability: windowsOnly ----
       if (c.windowsOnly && process.platform !== 'win32') {
         const reason = `skipped: windowsOnly (current platform is ${process.platform})`;
+        console.log(`[case=${c.id}] SKIPPED: ${reason}`);
+        results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
+        continue;
+      }
+
+      // ---- Capability: darwinOnly ----
+      if (c.darwinOnly && process.platform !== 'darwin') {
+        const reason = `skipped: darwinOnly (current platform is ${process.platform})`;
         console.log(`[case=${c.id}] SKIPPED: ${reason}`);
         results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
         continue;
