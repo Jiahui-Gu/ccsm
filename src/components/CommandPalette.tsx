@@ -9,6 +9,8 @@ import { useStore, resolveEffectiveTheme } from '../stores/store';
 import { useTranslation } from '../i18n/useTranslation';
 import { useFocusRestore } from '../lib/useFocusRestore';
 
+const MOD = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+';
+
 type ResultKind = 'session' | 'group' | 'command';
 
 type Result = {
@@ -117,7 +119,7 @@ export function CommandPalette({
         id: 'cmd:new-session',
         kind: 'command',
         label: t('commandPalette.cmdNewSession'),
-        hint: 'Ctrl+N',
+        hint: `${MOD}N`,
         icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -128,7 +130,7 @@ export function CommandPalette({
         id: 'cmd:new-group',
         kind: 'command',
         label: t('commandPalette.cmdNewGroup'),
-        hint: 'Ctrl+Shift+N',
+        hint: `${MOD}Shift+N`,
         icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -139,7 +141,7 @@ export function CommandPalette({
         id: 'cmd:toggle-sidebar',
         kind: 'command',
         label: t('commandPalette.cmdToggleSidebar'),
-        hint: 'Ctrl+B',
+        hint: `${MOD}B`,
         icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -160,7 +162,7 @@ export function CommandPalette({
         id: 'cmd:open-settings',
         kind: 'command',
         label: t('commandPalette.cmdOpenSettings'),
-        hint: 'Ctrl+,',
+        hint: `${MOD},`,
         icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
