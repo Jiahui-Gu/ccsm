@@ -85,6 +85,15 @@ export default function App() {
   const focusedGroupId = useStore((s) => s.focusedGroupId);
   const model = useStore((s) => s.model);
   const permission = useStore((s) => s.permission);
+  // perf/startup-render-gate: App now mounts BEFORE `hydrateStore()`
+  // resolves (index.tsx no longer awaits hydration). For the sub-frame
+  // window where `hydrated` is still false, sessions/groups are at their
+  // empty defaults — we must NOT render the first-run "no sessions yet"
+  // landing in that gap, otherwise a user with persisted sessions on disk
+  // sees a flash of the empty CTA before their real session list pops in.
+  // Render a neutral skeleton (sidebar shell + blank main) until the
+  // persisted snapshot lands.
+  const hydrated = useStore((s) => s.hydrated);
 
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
@@ -276,6 +285,37 @@ export default function App() {
   }, []);
 
   if (!active) {
+    // Pre-hydrate: render a minimal skeleton (sidebar + drag region only).
+    // The first-run/empty CTA branch below is reserved for when we're
+    // CERTAIN there are no persisted sessions (i.e. hydrated === true).
+    if (!hydrated) {
+      return (
+        <TooltipProvider delayDuration={400} skipDelayDuration={100}>
+          <ToastProvider>
+            <PersistErrorBridge />
+            <BackgroundWaitingBridge />
+            <UpdateDownloadedBridge />
+            <AppShell
+              sidebar={<aside data-testid="sidebar-skeleton" aria-busy="true" />}
+              main={
+                <main
+                  className="flex-1 flex flex-col min-w-0 right-pane-frame relative"
+                  data-testid="main-skeleton"
+                  aria-busy="true"
+                >
+                  <DragRegion
+                    className="relative flex items-center justify-end shrink-0"
+                    style={{ height: 32 }}
+                  >
+                    <WindowControls />
+                  </DragRegion>
+                </main>
+              }
+            />
+          </ToastProvider>
+        </TooltipProvider>
+      );
+    }
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>

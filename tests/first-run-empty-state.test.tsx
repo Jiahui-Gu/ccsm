@@ -76,6 +76,11 @@ beforeEach(() => {
       activeId: '',
       focusedGroupId: null,
       tutorialSeen: true,
+      // perf/startup-render-gate: App now renders a skeleton until
+      // `hydrated` flips true. The empty-state CTA branch (what this test
+      // pins) is gated behind hydrated=true so users with persisted
+      // sessions still loading don't flash the first-run landing.
+      hydrated: true,
       messagesBySession: {},
       startedSessions: {},
       runningSessions: {},
