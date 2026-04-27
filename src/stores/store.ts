@@ -254,6 +254,19 @@ type State = {
   models: DiscoveredModel[];
   modelsLoaded: boolean;
   connection: ConnectionInfo | null;
+  /**
+   * True once `hydrateStore()` has finished applying the persisted snapshot
+   * to the store. Set after the awaited persisted-state load completes —
+   * BEFORE `loadConnection()` / `loadModels()` (which are now fire-and-forget
+   * post-render). Components that need to know "are we still showing
+   * uninitialised defaults?" subscribe to this; e.g. the empty-sessions
+   * branch of App.tsx renders skeleton state while false to avoid flashing
+   * a "no sessions yet" landing for users who actually have sessions on
+   * disk. See perf/startup-render-gate — first paint must not block on
+   * hydration, so the renderer mounts immediately and components react to
+   * this flag flipping true a tick later.
+   */
+  hydrated: boolean;
   // Monotonic counter bumped whenever a user-driven action requests that the
   // InputBar textarea take focus (e.g. clicking a session in the sidebar,
   // matching Claude Desktop's behavior). InputBar `useEffect`s on this and
@@ -1038,6 +1051,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   models: [],
   modelsLoaded: false,
   connection: null,
+  hydrated: false,
   focusInputNonce: 0,
   installerCorrupt: false,
   composerInjectNonce: 0,
@@ -2668,6 +2682,20 @@ export const useStore = create<State & Actions>((set, get) => ({
 
 let hydrated = false;
 
+/**
+ * Boot timing trace exposed on `window.__ccsmHydrationTrace`. Populated by
+ * `index.tsx` (renderedAt) and `hydrateStore()` (hydrateStartedAt /
+ * hydrateDoneAt). Used by the harness-ui case
+ * `startup-paints-before-hydrate` to assert renderedAt < hydrateDoneAt —
+ * i.e. that React mounted before the awaited persisted-state load
+ * resolved. Same E2E-debug-affordance trade-off as `__ccsmStore`.
+ */
+export interface HydrationTrace {
+  renderedAt?: number;
+  hydrateStartedAt?: number;
+  hydrateDoneAt?: number;
+}
+
 // Compile-time guard: every key in PERSISTED_KEYS must exist on State (so the
 // subscriber's `s[k]` read is well-typed) AND on PersistedState (so the
 // snapshot we hand to schedulePersist is structurally valid). If a key is
@@ -2682,6 +2710,15 @@ void _persistedKeysOnPersisted;
 
 export async function hydrateStore(): Promise<void> {
   if (hydrated) return;
+  // E2E + perf trace. Pinned by harness-ui case `startup-paints-before-hydrate`
+  // to verify render() runs before hydrate resolves. Same security/scope
+  // trade-off as `__ccsmStore`.
+  const trace =
+    (typeof window !== 'undefined'
+      ? ((window as unknown as { __ccsmHydrationTrace?: HydrationTrace }).__ccsmHydrationTrace ??=
+          {} as HydrationTrace)
+      : ({} as HydrationTrace));
+  trace.hydrateStartedAt = Date.now();
   // Drafts live alongside the main snapshot but in their own key — load both
   // before render so the InputBar's initial value is the persisted draft, not
   // an empty string that flashes for one tick.
@@ -2720,7 +2757,13 @@ export async function hydrateStore(): Promise<void> {
       ),
     });
   }
+  // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components
+  // that gate their first paint on this can stop showing skeleton state the
+  // moment the persisted snapshot lands, even though connection/models may
+  // still be in flight for another 100-500ms.
+  useStore.setState({ hydrated: true });
   hydrated = true;
+  trace.hydrateDoneAt = Date.now();
   // Kick off a load for the restored active session so the right pane paints
   // history immediately on boot, not on the next click.
   const active = useStore.getState().activeId;
@@ -2761,30 +2804,34 @@ export async function hydrateStore(): Promise<void> {
   // for new sessions, and `claudeSettingsDefaultModel` is the CLI's own
   // `--model` default (read from `~/.claude/settings.json`). Both are
   // best-effort — if the IPC fails, the renderer keeps its empty defaults
-  // and the SDK falls back to its built-ins.
-  try {
-    const api = window.ccsm;
-    if (api?.userHome && api?.defaultModel) {
-      const [userHome, defaultModel] = await Promise.all([
-        api.userHome(),
-        api.defaultModel(),
-      ]);
-      useStore.setState({
-        userHome: typeof userHome === 'string' ? userHome : '',
-        claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
-      });
+  // and the SDK falls back to its built-ins. Fire-and-forget so a slow IPC
+  // (or a binary shell-out from defaultModel) doesn't gate first paint.
+  void (async () => {
+    try {
+      const api = window.ccsm;
+      if (api?.userHome && api?.defaultModel) {
+        const [userHome, defaultModel] = await Promise.all([
+          api.userHome(),
+          api.defaultModel(),
+        ]);
+        useStore.setState({
+          userHome: typeof userHome === 'string' ? userHome : '',
+          claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
+        });
+      }
+    } catch {
+      /* IPC unavailable — boot continues with empty defaults */
     }
-  } catch {
-    /* IPC unavailable — boot continues with empty defaults */
-  }
+  })();
 
-  // Load connection info + discovered models from settings.json. Both come
-  // from main; failures leave the empty defaults in place so the UI can still
-  // render with placeholder copy.
-  await Promise.all([
-    useStore.getState().loadConnection(),
-    useStore.getState().loadModels(),
-  ]);
+  // Connection info + discovered models from settings.json. Demoted to
+  // fire-and-forget post-hydrate (perf/startup-render-gate): `loadModels`
+  // shells out to the claude binary and can take 100-500ms; awaiting it
+  // here would gate first paint by that much. Consumers
+  // (SettingsDialog, StatusBar) already render an empty/loading state
+  // until `models` populates and re-fire these themselves on mount.
+  void useStore.getState().loadConnection();
+  void useStore.getState().loadModels();
 
   // After (potential) hydration, subscribe to write-through.
   // Perf: the subscriber fires on EVERY store mutation (including hot paths

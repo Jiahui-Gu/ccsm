@@ -3662,6 +3662,138 @@ async function caseSidebarLongNameTruncates({ win, log }) {
   log(`fp13-A — sidebar long name truncated (h=${rowBox.height.toFixed(1)}px, scroll=${probe.scrollWidth}>client=${probe.clientWidth}, ellipsis+nowrap, title carries full name)`);
 }
 
+// ---------- startup-paints-before-hydrate ----------
+//
+// perf/startup-render-gate regression. Pins the contract that the renderer
+// calls `root.render()` BEFORE `hydrateStore()` resolves — i.e. first paint
+// is no longer gated on the awaited persisted-state load (which itself
+// chained `loadConnection()` + `loadModels()`, the latter shells out to the
+// claude binary and can take 100-500ms).
+//
+// Mechanism: index.tsx + hydrateStore() write timestamps onto
+// `window.__ccsmHydrationTrace`:
+//   - `renderedAt`     stamped just before `root.render(<App />)` in index.tsx
+//   - `hydrateStartedAt` stamped at top of hydrateStore()
+//   - `hydrateDoneAt`  stamped after the persisted snapshot lands + flag flips
+//
+// On origin/main (render gated on hydrate.finally), `renderedAt` does not
+// exist (the field is new) AND if it did, it would be > hydrateDoneAt.
+// On the fixed branch, `renderedAt` exists and is <= hydrateDoneAt.
+//
+// We additionally inject a slow `window.ccsm.models.list` (500ms delay) via
+// addInitScript before reload to prove that even when models load takes
+// half a second, the skeleton main+sidebar are present in the DOM well
+// before that — `data-testid="main-skeleton"` flips to the populated
+// `<main>` once the empty-sessions OR active-session branch renders, so
+// observing the skeleton at all proves the renderer mounted before
+// hydration finished.
+async function caseStartupPaintsBeforeHydrate({ win, log }) {
+  // Inject a 500ms delay around models.list BEFORE the renderer bundle
+  // re-evaluates. The init script runs on every navigation including
+  // win.reload(). Wrap in a guard so prior cases that may have already
+  // wrapped don't double-wrap.
+  await win.context().addInitScript(() => {
+    try {
+      const original = window.ccsm?.models?.list;
+      if (original && !window.ccsm.models.__delayedForStartupCase) {
+        window.ccsm.models.list = async (...args) => {
+          await new Promise((r) => setTimeout(r, 500));
+          return original.apply(window.ccsm.models, args);
+        };
+        window.ccsm.models.__delayedForStartupCase = true;
+      }
+    } catch {
+      /* harness env without window.ccsm — case will fail loudly below */
+    }
+  });
+
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+
+  // Wait until React has mounted (sidebar OR main element exists). This is
+  // intentionally NOT gated on `__ccsmStore.getState().hydrated` — the whole
+  // point is that paint happens before hydrate-driven flag flips.
+  await win.waitForFunction(
+    () => !!document.querySelector('aside') || !!document.querySelector('main'),
+    null,
+    { timeout: 10_000 }
+  );
+
+  // Snapshot the trace + DOM state at the earliest moment we can measure.
+  const earlySnap = await win.evaluate(() => {
+    const trace = window.__ccsmHydrationTrace || {};
+    const store = window.__ccsmStore?.getState?.();
+    return {
+      renderedAt: trace.renderedAt,
+      hydrateStartedAt: trace.hydrateStartedAt,
+      hydrateDoneAt: trace.hydrateDoneAt,
+      hydratedFlag: store?.hydrated,
+      hasMain: !!document.querySelector('main'),
+      hasAside: !!document.querySelector('aside'),
+    };
+  });
+
+  if (typeof earlySnap.renderedAt !== 'number') {
+    throw new Error(
+      'startup-paints-before-hydrate: window.__ccsmHydrationTrace.renderedAt is missing — ' +
+        'index.tsx did not stamp the render-time trace. Either index.tsx still awaits ' +
+        'hydrateStore() before render(), or the trace export was removed.'
+    );
+  }
+  if (typeof earlySnap.hydrateStartedAt !== 'number') {
+    throw new Error(
+      'startup-paints-before-hydrate: hydrateStartedAt missing — hydrateStore() never ran.'
+    );
+  }
+  // Render must happen at or before hydrate finishes. Pre-fix: render
+  // happened in `.finally(() => root.render())`, so renderedAt would be >
+  // hydrateDoneAt. Post-fix: renderedAt <= hydrateStartedAt (render is
+  // synchronous before the void hydrateStore() call), and definitely
+  // <= hydrateDoneAt.
+  if (typeof earlySnap.hydrateDoneAt === 'number' && earlySnap.renderedAt > earlySnap.hydrateDoneAt) {
+    throw new Error(
+      `startup-paints-before-hydrate: renderedAt (${earlySnap.renderedAt}) > hydrateDoneAt ` +
+        `(${earlySnap.hydrateDoneAt}) — render() is still gated on hydration.`
+    );
+  }
+  // Stricter: the render call must happen before hydrate even begins its
+  // awaited persisted-load. This is what proves index.tsx no longer awaits.
+  if (earlySnap.renderedAt > earlySnap.hydrateStartedAt) {
+    throw new Error(
+      `startup-paints-before-hydrate: renderedAt (${earlySnap.renderedAt}) > ` +
+        `hydrateStartedAt (${earlySnap.hydrateStartedAt}) — index.tsx is awaiting ` +
+        `hydrateStore() before calling root.render(). Render must be synchronous.`
+    );
+  }
+  if (!earlySnap.hasMain && !earlySnap.hasAside) {
+    throw new Error('startup-paints-before-hydrate: neither <main> nor <aside> in DOM after reload');
+  }
+
+  // After hydrate completes, the store flag flips and the populated UI
+  // takes over from the skeleton. We confirm the flag goes true to prove
+  // we're not asserting against a stuck-skeleton state.
+  await win.waitForFunction(
+    () => !!window.__ccsmStore?.getState?.().hydrated,
+    null,
+    { timeout: 5_000 }
+  );
+
+  // And that the slow models.list eventually resolves — proves the
+  // fire-and-forget didn't get dropped on the floor.
+  await win.waitForFunction(
+    () => !!window.__ccsmStore?.getState?.().modelsLoaded,
+    null,
+    { timeout: 5_000 }
+  );
+
+  log(
+    `startup-paints-before-hydrate — renderedAt=${earlySnap.renderedAt} ` +
+      `hydrateStartedAt=${earlySnap.hydrateStartedAt} ` +
+      `hydrateDoneAt=${earlySnap.hydrateDoneAt ?? 'pending'} ` +
+      `hydratedFlag(early)=${earlySnap.hydratedFlag}`
+  );
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -3798,7 +3930,13 @@ await runHarness({
     // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
     // contract — enabled=false → dispatched:false, reason:'global-disabled',
     // zero notification:show IPC. Re-enabling proves recorder is wired.
-    { id: 'notif-disabled-suppress', run: caseNotifDisabledSuppress }
+    { id: 'notif-disabled-suppress', run: caseNotifDisabledSuppress },
+    // startup-paints-before-hydrate (perf/startup-render-gate): pins
+    // render-before-hydrate ordering via window.__ccsmHydrationTrace.
+    // Placed last because it calls win.reload() with a 500ms init-script
+    // delay on models.list, and the reload + delay perturb the page state
+    // for any case that follows.
+    { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler
