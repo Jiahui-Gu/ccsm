@@ -1,0 +1,26 @@
+{
+  "A": {
+    "status": "PASS",
+    "detail": "Chinese reply received (143 CJK chars, 225 total). No mojibake."
+  },
+  "B": {
+    "status": "PASS",
+    "detail": "All markdown elements rendered correctly. h1=21px(600) body=15px ul=3 ol=3 pre+mono blockquote bold italic inlineCode=1."
+  },
+  "C": {
+    "status": "PASS",
+    "detail": "Long output: 200 numbered lines. Auto-stuck to bottom (dist=-0.5). User scrollback works. Jump-to-latest affordance: present."
+  },
+  "D": {
+    "status": "PARTIAL",
+    "detail": "No truncation/expand affordance for long markdown — full content rendered inline. Note: this is a feature gap if content is very long; may be intentional for chat UX. Outer chat container scrolls (Check C)."
+  },
+  "E": {
+    "status": "PASS",
+    "detail": "Mixed-script reply OK. CJK=2 JP-kana=5 hasLatin=true mojibake=false."
+  },
+  "F": {
+    "status": "FAIL",
+    "detail": "Layout broken: stream has horizontal overflow (scrollWidth=4297 clientWidth=1006)"
+  }
+}
