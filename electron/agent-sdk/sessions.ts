@@ -27,13 +27,15 @@
  *     create time and passes it through StartOptions.sessionId so the SDK
  *     uses it as the CLI's `session_id`. The captured cliSessionId from the
  *     first system init frame is asserted to match (diagnostic on drift).
- *   - Bundled binary: PR-A still resolves the user's system claude binary
+ *   - Bundled binary: PR-A resolves the user's system claude binary
  *     via binary-resolver and passes it through `pathToClaudeCodeExecutable`.
- *     PR-B will swap in the SDK-bundled binary.
+ *     PR-B adds bundled-binary resolution as a fallback before PATH lookup.
  */
 
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { app } from 'electron';
 import { resolveClaudeInvocation, ClaudeNotFoundError } from '../agent/binary-resolver';
 import type {
   StartOptions,
@@ -71,6 +73,28 @@ import {
 } from '../../src/agent/effort';
 
 type EffortLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/**
+ * Resolve `~`-prefixed paths the way the legacy runner does. Kept identical
+ * (not factored into a shared util) because we don't want PR-A touching any
+ * file outside electron/agent-sdk/.
+ */
+function resolveBundledBinary(): string | null {
+  if (!app.isPackaged) return null;
+  const binaryName = process.platform === 'win32' ? 'claude.exe' : 'claude';
+  const pkgName = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
+  const appDir = path.dirname(app.getAppPath());
+  const candidates = [
+    path.join(appDir, 'app.asar.unpacked', 'node_modules', pkgName, binaryName),
+    path.join(appDir, 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'node_modules', pkgName, binaryName),
+  ];
+  for (const p of candidates) {
+    try {
+      if (fs.statSync(p).isFile()) return p;
+    } catch { /* miss */ }
+  }
+  return null;
+}
 
 /**
  * Resolve `~`-prefixed paths the way the legacy runner does. Kept identical
@@ -381,6 +405,10 @@ export class SdkSessionRunner {
         if (err instanceof ClaudeNotFoundError) throw err;
         throw err;
       }
+    }
+
+    if (!binaryPath) {
+      binaryPath = resolveBundledBinary() ?? undefined;
     }
 
     const sdk = await loadSdk();

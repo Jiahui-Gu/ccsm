@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { appWindow } from './probe-utils.mjs';
 
+const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const OUT_DIR = path.join(REPO_ROOT, 'dogfood-logs/type-scale-225');
@@ -64,7 +65,7 @@ await win.waitForTimeout(500);
 await shoot(win, 'sidebar-and-chat');
 
 // Settings dialog open.
-await win.keyboard.press('Control+,');
+await win.keyboard.press(`${mod}+,`);
 await win.waitForSelector('[role="dialog"]', { timeout: 5000 });
 await win.waitForTimeout(300);
 await shoot(win, 'settings-dialog');
@@ -72,7 +73,7 @@ await win.keyboard.press('Escape');
 await win.waitForTimeout(200);
 
 // Command palette.
-await win.keyboard.press('Control+f');
+await win.keyboard.press(`${mod}+f`);
 await win.waitForTimeout(250);
 await shoot(win, 'command-palette');
 await win.keyboard.press('Escape');

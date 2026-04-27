@@ -61,7 +61,7 @@
 // Run one case: `node scripts/harness-agent.mjs --only=streaming`
 
 import { randomUUID } from 'node:crypto';
-import { runHarness } from './probe-helpers/harness-runner.mjs';
+import { runHarness, mod } from './probe-helpers/harness-runner.mjs';
 
 // ---------- diagnostic-banner (F1) ----------
 // Verifies that pushing an agent:diagnostic into the store surfaces a banner
@@ -504,17 +504,17 @@ async function caseChatCopy({ win, log }) {
   await target.waitFor({ state: 'visible', timeout: 3000 });
   await target.click();
 
-  await win.keyboard.press('Control+a');
+  await win.keyboard.press(`${mod}+a`);
   await win.waitForTimeout(100);
   const sel = await win.evaluate(() => window.getSelection()?.toString() ?? '');
-  if (!sel.includes('COPY_ME_PROBE_TEXT')) throw new Error(`Ctrl+A did not select chat text (selection=${JSON.stringify(sel.slice(0, 80))})`);
+  if (!sel.includes('COPY_ME_PROBE_TEXT')) throw new Error(`${mod}+A did not select chat text (selection=${JSON.stringify(sel.slice(0, 80))})`);
 
-  await win.keyboard.press('Control+c');
+  await win.keyboard.press(`${mod}+c`);
   await win.waitForTimeout(150);
   const clip = await win.evaluate(() => navigator.clipboard.readText().catch((e) => `ERR:${e.message}`));
-  if (!clip.includes('COPY_ME_PROBE_TEXT')) throw new Error(`clipboard missing sample after Ctrl+C (clip=${JSON.stringify(clip.slice(0, 80))})`);
+  if (!clip.includes('COPY_ME_PROBE_TEXT')) throw new Error(`clipboard missing sample after ${mod}+C (clip=${JSON.stringify(clip.slice(0, 80))})`);
 
-  log('Ctrl+A selects chat, Ctrl+C copies to clipboard');
+  log(`${mod}+A selects chat, ${mod}+C copies to clipboard`);
 }
 
 // ---------- input-placeholder ----------
@@ -5206,7 +5206,7 @@ await runHarness({
     // contamination doesn't affect other cases. close-window-aborts-sessions
     // follows with relaunch:true → fresh app, then notify-integration's
     // bootstrap mutations don't matter either way.
-    { id: 'notify-integration', requiresClaudeBin: false, run: caseNotifyIntegration },
+    { id: 'notify-integration', requiresClaudeBin: false, windowsOnly: true, run: caseNotifyIntegration },
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // Pure-store reclassifications from the original "restore-*" probes;
     // 桶 4 reviewer flagged these as misnamed (single-launch, no fixture).

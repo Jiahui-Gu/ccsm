@@ -107,7 +107,7 @@ function plantJsonlFixture({ cwd, sessionId, frames }) {
  */
 async function launch({ userDataDir, env = {}, extraArgs = [] }) {
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userDataDir}`, ...extraArgs],
+    args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`, ...extraArgs],
     cwd: ROOT,
     env: { ...process.env, CCSM_PROD_BUNDLE: '1', ...env }
   });
@@ -830,7 +830,7 @@ async function caseNotifyFallback({ log, registerDispose }) {
   fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userDataDir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -965,7 +965,7 @@ async function caseImportSession({ log, registerDispose }) {
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -1494,7 +1494,7 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
   // Launch #1: seed state via saveState API + close so #2 restores from disk.
   {
     const app1 = await electron.launch({
-      args: ['.', `--user-data-dir=${userDataDir}`],
+      args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       env,
     });
@@ -1539,7 +1539,7 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
   // Launch #2: relaunch reads persisted state; drive the Bash prompt.
   {
     const app2 = await electron.launch({
-      args: ['.', `--user-data-dir=${userDataDir}`],
+      args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       env,
     });
@@ -1669,7 +1669,7 @@ async function caseRestartResumeContinuesConversation({ log, registerDispose }) 
   // Reusable launch wrapper.
   async function launch(label) {
     const app = await electron.launch({
-      args: ['.', `--user-data-dir=${userDataDir}`],
+      args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
       cwd: ROOT,
       env,
       timeout: 60_000,
@@ -1931,7 +1931,7 @@ async function caseNewSessionDefaultModelFromClaudeSettings({ log, registerDispo
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2042,7 +2042,7 @@ async function caseNewSessionDefaultModelHonorsClaudeConfigDir({ log, registerDi
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2116,7 +2116,7 @@ async function caseNewSessionDefaultCwdIsHome({ log, registerDispose }) {
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2214,7 +2214,7 @@ async function caseCwdPopoverRecentOnlyHomeOnFresh({ log, registerDispose }) {
   registerDispose(ud.cleanup);
 
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2305,7 +2305,7 @@ async function caseCwdPopoverLruAfterUserPick({ log, registerDispose }) {
   // ----- Launch 1: seed the pick -----
   {
     const app1 = await electron.launch({
-      args: ['.', `--user-data-dir=${ud.dir}`],
+      args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
       cwd: ROOT,
       env: {
         ...process.env,
@@ -2340,7 +2340,7 @@ async function caseCwdPopoverLruAfterUserPick({ log, registerDispose }) {
 
   // ----- Launch 2: assert popover shows pick at head, home at index 1 -----
   const app2 = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2437,7 +2437,7 @@ async function caseNewSessionDefaultModelIgnoresLastPick({ log, registerDispose 
   // ----- Launch 1: stash a stale persisted global model -----
   {
     const app1 = await electron.launch({
-      args: ['.', `--user-data-dir=${ud.dir}`],
+      args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
       cwd: ROOT,
       env: {
         ...process.env,
@@ -2471,7 +2471,7 @@ async function caseNewSessionDefaultModelIgnoresLastPick({ log, registerDispose 
 
   // ----- Launch 2: assert new-session default ignores stash -----
   const app2 = await electron.launch({
-    args: ['.', `--user-data-dir=${ud.dir}`],
+    args: ['.', '--lang=en', `--user-data-dir=${ud.dir}`],
     cwd: ROOT,
     env: {
       ...process.env,
@@ -2731,7 +2731,7 @@ await runHarness({
     { id: 'sidebar-resize',           skipLaunch: true, run: caseSidebarResize },
     { id: 'sidebar-rename-dnd-state', skipLaunch: true, run: caseSidebarRenameDndState },
     { id: 'db-corruption-recovery',   skipLaunch: true, run: caseDbCorruptionRecovery },
-    { id: 'notify-fallback',          skipLaunch: true, run: caseNotifyFallback },
+    { id: 'notify-fallback',          skipLaunch: true, windowsOnly: true, run: caseNotifyFallback },
     { id: 'import-session',           skipLaunch: true, run: caseImportSession },
     // ---- Bucket-7 absorption (final cleanup pass) ----
     // permission-prompt-default-mode: 2-launch (seed → close → relaunch)

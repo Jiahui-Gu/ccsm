@@ -620,7 +620,7 @@ async function caseTruncateFromHereThenResendRealCli({ log }) {
   // Use a temp cwd so the JSONL file we create is isolated from any real
   // user history. The CLI derives the project-key from cwd by replacing
   // [\\/:] with '-' (see jsonl-loader.ts projectKeyFromCwd).
-  const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-truncate-'));
+  const tmpCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-truncate-')));
   const sessionId = randomUUID();
   const projectKey = tmpCwd.replace(/[\\/:]/g, '-');
   const jsonlPath = path.join(CONFIG_DIR, 'projects', projectKey, `${sessionId}.jsonl`);

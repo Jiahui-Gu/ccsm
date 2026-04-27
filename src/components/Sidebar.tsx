@@ -615,9 +615,9 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           WindowControls (min/max/close buttons). The slight misalignment
           is intentional: dogfood flagged the 32px gap above "new session"
           as visually empty. */}
-      <DragRegion className="shrink-0 w-full" style={{ height: 8 }} />
+      <DragRegion className="shrink-0 w-full" style={{ height: window.ccsm?.window.platform === 'darwin' ? 40 : 8 }} />
       {collapsed ? (
-        <div className="flex flex-col items-center w-full h-full py-3 gap-2">
+        <div className={`flex flex-col items-center w-full h-full gap-2 ${window.ccsm?.window.platform === 'darwin' ? 'py-1' : 'py-3'}`}>
           <IconButton
             variant="raised"
             size="md"
