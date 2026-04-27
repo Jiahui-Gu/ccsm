@@ -889,6 +889,16 @@ const inFlightLoads = new Set<string>();
  */
 export function framesToBlocks(frames: unknown[]): MessageBlock[] {
   const out: MessageBlock[] = [];
+  // Index maps to keep the projection O(n) over frame count instead of
+  // O(n^2). Without these, dedupe-by-id and tool_result attach both call
+  // `out.findIndex(...)` per frame — for a 96 MB / 33k-frame transcript
+  // that's ~1.7s of pure linear scans on import. Keys mirror the lookup
+  // predicates the previous findIndex calls used:
+  //   - blockIdxById     : exact match on MessageBlock.id (dedupe append)
+  //   - toolBlockIdxById : tool_use id → index for tool/todo blocks only
+  //                        (matches the kind-narrowed findIndex below)
+  const blockIdxById = new Map<string, number>();
+  const toolBlockIdxById = new Map<string, number>();
   // Per-turn skill provenance threaded across frames so assistant text
   // generated after a Skill tool_use carries the `viaSkill` badge in
   // imported / hydrated history just like the live path (Task #318).
@@ -912,15 +922,18 @@ export function framesToBlocks(frames: unknown[]): MessageBlock[] {
       // tool_use ids in our block-id scheme, so this is mostly a defensive
       // dedupe rather than load-bearing). Skip duplicates by id.
       for (const b of append) {
-        const idx = out.findIndex((x) => x.id === b.id);
-        if (idx === -1) out.push(b);
+        if (blockIdxById.has(b.id)) continue;
+        const newIdx = out.length;
+        out.push(b);
+        blockIdxById.set(b.id, newIdx);
+        if ((b.kind === 'tool' || b.kind === 'todo') && b.toolUseId) {
+          toolBlockIdxById.set(b.toolUseId, newIdx);
+        }
       }
     }
     for (const tr of toolResults) {
-      const idx = out.findIndex(
-        (b) => (b.kind === 'tool' || b.kind === 'todo') && b.toolUseId === tr.toolUseId
-      );
-      if (idx === -1) continue;
+      const idx = toolBlockIdxById.get(tr.toolUseId);
+      if (idx === undefined) continue;
       const target = out[idx];
       if (target.kind === 'tool') {
         out[idx] = { ...target, result: tr.result, isError: tr.isError };
@@ -933,7 +946,11 @@ export function framesToBlocks(frames: unknown[]): MessageBlock[] {
     // assistant turns. Pull text out of `message.content` here.
     if (f.type === 'user') {
       const userBlock = userFrameToBlock(raw);
-      if (userBlock) out.push(userBlock);
+      if (userBlock) {
+        const newIdx = out.length;
+        out.push(userBlock);
+        blockIdxById.set(userBlock.id, newIdx);
+      }
     }
   }
   return out;

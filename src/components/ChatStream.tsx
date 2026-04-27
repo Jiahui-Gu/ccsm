@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowDown } from 'lucide-react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../stores/store';
 import {
   MOTION_SESSION_SWITCH_DURATION,
@@ -11,6 +12,49 @@ import { EMPTY_BLOCKS, FOLLOW_THRESHOLD_PX } from './chat/constants';
 import { EmptyState } from './chat/EmptyState';
 import { LoadHistoryErrorBlock } from './chat/blocks/LoadHistoryErrorBlock';
 import { renderBlock } from './chat/renderBlock';
+import type { MessageBlock } from '../types';
+
+// Virtuoso's Scroller is the actual overflow:auto element. We forward our
+// long-standing `data-chat-stream` + ARIA contract attributes onto it so the
+// existing notification scroll-to-bottom helper, harness probes, and a11y
+// snapshots keep working unchanged after the virtualization rewrite.
+const VirtuosoScroller = forwardRef<HTMLDivElement, React.HTMLProps<HTMLDivElement>>(
+  function VirtuosoScroller(props, ref) {
+    return (
+      <div
+        {...props}
+        ref={ref}
+        data-chat-stream
+        // a11y: announce streaming additions to assistive tech. We set this
+        // on the scroll container (not per-block) so SRs read newly appended
+        // message blocks rather than re-announcing every chunk inside a
+        // single message. We deliberately use `additions` only (NOT
+        // `additions text`): the `text` token causes SRs to re-announce on
+        // every text mutation inside existing nodes, which at ~30ms streaming
+        // chunk rate overwhelms screen readers.
+        aria-live="polite"
+        aria-relevant="additions"
+        aria-atomic="false"
+        role="log"
+      />
+    );
+  }
+);
+
+// Virtuoso's List wrapper holds the rendered range. We re-apply the original
+// flex column + gap + max-width so block spacing matches the pre-virtualization
+// layout exactly.
+const VirtuosoList = forwardRef<HTMLDivElement, React.HTMLProps<HTMLDivElement>>(
+  function VirtuosoList(props, ref) {
+    return (
+      <div
+        {...props}
+        ref={ref}
+        className="px-4 py-3 flex flex-col gap-2 max-w-[1100px]"
+      />
+    );
+  }
+);
 
 export function ChatStream() {
   const { t } = useTranslation();
@@ -29,10 +73,7 @@ export function ChatStream() {
   // message, or there are no blocks yet for this session). Suppressed once
   // the assistant block starts streaming, and suppressed while a permission
   // prompt is awaiting user input (different intent — "waiting for you",
-  // not "waiting for tokens"). Visual: monospace center-dots with a slow
-  // opacity pulse, anchored at the bottom of the message list at the same
-  // left padding as assistant blocks so the first token visually "lands"
-  // in the same column.
+  // not "waiting for tokens").
   const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
   const hasPendingPermission = blocks.some(
     (b) => b.kind === 'waiting' && b.intent === 'permission'
@@ -46,8 +87,7 @@ export function ChatStream() {
   // every 100ms only while at least one tool block is still waiting for
   // its result (or a completed one is within the stall-hint window so the
   // hint can appear retroactively). When no tool is in-flight the interval
-  // shuts down, so idle sessions don't pay any CPU cost. Per block cost
-  // is a single prop read — no per-block setInterval.
+  // shuts down, so idle sessions don't pay any CPU cost.
   const hasInflightTool = blocks.some(
     (b) => b.kind === 'tool' && typeof b.result !== 'string' && !b.isError
   );
@@ -58,9 +98,11 @@ export function ChatStream() {
     return () => window.clearInterval(id);
   }, [hasInflightTool]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const followingRef = useRef(true);
-  const [showJump, setShowJump] = useState(false);
+  // Virtuoso handle drives "jump to latest" + initial-mount scroll-to-bottom.
+  // `atBottom` mirrors the previous followingRef behavior — we surface the
+  // jump pill whenever the user has scrolled away from the tail.
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [atBottom, setAtBottom] = useState(true);
 
   // Belt-and-suspenders: selectSession already triggers a load, but hot-reload
   // and other edge paths can change activeId without going through it.
@@ -70,64 +112,130 @@ export function ChatStream() {
     if (!(activeId in state.messagesBySession)) void loadMessages(activeId);
   }, [activeId, loadMessages]);
 
-  // Reset follow state when the active session changes.
+  // Reset to bottom when the active session changes. Virtuoso treats
+  // `initialTopMostItemIndex` as a mount-only prop, so we explicitly snap
+  // via the imperative handle on each switch.
   useEffect(() => {
-    followingRef.current = true;
-    setShowJump(false);
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    setAtBottom(true);
+    // requestAnimationFrame so Virtuoso has remounted/measured the new list
+    // before we ask it to scroll.
+    const raf = requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: 'LAST',
+        align: 'end',
+        behavior: 'auto'
+      });
+    });
+    return () => cancelAnimationFrame(raf);
   }, [activeId]);
 
-  // After every render that adds blocks, if we're still in follow mode, snap
-  // to bottom synchronously to avoid the user briefly seeing the mid-stream
-  // before the scroll catches up.
-  useLayoutEffect(() => {
-    if (!followingRef.current) return;
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [blocks, showThinkingDots]);
-
-  function onScroll() {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = distanceFromBottom <= FOLLOW_THRESHOLD_PX;
-    followingRef.current = atBottom;
-    setShowJump(!atBottom && el.scrollHeight > el.clientHeight);
-  }
+  // Precompute permission-context indices once per render so itemContent
+  // is a pure (index, block) → ReactNode mapping with no per-row scans.
+  // permissionPendingToolIds: in-flight tool blocks whose toolName matches a
+  // SUBSEQUENT pending permission block. ToolBlock suppresses elapsed chip
+  // + stall banners for these so the counter doesn't tick during a gate.
+  // Bug #248-1 context kept verbatim.
+  const { permissionPendingToolIds, lastPermIdx } = useMemo(() => {
+    const ids = new Set<string>();
+    let lastIdx = -1;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      if (b.kind === 'waiting' && b.intent === 'permission') {
+        lastIdx = i;
+        break;
+      }
+    }
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (b.kind !== 'tool' || typeof b.result === 'string' || b.isError) continue;
+      if (!b.toolUseId) continue;
+      for (let j = i + 1; j < blocks.length; j++) {
+        const w = blocks[j];
+        if (
+          w.kind === 'waiting' &&
+          w.intent === 'permission' &&
+          w.toolName === b.name
+        ) {
+          ids.add(b.toolUseId);
+          break;
+        }
+      }
+    }
+    return { permissionPendingToolIds: ids, lastPermIdx: lastIdx };
+  }, [blocks]);
 
   function jumpToLatest() {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    followingRef.current = true;
-    setShowJump(false);
+    virtuosoRef.current?.scrollToIndex({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'smooth'
+    });
+    setAtBottom(true);
   }
+
+  // Footer: load-error banner (rare) + thinking dots (frequent). Rendered
+  // as Virtuoso's footer so they live inside the scroll container at the
+  // tail and don't get virtualized away.
+  function Footer() {
+    return (
+      <>
+        {loadError && (
+          <LoadHistoryErrorBlock
+            message={loadError}
+            onRetry={() => {
+              useStore.setState((s) => {
+                const nextMsgs = { ...s.messagesBySession };
+                delete nextMsgs[activeId];
+                const nextErrs = { ...s.loadMessageErrors };
+                delete nextErrs[activeId];
+                return { messagesBySession: nextMsgs, loadMessageErrors: nextErrs };
+              });
+              void loadMessages(activeId);
+            }}
+          />
+        )}
+        {showThinkingDots && (
+          <motion.div
+            key="thinking-dots"
+            data-testid="chat-thinking-dots"
+            aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
+            className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none px-4 pb-3"
+            animate={{ opacity: [0.3, 1, 0.3] }}
+            transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+          >
+            {'· · ·'}
+          </motion.div>
+        )}
+      </>
+    );
+  }
+
+  function itemContent(index: number, m: MessageBlock) {
+    return (
+      <div key={m.id}>
+        {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, addAllowAlways, {
+          permissionAutoFocus: index === lastPermIdx,
+          now,
+          permissionPendingToolIds,
+          resolvePermissionPartial
+        })}
+      </div>
+    );
+  }
+
+  const isEmpty = blocks.length === 0 && !showThinkingDots && !loadError;
 
   return (
     <div className="relative flex-1 min-h-0 min-w-0 flex flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        data-chat-stream
-        // a11y: announce streaming additions to assistive tech. We set this
-        // on the OUTER scroll container (not per-block) so SRs read newly
-        // appended message blocks rather than re-announcing every chunk inside
-        // a single message. We deliberately use `additions` only (NOT
-        // `additions text`): the `text` token causes SRs to re-announce on
-        // every text mutation inside existing nodes, which at ~30ms streaming
-        // chunk rate overwhelms screen readers. With `additions`, each newly
-        // appended assistant/tool block is announced once when it lands;
-        // partial chunks within an existing block stay silent until the
-        // message settles into a new sibling node.
-        aria-live="polite"
-        aria-relevant="additions"
-        aria-atomic="false"
-        role="log"
-        className="flex-1 overflow-y-auto min-w-0"
-      >
-        {blocks.length === 0 && !showThinkingDots && !loadError ? (
+      {isEmpty ? (
+        <div
+          data-chat-stream
+          aria-live="polite"
+          aria-relevant="additions"
+          aria-atomic="false"
+          role="log"
+          className="flex-1 overflow-y-auto min-w-0"
+        >
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
               // Key includes activeId so switching sessions (sidebar click)
@@ -146,113 +254,36 @@ export function ChatStream() {
               <EmptyState />
             </motion.div>
           </AnimatePresence>
-        ) : (
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              // Same coordination as the empty branch above: key on activeId
-              // so a session switch crossfades the content pane alongside
-              // the sidebar selection ring (shared timing in src/lib/motion).
-              key={`blocks:${activeId}`}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{
-                duration: MOTION_SESSION_SWITCH_DURATION,
-                ease: MOTION_STANDARD_EASING
-              }}
-              className="px-4 py-3 flex flex-col gap-2 max-w-[1100px]"
-            >
-              {loadError && (
-                <LoadHistoryErrorBlock
-                  message={loadError}
-                  onRetry={() => {
-                    // Clear the sentinel/error so the load effect fires a
-                    // fresh fetch; loadMessages also clears the error entry
-                    // on entry, but clearing here first keeps the UI honest
-                    // if the retry races with an unrelated state update.
-                    useStore.setState((s) => {
-                      const nextMsgs = { ...s.messagesBySession };
-                      delete nextMsgs[activeId];
-                      const nextErrs = { ...s.loadMessageErrors };
-                      delete nextErrs[activeId];
-                      return { messagesBySession: nextMsgs, loadMessageErrors: nextErrs };
-                    });
-                    void loadMessages(activeId);
-                  }}
-                />
-              )}
-              {(() => {
-                // Only the LAST pending permission block gets auto-focus. Older
-                // ones (unlikely but possible) stay put so we don't rip focus
-                // off the user mid-interaction.
-                let lastPermIdx = -1;
-                for (let i = blocks.length - 1; i >= 0; i--) {
-                  const b = blocks[i];
-                  if (b.kind === 'waiting' && b.intent === 'permission') {
-                    lastPermIdx = i;
-                    break;
-                  }
-                }
-                // Bug #248-1: the bash elapsed counter starts at REQUEST time
-                // (assistant's tool_use lands → ToolBlock first-render captures
-                // Date.now()), not at EXECUTION time. When a permission gate
-                // intercepts, the user can spend 90s+ deciding while the
-                // counter ticks and the stall / "still no result" escalation
-                // banners fire — misleading, since the tool hasn't even
-                // started running. We mark each in-flight tool block whose
-                // toolName matches a SUBSEQUENT pending permission block as
-                // permission-pending; ToolBlock then suppresses the elapsed
-                // chip + stall banners and defers `startedAtRef` capture
-                // until the gate clears. Matching by toolName-after-this-tool
-                // is enough in practice because claude.exe serializes
-                // permission prompts; the waiting block doesn't carry a
-                // toolUseId we could match more precisely.
-                const permissionPendingToolIds = new Set<string>();
-                for (let i = 0; i < blocks.length; i++) {
-                  const b = blocks[i];
-                  if (b.kind !== 'tool' || typeof b.result === 'string' || b.isError) continue;
-                  if (!b.toolUseId) continue;
-                  for (let j = i + 1; j < blocks.length; j++) {
-                    const w = blocks[j];
-                    if (
-                      w.kind === 'waiting' &&
-                      w.intent === 'permission' &&
-                      w.toolName === b.name
-                    ) {
-                      permissionPendingToolIds.add(b.toolUseId);
-                      break;
-                    }
-                  }
-                }
-                return blocks.map((m, i) => (
-                  <div key={m.id}>
-                    {renderBlock(m, activeId, resolvePermission, bumpComposerFocus, addAllowAlways, {
-                      permissionAutoFocus: i === lastPermIdx,
-                      now,
-                      permissionPendingToolIds,
-                      resolvePermissionPartial
-                    })}
-                  </div>
-                ));
-              })()}
-              {showThinkingDots && (
-                <motion.div
-                  key="thinking-dots"
-                  data-testid="chat-thinking-dots"
-                  aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
-                  className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none"
-                  animate={{ opacity: [0.3, 1, 0.3] }}
-                  transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-                >
-                  {'\u00B7 \u00B7 \u00B7'}
-                </motion.div>
-              )}
-            </motion.div>
-          </AnimatePresence>
-        )}
-      </div>
+        </div>
+      ) : (
+        <Virtuoso
+          ref={virtuosoRef}
+          // Virtualizes the rendered range so a 13k-block transcript only
+          // pays for the on-screen window (~10-30 nodes) instead of mounting
+          // the whole history at once. Replaced the previous `blocks.map`
+          // which mounted N <motion.div> children and caused 1-2s import
+          // jank on large sessions.
+          data={blocks}
+          itemContent={itemContent}
+          // followOutput="auto" sticks to the tail while streaming new
+          // blocks IF the user is already at the bottom; otherwise it
+          // respects the user's manual scroll position — same intent as
+          // the old followingRef gate.
+          followOutput="auto"
+          atBottomStateChange={setAtBottom}
+          atBottomThreshold={FOLLOW_THRESHOLD_PX}
+          // initialTopMostItemIndex pins the very first render to the tail
+          // so importing or re-opening a long session lands at the most
+          // recent block, matching pre-virtualization behavior.
+          initialTopMostItemIndex={Math.max(blocks.length - 1, 0)}
+          components={{ Scroller: VirtuosoScroller, List: VirtuosoList, Footer }}
+          className="flex-1 min-w-0"
+          style={{ height: '100%' }}
+          increaseViewportBy={{ top: 600, bottom: 600 }}
+        />
+      )}
       <AnimatePresence>
-        {showJump && (
+        {!atBottom && !isEmpty && (
           <motion.button
             key="jump"
             initial={{ opacity: 0, y: 8 }}
