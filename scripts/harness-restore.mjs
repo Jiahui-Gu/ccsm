@@ -782,6 +782,14 @@ async function caseDbCorruptionRecovery({ log, registerDispose }) {
 // Pre-launch fixture: rename `node_modules/electron-windows-notifications` so
 // the WindowsAdapter's require() throws MODULE_NOT_FOUND. Sandboxes HOME so
 // the dev's real ~/.claude isn't touched. From probe-e2e-notify-fallback.mjs.
+//
+// What this guards: the `notify:availability` IPC handler must report
+// available=false + a non-empty error string when the native module can't
+// load, so in-app banner fallback can take over silently. PR #354
+// deliberately removed the Settings → Notifications "module status" banner
+// (settings simplified to enabled+sound only — silent fallback is the design
+// intent). We no longer assert any user-facing UI for this case; the IPC
+// contract is the only contract.
 // ──────────────────────────────────────────────────────────────────────────
 async function caseNotifyFallback({ log, registerDispose }) {
   const notifyDir = path.join(ROOT, 'node_modules', 'electron-windows-notifications');
@@ -869,46 +877,9 @@ async function caseNotifyFallback({ log, registerDispose }) {
       throw new Error(`expected error to be non-empty string — got ${JSON.stringify(ipcResult)}`);
     }
 
-    const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
-    await sidebarBtn.waitFor({ state: 'visible', timeout: 5000 });
-    await sidebarBtn.click();
-
-    const dialog = win.getByRole('dialog');
-    await dialog.waitFor({ state: 'visible', timeout: 3000 });
-
-    const notifTab = dialog.getByRole('tab', { name: /^notifications$/i });
-    await notifTab.waitFor({ state: 'visible', timeout: 2000 });
-    await notifTab.click();
-
-    const status = win.locator('[data-testid="notifications-module-status"]');
-    await status.waitFor({ state: 'visible', timeout: 3000 });
-    await win.waitForFunction(
-      () => {
-        const el = document.querySelector('[data-testid="notifications-module-status"]');
-        return el && el.getAttribute('data-available') === 'false';
-      },
-      null,
-      { timeout: 5000 }
-    );
-
-    const text = (await status.textContent())?.trim() ?? '';
-    if (!text) throw new Error('notifications-module-status indicator was empty');
-    const lower = text.toLowerCase();
-    if (!lower.includes('native notification module')) {
-      throw new Error(`fallback message missing "native notification module": "${text}"`);
-    }
-    if (!lower.includes('in-app banners')) {
-      throw new Error(`fallback message missing "in-app banners": "${text}"`);
-    }
-    for (const word of text.split(/\s+/)) {
-      if (word.length > 3 && /^[A-Z]+$/.test(word) && word !== 'CCSM') {
-        throw new Error(`fallback message contains uppercase word "${word}" (no SCREAMING UI): "${text}"`);
-      }
-    }
-
     if (rendererErrors.length > 0) throw new Error(`renderer logged errors:\n  ${rendererErrors.join('\n  ')}`);
     if (mainErrors.length > 0) throw new Error(`main process errors:\n  ${mainErrors.join('\n  ')}`);
-    log(`Settings banner reads: "${text}"`);
+    log(`notify:availability reports available=false with error: "${ipcResult.error}"`);
   } finally {
     closed = true;
     try { await app.close(); } catch {}
