@@ -455,3 +455,48 @@ const api = {
 contextBridge.exposeInMainWorld('ccsm', api);
 
 export type CCSMAPI = typeof api;
+
+// ─────────────────────────── cliBridge ───────────────────────────────────
+//
+// Per-session ttyd lifecycle. Worker 2 will consume this surface from the
+// renderer to mount a `<iframe src="http://127.0.0.1:<port>">` per active
+// session. Exposed under a separate `window.ccsmCliBridge` namespace
+// (rather than merged into `api` above) so Worker 3's deletion of the
+// in-process SDK IPC stays a clean, isolated diff. We can fold this into
+// the main `ccsm` namespace once the SDK runner is gone.
+
+type CliBridgeOpenResult =
+  | { ok: true; port: number; sid: string }
+  | { ok: false; error: string };
+
+type CliBridgeKillResult =
+  | { ok: true; killed: boolean }
+  | { ok: false; error: string };
+
+type CliBridgeAvailability = { available: true; path: string } | { available: false };
+
+type TtydExitEvent = {
+  sessionId: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
+
+const cliBridge = {
+  openTtydForSession: (sessionId: string): Promise<CliBridgeOpenResult> =>
+    ipcRenderer.invoke('cliBridge:openTtydForSession', sessionId),
+  resumeSession: (sessionId: string, sid: string): Promise<CliBridgeOpenResult> =>
+    ipcRenderer.invoke('cliBridge:resumeSession', sessionId, sid),
+  killTtydForSession: (sessionId: string): Promise<CliBridgeKillResult> =>
+    ipcRenderer.invoke('cliBridge:killTtydForSession', sessionId),
+  checkClaudeAvailable: (): Promise<CliBridgeAvailability> =>
+    ipcRenderer.invoke('cliBridge:checkClaudeAvailable'),
+  onTtydExit: (handler: (e: TtydExitEvent) => void): (() => void) => {
+    const wrap = (_e: IpcRendererEvent, payload: TtydExitEvent) => handler(payload);
+    ipcRenderer.on('cliBridge:ttyd-exit', wrap);
+    return () => ipcRenderer.removeListener('cliBridge:ttyd-exit', wrap);
+  },
+};
+
+contextBridge.exposeInMainWorld('ccsmCliBridge', cliBridge);
+
+export type CCSMCliBridgeAPI = typeof cliBridge;

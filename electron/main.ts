@@ -82,6 +82,11 @@ import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 import { loadPickerCommands } from './commands-loader';
+import {
+  registerCliBridgeIpc,
+  bindCliBridgeSender,
+  shutdownCliBridge,
+} from './cliBridge';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -419,6 +424,10 @@ function createWindow() {
   }
   installContextMenu(win);
   sessions.bindSender(win.webContents);
+  // ttyd-exit events from the cliBridge module need a renderer to land on.
+  // Bound at the same point as `sessions.bindSender` so a window swap
+  // (close-to-tray + restore) routes events at the live renderer.
+  bindCliBridgeSender(win.webContents);
 
   // If a prior window was hidden then had its WebContents destroyed (can
   // happen under aggressive GC on minimize-to-tray), subsequent `wc.send`
@@ -1415,6 +1424,12 @@ app.whenReady().then(() => {
 
   installUpdaterIpc();
 
+  // Register cliBridge IPC (per-session ttyd lifecycle). The handlers are
+  // unused by the renderer until Worker 2 wires them; registering here
+  // unconditionally keeps the surface uniform with every other electron
+  // module and lets the e2e harness exercise them in isolation.
+  registerCliBridgeIpc();
+
   // Dev-only debug backdoor for E2E probes. Probes call this via
   // `app.evaluate(() => globalThis.__ccsmDebug.activeSessionPids())` on
   // the Electron main process (NOT the renderer — we intentionally don't
@@ -1460,6 +1475,16 @@ app.on('before-quit', () => {
   // the spawner); a duplicate call from window-all-closed is a no-op.
   try {
     sessions.closeAll();
+  } catch {
+    /* ignore — best-effort cleanup on quit */
+  }
+  // Tear down any live ttyd processes too. Idempotent; mirrors the
+  // sessions.closeAll() pattern above. Without this, ttyd + its claude
+  // child would leak past app quit on Windows (taskkill /T from
+  // killTtydForSession is the only reliable way to reap the conpty
+  // tree).
+  try {
+    shutdownCliBridge();
   } catch {
     /* ignore — best-effort cleanup on quit */
   }
