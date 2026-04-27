@@ -1,0 +1,41 @@
+{
+  "startedAt": "2026-04-27T05:08:20.102Z",
+  "checks": {
+    "A-idle": {
+      "status": "PASS",
+      "detail": "Stop hidden in idle"
+    },
+    "D": {
+      "status": "PASS",
+      "detail": "idempotent agentInterrupt while idle"
+    },
+    "A-streaming": {
+      "status": "PASS",
+      "detail": "Stop button visible during streaming"
+    },
+    "B": {
+      "status": "PASS",
+      "detail": "interrupt flag + lastTurnEnd set, assistant block preserved"
+    },
+    "B-morph-back": {
+      "status": "PASS",
+      "detail": "composer morphed back to Send"
+    },
+    "C": {
+      "status": "PASS",
+      "detail": "composer usable + Send enabled after stop"
+    },
+    "B-block-integrity": {
+      "status": "PASS",
+      "detail": "user + assistant + interrupted-status blocks intact"
+    }
+  },
+  "notes": [
+    "button data-morph-state during stream = stop",
+    "post-stop store snapshot: {\"interrupted\":true,\"lastTurnEnd\":\"interrupted\",\"queueLen\":0,\"running\":true,\"blockCount\":2,\"lastBlockKind\":\"assistant\"}",
+    "continue-after-interrupt hint rendered",
+    "final blocks: [{\"kind\":\"user\",\"id\":\"u-1\",\"title\":null},{\"kind\":\"assistant\",\"id\":\"a-1\",\"title\":null},{\"kind\":\"status\",\"id\":\"res-fp7\",\"title\":\"Interrupted\"}]"
+  ],
+  "finishedAt": "2026-04-27T05:08:30.700Z",
+  "verdict": "PASS"
+}
