@@ -1198,6 +1198,45 @@ describe('framesToBlocks', () => {
     ]);
     expect(blocks).toEqual([]);
   });
+
+  // Perf regression guard for Map-ized framesToBlocks. Pre-fix the function
+  // does two `out.findIndex(...)` calls per frame for every appended block /
+  // tool_result, making the projection O(n^2) over block count. On a real
+  // 96 MB / 33k-frame transcript that's ~1.7s of pure linear scans on
+  // import. We synthesize a balanced 10k-frame transcript here (5k tool_use
+  // + 5k tool_result, ~5k tool blocks) and assert wall < 200ms — the post-
+  // Map version finishes in ~10-20ms; the previous O(n^2) takes 5-10s.
+  // Threshold deliberately loose so CI noise doesn't flake.
+  it('projects 10k frames in under 200ms (perf regression guard)', () => {
+    const N = 5000;
+    const frames: unknown[] = [];
+    for (let i = 0; i < N; i++) {
+      frames.push({
+        type: 'assistant',
+        session_id: 's',
+        message: {
+          id: `msg-${i}`,
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: `tu-${i}`, name: 'Bash', input: { command: 'ls' } }
+          ]
+        }
+      });
+      frames.push({
+        type: 'user',
+        uuid: `u-r-${i}`,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: `tu-${i}`, content: `out-${i}` }]
+        }
+      });
+    }
+    const t0 = performance.now();
+    const blocks = framesToBlocks(frames);
+    const elapsed = performance.now() - t0;
+    expect(blocks.length).toBeGreaterThanOrEqual(N);
+    expect(elapsed).toBeLessThan(200);
+  });
 });
 
 describe('store: addSessionStats NaN guard', () => {

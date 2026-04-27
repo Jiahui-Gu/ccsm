@@ -27,6 +27,7 @@ vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 
 class StubResizeObserver {
   observe(): void {}
+  unobserve(): void {}
   disconnect(): void {}
 }
 beforeEach(() => {
