@@ -26,6 +26,12 @@ export function InlineRename({
   const ref = useRef<HTMLInputElement>(null);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // IME composition guard: blur / outside-pointer / Enter that fire while a
+  // composition is in flight must not commit the in-progress candidate.
+  // Mirrored by the `e.nativeEvent.isComposing` check on Enter below; we keep
+  // a ref so blur / mousedown handlers (which don't see the keydown event)
+  // can short-circuit too.
+  const composingRef = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -35,6 +41,7 @@ export function InlineRename({
   }, []);
 
   function commit() {
+    if (composingRef.current) return;
     const next = draftRef.current.trim();
     if (!next || next === value) {
       onCancel();
@@ -65,6 +72,8 @@ export function InlineRename({
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={() => { composingRef.current = false; }}
       onKeyDown={(e) => {
         // Skip Enter while IME composition is active — CJK candidate
         // selection shouldn't commit the rename.
