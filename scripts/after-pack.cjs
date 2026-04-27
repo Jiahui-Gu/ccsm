@@ -48,9 +48,27 @@ exports.default = async function afterPack(context) {
     return;
   }
 
+  // On macOS, appOutDir is e.g. release/mac and resources live inside
+  // the .app bundle at CCSM.app/Contents/Resources/. On Windows/Linux,
+  // resources are directly at appOutDir/resources/.
+  let resourcesDir;
+  if (electronPlatformName === 'darwin') {
+    // Find the .app bundle inside appOutDir
+    const appBundle = fs
+      .readdirSync(appOutDir)
+      .find((name) => name.endsWith('.app'));
+    if (!appBundle) {
+      throw new Error(
+        `[after-pack] No .app bundle found in ${appOutDir}`,
+      );
+    }
+    resourcesDir = path.join(appOutDir, appBundle, 'Contents', 'Resources');
+  } else {
+    resourcesDir = path.join(appOutDir, 'resources');
+  }
+
   const unpackedRoot = path.join(
-    appOutDir,
-    'resources',
+    resourcesDir,
     'app.asar.unpacked',
     'node_modules',
     '@anthropic-ai',
@@ -101,8 +119,7 @@ exports.default = async function afterPack(context) {
   // package transitively requires the chain at module load time).
   if (electronPlatformName === 'win32') {
     const notifyNativeDir = path.join(
-      appOutDir,
-      'resources',
+      resourcesDir,
       'app.asar.unpacked',
       'node_modules',
       'electron-windows-notifications',
@@ -120,7 +137,7 @@ exports.default = async function afterPack(context) {
       let nmListing = '<missing>';
       try {
         nmListing = fs
-          .readdirSync(path.join(appOutDir, 'resources', 'app.asar.unpacked', 'node_modules'))
+          .readdirSync(path.join(resourcesDir, 'app.asar.unpacked', 'node_modules'))
           .join(', ') || '<empty>';
       } catch {
         // unpacked node_modules root missing entirely — listing stays <missing>
@@ -139,8 +156,7 @@ exports.default = async function afterPack(context) {
     }
 
     const nodertDir = path.join(
-      appOutDir,
-      'resources',
+      resourcesDir,
       'app.asar.unpacked',
       'node_modules',
       '@nodert-win10-au',
