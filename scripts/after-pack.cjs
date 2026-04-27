@@ -1,32 +1,22 @@
 // electron-builder afterPack hook.
 //
-// Verify the @anthropic-ai/claude-agent-sdk-<platform-arch>/claude[.exe]
-// binary actually landed inside app.asar.unpacked. Shipping an installer
-// with no CLI binary is the worst possible regression: app starts, every
-// session crashes with "Native CLI binary not found". A glob typo in
-// asarUnpack or a missing optional-dep on disk are silent failures
-// otherwise; this hook turns them into a hard build failure.
+// Verify the bundled `ttyd.exe` binary actually landed in
+// `<resources>/ttyd.exe`. CCSM's right pane is a ttyd-served terminal
+// (PR: cliBridge + ttyd refactor); shipping an installer with no ttyd
+// means every session-open call returns `ttyd_binary_missing` and the
+// app is dead in the water. A typo in `extraResources` or a missing
+// source file is otherwise a silent failure surfaced only on first
+// session open — turn it into a hard build failure here.
 //
-// SDK lookup (sdk.mjs `V7`):
-//   createRequire(<sdk.mjs>).resolve(
-//     '@anthropic-ai/claude-agent-sdk-<platform-arch>/<binaryName>'
-//   )
-// resolved relative to claude-agent-sdk/sdk.mjs at runtime. sdk.mjs itself
-// stays inside app.asar (it's pure JS, no need to unpack); Electron's asar
-// shim transparently redirects file-system reads of unpacked-glob-matched
-// paths to app.asar.unpacked. So the binary MUST exist on disk under
-// app.asar.unpacked at one of the two layouts npm produces:
-//   (a) <unpacked>/node_modules/@anthropic-ai/claude-agent-sdk-<platform-arch>/
-//   (b) <unpacked>/node_modules/@anthropic-ai/claude-agent-sdk/
-//          node_modules/@anthropic-ai/claude-agent-sdk-<platform-arch>/
-// Both satisfy Node's resolution from sdk.mjs (it walks parent
-// node_modules). On this codebase npm currently produces (b) — the
-// platform sub-package is hoisted into the SDK's own node_modules — so we
-// accept either.
+// We intentionally do NOT verify the user's `claude` CLI: it is no
+// longer bundled by ccsm (the in-process SDK runner that required it
+// was deleted), the user's installed CLI on PATH is what cliBridge
+// resolves at runtime via `where claude.cmd`. The runtime resolver
+// already returns a clean `claude_not_found` error to the renderer.
 //
-// Scope: win32-x64, darwin-x64, darwin-arm64. Other platforms/arches are
-// out of scope and the hook no-ops for them so local dev runs don't
-// surprise people with red builds for an orthogonal reason.
+// Scope: win32-x64 ships ttyd.exe today. Other platforms are a no-op
+// until we add their ttyd binaries. Local dev runs for unsupported
+// platforms shouldn't fail builds for an orthogonal reason.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -36,78 +26,48 @@ exports.default = async function afterPack(context) {
   // electron-builder Arch enum: 0=ia32, 1=x64, 2=armv7l, 3=arm64
   const archName = ({ 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64' })[arch] ?? String(arch);
 
-  const supportedPlatforms = {
-    'win32-x64': 'claude.exe',
-    'darwin-x64': 'claude',
-    'darwin-arm64': 'claude',
-  };
+  // Only win32-x64 ships ttyd today. mac/linux are a no-op until those
+  // ttyd binaries are added to extraResources in a follow-up PR.
   const platformKey = `${electronPlatformName}-${archName}`;
-  const binaryName = supportedPlatforms[platformKey];
-  if (!binaryName) {
-    console.log(`[after-pack] Skipping SDK binary check for ${platformKey} (not in supported scope).`);
+  if (platformKey !== 'win32-x64') {
+    console.log(`[after-pack] Skipping ttyd verify for ${platformKey} (no bundled binary yet).`);
     return;
   }
 
   // On macOS, appOutDir is e.g. release/mac and resources live inside
   // the .app bundle at CCSM.app/Contents/Resources/. On Windows/Linux,
-  // resources are directly at appOutDir/resources/.
+  // resources are directly at appOutDir/resources/. Win-only here, but
+  // keep the branch so a future macOS ttyd ship can drop in cleanly.
   let resourcesDir;
   if (electronPlatformName === 'darwin') {
-    // Find the .app bundle inside appOutDir
     const appBundle = fs
       .readdirSync(appOutDir)
       .find((name) => name.endsWith('.app'));
     if (!appBundle) {
-      throw new Error(
-        `[after-pack] No .app bundle found in ${appOutDir}`,
-      );
+      throw new Error(`[after-pack] No .app bundle found in ${appOutDir}`);
     }
     resourcesDir = path.join(appOutDir, appBundle, 'Contents', 'Resources');
   } else {
     resourcesDir = path.join(appOutDir, 'resources');
   }
 
-  const unpackedRoot = path.join(
-    resourcesDir,
-    'app.asar.unpacked',
-    'node_modules',
-    '@anthropic-ai',
-  );
-  const candidates = [
-    // Layout (a): top-level peer of claude-agent-sdk
-    path.join(unpackedRoot, `claude-agent-sdk-${platformKey}`, binaryName),
-    // Layout (b): nested under claude-agent-sdk's own node_modules
-    path.join(
-      unpackedRoot,
-      'claude-agent-sdk',
-      'node_modules',
-      '@anthropic-ai',
-      `claude-agent-sdk-${platformKey}`,
-      binaryName,
-    ),
-  ];
-
-  const found = candidates.find((p) => fs.existsSync(p));
-
-  if (!found) {
+  const ttydPath = path.join(resourcesDir, 'ttyd.exe');
+  if (!fs.existsSync(ttydPath)) {
     let listing = '<missing>';
     try {
-      listing = fs.readdirSync(unpackedRoot).join(', ') || '<empty>';
+      listing = fs.readdirSync(resourcesDir).join(', ') || '<empty>';
     } catch {
-      // unpackedRoot may not exist at all — listing stays <missing>
+      // resourcesDir may not exist at all
     }
     throw new Error(
-      `[after-pack] Expected SDK binary at one of:\n` +
-        candidates.map((p) => `  - ${p}`).join('\n') +
-        `\n  but none exist on disk.\n` +
-        `  unpacked @anthropic-ai contents: ${listing}\n` +
-        `Hint: check that build.asarUnpack covers ` +
-        `**/node_modules/@anthropic-ai/claude-agent-sdk-*/** and that ` +
-        `@anthropic-ai/claude-agent-sdk-${platformKey} is installed in node_modules.`,
+      `[after-pack] Expected ttyd binary at:\n  - ${ttydPath}\n` +
+        `  but it does not exist on disk.\n` +
+        `  resources contents: ${listing}\n` +
+        `Hint: check that build.extraResources contains an entry mapping ` +
+        `spike/ttyd-embed/bin/ttyd.exe → ttyd.exe.`,
     );
   }
 
-  const sizeMB = (fs.statSync(found).size / 1024 / 1024).toFixed(1);
-  console.log(`[after-pack] OK ${platformKey}: ${binaryName} present (${sizeMB} MB) at ${found}`);
+  const sizeMB = (fs.statSync(ttydPath).size / 1024 / 1024).toFixed(1);
+  console.log(`[after-pack] OK ${platformKey}: ttyd.exe present (${sizeMB} MB) at ${ttydPath}`);
 };
-

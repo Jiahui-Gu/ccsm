@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const NAME = 'harness-real-cli';
 
@@ -875,12 +876,186 @@ async function caseTruncateFromHereThenResendRealCli({ log }) {
   log(`PASS: pre-fix path repros #288; post-fix path resumes cleanly with new result`);
 }
 
+/**
+ * cliBridge: spawn ttyd → claude pipeline, verify the HTTP port responds,
+ * tree-kill, verify the process is gone.
+ *
+ * Why this lives here (not in harness-agent or its own probe):
+ *   - cliBridge wraps the real bundled `ttyd.exe` + the user's installed
+ *     `claude` CLI. The harness-real-cli convention already handles the
+ *     "skip when claude not on PATH" gate and bypasses Electron entirely
+ *     (no Playwright cost), which matches what we want to test: the
+ *     spawn / port / kill mechanics, not the renderer wiring.
+ *   - This case mirrors the production cliBridge code path 1:1
+ *     (port 0 trick → spawn ttyd with -W -t fontSize=14 → HTTP probe →
+ *     taskkill /F /T). Re-implementing inline keeps the harness JS-only
+ *     (no tsx dep) and tests the protocol contract rather than the TS
+ *     module structure (which the unit tests cover separately).
+ *   - Placed in harness-real-cli per `feedback_e2e_prefer_harness` —
+ *     stand-alone probes cost ~30s extra each.
+ *
+ * Skips when:
+ *   - ttyd binary not present at `spike/ttyd-embed/bin/ttyd.exe` (e.g.
+ *     a clean clone without the extracted binary). The CLI-presence gate
+ *     at the top of this file already covers `claude` missing.
+ *   - non-Windows (no bundled ttyd binary for mac/linux yet).
+ */
+async function caseCliBridgeTtydSpawnAndKill({ log }) {
+  if (process.platform !== 'win32') {
+    log(`SKIP: ttyd binary is win32-only for now`);
+    return;
+  }
+
+  const REPO_ROOT = path.resolve(path.dirname(fileURLToPathLocal(import.meta.url)), '..');
+  const ttydPath = path.join(REPO_ROOT, 'spike', 'ttyd-embed', 'bin', 'ttyd.exe');
+  if (!fs.existsSync(ttydPath)) {
+    log(`SKIP: ttyd binary missing at ${ttydPath}`);
+    return;
+  }
+
+  // Claude resolution: same as cliBridge/claudeResolver.ts. Re-implementing
+  // here so the harness exercises the same fall-through (cmd → bare).
+  function findClaude() {
+    for (const name of ['claude.cmd', 'claude']) {
+      const r = spawnSync('where', [name], { encoding: 'utf8', windowsHide: true });
+      if (r.status === 0) {
+        const first = r.stdout.split(/\r?\n/).find((l) => l.trim().length > 0);
+        if (first) return first.trim();
+      }
+    }
+    return null;
+  }
+  const claudePath = findClaude();
+  if (!claudePath) {
+    log(`SKIP: claude not on PATH (where claude.cmd / where claude both failed)`);
+    return;
+  }
+  log(`ttyd: ${ttydPath}`);
+  log(`claude: ${claudePath}`);
+
+  // pickFreePort — port-0 trick. Mirrors electron/cliBridge/portAllocator.ts.
+  function pickFreePort() {
+    return new Promise((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      import('node:net').then((net) => {
+        const srv = net.createServer();
+        srv.unref();
+        srv.on('error', reject);
+        srv.listen(0, '127.0.0.1', () => {
+          const port = srv.address().port;
+          srv.close(() => resolve(port));
+        });
+      });
+    });
+  }
+  const port = await pickFreePort();
+  log(`allocated port: ${port}`);
+
+  // Use `--session-id <uuid>` to match cliBridge's openTtydForSession path.
+  // Args mirror processManager.ts: `-i 127.0.0.1` is required to bind
+  // loopback-only — without it ttyd binds 0.0.0.0 and Windows Defender
+  // Firewall prompts on every spawn.
+  const sid = randomUUID();
+  const args = ['-p', String(port), '-i', '127.0.0.1', '-W', '-t', 'fontSize=14', claudePath, '--session-id', sid];
+  log(`spawn: ttyd ${args.join(' ')}`);
+  const proc = spawn(ttydPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+
+  let stderrBuf = '';
+  proc.stderr.on('data', (b) => { stderrBuf += b.toString('utf8'); });
+
+  // Give ttyd time to bind. The cliBridge module sleeps 200ms; we wait a bit
+  // longer to keep the e2e green on slower machines (the CI Windows runner
+  // can take 600ms-1s to bind on cold start).
+  await new Promise((r) => setTimeout(r, 1500));
+
+  if (proc.exitCode !== null) {
+    throw new Error(
+      `ttyd exited prematurely (code=${proc.exitCode}). stderr: ${stderrBuf.slice(-400)}`,
+    );
+  }
+
+  // Probe the HTTP port: ttyd serves an HTML page at `/`. We just want to
+  // confirm the server is accepting connections and returns 2xx.
+  const httpOk = await new Promise((resolve) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    import('node:http').then((http) => {
+      const req = http.get(`http://127.0.0.1:${port}/`, (res) => {
+        const status = res.statusCode ?? 0;
+        res.resume();
+        resolve(status >= 200 && status < 400);
+      });
+      req.on('error', () => resolve(false));
+      req.setTimeout(3000, () => { req.destroy(); resolve(false); });
+    });
+  });
+  if (!httpOk) {
+    try { spawnSync('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore', windowsHide: true }); } catch { /* ignore */ }
+    throw new Error(
+      `ttyd HTTP probe at http://127.0.0.1:${port}/ failed. stderr: ${stderrBuf.slice(-400)}`,
+    );
+  }
+  log(`HTTP probe OK on 127.0.0.1:${port}`);
+
+  // Tree-kill — Windows MUST use taskkill /T /F to reap the conpty + claude
+  // child. Mirrors processManager.killTtydForSession.
+  const ttydPid = proc.pid;
+  spawnSync('taskkill', ['/F', '/T', '/PID', String(ttydPid)], {
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+
+  // Wait for the OS to actually release the PID. exit event is the
+  // canonical signal; fall back to a 3s deadline.
+  await new Promise((resolve) => {
+    if (proc.exitCode !== null) return resolve();
+    const t = setTimeout(resolve, 3000);
+    proc.once('exit', () => { clearTimeout(t); resolve(); });
+  });
+
+  // Confirm via tasklist that the PID is gone (the proc.exitCode could be
+  // set by Node having reaped its handle even if a stuck conpty is still
+  // around — check the real OS state).
+  const tl = spawnSync('tasklist', ['/FI', `PID eq ${ttydPid}`, '/NH'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  // tasklist with no match prints "INFO: No tasks are running ...".
+  const stillAlive = tl.stdout.includes(String(ttydPid)) && /ttyd/i.test(tl.stdout);
+  if (stillAlive) {
+    throw new Error(
+      `ttyd PID ${ttydPid} still present in tasklist after taskkill. Output: ${tl.stdout.slice(0, 300)}`,
+    );
+  }
+
+  // Final HTTP probe — port should now refuse connections.
+  const httpAfter = await new Promise((resolve) => {
+    import('node:http').then((http) => {
+      const req = http.get(`http://127.0.0.1:${port}/`, (res) => { res.resume(); resolve(true); });
+      req.on('error', () => resolve(false));
+      req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+    });
+  });
+  if (httpAfter) {
+    throw new Error(`ttyd port ${port} still serving HTTP after kill — process tree not reaped`);
+  }
+
+  log(`PASS: ttyd spawned, served HTTP on ${port}, killed via taskkill /T /F, port now closed`);
+}
+
+// fileURLToPath helper without an import-line edit — added late and we
+// don't want to reshuffle the top of the file.
+function fileURLToPathLocal(u) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return fileURLToPath(u);
+}
+
 // ---------- runner ----------
 const cases = [
   { id: 'control-response-no-timeout', run: caseControlResponseNoTimeout },
   { id: 'ide-auto-connect-kill-switch-present', run: caseIdeAutoConnectKillSwitchPresent },
   { id: 'namespaced-command-actually-runs', run: caseNamespacedCommandActuallyRuns },
   { id: 'truncate-from-here-then-resend-real-cli', run: caseTruncateFromHereThenResendRealCli },
+  { id: 'cli-bridge-ttyd-spawn-and-kill', run: caseCliBridgeTtydSpawnAndKill },
 ];
 
 const selected = onlyId ? cases.filter((c) => c.id === onlyId) : cases;

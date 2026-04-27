@@ -113,19 +113,22 @@
     "copyright": "Copyright (c) 2026 Jiahui Gu",
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**",
-      "**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+      "**/node_modules/better-sqlite3/**"
     ],
     "afterPack": "scripts/after-pack.cjs",
     "files": [
       "dist/**/*",
       "package.json",
-      "node_modules/@anthropic-ai/claude-agent-sdk/**",
-      "node_modules/@anthropic-ai/claude-agent-sdk-*/**",
       "!**/*.map",
       "!**/*.ts",
       "!**/__tests__/**",
       "!**/tests/**"
+    ],
+    "extraResources": [
+      {
+        "from": "spike/ttyd-embed/bin/ttyd.exe",
+        "to": "ttyd.exe"
+      }
     ],
     "directories": {
       "buildResources": "build",
