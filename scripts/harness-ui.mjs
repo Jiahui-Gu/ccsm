@@ -3025,6 +3025,65 @@ async function caseEffortChipToggle({ app, win, log }) {
   log(`effort chip dropdown opens with 6 tiers; clicking Low flips chip + store + sets IPC level='low'`);
 }
 
+// ---------- context-chip-always-visible ----------
+// Regression for FP13-C. Previously the StatusBar context-pie chip was
+// gated behind `pct >= 50`; on 1M-token windows that's 500k tokens —
+// effectively never reached, so users had zero context-cost visibility.
+// New contract: chip renders as soon as the model has reported a real
+// `contextWindow`, even at low percentages. The 80%/95% tone bumps stay
+// intact (asserted by the existing vitest in tests/statusbar-context-pie).
+async function caseContextChipAlwaysVisible({ win, log }) {
+  const SID = 's-ctx-always';
+  await win.evaluate((sid) => {
+    const store = window.__ccsmStore;
+    store.setState({
+      sessions: [
+        {
+          id: sid, name: sid, state: 'idle', cwd: 'C:/x',
+          model: 'claude-sonnet-4-5', groupId: 'g1', agentType: 'claude-code'
+        }
+      ],
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      activeId: sid,
+      // 5% fill — far below the old 50% gate. With a 1M window this is
+      // 50k tokens, mirroring a normal early-session round-trip.
+      contextUsageBySession: {
+        [sid]: { totalTokens: 50_000, contextWindow: 1_000_000, model: 'claude-sonnet-4-5' }
+      }
+    });
+  }, SID);
+
+  const chip = win.locator('[data-testid="context-pie-chip"]');
+  await chip.waitFor({ state: 'visible', timeout: 5_000 });
+
+  const probe = await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="context-pie-chip"]');
+    if (!el) return { found: false };
+    const cs = window.getComputedStyle(el);
+    return {
+      found: true,
+      percent: el.getAttribute('data-percent'),
+      tone: el.getAttribute('data-tone'),
+      text: (el.textContent || '').trim(),
+      display: cs.display,
+      visibility: cs.visibility,
+      opacity: cs.opacity,
+      hidden: el.hasAttribute('hidden')
+    };
+  });
+
+  if (!probe.found) throw new Error('context-pie-chip missing in DOM at 5% usage (50% gate regression?)');
+  if (probe.display === 'none') throw new Error(`chip rendered but display=none: ${JSON.stringify(probe)}`);
+  if (probe.visibility === 'hidden') throw new Error(`chip rendered but visibility=hidden: ${JSON.stringify(probe)}`);
+  if (Number(probe.opacity) === 0) throw new Error(`chip rendered but opacity=0: ${JSON.stringify(probe)}`);
+  if (probe.hidden) throw new Error(`chip rendered but [hidden] attr set: ${JSON.stringify(probe)}`);
+  if (probe.percent !== '5') throw new Error(`expected data-percent='5', got ${probe.percent}`);
+  if (probe.tone !== 'neutral') throw new Error(`expected data-tone='neutral' at 5%, got ${probe.tone}`);
+  if (!probe.text.includes('5%')) throw new Error(`expected '5%' in chip text, got '${probe.text}'`);
+
+  log(`context chip visible at 5% (50k/1M) — neutral tone, no display/visibility gate`);
+}
+
 // ---------- dead-ui-cleanup ----------
 // Lock in the three deletions from the "remove dead UI strings/settings"
 // PR (greeting, kbd hint, window tint). Each assertion regresses to the
@@ -4006,6 +4065,11 @@ await runHarness({
     // effort-chip-toggle: StatusBar 6-tier effort+thinking chip → ipcMain
     // spy on agent:setEffort. Pure UI, single launch, fits harness-ui.
     { id: 'effort-chip-toggle', run: caseEffortChipToggle },
+    // context-chip-always-visible: regression for FP13-C. Pins the contract
+    // that the StatusBar context-pie chip renders at low % (5% here),
+    // not just at >=50%, so users see context cost from turn 1 even on
+    // 1M-token models.
+    { id: 'context-chip-always-visible', run: caseContextChipAlwaysVisible },
     { id: 'dead-ui-cleanup', run: caseDeadUiCleanup },
     // sidebar-active-row-no-pulse: regression for #289 (PR #365). Active
     // session must NOT pulse on turn_done even when window focus is lost
