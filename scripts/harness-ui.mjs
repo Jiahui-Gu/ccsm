@@ -8,6 +8,7 @@
 //
 // Scope:
 //   - sidebar-align                        (probe-e2e-sidebar-align)
+//   - sidebar-long-name-truncates          (fp13-A, long name truncation + tooltip)
 //   - no-sessions-landing                  (probe-e2e-no-sessions-landing)
 //   - empty-state-minimal                  (probe-e2e-empty-state-minimal)
 //   - a11y-focus-restore                   (probe-e2e-a11y-focus-restore)
@@ -3577,6 +3578,90 @@ async function caseCardPaddingCanon({ win, log }) {
   );
 }
 
+async function caseSidebarLongNameTruncates({ win, log }) {
+  // fp13-A regression: an 80-char session name must visually truncate inside
+  // the sidebar row instead of wrapping to a second line, AND must surface
+  // the full name via a `title` attribute so the user can recover it via
+  // browser-native hover tooltip.
+  //
+  // Pre-fix: the inner `<span class="truncate block">` lived inside a
+  // `<span class="flex-1 min-w-0">` whose default `display: inline` voided
+  // both `min-w-0` and the truncation contract, so the row wrapped to 2
+  // lines. There was also no `title` attr carrying the full name.
+  const longName = 'A'.repeat(80);
+  await seedStore(win, {
+    groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+    sessions: [
+      { id: 's-long', name: longName, state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+    ],
+    activeId: 's-long',
+  });
+  await win.waitForTimeout(150);
+
+  const row = win.locator('li[data-session-id="s-long"]').first();
+  await row.waitFor({ state: 'visible', timeout: 3000 });
+
+  // The row's height must stay the canonical single-line height (h-9 = 36px).
+  // If wrapping happened, height would balloon (>= 50ish for two lines).
+  const rowBox = await row.boundingBox();
+  if (!rowBox) throw new Error('sidebar long-name: row not measurable');
+  if (rowBox.height > 40) {
+    throw new Error(`sidebar long-name: row height ${rowBox.height.toFixed(1)}px > 40 — text wrapped to multiple lines instead of truncating`);
+  }
+
+  // The truncated text span must have ellipsis + nowrap CSS AND scrollWidth
+  // exceeding clientWidth (proving the ellipsis actually clips real overflow,
+  // not just CSS that happens to be set on a fitting element).
+  const probe = await win.evaluate(() => {
+    const li = document.querySelector('li[data-session-id="s-long"]');
+    if (!li) return { found: false };
+    // Find the deepest text-bearing span containing the long A run.
+    const spans = Array.from(li.querySelectorAll('span'));
+    // Pick the deepest span carrying the long A run — outer wrappers also
+    // aggregate the same textContent via descendants, but the truncation
+    // contract lives on the leaf text element.
+    const candidates = spans.filter((s) => s.textContent && s.textContent.replace(/\s/g, '').startsWith('AAAA'));
+    const target = candidates.find((s) => !candidates.some((other) => other !== s && s.contains(other)));
+    if (!target) return { found: false };
+    const cs = window.getComputedStyle(target);
+    // Walk ancestors (including the <li>) collecting any title attr that
+    // carries the full name — the tooltip can live on the truncated element
+    // itself OR on any ancestor inside the row.
+    let hasTitleWithFullName = false;
+    let cursor = target;
+    while (cursor && cursor !== li.parentElement) {
+      const t = cursor.getAttribute('title');
+      if (t && t === 'A'.repeat(80)) { hasTitleWithFullName = true; break; }
+      cursor = cursor.parentElement;
+    }
+    return {
+      found: true,
+      whiteSpace: cs.whiteSpace,
+      textOverflow: cs.textOverflow,
+      overflow: cs.overflow,
+      scrollWidth: target.scrollWidth,
+      clientWidth: target.clientWidth,
+      hasTitleWithFullName,
+    };
+  });
+
+  if (!probe.found) throw new Error('sidebar long-name: could not find text span carrying the long A run');
+  if (probe.whiteSpace !== 'nowrap') {
+    throw new Error(`sidebar long-name: white-space=${probe.whiteSpace} (expected nowrap) — fp13-A regression: long names wrap instead of truncating`);
+  }
+  if (probe.textOverflow !== 'ellipsis') {
+    throw new Error(`sidebar long-name: text-overflow=${probe.textOverflow} (expected ellipsis)`);
+  }
+  if (probe.scrollWidth <= probe.clientWidth) {
+    throw new Error(`sidebar long-name: scrollWidth ${probe.scrollWidth} <= clientWidth ${probe.clientWidth} — text not actually overflowing, ellipsis would be a no-op`);
+  }
+  if (!probe.hasTitleWithFullName) {
+    throw new Error('sidebar long-name: no `title` attr carries the full name — hover tooltip missing');
+  }
+
+  log(`fp13-A — sidebar long name truncated (h=${rowBox.height.toFixed(1)}px, scroll=${probe.scrollWidth}>client=${probe.clientWidth}, ellipsis+nowrap, title carries full name)`);
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -3706,6 +3791,10 @@ await runHarness({
     // (alt-tabbed away). Pure renderer-IPC: dispatches `agent:event` from
     // main into the renderer's lifecycle handler, no claude.exe needed.
     { id: 'sidebar-active-row-no-pulse', run: caseSidebarActiveRowNoPulse },
+    // sidebar-long-name-truncates: regression for fp13-A. An 80-char session
+    // name must visually truncate to a single line with ellipsis AND expose
+    // the full name through a `title` attr so users can hover-recover it.
+    { id: 'sidebar-long-name-truncates', run: caseSidebarLongNameTruncates },
     // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
     // contract — enabled=false → dispatched:false, reason:'global-disabled',
     // zero notification:show IPC. Re-enabling proves recorder is wired.

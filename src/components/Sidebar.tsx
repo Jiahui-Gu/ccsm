@@ -424,7 +424,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
             />
           )}
           <AgentIcon agentType={session.agentType} state={session.state} size="sm" />
-          <span className="flex-1 min-w-0 leading-tight">
+          <span className="flex-1 min-w-0 leading-tight block">
             {renaming ? (
               <InlineRename
                 value={session.name}
@@ -437,7 +437,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               />
             ) : (
               <>
-                <span className="truncate block">{session.name}</span>
+                <span className="truncate block" title={session.name}>{session.name}</span>
               </>
             )}
           </span>
