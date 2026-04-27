@@ -3997,6 +3997,79 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   );
 }
 
+// ---------- ttyd-pane-iframe-mounted ----------
+// W2c (ttyd-iframe refactor): pin the App→{TtydPane | ClaudeMissingGuide}
+// wiring contract. Two branches, both real verifications (no skips):
+//   - claudeAvailable=true  → right pane mounts an `<iframe>` whose src
+//     matches `http://127.0.0.1:<port>/` (the per-session ttyd HTTP
+//     server from electron/cliBridge).
+//   - claudeAvailable=false → right pane mounts ClaudeMissingGuide
+//     (data-testid="claude-missing-guide"), proving the selector
+//     correctly chose the fallback path.
+// Backend ttyd spawn/teardown coverage lives in
+// `harness-real-cli.mjs::cli-bridge-ttyd-spawn-and-kill`; this case is
+// strictly the renderer-side wiring contract.
+async function caseTtydPaneIframeMounted({ win, log }) {
+  // Seed a real session so App's `active` resolves and the right-pane
+  // branch runs. tutorialSeen=true skips the tutorial overlay.
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 's-ttyd', name: 'ttyd-probe', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+      ],
+      activeId: 's-ttyd',
+      messagesBySession: { 's-ttyd': [] },
+      tutorialSeen: true,
+    });
+  });
+
+  // Wait for App to resolve the boot-time claudeAvailable check —
+  // either the guide or the iframe (or its loading shell) shows up.
+  await win.waitForFunction(
+    () =>
+      !!document.querySelector('[data-testid="claude-missing-guide"]') ||
+      !!document.querySelector('iframe[title^="ttyd session"]') ||
+      !!document.querySelector('[data-testid="claude-availability-probing"]') === false,
+    null,
+    { timeout: 8000 }
+  );
+
+  const guideCount = await win.locator('[data-testid="claude-missing-guide"]').count();
+  if (guideCount > 0) {
+    // claude not on PATH → fallback selector branch. Verify the guide
+    // is the only right-pane content (no leaked iframe).
+    const iframeCount = await win.locator('iframe[title^="ttyd session"]').count();
+    if (iframeCount > 0) {
+      throw new Error('both ClaudeMissingGuide and TtydPane rendered — selector logic broken');
+    }
+    log('claudeAvailable=false branch: ClaudeMissingGuide rendered, no leaked iframe');
+    return;
+  }
+
+  // claude available → iframe must mount. TtydPane goes through a
+  // brief `loading` state while it awaits openTtydForSession, then
+  // flips to `ready` and renders the iframe. 8s timeout absorbs ttyd
+  // spawn cost on cold harness boot.
+  const iframe = win.locator('iframe[title^="ttyd session"]');
+  try {
+    await iframe.first().waitFor({ state: 'attached', timeout: 8000 });
+  } catch {
+    throw new Error('TtydPane iframe did not mount within 8s — App→TtydPane wiring broken or ttyd spawn failed');
+  }
+
+  const src = await iframe.first().getAttribute('src');
+  if (!src) throw new Error('iframe missing src attribute');
+  // Wiring contract: src must be a localhost HTTP URL on a non-zero
+  // port. The exact port is allocated dynamically per session.
+  const expected = /^http:\/\/127\.0\.0\.1:\d+\/?$/;
+  if (!expected.test(src)) {
+    throw new Error(`iframe src does not match wiring contract: got "${src}", expected ${expected}`);
+  }
+
+  log(`claudeAvailable=true branch: iframe mounted with src=${src}`);
+}
+
 // ---------- chatstream-footer-stable ----------
 // Regression for task #407 (ChatStream perf-1 follow-up). Pre-fix: `Footer`
 // was defined inside the `ChatStream` function body, so every render produced
@@ -4238,7 +4311,13 @@ await runHarness({
     // chatstream-footer-stable: regression for #407. Pins the contract that
     // ChatStream's Footer (thinking-dots host) doesn't remount on every
     // store tick — see caseChatStreamFooterStable for full context.
-    { id: 'chatstream-footer-stable', run: caseChatStreamFooterStable }
+    { id: 'chatstream-footer-stable', run: caseChatStreamFooterStable },
+    // ttyd-pane-iframe-mounted: W2c (ttyd-iframe refactor). Pins the
+    // App→TtydPane wiring contract — when claude is available and a
+    // session is active, the right pane mounts an `<iframe>` whose src
+    // points at the per-session ttyd HTTP server. cliBridge is stubbed
+    // in-renderer; backend spawn coverage lives in harness-real-cli.
+    { id: 'ttyd-pane-iframe-mounted', run: caseTtydPaneIframeMounted }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

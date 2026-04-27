@@ -5,10 +5,8 @@ import { ToastProvider, useToast } from './components/ui/Toast';
 import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
 import { AppShell } from './components/AppShell';
-import { ChatStream } from './components/ChatStream';
-import { InputBar } from './components/InputBar';
-import { QuestionStickyHost } from './components/QuestionStickyHost';
-import { StatusBar } from './components/StatusBar';
+import { TtydPane } from './components/TtydPane';
+import { ClaudeMissingGuide } from './components/ClaudeMissingGuide';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
@@ -83,8 +81,6 @@ export default function App() {
   const sessions = useStore((s) => s.sessions);
   const activeId = useStore((s) => s.activeId);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
-  const model = useStore((s) => s.model);
-  const permission = useStore((s) => s.permission);
   // perf/startup-render-gate: App now mounts BEFORE `hydrateStore()`
   // resolves (index.tsx no longer awaits hydration). For the sub-frame
   // window where `hydrated` is still false, sessions/groups are at their
@@ -100,10 +96,6 @@ export default function App() {
   const moveSession = useStore((s) => s.moveSession);
   const createGroup = useStore((s) => s.createGroup);
   const createSession = useStore((s) => s.createSession);
-  const changeCwd = useStore((s) => s.changeCwd);
-  const pushRecentProject = useStore((s) => s.pushRecentProject);
-  const setSessionModel = useStore((s) => s.setSessionModel);
-  const setPermission = useStore((s) => s.setPermission);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
@@ -210,6 +202,38 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+
+  // Boot-time check: is the `claude` CLI on PATH? Cached in App-level
+  // state because the install state doesn't change mid-session — only
+  // when the user runs `npm install -g …` in another terminal and hits
+  // "Re-check" inside ClaudeMissingGuide, which calls
+  // `cliBridge.checkClaudeAvailable` itself and signals success via
+  // its `onResolved` prop.
+  //
+  // `undefined` = still probing (render nothing claude-gated yet);
+  // `true`/`false` = resolved.
+  const [claudeAvailable, setClaudeAvailable] = React.useState<boolean | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const bridge = window.ccsmCliBridge;
+    if (!bridge) {
+      // Preload missing — treat as unavailable so the guide surfaces
+      // rather than silently rendering an empty TtydPane.
+      setClaudeAvailable(false);
+      return;
+    }
+    void (async () => {
+      try {
+        const result = await bridge.checkClaudeAvailable();
+        if (!cancelled) setClaudeAvailable(result.available);
+      } catch {
+        if (!cancelled) setClaudeAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // New sessions are created in-place — no modal. The store seeds `cwd` from
   // `userHome` (always-true default per spec). Users repick via the StatusBar
@@ -441,29 +465,15 @@ export default function App() {
                 <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
                 <AgentDiagnosticBanner />
               </TopBannerStack>
-              <ChatStream />
-              <QuestionStickyHost sessionId={active.id} />
-              <StatusBar
-                cwd={active.cwd}
-                cwdMissing={active.cwdMissing}
-                sessionId={active.id}
-                model={active.model || model}
-                permission={permission}
-                onChangeCwdToPath={(p) => {
-                  if (!p) return;
-                  changeCwd(p);
-                  pushRecentProject(p);
-                }}
-                onBrowseForCwd={async () => {
-                  const next = (await window.ccsm?.pickDirectory()) ?? null;
-                  if (!next) return;
-                  changeCwd(next);
-                  pushRecentProject(next);
-                }}
-                onChangeModel={(m) => setSessionModel(active.id, m)}
-                onChangePermission={setPermission}
-              />
-              <InputBar sessionId={active.id} />
+              {claudeAvailable === false ? (
+                <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
+              ) : claudeAvailable === true ? (
+                <TtydPane sessionId={active.id} />
+              ) : (
+                // Probing claude availability — render an empty flex spacer
+                // so the layout doesn't jump once the boot check resolves.
+                <div className="flex-1 min-h-0" data-testid="claude-availability-probing" />
+              )}
             </main>
           }
         />
