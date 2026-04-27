@@ -1,0 +1,17 @@
+{
+  "effortInfo": {
+    "found": true,
+    "text": "High",
+    "ariaLabel": null,
+    "title": "Deeper thinking (default).",
+    "visible": true,
+    "siblings": [
+      {
+        "testid": "effort-chip",
+        "text": "High"
+      }
+    ]
+  },
+  "storeEffort": "high",
+  "globalEffort": "high"
+}
