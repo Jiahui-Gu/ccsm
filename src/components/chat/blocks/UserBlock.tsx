@@ -168,7 +168,15 @@ export function UserBlock({
             ))}
           </div>
         )}
-        {text && <span className="text-fg-secondary whitespace-pre-wrap">{text}</span>}
+        {/* `[overflow-wrap:anywhere]` — long unbreakable runs (URLs, hashes,
+            500-char paste with no whitespace) must wrap inside the chat
+            column, otherwise the user prose forces horizontal scroll on the
+            whole row (fp11-F follow-up to PR #405; same vulnerability as
+            AssistantBlock prose). `anywhere` is preferred over `break-word`
+            because it contributes to min-content sizing — necessary inside
+            the parent `flex` + `min-w-0` container so the inner div actually
+            shrinks. */}
+        {text && <span className="text-fg-secondary whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</span>}
       </div>
       {/* Hover-only action row. opacity-0 by default, fades in on parent hover.
           focus-within keeps it visible while a button is keyboard-focused so
