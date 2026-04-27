@@ -656,7 +656,26 @@ app.whenReady().then(() => {
         typeof (parsed as { blockId?: unknown }).blockId === 'string' &&
         typeof (parsed as { truncatedAt?: unknown }).truncatedAt === 'number'
       ) {
-        return parsed as { blockId: string; truncatedAt: number };
+        // userTurnIndex / textPrefix are optional anchor fields added in the
+        // fp9-F fix; pass them through if present, otherwise legacy markers
+        // (blockId-only) keep working through the loadMessages id-match path.
+        const p = parsed as {
+          blockId: string;
+          truncatedAt: number;
+          userTurnIndex?: unknown;
+          textPrefix?: unknown;
+        };
+        const out: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
+          blockId: p.blockId,
+          truncatedAt: p.truncatedAt
+        };
+        if (typeof p.userTurnIndex === 'number' && Number.isFinite(p.userTurnIndex) && p.userTurnIndex >= 0) {
+          out.userTurnIndex = p.userTurnIndex;
+        }
+        if (typeof p.textPrefix === 'string') {
+          out.textPrefix = p.textPrefix;
+        }
+        return out;
       }
       return null;
     } catch (err) {
@@ -684,7 +703,25 @@ app.whenReady().then(() => {
       ) {
         return { ok: false as const, error: 'invalid_args' };
       }
-      saveState(truncationKey(sessionId), JSON.stringify(marker));
+      // Sanitize optional anchor fields — silently drop bad shapes rather
+      // than rejecting the whole marker (the blockId-only path still works).
+      const m = marker as {
+        blockId: string;
+        truncatedAt: number;
+        userTurnIndex?: unknown;
+        textPrefix?: unknown;
+      };
+      const sanitized: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
+        blockId: m.blockId,
+        truncatedAt: m.truncatedAt
+      };
+      if (typeof m.userTurnIndex === 'number' && Number.isFinite(m.userTurnIndex) && m.userTurnIndex >= 0) {
+        sanitized.userTurnIndex = m.userTurnIndex;
+      }
+      if (typeof m.textPrefix === 'string') {
+        sanitized.textPrefix = m.textPrefix;
+      }
+      saveState(truncationKey(sessionId), JSON.stringify(sanitized));
       return { ok: true as const };
     } catch (err) {
       console.warn('[main] truncation:set failed', err);

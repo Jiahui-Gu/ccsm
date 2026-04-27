@@ -965,6 +965,17 @@ function userFrameToBlock(raw: unknown): MessageBlock | null {
 }
 
 /**
+ * Truncation-marker text anchor: first 80 chars of the user message with
+ * leading/trailing whitespace stripped and inner whitespace runs collapsed.
+ * Both `rewindToBlock` (persist) and `loadMessages` (re-apply) call this so
+ * the comparison is normalized. Length cap keeps app_state small even if
+ * the truncated turn was a giant paste.
+ */
+function anchorTextPrefix(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
+/**
  * Compact one-line summary of a tool input for the post-resolution trace
  * block. Picks the most descriptive scalar field (command/path/url/...) and
  * truncates aggressively — the user just needs a hint of what was decided,
@@ -1974,18 +1985,48 @@ export const useStore = create<State & Actions>((set, get) => ({
     // already gone (or there was no agent yet), the IPC just no-ops.
     void window.ccsm?.agentClose(sessionId);
     // Persist the truncation marker so an app restart re-applies the cut
-    // after re-hydrating the JSONL. We only persist `u-<uuid>` ids — those
-    // come from `framesToBlocks` projecting a real CLI-written JSONL line
-    // and are stable across reloads. Local-echo ids (`local-…`) are never
-    // written to disk, so a stale local-echo block can't be the rewind
-    // target on next boot anyway; skipping the persist for those keeps the
-    // marker honest.
-    if (blockId.startsWith('u-')) {
-      void window.ccsm?.truncationSet?.(sessionId, {
-        blockId,
-        truncatedAt: Date.now()
-      });
+    // after re-hydrating the JSONL.
+    //
+    // History: the marker originally keyed only on `blockId`, but the
+    // renderer-local-echo id (`u-<base36ts>-<rand>` from `nextLocalId()` in
+    // InputBar / `localQueuedEchoId()` in lifecycle.ts) is NOT what
+    // `framesToBlocks` produces post-restart (`u-<uuid>` from JSONL). When
+    // the user truncates a freshly-sent prompt whose local-echo block hasn't
+    // been replaced by the JSONL projection, the persisted blockId no longer
+    // matches anything on next boot — the re-apply silently no-ops and the
+    // entire transcript reappears (dogfood-r2 fp9-F).
+    //
+    // Fix: also persist a content-shape anchor — `userTurnIndex` (count of
+    // `kind:'user'` blocks at and including the cut) plus a `textPrefix`
+    // (first 80 chars of the user message, normalized). On rehydrate we try
+    // the blockId match first (works for stable `u-<uuid>` markers), then
+    // fall back to "Nth user block whose text starts with textPrefix" for
+    // local-echo-anchored markers. Inclusive cut semantics are preserved.
+    const truncatedBlocks = get().messagesBySession[sessionId] ?? [];
+    let userTurnIndex: number | undefined;
+    let textPrefix: string | undefined;
+    {
+      // The marker block must be a user block — the hover-menu only exposes
+      // truncate from UserBlock.tsx — but defensively bail if it isn't.
+      const cut = truncatedBlocks.findIndex((b) => b.id === blockId);
+      if (cut >= 0) {
+        let nthUser = -1;
+        for (let i = 0; i <= cut; i++) {
+          if (truncatedBlocks[i].kind === 'user') nthUser += 1;
+        }
+        const target = truncatedBlocks[cut];
+        if (nthUser >= 0 && target.kind === 'user') {
+          userTurnIndex = nthUser;
+          textPrefix = anchorTextPrefix(target.text);
+        }
+      }
     }
+    void window.ccsm?.truncationSet?.(sessionId, {
+      blockId,
+      truncatedAt: Date.now(),
+      ...(userTurnIndex !== undefined ? { userTurnIndex } : {}),
+      ...(textPrefix !== undefined ? { textPrefix } : {})
+    });
   },
 
   addSessionStats: (sessionId, delta) => {
@@ -2105,18 +2146,46 @@ export const useStore = create<State & Actions>((set, get) => ({
       // probe in the same commit so the codebase doesn't keep a phantom
       // invariant nobody can hit.
       let sanitized: MessageBlock[] = projected;
-      // Truncation marker (PR `feat/user-block-hover-menu`): the in-app
-      // "Truncate from here" hover-menu action persists a `{ blockId,
-      // truncatedAt }` record. Re-apply it here so a ccsm restart doesn't
-      // resurrect everything the user truncated. Marker by id is stable
-      // because `framesToBlocks` derives `u-<uuid>` from the JSONL line.
-      // A stale marker (id no longer present — JSONL was rewritten by a
-      // different tool) is silently ignored, NOT cleared, since a future
-      // re-import could legitimately bring the id back.
+      // Truncation marker (PR `feat/user-block-hover-menu` + fp9-F fix):
+      // the in-app "Truncate from here" hover-menu action persists a
+      // `{ blockId, truncatedAt, userTurnIndex?, textPrefix? }` record.
+      // Re-apply it here so a ccsm restart doesn't resurrect everything the
+      // user truncated.
+      //
+      // Two anchors, tried in order:
+      //   1. blockId === b.id  (stable for `u-<uuid>` markers — the case
+      //      where the user truncated a JSONL-projected block).
+      //   2. (userTurnIndex + textPrefix)  — when the user truncated a
+      //      renderer-local-echo block (id `u-<base36ts>-<rand>`), the id
+      //      doesn't survive the JSONL re-projection. The Nth user block
+      //      whose text starts with `textPrefix` is the same turn.
+      // A stale marker (neither anchor matches) is silently ignored, NOT
+      // cleared, since a future re-import could legitimately bring it back.
       try {
         const marker = await window.ccsm?.truncationGet?.(sessionId);
         if (marker && marker.blockId) {
-          const cut = sanitized.findIndex((b) => b.id === marker.blockId);
+          let cut = sanitized.findIndex((b) => b.id === marker.blockId);
+          if (
+            cut < 0 &&
+            typeof marker.userTurnIndex === 'number' &&
+            typeof marker.textPrefix === 'string'
+          ) {
+            // Anchor fallback: walk to the Nth user block; verify the
+            // textPrefix matches (cheap defense against re-ordering / a
+            // different session JSONL written into the same path).
+            let nthUser = -1;
+            for (let i = 0; i < sanitized.length; i++) {
+              const b = sanitized[i];
+              if (b.kind !== 'user') continue;
+              nthUser += 1;
+              if (nthUser === marker.userTurnIndex) {
+                if (anchorTextPrefix(b.text) === marker.textPrefix) {
+                  cut = i;
+                }
+                break;
+              }
+            }
+          }
           // Bug #309: inclusive cut — keep the marker block itself. Mirrors
           // `rewindToBlock`'s `prev.slice(0, idx + 1)`.
           if (cut >= 0) sanitized = sanitized.slice(0, cut + 1);
