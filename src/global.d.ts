@@ -101,10 +101,10 @@ declare global {
        */
       truncationGet: (
         sessionId: string
-      ) => Promise<{ blockId: string; truncatedAt: number } | null>;
+      ) => Promise<{ blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null>;
       truncationSet: (
         sessionId: string,
-        marker: { blockId: string; truncatedAt: number } | null
+        marker: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null
       ) => Promise<{ ok: true } | { ok: false; error: string }>;
       getVersion: () => Promise<string>;
       pickDirectory: () => Promise<string | null>;

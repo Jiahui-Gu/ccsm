@@ -108,11 +108,11 @@ const api = {
    */
   truncationGet: (
     sessionId: string
-  ): Promise<{ blockId: string; truncatedAt: number } | null> =>
+  ): Promise<{ blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null> =>
     ipcRenderer.invoke('truncation:get', sessionId),
   truncationSet: (
     sessionId: string,
-    marker: { blockId: string; truncatedAt: number } | null
+    marker: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null
   ): Promise<{ ok: true } | { ok: false; error: string }> =>
     ipcRenderer.invoke('truncation:set', sessionId, marker),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
