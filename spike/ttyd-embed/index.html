@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ttyd embed spike</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #1a1a1a; color: #eee;
+        font-family: -apple-system, Segoe UI, sans-serif; }
+      .root { display: flex; height: 100vh; }
+      .left {
+        flex: 0 0 360px; background: #2a2a3a; padding: 16px;
+        border-right: 1px solid #444; overflow-y: auto;
+      }
+      .left h2 { margin: 0 0 12px; font-size: 14px; color: #aaa; }
+      .left .placeholder { padding: 12px; background: #3a3a4a; border-radius: 6px;
+        font-size: 12px; line-height: 1.6; }
+      .right { flex: 1; display: flex; flex-direction: column; }
+      webview { flex: 1; width: 100%; height: 100%; border: 0; }
+      .bar { padding: 6px 12px; background: #111; font-size: 11px; color: #888;
+        border-bottom: 1px solid #333; font-family: Consolas, monospace; }
+    </style>
+  </head>
+  <body>
+    <div class="root">
+      <div class="left">
+        <h2>LEFT PANE (placeholder)</h2>
+        <div class="placeholder">
+          This represents ccsm's React sidebar. In the real app this would render
+          session list / status / cost from the JSONL tail (see probe-latency.js).
+          Right pane is a &lt;webview&gt; pointing at an embedded ttyd serving claude.
+        </div>
+      </div>
+      <div class="right">
+        <div class="bar" id="bar">loading...</div>
+        <webview id="term" allowpopups src="about:blank"></webview>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const port = params.get('port');
+      const url = `http://localhost:${port}/`;
+      document.getElementById('bar').textContent = `webview src = ${url}`;
+      const wv = document.getElementById('term');
+      wv.src = url;
+      wv.addEventListener('did-fail-load', (e) => {
+        document.getElementById('bar').textContent =
+          `did-fail-load code=${e.errorCode} desc=${e.errorDescription}`;
+      });
+      wv.addEventListener('console-message', (e) => {
+        console.log('[webview]', e.message);
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "ttyd-embed-spike",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Throwaway spike: embed ttyd + claude CLI inside Electron via <webview>.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
