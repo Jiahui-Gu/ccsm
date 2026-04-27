@@ -56,6 +56,43 @@ const VirtuosoList = forwardRef<HTMLDivElement, React.HTMLProps<HTMLDivElement>>
   }
 );
 
+// Footer context shape passed through Virtuoso's `context` prop. Hoisting
+// Footer to module scope (rather than defining it inside ChatStream) keeps
+// its component identity stable across renders so Virtuoso doesn't remount
+// the subtree on every store tick — that remount restarts the thinking-dots
+// motion.div animation cycle and makes streaming look broken (#407).
+type FooterContext = {
+  loadError: string | undefined;
+  showThinkingDots: boolean;
+  activeId: string;
+  onRetryLoad: () => void;
+  thinkingLabel: string;
+};
+
+function Footer({ context }: { context?: FooterContext }) {
+  if (!context) return null;
+  const { loadError, showThinkingDots, onRetryLoad, thinkingLabel } = context;
+  return (
+    <>
+      {loadError && (
+        <LoadHistoryErrorBlock message={loadError} onRetry={onRetryLoad} />
+      )}
+      {showThinkingDots && (
+        <motion.div
+          key="thinking-dots"
+          data-testid="chat-thinking-dots"
+          aria-label={thinkingLabel}
+          className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none px-4 pb-3"
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+        >
+          {'· · ·'}
+        </motion.div>
+      )}
+    </>
+  );
+}
+
 export function ChatStream() {
   const { t } = useTranslation();
   const activeId = useStore((s) => s.activeId);
@@ -175,40 +212,28 @@ export function ChatStream() {
 
   // Footer: load-error banner (rare) + thinking dots (frequent). Rendered
   // as Virtuoso's footer so they live inside the scroll container at the
-  // tail and don't get virtualized away.
-  function Footer() {
-    return (
-      <>
-        {loadError && (
-          <LoadHistoryErrorBlock
-            message={loadError}
-            onRetry={() => {
-              useStore.setState((s) => {
-                const nextMsgs = { ...s.messagesBySession };
-                delete nextMsgs[activeId];
-                const nextErrs = { ...s.loadMessageErrors };
-                delete nextErrs[activeId];
-                return { messagesBySession: nextMsgs, loadMessageErrors: nextErrs };
-              });
-              void loadMessages(activeId);
-            }}
-          />
-        )}
-        {showThinkingDots && (
-          <motion.div
-            key="thinking-dots"
-            data-testid="chat-thinking-dots"
-            aria-label={t('chat.thinking', { defaultValue: 'Agent is thinking' })}
-            className="font-mono text-mono-sm text-state-running select-none tracking-[0.2em] leading-none px-4 pb-3"
-            animate={{ opacity: [0.3, 1, 0.3] }}
-            transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-          >
-            {'· · ·'}
-          </motion.div>
-        )}
-      </>
-    );
-  }
+  // tail and don't get virtualized away. The Footer component itself is
+  // hoisted to module scope (see top of file); dynamic state flows through
+  // Virtuoso's `context` prop so the Footer subtree never remounts on store
+  // ticks — preserving the thinking-dots animation cycle (#407).
+  const onRetryLoad = useMemo(
+    () => () => {
+      useStore.setState((s) => {
+        const nextMsgs = { ...s.messagesBySession };
+        delete nextMsgs[activeId];
+        const nextErrs = { ...s.loadMessageErrors };
+        delete nextErrs[activeId];
+        return { messagesBySession: nextMsgs, loadMessageErrors: nextErrs };
+      });
+      void loadMessages(activeId);
+    },
+    [activeId, loadMessages]
+  );
+  const thinkingLabel = t('chat.thinking', { defaultValue: 'Agent is thinking' });
+  const footerContext = useMemo<FooterContext>(
+    () => ({ loadError, showThinkingDots, activeId, onRetryLoad, thinkingLabel }),
+    [loadError, showThinkingDots, activeId, onRetryLoad, thinkingLabel]
+  );
 
   function itemContent(index: number, m: MessageBlock) {
     return (
@@ -277,6 +302,7 @@ export function ChatStream() {
           // recent block, matching pre-virtualization behavior.
           initialTopMostItemIndex={Math.max(blocks.length - 1, 0)}
           components={{ Scroller: VirtuosoScroller, List: VirtuosoList, Footer }}
+          context={footerContext}
           className="flex-1 min-w-0"
           style={{ height: '100%' }}
           increaseViewportBy={{ top: 600, bottom: 600 }}

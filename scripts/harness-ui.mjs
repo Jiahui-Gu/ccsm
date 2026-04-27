@@ -3794,6 +3794,95 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   );
 }
 
+// ---------- chatstream-footer-stable ----------
+// Regression for task #407 (ChatStream perf-1 follow-up). Pre-fix: `Footer`
+// was defined inside the `ChatStream` function body, so every render produced
+// a fresh component identity for `<Virtuoso components={{ Footer }} />`,
+// which remounted the Footer subtree on every store tick (~10 Hz while
+// streaming). The thinking-dots `motion.div` therefore restarted its
+// opacity-pulse cycle on every tick, looking like a stuck/broken animation.
+// Fix: hoist `Footer` to module scope and pass dynamic state via Virtuoso's
+// `context` prop. This case pins the contract: the thinking-dots DOM node
+// MUST persist across multiple store ticks while the streaming/thinking
+// condition is unchanged.
+async function caseChatStreamFooterStable({ win, log }) {
+  // Seed an active session in the "thinking" state (running, last block is
+  // user, no permission gate) so showThinkingDots resolves to true.
+  await win.evaluate(() => {
+    const store = window.__ccsmStore;
+    store.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [
+        { id: 's1', name: 'thinking-session', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+      ],
+      activeId: 's1',
+      messagesBySession: { s1: [{ kind: 'user', id: 'u1', text: 'hello' }] },
+      runningSessions: { s1: true },
+      startedSessions: { s1: true },
+    });
+  });
+
+  // Wait for the dots to appear.
+  await win.waitForFunction(
+    () => !!document.querySelector('[data-testid="chat-thinking-dots"]'),
+    null,
+    { timeout: 5_000 }
+  );
+
+  // Tag the initial dots node so we can detect remounts: if Footer remounts,
+  // React replaces the DOM element entirely and our marker disappears with
+  // the old node.
+  await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="chat-thinking-dots"]');
+    el.setAttribute('data-footer-stability-marker', '1');
+  });
+
+  // Trigger several store ticks that should NOT cause the thinking-dots to
+  // unmount: append more user-only blocks (lastBlock stays kind='user', so
+  // showThinkingDots stays true), and bump unrelated state. Pre-fix each
+  // setState() rerenders ChatStream → fresh Footer identity → remount.
+  await win.evaluate(async () => {
+    const store = window.__ccsmStore;
+    for (let i = 0; i < 5; i++) {
+      store.setState((s) => ({
+        messagesBySession: {
+          ...s.messagesBySession,
+          s1: [
+            ...s.messagesBySession.s1,
+            { kind: 'user', id: `u-tick-${i}`, text: `tick ${i}` },
+          ],
+        },
+      }));
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  });
+
+  // After the ticks, the marker must still be on the (still-present) dots
+  // node — proving the same DOM element survived all updates.
+  const stable = await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="chat-thinking-dots"]');
+    if (!el) return { present: false, marked: false };
+    return { present: true, marked: el.getAttribute('data-footer-stability-marker') === '1' };
+  });
+
+  if (!stable.present) {
+    throw new Error(
+      '#407 regression: [data-testid="chat-thinking-dots"] vanished after store ticks — ' +
+        'Footer condition flipped unexpectedly during the test or DOM was torn down.'
+    );
+  }
+  if (!stable.marked) {
+    throw new Error(
+      '#407 regression: thinking-dots DOM node was replaced across store ticks — ' +
+        'Footer is remounting on every render (likely defined inside ChatStream() ' +
+        'function body), which restarts the opacity-pulse animation cycle. ' +
+        'Hoist Footer to module scope and pass dynamic state via Virtuoso context.'
+    );
+  }
+
+  log('#407 — thinking-dots DOM node identity stable across 5 store ticks');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -3936,7 +4025,11 @@ await runHarness({
     // Placed last because it calls win.reload() with a 500ms init-script
     // delay on models.list, and the reload + delay perturb the page state
     // for any case that follows.
-    { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate }
+    { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate },
+    // chatstream-footer-stable: regression for #407. Pins the contract that
+    // ChatStream's Footer (thinking-dots host) doesn't remount on every
+    // store tick — see caseChatStreamFooterStable for full context.
+    { id: 'chatstream-footer-stable', run: caseChatStreamFooterStable }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler
