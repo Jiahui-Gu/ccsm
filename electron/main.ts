@@ -58,7 +58,6 @@ if (SENTRY_DSN) {
     },
   });
 } else {
-  // eslint-disable-next-line no-console
   console.info('[sentry] SENTRY_DSN not set — crash reporting disabled.');
 }
 import { installUpdaterIpc } from './updater';
@@ -575,7 +574,6 @@ app.whenReady().then(() => {
   } catch (err) {
     // bootstrapNotify already swallows internally; this is belt-and-suspenders
     // so an unexpected throw still can't take down app startup.
-    // eslint-disable-next-line no-console
     console.warn(
       `[main] notify bootstrap threw: ${err instanceof Error ? err.message : err}`,
     );

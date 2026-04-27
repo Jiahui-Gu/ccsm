@@ -72,7 +72,6 @@ export function bootstrapNotify(router: NotifyActionRouter): boolean {
         try {
           router(event);
         } catch (err) {
-          // eslint-disable-next-line no-console
           console.warn(
             `[notify-bootstrap] router threw for toast ${event.toastId}: ${
               err instanceof Error ? err.message : err
@@ -93,7 +92,6 @@ export function bootstrapNotify(router: NotifyActionRouter): boolean {
   } catch (err) {
     // configureNotify itself never throws (it just stashes options) but be
     // defensive — a future refactor could.
-    // eslint-disable-next-line no-console
     console.warn(
       `[notify-bootstrap] failed to configure: ${err instanceof Error ? err.message : err}`,
     );
