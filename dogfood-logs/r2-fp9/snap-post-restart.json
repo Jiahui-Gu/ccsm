@@ -1,0 +1,46 @@
+{
+  "activeId": "d2c277a3-352b-49f4-993a-ba22677eb791",
+  "messageCount": 10,
+  "blocks": [
+    {
+      "kind": "user",
+      "id": "u-9eb6e1ba-54bf-43f9-bb7e-c45ec6e450a1"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268118311:c0"
+    },
+    {
+      "kind": "user",
+      "id": "u-bc0ede4e-9da4-4430-be91-1622cb89bc9c"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268122260:c0"
+    },
+    {
+      "kind": "user",
+      "id": "u-730b0658-6f8c-4643-a2d7-b55905f510d5"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268125917:c0"
+    },
+    {
+      "kind": "user",
+      "id": "u-0e45ec50-aa74-4c46-83f7-ae9e61abed1f"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268134917:c0"
+    },
+    {
+      "kind": "user",
+      "id": "u-b7c88705-862f-47b6-91e6-e69263affd43"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777268141738:c0"
+    }
+  ]
+}
