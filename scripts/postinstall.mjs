@@ -23,6 +23,20 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
+// Preflight: warn (don't block) when running on a Node major other than 20.
+// Native deps (better-sqlite3, electron-windows-notifications, @nodert-win10-au)
+// build cleanly on Node 20.x. node-gyp 10.x + Node >= 22 trips a `/std:c++20`
+// vs WinRT `/ZW` clash that surfaces as `error C1107: could not find assembly
+// 'platform.winmd'`, even with the full VS 2022 C++/CX SDK installed. We don't
+// pin engines.node so contributors who only touch UI/tests can still
+// `npm install` on newer Node; this warning gives them the clue if it breaks.
+const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
+if (nodeMajor !== 20) {
+  console.warn(
+    `[postinstall] WARNING: ccsm native deps (better-sqlite3, electron-windows-notifications, @nodert-win10-au) build cleanly on Node 20.x. You're on Node ${process.version}. If you only touch UI/tests, this is fine; if you hit \`node-gyp\` C1107 or \`/std:c++20 /ZW\` errors during install, switch with \`nvm use 20\` and re-run \`npm ci --legacy-peer-deps\`. CI uses Node 20.`,
+  );
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const isWindows = process.platform === 'win32';
