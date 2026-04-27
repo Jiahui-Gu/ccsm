@@ -233,6 +233,12 @@ function freshUserDataDir(tag) {
  *   the summary as `[--]` and do NOT count toward the failure exit code.
  *   Override via `CCSM_CLAUDE_BIN` env or by symlinking onto PATH.
  *
+ * @property {string[]} [skipOnPlatform]
+ *   Skip this case when `process.platform` matches any entry in the array.
+ *   Use for tests whose assertions are platform-specific (e.g. Windows-only
+ *   notification modules, macOS-specific rendering differences).
+ *   Example: `skipOnPlatform: ['darwin']` skips on macOS.
+ *
  *   Example (probe-e2e-permission-allow-bash style — needs real subprocess
  *   to verify the IPC frame round-trips through claude.exe):
  *     { id: 'permission-allow-bash', requiresClaudeBin: true, run: ... }
@@ -316,7 +322,7 @@ function freshUserDataDir(tag) {
  * @param {string | null} userDataDirOverride
  */
 function buildLaunchOpts(spec, userDataDirOverride) {
-  const args = ['.', ...(spec.launch?.args ?? [])];
+  const args = ['.', '--lang=en', ...(spec.launch?.args ?? [])];
   if (userDataDirOverride) {
     // Electron honors `--user-data-dir=<path>` as a CLI flag; this is the
     // same mechanism CCSM_USER_DATA_DIR-style overrides ultimately land on.
@@ -334,6 +340,8 @@ function buildLaunchOpts(spec, userDataDirOverride) {
   const env = {
     CCSM_E2E_HIDDEN: '1',
     ...process.env,
+    LANG: 'en_US.UTF-8',
+    LC_ALL: 'en_US.UTF-8',
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
     ...(spec.launch?.env ?? {})
@@ -346,6 +354,9 @@ function buildLaunchOpts(spec, userDataDirOverride) {
  *
  * @param {HarnessSpec} spec
  */
+/** Platform-aware modifier key: 'Meta' on macOS (Cmd), 'Control' elsewhere. */
+export const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
 export async function runHarness(spec) {
   // Fail-fast BEFORE launching electron: a stale dist/renderer/bundle.js
   // would silently run the harness against old src code (see PR #322 post-mortem).
@@ -404,6 +415,14 @@ export async function runHarness(spec) {
       // ---- Capability: requiresClaudeBin ----
       if (c.requiresClaudeBin && !resolveClaudeBin()) {
         const reason = 'no `claude` binary on PATH (set CCSM_CLAUDE_BIN or install the upstream CLI)';
+        console.log(`[case=${c.id}] SKIPPED: ${reason}`);
+        results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
+        continue;
+      }
+
+      // ---- Capability: skipOnPlatform ----
+      if (c.skipOnPlatform && c.skipOnPlatform.includes(process.platform)) {
+        const reason = `skipped on platform ${process.platform}`;
         console.log(`[case=${c.id}] SKIPPED: ${reason}`);
         results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
         continue;

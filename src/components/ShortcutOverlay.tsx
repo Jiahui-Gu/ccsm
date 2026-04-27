@@ -5,7 +5,7 @@ import { useTranslation } from '../i18n/useTranslation';
 // Windows-only shortcut labels. The app currently ships Windows-first;
 // we don't carry mac glyphs here. If macOS support returns later, this is
 // the place to introduce platform-aware modifier resolution again.
-const MOD = 'Ctrl';
+const MOD = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl';
 const SHIFT = 'Shift';
 
 type Row = { keys: string; actionKey: string };
