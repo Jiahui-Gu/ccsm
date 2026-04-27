@@ -14,13 +14,9 @@ import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
-import { AgentDiagnosticBanner } from './components/AgentDiagnosticBanner';
-import { AgentInitFailedBanner } from './components/AgentInitFailedBanner';
-import { TopBannerStack } from './components/chrome/TopBanner';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
-import { subscribeAgentEvents, setBackgroundWaitingHandler, maybeAutoResolveAllowAlways } from './agent/lifecycle';
 import { dispatchNotification } from './notifications/dispatch';
 import { initI18n } from './i18n';
 import { i18next } from './i18n';
@@ -33,8 +29,6 @@ import { DURATION, EASING } from './lib/motion';
 // setter in src/store/preferences.ts).
 initI18n(usePreferences.getState().resolvedLanguage);
 
-subscribeAgentEvents();
-
 // Expose the zustand store on `window` so E2E probes can introspect /
 // drive state directly. We set this UNCONDITIONALLY (not gated on
 // NODE_ENV) because webpack production builds dead-strip the gated
@@ -43,13 +37,9 @@ subscribeAgentEvents();
 // security boundary; same trade-off as `window.__ccsmI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
-  (window as unknown as {
-    __ccsmMaybeAutoResolveAllowAlways?: typeof maybeAutoResolveAllowAlways;
-  }).__ccsmMaybeAutoResolveAllowAlways = maybeAutoResolveAllowAlways;
   // E2E seam: harnesses drive dispatchNotification directly to verify the
   // single-gate `enabled` suppression without spinning up a real agent. Same
-  // trade-off as `__ccsmMaybeAutoResolveAllowAlways` — debug affordance, not
-  // a security boundary.
+  // debug affordance, not a security boundary.
   (window as unknown as {
     __ccsmDispatchNotification?: typeof dispatchNotification;
   }).__ccsmDispatchNotification = dispatchNotification;
@@ -317,7 +307,6 @@ export default function App() {
         <TooltipProvider delayDuration={400} skipDelayDuration={100}>
           <ToastProvider>
             <PersistErrorBridge />
-            <BackgroundWaitingBridge />
             <UpdateDownloadedBridge />
             <AppShell
               sidebar={<aside data-testid="sidebar-skeleton" aria-busy="true" />}
@@ -343,31 +332,30 @@ export default function App() {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>
-          <PersistErrorBridge />
-          <BackgroundWaitingBridge />
-          <UpdateDownloadedBridge />
-          <AppShell
-            sidebar={
-              <Sidebar
-                onCreateSession={newSession}
-                onOpenSettings={() => setSettingsOpen(true)}
-                onOpenPalette={() => setPaletteOpen(true)}
-                onOpenImport={() => setImportOpen(true)}
-                activeSessionId={activeId}
-                focusedGroupId={focusedGroupId}
-                onSelectSession={selectSession}
-                onFocusGroup={focusGroup}
-                sessions={sessions}
-                onMoveSession={moveSession}
-              />
-            }
-            main={
-              <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
-                <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
-                  <WindowControls />
-                </DragRegion>
-                <InstallerCorruptBanner />
-                <div className="flex-1 flex items-center justify-center min-h-0">
+        <PersistErrorBridge />
+        <UpdateDownloadedBridge />
+        <AppShell
+          sidebar={
+            <Sidebar
+              onCreateSession={newSession}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenPalette={() => setPaletteOpen(true)}
+              onOpenImport={() => setImportOpen(true)}
+              activeSessionId={activeId}
+              focusedGroupId={focusedGroupId}
+              onSelectSession={selectSession}
+              onFocusGroup={focusGroup}
+              sessions={sessions}
+              onMoveSession={moveSession}
+            />
+          }
+          main={
+            <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
+              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
+                <WindowControls />
+              </DragRegion>
+              <InstallerCorruptBanner />
+              <div className="flex-1 flex items-center justify-center min-h-0">
                   {tutorialSeen ? (
                     // First-run / no-active-session empty state. Task #329 — we
                     // explicitly do NOT auto-create a session at boot; instead
@@ -438,7 +426,6 @@ export default function App() {
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
       <ToastProvider>
         <PersistErrorBridge />
-        <BackgroundWaitingBridge />
         <UpdateDownloadedBridge />
         <AppShell
           sidebar={
@@ -460,11 +447,7 @@ export default function App() {
               <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
                 <WindowControls />
               </DragRegion>
-              <TopBannerStack>
-                <InstallerCorruptBanner />
-                <AgentInitFailedBanner onRequestReconfigure={() => setSettingsOpen(true)} />
-                <AgentDiagnosticBanner />
-              </TopBannerStack>
+              <InstallerCorruptBanner />
               {claudeAvailable === false ? (
                 <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
               ) : claudeAvailable === true ? (
@@ -510,37 +493,6 @@ function PersistErrorBridge() {
     });
     return () => setPersistErrorHandler(() => {});
   }, [push]);
-  return null;
-}
-
-function BackgroundWaitingBridge() {
-  const { push } = useToast();
-  const selectSession = useStore((s) => s.selectSession);
-  useEffect(() => {
-    setBackgroundWaitingHandler((info) => {
-      push({
-        kind: 'waiting',
-        title: i18next.t('notifications.backgroundWaitingToastTitle', { name: info.sessionName }),
-        body: info.prompt
-      });
-      // The toast is fire-and-forget; we deliberately do NOT auto-jump on
-      // click here because the dismiss-on-click in Toast.tsx and a
-      // separate "switch session" action would conflict. User clicks the
-      // sidebar row to switch — same as today.
-      void selectSession;
-    });
-    return () => setBackgroundWaitingHandler(() => {});
-  }, [push, selectSession]);
-  // Subscribe to OS notification clicks → focus the session.
-  useEffect(() => {
-    const off = window.ccsm?.onNotificationFocus((sessionId) => {
-      const exists = useStore.getState().sessions.some((s) => s.id === sessionId);
-      if (exists) selectSession(sessionId);
-    });
-    return () => {
-      if (off) off();
-    };
-  }, [selectSession]);
   return null;
 }
 
