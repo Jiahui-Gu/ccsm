@@ -474,7 +474,10 @@ const zh: EnCatalog = {
   },
   terminal: {
     waitingOutput: '等待输出…',
-    noOutput: '（无输出）'
+    noOutput: '（无输出）',
+    starting: '启动中…',
+    spawnFailed: '终端启动失败',
+    retryButton: '重试'
   },
   statusBar: {
     workingDirectory: '工作目录',
@@ -578,6 +581,13 @@ const zh: EnCatalog = {
   firstRun: {
     newSession: '新建会话',
     importSession: '从 CLI 导入会话'
+  },
+  // Boot-time full-screen page shown when `claude` CLI not on PATH.
+  claudeMissing: {
+    title: 'Claude CLI 未找到',
+    body: 'ccsm 需要单独安装 Claude CLI。请通过 npm 安装后重新检查。',
+    installCommandLabel: '安装命令',
+    recheckButton: '重新检查'
   }
 };
 
