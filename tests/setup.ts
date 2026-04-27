@@ -34,20 +34,21 @@ import { vi } from 'vitest';
 import * as React from 'react';
 vi.mock('react-virtuoso', () => {
   type ItemContent<T> = (index: number, item: T) => React.ReactNode;
-  type Components = {
+  type Components<C> = {
     Scroller?: React.ComponentType<React.HTMLProps<HTMLDivElement>>;
     List?: React.ComponentType<React.HTMLProps<HTMLDivElement>>;
-    Footer?: React.ComponentType;
+    Footer?: React.ComponentType<{ context?: C }>;
   };
-  type Props<T> = {
+  type Props<T, C> = {
     data?: T[];
     itemContent?: ItemContent<T>;
-    components?: Components;
+    components?: Components<C>;
+    context?: C;
     className?: string;
     style?: React.CSSProperties;
   };
-  const Virtuoso = React.forwardRef(function Virtuoso<T>(
-    props: Props<T>,
+  const Virtuoso = React.forwardRef(function Virtuoso<T, C>(
+    props: Props<T, C>,
     _ref: React.ForwardedRef<unknown>
   ) {
     const data = props.data ?? [];
@@ -72,7 +73,7 @@ vi.mock('react-virtuoso', () => {
           )
         )
       ),
-      Footer ? React.createElement(Footer) : null
+      Footer ? React.createElement(Footer, { context: props.context }) : null
     );
   });
   return { Virtuoso };
