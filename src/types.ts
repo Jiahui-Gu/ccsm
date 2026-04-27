@@ -15,6 +15,15 @@ export interface Session {
   // Set when the session was imported from a Claude Code CLI transcript.
   // Passed to agentStart on first send so the SDK resumes the same thread.
   resumeSessionId?: string;
+  // Captured from the first `system/init` SDK frame (= the CLI-allocated
+  // `session_id`). For fresh sessions this equals `id` because ccsm
+  // forwards `id` as the SDK's preset `sessionId`; for resume / import
+  // paths it may differ (the SDK allocates a new sid for each resumed
+  // branch). Persisted so a ccsm restart can pass it as `--resume` on the
+  // next agentStart — without this, restart→continue silently breaks
+  // because the SDK rejects re-using a `sessionId` that already has an
+  // on-disk JSONL transcript. See `src/agent/startSession.ts`.
+  sdkSessionId?: string;
   // Marks a session whose persisted `cwd` no longer exists on disk (e.g.
   // a directory that was deleted between app runs — common after the
   // worktree feature was reverted). Set by `hydrateStore` via a best-effort

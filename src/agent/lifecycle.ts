@@ -184,6 +184,21 @@ export function subscribeAgentEvents(): void {
   installed = true;
 
   api.onAgentEvent((e) => {
+    // Capture the SDK-allocated CLI session_id from the first `system/init`
+    // frame and persist it on the Session record. Required for cross-restart
+    // resume: on the next ccsm launch, `startSessionAndReconcile` passes this
+    // id to the SDK as `--resume <id>`. Without it, restarting ccsm and
+    // sending another prompt silently times out — the SDK refuses to
+    // re-spawn with a `sessionId` whose JSONL transcript already exists.
+    if (
+      e.message.type === 'system' &&
+      (e.message as { subtype?: string }).subtype === 'init'
+    ) {
+      const sid = (e.message as { session_id?: unknown }).session_id;
+      if (typeof sid === 'string' && sid) {
+        useStore.getState().recordSdkSessionId(e.sessionId, sid);
+      }
+    }
     // Record the wall-clock start of the current turn so we can decide later
     // whether `turn_done` is worth a toast. We treat the first non-result
     // message after a result (or the very first ever) as the turn start.

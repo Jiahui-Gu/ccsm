@@ -1655,7 +1655,284 @@ async function casePermissionPromptDefaultMode({ log, registerDispose }) {
 
 
 // ──────────────────────────────────────────────────────────────────────────
-// CASE: new-session-default-model-from-claude-settings
+// CASE: restart-resume-continues-conversation  (#fp5)
+// 3-launch ("开关开关开") with the SAME --user-data-dir + real claude.exe
+// (Agent Maestro proxy via the dev's ~/.claude/settings.json). Verifies
+// the bug-fp5 regression guard: after closing ccsm and relaunching,
+// sending another prompt in the resumed session must reach the model and
+// the model must remember the prior turns.
+//
+// THREE rounds because every `claude --resume <id>` allocates a NEW
+// cliSessionId (the old one is consumed). A one-restart probe would let
+// a fix that only captures the FIRST init slip through; round 3 catches
+// the latent "stale id" regression by requiring the post-resume rotation
+// to also be persisted.
+//
+// Without the fix the assertion times out at 90s on launch #2's prompt
+// because the SDK silently refuses to spawn over an existing JSONL.
+// ──────────────────────────────────────────────────────────────────────────
+async function caseRestartResumeContinuesConversation({ log, registerDispose }) {
+  const SECRET = 'magenta-otter-7';
+  const SECRET2 = 'azure-falcon-13';
+  const SESSION_ID = crypto.randomUUID();
+  const GROUP_ID = 'g-default';
+  const CWD = os.homedir();
+
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-harness-restart-resume-'));
+  registerDispose(() => { try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {} });
+  log(`user-data-dir = ${userDataDir}`);
+
+  // Match the dev's working environment: ANTHROPIC_BASE_URL etc. live in
+  // ~/.claude/settings.json which the bundled CLI reads at boot. We force
+  // CLAUDE_CONFIG_DIR=~/.claude so the CLI sees the real Agent Maestro
+  // pointer instead of an empty isolated config (would 401 with no auth).
+  const env = {
+    ...process.env,
+    NODE_ENV: 'production',
+    CCSM_PROD_BUNDLE: '1',
+    CCSM_CLAUDE_CONFIG_DIR: path.join(os.homedir(), '.claude'),
+  };
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+
+  // Reusable launch wrapper.
+  async function launch(label) {
+    const app = await electron.launch({
+      args: ['.', `--user-data-dir=${userDataDir}`],
+      cwd: ROOT,
+      env,
+      timeout: 60_000,
+    });
+    const win = await appWindow(app, { timeout: 30_000 });
+    await win.waitForLoadState('domcontentloaded');
+    await win.waitForTimeout(2000);
+    await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 30_000 });
+    log(`launch #${label}: store ready`);
+    return { app, win };
+  }
+
+  async function snapshot(win) {
+    return await win.evaluate(() => {
+      const s = window.__ccsmStore.getState();
+      const sid = s.activeId;
+      const blocks = (sid && s.messagesBySession?.[sid]) || [];
+      const sess = (s.sessions || []).find((x) => x.id === sid) || null;
+      return {
+        sid,
+        running: !!(sid && s.runningSessions?.[sid]),
+        blockCount: blocks.length,
+        sdkSessionId: sess?.sdkSessionId ?? null,
+        resumeSessionId: sess?.resumeSessionId ?? null,
+        lastAssistantText: (() => {
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i];
+            if (b.kind === 'assistant' && typeof b.text === 'string') return b.text;
+          }
+          return '';
+        })(),
+      };
+    });
+  }
+
+  async function sendAndWait(win, text, deadlineMs, label) {
+    const before = await snapshot(win);
+    const baseCount = before.blockCount;
+    const ta = win.locator('textarea').first();
+    await ta.waitFor({ state: 'visible', timeout: 15_000 });
+    await ta.click();
+    await ta.fill(text);
+    await win.waitForTimeout(150);
+    await ta.press('Enter');
+    log(`[${label}] prompt sent: ${text.slice(0, 60)}`);
+    const t0 = Date.now();
+    while (Date.now() - t0 < deadlineMs) {
+      const st = await snapshot(win);
+      if (!st.running && st.blockCount > baseCount + 1 && st.lastAssistantText) {
+        log(`[${label}] reply received in ${Date.now() - t0}ms; len=${st.lastAssistantText.length}`);
+        return st;
+      }
+      await win.waitForTimeout(500);
+    }
+    return null;
+  }
+
+  // ===== Launch #1: seed session, send prompt, get reply, capture sdkSessionId =====
+  let snapAfterA = null;
+  {
+    const { app, win } = await launch('1');
+    let closed = false;
+    registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+    try {
+      // Seed session via saveState so we control the id and skip onboarding.
+      await win.evaluate(
+        async ({ sid, gid, cwd }) => {
+          const state = {
+            version: 1,
+            sessions: [
+              { id: sid, name: 'restart-resume-fp5', state: 'idle',
+                cwd, model: '', groupId: gid, agentType: 'claude-code' },
+            ],
+            groups: [{ id: gid, name: 'Sessions', collapsed: false, kind: 'normal' }],
+            activeId: sid,
+            model: '',
+            permission: 'bypassPermissions',
+            sidebarCollapsed: false,
+            theme: 'system',
+            fontSize: 'md',
+            recentProjects: [],
+            tutorialSeen: true,
+          };
+          await window.ccsm.saveState('main', JSON.stringify(state));
+        },
+        { sid: SESSION_ID, gid: GROUP_ID, cwd: CWD }
+      );
+      // Hard reload so hydrate picks up the seeded state.
+      await win.reload();
+      await win.waitForLoadState('domcontentloaded');
+      await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 30_000 });
+      await win.waitForTimeout(1500);
+
+      const initial = await snapshot(win);
+      if (initial.sid !== SESSION_ID) {
+        throw new Error(`seeded session not active; activeId=${initial.sid}`);
+      }
+
+      const reply1 = await sendAndWait(
+        win,
+        `Remember the secret word "${SECRET}". Reply with only the words "got it".`,
+        90_000,
+        'A1'
+      );
+      if (!reply1) throw new Error('A1 prompt timed out (90s) — no reply on launch #1');
+      snapAfterA = reply1;
+      log(`launch #1 captured sdkSessionId=${reply1.sdkSessionId}`);
+      if (!reply1.sdkSessionId) {
+        throw new Error('launch #1 finished but no sdkSessionId captured on the session record (system/init capture missing)');
+      }
+    } finally {
+      try { await app.close(); closed = true; } catch {}
+    }
+  }
+
+  // Brief settle so persistence flushes.
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // ===== Launch #2: relaunch SAME user-data-dir, send P2 to verify resume works =====
+  let sdkIdAfterRound1 = snapAfterA.sdkSessionId;
+  let sdkIdAfterRound2 = null;
+  {
+    const { app, win } = await launch('2');
+    let closed = false;
+    registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+    try {
+      await win.waitForTimeout(2000);
+      // Make sure the seeded session is still active.
+      await win.evaluate((sid) => {
+        const s = window.__ccsmStore?.getState();
+        if (s && typeof s.selectSession === 'function' && s.activeId !== sid) {
+          s.selectSession(sid);
+        }
+      }, SESSION_ID);
+      await win.waitForTimeout(1000);
+
+      const restored = await snapshot(win);
+      if (restored.sid !== SESSION_ID) {
+        throw new Error(`launch #2: session not restored; activeId=${restored.sid}`);
+      }
+      log(`launch #2 restored session, persisted sdkSessionId=${restored.sdkSessionId}`);
+      if (!restored.sdkSessionId) {
+        throw new Error('launch #2: sdkSessionId not persisted across restart — fix did not land');
+      }
+      if (restored.sdkSessionId !== sdkIdAfterRound1) {
+        throw new Error(`launch #2: persisted sdkSessionId drifted before send; was ${sdkIdAfterRound1}, now ${restored.sdkSessionId}`);
+      }
+
+      const reply2 = await sendAndWait(
+        win,
+        `Repeat the secret word you were told earlier. Then remember a SECOND secret word "${SECRET2}". Reply with only the two words on separate lines, no extra text.`,
+        90_000,
+        'B'
+      );
+      if (!reply2) {
+        throw new Error('B: prompt timed out at 90s on launch #2 — SDK did not respond (resume path broken)');
+      }
+      const txt2 = (reply2.lastAssistantText || '').toLowerCase();
+      if (!txt2.includes(SECRET)) {
+        throw new Error(`B: assistant did not recall the first secret. Got: ${reply2.lastAssistantText.slice(0, 300)}`);
+      }
+      // The CLI rotates session_id on resume. After this turn's `system/init`
+      // the persisted sdkSessionId MUST be the new one (capture-on-every-init).
+      sdkIdAfterRound2 = reply2.sdkSessionId;
+      log(`launch #2 post-send sdkSessionId=${sdkIdAfterRound2} (was ${sdkIdAfterRound1})`);
+      if (!sdkIdAfterRound2) {
+        throw new Error('launch #2: sdkSessionId disappeared after the resume turn');
+      }
+      if (sdkIdAfterRound2 === sdkIdAfterRound1) {
+        // Not strictly a failure (SDK behavior may vary), but worth a log —
+        // the round-3 assertion below is the real test.
+        log('NOTE: SDK did not rotate session_id on resume; fp5 regression guard still depends on round-3 success');
+      }
+    } finally {
+      try { await app.close(); closed = true; } catch {}
+    }
+  }
+
+  await new Promise((r) => setTimeout(r, 1000));
+
+  // ===== Launch #3: second restart cycle. Catches the "only captured first
+  // init" regression — if the fix didn't update sdkSessionId after the
+  // resume turn, this prompt times out (resume against a stale id). =====
+  {
+    const { app, win } = await launch('3');
+    let closed = false;
+    registerDispose(async () => { if (!closed) try { await app.close(); } catch {} });
+    try {
+      await win.waitForTimeout(2000);
+      await win.evaluate((sid) => {
+        const s = window.__ccsmStore?.getState();
+        if (s && typeof s.selectSession === 'function' && s.activeId !== sid) {
+          s.selectSession(sid);
+        }
+      }, SESSION_ID);
+      await win.waitForTimeout(1000);
+
+      const restored = await snapshot(win);
+      if (restored.sid !== SESSION_ID) {
+        throw new Error(`launch #3: session not restored; activeId=${restored.sid}`);
+      }
+      log(`launch #3 restored session, persisted sdkSessionId=${restored.sdkSessionId}`);
+      if (!restored.sdkSessionId) {
+        throw new Error('launch #3: sdkSessionId missing after second restart');
+      }
+      if (restored.sdkSessionId !== sdkIdAfterRound2) {
+        throw new Error(`launch #3: persisted sdkSessionId did not update after round-2 resume; expected ${sdkIdAfterRound2}, got ${restored.sdkSessionId}. Capture latched the first init only — fix is incomplete.`);
+      }
+
+      const reply3 = await sendAndWait(
+        win,
+        'List BOTH secret words you were told across all our conversation, one per line, no extra text.',
+        90_000,
+        'C'
+      );
+      if (!reply3) {
+        throw new Error('C: prompt timed out at 90s on launch #3 — second-restart resume path broken');
+      }
+      const txt3 = (reply3.lastAssistantText || '').toLowerCase();
+      if (!txt3.includes(SECRET)) {
+        throw new Error(`C: assistant did not recall the FIRST secret on launch #3. Got: ${reply3.lastAssistantText.slice(0, 300)}`);
+      }
+      if (!txt3.includes(SECRET2)) {
+        throw new Error(`C: assistant did not recall the SECOND secret on launch #3. Got: ${reply3.lastAssistantText.slice(0, 300)}`);
+      }
+      log(`PASS — both secrets recalled across two restarts ("开关开关开")`);
+    } finally {
+      try { await app.close(); closed = true; } catch {}
+    }
+  }
+}
+
+
+
 // Pre-launch fixture: plant a `~/.claude/settings.json` containing
 // `{"model":"opus[1m]"}` under a sandboxed HOME. Boot the app, call
 // `createSession()`, assert the new session's `model` is `"opus[1m]"`.
@@ -2308,6 +2585,13 @@ await runHarness({
     // with sandboxed CLAUDE_CONFIG_DIR + real claude.exe Bash invocation.
     // 桶 3 worker classified as restore-fits-the-multi-launch pattern.
     { id: 'permission-prompt-default-mode', skipLaunch: true, requiresClaudeBin: true, run: casePermissionPromptDefaultMode },
+    // restart-resume-continues-conversation (#fp5): two real-CLI launches
+    // into the SAME user-data dir. Launch #1 sends a prompt with a secret
+    // word, gets a reply. Launch #2 reopens the session and asks the
+    // assistant to repeat the secret. Without `sdkSessionId` capture +
+    // resume the second prompt times out — the SDK refuses to spawn over
+    // an existing JSONL transcript. Real claude.exe (Agent Maestro proxy).
+    { id: 'restart-resume-continues-conversation', skipLaunch: true, requiresClaudeBin: true, run: caseRestartResumeContinuesConversation },
     // Default cwd is ALWAYS the user's home directory — no fallback chain,
     // no derivation from CLI history, no inheritance from prior sessions.
     // (PR fix-default-cwd-home-and-model-settings-only.) Replaces the old

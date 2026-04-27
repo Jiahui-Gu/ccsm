@@ -543,6 +543,14 @@ type Actions = {
   replaceMessages: (sessionId: string, blocks: MessageBlock[]) => void;
   loadMessages: (sessionId: string) => Promise<void>;
   markStarted: (sessionId: string) => void;
+  /**
+   * Record the SDK-allocated CLI session_id captured from the first
+   * `system/init` frame. No-op if the session already has a value (init
+   * frames may arrive on every spawn — we only persist the first). Stored
+   * on the Session record so it survives ccsm restart and feeds the next
+   * agentStart's `--resume` arg. See `src/agent/startSession.ts`.
+   */
+  recordSdkSessionId: (sessionId: string, sdkSessionId: string) => void;
   setRunning: (sessionId: string, running: boolean) => void;
   setSessionState: (sessionId: string, state: Session['state']) => void;
   markInterrupted: (sessionId: string) => void;
@@ -2016,10 +2024,13 @@ export const useStore = create<State & Actions>((set, get) => ({
     // both cwd and the right sid (resumed imports keep the original CLI
     // sid in `resumeSessionId`; fresh sessions use ccsm's local id which
     // we forwarded to the SDK as its `sessionId`, so the filenames match).
+    // After cross-restart resume (#fp5) the SDK allocates a new sid for
+    // the resumed branch — captured into `sdkSessionId` — so we prefer
+    // that when present so subsequent loads pick up the latest transcript.
     const session = get().sessions.find((s) => s.id === sessionId);
     if (!session) return;
     const cwd = session.cwd ?? '';
-    const sidOnDisk = session.resumeSessionId || session.id;
+    const sidOnDisk = session.resumeSessionId || session.sdkSessionId || session.id;
     if (!cwd) {
       // No cwd → no project key → can't locate the JSONL. Treat as empty
       // (don't surface an error; cwd-less sessions are a transient state
@@ -2149,6 +2160,20 @@ export const useStore = create<State & Actions>((set, get) => ({
         ? s
         : { startedSessions: { ...s.startedSessions, [sessionId]: true } }
     );
+  },
+
+  recordSdkSessionId: (sessionId, sdkSessionId) => {
+    if (!sdkSessionId) return;
+    set((s) => {
+      const idx = s.sessions.findIndex((x) => x.id === sessionId);
+      if (idx < 0) return s;
+      const sess = s.sessions[idx];
+      if (sess.sdkSessionId === sdkSessionId) return s;
+      const nextSess = { ...sess, sdkSessionId };
+      const sessions = [...s.sessions];
+      sessions[idx] = nextSess;
+      return { sessions };
+    });
   },
 
   setRunning: (sessionId, running) => {

@@ -29,8 +29,17 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   // keeps the on-disk JSONL filename identical to what ccsm shows. We omit
   // it when `resumeSessionId` is set: the SDK rejects passing both at once
   // (it would conflict with which conversation to load), and on resume the
-  // SDK allocates a new sid for the resumed branch which we'll capture
-  // server-side and surface back via a future hook.
+  // SDK allocates a new sid for the resumed branch which we capture from
+  // the first `system/init` frame (see `src/agent/lifecycle.ts` —
+  // `recordSdkSessionId`).
+  //
+  // Cross-restart resume (#fp5): once we've captured a `sdkSessionId` for
+  // this session (any prior turn under THIS ccsm install), prefer it as
+  // the resume target. Without this, the SDK gets `sessionId: <existing-
+  // uuid>` whose JSONL is already on disk and silently refuses to start —
+  // the next prompt times out at 45s with no reply. Explicit user-set
+  // `resumeSessionId` (import path) still wins so import semantics are
+  // unchanged.
   //
   // Legacy persisted sessions whose id starts with `s-` (pre-PR-D format)
   // also skip the sessionId option: the SDK validates UUID shape and would
@@ -39,6 +48,7 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
   const isUuidShaped = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
     sessionId,
   );
+  const resumeSessionId = session.resumeSessionId ?? session.sdkSessionId;
   // Resolve the chip's effort level (per-session override, else global
   // default). Pass it through to `agentStart` so the SDK is launched with
   // the right `thinking` + `effort` options on the FIRST query — no
@@ -50,9 +60,9 @@ export async function startSessionAndReconcile(sessionId: string): Promise<boole
     cwd: session.cwd,
     model: session.model || undefined,
     permissionMode: store.permission,
-    resumeSessionId: session.resumeSessionId,
+    resumeSessionId,
     sessionId:
-      session.resumeSessionId == null && isUuidShaped ? sessionId : undefined,
+      resumeSessionId == null && isUuidShaped ? sessionId : undefined,
     effortLevel,
   });
 
