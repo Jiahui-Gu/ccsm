@@ -587,7 +587,7 @@ export const useStore = create<State & Actions>((set, get) => ({
     }));
   },
 
-  importSession: ({ name, cwd, groupId, resumeSessionId, projectDir }) => {
+  importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {
     const { sessions, groups, model, models, connection } = get();
     // Re-importing the same transcript: just re-select the existing row.
     // The JSONL UUID uniquely identifies the conversation, and our session

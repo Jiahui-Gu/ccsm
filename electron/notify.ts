@@ -117,7 +117,6 @@ function createNotification(
       try {
         options?.onAction({ toastId, action: 'focus', args: {} });
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.warn(
           `[notify] onAction handler threw for toast ${toastId}: ${e instanceof Error ? e.message : e}`,
         );
@@ -132,7 +131,6 @@ function createNotification(
     return n;
   } catch (e) {
     lastError = e instanceof Error ? e.message : String(e);
-    // eslint-disable-next-line no-console
     console.warn(`[notify] Notification.show failed: ${lastError}`);
     return null;
   }

@@ -33,9 +33,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Ensure base ref is fetched
-        run: git fetch origin "${{ github.base_ref }}" --depth=0
-
       - name: Compare claimed files vs actual diff
         env:
           GH_TOKEN: ${{ github.token }}

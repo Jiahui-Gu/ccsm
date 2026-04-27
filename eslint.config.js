@@ -60,7 +60,9 @@ export default [
         NodeList: 'readonly',
         Node: 'readonly',
         Event: 'readonly',
+        EventTarget: 'readonly',
         MouseEvent: 'readonly',
+        PointerEvent: 'readonly',
         FocusEvent: 'readonly',
         DragEvent: 'readonly',
         File: 'readonly',
@@ -71,7 +73,11 @@ export default [
         atob: 'readonly',
         getComputedStyle: 'readonly',
         requestAnimationFrame: 'readonly',
-        cancelAnimationFrame: 'readonly'
+        cancelAnimationFrame: 'readonly',
+        // `NodeJS` namespace is also referenced from renderer-side .d.ts
+        // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
+        // available alongside browser globals.
+        NodeJS: 'readonly'
       }
     },
     plugins: {
