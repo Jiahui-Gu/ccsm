@@ -56,7 +56,16 @@ export function AssistantBlock({
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
-            p: ({ children }) => <p className="whitespace-pre-wrap mb-2 last:mb-0">{children}</p>,
+            // `[overflow-wrap:anywhere]` — long unbreakable runs (URLs, hashes,
+            // a 500-char glob of one letter) must wrap inside the chat column,
+            // otherwise the assistant prose forces horizontal scroll on the
+            // whole row (fp11 dogfood Check F: scrollWidth=4297 vs
+            // clientWidth=1006). `anywhere` is preferred over `break-word`
+            // because it contributes to min-content sizing — necessary inside
+            // the parent `flex` + `min-w-0` container so the inner div
+            // actually shrinks. <pre> code blocks keep their own
+            // `overflow-x-auto` and are not affected by this rule.
+            p: ({ children }) => <p className="whitespace-pre-wrap [overflow-wrap:anywhere] mb-2 last:mb-0">{children}</p>,
             code: ({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { node?: unknown; children?: React.ReactNode }) => {
               const isInline = !className?.startsWith('language-');
               const { node: _node, ...rest } = props as { node?: unknown } & Record<string, unknown>;

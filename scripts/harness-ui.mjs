@@ -15,6 +15,7 @@
 //   - popover-cross-dismiss                (popover-mutex / #221)
 //   - type-scale-snapshot                  (#225, 4-step type token system)
 //   - chat-user-assistant-contrast         (#345, dogfood: user vs assistant rail)
+//   - assistant-long-line-wraps            (fp11 Check F, long unbreakable run wraps)
 //   - banner-i18n-toggle                   (banner i18n)
 //   - toast-a11y                           (#298 follow-up)
 //   - cwd-popover-recent-unfiltered        (probe-e2e-cwd-popover-recent-unfiltered)
@@ -700,6 +701,76 @@ async function caseChatUserAssistantContrast({ win, log }) {
   }
 
   log(`user.border=${probe.user.borderLeftWidth}@${probe.user.borderLeftColor} user.prefix=${probe.user.prefixColor}/${probe.user.prefixWeight} assistant.prefix=${probe.assistant.prefixColor}`);
+}
+
+// ---------- assistant-long-line-wraps ----------
+// fp11 dogfood Check F: when the assistant emits a single 500-char run with
+// no whitespace (URL, hash, "aaaa..."), the `<p>` must wrap inside the chat
+// column instead of pushing the whole row into horizontal scroll. Without
+// `overflow-wrap: anywhere` on the prose `<p>`, the default `word-break:
+// normal` + `overflow-wrap: normal` leaves unbreakable runs intact and the
+// assistant block's scrollWidth balloons to ~4× clientWidth (4297 vs 1006
+// in the original repro).
+//
+// Reverse-verify: drop `[overflow-wrap:anywhere]` from the `<p>` className
+// in src/components/chat/blocks/AssistantBlock.tsx; this case must FAIL on
+// the scrollWidth-overflow check.
+async function caseAssistantLongLineWraps({ win, log }) {
+  const longRun = 'a'.repeat(500);
+  await win.evaluate((text) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 'session-one', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: {
+        s1: [
+          { kind: 'assistant', id: 'm-asst-long', text }
+        ]
+      }
+    });
+  }, longRun);
+  await win.waitForTimeout(300);
+
+  const probe = await win.evaluate(() => {
+    const block = document.querySelector('[data-type-scale-role="assistant-body"]');
+    if (!block) return null;
+    // Walk to the `<p>` ReactMarkdown rendered inside the prose container.
+    const p = block.querySelector('p');
+    return {
+      blockScrollWidth: block.scrollWidth,
+      blockClientWidth: block.clientWidth,
+      pScrollWidth: p ? p.scrollWidth : null,
+      pClientWidth: p ? p.clientWidth : null,
+      pOverflowWrap: p ? getComputedStyle(p).overflowWrap : null
+    };
+  });
+
+  if (!probe) throw new Error('assistant-body block not found in DOM');
+
+  const failures = [];
+  // Allow 2px slack for sub-pixel rounding.
+  if (probe.blockScrollWidth > probe.blockClientWidth + 2) {
+    failures.push(
+      `assistant block horizontal overflow: scrollWidth=${probe.blockScrollWidth} > clientWidth=${probe.blockClientWidth} (expected wrap)`
+    );
+  }
+  if (probe.pScrollWidth != null && probe.pScrollWidth > probe.pClientWidth + 2) {
+    failures.push(
+      `assistant <p> horizontal overflow: scrollWidth=${probe.pScrollWidth} > clientWidth=${probe.pClientWidth}`
+    );
+  }
+  if (probe.pOverflowWrap !== 'anywhere') {
+    failures.push(`assistant <p> overflow-wrap should be 'anywhere', got '${probe.pOverflowWrap}'`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      'assistant long-line wrap regression:\n  - ' + failures.join('\n  - ') +
+      '\n  probe=' + JSON.stringify(probe)
+    );
+  }
+
+  log(`block ${probe.blockScrollWidth}/${probe.blockClientWidth} p ${probe.pScrollWidth}/${probe.pClientWidth} overflow-wrap=${probe.pOverflowWrap}`);
 }
 
 // ---------- banner-i18n-toggle ----------
@@ -3477,6 +3548,7 @@ await runHarness({
     { id: 'popover-cross-dismiss', run: casePopoverCrossDismiss },
     { id: 'type-scale-snapshot', run: caseTypeScaleSnapshot },
     { id: 'chat-user-assistant-contrast', run: caseChatUserAssistantContrast },
+    { id: 'assistant-long-line-wraps', run: caseAssistantLongLineWraps },
     { id: 'banner-i18n-toggle', run: caseBannerI18nToggle },
     { id: 'toast-a11y', run: caseToastA11y },
     { id: 'cwd-popover-recent-unfiltered', run: caseCwdPopoverRecentUnfiltered },
