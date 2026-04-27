@@ -31,7 +31,7 @@ export const buttonVariants = cva(
           'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18)]',
           'hover:bg-[linear-gradient(to_bottom,oklch(0.86_0.14_215),oklch(0.66_0.14_215))]',
           'active:bg-[linear-gradient(to_bottom,oklch(0.62_0.14_215),oklch(0.70_0.14_215))]',
-          'focus-visible:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18),0_0_0_3px_oklch(0.72_0.14_215_/_0.35)]',
+          'focus-visible:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.28),0_1px_0_0_oklch(0_0_0_/_0.18),0_0_0_3px_var(--color-focus-ring)]',
           'disabled:bg-bg-elevated disabled:bg-none disabled:shadow-none disabled:border-border-default disabled:text-fg-disabled'
         ),
         secondary: cn(
@@ -62,7 +62,7 @@ export const buttonVariants = cva(
           'disabled:bg-bg-elevated disabled:border-border-default disabled:text-fg-disabled disabled:shadow-none'
         ),
         danger: cn(
-          'text-status-error-foreground font-medium',
+          'text-state-error-fg font-medium',
           'border border-[oklch(0.50_0.20_25)]',
           'bg-[linear-gradient(to_bottom,oklch(0.68_0.22_25),oklch(0.56_0.22_25))]',
           'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.22),0_1px_0_0_oklch(0_0_0_/_0.18)]',
@@ -73,9 +73,9 @@ export const buttonVariants = cva(
         )
       },
       size: {
-        xs: 'h-6 px-2 text-xs gap-1.5 has-[>svg]:px-1.5',
-        sm: 'h-6 px-2.5 text-xs gap-1.5 has-[>svg]:px-2',
-        md: 'h-7 px-3 text-sm gap-2 has-[>svg]:px-2.5',
+        xs: 'h-6 px-2 text-meta gap-1.5 has-[>svg]:px-1.5',
+        sm: 'h-6 px-2.5 text-meta gap-1.5 has-[>svg]:px-2',
+        md: 'h-7 px-3 text-chrome gap-2 has-[>svg]:px-2.5',
         lg: 'h-8 px-4 text-md gap-2 has-[>svg]:px-3'
       }
     },

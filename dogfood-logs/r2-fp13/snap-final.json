@@ -1,0 +1,22 @@
+{
+  "activeId": "f56940fd-40d5-4379-85b3-cc78893b0af6",
+  "sessions": [
+    {
+      "id": "f56940fd-40d5-4379-85b3-cc78893b0af6",
+      "name": "fp13 probe",
+      "cwd": "C:\\Users\\jiahuigu"
+    }
+  ],
+  "running": false,
+  "messageCount": 4,
+  "statsCostUsd": null,
+  "statsTokensIn": null,
+  "statsTokensOut": null,
+  "contextUsage": {
+    "totalTokens": 36070,
+    "contextWindow": 1000000,
+    "model": "claude-opus-4-7[1m]"
+  },
+  "effortLevel": "high",
+  "globalEffort": "high"
+}

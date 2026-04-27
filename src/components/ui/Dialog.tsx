@@ -3,6 +3,7 @@ import * as RD from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
 import { IconButton } from './IconButton';
+import { useTranslation } from '../../i18n/useTranslation';
 
 export const Dialog = RD.Root;
 export const DialogTrigger = RD.Trigger;
@@ -41,16 +42,22 @@ export const DialogContent = forwardRef<
   { className, children, title, description, hideClose, width = '520px', ...rest },
   ref
 ) {
+  const { t } = useTranslation('common');
   return (
     <DialogPortal>
       <DialogOverlay />
       <RD.Content
         ref={ref}
+        // Marker used by InputBar's global Esc handler to back off. Inline
+        // sticky widgets (AskUserQuestion, CwdPopover) also use role="dialog"
+        // for a11y but are NOT modal — they should not consume Esc-to-stop.
+        data-modal-dialog=""
+        aria-modal="true"
         className={cn(
           'fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2',
           'rounded-lg border border-border-default bg-bg-panel',
           'surface-highlight',
-          'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_8px_32px_oklch(0_0_0_/_0.45),0_2px_8px_oklch(0_0_0_/_0.25)]',
+          'shadow-[var(--surface-shadow)]',
           'text-fg-primary outline-none',
           'data-[state=open]:animate-[dialogIn_200ms_cubic-bezier(0.32,0.72,0,1)]',
           'data-[state=closed]:opacity-0',
@@ -63,19 +70,19 @@ export const DialogContent = forwardRef<
           <div className="flex items-start gap-3 px-5 pt-4 pb-3">
             <div className="flex-1 min-w-0">
               {title && (
-                <RD.Title className="text-base font-semibold text-fg-primary leading-tight">
+                <RD.Title className="text-heading font-semibold text-fg-primary leading-tight">
                   {title}
                 </RD.Title>
               )}
               {description && (
-                <RD.Description className="mt-1 text-sm text-fg-tertiary">
+                <RD.Description className="mt-1 text-chrome text-fg-tertiary">
                   {description}
                 </RD.Description>
               )}
             </div>
             {!hideClose && (
               <DialogClose asChild>
-                <IconButton size="sm" aria-label="Close">
+                <IconButton size="sm" aria-label={t('close')}>
                   <X size={13} className="stroke-[1.75]" />
                 </IconButton>
               </DialogClose>

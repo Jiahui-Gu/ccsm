@@ -1,0 +1,53 @@
+{
+  "activeId": "50ef703a-76e2-40ec-a073-5e47f86457da",
+  "running": false,
+  "messageCount": 8,
+  "blocks": [
+    {
+      "kind": "user",
+      "id": "u-mogsc0hp-nuzf",
+      "text": "用三句话介绍一下今天天气怎么测，很感谢"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777269435859:c0",
+      "text": "测量今天天气的三种主要方式：\n\n1. **查看天气应用/网站** — 使用手机天气 App（如墨迹天气、彩云天气）或访问天气网站（如 weather.com），输入所在城市即可获取实时数据。\n\n2. **使用气象仪器测量** — 用**温度计**测气温、**湿度计**测湿度、**气压计**测大气压，适合想获取精确本地数据的用户。\n\n3. **观察自然现象** — 通过云层厚薄、风向风速、能见度等自然迹象，结合经验进行简单判断，是最直观的传统方法。"
+    },
+    {
+      "kind": "user",
+      "id": "u-mogsc6zv-e770",
+      "text": "Please respond with EXACTLY this markdown (no extra commentary). Reply ONLY with the markdown content below:\n\n# Heading One\n\nUnordered list:\n- alpha\n- beta\n- gamma\n\nOrdered list:\n1. first\n2. second\n3. third\n\n```javascript\nconsole.log('hello world');\n```\n\n> a quoted line\n\nThis has **bold word** and *italic word* and inline `foo` code."
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777269443223:c0",
+      "text": "# Heading One\n\nUnordered list:\n- alpha\n- beta\n- gamma\n\nOrdered list:\n1. first\n2. second\n3. third\n\n```javascript\nconsole.log('hello world');\n```\n\n> a quoted line\n\nThis has **bold word** and *italic word* and inline `foo` code."
+    },
+    {
+      "kind": "user",
+      "id": "u-mogsca7y-skbp",
+      "text": "count from 1 to 200 one per line. Output ONLY the numbers, nothing else."
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777269447401:c0",
+      "text": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26\n27\n28\n29\n30\n31\n32\n33\n34\n35\n36\n37\n38\n39\n40\n41\n42\n43\n44\n45\n46\n47\n48\n49\n50\n51\n52\n53\n54\n55\n56\n57\n58\n59\n60\n61\n62\n63\n64\n65\n66\n67\n68\n69\n70\n71\n72\n73\n74\n75\n76\n77\n78\n79\n80\n81\n82\n83\n84\n85\n86\n87\n88\n89\n90\n91\n92\n93\n94\n95\n96\n97\n98\n99\n100\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n141\n142\n143\n144\n145\n146\n147\n148\n149\n150\n151\n152\n153\n154\n155\n156\n157\n158\n159\n160\n161\n162\n163\n164\n165\n166\n167\n168\n169\n170\n171\n172\n173\n174\n175\n176\n177\n178\n179\n180\n181\n182\n183\n184\n185\n186\n187\n188\n189\n190\n191\n192\n193\n194\n195\n196\n197\n198\n199\n200"
+    },
+    {
+      "kind": "user",
+      "id": "u-mogscg0h-x2wd",
+      "text": "summarize 这段内容: hello 世界 こんにちは"
+    },
+    {
+      "kind": "assistant",
+      "id": "msg_1777269454905:c0",
+      "text": "The content is a simple multilingual greeting saying **\"Hello\"** in three languages:\n\n- **English**: hello\n- **Chinese**: 世界 (world) — though this means \"world,\" it's commonly paired with \"hello\" as in \"Hello World\"\n- **Japanese**: こんにちは (Konnichiwa) — \"Hello/Good afternoon\""
+    }
+  ],
+  "statsCostUsd": null,
+  "contextUsage": {
+    "totalTokens": 26249,
+    "contextWindow": 200000,
+    "model": "claude-sonnet-4-6"
+  }
+}

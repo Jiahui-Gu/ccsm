@@ -1,0 +1,22 @@
+{
+  "morphIdle": {
+    "found": true,
+    "morphState": "send",
+    "ariaLabel": "Send message",
+    "backgroundColor": "oklch(0.975 0.003 240)",
+    "color": "oklch(0.62 0.004 240)",
+    "text": "Send",
+    "disabled": true
+  },
+  "streamingMorph": {
+    "morphState": "stop",
+    "ariaLabel": "Stop",
+    "bg": "rgba(0, 0, 0, 0)"
+  },
+  "morphAfter": {
+    "morphState": "send",
+    "ariaLabel": "Send message",
+    "bg": "oklch(0.975 0.003 240)"
+  },
+  "sidebarWaiting": null
+}

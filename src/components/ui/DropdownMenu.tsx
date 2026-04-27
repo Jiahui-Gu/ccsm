@@ -18,7 +18,7 @@ export const DropdownMenuLabel = forwardRef<
     <RDM.Label
       ref={ref}
       className={cn(
-        'px-3 pt-1.5 pb-1 text-[10px] uppercase tracking-[0.08em] font-medium text-fg-tertiary',
+        'px-3 pt-1.5 pb-1 text-mono-sm font-medium text-fg-tertiary',
         className
       )}
       {...rest}
@@ -38,7 +38,7 @@ export const DropdownMenuContent = forwardRef<
         className={cn(
           'z-50 min-w-[180px] py-1 rounded-md border border-border-default bg-bg-elevated',
           'surface-highlight surface-elevated',
-          'text-sm text-fg-secondary outline-none',
+          'text-chrome text-fg-secondary outline-none',
           'data-[state=open]:animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]',
           'data-[state=closed]:opacity-0',
           'origin-[var(--radix-dropdown-menu-content-transform-origin)]',

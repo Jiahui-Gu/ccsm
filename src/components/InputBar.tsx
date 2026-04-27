@@ -1,81 +1,1243 @@
-import React, { useState } from 'react';
-import { ArrowUp } from 'lucide-react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { AlertCircle, ArrowUp, ImagePlus, Square, X } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Button } from './ui/Button';
+import { MetaLabel } from './ui/MetaLabel';
+import { useStore } from '../stores/store';
+import { serializeDiffCommentsForPrompt } from '../stores/store';
+import { DURATION, EASING } from '../lib/motion';
+import { useShallow } from 'zustand/react/shallow';
+import { SlashCommandPicker } from './SlashCommandPicker';
+import { MentionPicker } from './MentionPicker';
+import {
+  BUILT_IN_COMMANDS,
+  detectSlashTrigger,
+  dispatchSlashCommand,
+  filterSlashCommands,
+  loadDynamicCommands,
+  nextSectionIndex,
+  parseSlashInvocation,
+  type SlashCommand
+} from '../slash-commands/registry';
+import {
+  commitMention,
+  detectAtTrigger,
+  filterMentionFiles,
+} from '../mentions/registry';
+import type { WorkspaceFile } from '../shared/ipc-types';
+import type { ImageAttachment } from '../types';
+import {
+  attachmentToDataUrl,
+  buildUserContentBlocks,
+  formatSize,
+  intakeFiles,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_PER_MESSAGE,
+  SUPPORTED_IMAGE_TYPES,
+  type AttachmentRejection
+} from '../lib/attachments';
+import { useTranslation } from '../i18n/useTranslation';
+import { runningPlaceholderForMode } from '../lib/runningPlaceholder';
+import { useToast } from './ui/Toast';
 
-// Per-session draft cache. Survives session switches within a process so
-// users don't lose half-typed prompts when they pop into another session.
-// Cleared on send. Not persisted to disk by design — drafts are ephemeral.
-const draftCache = new Map<string, string>();
+// Per-session text drafts persist across session switches AND across app
+// restarts (see ../stores/drafts). Cleared on send. Image attachments stay
+// in-memory only — they're large and re-droppable.
+import { getDraft, setDraft, clearDraft } from '../stores/drafts';
+import { startSessionAndReconcile } from '../agent/startSession';
+
+// Per-session attachment cache. Same rationale as the text draft: stays in
+// memory across session switches, cleared on send. Data URLs are ephemeral
+// too — users can always re-drop if the process restarts.
+const attachmentCache = new Map<string, ImageAttachment[]>();
+
+function nextLocalId(): string {
+  return `u-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function AttachmentChip({
+  attachment,
+  onRemove
+}: {
+  attachment: ImageAttachment;
+  onRemove: () => void;
+}) {
+  const { t } = useTranslation();
+  const url = useMemo(() => attachmentToDataUrl(attachment), [attachment]);
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 4, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -2, scale: 0.96 }}
+      transition={{ duration: DURATION.standard, ease: EASING.standard }}
+      className="group relative flex items-center gap-2 rounded-md border border-border-subtle bg-bg-elevated/80 pl-1 pr-2 py-1 hover:border-border-strong transition-colors duration-150 ease-out"
+    >
+      <img
+        src={url}
+        alt={attachment.name}
+        className="h-12 w-12 shrink-0 rounded-sm object-cover"
+        draggable={false}
+      />
+      <div className="min-w-0 flex flex-col">
+        <span className="text-meta text-fg-primary truncate max-w-[180px]" title={attachment.name}>
+          {attachment.name}
+        </span>
+        <span className="text-meta text-fg-tertiary">
+          {attachment.mediaType.replace('image/', '')} · {formatSize(attachment.size)}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={t('chat.removeAttachment', { name: attachment.name })}
+        className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full text-fg-tertiary hover:text-fg-primary hover:bg-bg-hover active:scale-95 transition-all duration-150 ease-out outline-none focus-ring"
+      >
+        <X size={12} className="stroke-[2.25]" />
+      </button>
+    </motion.div>
+  );
+}
+
+function DropOverlay({ show }: { show: boolean }) {
+  const { t } = useTranslation();
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          key="drop-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: DURATION.fast, ease: EASING.enter }}
+          className="pointer-events-none absolute inset-2 z-10 rounded-lg border-2 border-dashed border-accent bg-accent/[0.08] backdrop-blur-[1px] flex flex-col items-center justify-center gap-2"
+          aria-hidden
+        >
+          <ImagePlus size={28} className="text-accent" />
+          <span className="font-mono text-chrome text-accent tracking-wide">{t('chat.dropImageHint')}</span>
+          <span className="text-meta text-accent/70">
+            {t('chat.attachmentFormatsHint', { size: formatSize(MAX_IMAGE_BYTES) })}
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+function hasDraggedFiles(e: DragEvent): boolean {
+  // `types` is the cross-browser way to peek at DataTransfer during dragover
+  // without reading `files` (which browsers intentionally blank until drop).
+  const types = e.dataTransfer?.types;
+  if (!types) return false;
+  // In Chromium, file drags include a 'Files' entry.
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === 'Files') return true;
+  }
+  return false;
+}
 
 export function InputBar({ sessionId }: { sessionId: string }) {
-  const [value, setValue] = useState(() => draftCache.get(sessionId) ?? '');
+  const { t } = useTranslation();
+  const { push: pushToast } = useToast();
+  const [value, setValue] = useState(() => getDraft(sessionId));
+  const [attachments, setAttachments] = useState<ImageAttachment[]>(
+    () => attachmentCache.get(sessionId) ?? []
+  );
+  const [rejections, setRejections] = useState<AttachmentRejection[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  // Perf: subscribe to all reactive per-session signals via useShallow so this
+  // component only re-renders when one of these specific values changes
+  // (instead of once per any store mutation, like an appendBlocks chunk).
+  // PR-N: ↑/↓ history recall. Subscribe to a derived array of user-prompt
+  // texts (newest first) via useShallow so the component only re-renders when
+  // the recall list itself changes — not on every per-token assistant chunk.
+  // The selector skips slash-command echoes and image-only turns since those
+  // can't be re-sent through the textarea anyway.
+  const userPromptHistory = useStore(
+    useShallow((s) => {
+      const blocks = s.messagesBySession[sessionId] ?? [];
+      const out: string[] = [];
+      // Stashed drafts come first — these are recent in-flight composer
+      // contents that the user-message hover menu's Edit action would
+      // otherwise have silently overwritten. Surfacing them ahead of the
+      // sent-prompt history matches "↑ recalls the most recent thing I
+      // was typing", which is what the user actually wants.
+      const stashed = s.stashedDrafts[sessionId];
+      if (stashed) {
+        for (const text of stashed) {
+          if (text && text.trim()) out.push(text);
+        }
+      }
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.kind !== 'user') continue;
+        if (!b.text || !b.text.trim()) continue;
+        out.push(b.text);
+      }
+      return out;
+    })
+  );
+  // recallIndex semantics:
+  //   0       → idle (composer reflects the user's own draft / empty)
+  //   1..N    → recall mode, value === userPromptHistory[index - 1]
+  // Reset on session switch (the sessionId effect below) and on any user edit
+  // that diverges from the recalled prompt.
+  const [recallIndex, setRecallIndex] = useState(0);
 
-  // When sessionId changes, swap the visible draft to that session's cached
-  // value. We persist the previous session's draft into the cache via the
-  // setter below — onChange writes both state and cache in one step.
-  React.useEffect(() => {
-    setValue(draftCache.get(sessionId) ?? '');
+  const { session, started, running, queueLength, hasMessages, hasPendingWaiting, permission, focusInputNonce, pendingDiffCommentsCount, lastTurnEnd, composerInjectNonce, composerInjectText } = useStore(
+    useShallow((s) => ({
+      session: s.sessions.find((x) => x.id === sessionId),
+      started: !!s.startedSessions[sessionId],
+      running: !!s.runningSessions[sessionId],
+      queueLength: s.messageQueues[sessionId]?.length ?? 0,
+      hasMessages: (s.messagesBySession[sessionId]?.length ?? 0) > 0,
+      // True iff there's a pending permission/plan/question prompt for this
+      // session — those blocks auto-focus their own primary control (see the
+      // setTimeout(..., 150) in WaitingBlock/PlanBlock, plus the sticky
+      // <QuestionStickyHost /> for AskUserQuestion). We let them win and
+      // skip stealing focus into the textarea. Unanswered `question` blocks
+      // count too — even though they no longer render in the timeline, the
+      // sticky widget owns focus until the user submits or dismisses it.
+      hasPendingWaiting: (s.messagesBySession[sessionId] ?? []).some(
+        (b) => b.kind === 'waiting' || (b.kind === 'question' && !b.answered)
+      ),
+      permission: s.permission,
+      focusInputNonce: s.focusInputNonce,
+      // Count of pending per-line diff comments queued up to ride the next
+      // user prompt as `<diff-feedback>` blocks (#303). Drives the "N diff
+      // comments will be sent" indicator + lets the send path skip the
+      // serialization round-trip when there are none.
+      pendingDiffCommentsCount: Object.keys(s.pendingDiffComments[sessionId] ?? {}).length,
+      // task322: 'interrupted' iff the last turn for this session ended via
+      // user-initiated stop. Drives the continue-hint affordance below.
+      lastTurnEnd: s.lastTurnEnd[sessionId] ?? null,
+      composerInjectNonce: s.composerInjectNonce,
+      composerInjectText: s.composerInjectText,
+    }))
+  );
+  // Action references are stable across renders in Zustand v5, so reading them
+  // via getState() avoids registering listeners that would never fire anyway.
+  const { appendBlocks, markStarted, setRunning, markInterrupted, enqueueMessage, clearQueue, bumpComposerFocus, clearDiffComments, clearLastTurnEnd, markQuestionAnswered } =
+    useStore.getState();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Skip the very first observation of focusInputNonce so app mount doesn't
+  // steal focus from wherever the user (or some other auto-focus) put it.
+  const focusNonceSeenRef = useRef<number | null>(null);
+  // Counts nested dragenter/dragleave events at window level so sub-element
+  // drags don't flicker the overlay off before the user drops.
+  const dragDepthRef = useRef(0);
+
+  // --- Slash-command picker state --------------------------------------
+  // We derive picker openness from (value, caret) rather than storing a
+  // separate `open` flag, so the picker cannot drift out of sync with the
+  // textarea content. `caret` is updated on every keyup/click/select.
+  const [caret, setCaret] = useState(0);
+  // `dismissed` lets the user Esc-out of the picker without needing to
+  // change the textarea content. Any edit re-arms it.
+  const [pickerDismissed, setPickerDismissed] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  // Disk-discovered commands (user / project / plugin). Reload whenever
+  // the session or its cwd changes so project-level commands track the
+  // active workspace, and again on textarea focus so a user dropping a new
+  // .md file in mid-session sees it without reloading the app.
+  const cwd = session?.cwd ?? null;
+  const [dynamicCommands, setDynamicCommands] = useState<SlashCommand[]>([]);
+  const refreshDynamic = useCallback(async () => {
+    const next = await loadDynamicCommands(cwd);
+    setDynamicCommands(next);
+  }, [cwd]);
+  useEffect(() => {
+    void refreshDynamic();
+  }, [refreshDynamic]);
+
+  const allCommands = useMemo<SlashCommand[]>(
+    () => [...BUILT_IN_COMMANDS, ...dynamicCommands],
+    [dynamicCommands]
+  );
+
+  const trigger = useMemo(() => detectSlashTrigger(value, caret), [value, caret]);
+  const filtered = useMemo<SlashCommand[]>(
+    () => (trigger.active ? filterSlashCommands(allCommands, trigger.query) : []),
+    [trigger, allCommands]
+  );
+  const pickerOpen = trigger.active && !pickerDismissed;
+  // Clamp activeIndex whenever the filtered list shrinks.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    if (activeIndex >= filtered.length) setActiveIndex(Math.max(0, filtered.length - 1));
+  }, [pickerOpen, filtered.length, activeIndex]);
+
+  // --- @file mention picker state -------------------------------------
+  // Same trigger/dismiss/active-index pattern as the slash picker, but the
+  // file list is loaded async via IPC. We only fetch once per cwd (and on
+  // textarea focus, so a freshly-`touch`-ed file shows up without a reload).
+  const [mentionFiles, setMentionFiles] = useState<WorkspaceFile[]>([]);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionActiveIndex, setMentionActiveIndex] = useState(0);
+  const refreshMentionFiles = useCallback(async () => {
+    const bridge = typeof window !== 'undefined' ? window.ccsm : undefined;
+    if (!bridge?.files?.list) {
+      setMentionFiles([]);
+      return;
+    }
+    try {
+      const next = await bridge.files.list(cwd ?? null);
+      setMentionFiles(next);
+    } catch {
+      setMentionFiles([]);
+    }
+  }, [cwd]);
+  useEffect(() => {
+    void refreshMentionFiles();
+  }, [refreshMentionFiles]);
+
+  const atTrigger = useMemo(() => detectAtTrigger(value, caret), [value, caret]);
+  const filteredFiles = useMemo<WorkspaceFile[]>(
+    () => (atTrigger.active ? filterMentionFiles(mentionFiles, atTrigger.query) : []),
+    [atTrigger, mentionFiles]
+  );
+  const mentionOpen = atTrigger.active && !mentionDismissed;
+  useEffect(() => {
+    if (!mentionOpen) return;
+    if (mentionActiveIndex >= filteredFiles.length)
+      setMentionActiveIndex(Math.max(0, filteredFiles.length - 1));
+  }, [mentionOpen, filteredFiles.length, mentionActiveIndex]);
+
+  // Wire the slash picker into the global popover mutex (id: 'slash'). When
+  // the user opens any other popover (cwd / model chip / permission chip),
+  // openPopoverId moves off 'slash' and we dismiss the picker so it can't
+  // visually overlap a sibling. Conversely, opening the picker claims the
+  // slot, which auto-closes whichever popover was previously open.
+  const openPopoverId = useStore((s) => s.openPopoverId);
+  const openPopover = useStore((s) => s.openPopover);
+  const closePopover = useStore((s) => s.closePopover);
+  useEffect(() => {
+    if (pickerOpen) openPopover('slash');
+    else closePopover('slash');
+  }, [pickerOpen, openPopover, closePopover]);
+  useEffect(() => {
+    if (pickerOpen && openPopoverId !== null && openPopoverId !== 'slash') {
+      setPickerDismissed(true);
+    }
+  }, [openPopoverId, pickerOpen]);
+  // Mention picker shares the global popover mutex (id: 'mention'). Same
+  // semantics as the slash picker — opening any sibling popover dismisses.
+  useEffect(() => {
+    if (mentionOpen) openPopover('mention');
+    else closePopover('mention');
+  }, [mentionOpen, openPopover, closePopover]);
+  useEffect(() => {
+    if (mentionOpen && openPopoverId !== null && openPopoverId !== 'mention') {
+      setMentionDismissed(true);
+    }
+  }, [openPopoverId, mentionOpen]);
+
+  useEffect(() => {
+    setValue(getDraft(sessionId));
+    setAttachments(attachmentCache.get(sessionId) ?? []);
+    setRejections([]);
+    // PR-N: history recall is per-session — wipe the index when switching so
+    // ↑ on a fresh session always starts at the most recent prompt.
+    setRecallIndex(0);
   }, [sessionId]);
+
+  // task322: continue-after-interrupt — show a one-line hint above the
+  // composer after the user stops a turn, telling them they can press Enter
+  // (with empty composer) to send the literal `continue`. Gate conditions:
+  //   (a) last turn ended via interrupt (store: lastTurnEnd === 'interrupted')
+  //   (b) composer is empty (no draft, no attachments)
+  //   (c) user hasn't typed anything since the interrupt (typedSinceInterrupt
+  //       latches true on the first keystroke, resets on a fresh interrupt)
+  //   (d) agent is not currently running
+  // The hint dismisses when any of (b)/(c)/(d) flips, when the user sends a
+  // message (clearLastTurnEnd in `send()`), or when a new turn starts
+  // (setRunning(true) clears lastTurnEnd in the store).
+  const [typedSinceInterrupt, setTypedSinceInterrupt] = useState(false);
+  // Reset the typed-since-interrupt latch every time we observe a new
+  // 'interrupted' transition. The session-id change effect above also resets
+  // this implicitly (component unmount/remount), but session switches reuse
+  // the same component instance — so we re-arm explicitly here.
+  const lastSeenInterruptRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${sessionId}:${lastTurnEnd ?? 'none'}`;
+    if (lastSeenInterruptRef.current === key) return;
+    lastSeenInterruptRef.current = key;
+    if (lastTurnEnd === 'interrupted') setTypedSinceInterrupt(false);
+  }, [sessionId, lastTurnEnd]);
+  const showContinueHint =
+    lastTurnEnd === 'interrupted' &&
+    !running &&
+    value === '' &&
+    attachments.length === 0 &&
+    !typedSinceInterrupt;
+
+  useEffect(() => {
+    if (focusNonceSeenRef.current === null) {
+      focusNonceSeenRef.current = focusInputNonce;
+      return;
+    }
+    if (focusNonceSeenRef.current === focusInputNonce) return;
+    focusNonceSeenRef.current = focusInputNonce;
+    if (hasPendingWaiting) return;
+    // Don't yank focus out of another text-entry surface the user is
+    // actively typing in (e.g. the inline-rename input on a session row,
+    // a settings dialog field, etc.). Sidebar clicks land focus on the
+    // session <li> (role="option"), which is fine to override.
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && ae !== textareaRef.current) {
+      const tag = ae.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || ae.isContentEditable) return;
+    }
+    textareaRef.current?.focus();
+  }, [focusInputNonce, hasPendingWaiting]);
+
+  // Composer-injection: the user-message hover menu's "Edit and resend" action
+  // bumps `composerInjectNonce` after writing the original message text into
+  // `composerInjectText`. Mirror the focus-nonce skip-first-observation pattern
+  // so hot-reload / mount doesn't clobber the persisted draft.
+  const injectNonceSeenRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (injectNonceSeenRef.current === null) {
+      injectNonceSeenRef.current = composerInjectNonce;
+      return;
+    }
+    if (injectNonceSeenRef.current === composerInjectNonce) return;
+    injectNonceSeenRef.current = composerInjectNonce;
+    setValue(composerInjectText);
+    setDraft(sessionId, composerInjectText);
+    // Cursor at end of text after React paints. queueMicrotask isn't on the
+    // shared lint env globals; Promise.resolve().then() is the portable form.
+    void Promise.resolve().then(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const end = composerInjectText.length;
+      try {
+        ta.setSelectionRange(end, end);
+      } catch {
+        /* setSelectionRange throws on some non-textarea inputs */
+      }
+    });
+  }, [composerInjectNonce, composerInjectText, sessionId]);
 
   function update(next: string) {
     setValue(next);
-    if (next) draftCache.set(sessionId, next);
-    else draftCache.delete(sessionId);
+    // PR-N: any user-initiated edit that diverges from the recalled prompt
+    // exits recall mode. Compare against the prompt at the current index so
+    // a programmatic recall fill (which routes through setValue directly,
+    // not update()) doesn't accidentally trip this guard.
+    if (recallIndex > 0) {
+      const recalled = userPromptHistory[recallIndex - 1];
+      if (next !== recalled) setRecallIndex(0);
+    }
+    // task322: any keystroke (even one that lands an empty string back —
+    // e.g. paste-then-undo) counts as user activity that dismisses the
+    // continue-after-interrupt hint. We only flip the latch when the value
+    // actually has content; pure deletions back to "" leave the hint armed
+    // (the user might still hit Enter to continue).
+    if (next !== '') setTypedSinceInterrupt(true);
+    // Any edit re-arms the picker (so the user can dismiss with Esc, then
+    // keep typing to reopen it if they're still in the `/...` prefix).
+    setPickerDismissed(false);
+    setActiveIndex(0);
+    // Same for the @ mention picker — re-arm on every edit so Esc-then-type
+    // reopens it. Reset highlight to row 0.
+    setMentionDismissed(false);
+    setMentionActiveIndex(0);
+    // Keep caret in sync with the edit — textarea may not have fired
+    // onSelect/onKeyUp yet when onChange lands (and programmatic fills
+    // from Playwright skip those entirely).
+    const el = textareaRef.current;
+    if (el) setCaret(el.selectionStart ?? next.length);
+    else setCaret(next.length);
+    if (next) setDraft(sessionId, next);
+    else clearDraft(sessionId);
   }
 
-  function send() {
-    if (!value.trim()) return;
+  function commitSlashCommand(cmd: SlashCommand) {
+    // Built-in client-handled commands (currently just /clear) run
+    // immediately on commit rather than parking `/name<space>` in the
+    // textarea waiting for another Enter press. Dynamic / pass-through
+    // commands ALSO run immediately when they have no `argument-hint` —
+    // they're meant to be one-shots. When an argument hint exists we
+    // insert `/name ` and let the user type the args before sending.
+    if (cmd.clientHandler) {
+      void dispatchSlashCommand(`/${cmd.name}`, allCommands, { sessionId, args: '' });
+      setValue('');
+      clearDraft(sessionId);
+      setCaret(0);
+      setPickerDismissed(true);
+      setActiveIndex(0);
+      return;
+    }
+    if (!cmd.argumentHint) {
+      // Pass-through one-shot: forward `/name` as a real send so the CLI
+      // sees it. Mirror the normal send path's draft cleanup.
+      void send(`/${cmd.name}`);
+      setValue('');
+      clearDraft(sessionId);
+      setCaret(0);
+      setPickerDismissed(true);
+      setActiveIndex(0);
+      return;
+    }
+    const next = `/${cmd.name} `;
+    setValue(next);
+    setDraft(sessionId, next);
+    setCaret(next.length);
+    setPickerDismissed(true);
+    setActiveIndex(0);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+    });
+  }
+
+  function setAttachmentsAndCache(next: ImageAttachment[]): void {
+    setAttachments(next);
+    if (next.length > 0) attachmentCache.set(sessionId, next);
+    else attachmentCache.delete(sessionId);
+  }
+
+  // Commit a chosen file from the @ mention picker. Splices `@<path> ` into
+  // the textarea at the trigger location, advances the caret past the
+  // inserted token + trailing space, dismisses the picker, and persists the
+  // updated draft. Mirrors `commitSlashCommand` for the / picker.
+  function commitMentionFile(file: WorkspaceFile) {
+    if (!atTrigger.active) return;
+    const { next, caret: nextCaret } = commitMention(value, atTrigger, file.path);
+    setValue(next);
+    setDraft(sessionId, next);
+    setCaret(nextCaret);
+    setMentionDismissed(true);
+    setMentionActiveIndex(0);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      try {
+        el.setSelectionRange(nextCaret, nextCaret);
+      } catch {
+        /* setSelectionRange can throw on detached nodes during teardown */
+      }
+    });
+  }
+
+  const intake = useCallback(
+    async (files: File[]): Promise<void> => {
+      if (files.length === 0) return;
+      const current = attachmentCache.get(sessionId) ?? [];
+      const { accepted, rejected } = await intakeFiles(files, current.length);
+      if (accepted.length > 0) {
+        const next = [...current, ...accepted];
+        setAttachmentsAndCache(next);
+      }
+      if (rejected.length > 0) {
+        setRejections(rejected);
+        // Auto-clear rejection banner after 6s so it doesn't pile up if the
+        // user drags another batch.
+        window.setTimeout(() => setRejections([]), 6000);
+      }
+    },
+    // setAttachmentsAndCache is stable across renders (closes over setAttachments),
+    // and attachmentCache is a module singleton. sessionId is the only real dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessionId]
+  );
+
+  // Window-level drag tracking so the overlay lights up as soon as the user
+  // drags a file anywhere over the app, not only when they hover the input.
+  useEffect(() => {
+    function onDragEnter(e: DragEvent) {
+      if (!hasDraggedFiles(e)) return;
+      dragDepthRef.current += 1;
+      setIsDragging(true);
+    }
+    function onDragLeave(e: DragEvent) {
+      if (!hasDraggedFiles(e)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setIsDragging(false);
+    }
+    function onDragOver(e: DragEvent) {
+      if (!hasDraggedFiles(e)) return;
+      e.preventDefault(); // allow drop
+    }
+    function onDrop(e: DragEvent) {
+      dragDepthRef.current = 0;
+      setIsDragging(false);
+      if (!hasDraggedFiles(e)) return;
+      e.preventDefault();
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      void intake(Array.from(files));
+    }
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [intake]);
+
+  // Global Esc → stop running turn. Intentionally listens at the document
+  // level so the shortcut works regardless of which surface has focus
+  // (composer, chat scroll area, sidebar). Yields to:
+  //   - Open Radix modal dialogs (settings, command palette, CLI-missing) —
+  //     they manage their own Esc-to-close. We discriminate true modals via
+  //     `[data-modal-dialog]` (set by our DialogContent + CommandPalette
+  //     wrappers) so inline widgets that also use `role="dialog"` for a11y
+  //     (AskUserQuestion sticky, CwdPopover) do NOT block Esc-to-stop.
+  //   - The slash-command picker when it's open and the textarea has focus —
+  //     the inline Esc handler in `onKeyDown` dismisses the picker first.
+  useEffect(() => {
+    function onDocKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      if (!running) return;
+      // Only true modal dialogs (Radix-portaled, focus-trapped) own Esc.
+      if (document.querySelector('[data-modal-dialog]')) return;
+      const ae = document.activeElement as HTMLElement | null;
+      // Defer to the picker's own dismissal when it's the active surface.
+      if (ae === textareaRef.current && (pickerOpen || mentionOpen)) return;
+      e.preventDefault();
+      void stop();
+    }
+    document.addEventListener('keydown', onDocKeyDown);
+    return () => document.removeEventListener('keydown', onDocKeyDown);
+    // `stop` closes over running + sessionId; both are dependencies via
+    // `running` and the implicit re-render when sessionId changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, pickerOpen, mentionOpen, sessionId]);
+
+  async function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length === 0) return;
+    // Stop the browser from also pasting the filename / blob URL as text.
+    e.preventDefault();
+    await intake(files);
+  }
+
+  async function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length === 0) return;
+    // Let the user pick the same file twice in a row if they want.
+    e.target.value = '';
+    await intake(files);
+  }
+
+  function removeAttachment(id: string) {
+    const next = attachments.filter((a) => a.id !== id);
+    setAttachmentsAndCache(next);
+  }
+
+  async function send(override?: string) {
+    const text = (override ?? value).trim();
+    const imgs = override !== undefined ? [] : attachments;
+    // Valid turns: text with or without images, OR images with no text. Empty
+    // text + no images is a no-op (same as before).
+    if (!text && imgs.length === 0) return;
+    // task322: any send dismisses the continue-after-interrupt hint
+    // synchronously. setRunning(true) below would also clear it via the
+    // store, but doing it here covers the queued-while-running branch (which
+    // doesn't flip running) and avoids a one-frame flash of the hint.
+    clearLastTurnEnd(sessionId);
+
+    // Slash-command fast path: if the whole message is `/<name> [args]` and
+    // a client-side handler is registered, run it locally and return. This
+    // runs BEFORE the agentory/IPC guard so commands like `/help` still work
+    // in a browser-only probe harness where no Electron preload exists.
+    // Only trigger when there are no image attachments — a slash command with
+    // pasted images is almost certainly prose, not a bare invocation.
+    //
+    // Slash commands are intentionally NOT queued. Client handlers are
+    // immediate side-effects (`/clear` wipes context, `/config` opens
+    // settings) — deferring them until the next turn ends would be confusing.
+    // Pass-through slashes also bypass the queue so they reach claude.exe in
+    // the order the user typed them, not interleaved with queued prose.
+    if (text.startsWith('/') && imgs.length === 0) {
+      const outcome = await dispatchSlashCommand(text, allCommands, { sessionId, args: '' });
+      if (outcome === 'handled') {
+        update('');
+        return;
+      }
+      if (outcome === 'unknown-namespaced') {
+        // `/x:y` or `/plugin` — looks like a CLI / plugin command but the
+        // SDK transport can't run it. Forwarding would deliver the raw
+        // `/foo` text as a user message, which the model then either
+        // misinterprets or replies "deprecated, use the skill instead"
+        // (the bug PR #346 surfaced from the picker side). Bounce locally.
+        const parsed = parseSlashInvocation(text);
+        const name = parsed?.name ?? text.slice(1).split(/\s/)[0] ?? '';
+        pushToast({
+          kind: 'error',
+          title: t('slashCommands.unknownToast', { name })
+        });
+        update('');
+        return;
+      }
+      // 'pass-through' and 'unknown' fall through to the normal send path.
+    }
+
+    // #303: bake any pending per-line diff comments into the outgoing prompt
+    // body BEFORE the user text. Comments are session-scoped; we serialize
+    // and clear in one shot so the same comments can never ride two turns.
+    // Done here (before the queueing branch) so a turn enqueued during a
+    // running session captures exactly the comments visible at the moment
+    // the user pressed Enter — not whatever is left over when the queue
+    // eventually drains. Override (slash-command pass-through, command
+    // panel) skips comments: an override is a programmatic send, not a
+    // user composing in the textarea.
+    let outgoingText = text;
+    if (override === undefined) {
+      const { pendingDiffComments } = useStore.getState();
+      const prefix = serializeDiffCommentsForPrompt(pendingDiffComments[sessionId]);
+      if (prefix) {
+        // Two newlines between prefix and user text so a markdown-rendering
+        // model treats them as separate paragraphs even if it ignores the
+        // structured tag.
+        outgoingText = `${prefix}\n\n${text}`;
+        clearDiffComments(sessionId);
+      }
+    }
+
+    // Queue non-slash messages while a turn is in flight. The drain happens
+    // in agent/lifecycle.ts when `result` arrives. Clear the composer so the
+    // user can keep typing the next thought immediately.
+    if (running) {
+      enqueueMessage(sessionId, { text: outgoingText, attachments: imgs });
+      update('');
+      setAttachmentsAndCache([]);
+      setRejections([]);
+      return;
+    }
+
+    const api = window.ccsm;
+    if (!api || !session) return;
+
+    // Local echo: render the user's turn immediately. We skip the SDK's
+    // own user-message echo in sdk-to-blocks to avoid duplicates.
+    appendBlocks(sessionId, [
+      {
+        kind: 'user',
+        id: nextLocalId(),
+        text: outgoingText,
+        ...(imgs.length > 0 ? { images: imgs } : {})
+      }
+    ]);
     update('');
+    setAttachmentsAndCache([]);
+    setRejections([]);
+    setRunning(sessionId, true);
+
+    if (!started) {
+      const ok = await startSessionAndReconcile(sessionId);
+      if (!ok) {
+        // All failure branches (CLAUDE_NOT_FOUND → installer-corrupt banner,
+        // CWD_MISSING → inline error + sidebar dim, generic →
+        // sessionInitFailures banner) are reconciled inside the helper.
+        // We just flip running off and bail out of the send path.
+        setRunning(sessionId, false);
+        return;
+      }
+    }
+
+    let ok: boolean;
+    if (imgs.length > 0) {
+      const content = buildUserContentBlocks(outgoingText, imgs);
+      ok = await api.agentSendContent(sessionId, content);
+    } else {
+      ok = await api.agentSend(sessionId, outgoingText);
+    }
+    if (!ok) {
+      setRunning(sessionId, false);
+      appendBlocks(sessionId, [
+        { kind: 'error', id: `send-${Date.now().toString(36)}`, text: t('chat.sendFailedToDeliver') }
+      ]);
+    }
+  }
+
+  async function stop() {
+    if (!running) return;
+    const api = window.ccsm;
+    if (!api) return;
+    // Flag the session BEFORE the IPC call so the upcoming
+    // `result { error_during_execution }` frame is rendered as a neutral
+    // "Interrupted" banner instead of an error block.
+    markInterrupted(sessionId);
+    // Match CLI Ctrl+C behavior: interrupting also drops everything the user
+    // queued during this turn. Otherwise the next turn would auto-send work
+    // the user just decided to abandon.
+    clearQueue(sessionId);
+    // Dismiss any unanswered AskUserQuestion sticky for this session — the
+    // agent is being stopped, so there's no one to receive an answer. Without
+    // this the question card would stay sticky after interrupt with no path
+    // to close it (Bug: AskUserQuestion sticky doesn't disappear on stop).
+    // We mark every unanswered question block as rejected; the per-block
+    // permission deny (if any requestId) is best-effort via the same path
+    // QuestionBlock takes when the user clicks the Cancel chip.
+    {
+      const state = useStore.getState();
+      const blocks = state.messagesBySession[sessionId] ?? [];
+      for (const b of blocks) {
+        if (b.kind === 'question' && !b.answered) {
+          if (b.requestId) {
+            void api.agentResolvePermission(sessionId, b.requestId, 'deny');
+          }
+          markQuestionAnswered(sessionId, b.id, { answers: {}, rejected: true });
+        }
+      }
+    }
+    await api.agentInterrupt(sessionId);
+    // Return focus to the composer so the user can type immediately
+    // (matches CLI Ctrl+C behavior). The InputBar focus useEffect picks
+    // this up via the bumped nonce and applies the standard focus guards
+    // (skips if user is mid-typing in another text surface).
+    bumpComposerFocus();
+    // running flag is cleared when the SDK emits its result message.
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     // Skip Enter handling while IME composition is active — otherwise CJK
     // candidate selection accidentally sends the message.
     if (e.nativeEvent.isComposing || (e.nativeEvent as { keyCode?: number }).keyCode === 229) return;
+
+    // Mention picker navigation takes precedence when open. Same key set as
+    // the slash picker (↑/↓/Enter/Esc) — no Tab section-jump because the
+    // mention list has no sections.
+    if (mentionOpen && filteredFiles.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i + 1) % filteredFiles.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionActiveIndex(
+          (i) => (i - 1 + filteredFiles.length) % filteredFiles.length
+        );
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const f = filteredFiles[mentionActiveIndex];
+        if (f) commitMentionFile(f);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentionDismissed(true);
+        return;
+      }
+    }
+    // Mention picker is open but has zero results — Esc still dismisses it
+    // so the user isn't trapped with an empty picker hovering above the
+    // composer.
+    if (mentionOpen && e.key === 'Escape') {
+      e.preventDefault();
+      setMentionDismissed(true);
+      return;
+    }
+
+    // Slash picker navigation takes precedence when open.
+    if (pickerOpen && filtered.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex((i) => (i + 1) % filtered.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex((i) => (i - 1 + filtered.length) % filtered.length);
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        // Tab / Shift+Tab = jump to first row of the next / previous
+        // non-empty section. Wraps at the ends. With ≤1 visible section
+        // the helper returns the current index unchanged.
+        setActiveIndex((i) =>
+          nextSectionIndex(filtered, i, e.shiftKey ? -1 : 1)
+        );
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const cmd = filtered[activeIndex];
+        if (cmd) commitSlashCommand(cmd);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setPickerDismissed(true);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // task322: empty composer + active continue-hint → send literal
+      // 'continue' through the normal send path. This is the affordance the
+      // hint advertises; without it, empty-Enter would no-op as before.
+      if (showContinueHint) {
+        void send('continue');
+        return;
+      }
       send();
+      return;
+    }
+
+    // PR-N: ↑/↓ history recall. Strict guard so we never steal arrow keys
+    // from in-textarea caret movement during multi-line editing.
+    //   ↑ triggers iff value is exactly '' (idle) OR we're already in recall
+    //     mode (so ↑ keeps walking backwards through history).
+    //   ↓ triggers iff we're already in recall mode (idle ↓ is a no-op).
+    // Once a key is intercepted we preventDefault so the textarea doesn't
+    // also move the caret — relevant when value === '' (caret at 0 anyway,
+    // but the browser would still scroll the empty textarea to its top edge).
+    if (e.key === 'ArrowUp') {
+      const inRecall = recallIndex > 0;
+      if (value !== '' && !inRecall) return;
+      if (userPromptHistory.length === 0) return;
+      // Already at the oldest prompt — stop walking, swallow the keystroke
+      // so the textarea doesn't try to move the caret either.
+      if (recallIndex >= userPromptHistory.length) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      const nextIndex = recallIndex + 1;
+      const recalled = userPromptHistory[nextIndex - 1];
+      setRecallIndex(nextIndex);
+      setValue(recalled);
+      setCaret(recalled.length);
+      // Place caret at the end after React commits the new value.
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.setSelectionRange(recalled.length, recalled.length);
+      });
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      if (recallIndex === 0) return; // idle — let textarea handle it
+      e.preventDefault();
+      const nextIndex = recallIndex - 1;
+      setRecallIndex(nextIndex);
+      if (nextIndex === 0) {
+        setValue('');
+        setCaret(0);
+      } else {
+        const recalled = userPromptHistory[nextIndex - 1];
+        setValue(recalled);
+        setCaret(recalled.length);
+        requestAnimationFrame(() => {
+          const el = textareaRef.current;
+          if (!el) return;
+          el.setSelectionRange(recalled.length, recalled.length);
+        });
+      }
+      return;
     }
   }
 
+  function syncCaret() {
+    const el = textareaRef.current;
+    if (!el) return;
+    setCaret(el.selectionStart ?? 0);
+  }
+
+  const sendDisabled = !value.trim() && attachments.length === 0;
+  const remainingSlots = Math.max(0, MAX_IMAGES_PER_MESSAGE - attachments.length);
+
+  // Auto-resize the textarea: grow from ~2 lines up to ~10 lines, then scroll.
+  // useLayoutEffect so the height is corrected before the browser paints,
+  // avoiding a one-frame flicker on every keystroke. Matches the line-height
+  // declared on the <textarea> (22px) and the composer's vertical padding
+  // (pt-2 = 8px, pb-7 = 28px) so min/max map cleanly to "N lines of text".
+  const MIN_LINES = 2;
+  const MAX_LINES = 10;
+  const LINE_HEIGHT = 22;
+  const VPAD = 8 + 28; // pt-2 + pb-7
+  const MIN_HEIGHT = MIN_LINES * LINE_HEIGHT + VPAD; // 80
+  const MAX_HEIGHT = MAX_LINES * LINE_HEIGHT + VPAD; // 256
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    // Reset first so shrinking (after deleting lines) actually takes effect —
+    // scrollHeight is always >= current height.
+    el.style.height = 'auto';
+    const next = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, el.scrollHeight));
+    el.style.height = `${next}px`;
+  }, [value, attachments.length, MIN_HEIGHT, MAX_HEIGHT]);
+
   return (
-    <div className="px-3 pt-2 pb-3">
+    <div className="relative px-3 pt-2 pb-3">
+      <DropOverlay show={isDragging} />
+
+      <AnimatePresence>
+        {rejections.length > 0 && (
+          <motion.div
+            key="rejections"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -2 }}
+            transition={{ duration: DURATION.standard, ease: EASING.standard }}
+            role="alert"
+            className="mb-2 rounded-md border border-state-error/40 bg-state-error-soft/60 px-3 py-2 text-meta text-state-error-fg"
+          >
+            <div className="flex items-start gap-2">
+              <AlertCircle size={12} className="text-state-error mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0 space-y-0.5">
+                {rejections.map((r, i) => (
+                  <div key={i} className="truncate" title={r.detail}>
+                    {r.detail}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRejections([])}
+                aria-label={t('common.dismiss')}
+                className="shrink-0 inline-flex items-center justify-center rounded-sm text-state-error/70 hover:text-state-error transition-colors duration-150 ease-out outline-none focus-ring-destructive"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* task322: continue-after-interrupt hint. One-line muted row above
+          the composer; empty-Enter while it's visible sends `continue`. */}
+      {showContinueHint && (
+        <div
+          data-testid="continue-after-interrupt-hint"
+          className="mb-1 px-1 text-meta text-fg-tertiary select-none"
+          aria-live="polite"
+        >
+          {t('chat.continueAfterInterruptHint')}
+        </div>
+      )}
+
       <div
+        data-input-bar-wrapper
         className={cn(
           'relative rounded-md border bg-bg-elevated surface-highlight',
           'transition-[border-color,box-shadow] duration-200',
           '[transition-timing-function:cubic-bezier(0.32,0.72,0,1)]',
-          'border-border-default',
-          'focus-within:border-border-strong',
-          // Apple-blue focus halo (no inner dark inset — that fought the
-          // top-edge highlight). Alpha lifted to 0.30 for visibility.
-          'focus-within:shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_0_0_3px_oklch(0.72_0.14_215_/_0.30)]'
+          isDragging
+            ? 'border-accent shadow-[0_0_0_3px_oklch(0.62_0.14_258_/_0.15)]'
+            : 'border-border-default',
+          !isDragging && 'focus-within:border-accent'
         )}
       >
+        <SlashCommandPicker
+          open={pickerOpen}
+          query={trigger.active ? trigger.query : ''}
+          commands={allCommands}
+          activeIndex={activeIndex}
+          onActiveIndexChange={setActiveIndex}
+          onSelect={commitSlashCommand}
+        />
+        <MentionPicker
+          open={mentionOpen}
+          query={atTrigger.active ? atTrigger.query : ''}
+          files={filteredFiles}
+          activeIndex={mentionActiveIndex}
+          onActiveIndexChange={setMentionActiveIndex}
+          onSelect={commitMentionFile}
+        />
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+            <AnimatePresence initial={false}>
+              {attachments.map((a) => (
+                <AttachmentChip
+                  key={a.id}
+                  attachment={a}
+                  onRemove={() => removeAttachment(a.id)}
+                />
+              ))}
+            </AnimatePresence>
+          </div>
+        )}
         <textarea
+          ref={textareaRef}
+          data-input-bar
           value={value}
           onChange={(e) => update(e.target.value)}
           onKeyDown={onKeyDown}
+          onKeyUp={syncCaret}
+          onClick={syncCaret}
+          onSelect={syncCaret}
+          onFocus={() => {
+            // Re-scan disk commands on focus so newly-dropped .md files
+            // surface in the picker without reloading the app.
+            void refreshDynamic();
+            // Same for the @ mention file list — pick up freshly-created
+            // files without making the user reload the app.
+            void refreshMentionFiles();
+          }}
+          onPaste={onPaste}
           rows={2}
-          placeholder="Reply…"
+          placeholder={running ? runningPlaceholderForMode(t, permission) : hasMessages ? t('chat.inputPlaceholder') : t('chat.askPlaceholder')}
           className={cn(
-            'block w-full resize-none px-3 pt-2 pb-7 text-base leading-[22px]',
+            'block w-full resize-none px-3 pt-2 pb-7 text-body leading-[22px]',
             'bg-transparent text-fg-primary placeholder:text-fg-tertiary',
-            'transition-colors duration-150 ease-out'
+            'transition-colors duration-150 ease-out',
+            'overflow-y-auto'
           )}
-          style={{ minHeight: 64, maxHeight: 240 }}
+          style={{ minHeight: MIN_HEIGHT, maxHeight: MAX_HEIGHT }}
         />
-        <div className="absolute right-3 bottom-1.5">
-          <Button
-            variant="primary"
-            size="sm"
-            aria-label="Send message"
-            disabled={!value.trim()}
-            onClick={send}
+        <div className="absolute left-2 bottom-1.5 flex items-center gap-1">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={SUPPORTED_IMAGE_TYPES.join(',')}
+            className="hidden"
+            onChange={onPickFiles}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={remainingSlots === 0}
+            aria-label={t('chat.attachImage')}
+            title={
+              remainingSlots === 0
+                ? t('chat.attachCapReached', { max: MAX_IMAGES_PER_MESSAGE })
+                : t('chat.attachImageTitle')
+            }
+            className={cn(
+              'inline-flex h-6 w-6 items-center justify-center rounded-sm text-fg-tertiary',
+              'hover:text-fg-primary hover:bg-bg-hover active:scale-95',
+              'disabled:opacity-40 disabled:pointer-events-none',
+              'transition-all duration-150 ease-out outline-none focus-ring'
+            )}
           >
-            <ArrowUp size={10} className="stroke-[2.25]" />
-            <span>Send</span>
+            <ImagePlus size={14} className="stroke-[2.25]" />
+          </button>
+          {attachments.length > 0 && (
+            <MetaLabel>
+              {attachments.length}/{MAX_IMAGES_PER_MESSAGE}
+            </MetaLabel>
+          )}
+        </div>
+        <div className="absolute right-3 bottom-1.5 flex items-center gap-2">
+          {pendingDiffCommentsCount > 0 && (
+            <Button
+              variant="ghost"
+              size="xs"
+              title={t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
+              onClick={() => {
+                // Locate the first pending diff comment for this session
+                // (sorted by file path asc, then line asc, then createdAt asc —
+                // matches the deterministic order used by
+                // serializeDiffCommentsForPrompt) and scroll the chip into
+                // view. If the chip isn't currently mounted (chat scrolled
+                // away, file collapsed, etc.) we silently no-op rather than
+                // log — there's no useful action the user could take.
+                const bucket = useStore.getState().pendingDiffComments[sessionId];
+                if (!bucket) return;
+                const list = Object.values(bucket);
+                if (list.length === 0) return;
+                list.sort((a, b) => {
+                  if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+                  if (a.line !== b.line) return a.line - b.line;
+                  return a.createdAt - b.createdAt;
+                });
+                const first = list[0];
+                const el = document.querySelector(
+                  `[data-diff-comment-id="${first.id}"]`
+                ) as HTMLElement | null;
+                if (!el) return;
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }}
+              className="font-mono text-mono-xs tracking-wider text-fg-tertiary"
+            >
+              {t('task303.diffCommentsPendingChip', { count: pendingDiffCommentsCount })}
+            </Button>
+          )}
+          {queueLength > 0 && (
+            <MetaLabel title={t('chat.queueChip', { count: queueLength })}>
+              {t('chat.queueChip', { count: queueLength })}
+            </MetaLabel>
+          )}
+          {running && !sendDisabled && (
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-label={t('chat.queueAria')}
+              onClick={() => void send()}
+            >
+              <ArrowUp size={10} className="stroke-[2.25]" />
+              <span>{t('chat.queueButton')}</span>
+            </Button>
+          )}
+          {/*
+            Morph button. Same DOM slot in both states; only the icon, label,
+            variant, aria-label, and onClick swap. Mirrors the upstream
+            Anthropic Claude Code VS Code extension pattern (webview/index.js):
+              `if (busy && !X) <StopIcon/> else <SendIcon/>`
+            — same button instance, conditional inner SVG. AnimatePresence
+            cross-fades the icon at 230ms tween so the swap reads as one
+            control changing role rather than two buttons toggling display.
+            The variant flip (primary → danger) uses the existing CSS
+            transition on background-color, so no extra Framer wrapper for
+            the chrome — only the icon is animated.
+          */}
+          <Button
+            data-morph-state={running ? 'stop' : 'send'}
+            variant={running ? 'danger' : 'primary'}
+            size="sm"
+            aria-label={running ? t('chat.stopAria') : t('chat.sendMessage')}
+            title={running ? t('chat.stopBtn') : t('chat.sendButton')}
+            disabled={running ? false : sendDisabled}
+            onClick={running ? stop : () => void send()}
+          >
+            <span className="relative inline-flex items-center justify-center w-2.5 h-2.5">
+              <AnimatePresence initial={false} mode="wait">
+                {running ? (
+                  <motion.span
+                    key="stop-icon"
+                    initial={{ opacity: 0, scale: 0.7, rotate: -8 }}
+                    animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                    exit={{ opacity: 0, scale: 0.7, rotate: 8 }}
+                    transition={{ duration: 0.23, ease: EASING.standard }}
+                    className="absolute inset-0 inline-flex items-center justify-center"
+                  >
+                    <Square size={10} className="stroke-[2.25]" />
+                  </motion.span>
+                ) : (
+                  <motion.span
+                    key="send-icon"
+                    initial={{ opacity: 0, scale: 0.7, rotate: 8 }}
+                    animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                    exit={{ opacity: 0, scale: 0.7, rotate: -8 }}
+                    transition={{ duration: 0.23, ease: EASING.standard }}
+                    className="absolute inset-0 inline-flex items-center justify-center"
+                  >
+                    <ArrowUp size={10} className="stroke-[2.25]" />
+                  </motion.span>
+                )}
+              </AnimatePresence>
+            </span>
+            <span>{running ? t('chat.stopBtn') : t('chat.sendButton')}</span>
           </Button>
         </div>
       </div>

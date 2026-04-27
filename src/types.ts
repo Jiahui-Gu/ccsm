@@ -12,18 +12,159 @@ export interface Session {
   model: string;
   groupId: string;
   agentType: AgentType;
+  // Set when the session was imported from a Claude Code CLI transcript.
+  // Passed to agentStart on first send so the SDK resumes the same thread.
+  resumeSessionId?: string;
+  // Captured from the first `system/init` SDK frame (= the CLI-allocated
+  // `session_id`). For fresh sessions this equals `id` because ccsm
+  // forwards `id` as the SDK's preset `sessionId`; for resume / import
+  // paths it may differ (the SDK allocates a new sid for each resumed
+  // branch). Persisted so a ccsm restart can pass it as `--resume` on the
+  // next agentStart — without this, restart→continue silently breaks
+  // because the SDK rejects re-using a `sessionId` that already has an
+  // on-disk JSONL transcript. See `src/agent/startSession.ts`.
+  sdkSessionId?: string;
+  // Marks a session whose persisted `cwd` no longer exists on disk (e.g.
+  // a directory that was deleted between app runs — common after the
+  // worktree feature was reverted). Set by `hydrateStore` via a best-effort
+  // existence probe and cleared the next time the user repicks a cwd.
+  // Surfaced in the Sidebar (dim row + tooltip) and in `agent:start`
+  // (returns `errorCode: 'CWD_MISSING'` so InputBar can prompt the user
+  // to repick via the StatusBar cwd chip).
+  cwdMissing?: boolean;
 }
 
 export interface Group {
   id: string;
   name: string;
   collapsed: boolean;
-  kind: 'normal' | 'archive' | 'deleted';
+  kind: 'normal' | 'archive';
+  /**
+   * When set, the sidebar should render `t(nameKey)` instead of `name`.
+   * Used by groups synthesized at session-create / import time so the
+   * default-group label re-localizes when the user switches language,
+   * instead of staying frozen to whatever the current locale was when
+   * the group was created. `name` is still populated with the resolved
+   * string at creation time as a fallback for any non-i18n surface.
+   */
+  nameKey?: string;
+}
+
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionSpec {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: QuestionOption[];
+}
+
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm?: string;
+}
+
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+// A single image attached to a user message. `data` is raw base64 (no
+// `data:...;base64,` prefix) so it can be dropped directly into an Anthropic
+// content block as `source.data`. Persisted inline with the message block —
+// ChatStream reconstructs a data-URL for thumbnail rendering on demand.
+export interface ImageAttachment {
+  id: string;
+  name: string;
+  mediaType: ImageMediaType;
+  data: string;
+  size: number;
+}
+
+// Provenance marker on assistant text blocks emitted while a Skill tool
+// invocation is in flight for the current turn. Surfaced as a small
+// "via skill: <name>" badge in AssistantBlock so users can tell when a
+// reply is being driven by a Skill (Task #318) — this is discoverability,
+// not a quality signal: skills running is correct behavior.
+export interface SkillProvenance {
+  // The skill name as the Skill tool received it (e.g. "using-superpowers"
+  // or "pua:pua-loop"). Plugin-namespaced skills carry the `<plugin>:<skill>`
+  // form and are rendered verbatim.
+  name: string;
+  // Best-effort filesystem path for the tooltip. Renderer-side derivation
+  // since the renderer can't list disk; matches the convention in
+  // electron/commands-loader.ts (skills under ~/.claude/skills/<name> or
+  // ~/.claude/plugins/<plugin>/skills/<skill>).
+  path?: string;
 }
 
 export type MessageBlock =
-  | { kind: 'user'; id: string; text: string }
-  | { kind: 'assistant'; id: string; text: string }
-  | { kind: 'tool'; id: string; name: string; brief: string; expanded: boolean; result?: string }
-  | { kind: 'waiting'; id: string; prompt: string; intent: 'permission' | 'plan' | 'question' }
+  | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
+  | { kind: 'assistant'; id: string; text: string; streaming?: boolean; viaSkill?: SkillProvenance }
+  | {
+      kind: 'tool';
+      id: string;
+      name: string;
+      brief: string;
+      expanded: boolean;
+      toolUseId?: string;
+      result?: string;
+      isError?: boolean;
+      input?: unknown;
+      // (#336) When true, the tool block is a placeholder created from a
+      // partial assistant stream — `input_json_delta` chunks are still
+      // arriving and the canonical assistant `tool_use` event hasn't
+      // landed yet. ToolBlock uses this to render `bashPartialCommand`
+      // (see below) with a typing caret. Cleared (omitted) once the real
+      // assistant event coalesces over the placeholder via id.
+      streamingInput?: boolean;
+      // (#336) The in-flight Bash `command` arg as the model types it.
+      // Only populated for `name === 'Bash'` placeholder blocks during
+      // streaming. After finalize this lives in `input.command` like any
+      // other tool block.
+      bashPartialCommand?: string;
+    }
+  | { kind: 'todo'; id: string; toolUseId?: string; todos: TodoItem[] }
+  | {
+      kind: 'waiting';
+      id: string;
+      prompt: string;
+      intent: 'permission' | 'plan' | 'question';
+      requestId?: string;
+      plan?: string;
+      toolName?: string;
+      toolInput?: Record<string, unknown>;
+    }
+  | {
+      kind: 'question';
+      id: string;
+      requestId?: string;
+      toolUseId?: string;
+      questions: QuestionSpec[];
+      // Set true once the user submits or rejects via Esc. The sticky
+      // widget hides and the timeline renders a compact summary row in
+      // place of the live card. Mirrors upstream's "card 出队, timeline 留
+      // result row" behavior.
+      answered?: boolean;
+      // Per-question answers as a Q→A map (Other replaced with the typed
+      // text, multi-select labels joined by `"\n "`). Absent when the user
+      // rejected via Esc.
+      answers?: Record<string, string>;
+      // True when the user dismissed the prompt via Esc / X with no answer.
+      rejected?: boolean;
+    }
+  | { kind: 'status'; id: string; tone: 'info' | 'warn'; title: string; detail?: string }
+  | {
+      kind: 'system';
+      id: string;
+      // Discriminator for future system block variants. Today: only the
+      // post-resolution permission trace replaces a withdrawn waiting block,
+      // so the chat retains a scrollable record of what was allowed/denied.
+      subkind: 'permission-resolved';
+      toolName: string;
+      toolInputSummary: string;
+      decision: 'allowed' | 'denied';
+      timestamp: number;
+    }
   | { kind: 'error'; id: string; text: string };

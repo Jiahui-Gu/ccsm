@@ -1,4 +1,4 @@
-# Agentory-next Design System
+# CCSM Design System
 
 冻结日期：2026-04-18
 配套：`docs/mvp-design.md`（layout + flows 的 single source of truth；本文件只管 visual + token）。
@@ -8,7 +8,7 @@
 
 ## 1. Design philosophy
 
-Agentory-next looks like a developer's terminal grew a sidebar. Chrome is dim, near-monochrome, and almost flat — borders carry hierarchy, shadows only float (Geist's two-tier surface/floating model). Conversation content is rendered in a monospace block grid with no bubbles, no avatars, no padding theatre — symbol-prefixed lines (`>` `●` `⏺`) do the work that color and shape do in a chat app. There is exactly **one accent color**, used only for live signal (running/active/focused) so a glance across the sidebar parses instantly. Spacing is tight by Tailwind defaults (Linear/Raycast density), motion is short (≤200ms) and only marks state, and we follow GUI conventions everywhere a CLI quirk would cost more than it teaches (Stop button, not Ctrl+C; disabled input on `●`; standard menus). The aesthetic target: a senior engineer opens it and thinks "this respects my screen."
+CCSM looks like a developer's terminal grew a sidebar. Chrome is dim, near-monochrome, and almost flat — borders carry hierarchy, shadows only float (Geist's two-tier surface/floating model). Conversation content is rendered in a monospace block grid with no bubbles, no avatars, no padding theatre — symbol-prefixed lines (`>` `●` `⏺`) do the work that color and shape do in a chat app. There is exactly **one accent color**, used only for live signal (running/active/focused) so a glance across the sidebar parses instantly. Spacing is tight by Tailwind defaults (Linear/Raycast density), motion is short (≤200ms) and only marks state, and we follow GUI conventions everywhere a CLI quirk would cost more than it teaches (Stop button, not Ctrl+C; disabled input on `●`; standard menus). The aesthetic target: a senior engineer opens it and thinks "this respects my screen."
 
 ---
 
@@ -406,7 +406,7 @@ div: h-7 px-4 flex items-center justify-between
 
 No background fill different from chat pane — only the top border separates it. Reads as part of the stream, not a control bar.
 
-### 7.7 Command palette (Cmd+K)
+### 7.7 Command palette (Cmd+F)
 
 ```
 Overlay: fixed inset-0 bg-black/40 backdrop-blur-[2px]

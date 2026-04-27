@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/*
+  Tokens live in @theme so Tailwind's v4 resolver picks them up. These are the
+  DARK palette (the historical default). The LIGHT palette is applied by
+  overriding the same CSS custom properties inside `html.theme-light` below —
+  every `bg-bg-panel`, `text-fg-primary`, etc. Tailwind utility just resolves
+  to the active value, no component-level branching needed.
+*/
 @theme {
   /* Solid surfaces — depth comes from inset highlights + drop shadows,
      not transparency. Order: app < sidebar < panel < elevated. */
@@ -31,14 +38,26 @@
   --color-accent-fg: oklch(0.18 0 0);
   --color-accent-soft: oklch(0.45 0.10 215 / 0.18);
 
-  /* State scale — error gets soft/default/strong/fg facets so danger weighting
-     is a token choice, not a magic number. */
+  /* State scale — the single source of truth for "what is this process/thing
+     doing right now" coloring. Suffix convention:
+       (bare)   = the signal color itself (glyphs, dot indicators)
+       -text    = AA-contrast text color on a neutral bg (colored label)
+       -soft    = translucent fill for row/pill backgrounds
+       -strong  = denser variant for heavy-weight affordances
+       -fg      = high-contrast foreground designed to sit ON the bare color
+                  (e.g. white text on a red button)
+     `error` carries the full scale because destructive weighting needs it;
+     other states add facets only when a consumer needs them. */
   --color-state-running: oklch(0.78 0.13 155);
   --color-state-waiting: oklch(0.78 0.10 75);
   --color-state-parked: var(--color-fg-tertiary);
   --color-state-success: oklch(0.72 0.14 155);
+  --color-state-success-text: oklch(0.78 0.14 155);
   --color-state-warning: oklch(0.78 0.16 75);
+  --color-state-warning-text: oklch(0.82 0.16 75);
+  --color-state-warning-soft: oklch(0.78 0.16 75 / 0.12);
   --color-state-error: oklch(0.65 0.20 25);
+  --color-state-error-text: oklch(0.72 0.20 25);
   --color-state-error-soft: oklch(0.65 0.20 25 / 0.14);
   --color-state-error-strong: oklch(0.60 0.22 25);
   --color-state-error-fg: oklch(0.97 0 0);
@@ -47,6 +66,27 @@
      makes a flat surface read as 3D without a real shadow. */
   --surface-highlight: oklch(1 0 0 / 0.04);
   --surface-shadow: 0 1px 2px oklch(0 0 0 / 0.3), 0 4px 16px oklch(0 0 0 / 0.2);
+  /* Drag overlay shadow — heavier than --surface-shadow because the lifted
+     row floats well above the sidebar surface during a DnD gesture. The
+     0_0_0_1px highlight ring fakes a thin rim of catch-light at the top of
+     the tile so it reads as picked-up, not pasted-on. Mirrors the dark
+     vs. light split below — light mode swaps to warmer, lower-alpha values
+     so a dragged tile on near-white sidebar doesn't punch a black hole. */
+  --shadow-drag-overlay:
+    0 12px 32px -8px oklch(0 0 0 / 0.5),
+    0 0 0 1px oklch(1 0 0 / 0.08);
+  /* Tutorial-only ornamentals (#293). The first-run welcome icon needs a
+     two-stop accent gradient (cyan -> indigo) and the visual cards need a
+     deep, warm drop shadow that reads against the dark app surface. These
+     are too specific to belong in --color-accent / --surface-shadow but we
+     still want them as tokens so the light-mode override flows through. */
+  --gradient-tutorial-welcome:
+    linear-gradient(135deg, oklch(0.72 0.14 215) 0%, oklch(0.55 0.18 265) 100%);
+  --shadow-tutorial-card: 0 24px 48px -12px oklch(0 0 0 / 0.5);
+  /* 2px focus halo. Token-driven so light mode can pull saturation/lightness
+     down — the dark cyan stays vibrant on dark surfaces, but reads as a
+     glaring teal smear on near-white. Each mode picks its own oklch(). */
+  --color-focus-ring: oklch(0.72 0.14 215 / 0.30);
 
   /* Apple's spring curve — used for hover / active / focus transitions. */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -64,6 +104,40 @@
   --text-md--line-height: 22px;
   --text-lg: 17px;
   --text-lg--line-height: 24px;
+
+  /* ── 4-step semantic type scale (#225) ──
+     Replaces the per-call-site mix of text-xs/text-sm/text-base across
+     src/components. See docs/design/type-scale-audit.md for the full
+     rationale; the short version is that the codebase had collapsed onto
+     ~14px for everything (chrome AND content), giving the eye nowhere to
+     land. The four tokens map to deliberate semantic roles:
+
+       text-meta    11px : micro-metadata — status pills, durations, hint chips
+       text-chrome  13px : sidebar rows, buttons, status bar, tool block name
+       text-body    15px : primary reading surface — assistant + user messages
+       text-heading 16px : section titles, dialog titles, markdown h3
+
+     The audit specifies chrome at "12 or 13" and heading at "16-18". We
+     pick 13 for chrome (it carries the sidebar list — the heaviest chrome
+     surface) and 16 for heading (matching --text-base ladder + the Inter
+     hinting sweet spot). Markdown h2 inside assistant prose continues to
+     ride --text-lg (17px) for the next step up. */
+  --text-meta: 11px;
+  --text-meta--line-height: 14px;
+  --text-chrome: 13px;
+  --text-chrome--line-height: 18px;
+  --text-body: 15px;
+  --text-body--line-height: 24px;
+  --text-heading: 16px;
+  --text-heading--line-height: 22px;
+  /* 5th tier added in #256. Markdown h1 inside assistant prose was riding
+     --text-lg (17px), barely 1px above --text-heading (16px) — the 4-step
+     ladder collapsed at the top. `text-display` gives prose h1 (and the
+     Tutorial step heading) a clear step above heading without screaming.
+     21px/28px = roughly a major-third up from 16/22, lands on the 4px
+     grid, and keeps Inter hinting in the comfortable range. */
+  --text-display: 21px;
+  --text-display--line-height: 28px;
 
   --radius-xs: 3px;
   --radius-sm: 5px;
@@ -89,29 +163,6 @@
   --color-card-foreground: var(--color-fg-primary);
   --color-card-border: var(--color-border-subtle);
 
-  /* ── Status × facet matrix. Each status gets {base, foreground, muted,
-     border} so `bg-status-error-muted text-status-error border-status-error-border`
-     composes without inventing new shades inline. ── */
-  --color-status-success: oklch(0.72 0.14 155);
-  --color-status-success-foreground: oklch(0.78 0.14 155);
-  --color-status-success-muted: oklch(0.72 0.14 155 / 0.12);
-  --color-status-success-border: oklch(0.72 0.14 155 / 0.30);
-
-  --color-status-warning: oklch(0.78 0.16 75);
-  --color-status-warning-foreground: oklch(0.82 0.16 75);
-  --color-status-warning-muted: oklch(0.78 0.16 75 / 0.12);
-  --color-status-warning-border: oklch(0.78 0.16 75 / 0.30);
-
-  --color-status-error: oklch(0.65 0.20 25);
-  --color-status-error-foreground: oklch(0.72 0.20 25);
-  --color-status-error-muted: oklch(0.65 0.20 25 / 0.14);
-  --color-status-error-border: oklch(0.65 0.20 25 / 0.32);
-
-  --color-status-info: oklch(0.74 0.13 215);
-  --color-status-info-foreground: oklch(0.80 0.13 215);
-  --color-status-info-muted: oklch(0.74 0.13 215 / 0.12);
-  --color-status-info-border: oklch(0.74 0.13 215 / 0.30);
-
   /* ── Terminal palette. Bash/shell tool output renders into this surface;
      keeping it as its own token set means we can re-theme terminals
      (e.g. solarized) without touching the rest of the app. ── */
@@ -121,6 +172,23 @@
   --color-terminal-border: oklch(0.30 0.005 240);
   --color-terminal-accent: oklch(0.55 0.17 155);
   --color-terminal-hover-bg: oklch(0.22 0.005 240);
+
+  /* ── Syntax highlighting palette (#284). Used by CodeBlock to color
+     Prism tokens. Centralizing here means light/dark themes can shift the
+     palette without editing the React theme inline. Each token name maps
+     to a Prism token-type group inside CodeBlock.tsx. Dark values match
+     the historical inline theme — light values are tuned for AA-large
+     contrast on the near-white --color-bg-panel surface (see html.theme-light
+     overrides below). ── */
+  --color-syntax-keyword: oklch(0.72 0.13 260);
+  --color-syntax-string: oklch(0.72 0.15 145);
+  --color-syntax-number: oklch(0.72 0.12 65);
+  --color-syntax-comment: oklch(0.55 0 0);
+  --color-syntax-function: oklch(0.78 0.12 220);
+  --color-syntax-punctuation: oklch(0.65 0 0);
+  --color-syntax-tag: oklch(0.72 0.15 20);
+  --color-syntax-variable: oklch(0.82 0 0);
+  --color-syntax-regex: oklch(0.72 0.15 300);
 }
 
 html, body, #root {
@@ -130,12 +198,224 @@ html, body, #root {
   background: var(--color-bg-app);
   color: var(--color-fg-primary);
   font-family: var(--font-sans);
-  font-size: var(--text-base);
+  /* --app-font-size is bumped by the Appearance settings slider (12–16px).
+     Using the token via CSS var means every `text-*` utility scales from the
+     root — if you need an override (e.g. a small meta label), use explicit
+     px in the component. Default 14 matches the legacy `md` stop. */
+  font-size: var(--app-font-size, 14px);
   line-height: var(--text-base--line-height);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow: hidden;
+}
+
+/*
+  Sidebar right-rail X axis. The 5 right-anchored affordances (search button,
+  new-group +, in-group new-session +, selected-session blue dot, import
+  button) all share a single vertical line so the eye reads them as one
+  column, not five drift values.
+
+  Width uses `2rem` (matches Tailwind's `w-8` on the action IconButtons) so
+  the cell scales with `--app-font-size` exactly the way the rest of the
+  sidebar does. Using a literal `32px` would desynchronise the cell from
+  the IconButton it mirrors when the user changes the appearance scale.
+
+  The `.sidebar-rail-cell--nested` modifier compensates for the extra right
+  inset that nested rows (group-list `nav.px-1.5` + row `px-2`) carry
+  compared with the top/bottom action rows (`px-3`). The 0.125rem (≈1.75px
+  at 14px root) negative right margin pulls the cell back onto the rail-x
+  line. Kept as a modifier (not a magic number per call site) so future
+  rail-X consumers in dense rows opt in by class, not by re-deriving the
+  offset. See docs/design/sidebar-alignment-plan.md.
+*/
+:root {
+  --sidebar-rail-x: 1.75rem;
+}
+.sidebar-rail-cell {
+  width: 2rem;
+  display: grid;
+  place-items: center;
+}
+.sidebar-rail-cell--nested {
+  margin-right: -0.125rem;
+}
+
+/*
+  LIGHT palette.
+
+  This is NOT a mechanical inversion — a naive `1 - L` recipe produces a
+  glaring, tiring light mode. Instead we rebalance:
+    - Surfaces spread less in L than dark (humans see more L steps in the
+      upper range, so we crush the range to keep hierarchy without yelling).
+    - Borders tone down — pure black hairlines look dirty at 14px font size.
+    - Accent ring pulled down in L for contrast against light surfaces; hue
+      kept at 215 for visual identity continuity.
+    - Drop shadows slightly warmer (≈60° hue) so the app reads as "paper on
+      a desk" rather than "plastic". Warmth is Apple's cue for "lift".
+*/
+html.theme-light {
+  --color-bg-app: oklch(0.985 0.002 240);
+  --color-bg-sidebar: oklch(0.965 0.003 240);
+  --color-bg-panel: oklch(0.995 0.001 240);
+  --color-bg-elevated: oklch(0.975 0.003 240);
+  --color-bg-hover: oklch(0.935 0.004 240);
+  --color-bg-active: oklch(0.895 0.006 240);
+
+  --color-fg-primary: oklch(0.22 0.01 240);
+  --color-fg-secondary: oklch(0.36 0.008 240);
+  --color-fg-tertiary: oklch(0.48 0.006 240);
+  --color-fg-disabled: oklch(0.62 0.004 240);
+  --color-fg-faint: oklch(0.70 0.003 240);
+
+  --color-border-subtle: oklch(0.90 0.003 240);
+  --color-border-default: oklch(0.82 0.004 240);
+  --color-border-strong: oklch(0.70 0.005 240);
+
+  --color-accent: oklch(0.58 0.14 225);
+  --color-accent-quiet: oklch(0.62 0.08 225);
+  --color-accent-fg: oklch(0.99 0 0);
+  --color-accent-soft: oklch(0.58 0.14 225 / 0.14);
+
+  --color-state-running: oklch(0.55 0.14 155);
+  --color-state-waiting: oklch(0.58 0.12 75);
+  --color-state-parked: var(--color-fg-tertiary);
+  --color-state-success: oklch(0.55 0.14 155);
+  --color-state-success-text: oklch(0.48 0.14 155);
+  --color-state-warning: oklch(0.62 0.15 75);
+  --color-state-warning-text: oklch(0.52 0.15 75);
+  --color-state-warning-soft: oklch(0.62 0.15 75 / 0.10);
+  --color-state-error: oklch(0.52 0.21 25);
+  --color-state-error-text: oklch(0.48 0.21 25);
+  --color-state-error-soft: oklch(0.52 0.21 25 / 0.10);
+  --color-state-error-strong: oklch(0.46 0.22 25);
+  --color-state-error-fg: oklch(0.99 0 0);
+
+  /* Inner highlight in dark = "light from above"; in light the analogue is
+     a soft warm inset shadow on the top edge, not a highlight. */
+  --surface-highlight: oklch(0 0 0 / 0.03);
+  --surface-shadow:
+    0 1px 2px oklch(0 0 0 / 0.06),
+    0 4px 16px oklch(0.6 0.02 60 / 0.08);
+  --shadow-drag-overlay:
+    0 12px 32px -8px oklch(0.4 0.02 60 / 0.18),
+    0 0 0 1px oklch(0 0 0 / 0.06);
+  /* Tutorial ornamentals — light variant. Drop one lightness step so the
+     white message glyph keeps AA contrast on the welcome bubble, and swap
+     the deep black card shadow for a softer warm one to match the rest of
+     the light surface stack. */
+  --gradient-tutorial-welcome:
+    linear-gradient(135deg, oklch(0.62 0.14 215) 0%, oklch(0.48 0.18 265) 100%);
+  --shadow-tutorial-card: 0 24px 48px -12px oklch(0.4 0.02 60 / 0.20);
+  --color-focus-ring: oklch(0.55 0.15 215 / 0.55); /* a11y: boosted opacity for inline-rename + input focus visibility in light mode */
+
+  --color-bg-app-foreground: var(--color-fg-primary);
+  --color-bg-panel-foreground: var(--color-fg-primary);
+  --color-bg-elevated-foreground: var(--color-fg-primary);
+  --color-bg-hover-foreground: var(--color-fg-primary);
+
+  --color-popover: oklch(0.995 0.001 240);
+  --color-popover-foreground: var(--color-fg-primary);
+  --color-popover-border: var(--color-border-default);
+
+  --color-card: var(--color-bg-panel);
+  --color-card-foreground: var(--color-fg-primary);
+  --color-card-border: var(--color-border-subtle);
+
+  /* Terminal stays dark even in light mode — shell output is easier to
+     parse on dark, and every major terminal emulator ships dark by default.
+     Inverting it would break mental model + hurt ANSI color contrast. */
+  --color-terminal-bg: oklch(0.18 0.004 240);
+  --color-terminal-foreground: oklch(0.90 0.006 106);
+  --color-terminal-muted: oklch(0.58 0.01 58);
+  --color-terminal-border: oklch(0.30 0.005 240);
+  --color-terminal-accent: oklch(0.60 0.17 155);
+  --color-terminal-hover-bg: oklch(0.24 0.005 240);
+
+  /* Syntax tokens — light mode. Drop lightness, hold chroma so highlight
+     reads cleanly on bg-panel (oklch 0.995). Hue parity with the dark
+     palette keeps token identity stable across theme switch. */
+  --color-syntax-keyword: oklch(0.45 0.16 260);
+  --color-syntax-string: oklch(0.42 0.14 145);
+  --color-syntax-number: oklch(0.50 0.14 50);
+  --color-syntax-comment: oklch(0.55 0.01 240);
+  --color-syntax-function: oklch(0.50 0.14 220);
+  --color-syntax-punctuation: oklch(0.50 0.005 240);
+  --color-syntax-tag: oklch(0.48 0.18 25);
+  --color-syntax-variable: oklch(0.32 0.01 240);
+  --color-syntax-regex: oklch(0.48 0.18 300);
+}
+
+html.theme-light ::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-fg-primary);
+}
+
+/* Light-mode label overrides — the hard-coded oklch() grays in the type
+   utilities below were authored for the dark palette. Remap them here so
+   text-label-* reads correctly on light surfaces too. */
+html.theme-light .text-label-section,
+html.theme-light .text-label-meta {
+  color: oklch(0.48 0.006 240);
+}
+html.theme-light .text-label-faint {
+  color: oklch(0.62 0.004 240);
+}
+html.theme-light .text-body-row {
+  color: oklch(0.36 0.008 240);
+}
+html.theme-light .text-body-emphasis {
+  color: oklch(0.22 0.01 240);
+}
+
+/* Light-mode `raised` button overrides — Button/IconButton ship hardcoded
+   dark oklch(0.40) bg + border for the dark palette (see Button.tsx /
+   IconButton.tsx `raised` variant). In light mode that renders as
+   dark-on-dark (text-fg-primary is oklch 0.22), making the Sidebar's
+   New Session, palette search, and Settings buttons unreadable. Re-skin
+   the same tile here as a near-white surface that lifts off the
+   bg-sidebar (0.965) with a hairline border + soft shadow, so the dark
+   foreground text/icon reads cleanly. Hover/active mirror the dark-mode
+   ladder direction (hover lighter, active recessed). Dark mode is
+   untouched. */
+html.theme-light [data-variant="raised"] {
+  background-color: oklch(1 0 0);
+  border-color: var(--color-border-default);
+  box-shadow:
+    inset 0 1px 0 0 oklch(1 0 0 / 0.6),
+    0 1px 2px 0 oklch(0 0 0 / 0.05),
+    0 1px 3px 0 oklch(0 0 0 / 0.04);
+}
+html.theme-light [data-variant="raised"]:hover {
+  background-color: oklch(0.985 0.002 240);
+  border-color: var(--color-border-strong);
+}
+html.theme-light [data-variant="raised"]:active {
+  background-color: oklch(0.945 0.003 240);
+}
+html.theme-light [data-variant="raised"]:focus-visible {
+  box-shadow:
+    inset 0 1px 0 0 oklch(1 0 0 / 0.6),
+    0 1px 2px 0 oklch(0 0 0 / 0.05),
+    0 1px 3px 0 oklch(0 0 0 / 0.04),
+    0 0 0 3px var(--color-focus-ring);
+}
+html.theme-light [data-variant="raised"]:disabled {
+  background-color: var(--color-bg-elevated);
+  border-color: var(--color-border-default);
+  color: var(--color-fg-disabled);
+  box-shadow: none;
+}
+
+/* Light-mode scrollbar — the dark palette's border tokens are too dark to
+   read as "scrollbar" on a near-white surface. */
+html.theme-light ::-webkit-scrollbar-thumb {
+  background: oklch(0.78 0.004 240);
+  background-clip: padding-box;
+}
+html.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.68 0.004 240);
+  background-clip: padding-box;
 }
 
 /* Inter stylistic sets only on opt-in Latin contexts. Applying this to a
@@ -208,6 +488,105 @@ html, body, #root {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* (#336) Bash command typing-preview caret. While the model is mid-stream
+   on a Bash tool_use input, ToolBlock renders the partial `command` arg
+   followed by a `\u258B` glyph wrapped in this class. Pure CSS animation
+   (no JS interval) — opacity 1→0→1 every 600ms. Sized to match the
+   surrounding `text-meta` (11px) without inheriting the parent color so
+   it stays readable in both themes. */
+@keyframes bashTypingCaret {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.bash-typing-caret {
+  display: inline-block;
+  margin-left: 1px;
+  font-family: inherit;
+  color: inherit;
+  animation: bashTypingCaret 0.6s steps(1, end) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bash-typing-caret { animation: none; opacity: 0.7; }
+}
+/*
+  Focus-ring token kit (#211).
+
+  Before this utility, `focus-visible:ring-*` was sprinkled inline across ~20
+  components with at least three distinct rings (accent 1px inset, border-strong
+  1px inset, state-error 1px outset). Users saw a different cyan/gray ring
+  depending on which pane their Tab key landed in — classic inconsistency
+  surfaced by the UI-review.
+
+  We consolidate to ONE canonical ring for interactive chrome + selectable
+  rows, matching the session-row / group-header treatment established in
+  Sidebar.tsx (#183): 1px INSET accent. Inset keeps the ring from growing
+  the element's bounding box — critical inside tight sidebar rows and inline
+  chat action chips where a 2px outset would collide with neighbors.
+
+  `.focus-ring-destructive` uses the error token at the same geometry for
+  Reject / Delete / Interrupt buttons so the ring itself conveys "dangerous
+  action" without re-coloring the whole button. We intentionally keep it as
+  an outset ring on the destructive chips (they sit in dense rows with
+  borders of their own, so an outset ring reads cleanest).
+
+  Buttons that build their OWN custom focus ring (Button, IconButton,
+  WindowControls red variant) keep their bespoke box-shadow halos —
+  those are tuned against specific background stacks and replacing them
+  would change the visual. This kit targets ring-utility consumers only.
+*/
+@layer utilities {
+  /*
+    Use `outline` (not box-shadow) so the ring composes cleanly with
+    existing shadow stacks — selected sidebar rows, mono chip buttons with
+    inset borders, etc. all already ride on box-shadow, and stacking a
+    second shadow would either overwrite those or require per-site
+    composition. `outline` is its own layer, drawn after paint, and it
+    honors border-radius on every modern engine we ship to.
+      - .focus-ring           : inset 1px accent (default selectable / chrome)
+      - .focus-ring-destructive: outset 1px state-error at 0.6 alpha
+        (destructive chips — Reject / Delete / Interrupt)
+      - .focus-ring-waiting   : outset 2px state-waiting at 0.95 alpha
+        (selectable options blocking on user input — QuestionBlock rows.
+         Denser than the others to remain visible on the waiting tint bg.)
+      - .focus-ring-success   : outset 1px state-success at 0.6 alpha
+        (affirmative actions paired with destructive chips — DiffView Accept,
+        QuestionBlock once submitted)
+  */
+  .focus-ring:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: -1px;
+  }
+  .focus-ring-destructive:focus-visible {
+    outline: 1px solid oklch(from var(--color-state-error) l c h / 0.6);
+    outline-offset: 0;
+  }
+  /*
+    `focus-ring-waiting` is geometrically denser than `focus-ring-destructive`
+    (2px outset at 0.95 alpha) and tinted with the waiting amber. The denser
+    ring is necessary because QuestionBlock options sit on a `state-waiting/
+    [0.06]` tinted bg — at 1px / 0.6 alpha the ring blended into the tint and
+    failed visibility audits (#307 bug 4). 2px width + near-opaque alpha
+    matches Apple-tier focus indicators while still reading as the waiting
+    hue (matched-tone reinforces "this row belongs to the waiting prompt").
+
+    Both `:focus-visible` and `:focus-within` selectors are exposed because
+    QuestionBlock wraps the radio inside a `<label>`, so the wrapper needs
+    to react when the inner Radix control receives focus. Toolbar-style
+    consumers that focus the element directly only fire `:focus-visible`.
+  */
+  .focus-ring-waiting:focus-visible,
+  .focus-ring-waiting:focus-within {
+    outline: 2px solid oklch(from var(--color-state-waiting) l c h / 0.95);
+    outline-offset: 0;
+  }
+  .focus-ring-success:focus-visible,
+  .focus-ring-success:focus-within {
+    outline: 1px solid oklch(from var(--color-state-success) l c h / 0.6);
+    outline-offset: 0;
+  }
+}
+
 /* Material craft utilities. */
 @layer utilities {
   /* Typography scale — 4 semantic tiers. Components must pick one of these
@@ -260,6 +639,44 @@ html, body, #root {
     color: oklch(0.93 0 0);
   }
 
+  /* ── Fine-grained mono typography scale ──
+     Used by chat tool buttons, terminal headers, code chips, command
+     palette inline metadata. These ride below the semantic
+     text-label-*/text-body-* tier — they're for content that is
+     intentionally typographically dense (mono, often uppercase) and needs
+     sub-13px sizing without each call site rolling its own arbitrary
+     `text-[10px]`. Color is *not* baked in here so the same size class
+     can be paired with text-fg-tertiary, text-state-error, etc.
+
+       mono-xs : 10/14 — tool chip buttons, micro-labels
+       mono-sm : 11/15 — code paths, terminal headers, hint chips
+       mono-md : 12/16 — popover input text, inline command labels
+       mono-lg : 13/18 — palette command text (matches body-row)
+
+     ── Naming convention (#300, finalized) ──
+     `text-meta` (11px proportional) and `text-mono-xs` (10px mono) are
+     intentionally separate utilities, not interchangeable:
+       - `text-meta`   = 11px, line-height 14px, **proportional Inter**.
+                         Use for status pills, durations, hint chips, and
+                         anywhere a micro-label sits inside a body-text
+                         flow (banner subtitles, toast bodies). Defined
+                         in the semantic 4-step scale above.
+       - `text-mono-xs` = 10px, line-height 14px, **monospace**. Use for
+                         tool chip buttons, code byte counters, mono
+                         micro-labels (inside ToolBlock, DiffView,
+                         PrettyInput, etc).
+     They differ in BOTH font family AND size (11 vs 10), so composing
+     `text-meta font-mono` would silently bump 10px → 11px and break the
+     mono micro-scale alignment with mono-sm/md/lg. Keep them split.
+     The shared `MetaLabel` primitive (src/components/ui/MetaLabel.tsx)
+     wraps the mono variant; bare `text-meta` is the right choice when
+     the surrounding text is already proportional.
+  */
+  .text-mono-xs { font-size: 10px; line-height: 14px; }
+  .text-mono-sm { font-size: 11px; line-height: 15px; }
+  .text-mono-md { font-size: 12px; line-height: 16px; }
+  .text-mono-lg { font-size: 13px; line-height: 18px; }
+
   /* 1px lighter top edge — the "light from above" cue. Apply on any card-like
      surface (sidebar, panel, elevated, dropdown, tooltip, input wrapper). */
   .surface-highlight {
@@ -288,6 +705,24 @@ html, body, #root {
       inset 0 1px 0 0 var(--surface-highlight),
       0 1px 0 0 var(--color-border-subtle),
       0 8px 32px oklch(0 0 0 / 0.25);
+  }
+
+  /* Two-pane shell. The window itself is frameless (Windows/Linux) or
+     `hiddenInset` (macOS); DWM/Aqua paints the rounded outer corners. The
+     app shell is a flat flex row — no outer margin, no outer rounding —
+     so sidebar + right-pane meet the window edge flush. The only visible
+     internal seam is .sidebar-edge (the sidebar's right hairline). */
+  .app-shell {
+    padding: 0;
+  }
+
+  /* The right pane is the conversation surface. It reads as a panel with
+     no border of its own — its left edge is the sidebar's inset highlight,
+     its top/right/bottom are the window's DWM/Aqua edge. A 1px inset
+     highlight along the top provides the "light from above" cue. */
+  .right-pane-frame {
+    background: var(--color-bg-panel);
+    box-shadow: inset 0 1px 0 0 var(--surface-highlight);
   }
 }
 
@@ -328,4 +763,50 @@ html, body, #root {
   background: var(--color-border-strong);
   background-clip: padding-box;
   border: 2px solid transparent;
+}
+
+/*
+  Pane resize handle for react-resizable-panels' <Separator>.
+
+  Spec: 4px-wide invisible hit area, 1px visible divider that only appears on
+  hover / drag / focus — matches VS Code, Linear, Figma. We render it as a
+  4px-flex element with a 1px inner bar that animates opacity. The outer
+  element IS the cursor hit target, the inner is purely decorative.
+
+  Drag state: :active covers pointerdown-drag; the library itself doesn't add
+  a distinguishing attribute across versions, so CSS pseudo-classes are our
+  single source of truth.
+*/
+.pane-resize-handle {
+  position: relative;
+  flex: 0 0 4px;
+  width: 4px;
+  cursor: col-resize;
+  outline: none;
+  z-index: 10;
+  user-select: none;
+  touch-action: none;
+  transition: background-color 150ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1));
+}
+.pane-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 0.5px);
+  width: 1px;
+  background: var(--color-border-default);
+  opacity: 0;
+  transition: opacity 180ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1)),
+              background-color 180ms var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1));
+  pointer-events: none;
+}
+.pane-resize-handle:hover::after,
+.pane-resize-handle:active::after,
+.pane-resize-handle:focus-visible::after {
+  opacity: 1;
+}
+.pane-resize-handle:active::after,
+.pane-resize-handle:focus-visible::after {
+  background: var(--color-accent);
 }

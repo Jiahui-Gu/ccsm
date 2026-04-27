@@ -1,0 +1,18 @@
+New Session
+Groups
+Sessions
+Archived Groups
+0
+Settings
+Skip
+STEP 4 OF 4
+Ready when you are
+
+Create a fresh session, or import what you already have from the Claude Code CLI.
+
+New Session
+Import Session
+New
+Import
+Back
+Done

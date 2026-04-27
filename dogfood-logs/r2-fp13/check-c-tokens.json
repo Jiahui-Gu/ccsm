@@ -1,0 +1,11 @@
+{
+  "ctxChip": {
+    "found": false
+  },
+  "tokenMentions": [],
+  "snapContext": {
+    "totalTokens": 36005,
+    "contextWindow": 1000000,
+    "model": "claude-opus-4-7[1m]"
+  }
+}

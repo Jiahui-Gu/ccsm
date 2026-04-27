@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Hash, Terminal, Settings, Plus } from 'lucide-react';
+import { motion, useReducedMotion } from 'framer-motion';
+import { Search, SearchX, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
-import { mockGroups, mockSessions } from '../mock/data';
+import { useStore, resolveEffectiveTheme } from '../stores/store';
+import { useTranslation } from '../i18n/useTranslation';
+import { useFocusRestore } from '../lib/useFocusRestore';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -22,6 +25,7 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   onOpenSettings?: () => void;
   onNewSession?: () => void;
+  onOpenImport?: () => void;
   onSelectSession?: (id: string) => void;
   onFocusGroup?: (id: string) => void;
 };
@@ -31,26 +35,61 @@ export function CommandPalette({
   onOpenChange,
   onOpenSettings,
   onNewSession,
+  onOpenImport,
   onSelectSession,
   onFocusGroup
 }: Props) {
+  const { t } = useTranslation();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const sessions = useStore((s) => s.sessions);
+  const groups = useStore((s) => s.groups);
+  const createGroup = useStore((s) => s.createGroup);
+  const toggleSidebar = useStore((s) => s.toggleSidebar);
+  const theme = useStore((s) => s.theme);
+  const setTheme = useStore((s) => s.setTheme);
+  const prefersReducedMotion = useReducedMotion();
+
+  // Track OS preference so the "Switch theme → X" label always reflects the
+  // currently rendered theme (when persisted is `system`, raw label would
+  // say "Switch theme → dark" even if dark is already showing). Cheap
+  // matchMedia subscription, mirrors App.tsx's effect.
+  const [osPrefersDark, setOsPrefersDark] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => setOsPrefersDark(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   useEffect(() => {
     if (open) {
       setQ('');
       setActive(0);
-      // Focus after entrance animation so the ring settles cleanly.
-      const t = window.setTimeout(() => inputRef.current?.focus(), 80);
-      return () => window.clearTimeout(t);
     }
   }, [open]);
 
+  // a11y: palette is opened via Ctrl+K (no Radix Trigger), so restore focus
+  // to whatever had it before the palette intercepted. Falls back to the
+  // active session row in the sidebar.
+  const { handleCloseAutoFocus } = useFocusRestore(open, {
+    fallbackSelector: '[data-session-id][aria-selected="true"], [data-session-id][tabindex="0"]'
+  });
+
   const results: Result[] = useMemo(() => {
+    // Derive the next theme from what is *actually rendered*, not from the
+    // persisted preference. When persisted is `system`, the raw value would
+    // misreport (e.g. "Switch theme → dark" while dark is already showing).
+    const resolvedTheme = resolveEffectiveTheme(theme, osPrefersDark);
+    const nextTheme = resolvedTheme === 'dark' ? 'light' : 'dark';
     const all: Result[] = [
-      ...mockSessions.map<Result>((s) => ({
+      ...sessions.map<Result>((s) => ({
         id: `session:${s.id}`,
         kind: 'session',
         label: s.name,
@@ -61,13 +100,13 @@ export function CommandPalette({
           onSelectSession?.(s.id);
         }
       })),
-      ...mockGroups
+      ...groups
         .filter((g) => g.kind === 'normal')
         .map<Result>((g) => ({
           id: `group:${g.id}`,
           kind: 'group',
           label: g.name,
-          hint: 'Group',
+          hint: t('commandPalette.groupHint'),
           icon: <Hash size={13} className="stroke-[1.75] text-fg-tertiary" />,
           onPick: () => {
             onOpenChange(false);
@@ -77,8 +116,8 @@ export function CommandPalette({
       {
         id: 'cmd:new-session',
         kind: 'command',
-        label: 'New session',
-        hint: '⌘N',
+        label: t('commandPalette.cmdNewSession'),
+        hint: 'Ctrl+N',
         icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -86,10 +125,42 @@ export function CommandPalette({
         }
       },
       {
+        id: 'cmd:new-group',
+        kind: 'command',
+        label: t('commandPalette.cmdNewGroup'),
+        hint: 'Ctrl+Shift+N',
+        icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          createGroup();
+        }
+      },
+      {
+        id: 'cmd:toggle-sidebar',
+        kind: 'command',
+        label: t('commandPalette.cmdToggleSidebar'),
+        hint: 'Ctrl+B',
+        icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          toggleSidebar();
+        }
+      },
+      {
+        id: 'cmd:import',
+        kind: 'command',
+        label: t('commandPalette.cmdImport'),
+        icon: <DownloadCloud size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          onOpenImport?.();
+        }
+      },
+      {
         id: 'cmd:open-settings',
         kind: 'command',
-        label: 'Open settings',
-        hint: '⌘,',
+        label: t('commandPalette.cmdOpenSettings'),
+        hint: 'Ctrl+,',
         icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -99,17 +170,22 @@ export function CommandPalette({
       {
         id: 'cmd:switch-theme',
         kind: 'command',
-        label: 'Switch theme',
-        icon: <Terminal size={13} className="stroke-[1.75] text-fg-tertiary" />,
-        onPick: () => onOpenChange(false)
+        label: t('commandPalette.cmdSwitchTheme', { next: nextTheme }),
+        icon: <SunMoon size={13} className="stroke-[1.75] text-fg-tertiary" />,
+        onPick: () => {
+          onOpenChange(false);
+          setTheme(nextTheme);
+        }
       }
     ];
     const needle = q.trim().toLowerCase();
-    if (!needle) return all;
+    if (!needle) return [];
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
-  }, [q, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup]);
+  }, [q, sessions, groups, theme, osPrefersDark, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
+
+  const hasQuery = q.trim().length > 0;
 
   useEffect(() => {
     if (active >= results.length) setActive(0);
@@ -133,63 +209,129 @@ export function CommandPalette({
       <DialogPortal>
         <DialogOverlay />
         <RD.Content
+          // Marker for InputBar's global Esc handler — modal dialogs own Esc.
+          data-modal-dialog=""
+          aria-modal="true"
           onKeyDown={onKeyDown}
+          onOpenAutoFocus={(e) => {
+            // Let Radix's FocusScope own the focus handoff (so it knows
+            // which element to release on close), but redirect it to our
+            // search input instead of the first tabbable.
+            e.preventDefault();
+            inputRef.current?.focus();
+          }}
+          onCloseAutoFocus={handleCloseAutoFocus}
           className={cn(
-            'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[600px] max-w-[90vw]',
+            'fixed left-1/2 top-[18%] z-50 -translate-x-1/2 w-[calc(100vw-2rem)] max-w-xl',
             'rounded-lg border border-border-default bg-bg-panel',
             'surface-highlight',
-            'shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.04),0_8px_32px_oklch(0_0_0_/_0.45)]',
+            'shadow-[var(--surface-shadow)]',
             'outline-none',
             'data-[state=open]:animate-[dialogIn_200ms_cubic-bezier(0.32,0.72,0,1)]',
             'data-[state=closed]:opacity-0'
           )}
         >
-          <RD.Title className="sr-only">Command palette</RD.Title>
+          <RD.Title className="sr-only">{t('commandPalette.title')}</RD.Title>
           <div className="flex items-center gap-2 px-3 h-11 border-b border-border-subtle">
             <Search size={14} className="stroke-[1.5] text-fg-tertiary shrink-0" />
             <input
               ref={inputRef}
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="Search sessions, groups, commands…"
+              placeholder={t('commandPalette.searchPlaceholder')}
               className={cn(
-                'flex-1 bg-transparent text-base text-fg-primary placeholder:text-fg-tertiary',
+                'flex-1 bg-transparent text-body text-fg-primary placeholder:text-fg-tertiary',
                 'outline-none'
               )}
             />
-            <kbd className="font-mono text-xs px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-tertiary">
-              Esc
-            </kbd>
           </div>
           <ul className="max-h-[340px] overflow-y-auto py-1" role="listbox">
-            {results.length === 0 && (
-              <li className="px-4 py-6 text-center text-sm text-fg-tertiary">No matches</li>
+            {!hasQuery && (
+              <li className="px-4 py-6 text-center text-chrome text-fg-tertiary">{t('commandPalette.emptyHint')}</li>
             )}
-            {results.map((r, i) => (
+            {hasQuery && results.length === 0 && (
               <li
-                key={r.id}
-                role="option"
-                aria-selected={i === active}
-                onMouseEnter={() => setActive(i)}
-                onClick={() => r.onPick()}
-                className={cn(
-                  'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
-                  'text-sm',
-                  i === active
-                    ? 'bg-bg-hover text-fg-primary shadow-[inset_0_1px_0_0_oklch(1_0_0_/_0.05)]'
-                    : 'text-fg-secondary'
-                )}
+                className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center"
+                data-testid="cmd-palette-no-matches"
               >
-                <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
-                <span className="flex-1 min-w-0 truncate">{r.label}</span>
-                {r.hint && (
-                  <span className="text-xs text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
-                    {r.hint}
-                  </span>
-                )}
+                <SearchX size={28} className="stroke-[1.5] text-fg-disabled" aria-hidden />
+                <div className="text-chrome text-fg-secondary">
+                  {t('commandPalette.noMatches')}
+                </div>
+                <div className="text-meta text-fg-tertiary">
+                  {t('commandPalette.noResultsFor', { query: q.trim() })}
+                </div>
               </li>
-            ))}
+            )}
+            {hasQuery && results.length > 0 && (
+              <motion.div
+                // Re-key on the result set so the stagger replays whenever the
+                // user types and the list changes.
+                key={results.map((r) => r.id).join('|')}
+                initial="hidden"
+                animate="visible"
+                variants={{
+                  hidden: {},
+                  visible: {
+                    transition: prefersReducedMotion ? {} : { staggerChildren: 0.015 }
+                  }
+                }}
+                role="presentation"
+              >
+                {results.map((r, i) => (
+                  <motion.li
+                    key={r.id}
+                    role="option"
+                    aria-selected={i === active}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => r.onPick()}
+                    variants={{
+                      hidden: { opacity: prefersReducedMotion ? 1 : 0 },
+                      visible: { opacity: 1 }
+                    }}
+                    className={cn(
+                      'flex items-center gap-2.5 h-8 px-3 mx-1 rounded-sm cursor-pointer',
+                      'text-chrome',
+                      i === active
+                        ? 'bg-bg-hover text-fg-primary surface-highlight'
+                        : 'text-fg-secondary'
+                    )}
+                  >
+                    <span className="shrink-0 inline-flex w-4 justify-center">{r.icon}</span>
+                    <span className="flex-1 min-w-0 truncate">{r.label}</span>
+                    {r.hint && (
+                      <span className="text-meta text-fg-disabled font-mono tabular-nums truncate max-w-[180px]">
+                        {r.hint}
+                      </span>
+                    )}
+                  </motion.li>
+                ))}
+              </motion.div>
+            )}
           </ul>
+          <div
+            className="flex items-center gap-4 px-3 h-8 border-t border-border-subtle text-meta text-fg-tertiary"
+            data-testid="cmd-palette-kbd-hints"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {'\u2191\u2193'}
+              </kbd>
+              <span>{t('commandPalette.hintNavigate')}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {'\u21B5'}
+              </kbd>
+              <span>{t('commandPalette.hintSelect')}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <kbd className="font-mono px-1.5 py-0.5 rounded-sm border border-border-subtle bg-bg-elevated text-fg-secondary">
+                {t('commandPalette.escKey')}
+              </kbd>
+              <span>{t('commandPalette.hintClose')}</span>
+            </span>
+          </div>
         </RD.Content>
       </DialogPortal>
     </Dialog>
