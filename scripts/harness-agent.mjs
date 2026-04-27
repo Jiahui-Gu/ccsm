@@ -2540,6 +2540,74 @@ async function caseUserBlockHoverMenu({ win, log }) {
   log('hover reveals 4 actions; Copy -> clipboard; Truncate -> cut keeps clicked user msg + pinned resume');
 }
 
+// ---------- assistant-copy-button ----------
+// Dogfood r2 fp2 bug #5: AssistantBlock had no copy-message button while
+// UserBlock did (parity gap). Mirrors the UserBlock hover-reveal Copy pattern
+// on assistant rows. We seed BOTH a user prompt and an assistant reply, then
+// click the Copy button on the assistant row and assert the clipboard
+// contains the assistant text — NOT the user prompt (regression guard: the
+// bug we're fixing was "no button at all", but the next-most-likely
+// regression is wiring it to the wrong block's text).
+async function caseAssistantCopyButton({ win, log }) {
+  // i18n is global; pin English so aria-label assertions are stable.
+  await win.evaluate(async () => {
+    try { if (window.__ccsmI18n && window.__ccsmI18n.language !== 'en') await window.__ccsmI18n.changeLanguage('en'); } catch {}
+  });
+  const USER_TEXT = 'PROBE_USER_PROMPT please say copy me';
+  const ASSISTANT_TEXT = 'PROBE_ASSISTANT_REPLY copy me';
+  const SID = 's-acopy';
+  const BID = 'a-copy';
+  await win.evaluate(([sid, bid, userText, assistantText]) => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: sid, name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: sid,
+      messagesBySession: {
+        [sid]: [
+          { kind: 'user', id: 'u-copy', text: userText },
+          { kind: 'assistant', id: bid, text: assistantText }
+        ]
+      }
+    });
+  }, [SID, BID, USER_TEXT, ASSISTANT_TEXT]);
+  await win.waitForTimeout(300);
+
+  const assistantRow = win.locator(`[data-assistant-block-id="${BID}"]`);
+  await assistantRow.waitFor({ state: 'visible', timeout: 5000 });
+
+  await assistantRow.hover();
+  await win.waitForTimeout(250);
+
+  const actions = assistantRow.locator('[data-testid="assistant-block-actions"]');
+  if ((await actions.count()) !== 1) {
+    throw new Error('expected assistant-block-actions row to render (bug #5: no copy button on assistant blocks)');
+  }
+  const opacity = await actions.evaluate((el) => getComputedStyle(el).opacity);
+  if (opacity !== '1') {
+    throw new Error(`expected assistant actions opacity=1 on hover, got ${opacity}`);
+  }
+
+  const copyBtn = actions.locator('button[aria-label="Copy message"]');
+  if ((await copyBtn.count()) !== 1) {
+    throw new Error('expected exactly 1 Copy message button on assistant block');
+  }
+  await copyBtn.click();
+  await win.waitForTimeout(200);
+
+  const clip = await win.evaluate(() =>
+    navigator.clipboard.readText().catch((e) => `ERR:${e.message}`)
+  );
+  if (!clip.includes('PROBE_ASSISTANT_REPLY')) {
+    throw new Error(`clipboard missing assistant text after Copy click (clip=${JSON.stringify(clip.slice(0, 120))})`);
+  }
+  // Regression guard: must NOT have grabbed the user prompt instead.
+  if (clip.includes('PROBE_USER_PROMPT')) {
+    throw new Error(`clipboard wrongly contains user prompt — copy button wired to wrong block (clip=${JSON.stringify(clip.slice(0, 120))})`);
+  }
+
+  log('hover reveals Copy on assistant block; click -> clipboard has assistant text (not user prompt)');
+}
+
 // ---------- cap-pre-main-injects-global (capability demo) ----------
 // Demonstrates `preMain`: stage state in the electron MAIN process via
 // app.evaluate before the case body runs. The case body then reads it back
@@ -5093,6 +5161,7 @@ await runHarness({
     { id: 'sdk-system-subtypes', run: caseSdkSystemSubtypes },
     { id: 'sdk-abort-on-disposed', run: caseSdkAbortOnDisposed },
     { id: 'user-block-hover-menu', run: caseUserBlockHoverMenu },
+    { id: 'assistant-copy-button', run: caseAssistantCopyButton },
     // ---- Per-case capability demos (task #223) ----
     // Each demo exercises one new field on the runner contract; the assertion
     // is intentionally trivial — the value here is locking the API shape, not

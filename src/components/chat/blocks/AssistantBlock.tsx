@@ -1,23 +1,46 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Copy, Check } from 'lucide-react';
 import { CodeBlock } from '../../CodeBlock';
 import { Tooltip } from '../../ui/Tooltip';
 import { useTranslation } from '../../../i18n/useTranslation';
 import type { SkillProvenance } from '../../../types';
 
 export function AssistantBlock({
+  id,
   text,
   streaming,
   viaSkill
 }: {
+  id?: string;
   text: string;
   streaming?: boolean;
   viaSkill?: SkillProvenance;
 }) {
   const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+
+  // Mirror UserBlock.handleCopy: writeText with the assistant's plain text
+  // (the same string the user sees rendered as markdown). Silently no-op on
+  // clipboard-blocked environments rather than spamming a toast.
+  async function handleCopy() {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — silently no-op */
+    }
+  }
+
   return (
-    <div className="flex gap-3 text-body" data-type-scale-role="assistant-body">
+    <div
+      className="group relative flex gap-3 text-body"
+      data-type-scale-role="assistant-body"
+      data-assistant-block-id={id}
+    >
       <span className="text-fg-secondary select-none w-3 shrink-0 font-mono font-semibold leading-[22px]">●</span>
       <div className="text-fg-primary min-w-0 leading-[22px]">
         {viaSkill && (
@@ -96,6 +119,27 @@ export function AssistantBlock({
           />
         )}
       </div>
+      {/* Hover-only action row mirroring UserBlock's pattern. Hidden while the
+          assistant is streaming — copying a half-streamed reply would be
+          surprising. focus-within keeps it visible during keyboard tab-through. */}
+      {!streaming && text && (
+        <div
+          data-testid="assistant-block-actions"
+          className="absolute top-0 right-0 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100"
+        >
+          <Tooltip content={copied ? t('chat.userMsgCopied') : t('chat.userMsgCopy')} side="top">
+            <button
+              type="button"
+              aria-label={copied ? t('chat.userMsgCopied') : t('chat.userMsgCopy')}
+              data-copied={copied ? 'true' : 'false'}
+              onClick={handleCopy}
+              className="inline-grid place-items-center h-6 w-6 rounded-md text-fg-tertiary hover:bg-bg-hover hover:text-fg-primary focus-visible:bg-bg-hover focus-visible:outline-none transition-colors"
+            >
+              {copied ? <Check size={13} /> : <Copy size={13} />}
+            </button>
+          </Tooltip>
+        </div>
+      )}
     </div>
   );
 }
