@@ -56,7 +56,11 @@ type AgentPermissionRequest = {
   input: Record<string, unknown>;
 };
 
-type UpdateStatus =
+// Updater status — exported so the renderer's `UpdatesPane` (and any
+// future banners/toasts) can import a single source of truth instead of
+// redeclaring the union locally. Mirrors the shape broadcast by
+// `electron/updater.ts` over the `updates:status` IPC channel.
+export type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'available'; version: string; releaseDate?: string }

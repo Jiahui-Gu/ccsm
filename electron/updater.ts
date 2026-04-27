@@ -155,6 +155,17 @@ export function installUpdaterIpc(): void {
 
   ipcMain.handle('updates:install', () => {
     if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
+    // Defense-in-depth: refuse to call quitAndInstall unless we've
+    // actually broadcast a `downloaded` event. Without this guard a
+    // misbehaving renderer (e.g. the user clicking the persistent toast
+    // after a stale state, or a future bug that wires the install button
+    // to a non-downloaded state) can trigger autoUpdater.quitAndInstall()
+    // mid-download — electron-updater handles that by force-killing the
+    // app, which the user reads as a crash. Returning `not-ready` lets
+    // the renderer surface a sane "still downloading" message instead.
+    if (lastStatus.kind !== 'downloaded') {
+      return { ok: false as const, reason: 'not-ready' as const };
+    }
     // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
     // on Windows (isSilent=false) and to relaunch after install on all OSes.
     setImmediate(() => autoUpdater.quitAndInstall(false, true));

@@ -25,6 +25,7 @@
 //   - palette-nav                          (probe-e2e-palette-nav)
 //   - slash-picker-claude-config-dir       (PR #346, env-scoped fake ~/.claude)
 //   - settings-open                        (probe-e2e-settings-open)
+//   - settings-updates-pane                (Settings → Updates pane render contract)
 //   - search-shortcut-f                    (probe-e2e-search-shortcut-f)
 //   - tutorial                             (probe-e2e-tutorial)
 //   - titlebar                             (probe-e2e-titlebar)
@@ -1575,6 +1576,85 @@ async function caseSettingsOpen({ win, log }) {
   await pressEscAndExpectClosed('keyboard shortcut');
 
   log('sidebar / /config / Cmd+, all open Settings; Esc closes');
+}
+
+// ---------- settings-updates-pane ----------
+// Settings → Updates tab renders the current version + status line driven
+// by `electron/updater.ts` over the `updates:status` IPC channel. Today
+// `updates:status` returns `{ kind: 'idle' }` in dev (autoUpdater short-
+// circuits when !app.isPackaged) so the displayed status line should
+// match the i18n `updates.statusIdle` copy. This case guards the contract
+// the UpdateBanner / dogfood toast both depend on: that the pane mounts,
+// reads the IPC bridge, and surfaces a sane status string instead of an
+// empty placeholder.
+//
+// We DO NOT exercise the install button here — quitAndInstall would tear
+// down the app mid-test. The download path is also gated behind
+// `app.isPackaged`, so there's no value in clicking those CTAs.
+async function caseSettingsUpdatesPane({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      tutorialSeen: true,
+    });
+  });
+  await win.waitForTimeout(150);
+
+  // Open Settings via the sidebar button so this case doesn't depend on
+  // keyboard-shortcut wiring already covered by `settings-open`.
+  await win.evaluate(() => window.dispatchEvent(new Event('ccsm:open-settings')));
+  const dialog = win.getByRole('dialog');
+  await dialog.waitFor({ state: 'visible', timeout: 3000 });
+
+  // Switch to the Updates tab. Tab labels are i18n strings; the case
+  // runs in default English so the regex is fine. Multilingual variants
+  // are covered by `i18n-settings-zh`.
+  const updatesTab = dialog.getByRole('tab', { name: /^updates$/i });
+  await updatesTab.waitFor({ state: 'visible', timeout: 1500 });
+  await updatesTab.click();
+
+  // The pane's tabpanel is `settings-panel-updates`.
+  const panel = dialog.locator('#settings-panel-updates');
+  await panel.waitFor({ state: 'visible', timeout: 1500 });
+
+  // Version + Status field labels are sentence-case ("Version", "Status")
+  // — assert they're visible inside the panel.
+  const text = (await panel.textContent()) || '';
+  if (!/Version/i.test(text)) {
+    throw new Error('updates pane missing "Version" label');
+  }
+  if (!/Status/i.test(text)) {
+    throw new Error('updates pane missing "Status" label');
+  }
+  // Dev runs hit the `not-packaged` short-circuit so `safeCheck` broadcasts
+  // `{ kind: 'not-available' }` on boot — the i18n `statusNotAvailable`
+  // copy ("You are on the latest version.") should render. We accept
+  // either the not-available or the idle line so this case stays resilient
+  // to future startup-broadcast changes (e.g. delaying the boot check).
+  const statusOk = await Promise.race([
+    panel.getByText('You are on the latest version.').waitFor({ state: 'visible', timeout: 2500 }).then(() => true).catch(() => false),
+    panel.getByText('No update check performed yet.').waitFor({ state: 'visible', timeout: 2500 }).then(() => true).catch(() => false),
+  ]);
+  if (!statusOk) {
+    const dump = (await panel.textContent()) || '';
+    throw new Error(`updates pane never rendered a recognisable status line; panel text: ${dump.slice(0, 200)}`);
+  }
+
+  // The "Check for updates" button must be visible + enabled (the dev
+  // short-circuit returns idle so canCheck === true).
+  const checkBtn = panel.getByRole('button', { name: /^check for updates$/i });
+  await checkBtn.waitFor({ state: 'visible', timeout: 1500 });
+  if (await checkBtn.isDisabled()) {
+    throw new Error('Check for updates button unexpectedly disabled in idle state');
+  }
+
+  await win.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden', timeout: 1500 }).catch(() => {});
+
+  log('updates pane: version + status labels render, idle status line + check button visible');
 }
 
 // ---------- search-shortcut-f ----------
@@ -4108,6 +4188,7 @@ await runHarness({
     },
     { id: 'slash-namespaced-unknown-toast', run: caseSlashNamespacedUnknownToast },
     { id: 'settings-open', run: caseSettingsOpen },
+    { id: 'settings-updates-pane', run: caseSettingsUpdatesPane },
     { id: 'search-shortcut-f', run: caseSearchShortcutF },
     { id: 'tutorial', run: caseTutorial },
     { id: 'titlebar', run: caseTitlebar },

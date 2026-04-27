@@ -274,7 +274,10 @@ const zh: EnCatalog = {
       statusNotAvailable: '已经是最新版本。',
       statusDownloading: '下载中… {{percent}}%（{{transferred}} / {{total}}）',
       statusDownloaded: '更新 {{version}} 已就绪 — 重启即可安装。',
-      statusError: '检查更新失败：{{message}}'
+      statusError: '检查更新失败：{{message}}',
+      downloadedToastTitle: '更新已下载 — 重启以应用',
+      downloadedToastBody: '版本 {{version}} 已就绪。',
+      downloadedToastAction: '重启'
     }
   },
   permissions: {
