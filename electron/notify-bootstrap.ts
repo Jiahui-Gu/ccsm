@@ -167,13 +167,9 @@ export function getNotifyRuntimeState(): Readonly<NotifyRuntimeState> {
 //
 // Extracted from main.ts so the e2e probe can install the EXACT same
 // router behaviour rather than a hand-rolled copy that drifts from
-// production. The router consumes a few host capabilities (resolve
-// permission against the live session manager, look up the foreground
-// window) injected as functions so this module stays free of cyclic
-// imports against `agent/sessions`.
+// production. The router consumes the host's main-window lookup as an
+// injected function so this module stays free of cyclic imports.
 export interface ToastActionRouterDeps {
-  /** Resolve a CLI permission gate (typically `sessions.resolvePermission`). */
-  resolvePermission: (sessionId: string, requestId: string, decision: 'allow' | 'deny') => unknown;
   /** Returns the window to send `notify:toastAction` to, or null. */
   getMainWindow: () => { isDestroyed?: () => boolean; webContents?: { send: (channel: string, payload: unknown) => void }; isMinimized?: () => boolean; restore?: () => void; isVisible?: () => boolean; show?: () => void; focus?: () => void } | null;
 }
@@ -186,16 +182,11 @@ export function createDefaultToastActionRouter(
     if (!target) return;
     const win = deps.getMainWindow();
     if (target.kind === 'permission') {
-      // The toastId for permission events IS the requestId (see lifecycle.ts
-      // → permissionRequestToWaitingBlock). Resolve the underlying CLI
-      // permission gate and notify the renderer so it can update its
-      // waiting-block UI + (for `allow-always`) seed `allowAlwaysTools`.
+      // The toastId for permission events IS the requestId. Permission
+      // resolution previously routed through the SDK runner; with the
+      // SDK gone (W3.5) the renderer is the only authority, so we just
+      // notify it of the toast click and let it update its UI.
       const requestId = event.toastId;
-      if (event.action === 'allow' || event.action === 'allow-always') {
-        deps.resolvePermission(target.sessionId, requestId, 'allow');
-      } else if (event.action === 'reject') {
-        deps.resolvePermission(target.sessionId, requestId, 'deny');
-      }
       if (win && win.webContents) {
         win.webContents.send('notify:toastAction', {
           sessionId: target.sessionId,

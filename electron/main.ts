@@ -9,7 +9,6 @@ import {
   saveState,
   closeDb,
 } from './db';
-import { loadHistoryFromJsonl } from './jsonl-loader';
 import { validateSaveStateInput } from './db-validate';
 
 // Reads the user's opt-out preference for crash reporting from app_state.
@@ -62,8 +61,6 @@ if (SENTRY_DSN) {
   // eslint-disable-next-line no-console
   console.info('[sentry] SENTRY_DSN not set — crash reporting disabled.');
 }
-import { sessions } from './agent/manager';
-import { resolveCwd } from './agent/sessions';
 import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
@@ -78,7 +75,6 @@ import {
   createDefaultToastActionRouter,
   autoSetupAumid,
 } from './notify-bootstrap';
-import type { PermissionMode } from './agent/sessions';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
 import { loadPickerCommands } from './commands-loader';
@@ -107,6 +103,16 @@ function isSafePath(p: unknown): p is string {
     !p.startsWith('\\\\') &&
     !p.startsWith('//')
   );
+}
+
+// Expand a leading `~` / `~/` / `~\` to the user's home directory. Used by
+// `paths:exist` to normalize persisted cwds before the safety check. Inlined
+// here after the `electron/agent/sessions.ts` deletion (W3.5c) — it was the
+// only non-deleted consumer of the old `resolveCwd` helper.
+function resolveCwd(cwd: string): string {
+  if (cwd === '~') return os.homedir();
+  if (cwd.startsWith('~/') || cwd.startsWith('~\\')) return path.join(os.homedir(), cwd.slice(2));
+  return cwd;
 }
 
 // Defense-in-depth: every IPC handler that takes a privileged action should
@@ -423,27 +429,20 @@ function createWindow() {
     try { win.webContents.setBackgroundThrottling(false); } catch { /* ignore */ }
   }
   installContextMenu(win);
-  sessions.bindSender(win.webContents);
   // ttyd-exit events from the cliBridge module need a renderer to land on.
-  // Bound at the same point as `sessions.bindSender` so a window swap
-  // (close-to-tray + restore) routes events at the live renderer.
   bindCliBridgeSender(win.webContents);
 
   // If a prior window was hidden then had its WebContents destroyed (can
   // happen under aggressive GC on minimize-to-tray), subsequent `wc.send`
-  // calls from the sessions manager no-op silently. Rebinding on `show` and
-  // on the fresh window's `did-finish-load` picks up any still-live sessions
-  // and routes their events at the live renderer.
+  // calls no-op silently. Rebinding on `show` and on the fresh window's
+  // `did-finish-load` picks up any still-live ttyd plumbing and routes
+  // events at the live renderer.
   win.on('show', () => {
-    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
     // Reset the renderer's fade-opacity in case the window was just
     // restored after a fade-to-hide (see `window:beforeHide` below).
     if (!win.webContents.isDestroyed()) {
       win.webContents.send('window:afterShow');
     }
-  });
-  win.webContents.on('did-finish-load', () => {
-    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
   });
 
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
@@ -570,8 +569,6 @@ app.whenReady().then(() => {
   try {
     bootstrapNotify(
       createDefaultToastActionRouter({
-        resolvePermission: (sessionId, requestId, decision) =>
-          sessions.resolvePermission(sessionId, requestId, decision),
         getMainWindow: () =>
           BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null,
       }),
@@ -619,31 +616,9 @@ app.whenReady().then(() => {
     }
   );
   // Session message history is no longer persisted by ccsm — the CLI/Agent
-  // SDK already writes every frame to `~/.claude/projects/<key>/<sid>.jsonl`,
-  // and ccsm now reads from there via `agent:load-history`. The previous
-  // `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages` table were
-  // a redundant secondary copy.
-  ipcMain.handle(
-    'agent:load-history',
-    async (e, cwd: unknown, sessionId: unknown) => {
-      if (!fromMainFrame(e)) {
-        return { ok: false, error: 'rejected' as const };
-      }
-      if (typeof cwd !== 'string' || typeof sessionId !== 'string') {
-        return { ok: false, error: 'invalid_args' as const };
-      }
-      try {
-        return await loadHistoryFromJsonl(cwd, sessionId);
-      } catch (err) {
-        console.warn('[main] agent:load-history failed', err);
-        return {
-          ok: false as const,
-          error: 'read_error' as const,
-          detail: err instanceof Error ? err.message : String(err)
-        };
-      }
-    }
-  );
+  // SDK already writes every frame to `~/.claude/projects/<key>/<sid>.jsonl`.
+  // The previous `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages`
+  // table were a redundant secondary copy.
 
   // Truncation marker (PR `feat/user-block-hover-menu`). Stored in app_state
   // under key `truncation:<sessionId>` as JSON `{ blockId, truncatedAt }`.
@@ -954,225 +929,6 @@ app.whenReady().then(() => {
     return BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false;
   });
 
-  ipcMain.handle(
-    'agent:start',
-    async (
-      e,
-      sessionId: string,
-      opts: {
-        cwd: string;
-        model?: string;
-        permissionMode?: PermissionMode;
-        resumeSessionId?: string;
-        // Pre-allocated CLI session UUID. Forwarded to the SDK runner via
-        // StartOptions; the legacy hand-written runner ignores it. See
-        // `src/stores/store.ts` newSessionId() for the unification rationale.
-        sessionId?: string;
-        // Resolved 6-tier effort chip level. Forwarded to the SDK runner so
-        // launch query() carries `thinking` + `effort`.
-        effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      }
-    ) => {
-      if (!fromMainFrame(e)) {
-        return { ok: false, error: 'rejected', errorCode: 'CWD_MISSING' as const };
-      }
-      // Guard against stale `cwd` paths that no longer exist on disk. Common
-      // failure mode: a session was created inside a now-deleted worktree
-      // (the Sept worktree feature was reverted in #104), so its persisted
-      // `cwd` points at `.claude/worktrees/agent-xxx`. Spawning would crash
-      // with ENOENT inside SessionRunner; catching here gives the renderer a
-      // clean error code it can surface as "repick your folder".
-      const resolvedCwd = resolveCwd(opts.cwd);
-      // UNC + non-absolute paths are rejected up front. resolveCwd expands
-      // `~` to the home dir, so by this point a safe cwd is always absolute
-      // and never a UNC share. See isSafePath() at top-of-file.
-      if (!isSafePath(resolvedCwd) || !fs.existsSync(resolvedCwd)) {
-        return {
-          ok: false,
-          error: `Working directory no longer exists: ${opts.cwd}`,
-          errorCode: 'CWD_MISSING' as const,
-        };
-      }
-
-      // Binary resolution lives in `electron/agent-sdk/sessions.ts`
-      // (`resolveClaudeInvocation`). CCSM ships the binary inside the
-      // installer (PR-B) so we no longer let the renderer pick / persist
-      // a path — `agent:start` just trusts the SDK runner to find it.
-
-      const result = await sessions.start(sessionId, opts);
-
-      return result;
-    }
-  );
-  ipcMain.handle('agent:send', (e, sessionId: string, text: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.send(sessionId, text);
-  });
-  ipcMain.handle(
-    'agent:sendContent',
-    (e, sessionId: string, content: unknown[]) => {
-      if (!fromMainFrame(e)) return false;
-      return sessions.sendContent(sessionId, Array.isArray(content) ? content : []);
-    }
-  );
-  ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
-  /**
-   * (#239) Per-tool-use cancel IPC. Validates payload shape so a malformed
-   * call from a compromised renderer can't tickle the manager with bogus
-   * args. Returns the same `{ok:true} | {ok:false, error}` shape the
-   * renderer already handles for setPermissionMode.
-   */
-  ipcMain.handle(
-    'agent:cancelToolUse',
-    async (
-      e,
-      args: { sessionId: string; toolUseId: string }
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        !args ||
-        typeof args !== 'object' ||
-        typeof args.sessionId !== 'string' ||
-        typeof args.toolUseId !== 'string' ||
-        !args.sessionId ||
-        !args.toolUseId
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.cancelToolUse(args.sessionId, args.toolUseId);
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-  ipcMain.handle(
-    'agent:setPermissionMode',
-    async (
-      e,
-      sessionId: string,
-      mode: PermissionMode
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      // Validate the mode up front so an unknown value gets rejected even
-      // when the session no longer exists (manager.setPermissionMode would
-      // otherwise short-circuit to `false` and we'd never hit the throw in
-      // toCliPermissionMode). The list here mirrors the union in
-      // electron/agent/sessions.ts:PermissionMode — keep them in sync.
-      const KNOWN_MODES = new Set<string>([
-        'default', 'acceptEdits', 'plan', 'bypassPermissions',
-        'ask', 'standard', 'dontAsk', 'auto', 'yolo'
-      ]);
-      if (typeof mode !== 'string' || !KNOWN_MODES.has(mode)) {
-        return { ok: false, error: 'unknown_mode' };
-      }
-      try {
-        await sessions.setPermissionMode(sessionId, mode);
-        return { ok: true };
-      } catch (err) {
-        if (err instanceof Error && /Unknown permission mode/i.test(err.message)) {
-          return { ok: false, error: 'unknown_mode' };
-        }
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-  ipcMain.handle('agent:setModel', (e, sessionId: string, model?: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.setModel(sessionId, model);
-  });
-  /**
-   * Legacy: apply a `max_thinking_tokens` cap to a live session. Kept for
-   * the harness probe path (which spies on this IPC); the unified 6-tier
-   * effort+thinking chip uses `agent:setEffort` instead. Validates payload
-   * defensively — a non-finite or negative `tokens` would otherwise reach
-   * the SDK and throw mid-session.
-   */
-  ipcMain.handle(
-    'agent:setMaxThinkingTokens',
-    async (
-      e,
-      sessionId: string,
-      tokens: number,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        typeof sessionId !== 'string' ||
-        !sessionId ||
-        typeof tokens !== 'number' ||
-        !Number.isFinite(tokens) ||
-        tokens < 0
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.setMaxThinkingTokens(sessionId, Math.floor(tokens));
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-  );
-  // 6-tier effort+thinking chip change. Validates the level union strictly;
-  // the runner fans out to two concurrent SDK control RPCs (see
-  // electron/agent-sdk/sessions.ts:setEffort) so the renderer never sees
-  // the two-dimension wire shape.
-  ipcMain.handle(
-    'agent:setEffort',
-    async (
-      e,
-      sessionId: string,
-      level: unknown,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        typeof sessionId !== 'string' ||
-        !sessionId ||
-        (level !== 'off' &&
-          level !== 'low' &&
-          level !== 'medium' &&
-          level !== 'high' &&
-          level !== 'xhigh' &&
-          level !== 'max')
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.setEffort(sessionId, level);
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-  );
-  ipcMain.handle('agent:close', (e, sessionId: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.close(sessionId);
-  });
-
-  ipcMain.handle(
-    'agent:resolvePermission',
-    (e, sessionId: string, requestId: string, decision: 'allow' | 'deny') => {
-      if (!fromMainFrame(e)) return false;
-      return sessions.resolvePermission(sessionId, requestId, decision);
-    }
-  );
-
-  // Per-hunk partial accept for Edit / Write / MultiEdit (#251). Additive —
-  // the legacy `agent:resolvePermission` channel above stays as the whole-tool
-  // allow/deny path. Renderer should validate `acceptedHunks` is a non-empty
-  // subset of available hunk indices before invoking.
-  ipcMain.handle(
-    'agent:resolvePermissionPartial',
-    (e, sessionId: string, requestId: string, acceptedHunks: unknown) => {
-      if (!fromMainFrame(e)) return false;
-      if (!Array.isArray(acceptedHunks)) return false;
-      const indices = acceptedHunks.filter((n): n is number => Number.isInteger(n) && n >= 0);
-      return sessions.resolvePermissionPartial(sessionId, requestId, indices);
-    }
-  );
-
   ipcMain.handle('import:scan', () => getImportableSessions());
   // Recent cwd list shown in the StatusBar cwd popover. Sourced from the
   // ccsm-owned LRU (NOT from CLI JSONL scans). Always includes home as a
@@ -1441,18 +1197,11 @@ app.whenReady().then(() => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const bootstrapMod = require('./notify-bootstrap') as typeof import('./notify-bootstrap');
     (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
-      activeSessionPids: () => sessions.activeRunnerPids(),
-      activeSessionCount: () => sessions.activeSessionCount(),
-      // Lifecycle discriminator for the close-window / delete-session probes:
-      // distinguishes count-dropped-to-0-via-handler from
-      // count-dropped-to-0-because-CLI-self-crashed.
-      selfExitCount: () => sessions.selfExitsSinceStart(),
       // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
       // can swap the inlined notify module importer for a fake without resorting to
       // `require` from inside `app.evaluate` (where it's not in scope).
       notify: notifyMod,
       notifyBootstrap: bootstrapMod,
-      sessions,
     };
   }
 
@@ -1467,22 +1216,10 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  // Kill any live claude.exe children before the event loop is torn down.
-  // `window-all-closed` already runs closeAll() on Windows/Linux, but on
-  // macOS (and on the tray→Quit path that invokes app.quit() directly while
-  // windows are hidden-not-closed) before-quit is our only guaranteed hook.
-  // closeAll() is idempotent and synchronous (abort signals fire SIGTERM via
-  // the spawner); a duplicate call from window-all-closed is a no-op.
-  try {
-    sessions.closeAll();
-  } catch {
-    /* ignore — best-effort cleanup on quit */
-  }
-  // Tear down any live ttyd processes too. Idempotent; mirrors the
-  // sessions.closeAll() pattern above. Without this, ttyd + its claude
-  // child would leak past app quit on Windows (taskkill /T from
-  // killTtydForSession is the only reliable way to reap the conpty
-  // tree).
+  // Tear down any live ttyd processes before the event loop is torn down.
+  // Idempotent. Without this, ttyd + its claude child would leak past app
+  // quit on Windows (taskkill /T from killTtydForSession is the only
+  // reliable way to reap the conpty tree).
   try {
     shutdownCliBridge();
   } catch {
@@ -1495,7 +1232,6 @@ app.on('window-all-closed', () => {
   // explicitly chose minimize-to-tray. Real quit goes through tray Quit /
   // Ctrl-Q.
   if (isQuitting) {
-    sessions.closeAll();
     closeDb();
     app.quit();
   }
