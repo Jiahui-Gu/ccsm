@@ -177,12 +177,25 @@ describe('updater: IPC wiring', () => {
   });
 
   it('updates:install calls quitAndInstall with visible installer + relaunch', async () => {
+    // Defense-in-depth gate (#TBD): updates:install refuses unless
+    // lastStatus is `downloaded`. Drive the broadcast first so the
+    // handler can proceed.
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = handler({});
     expect(res).toEqual({ ok: true });
     // quitAndInstall is scheduled via setImmediate — flush it.
     await new Promise((r) => setImmediate(r));
     expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
+  });
+
+  it('updates:install refuses when no download has completed', () => {
+    // No `update-downloaded` event broadcast → lastStatus stays `idle`.
+    // The defense-in-depth gate must short-circuit before quitAndInstall.
+    const handler = ipcHandlers.get('updates:install')!;
+    const res = handler({});
+    expect(res).toEqual({ ok: false, reason: 'not-ready' });
+    expect(quitAndInstallCalls).toEqual([]);
   });
 
   it('updates:install refuses when not packaged', async () => {

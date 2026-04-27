@@ -39,6 +39,16 @@ Known caveats:
   installs; until then this is expected.
 - **Unsigned builds**: if `CSC_LINK` is absent, SmartScreen prompts on every
   launch. This is the path used for dry-run builds.
+- **`build.win.publisherName` is intentionally unset** in `package.json`. With
+  no publisherName, electron-updater's `verifySignature` step returns `null`
+  rather than failing — letting unsigned local / CI dry-run builds still
+  exercise the auto-update flow without a code-signing certificate. Once we
+  ship a signed release with a real CN, set `publisherName` to the cert's
+  Common Name so signature verification becomes mandatory in production.
+- **`build.nsis.disableWebInstaller: true`** silences the runtime warning
+  electron-updater emits when an NSIS web installer is detected. We ship a
+  full installer (single `.exe` carrying the app payload), so the web-installer
+  path is unreachable; the flag just removes the noise.
 
 ### macOS
 

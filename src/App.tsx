@@ -546,13 +546,17 @@ function UpdateDownloadedBridge() {
     const off = window.ccsm?.onUpdateDownloaded((info) => {
       if (shown) return;
       shown = true;
+      // Strings live in `settings:updates.downloadedToast*` so the toast
+      // localizes alongside the Settings → Updates pane copy. Using
+      // `i18next.t` (not the React hook) keeps this callback pure — it
+      // fires from an IPC subscription, not a render.
       push({
         kind: 'info',
-        title: 'Update downloaded — restart to apply',
-        body: `Version ${info.version} is ready.`,
+        title: i18next.t('settings:updates.downloadedToastTitle'),
+        body: i18next.t('settings:updates.downloadedToastBody', { version: info.version }),
         persistent: true,
         action: {
-          label: 'Restart',
+          label: i18next.t('settings:updates.downloadedToastAction'),
           onClick: () => {
             void window.ccsm?.updatesInstall();
           }

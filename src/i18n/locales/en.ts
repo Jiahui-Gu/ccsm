@@ -294,7 +294,15 @@ const en = {
       statusNotAvailable: 'You are on the latest version.',
       statusDownloading: 'Downloading… {{percent}}% ({{transferred}} / {{total}})',
       statusDownloaded: 'Update {{version}} ready — restart to install.',
-      statusError: 'Update check failed: {{message}}'
+      statusError: 'Update check failed: {{message}}',
+      // Strings for the persistent renderer toast surfaced by
+      // App.tsx's UpdateDownloadedBridge when main pushes
+      // `update:downloaded`. Lives under `settings:updates.*` for parity
+      // with the rest of the updater copy even though the toast itself
+      // is rendered outside the Settings dialog.
+      downloadedToastTitle: 'Update downloaded — restart to apply',
+      downloadedToastBody: 'Version {{version}} is ready.',
+      downloadedToastAction: 'Restart'
     }
   },
   permissions: {

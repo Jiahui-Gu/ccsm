@@ -13,15 +13,7 @@ import { useTranslation } from '../i18n/useTranslation';
 import { usePreferences } from '../store/preferences';
 import { useFocusRestore } from '../lib/useFocusRestore';
 import { DURATION_RAW, EASING } from '../lib/motion';
-
-type LocalUpdateStatus =
-  | { kind: 'idle' }
-  | { kind: 'checking' }
-  | { kind: 'available'; version: string; releaseDate?: string }
-  | { kind: 'not-available'; version: string }
-  | { kind: 'downloading'; percent: number; transferred: number; total: number }
-  | { kind: 'downloaded'; version: string }
-  | { kind: 'error'; message: string };
+import type { UpdateStatus } from '../global';
 
 type Tab = 'appearance' | 'notifications' | 'connection' | 'updates';
 
@@ -393,7 +385,7 @@ function CrashReportingField() {
 
 function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
-  const [status, setStatus] = useState<LocalUpdateStatus>({ kind: 'idle' });
+  const [status, setStatus] = useState<UpdateStatus>({ kind: 'idle' });
   const [autoCheck, setAutoCheck] = useState<boolean>(true);
   const { t } = useTranslation('settings');
 
@@ -469,7 +461,7 @@ function UpdatesPane() {
   );
 }
 
-function describeStatus(s: LocalUpdateStatus, t: (key: string, vars?: Record<string, unknown>) => string): string {
+function describeStatus(s: UpdateStatus, t: (key: string, vars?: Record<string, unknown>) => string): string {
   switch (s.kind) {
     case 'idle':
       return t('updates.statusIdle');
