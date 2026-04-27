@@ -227,7 +227,7 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = navigator.platform.startsWith('Mac') ? e.metaKey : e.ctrlKey;
+      const mod = e.metaKey || e.ctrlKey;
       // Ctrl+/ opens the shortcuts overlay. We handle it BEFORE the
       // `if (!mod) return` guard below so it sits alongside the other
       // modified-key bindings, even though the `?` alternative handled

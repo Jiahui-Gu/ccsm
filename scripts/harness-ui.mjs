@@ -1220,7 +1220,7 @@ async function caseSlashPickerClaudeConfigDir({ win, log }) {
   await textarea.click();
   // Allow more time for the IPC round-trip to load commands from the
   // fixture directory — macOS disk I/O can be slower in CI.
-  await win.waitForTimeout(process.platform === 'darwin' ? 1500 : 500);
+  await win.waitForTimeout(process.platform !== 'win32' ? 1500 : 500);
   await textarea.fill('/');
   await win.waitForTimeout(400);
 
@@ -1230,7 +1230,7 @@ async function caseSlashPickerClaudeConfigDir({ win, log }) {
   // Retry reading the picker options — the command loader IPC may still be
   // resolving on macOS when the picker first appears.
   let flat = '';
-  const deadline = Date.now() + (process.platform === 'darwin' ? 6000 : 3000);
+  const deadline = Date.now() + (process.platform !== 'win32' ? 6000 : 3000);
   while (Date.now() < deadline) {
     const optionTexts = await picker.locator('[role="option"]').allInnerTexts();
     flat = optionTexts.join(' | ');
@@ -3400,9 +3400,8 @@ async function caseSidebarSpacingCanon({ win, log }) {
   if (m.err) throw new Error(m.err);
 
   const TOL = 1;
-  // macOS font rendering produces slightly different element positions;
-  // the archivedDivider-to-inputBar delta can be up to ~6px on macOS.
-  const TOL_ARCHIVED = process.platform === 'darwin' ? 8 : TOL;
+  // Non-Windows font rendering produces slightly different element positions.
+  const TOL_ARCHIVED = process.platform !== 'win32' ? 8 : TOL;
   const fails = [];
   if (Math.abs(m.top_x - m.bottom_x) > TOL) {
     fails.push(`Group A invariant broken: top_x=${m.top_x.toFixed(1)} bottom_x=${m.bottom_x.toFixed(1)}`);
@@ -3593,8 +3592,8 @@ async function caseCardPaddingCanon({ win, log }) {
   });
   if (!chatGap) throw new Error('card-padding-canon: ChatStream wrapper not found');
   const errors = [];
-  // macOS font rendering can cause sub-pixel rounding; allow 6px floor on macOS.
-  const MIN_GAP = process.platform === 'darwin' ? 6 : 8;
+  // Non-Windows font rendering can cause sub-pixel rounding; allow 6px floor.
+  const MIN_GAP = process.platform !== 'win32' ? 6 : 8;
   if (!(chatGap.gap >= MIN_GAP)) {
     errors.push(`ChatStream gap drift: rowGap=${chatGap.gap}px (expected >= ${MIN_GAP}px)`);
   }
@@ -3642,8 +3641,8 @@ async function caseCardPaddingCanon({ win, log }) {
       `footer padding-left=${qPad.footerPadLeft}px (must match)`
     );
   }
-  // macOS sub-pixel rounding can produce 14px instead of 16px; allow 2px slack.
-  const PAD_TOL = process.platform === 'darwin' ? 2 : 0;
+  // Non-Windows sub-pixel rounding can produce 14px instead of 16px; allow 2px slack.
+  const PAD_TOL = process.platform !== 'win32' ? 2 : 0;
   if (Math.abs(qPad.bodyPadLeft - 16) > PAD_TOL) {
     errors.push(
       `QuestionBlock body padding-left=${qPad.bodyPadLeft}px (canon=16px / px-4)`

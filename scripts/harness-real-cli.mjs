@@ -70,29 +70,6 @@ function claudeEnv(extra = {}) {
   return env;
 }
 
-// ---------- API-key gate ----------
-/**
- * Cases that send user messages require real Claude API access.
- * Skip gracefully when no credentials are available — the bundled CLI
- * authenticates via ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an OAuth
- * token cached in CLAUDE_CONFIG_DIR. If none are present the CLI will
- * exit before producing any assistant frames, causing a confusing
- * "user=0 assistant=0" failure that isn't a code bug.
- */
-function hasApiCredentials() {
-  if (process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY.length > 0) return true;
-  if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_AUTH_TOKEN.length > 0) return true;
-  // Check for OAuth credentials cached by `claude login`.
-  const oauthFile = path.join(CONFIG_DIR, '.credentials.json');
-  if (fs.existsSync(oauthFile)) {
-    try {
-      const creds = JSON.parse(fs.readFileSync(oauthFile, 'utf8'));
-      if (creds && (creds.claudeAiOauth || creds.oauth_token)) return true;
-    } catch { /* ignore parse errors */ }
-  }
-  return false;
-}
-
 // ---------- cases ----------
 
 /**
@@ -358,11 +335,6 @@ async function caseIdeAutoConnectKillSwitchPresent({ log }) {
  * CLAUDE_CONFIG_DIR — ccsm dev machines have them, CI may not.
  */
 async function caseNamespacedCommandActuallyRuns({ log }) {
-  if (!hasApiCredentials()) {
-    log('SKIP: no API credentials (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OAuth) — this case requires real Claude API access');
-    return;
-  }
-
   // Pre-flight: confirm the user has the plugin installed. If not, skip
   // (don't fail) — we cover the contract on dev machines where it's set
   // up, and we'd rather know about a real regression than chase missing
@@ -627,11 +599,6 @@ async function caseNamespacedCommandActuallyRuns({ log }) {
  * harness convention.
  */
 async function caseTruncateFromHereThenResendRealCli({ log }) {
-  if (!hasApiCredentials()) {
-    log('SKIP: no API credentials (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / OAuth) — this case requires real Claude API access');
-    return;
-  }
-
   // Resolve the bundled CLI binary (matches sessions.ts'
   // resolveClaudeInvocation default path).
   const platformPkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`;
@@ -653,7 +620,7 @@ async function caseTruncateFromHereThenResendRealCli({ log }) {
   // Use a temp cwd so the JSONL file we create is isolated from any real
   // user history. The CLI derives the project-key from cwd by replacing
   // [\\/:] with '-' (see jsonl-loader.ts projectKeyFromCwd).
-  const tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-truncate-'));
+  const tmpCwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-truncate-')));
   const sessionId = randomUUID();
   const projectKey = tmpCwd.replace(/[\\/:]/g, '-');
   const jsonlPath = path.join(CONFIG_DIR, 'projects', projectKey, `${sessionId}.jsonl`);
@@ -827,19 +794,6 @@ async function caseTruncateFromHereThenResendRealCli({ log }) {
   const baselineRun = await runConversation('baseline', 3, 'preset');
   log(`baseline: ${baselineRun.results.length} result frames, exit=${baselineRun.exitCode} reason="${baselineRun.reason}"`);
   if (baselineRun.stderr.trim()) log(`baseline stderr tail: ${baselineRun.stderr.slice(-300).replace(/\n/g, ' | ')}`);
-
-  // If the baseline produced no results and stderr hints at auth issues,
-  // skip gracefully — the pre-flight hasApiCredentials() check may have
-  // found stale/expired tokens that the CLI rejects at runtime.
-  if (baselineRun.results.length < 3) {
-    const authFail = /auth|unauthorized|forbidden|invalid.*key|invalid.*token|API key/i.test(baselineRun.stderr);
-    if (authFail) {
-      try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
-      log('SKIP: baseline failed with auth-related error — credentials may be expired');
-      return;
-    }
-  }
-
   if (baselineRun.results.length < 3) {
     try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
     throw new Error(
@@ -857,8 +811,9 @@ async function caseTruncateFromHereThenResendRealCli({ log }) {
   log(`baseline JSONL: user=${baseline.user} assistant=${baseline.assistant} total=${baseline.total}`);
   if (baseline.user < 3 || baseline.assistant < 3) {
     try { fs.rmSync(tmpCwd, { recursive: true, force: true }); } catch { /* ignore */ }
-    log(`SKIP: baseline JSONL incomplete (user=${baseline.user} assistant=${baseline.assistant}) — CLI may lack valid API credentials`);
-    return;
+    throw new Error(
+      `baseline JSONL incomplete: expected >=3 user + >=3 assistant, got user=${baseline.user} assistant=${baseline.assistant}.`,
+    );
   }
 
   // ---- Phase 2: simulate ccsm "Truncate from here" — JSONL untouched ----
