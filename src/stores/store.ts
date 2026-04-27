@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { RecentProject } from '../mock/data';
-import type { Group, Session, MessageBlock, ImageAttachment } from '../types';
+import type { Group, Session } from '../types';
 import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, type PersistedKey } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 import { i18next } from '../i18n';
@@ -19,18 +19,6 @@ function defaultGroupName(): string {
     // i18next not initialized — fall through to the hard-coded English.
   }
   return 'Sessions';
-}
-
-/**
- * One pending user turn waiting in the per-session FIFO queue. Created when
- * the user hits Send while the agent is mid-turn (CLI-style queueing). Drained
- * by lifecycle.ts when the running flag flips back to false. Slash commands
- * are NOT queued — see InputBar.send() for the rationale.
- */
-export interface QueuedMessage {
-  id: string;
-  text: string;
-  attachments: ImageAttachment[];
 }
 
 export type ModelId = string;
@@ -66,40 +54,6 @@ export type ModelSource =
   | 'env-override'
   | 'fallback';
 
-// Cumulative cost / token / turn counters for a single session. Aggregated
-// from `result` frames as they arrive (see agent/lifecycle). Used by the
-// `/cost` client handler and could drive a future footer chip.
-export interface SessionStats {
-  turns: number;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-}
-
-export const EMPTY_SESSION_STATS: SessionStats = {
-  turns: 0,
-  inputTokens: 0,
-  outputTokens: 0,
-  costUsd: 0
-};
-
-// Snapshot of the last completed turn's context-window usage. Updated from
-// the latest `result` frame's `usage` (current prompt size, NOT the
-// cumulative API tokens that `SessionStats` tracks) and the model-aware
-// `contextWindow` reported in `modelUsage[model].contextWindow`. Drives the
-// StatusBar context-usage pie chip. Ephemeral — not persisted; the chip just
-// stays hidden until the first turn after reload.
-export interface SessionContextUsage {
-  /** Latest turn's prompt size: input + cache_creation + cache_read tokens.
-   *  This is the live "how full is the context window" number. */
-  totalTokens: number;
-  /** Model-reported context window for that turn (e.g. 200_000 for sonnet/opus).
-   *  Null when claude.exe didn't report `modelUsage` (older CLI / error frame). */
-  contextWindow: number | null;
-  /** Model id from the same `modelUsage` entry, kept for tooltip display. */
-  model: string | null;
-}
-
 export interface DiscoveredModel {
   id: string;
   source: ModelSource;
@@ -121,41 +75,6 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
   enabled: true,
   sound: true
 };
-
-/**
- * Transient diagnostic surfaced from the agent subsystem (initialize handshake
- * failed, control_request timed out, etc). Originates in
- * `electron/agent/sessions.ts` → `manager.ts` emits `agent:diagnostic` on the
- * WebContents → `src/agent/lifecycle.ts` pushes into the store slice below.
- * The UI shows the most-recent, not-yet-dismissed entry as a banner above
- * ChatStream.
- */
-export interface DiagnosticEntry {
-  id: string;
-  sessionId: string;
-  level: 'warn' | 'error';
-  code: string;
-  message: string;
-  timestamp: number;
-  dismissed?: boolean;
-}
-
-/**
- * Per-session init-failure flag. Populated by InputBar when `agent:start`
- * returns `!ok` with an error code other than the ones with bespoke UX
- * (CLAUDE_NOT_FOUND → installer-corrupt banner; CWD_MISSING → inline error block + StatusBar
- * hint). Cleared on successful retry or when the user repicks the cwd/model.
- *
- * The UI surfaces this as an actionable banner ("Failed to start Claude — Retry
- * / Reconfigure") so a stuck session isn't left silently spinning on
- * `setRunning(true)` with no explanation.
- */
-export interface SessionInitFailure {
-  error: string;
-  errorCode?: string;
-  searchedPaths?: string[];
-  timestamp: number;
-}
 
 // Soft minimum was previously surfaced to the user via the now-deleted
 // first-run wizard. CCSM ships a fixed binary version inside the installer
@@ -187,21 +106,6 @@ type State = {
   focusedGroupId: string | null;
   model: ModelId;
   permission: PermissionMode;
-  /**
-   * Global default effort level applied to NEW sessions and to any session
-   * without a per-session override in `effortLevelBySession`. Six values:
-   *  off | low | medium | high | xhigh | max  (default: 'high').
-   * Wire path projects this to SDK `thinking` + `effort` at launch and to
-   * concurrent `setMaxThinkingTokens` + `applyFlagSettings({effortLevel})`
-   * RPCs mid-session — see `src/agent/effort.ts`.
-   */
-  globalEffortLevel: EffortLevel;
-  /**
-   * Per-session effort level. Absent => inherit `globalEffortLevel`.
-   * Persisted alongside permission so a relaunch picks up the same chip
-   * value the user left each session in.
-   */
-  effortLevelBySession: Record<string, EffortLevel>;
   sidebarCollapsed: boolean;
   /**
    * Sidebar width in pixels. Persisted as px (not %) — for a fixed-content
@@ -216,33 +120,6 @@ type State = {
   fontSizePx: FontSizePx;
   tutorialSeen: boolean;
   notificationSettings: NotificationSettings;
-  messagesBySession: Record<string, MessageBlock[]>;
-  /**
-   * Transient load-history error per session. Populated when `loadMessages`
-   * IPC throws; cleared on next successful load (or explicit retry). The
-   * ChatStream renders an inline ErrorBlock when this is set so a failed
-   * history fetch isn't silent.
-   */
-  loadMessageErrors: Record<string, string>;
-  startedSessions: Record<string, true>;
-  runningSessions: Record<string, true>;
-  statsBySession: Record<string, SessionStats>;
-  /** Last-turn context-usage snapshot per session, updated from `result`
-   *  frames. Used by StatusBar's context-pie chip. Cleared on session
-   *  delete and on `/clear`-style transcript wipes. */
-  contextUsageBySession: Record<string, SessionContextUsage>;
-  // Marks sessions where the user clicked Stop. Consumed when the next
-  // `result { error_during_execution }` frame arrives so we can render a
-  // neutral "Interrupted" banner instead of an error block.
-  interruptedSessions: Record<string, true>;
-  /**
-   * Per-session FIFO of user messages enqueued while the agent was running.
-   * Drained one-at-a-time when `runningSessions[id]` flips false (see
-   * `agent/lifecycle.ts`). Cleared on Stop, on session delete, and after
-   * each successful drain. Not persisted — queues are an in-memory UX
-   * affordance, not durable state.
-   */
-  messageQueues: Record<string, QueuedMessage[]>;
   models: DiscoveredModel[];
   modelsLoaded: boolean;
   connection: ConnectionInfo | null;
@@ -259,13 +136,6 @@ type State = {
    * this flag flipping true a tick later.
    */
   hydrated: boolean;
-  // Monotonic counter bumped whenever a user-driven action requests that the
-  // InputBar textarea take focus (e.g. clicking a session in the sidebar,
-  // matching Claude Desktop's behavior). InputBar `useEffect`s on this and
-  // calls `.focus()`. Initial value is 0 so first-render comparisons are
-  // trivial — InputBar skips the first observation to avoid stealing focus
-  // on app mount. Don't bump from background/system events; only user clicks.
-  focusInputNonce: number;
   /**
    * Set when `agent:start` returns errorCode === 'CLAUDE_NOT_FOUND'. CCSM
    * bundles the Claude binary in the installer (PR-B) so this should never
@@ -274,49 +144,6 @@ type State = {
    * by `<InstallerCorruptBanner />` as a non-dismissible top banner.
    */
   installerCorrupt: boolean;
-  /** Bumped by `injectComposerText` to ask the InputBar to overwrite its draft
-   *  with `composerInjectText`. Same nonce-pull pattern as `focusInputNonce`
-   *  (skip-first-observation, ref-tracked) so app mount doesn't clobber a
-   *  user's persisted draft. Used by the user-message hover menu's "Edit and
-   *  resend" action. */
-  composerInjectNonce: number;
-  composerInjectText: string;
-  /** Per-session "draft was about to be overwritten" stash. The user-message
-   *  hover menu's Edit action would otherwise silently replace whatever the
-   *  user was typing in the composer. Instead we stash the live draft into
-   *  this list (newest first) so the InputBar's ↑/↓ recall surfaces it as
-   *  if it were a sent prompt. Not persisted — same rationale as drafts:
-   *  this is ephemeral recall sugar, not history of record. */
-  stashedDrafts: Record<string, string[]>;
-  /** Recent agent diagnostics (newest last). Capped at 20 in-memory; the
-   *  renderer only surfaces the latest non-dismissed one. Not persisted —
-   *  these are ephemeral run-time signals. */
-  diagnostics: DiagnosticEntry[];
-  /** Per-session init-failure state. See `SessionInitFailure` for semantics.
-   *  Cleared on successful retry via `clearSessionInitFailure`. */
-  sessionInitFailures: Record<string, SessionInitFailure>;
-  /**
-   * Tool names the user has granted a session-scoped "allow always" decision
-   * for. A permission request whose `toolName` is in this set auto-resolves
-   * Allow without rendering a waiting block.
-   *
-   * Session-scoped (NOT persisted): resets on app restart. See PR discussion —
-   * persisting across restarts risks a rarely-revisited allowlist leaking
-   * privileges into future workdays. User explicitly re-confirms after each
-   * launch.
-   */
-  allowAlwaysTools: string[];
-  /**
-   * Per-session pending diff comments (#303). Keyed by sessionId then by
-   * commentId. Each comment ties a free-text note to a specific
-   * `(filePath, line)` in a DiffView the user is reviewing. On the next
-   * `send()` from InputBar these are serialized as `<diff-feedback file=…
-   * line=…>…</diff-feedback>` blocks prepended to the user's prompt body
-   * and then cleared. Session-scoped + in-memory only — comments are lost
-   * on app reload by design (avoids the "old draft feedback resurfaces
-   * later in a new conversation" surprise).
-   */
-  pendingDiffComments: Record<string, Record<string, PendingDiffComment>>;
   /**
    * Id of the currently-open popover/menu, or null when nothing is open. A
    * single global slot enforces mutual exclusion: opening any popover sets
@@ -328,81 +155,7 @@ type State = {
    * the user on a randomly-open menu after restart).
    */
   openPopoverId: string | null;
-  // task322: continue-after-interrupt — per-session record of how the most
-  // recent turn ended. 'interrupted' triggers the InputBar continue-hint;
-  // 'ok' / missing = no hint. Set in `markInterrupted`, cleared in
-  // `setRunning(id, true)` when a fresh turn begins. Not persisted — a hint
-  // surviving an app reload would feel stale.
-  lastTurnEnd: Record<string, 'ok' | 'interrupted'>;
 };
-
-/**
- * One pending per-line comment attached to a DiffView (#303). Created when
- * the user opens the inline composer in a diff gutter and saves text. The
- * `file` + `line` pair locate the comment for serialization on send; `id`
- * is opaque (used as the React key + delete handle).
- *
- * `line` is the 1-based index of the changed line WITHIN the diff hunk's
- * combined removed-then-added stream as rendered by DiffView (which is the
- * unit the user sees and points at). It is NOT a source-file line number —
- * the agent gets enough context from the surrounding diff in the same turn
- * to map it back, and trying to compute real source-file line numbers from
- * a non-Myers diff would be brittle for the typical Edit/Write/MultiEdit
- * shape this app renders.
- */
-export interface PendingDiffComment {
-  id: string;
-  file: string;
-  line: number;
-  text: string;
-  createdAt: number;
-  // Bumped when an existing (file, line) comment is overwritten by a fresh
-  // addDiffComment call. Sort order still keys on createdAt so the prompt
-  // serialization stays deterministic across the replace; updatedAt is
-  // informational only.
-  updatedAt?: number;
-}
-
-/**
- * Serialize a session's pending diff comments into the structured prefix
- * we prepend to the next user prompt body. Each comment becomes one
- * `<diff-feedback file="…" line="N">text</diff-feedback>` block on its own
- * line; comments are sorted by (file, line, createdAt) so the prefix is
- * deterministic across renders. Returns '' when there are no comments,
- * which lets callers append unconditionally without a length check.
- */
-export function serializeDiffCommentsForPrompt(
-  comments: Record<string, PendingDiffComment> | undefined,
-): string {
-  if (!comments) return '';
-  const list = Object.values(comments);
-  if (list.length === 0) return '';
-  // Stable order: file path asc, then line asc, then createdAt asc. Keeps
-  // the serialized output identical across renders so test assertions on
-  // exact string output don't flap on Object.values insertion order.
-  list.sort((a, b) => {
-    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-    if (a.line !== b.line) return a.line - b.line;
-    return a.createdAt - b.createdAt;
-  });
-  return list
-    .map((c) => {
-      // Escape the attribute value so a path with `"` can't break out of
-      // the file= attribute.
-      const file = c.file.replace(/"/g, '&quot;');
-      // Escape XML metacharacters in the body so user-typed text containing
-      // `<`, `&`, or even a literal `</diff-feedback>` can't break out of
-      // the envelope or confuse the agent's tag parser. Order matters:
-      // `&` must be replaced first, otherwise we'd double-escape the `&`
-      // introduced by the subsequent `<` → `&lt;` substitution.
-      const text = c.text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-      return `<diff-feedback file="${file}" line="${c.line}">${text}</diff-feedback>`;
-    })
-    .join('\n');
-}
 
 export interface CreateSessionOptions {
   cwd?: string | null;
@@ -415,20 +168,14 @@ export interface CreateSessionOptions {
 
 /** Snapshot returned by `deleteSession` so callers can restore the row via
  *  `restoreSession` (undo toast). Captures everything needed to put the
- *  session back exactly where it was — DOM index inside its group, message
- *  history, draft text, and any in-flight runtime flags. */
+ *  session back exactly where it was — DOM index inside its group and any
+ *  draft text. */
 export interface SessionSnapshot {
   session: Session;
   /** Index of the session inside `sessions[]` BEFORE deletion. We re-insert
    *  at this index so the visual order in the sidebar is preserved. */
   index: number;
-  messages: MessageBlock[] | undefined;
   draft: string;
-  started: boolean;
-  running: boolean;
-  interrupted: boolean;
-  queue: QueuedMessage[] | undefined;
-  stats: SessionStats | undefined;
   prevActiveId: string;
 }
 
@@ -597,31 +344,6 @@ export function migrateNotificationSettings(
   };
 }
 
-/**
- * Coerce a persisted per-session effort-level map back into the strict
- * `EffortLevel` union. Strips entries with malformed values rather than
- * throwing — a legacy snapshot with stray keys shouldn't block boot.
- */
-export function sanitizeEffortLevelMap(
-  raw: unknown,
-): Record<string, EffortLevel> {
-  if (!raw || typeof raw !== 'object') return {};
-  const out: Record<string, EffortLevel> = {};
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (
-      v === 'off' ||
-      v === 'low' ||
-      v === 'medium' ||
-      v === 'high' ||
-      v === 'xhigh' ||
-      v === 'max'
-    ) {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
 function firstUsableGroupId(groups: Group[]): string | null {
   const g = groups.find((x) => x.kind === 'normal');
   return g ? g.id : null;
@@ -731,153 +453,6 @@ export function resolveEffectiveTheme(
   return osPrefersDark ? 'dark' : 'light';
 }
 
-// Module-scoped set tracking in-flight db fetches, so rapid re-clicks on a
-// session don't issue redundant IPC round-trips.
-const inFlightLoads = new Set<string>();
-
-/**
- * Project a sequence of CLI .jsonl frames (assistant / user / system / result)
- * into our store's MessageBlock format. Mirrors the live agent's reduction
- * (lifecycle.ts → streamEventToTranslation + setToolResult patches) but runs
- * synchronously over a finished transcript instead of subscribing to a stream.
- *
- * Used by importSession() to hydrate `messagesBySession[id]` immediately on
- * import — without this the imported chat looks empty until the user sends a
- * follow-up that triggers `--resume` and replays history. We deliberately
- * skip stream_event / control_request / control_response / agent_metadata
- * frames: those are runtime-only artifacts with no rendered representation.
- */
-export function framesToBlocks(frames: unknown[]): MessageBlock[] {
-  const out: MessageBlock[] = [];
-  // Index maps to keep the projection O(n) over frame count instead of
-  // O(n^2). Without these, dedupe-by-id and tool_result attach both call
-  // `out.findIndex(...)` per frame — for a 96 MB / 33k-frame transcript
-  // that's ~1.7s of pure linear scans on import. Keys mirror the lookup
-  // predicates the previous findIndex calls used:
-  //   - blockIdxById     : exact match on MessageBlock.id (dedupe append)
-  //   - toolBlockIdxById : tool_use id → index for tool/todo blocks only
-  //                        (matches the kind-narrowed findIndex below)
-  const blockIdxById = new Map<string, number>();
-  const toolBlockIdxById = new Map<string, number>();
-  // Per-turn skill provenance threaded across frames so assistant text
-  // generated after a Skill tool_use carries the `viaSkill` badge in
-  // imported / hydrated history just like the live path (Task #318).
-  let activeSkill: import('../types').SkillProvenance | null = null;
-  for (const raw of frames) {
-    if (!raw || typeof raw !== 'object') continue;
-    const f = raw as { type?: unknown };
-    if (typeof f.type !== 'string') continue;
-    // streamEventToTranslation already silently no-ops on unrecognized
-    // types, so this is safe to feed everything to it.
-    const { append, toolResults, nextActiveSkill } = streamEventToTranslation(
-      f as { type: string },
-      { activeSkill }
-    );
-    if (nextActiveSkill !== undefined) {
-      activeSkill = nextActiveSkill;
-    }
-    if (append.length > 0) {
-      // Coalesce by id — assistant messages spread across multiple frames
-      // (parallel tool batches share the same message.id with different
-      // tool_use ids in our block-id scheme, so this is mostly a defensive
-      // dedupe rather than load-bearing). Skip duplicates by id.
-      for (const b of append) {
-        if (blockIdxById.has(b.id)) continue;
-        const newIdx = out.length;
-        out.push(b);
-        blockIdxById.set(b.id, newIdx);
-        if ((b.kind === 'tool' || b.kind === 'todo') && b.toolUseId) {
-          toolBlockIdxById.set(b.toolUseId, newIdx);
-        }
-      }
-    }
-    for (const tr of toolResults) {
-      const idx = toolBlockIdxById.get(tr.toolUseId);
-      if (idx === undefined) continue;
-      const target = out[idx];
-      if (target.kind === 'tool') {
-        out[idx] = { ...target, result: tr.result, isError: tr.isError };
-      }
-      // todo blocks don't carry result text, skip — TodoWrite returns void.
-    }
-    // Plain user-text frames aren't emitted by streamEventToTranslation
-    // (the live path renders them via local-echo on send). For imported
-    // history we DO need to surface them, otherwise the chat shows only
-    // assistant turns. Pull text out of `message.content` here.
-    if (f.type === 'user') {
-      const userBlock = userFrameToBlock(raw);
-      if (userBlock) {
-        const newIdx = out.length;
-        out.push(userBlock);
-        blockIdxById.set(userBlock.id, newIdx);
-      }
-    }
-  }
-  return out;
-}
-
-function userFrameToBlock(raw: unknown): MessageBlock | null {
-  const f = raw as { uuid?: unknown; message?: { content?: unknown } };
-  const content = f.message?.content;
-  let text = '';
-  if (typeof content === 'string') {
-    text = content;
-  } else if (Array.isArray(content)) {
-    for (const part of content) {
-      if (!part || typeof part !== 'object') continue;
-      const p = part as { type?: unknown; text?: unknown };
-      if (p.type === 'text' && typeof p.text === 'string') {
-        text += (text ? '\n' : '') + p.text;
-      }
-      // Skip tool_result parts — those become tool block patches above.
-    }
-  }
-  if (!text) return null;
-  // Slash-command wrappers like `<command-name>...</command-name>` carry
-  // synthetic metadata, not user-typed text. Filter them so the imported
-  // chat looks like the user remembers it.
-  if (text.startsWith('<command-')) return null;
-  const id = typeof f.uuid === 'string' && f.uuid ? `u-${f.uuid}` : `u-${Math.random().toString(36).slice(2, 10)}`;
-  return { kind: 'user', id, text };
-}
-
-/**
- * Truncation-marker text anchor: first 80 chars of the user message with
- * leading/trailing whitespace stripped and inner whitespace runs collapsed.
- * Both `rewindToBlock` (persist) and `loadMessages` (re-apply) call this so
- * the comparison is normalized. Length cap keeps app_state small even if
- * the truncated turn was a giant paste.
- */
-function anchorTextPrefix(text: string): string {
-  return text.replace(/\s+/g, ' ').trim().slice(0, 80);
-}
-
-/**
- * Compact one-line summary of a tool input for the post-resolution trace
- * block. Picks the most descriptive scalar field (command/path/url/...) and
- * truncates aggressively — the user just needs a hint of what was decided,
- * not the full payload. Returns "" when nothing useful is present.
- */
-function summarizeInputForTrace(input: Record<string, unknown> | undefined): string {
-  if (!input) return '';
-  const PREFERRED = ['command', 'file_path', 'path', 'pattern', 'url', 'plan'];
-  for (const k of PREFERRED) {
-    const v = input[k];
-    if (typeof v === 'string' && v.length > 0) {
-      return v.length > 120 ? v.slice(0, 120) + '…' : v;
-    }
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  }
-  // Fallback: first scalar field by Object.entries order.
-  for (const [, v] of Object.entries(input)) {
-    if (typeof v === 'string' && v.length > 0) {
-      return v.length > 120 ? v.slice(0, 120) + '…' : v;
-    }
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  }
-  return '';
-}
-
 const defaultGroups: Group[] = [
   // The bootstrap "Sessions" group also carries `nameKey` so a language
   // switch re-localizes its label (the user never explicitly named this
@@ -895,8 +470,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   focusedGroupId: null,
   model: '',
   permission: 'default',
-  globalEffortLevel: DEFAULT_EFFORT_LEVEL,
-  effortLevelBySession: {},
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   theme: 'system',
@@ -904,30 +477,12 @@ export const useStore = create<State & Actions>((set, get) => ({
   fontSizePx: 14,
   tutorialSeen: false,
   notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
-  messagesBySession: {},
-  loadMessageErrors: {},
-  startedSessions: {},
-  runningSessions: {},
-  statsBySession: {},
-  contextUsageBySession: {},
-  interruptedSessions: {},
-  messageQueues: {},
   models: [],
   modelsLoaded: false,
   connection: null,
   hydrated: false,
-  focusInputNonce: 0,
   installerCorrupt: false,
-  composerInjectNonce: 0,
-  composerInjectText: '',
-  stashedDrafts: {},
-  diagnostics: [],
-  sessionInitFailures: {},
-  allowAlwaysTools: [],
   openPopoverId: null,
-  // task322: continue-after-interrupt
-  lastTurnEnd: {},
-  pendingDiffComments: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -936,19 +491,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       sessions: s.sessions.map((x) =>
         x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
       ),
-      // Bump so the InputBar pulls focus — matches Claude Desktop's UX
-      // when clicking a session in the sidebar. Other entry points that
-      // ultimately route through selectSession (tray/notification click,
-      // command palette) get the same behavior for free.
-      focusInputNonce: s.focusInputNonce + 1
     }));
-    // Lazy-load persisted history on first view after app restart. The store
-    // only holds messages in memory; on fresh boot messagesBySession[id] is
-    // undefined until we fetch from the db. An empty array means "known to be
-    // empty", so only fetch when the key is truly missing.
-    if (id && !(id in get().messagesBySession)) {
-      void get().loadMessages(id);
-    }
   },
 
   focusGroup: (id) => set({ focusedGroupId: id }),
@@ -1015,20 +558,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     };
     // If the target group is currently collapsed, expand it in the same
     // atomic update so the new row is visible the moment activeId flips.
-    // Bumping focusInputNonce here mirrors selectSession — clicking
-    // "New Session" should also land focus in the composer.
     const targetGroup = baseGroups.find((g) => g.id === targetGroupId);
     const nextGroups =
       targetGroup && targetGroup.collapsed
         ? baseGroups.map((g) => (g.id === targetGroupId ? { ...g, collapsed: false } : g))
         : baseGroups;
-    set((s) => ({
+    set({
       sessions: [newSession, ...sessions],
       activeId: id,
       focusedGroupId: null,
       groups: nextGroups,
-      focusInputNonce: s.focusInputNonce + 1
-    }));
+    });
     // If the user explicitly created the session against a non-default cwd
     // (cwd override differs from home), record it in the ccsm-owned LRU so
     // it shows in the popover's recent column on subsequent opens. Fire-and-
@@ -1089,35 +629,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       focusedGroupId: null,
       groups: ensured.groups
     });
-    // Hydrate the imported session's chat from its `.jsonl` so the user sees
-    // the real history immediately, instead of an empty pane until they send
-    // a follow-up. We need both `projectDir` (for the on-disk path) and the
-    // resume sessionId; without `projectDir` we can't safely guess the
-    // encoded directory, so we just leave the chat empty (graceful degrade).
-    if (projectDir && typeof window !== 'undefined' && window.ccsm?.loadImportHistory) {
-      const api = window.ccsm;
-      void (async () => {
-        try {
-          const frames = await api.loadImportHistory(projectDir, resumeSessionId);
-          if (!Array.isArray(frames) || frames.length === 0) return;
-          const blocks = framesToBlocks(frames);
-          if (blocks.length === 0) return;
-          set((s) => ({
-            messagesBySession: {
-              ...s.messagesBySession,
-              [id]: blocks
-            }
-          }));
-          // PR-H: ccsm no longer mirrors history into SQLite, so on import
-          // we just hydrate the in-memory store. Subsequent loads come
-          // straight from the CLI's JSONL via `loadHistory`, which is the
-          // same source we just read from.
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.warn('[store] importSession history load failed', err);
-        }
-      })();
-    }
     return id;
   },
 
@@ -1129,31 +640,9 @@ export const useStore = create<State & Actions>((set, get) => ({
     const snapshot: SessionSnapshot = {
       session: target,
       index: idx,
-      messages: prev.messagesBySession[id],
       draft: snapshotDraft(id),
-      started: !!prev.startedSessions[id],
-      running: !!prev.runningSessions[id],
-      interrupted: !!prev.interruptedSessions[id],
-      queue: prev.messageQueues[id],
-      stats: prev.statsBySession[id],
       prevActiveId: prev.activeId
     };
-    // Kill the spawned claude.exe BEFORE we clear store state. Without this,
-    // deleting an actively-streaming session leaves a zombie child that
-    // keeps burning tokens and whose stream events land on a removed id
-    // (noisy warns + memory growth until the user quits the app). The IPC
-    // is fire-and-forget because the cleanup in main.ts is synchronous from
-    // our POV — it returns before the child fully exits, but the abort
-    // signal has already fired by then. Guarded on `started || running` to
-    // avoid a no-op round-trip for never-spawned sessions (restored ones).
-    if (prev.startedSessions[id] || prev.runningSessions[id]) {
-      void window.ccsm?.agentClose(id);
-    }
-    // Drop the renderer-side streamer accumulator. Without this, a deleted
-    // session's PartialAssistantStreamer lingers in the lifecycle module map
-    // — a tiny leak per delete, but adds up on long-running users who churn
-    // sessions. Idempotent on never-streamed ids.
-    disposeStreamer(id);
     set((s) => {
       const remaining = s.sessions.filter((x) => x.id !== id);
       // Same-group sibling fallback (J5): when the active row is being
@@ -1187,32 +676,11 @@ export const useStore = create<State & Actions>((set, get) => ({
           nextActive = remaining[0]?.id ?? '';
         }
       }
-      const nextMessages = { ...s.messagesBySession };
-      delete nextMessages[id];
-      const nextStarted = { ...s.startedSessions };
-      delete nextStarted[id];
-      const nextRunning = { ...s.runningSessions };
-      delete nextRunning[id];
-      const nextInterrupted = { ...s.interruptedSessions };
-      delete nextInterrupted[id];
-      const nextQueues = { ...s.messageQueues };
-      delete nextQueues[id];
       return {
         sessions: remaining,
         activeId: nextActive,
-        messagesBySession: nextMessages,
-        startedSessions: nextStarted,
-        runningSessions: nextRunning,
-        interruptedSessions: nextInterrupted,
-        messageQueues: nextQueues
       };
     });
-    // PR-H: ccsm no longer persists message history. The CLI's JSONL at
-    // ~/.claude/projects/<key>/<sid>.jsonl is the canonical record and we
-    // intentionally don't delete it here — losing the user's CLI-side
-    // transcript when they remove a session from ccsm's UI would be a
-    // surprising, lossy side-effect. The session is gone from ccsm's view,
-    // which is what the user asked for.
     // Also drop any persisted draft for this session.
     deleteDrafts([id]);
     return snapshot;
@@ -1228,39 +696,11 @@ export const useStore = create<State & Actions>((set, get) => ({
         snapshot.session,
         ...s.sessions.slice(insertAt)
       ];
-      const messagesBySession =
-        snapshot.messages !== undefined
-          ? { ...s.messagesBySession, [snapshot.session.id]: snapshot.messages }
-          : s.messagesBySession;
-      const startedSessions = snapshot.started
-        ? { ...s.startedSessions, [snapshot.session.id]: true as const }
-        : s.startedSessions;
-      // Intentionally DO NOT restore runningSessions / interruptedSessions:
-      // the child claude.exe process tied to the deleted session was killed,
-      // so resurrecting either flag leaves the UI permanently stuck (running
-      // = perpetual spinner, no result frame will ever arrive; interrupted =
-      // banner waiting for a `result.error_during_execution` that's gone with
-      // the process). The session restarts from a clean post-turn state.
-      const messageQueues =
-        snapshot.queue !== undefined
-          ? { ...s.messageQueues, [snapshot.session.id]: snapshot.queue }
-          : s.messageQueues;
-      const statsBySession =
-        snapshot.stats !== undefined
-          ? { ...s.statsBySession, [snapshot.session.id]: snapshot.stats }
-          : s.statsBySession;
       return {
         sessions,
         activeId: snapshot.prevActiveId || s.activeId,
-        messagesBySession,
-        startedSessions,
-        messageQueues,
-        statsBySession
       };
     });
-    // PR-H: history lives in the CLI's JSONL; restore is a no-op for it.
-    // The in-memory reseed above is what makes undo instant; on a future
-    // page reload, history reloads from the JSONL like any other session.
     restoreDraft(snapshot.session.id, snapshot.draft);
   },
 
@@ -1337,46 +777,9 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x))
     }));
-    const api = window.ccsm;
-    if (!api) return;
-    if (get().startedSessions[sessionId]) {
-      void api.agentSetModel(sessionId, model);
-    }
   },
   setPermission: (permission) => {
     set({ permission });
-    const api = window.ccsm;
-    if (!api) return;
-    // The enum value IS the CLI flag value — no translation needed.
-    const started = Object.keys(get().startedSessions);
-    if (started.length === 0) return;
-    // For 'auto' we await the IPC so we can fall back to 'default' with a
-    // toast if the SDK rejects (account/model gating). For other modes we
-    // fire-and-forget — same behavior as before. We poll the first started
-    // session's response since `auto` capability is account/model wide.
-    if (permission === 'auto') {
-      const probe = started[0];
-      void Promise.resolve(api.agentSetPermissionMode(probe, permission)).then((res) => {
-        if (res && res.ok === false) {
-          set({ permission: 'default' });
-          // Best-effort: tell remaining sessions to revert too.
-          for (const id of started.slice(1)) void api.agentSetPermissionMode(id, 'default');
-          const toast = (window as unknown as {
-            __ccsmToast?: { push: (t: { kind: 'error'; title: string; body?: string }) => string };
-          }).__ccsmToast;
-          toast?.push({
-            kind: 'error',
-            title: i18next.t('permissions.autoUnsupportedTitle'),
-            body: i18next.t('permissions.autoUnsupportedBody'),
-          });
-          return;
-        }
-        // Apply auto to remaining started sessions if the probe accepted.
-        for (const id of started.slice(1)) void api.agentSetPermissionMode(id, permission);
-      });
-      return;
-    }
-    for (const id of started) void api.agentSetPermissionMode(id, permission);
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -1423,13 +826,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       .map(({ s, i }) => ({
         session: s,
         index: i,
-        messages: prev.messagesBySession[s.id],
         draft: snapshotDraft(s.id),
-        started: !!prev.startedSessions[s.id],
-        running: !!prev.runningSessions[s.id],
-        interrupted: !!prev.interruptedSessions[s.id],
-        queue: prev.messageQueues[s.id],
-        stats: prev.statsBySession[s.id],
         prevActiveId: prev.activeId
       }));
     const snapshot: GroupSnapshot = {
@@ -1447,30 +844,11 @@ export const useStore = create<State & Actions>((set, get) => ({
         : remainingSessions[0]?.id ?? '';
       // Drop drafts for every session that vanished with the group.
       if (droppedIds.length > 0) deleteDrafts(droppedIds);
-      const nextMessages = { ...s.messagesBySession };
-      const nextStarted = { ...s.startedSessions };
-      const nextRunning = { ...s.runningSessions };
-      const nextInterrupted = { ...s.interruptedSessions };
-      const nextQueues = { ...s.messageQueues };
-      for (const did of droppedIds) {
-        delete nextMessages[did];
-        delete nextStarted[did];
-        delete nextRunning[did];
-        delete nextInterrupted[did];
-        delete nextQueues[did];
-        // PR-H: ccsm no longer persists per-session history; nothing to wipe.
-        // The CLI's JSONL stays on disk, mirroring deleteSession's policy.
-      }
       return {
         groups: s.groups.filter((g) => g.id !== id),
         sessions: remainingSessions,
         activeId: nextActive,
         focusedGroupId: s.focusedGroupId === id ? null : s.focusedGroupId,
-        messagesBySession: nextMessages,
-        startedSessions: nextStarted,
-        runningSessions: nextRunning,
-        interruptedSessions: nextInterrupted,
-        messageQueues: nextQueues
       };
     });
     return snapshot;
@@ -1490,10 +868,6 @@ export const useStore = create<State & Actions>((set, get) => ({
       // each placement uses the live `sessions` array (later snapshots may
       // have indices that depend on earlier ones being back).
       let sessions = s.sessions.slice();
-      const messagesBySession = { ...s.messagesBySession };
-      const startedSessions = { ...s.startedSessions };
-      const messageQueues = { ...s.messageQueues };
-      const statsBySession = { ...s.statsBySession };
       const ordered = snapshot.sessions
         .slice()
         .sort((a, b) => a.index - b.index);
@@ -1505,27 +879,14 @@ export const useStore = create<State & Actions>((set, get) => ({
           snap.session,
           ...sessions.slice(insertSesAt)
         ];
-        if (snap.messages !== undefined) messagesBySession[snap.session.id] = snap.messages;
-        if (snap.started) startedSessions[snap.session.id] = true;
-        // Same rationale as restoreSession: do NOT restore running /
-        // interrupted flags — the child process is dead, the flags would
-        // strand the UI in a permanent transitional state.
-        if (snap.queue !== undefined) messageQueues[snap.session.id] = snap.queue;
-        if (snap.stats !== undefined) statsBySession[snap.session.id] = snap.stats;
       }
       return {
         groups,
         sessions,
         activeId: snapshot.prevActiveId || s.activeId,
         focusedGroupId: snapshot.prevFocusedGroupId,
-        messagesBySession,
-        startedSessions,
-        messageQueues,
-        statsBySession
       };
     });
-    // PR-H: snapshot.messages is in-memory state; the JSONL on disk is
-    // unchanged and remains the source of truth for future reloads.
     for (const snap of snapshot.sessions) {
       restoreDraft(snap.session.id, snap.draft);
     }
@@ -1650,19 +1011,6 @@ export async function hydrateStore(): Promise<void> {
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
       notificationSettings: migrateNotificationSettings(persisted.notificationSettings),
-      globalEffortLevel: coerceEffortLevel(
-        // Migration: any legacy `globalThinkingDefault` (off | default_on) on
-        // disk maps to the new chip's default 'high' regardless of value.
-        // Keeping a literal-by-literal mapping ('off' -> 'off', 'default_on'
-        // -> 'high') was tempting but rejected: the old toggle's `off` was a
-        // 2-state UI wart, not an explicit user preference for "no thinking
-        // ever" — most users left it on the default. Resetting everyone to
-        // 'high' is consistent with the new chip's default.
-        (persisted as { globalEffortLevel?: unknown }).globalEffortLevel,
-      ),
-      effortLevelBySession: sanitizeEffortLevelMap(
-        (persisted as { effortLevelBySession?: unknown }).effortLevelBySession,
-      ),
     });
   }
   // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components
@@ -1672,10 +1020,6 @@ export async function hydrateStore(): Promise<void> {
   useStore.setState({ hydrated: true });
   hydrated = true;
   trace.hydrateDoneAt = Date.now();
-  // Kick off a load for the restored active session so the right pane paints
-  // history immediately on boot, not on the next click.
-  const active = useStore.getState().activeId;
-  if (active) void useStore.getState().loadMessages(active);
 
   // One-shot best-effort migration: probe every persisted session's `cwd`
   // and tag rows whose directory has vanished between runs. We only

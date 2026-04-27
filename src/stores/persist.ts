@@ -5,7 +5,6 @@ import type {
   FontSize,
   FontSizePx,
   NotificationSettings,
-  EffortLevel
 } from './store';
 import type { RecentProject } from '../mock/data';
 
@@ -46,8 +45,6 @@ export const PERSISTED_KEYS = [
   'recentProjects',
   'tutorialSeen',
   'notificationSettings',
-  'globalEffortLevel',
-  'effortLevelBySession'
 ] as const;
 
 export type PersistedKey = typeof PERSISTED_KEYS[number];
@@ -78,10 +75,6 @@ export interface PersistedState {
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
   notificationSettings?: NotificationSettings;
-  /** Global default effort level applied to fresh sessions (6-tier chip). */
-  globalEffortLevel?: EffortLevel;
-  /** Per-session effort level overrides; absent => inherit global default. */
-  effortLevelBySession?: Record<string, EffortLevel>;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
