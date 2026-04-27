@@ -1,0 +1,15 @@
+{
+  "found": true,
+  "tag": "LI",
+  "class": "group/sess relative flex items-center gap-2.5 pl-3 pr-2 rounded-sm cursor-pointer text-chrome h-9 transition-[background-color,color,box-shadow] duration-[180ms] [transition-timing-function:cubic-bezier(0.32,0.72,0,1)] outline-none focus-ring bg-bg-active font-medium text-fg-primary",
+  "textOverflow": "clip",
+  "whiteSpace": "normal",
+  "overflow": "visible",
+  "width": 249.5,
+  "scrollWidth": 250,
+  "clientWidth": 250,
+  "clipped": false,
+  "visibleText": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "fullText": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "tooltipSrc": null
+}

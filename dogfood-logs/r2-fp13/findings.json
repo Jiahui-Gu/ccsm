@@ -1,0 +1,26 @@
+{
+  "A": {
+    "status": "FAIL",
+    "detail": "text NOT clipped (scrollW=250 clientW=250); text-overflow=clip (expect ellipsis); white-space=normal (expect nowrap); no tooltip / title attr surfaces full name on hover (tooltipSrc=null)"
+  },
+  "B": {
+    "status": "PASS",
+    "detail": "cwd shown as basename \"jiahuigu\" (1 match(es)). Full path NOT visible directly."
+  },
+  "C": {
+    "status": "PARTIAL",
+    "detail": "Context chip is hidden by design until usage >= 50% (current 3.6%, 36005 / 1000000). Token usage IS captured in store but invisible to the user at low fill. Consider always-visible compact display or a lower threshold."
+  },
+  "D": {
+    "status": "PARTIAL",
+    "detail": "Store costUsd=null (null or 0) — proxy may not be reporting cost. Cannot verify display format."
+  },
+  "E": {
+    "status": "PASS",
+    "detail": "Send/Stop morph transitions: idle aria=\"Send message\" bg=oklch(0.975 0.003 240); streaming aria=\"Stop\" bg=rgba(0, 0, 0, 0); back to send bg=oklch(0.975 0.003 240). No separate sidebar waiting indicator surfaced."
+  },
+  "F": {
+    "status": "PASS",
+    "detail": "Effort chip visible: \"High\" (title=\"Deeper thinking (default).\"). Matches store effortLevel=high. Picker has 6 options: [\"OffNo thinking. Fastest.\",\"LowQuick takes. Adaptive thinking.\",\"MediumBalanced reasoning.\",\"HighDeeper thinking (default).\",\"Extra highExtended deliberation. Opus 4.7.\",\"MaxMaximum effort. Opus 4.6/."
+  }
+}
