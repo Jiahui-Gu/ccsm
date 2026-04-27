@@ -1,5 +1,3 @@
-import type { CliPermissionMode } from './agent/permission';
-import type { ClaudeStreamEvent } from '../electron/agent/stream-json-types';
 import type {
   ConnectionInfo,
   OpenSettingsResult,
@@ -7,54 +5,6 @@ import type {
   LoadedCommand,
   WorkspaceFile,
 } from './shared/ipc-types';
-
-type PermissionMode = CliPermissionMode;
-type AgentMessage = ClaudeStreamEvent;
-
-type StartOpts = {
-  cwd: string;
-  model?: string;
-  permissionMode?: PermissionMode;
-  resumeSessionId?: string;
-  /**
-   * Pre-allocated session UUID. When set, the SDK uses this as the
-   * conversation's `session_id` instead of auto-generating one — so the
-   * `~/.claude/projects/<key>/<sid>.jsonl` file the CLI writes is named
-   * with the same id ccsm uses internally. Must be a valid UUID; ignored
-   * by the legacy (non-SDK) runner. Cannot be combined with
-   * `resumeSessionId` per SDK constraints.
-   */
-  sessionId?: string;
-  /** Resolved 6-tier effort chip level applied at launch. */
-  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-};
-
-// Mirror of `StartResult` from `electron/agent/start-result-types.ts` —
-// this `.d.ts` is consumed by the Vite renderer build which can't import
-// from the electron tree directly. Keep the union in sync.
-type StartResult =
-  | { ok: true }
-  | {
-      ok: false;
-      error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING' | 'CLI_SPAWN_FAILED';
-      searchedPaths?: string[];
-      detail?: string;
-    };
-type AgentEvent = { sessionId: string; message: AgentMessage };
-type AgentExit = { sessionId: string; error?: string };
-type AgentDiagnostic = {
-  sessionId: string;
-  level: 'warn' | 'error';
-  code: string;
-  message: string;
-};
-type AgentPermissionRequest = {
-  sessionId: string;
-  requestId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-};
 
 // Updater status — exported so the renderer's `UpdatesPane` (and any
 // future banners/toasts) can import a single source of truth instead of
@@ -84,20 +34,6 @@ declare global {
         setLanguage: (l: 'en' | 'zh') => void;
       };
       /**
-       * Load a session's message history from the CLI's JSONL transcript at
-       * `~/.claude/projects/<projectKey(cwd)>/<sessionId>.jsonl`. The
-       * renderer projects the returned frames through `framesToBlocks`. PR-H
-       * removed the previous SQLite-backed `loadMessages`/`saveMessages`
-       * pair — ccsm no longer maintains a redundant secondary copy.
-       */
-      loadHistory: (
-        cwd: string,
-        sessionId: string
-      ) => Promise<
-        | { ok: true; frames: unknown[] }
-        | { ok: false; error: string; detail?: string }
-      >;
-      /**
        * Truncation marker persistence — see preload.ts for full rationale.
        * The user-message hover-menu's "Truncate from here" stores the chosen
        * user-block id so a ccsm restart re-applies the truncation after
@@ -122,47 +58,6 @@ declare global {
       toolOpenInEditor: (args: {
         content: string;
       }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
-
-      agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
-      agentSend: (sessionId: string, text: string) => Promise<boolean>;
-      agentSendContent: (sessionId: string, content: unknown[]) => Promise<boolean>;
-      agentInterrupt: (sessionId: string) => Promise<boolean>;
-      /**
-       * (#239) Per-tool-use cancel. Today routes through a turn-level
-       * interrupt fallback inside SessionRunner; the {sessionId, toolUseId}
-       * payload is forward-compatible with a future scoped-cancel SDK API.
-       */
-      agentCancelToolUse: (args: { sessionId: string; toolUseId: string }) => Promise<
-        { ok: true } | { ok: false; error: string }
-      >;
-      agentSetPermissionMode: (
-        sessionId: string,
-        mode: PermissionMode
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;
-      agentSetMaxThinkingTokens: (
-        sessionId: string,
-        tokens: number
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentSetEffort: (
-        sessionId: string,
-        level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentClose: (sessionId: string) => Promise<boolean>;
-      agentResolvePermission: (
-        sessionId: string,
-        requestId: string,
-        decision: 'allow' | 'deny'
-      ) => Promise<boolean>;
-      agentResolvePermissionPartial: (
-        sessionId: string,
-        requestId: string,
-        acceptedHunks: number[]
-      ) => Promise<boolean>;
-      onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
-      onAgentExit: (handler: (e: AgentExit) => void) => () => void;
-      onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void) => () => void;
-      onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
       scanImportable: () => Promise<
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>

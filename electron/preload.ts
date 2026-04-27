@@ -1,44 +1,11 @@
 import '@sentry/electron/preload';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { PermissionMode, AgentMessage } from './agent/sessions';
-import type { StartResult } from './agent/start-result-types';
 import type {
   ConnectionInfo,
   OpenSettingsResult,
   DiscoveredModel,
   LoadedCommand,
 } from '../src/shared/ipc-types';
-
-type StartOpts = {
-  cwd: string;
-  model?: string;
-  permissionMode?: PermissionMode;
-  resumeSessionId?: string;
-  /**
-   * Pre-allocated session UUID forwarded as the SDK's `sessionId` option so
-   * the JSONL transcript filename matches ccsm's internal id. See
-   * `src/stores/store.ts` newSessionId() for the rationale and the
-   * "no migration for old users" decision.
-   */
-  sessionId?: string;
-  /** Resolved 6-tier effort chip level applied at launch. */
-  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-};
-
-type AgentEvent = { sessionId: string; message: AgentMessage };
-type AgentExit = { sessionId: string; error?: string };
-type AgentDiagnostic = {
-  sessionId: string;
-  level: 'warn' | 'error';
-  code: string;
-  message: string;
-};
-type AgentPermissionRequest = {
-  sessionId: string;
-  requestId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-};
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -78,23 +45,6 @@ const api = {
     }
   },
   /**
-   * Load a session's message history from the CLI's on-disk JSONL transcript
-   * (`~/.claude/projects/<key>/<sid>.jsonl`). Returns a tagged result so the
-   * renderer can distinguish "no transcript yet" (e.g. fresh session before
-   * the first frame lands) from a real read error. The renderer projects
-   * the raw frames through `framesToBlocks` to get its MessageBlock[].
-   * Replaces the previous `db:loadMessages` / `db:saveMessages` round-trip
-   * which mirrored CLI's transcript into ccsm's SQLite (PR-H removed that
-   * redundant copy).
-   */
-  loadHistory: (
-    cwd: string,
-    sessionId: string
-  ): Promise<
-    | { ok: true; frames: unknown[] }
-    | { ok: false; error: string; detail?: string }
-  > => ipcRenderer.invoke('agent:load-history', cwd, sessionId),
-  /**
    * Truncation marker — the user-message hover menu's "Truncate from here"
    * action drops the in-memory transcript at a chosen user block. Persisting
    * the marker in app_state means the truncation survives an app restart:
@@ -128,97 +78,6 @@ const api = {
     args: { content: string }
   ): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
     ipcRenderer.invoke('tool:open-in-editor', args),
-
-  agentStart: (sessionId: string, opts: StartOpts): Promise<StartResult> =>
-    ipcRenderer.invoke('agent:start', sessionId, opts),
-  agentSend: (sessionId: string, text: string): Promise<boolean> =>
-    ipcRenderer.invoke('agent:send', sessionId, text),
-  /**
-   * Send a user message carrying a prebuilt Anthropic content-block array
-   * (text + image blocks etc.). Image drop/paste goes through this channel.
-   */
-  agentSendContent: (sessionId: string, content: unknown[]): Promise<boolean> =>
-    ipcRenderer.invoke('agent:sendContent', sessionId, content),
-  agentInterrupt: (sessionId: string): Promise<boolean> =>
-    ipcRenderer.invoke('agent:interrupt', sessionId),
-  /**
-   * (#239) Per-tool-use cancel. The renderer calls this when the user clicks
-   * the in-block "Cancel" link on a stalled tool. The main-side handler
-   * routes through SessionRunner.cancelToolUse which today FALLS BACK to a
-   * turn-level interrupt — see the WHY comment in
-   * electron/agent/sessions.ts. We pass `toolUseId` anyway so the fallback
-   * can be swapped for a true scoped cancel without a renderer change once
-   * the SDK exposes one.
-   */
-  agentCancelToolUse: (args: { sessionId: string; toolUseId: string }): Promise<
-    { ok: true } | { ok: false; error: string }
-  > => ipcRenderer.invoke('agent:cancelToolUse', args),
-  agentSetPermissionMode: (
-    sessionId: string,
-    mode: PermissionMode
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('agent:setPermissionMode', sessionId, mode),
-  agentSetModel: (sessionId: string, model?: string): Promise<boolean> =>
-    ipcRenderer.invoke('agent:setModel', sessionId, model),
-  /**
-   * Push a 6-tier effort chip change into a live session. Main side fans
-   * out to two concurrent SDK RPCs (setMaxThinkingTokens + applyFlagSettings).
-   * Renderer never has to know about the two-dimension wire shape — it
-   * just passes the chip's value.
-   */
-  agentSetEffort: (
-    sessionId: string,
-    level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max',
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('agent:setEffort', sessionId, level),
-  /**
-   * Legacy: push a `max_thinking_tokens` cap into a live session. Kept for
-   * the harness probe path that pre-dates the unified chip; new renderer
-   * code uses `agentSetEffort`.
-   */
-  agentSetMaxThinkingTokens: (
-    sessionId: string,
-    tokens: number,
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('agent:setMaxThinkingTokens', sessionId, tokens),
-  agentClose: (sessionId: string): Promise<boolean> => ipcRenderer.invoke('agent:close', sessionId),
-  agentResolvePermission: (
-    sessionId: string,
-    requestId: string,
-    decision: 'allow' | 'deny'
-  ): Promise<boolean> =>
-    ipcRenderer.invoke('agent:resolvePermission', sessionId, requestId, decision),
-  /**
-   * Per-hunk partial accept (#251). `acceptedHunks` indices map to
-   * `DiffSpec.hunks` from `src/utils/diff.ts`. Empty array => deny.
-   * UI follow-up (#TBD) will surface this in PermissionPromptBlock.
-   */
-  agentResolvePermissionPartial: (
-    sessionId: string,
-    requestId: string,
-    acceptedHunks: number[]
-  ): Promise<boolean> =>
-    ipcRenderer.invoke('agent:resolvePermissionPartial', sessionId, requestId, acceptedHunks),
-  onAgentEvent: (handler: (e: AgentEvent) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: AgentEvent) => handler(payload);
-    ipcRenderer.on('agent:event', wrap);
-    return () => ipcRenderer.removeListener('agent:event', wrap);
-  },
-  onAgentExit: (handler: (e: AgentExit) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: AgentExit) => handler(payload);
-    ipcRenderer.on('agent:exit', wrap);
-    return () => ipcRenderer.removeListener('agent:exit', wrap);
-  },
-  onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: AgentDiagnostic) => handler(payload);
-    ipcRenderer.on('agent:diagnostic', wrap);
-    return () => ipcRenderer.removeListener('agent:diagnostic', wrap);
-  },
-  onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: AgentPermissionRequest) => handler(payload);
-    ipcRenderer.on('agent:permissionRequest', wrap);
-    return () => ipcRenderer.removeListener('agent:permissionRequest', wrap);
-  },
 
   scanImportable: (): Promise<
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
