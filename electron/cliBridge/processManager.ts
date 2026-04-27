@@ -108,8 +108,13 @@ async function spawnTtyd(
   }
 
   // ttyd flags:
-  //   -p <port>           bind 127.0.0.1 by default; we don't pass -i so
-  //                       it stays loopback-only (no LAN exposure).
+  //   -p <port>           listen port.
+  //   -i 127.0.0.1        bind interface. ttyd's default is 0.0.0.0 (all
+  //                       interfaces), which on Windows triggers a
+  //                       Defender Firewall "Allow on private/public
+  //                       networks?" prompt every spawn. We explicitly
+  //                       restrict to loopback so no LAN exposure and no
+  //                       firewall prompt.
   //   -W                  writable (allow keystrokes from the browser).
   //                       Without it the user could only watch.
   //   -t fontSize=14      pass-through to the embedded xterm.js client
@@ -121,6 +126,8 @@ async function spawnTtyd(
   const args = [
     '-p',
     String(port),
+    '-i',
+    '127.0.0.1',
     '-W',
     '-t',
     'fontSize=14',

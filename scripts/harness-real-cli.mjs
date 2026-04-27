@@ -952,8 +952,11 @@ async function caseCliBridgeTtydSpawnAndKill({ log }) {
   log(`allocated port: ${port}`);
 
   // Use `--session-id <uuid>` to match cliBridge's openTtydForSession path.
+  // Args mirror processManager.ts: `-i 127.0.0.1` is required to bind
+  // loopback-only — without it ttyd binds 0.0.0.0 and Windows Defender
+  // Firewall prompts on every spawn.
   const sid = randomUUID();
-  const args = ['-p', String(port), '-W', '-t', 'fontSize=14', claudePath, '--session-id', sid];
+  const args = ['-p', String(port), '-i', '127.0.0.1', '-W', '-t', 'fontSize=14', claudePath, '--session-id', sid];
   log(`spawn: ttyd ${args.join(' ')}`);
   const proc = spawn(ttydPath, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
 
