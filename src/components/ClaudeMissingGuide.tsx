@@ -25,15 +25,10 @@ export function ClaudeMissingGuide({ onResolved }: Props) {
     if (checking) return;
     setChecking(true);
     try {
-      // `window.ccsmCliBridge` is exposed by `electron/preload.ts` but the
-      // global type isn't published in `src/global.d.ts` yet (App-level
-      // wiring lands in W2c, which will own that declaration). Local cast
-      // keeps this PR scoped to the 3 files in the W2b spec.
-      const bridge = (window as unknown as {
-        ccsmCliBridge: {
-          checkClaudeAvailable: () => Promise<{ available: boolean }>;
-        };
-      }).ccsmCliBridge;
+      // `window.ccsmCliBridge` is typed via `src/cliBridge.d.ts` (added
+      // in W2a alongside the TtydPane wiring).
+      const bridge = window.ccsmCliBridge;
+      if (!bridge) return;
       const result = await bridge.checkClaudeAvailable();
       if (result.available) {
         onResolved();
