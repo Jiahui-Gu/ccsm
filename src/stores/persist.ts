@@ -25,11 +25,9 @@ export const STATE_KEY = 'main';
  * field consumed by `resolvePersistedSidebarWidth` during hydration. New
  * writes always populate `sidebarWidth` (px) instead.
  *
- * runningSessions, interruptedSessions, messageQueues, messagesBySession,
- * statsBySession, focusInputNonce, models, connection, installerCorrupt etc.
- * are intentionally NOT persisted — they're runtime state tied to the current
- * agent process / IPC layer. Restoring them would block recovery on next
- * launch. See PR #156.
+ * Runtime-only fields (models, connection, installerCorrupt, etc.) are
+ * intentionally NOT persisted — they're tied to the current process and
+ * restoring them would block recovery on next launch. See PR #156.
  */
 export const PERSISTED_KEYS = [
   'sessions',

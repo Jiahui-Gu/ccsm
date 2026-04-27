@@ -44,27 +44,6 @@ const api = {
       ipcRenderer.send('ccsm:set-language', lang);
     }
   },
-  /**
-   * Truncation marker — the user-message hover menu's "Truncate from here"
-   * action drops the in-memory transcript at a chosen user block. Persisting
-   * the marker in app_state means the truncation survives an app restart:
-   * `loadMessages` consults `truncation:get` after re-projecting the JSONL
-   * frames and slices to the same point. We deliberately do NOT rewrite the
-   * CLI's on-disk JSONL — that's the CLI's data, not ccsm's.
-   *
-   * `blockId` is the post-projection MessageBlock id (`u-<uuid>` for frames
-   * loaded from JSONL). Passing `null` clears the marker — used when the
-   * session is rebuilt cleanly (e.g. another full-history send replaces it).
-   */
-  truncationGet: (
-    sessionId: string
-  ): Promise<{ blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null> =>
-    ipcRenderer.invoke('truncation:get', sessionId),
-  truncationSet: (
-    sessionId: string,
-    marker: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null
-  ): Promise<{ ok: true } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('truncation:set', sessionId, marker),
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
   pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
   saveFile: (
@@ -120,15 +99,6 @@ const api = {
    * missing, or it can't be parsed — caller falls back to the SDK default.
    */
   defaultModel: (): Promise<string | null> => ipcRenderer.invoke('settings:defaultModel'),
-
-  /**
-   * Read the raw frames of an importable session's `.jsonl` transcript so the
-   * renderer can hydrate `messagesBySession` immediately on import (otherwise
-   * the imported chat looks empty until the user sends a follow-up that
-   * triggers `--resume` history replay).
-   */
-  loadImportHistory: (projectDir: string, sessionId: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('import:loadHistory', projectDir, sessionId),
 
   /**
    * Best-effort batched existence check. Returns a map keyed by the input

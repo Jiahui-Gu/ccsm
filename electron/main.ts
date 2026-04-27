@@ -66,7 +66,6 @@ import {
   scanImportableSessions,
   type ScannableSession,
 } from './import-scanner';
-import { loadImportableHistory } from './import-history';
 import { showNotification, type ShowNotificationPayload } from './notifications';
 import { probeNotifyAvailability, notifyLastError } from './notify';
 import {
@@ -615,105 +614,10 @@ app.whenReady().then(() => {
       return { ok: true };
     }
   );
-  // Session message history is no longer persisted by ccsm — the CLI/Agent
-  // SDK already writes every frame to `~/.claude/projects/<key>/<sid>.jsonl`.
-  // The previous `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages`
-  // table were a redundant secondary copy.
-
-  // Truncation marker (PR `feat/user-block-hover-menu`). Stored in app_state
-  // under key `truncation:<sessionId>` as JSON `{ blockId, truncatedAt }`.
-  // The renderer reads it after re-hydrating from JSONL and slices the
-  // projected MessageBlock[] at the recorded user-block id. Survives ccsm
-  // restart so the user-visible truncation isn't lost the moment we go to
-  // re-hydrate from disk.
-  function truncationKey(sessionId: string): string {
-    return `truncation:${sessionId}`;
-  }
-  ipcMain.handle('truncation:get', (e, sessionId: unknown) => {
-    if (!fromMainFrame(e)) return null;
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    try {
-      const raw = loadState(truncationKey(sessionId));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as unknown;
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        typeof (parsed as { blockId?: unknown }).blockId === 'string' &&
-        typeof (parsed as { truncatedAt?: unknown }).truncatedAt === 'number'
-      ) {
-        // userTurnIndex / textPrefix are optional anchor fields added in the
-        // fp9-F fix; pass them through if present, otherwise legacy markers
-        // (blockId-only) keep working through the loadMessages id-match path.
-        const p = parsed as {
-          blockId: string;
-          truncatedAt: number;
-          userTurnIndex?: unknown;
-          textPrefix?: unknown;
-        };
-        const out: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
-          blockId: p.blockId,
-          truncatedAt: p.truncatedAt
-        };
-        if (typeof p.userTurnIndex === 'number' && Number.isFinite(p.userTurnIndex) && p.userTurnIndex >= 0) {
-          out.userTurnIndex = p.userTurnIndex;
-        }
-        if (typeof p.textPrefix === 'string') {
-          out.textPrefix = p.textPrefix;
-        }
-        return out;
-      }
-      return null;
-    } catch (err) {
-      console.warn('[main] truncation:get failed', err);
-      return null;
-    }
-  });
-  ipcMain.handle('truncation:set', (e, sessionId: unknown, marker: unknown) => {
-    if (!fromMainFrame(e)) return { ok: false as const, error: 'rejected' };
-    if (typeof sessionId !== 'string' || !sessionId) {
-      return { ok: false as const, error: 'invalid_args' };
-    }
-    try {
-      if (marker == null) {
-        // Clear by writing empty string — saveState upserts; reading back
-        // returns '' which the loader will treat as no-marker after the
-        // JSON.parse path below. Simpler: just store empty JSON object.
-        saveState(truncationKey(sessionId), '');
-        return { ok: true as const };
-      }
-      if (
-        typeof marker !== 'object' ||
-        typeof (marker as { blockId?: unknown }).blockId !== 'string' ||
-        typeof (marker as { truncatedAt?: unknown }).truncatedAt !== 'number'
-      ) {
-        return { ok: false as const, error: 'invalid_args' };
-      }
-      // Sanitize optional anchor fields — silently drop bad shapes rather
-      // than rejecting the whole marker (the blockId-only path still works).
-      const m = marker as {
-        blockId: string;
-        truncatedAt: number;
-        userTurnIndex?: unknown;
-        textPrefix?: unknown;
-      };
-      const sanitized: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
-        blockId: m.blockId,
-        truncatedAt: m.truncatedAt
-      };
-      if (typeof m.userTurnIndex === 'number' && Number.isFinite(m.userTurnIndex) && m.userTurnIndex >= 0) {
-        sanitized.userTurnIndex = m.userTurnIndex;
-      }
-      if (typeof m.textPrefix === 'string') {
-        sanitized.textPrefix = m.textPrefix;
-      }
-      saveState(truncationKey(sessionId), JSON.stringify(sanitized));
-      return { ok: true as const };
-    } catch (err) {
-      console.warn('[main] truncation:set failed', err);
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
+  // Session message history is no longer persisted by ccsm — the CLI writes
+  // every frame to `~/.claude/projects/<key>/<sid>.jsonl`. Previous
+  // `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages` table were
+  // a redundant secondary copy.
 
   // i18n: renderer mirrors the resolved UI language to main so OS
   // notifications use it. Renderer also asks main for the OS locale at
@@ -953,27 +857,14 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.handle(
-    'import:loadHistory',
-    async (e, projectDir: unknown, sessionId: unknown) => {
-      if (!fromMainFrame(e)) return [];
-      if (typeof projectDir !== 'string' || typeof sessionId !== 'string') return [];
-      try {
-        return await loadImportableHistory(projectDir, sessionId);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[main] import:loadHistory failed', err);
-        return [];
-      }
-    }
-  );
-
-  // Batched best-effort existence probe for arbitrary filesystem paths.
-  // The renderer uses this on hydration to flag sessions whose persisted
-  // `cwd` was deleted between runs (typical worktree-cleanup victim — see
-  // PR #104). Returned map is keyed by the input path; missing paths and
-  // permission errors both map to `false` (we don't surface the distinction
-  // — for the migration's purpose they're equivalent: don't auto-spawn).
-  ipcMain.handle('paths:exist', (_e, inputPaths: unknown) => {
+    'paths:exist',
+    // Batched best-effort existence probe for arbitrary filesystem paths.
+    // The renderer uses this on hydration to flag sessions whose persisted
+    // `cwd` was deleted between runs (typical worktree-cleanup victim — see
+    // PR #104). Returned map is keyed by the input path; missing paths and
+    // permission errors both map to `false` (we don't surface the distinction
+    // — for the migration's purpose they're equivalent: don't auto-spawn).
+    (_e, inputPaths: unknown) => {
     const list = Array.isArray(inputPaths)
       ? inputPaths.filter((p): p is string => typeof p === 'string')
       : [];
@@ -997,7 +888,8 @@ app.whenReady().then(() => {
       }
     }
     return out;
-  });
+    }
+  );
 
   // ─────────────────────── disk-based slash commands ──────────────────────
   //

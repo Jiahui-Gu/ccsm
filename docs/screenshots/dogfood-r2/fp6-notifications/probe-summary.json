@@ -1,0 +1,145 @@
+{
+  "startedAt": "2026-04-27T03:53:48.351Z",
+  "platform": "win32",
+  "binary": "C:/Users/jiahuigu/AppData/Local/Programs/CCSM/CCSM.exe",
+  "userDataDir": "C:/temp/ccsm-dogfood-r2-fp6",
+  "checks": {
+    "A": {
+      "verdict": "PASS",
+      "switchInfo": {
+        "found": true,
+        "count": 2,
+        "labels": [
+          {
+            "aria": "Enable notifications",
+            "text": "Enable notifications"
+          },
+          {
+            "aria": "Sound",
+            "text": "SoundPlay the OS default notification sound."
+          }
+        ]
+      },
+      "expected": "2 switches (enabled + sound)",
+      "screenshot": "A-settings-notifications.png"
+    },
+    "B": {
+      "verdict": "PASS",
+      "drive": {
+        "ok": true,
+        "dispatched": true,
+        "ipcReturn": true
+      },
+      "focusedAtBlur": false,
+      "ipcCalls": [
+        {
+          "payload": {
+            "sessionId": "s-fp6",
+            "title": "fp6 / B-unfocused",
+            "body": "turn complete",
+            "eventType": "turn_done",
+            "silent": false,
+            "extras": {
+              "toastId": "fp6-turn_done-1777262034649",
+              "sessionName": "probe",
+              "groupName": "fp6",
+              "eventType": "turn_done"
+            }
+          },
+          "focusedAtFire": false,
+          "suppressed": false,
+          "wouldDispatch": true,
+          "ts": 1777262034649
+        }
+      ],
+      "note": "window unfocused; gate evaluates !suppressed → dispatch reaches native layer",
+      "screenshot": "B-after-unfocused-dispatch.png"
+    },
+    "C": {
+      "verdict": "PASS",
+      "drive": {
+        "ok": true,
+        "dispatched": true,
+        "ipcReturn": false
+      },
+      "focusedAtFire": true,
+      "ipcCalls": [
+        {
+          "payload": {
+            "sessionId": "s-fp6",
+            "title": "fp6 / C-focused",
+            "body": "turn complete",
+            "eventType": "turn_done",
+            "silent": false,
+            "extras": {
+              "toastId": "fp6-turn_done-1777262035705",
+              "sessionName": "probe",
+              "groupName": "fp6",
+              "eventType": "turn_done"
+            }
+          },
+          "focusedAtFire": true,
+          "suppressed": true,
+          "wouldDispatch": false,
+          "ts": 1777262035705
+        }
+      ],
+      "note": "focus-suppression gate replicates electron/notify-bootstrap.ts:shouldSuppressForFocus — any visible+focused BrowserWindow → suppress.",
+      "screenshot": "C-after-focused-dispatch.png"
+    },
+    "D": {
+      "verdict": "PASS",
+      "drive": {
+        "ok": true,
+        "dispatched": true,
+        "ipcReturn": false
+      },
+      "ipcCalls": [
+        {
+          "payload": {
+            "sessionId": "s-fp6",
+            "title": "fp6 / D-sound-off",
+            "body": "turn complete",
+            "eventType": "turn_done",
+            "silent": true,
+            "extras": {
+              "toastId": "fp6-turn_done-1777262036406",
+              "sessionName": "probe",
+              "groupName": "fp6",
+              "eventType": "turn_done"
+            }
+          },
+          "focusedAtFire": true,
+          "suppressed": true,
+          "wouldDispatch": false,
+          "ts": 1777262036407
+        }
+      ],
+      "silentInPayload": true,
+      "note": "Audible verification not possible from a probe; we verify the IPC payload carries `silent: true` so the WindowsAdapter can pass it down to the toast."
+    },
+    "E": {
+      "verdict": "PASS",
+      "drive": {
+        "ok": true,
+        "dispatched": false,
+        "reason": "global-disabled"
+      },
+      "ipcCalls": [],
+      "expected": "dispatched=false and zero IPC calls (renderer-side gate)"
+    },
+    "F": {
+      "verdict": "PASS",
+      "darwinThrowsOnEmit": true,
+      "linuxThrowsOnEmit": true,
+      "notificationsHasAvailabilityGate": true,
+      "bootstrapNonWin32ReturnsFalse": true,
+      "note": "Non-Windows: bootstrap short-circuits → wrapper never gets options → isNotifyAvailable() false → showNotification returns false without touching adapters. The throw stubs in darwin/linux are only reached if someone bypasses bootstrap."
+    }
+  },
+  "notes": [
+    "launching C:/Users/jiahuigu/AppData/Local/Programs/CCSM/CCSM.exe with --user-data-dir=C:/temp/ccsm-dogfood-r2-fp6"
+  ],
+  "endedAt": "2026-04-27T03:53:57.040Z",
+  "mainLogTail": []
+}
