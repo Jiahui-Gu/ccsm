@@ -505,7 +505,10 @@ const en = {
   },
   terminal: {
     waitingOutput: 'waiting for output…',
-    noOutput: '(no output)'
+    noOutput: '(no output)',
+    starting: 'Starting…',
+    spawnFailed: 'Failed to start terminal',
+    retryButton: 'Retry'
   },
   statusBar: {
     workingDirectory: 'Working directory',
@@ -622,6 +625,16 @@ const en = {
   firstRun: {
     newSession: 'New session',
     importSession: 'Import a CLI session'
+  },
+  // Shown full-screen at boot when the `claude` CLI is not on PATH.
+  // ccsm requires the user to install the Claude CLI separately; this
+  // page links them to the install command and lets them re-check
+  // without restarting the app.
+  claudeMissing: {
+    title: 'Claude CLI not found',
+    body: 'ccsm requires the Claude CLI to be installed separately. Install it via npm and re-check.',
+    installCommandLabel: 'Install command',
+    recheckButton: 'Re-check'
   }
 } as const;
 
