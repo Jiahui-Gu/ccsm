@@ -1,9 +1,11 @@
 // Component tests for the StatusBar context-usage pie chip (PR-R, Task #42).
 //
 // Behavior under test:
-//  1. Below 50% the chip stays hidden — keeps the StatusBar quiet on
-//     every-day turns where /compact isn't relevant.
-//  2. At 50–79% the chip surfaces with a neutral tone.
+//  1. Always render whenever the model has reported a real contextWindow,
+//     even at low usage — gives users an at-a-glance cost signal from
+//     turn 1, instead of waiting until 50% (which on 1M-token models is
+//     500k tokens and effectively never reached).
+//  2. Below 80% the tone stays neutral.
 //  3. At 80–94% the tone bumps to amber (state-warning).
 //  4. At ≥95% the tone bumps to red (state-error).
 //  5. Clicking the chip dispatches "/compact" through agentSend, matching the
@@ -84,11 +86,18 @@ beforeEach(() => {
 });
 
 describe('<StatusBar /> context-pie chip', () => {
-  it('stays hidden below the 50% display threshold', () => {
-    setupStore({ totalTokens: 60_000, contextWindow: 200_000, model: 'claude-sonnet-4-5' });
+  it('renders at low usage (5%) with a neutral tone — no 50% gate', () => {
+    // Regression for FP13-C. Previously the chip was hidden until pct >= 50,
+    // which on 1M context windows = 500k tokens (effectively never). Now
+    // the chip is always-on once the model reports a contextWindow.
+    setupStore({ totalTokens: 10_000, contextWindow: 200_000, model: 'claude-sonnet-4-5' });
     stubCCSM();
     renderBar();
-    expect(screen.queryByTestId('context-pie-chip')).toBeNull();
+    const chip = screen.getByTestId('context-pie-chip');
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveAttribute('data-percent', '5');
+    expect(chip).toHaveAttribute('data-tone', 'neutral');
+    expect(chip.textContent).toContain('5%');
   });
 
   it('stays hidden when the model has not reported a context window yet', () => {

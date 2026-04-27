@@ -158,10 +158,13 @@ function primaryOf<V extends string>(options: ChipOption<V>[], value: V): string
 // =====================================================================
 // ContextPieChip — StatusBar chip showing live context-window fill.
 //
-// Visibility rule mirrors the official VS Code Claude extension: hidden
-// below 50% to keep the bar quiet during normal turns, surfaces only when
-// /compact starts becoming a relevant action. Color buckets:
-//   50–79%  neutral (text-fg-tertiary)
+// Always-on once the model has reported a real `contextWindow`. We used
+// to hide the chip below 50% (mirroring the VS Code Claude extension's
+// auto-compact CTA), but with 1M-token windows that gate is 500k tokens
+// — effectively never reached, so the chip never appeared. CLI-density
+// principle wins here: cost/context is exactly the kind of info power
+// users want at-a-glance from turn 1. Tone buckets carry the urgency:
+//   <80%    neutral (text-fg-tertiary)
 //   80–94%  amber  (text-state-warning)
 //   ≥95%    red    (text-state-error)
 // Click sends "/compact" through the same agentSend path the InputBar
@@ -198,9 +201,12 @@ function ContextPieChip({ sessionId }: { sessionId: string }) {
   if (!usage || !usage.contextWindow || usage.contextWindow <= 0) return null;
 
   const rawPct = (usage.totalTokens / usage.contextWindow) * 100;
-  // Visibility threshold matches the upstream extension's auto-compact
-  // chip: under 50% the bar stays clean.
-  if (rawPct < 50) return null;
+  // Always render once we have a real (model-reported) contextWindow. The
+  // previous >=50% gate matched the VS Code extension's auto-compact chip,
+  // but with 1M context windows that threshold is 500k tokens — a number a
+  // normal session never reaches, so the chip effectively never appeared.
+  // CLI-density principle: keep cost/context info always-on, let the
+  // 80%/95% tone bumps below carry the urgency signal.
 
   // Clamp display to [0, 100] so a 110%-overflow turn (rare but possible
   // when the CLI reports a stale contextWindow) doesn't break the SVG.
@@ -314,9 +320,12 @@ export function StatusBar({
   );
   const setEffortLevel = useStore((s) => s.setEffortLevel);
   const contextChipVisible = (() => {
+    // Render the chip whenever the model has reported a real context
+    // window — no percentage gate. The inner ContextPieChip handles the
+    // "no usage yet" case by returning null, so this guard just keeps the
+    // chips array tidy before the first usage frame arrives.
     if (!contextUsage || !contextUsage.contextWindow) return false;
-    const pct = (contextUsage.totalTokens / contextUsage.contextWindow) * 100;
-    return pct >= 50;
+    return true;
   })();
 
   // Labels describe what claude.exe actually does per mode. The underlying
