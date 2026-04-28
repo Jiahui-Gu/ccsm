@@ -949,40 +949,6 @@ app.whenReady().then(() => {
     (globalThis as unknown as Record<string, unknown>).__ccsmTestDebug = {
       getLastEmittedForSid: (sid: string) =>
         sessionWatcher.getLastEmittedForTest(sid),
-      // Force the watcher to re-attach for `sid`. Used by the e2e to work
-      // around a PR-A (#553) startWatching limitation: when the parent
-      // projects/<projectKey>/ dir does not exist at startWatching time
-      // (claude has never run in this cwd before — fresh isolated config),
-      // sessionWatcher silently bails on the dir watcher and never re-scans.
-      // The harness pokes this seam after seedSession + first prompt so the
-      // re-attach picks up the now-existing JSONL. Tracked for upstream fix.
-      reAttachWatcher: (sid: string) => {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const fs = require('node:fs');
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const path = require('node:path');
-          const root =
-            process.env.CCSM_CLAUDE_CONFIG_DIR ||
-            process.env.CLAUDE_CONFIG_DIR;
-          if (!root) return { ok: false, reason: 'no-config-root' };
-          const projDir = path.join(root, 'projects');
-          if (!fs.existsSync(projDir))
-            return { ok: false, reason: 'no-projects-dir' };
-          const projects = fs.readdirSync(projDir);
-          for (const p of projects) {
-            const fp = path.join(projDir, p, `${sid}.jsonl`);
-            if (fs.existsSync(fp)) {
-              sessionWatcher.stopWatching(sid);
-              sessionWatcher.startWatching(sid, fp);
-              return { ok: true, fp };
-            }
-          }
-          return { ok: false, reason: 'no-jsonl-found' };
-        } catch (e) {
-          return { ok: false, err: String(e) };
-        }
-      },
       env: () => ({
         CCSM_CLAUDE_CONFIG_DIR: process.env.CCSM_CLAUDE_CONFIG_DIR ?? null,
         CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
