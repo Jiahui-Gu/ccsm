@@ -20,3 +20,4 @@ docs/screenshots/dogfood-happy-path/
 *.deb
 *.rpm
 *.blockmap
+.pool-synced-at-*
