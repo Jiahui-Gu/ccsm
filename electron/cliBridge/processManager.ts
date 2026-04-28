@@ -6,9 +6,16 @@
 //
 // Lifecycle:
 //   - openTtydForSession  → spawn ttyd with `claude --session-id <uuid>`
-//                           (new chat). Returns {port, sid}. Caller keys
-//                           ccsm's session row by `sid` so the JSONL
-//                           transcript on disk and ccsm's session id
+//                           when no on-disk JSONL exists for the projected
+//                           sid (fresh session), OR `claude --resume <uuid>`
+//                           when one does (app restart, imported transcript,
+//                           prior in-app spawn that exited). The on-disk
+//                           JSONL is the only ground truth — fixes #507/#508
+//                           where always passing `--session-id` made claude
+//                           reject with "Session ID is already in use." on
+//                           any rehydrated session. Returns {port, sid}.
+//                           Caller keys ccsm's session row by `sid` so the
+//                           JSONL transcript on disk and ccsm's session id
 //                           agree (matches the existing agent:start
 //                           pre-allocated-uuid pattern).
 //   - resumeTtydForSession → spawn ttyd with `claude --resume <sid>`
@@ -32,6 +39,9 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join as pathJoin } from 'node:path';
 import type { WebContents } from 'electron';
 import { pickFreePort } from './portAllocator';
 import { resolveClaude } from './claudeResolver';
@@ -254,7 +264,77 @@ export async function openTtydForSession(
   // → ccsm sidebar ↔ on-disk transcript stay aligned (the previous
   // randomUUID() per spawn caused divergence + orphaned JSONLs).
   const sid = toClaudeSid(sessionId);
+  // If the JSONL transcript already exists on disk for this sid (app
+  // restart, imported session, prior in-app spawn that exited), claude
+  // refuses `--session-id <sid>` with "Session ID is already in use." We
+  // must `--resume <sid>` instead so the prior conversation reattaches.
+  // Fixes #507 (UX G reopen-resume) and #508 (UX H import-resume).
+  //
+  // Backend-decides over renderer-decides: the on-disk JSONL is the only
+  // source of truth — the renderer cannot distinguish a fresh-this-session
+  // sid from a rehydrated-from-persistence sid without a roundtrip anyway.
+  // Keeping the decision here means a single codepath for both new and
+  // rehydrated sessions, and no new IPC surface.
+  if (jsonlExistsForSid(sid)) {
+    return spawnTtyd(sessionId, cwd, ['--resume', sid]);
+  }
   return spawnTtyd(sessionId, cwd, ['--session-id', sid]);
+}
+
+// Synchronously locate a `<sid>.jsonl` transcript anywhere under the
+// claude projects root(s). claude encodes each cwd as a flattened
+// directory name (e.g. `C:\foo\bar` → `C--foo-bar`); rather than
+// reproducing that encoding (which we don't fully own — it's a CLI
+// implementation detail), scan all project subdirs and return true on
+// first match. ~tens of dirs in steady state, single readdir + a per-dir
+// existsSync — well below the spawnTtyd 200ms warmup budget.
+//
+// Two roots to scan, mirroring two codepaths:
+//   1. `${CLAUDE_CONFIG_DIR}/projects/` when env is set — matches where
+//      ccsm-spawned claude writes transcripts (commands-loader.ts uses
+//      CLAUDE_CONFIG_DIR as a full replacement for ~/.claude).
+//   2. `${HOME}/.claude/projects/` — matches where the import scanner
+//      reads imported transcripts from (import-scanner.ts uses
+//      `os.homedir() + .claude` directly), and where production claude
+//      writes when CLAUDE_CONFIG_DIR is unset.
+// Production: both resolve to the same path so we deduplicate. The
+// probes set HOME and CLAUDE_CONFIG_DIR to the same tempDir but the
+// scanner places imports under `${tempDir}/.claude/projects/` while
+// spawned claude writes to `${tempDir}/projects/` — so we need both.
+//
+// Best-effort: any fs error → treat as "no transcript", which falls
+// back to `--session-id` (the prior behavior).
+function jsonlExistsForSid(sid: string): boolean {
+  const roots = new Set<string>();
+  if (process.env.CLAUDE_CONFIG_DIR) {
+    roots.add(pathJoin(process.env.CLAUDE_CONFIG_DIR, 'projects'));
+  }
+  roots.add(pathJoin(homedir(), '.claude', 'projects'));
+  const filename = `${sid}.jsonl`;
+  for (const root of roots) {
+    let dirs: string[];
+    try {
+      dirs = readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const d of dirs) {
+      const candidate = pathJoin(root, d, filename);
+      try {
+        if (existsSync(candidate)) {
+          // Guard against accidentally matching a 0-byte placeholder; only
+          // treat the file as a real transcript when there's content to
+          // resume. A truly fresh `--session-id` spawn has no JSONL yet,
+          // so a stat here can't false-positive on what we just spawned.
+          const st = statSync(candidate);
+          if (st.isFile() && st.size > 0) return true;
+        }
+      } catch {
+        /* skip unreadable entries */
+      }
+    }
+  }
+  return false;
 }
 
 export async function resumeTtydForSession(
