@@ -30,9 +30,12 @@ jobs:
       # GitHub-hosted ubuntu image already has them, but setup-python makes
       # it explicit and pins the version so upstream image changes don't
       # surprise us.
+      # Pinned to 3.11 because 3.12+ removed the distutils stdlib (PEP 632)
+      # which the older node-gyp invoked by better-sqlite3's postinstall
+      # still imports. Bump back when better-sqlite3 ships node-gyp >= 10.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Install deps
         run: npm ci --legacy-peer-deps
