@@ -1886,41 +1886,41 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   );
 }
 
-// ---------- ttyd-pane-webview-mounted ----------
-// W2c (ttyd-iframe refactor): pin the App→{TtydPane | ClaudeMissingGuide}
-// wiring contract. Two branches, both real verifications (no skips):
-//   - claudeAvailable=true  → right pane mounts an Electron `<webview>`
-//     whose src matches `http://127.0.0.1:<port>/` (the per-session ttyd
-//     HTTP server from electron/cliBridge). The original `<iframe>` was
-//     swapped to `<webview>` because the iframe + sandbox combo blocked
-//     ttyd's xterm WebSocket on Windows mingw shells.
+// ---------- terminal-pane-mounted ----------
+// Direct-xterm refactor (post-PR-1..PR-6): pin the App→{TerminalPane |
+// ClaudeMissingGuide} wiring contract. Two branches, both real
+// verifications (no skips):
+//   - claudeAvailable=true  → right pane mounts the in-renderer xterm
+//     host DIV `[data-terminal-host]` containing an `.xterm` child
+//     element. The pty (owned by main) is exposed to the renderer via
+//     window.ccsmPty.list(); we assert at least one entry exists.
 //   - claudeAvailable=false → right pane mounts ClaudeMissingGuide
 //     (data-testid="claude-missing-guide"), proving the selector
 //     correctly chose the fallback path.
-// Backend ttyd spawn/teardown coverage lives in
-// `harness-real-cli.mjs::cli-bridge-ttyd-spawn-and-kill`; this case is
-// strictly the renderer-side wiring contract.
-async function caseTtydPaneWebviewMounted({ win, log }) {
+// Backend pty spawn/teardown coverage lives in
+// `harness-real-cli.mjs`; this case is strictly the renderer-side
+// wiring contract.
+async function caseTerminalPaneMounted({ win, log }) {
   // Seed a real session so App's `active` resolves and the right-pane
   // branch runs. tutorialSeen=true skips the tutorial overlay.
   await win.evaluate(() => {
     window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [
-        { id: 's-ttyd', name: 'ttyd-probe', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+        { id: 's-term', name: 'terminal-probe', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
       ],
-      activeId: 's-ttyd',
-      messagesBySession: { 's-ttyd': [] },
+      activeId: 's-term',
+      messagesBySession: { 's-term': [] },
       tutorialSeen: true,
     });
   });
 
   // Wait for App to resolve the boot-time claudeAvailable check —
-  // either the guide or the webview (or its loading shell) shows up.
+  // either the guide or the terminal host (or its loading shell) shows up.
   await win.waitForFunction(
     () =>
       !!document.querySelector('[data-testid="claude-missing-guide"]') ||
-      !!document.querySelector('webview[title^="ttyd session"]') ||
+      !!document.querySelector('[data-terminal-host]') ||
       !!document.querySelector('[data-testid="claude-availability-probing"]') === false,
     null,
     { timeout: 8000 }
@@ -1929,36 +1929,54 @@ async function caseTtydPaneWebviewMounted({ win, log }) {
   const guideCount = await win.locator('[data-testid="claude-missing-guide"]').count();
   if (guideCount > 0) {
     // claude not on PATH → fallback selector branch. Verify the guide
-    // is the only right-pane content (no leaked webview).
-    const webviewCount = await win.locator('webview[title^="ttyd session"]').count();
-    if (webviewCount > 0) {
-      throw new Error('both ClaudeMissingGuide and TtydPane rendered — selector logic broken');
+    // is the only right-pane content (no leaked terminal host).
+    const hostCount = await win.locator('[data-terminal-host]').count();
+    if (hostCount > 0) {
+      throw new Error('both ClaudeMissingGuide and terminal host rendered — selector logic broken');
     }
-    log('claudeAvailable=false branch: ClaudeMissingGuide rendered, no leaked webview');
+    log('claudeAvailable=false branch: ClaudeMissingGuide rendered, no leaked terminal host');
     return;
   }
 
-  // claude available → webview must mount. TtydPane goes through a
-  // brief `loading` state while it awaits openTtydForSession, then
-  // flips to `ready` and renders the <webview>. 8s timeout absorbs ttyd
-  // spawn cost on cold harness boot.
-  const webview = win.locator('webview[title^="ttyd session"]');
+  // claude available → terminal host must mount. The pane goes through
+  // a brief `loading` state while it awaits pty attach, then flips to
+  // `ready`. 8s timeout absorbs cold-boot cost.
+  const host = win.locator('[data-terminal-host]');
   try {
-    await webview.first().waitFor({ state: 'attached', timeout: 8000 });
+    await host.first().waitFor({ state: 'attached', timeout: 8000 });
   } catch {
-    throw new Error('TtydPane webview did not mount within 8s — App→TtydPane wiring broken or ttyd spawn failed');
+    throw new Error('terminal host did not mount within 8s — App→TerminalPane wiring broken or pty attach failed');
   }
 
-  const src = await webview.first().getAttribute('src');
-  if (!src) throw new Error('webview missing src attribute');
-  // Wiring contract: src must be a localhost HTTP URL on a non-zero
-  // port. The exact port is allocated dynamically per session.
-  const expected = /^http:\/\/127\.0\.0\.1:\d+\/?$/;
-  if (!expected.test(src)) {
-    throw new Error(`webview src does not match wiring contract: got "${src}", expected ${expected}`);
+  // Wiring contract: the host DIV must contain an .xterm child (xterm.js
+  // mounts its DOM under the configured parent element).
+  const xtermCount = await host.first().locator('.xterm').count();
+  if (xtermCount === 0) {
+    throw new Error('terminal host mounted but no .xterm child element — xterm.js never attached');
   }
 
-  log(`claudeAvailable=true branch: webview mounted with src=${src}`);
+  // Wiring contract: window.ccsmPty.list() must report ≥1 entry,
+  // proving the renderer→main IPC bridge is wired and main has at
+  // least one pty for the active session.
+  const ptyList = await win.evaluate(async () => {
+    if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') {
+      return { ok: false, reason: 'window.ccsmPty.list unavailable' };
+    }
+    try {
+      const arr = await window.ccsmPty.list();
+      return { ok: true, count: Array.isArray(arr) ? arr.length : 0, entries: arr };
+    } catch (err) {
+      return { ok: false, reason: String(err) };
+    }
+  });
+  if (!ptyList.ok) {
+    throw new Error(`window.ccsmPty.list failed: ${ptyList.reason}`);
+  }
+  if (!ptyList.count || ptyList.count < 1) {
+    throw new Error(`window.ccsmPty.list returned 0 entries — pty bridge wired but no pty spawned`);
+  }
+
+  log(`claudeAvailable=true branch: terminal host mounted with .xterm, pty list reports ${ptyList.count} entry/entries`);
 }
 
 // ---------- harness spec ----------
@@ -2019,13 +2037,12 @@ await runHarness({
     // delay on models.list, and the reload + delay perturb the page state
     // for any case that follows.
     { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate },
-    // ttyd-pane-webview-mounted: W2c (ttyd-iframe refactor). Pins the
-    // App→TtydPane wiring contract — when claude is available and a
-    // session is active, the right pane mounts an Electron `<webview>`
-    // whose src points at the per-session ttyd HTTP server. cliBridge
-    // is stubbed in-renderer; backend spawn coverage lives in
-    // harness-real-cli.
-    { id: 'ttyd-pane-webview-mounted', run: caseTtydPaneWebviewMounted }
+    // terminal-pane-mounted: direct-xterm refactor (post-PR-1..PR-6).
+    // Pins the App→TerminalPane wiring contract — when claude is
+    // available and a session is active, the right pane mounts the
+    // in-renderer xterm host DIV `[data-terminal-host]` and main
+    // surfaces the pty via window.ccsmPty.list().
+    { id: 'terminal-pane-mounted', run: caseTerminalPaneMounted }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

@@ -1,9 +1,9 @@
 // Shared helpers for real-claude e2e probes.
 //
-// Goal: factor the working `dogfood-probe-happy-path.mjs` patterns (Electron
-// OOPIF webview drive, xterm canvas-buffer reads, raw `triggerDataEvent`
-// keystroke injection, prod-bundle launch with isolated config) into a single
-// reusable module so the 5 downstream probes share one canonical implementation.
+// Goal: factor the working real-CLI driving patterns (in-renderer xterm.js
+// buffer reads, raw `triggerDataEvent` keystroke injection, prod-bundle
+// launch with isolated config) into a single reusable module so the
+// downstream probes share one canonical implementation.
 //
 // This module is helpers ONLY. No assertions, no test logic, no top-level
 // `console.log` chatter beyond what callers explicitly opt into.
@@ -12,7 +12,8 @@
 //
 //   1. xterm renders to canvas — `document.body.innerText` is empty. The only
 //      reliable buffer read is `term.buffer.active.getLine(N).translateToString()`
-//      via the xterm Terminal instance ttyd exposes as `window.term`.
+//      via the xterm Terminal instance the renderer exposes as
+//      `window.__ccsmTerm`.
 //
 //   2. claude's Ink TUI silently swallows bracketed-paste sequences. Use
 //      `term._core._coreService.triggerDataEvent(text, true)` — NOT
@@ -39,9 +40,20 @@
 //   6. Cleanup must run on Ctrl+C too — registered via process.on('exit')
 //      AND process.on('SIGINT') / SIGTERM / uncaughtException /
 //      unhandledRejection. Cleanups run LIFO so process force-kill
-//      (electron + ttyd + claude subtree, registered in launchCcsmIsolated)
+//      (electron + claude subtree, registered in launchCcsmIsolated)
 //      runs BEFORE tempdir rmSync — Windows can't remove a directory whose
 //      files are still locked by live processes.
+//
+//   7. Direct-xterm architecture (post-PR-1..PR-6): the renderer hosts a
+//      single xterm.js Terminal in the host window (NOT inside an OOPIF
+//      <webview>). It is exposed as `window.__ccsmTerm`, bound to the host
+//      DIV with `[data-terminal-host][data-active-sid="<sid>"]`. The pty
+//      is owned by the main process; renderer drives it via
+//      `window.ccsmPty.{list, attach, detach, input, resize, kill, spawn,
+//      onData, onExit}` and clipboard via `window.ccsmPty.clipboard.{readText,
+//      writeText}`. There is no ttyd HTTP server, no port allocation, no
+//      OOPIF, no webview <tag>. All probe driving happens via
+//      `win.evaluate(() => window.__ccsmTerm....)`.
 
 import { _electron as electron } from 'playwright';
 import {
@@ -59,76 +71,106 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
 // ============================================================================
-// OOPIF helpers
+// Direct-xterm helpers
 // ============================================================================
 
 /**
- * Find the Electron WebContents id of the ttyd <webview>. Returns a number.
+ * Wait for the in-renderer xterm Terminal to be mounted and active for the
+ * given session id. Polls for both:
+ *   1. host DIV `[data-terminal-host][data-active-sid="<sid>"]` exists
+ *   2. `window.__ccsmTerm` is non-null (Terminal singleton constructed)
  *
- * The ttyd webview is identified by getType() === 'webview' AND a URL that
- * starts with `http://127.0.0.1:` (the ttyd HTTP server).
- *
- * Throws if no matching webview is found within `timeout` ms.
+ * Throws on timeout.
  */
-export async function getTtydWebContentsId(electronApp, { timeout = 5000, port = null } = {}) {
+export async function waitForTerminalReady(win, sid, { timeout = 10000 } = {}) {
+  if (!sid) throw new Error('waitForTerminalReady: sid is required');
   const deadline = Date.now() + timeout;
   let lastSeen = null;
-  // Build a port-specific URL prefix when caller supplies one. This lets
-  // multi-ttyd probes (switch-session) target the right webview instead of
-  // racing on highest-id heuristics.
-  const portRe = port != null
-    ? new RegExp(`^http:\\/\\/127\\.0\\.0\\.1:${port}(?:\\/|$)`)
-    : /^http:\/\/127\.0\.0\.1:\d+/;
   while (Date.now() < deadline) {
-    const found = await electronApp.evaluate(
-      ({ webContents }, { reSrc }) => {
-        const re = new RegExp(reSrc);
-        const all = webContents.getAllWebContents();
-        const matches = [];
-        for (const wc of all) {
-          const type = wc.getType();
-          const url = wc.getURL();
-          if (type === 'webview' && re.test(url)) {
-            matches.push({ id: wc.id, url });
-          }
-        }
-        return matches;
-      },
-      { reSrc: portRe.source },
-    );
-    if (found && found.length > 0) {
-      // Prefer the most recently created (highest id) — matches the
-      // "current session's ttyd" intent when multiple have been opened.
-      // When `port` was supplied this is already filtered to that ttyd,
-      // so the highest-id pick is just a tie-break.
-      found.sort((a, b) => b.id - a.id);
-      return found[0].id;
-    }
-    lastSeen = found;
+    const ready = await win
+      .evaluate(
+        (s) => {
+          const host = document.querySelector(
+            `[data-terminal-host][data-active-sid="${s}"]`,
+          );
+          const term = window.__ccsmTerm;
+          return {
+            host: !!host,
+            term: !!term,
+            buffer: !!(term && term.buffer && term.buffer.active),
+          };
+        },
+        sid,
+      )
+      .catch((err) => ({ host: false, term: false, buffer: false, err: String(err) }));
+    lastSeen = ready;
+    if (ready.host && ready.term && ready.buffer) return true;
     await sleep(200);
   }
   throw new Error(
-    `getTtydWebContentsId: no <webview> with URL matching ${portRe} found within ${timeout}ms (last seen: ${JSON.stringify(lastSeen)})`,
+    `waitForTerminalReady: terminal not ready for sid=${sid} within ${timeout}ms (last: ${JSON.stringify(lastSeen)})`,
   );
 }
 
 /**
- * Run JS inside the webview's WebContents (OOPIF). Returns whatever the JS
- * expression evaluates to. The script must be a string (Electron's
- * `executeJavaScript` API requirement).
+ * Read the last N lines from the active xterm buffer, anchored at the
+ * cursor row. Returns an array of strings (one per row, top-to-bottom).
+ * Empty rows are preserved so callers can see the cursor row context.
+ *
+ * If `window.__ccsmTerm` is unavailable, returns an empty array (safe for
+ * polling loops).
  */
-export async function executeJavaScriptOnWebview(electronApp, wcId, scriptString) {
-  if (typeof scriptString !== 'string') {
-    throw new TypeError('executeJavaScriptOnWebview: scriptString must be a string');
+export async function readXtermLines(win, { lines = 30 } = {}) {
+  const out = await win
+    .evaluate(
+      ({ n }) => {
+        const term = window.__ccsmTerm;
+        if (!term || !term.buffer || !term.buffer.active) return [];
+        const buf = term.buffer.active;
+        const cursorRow = buf.baseY + buf.cursorY;
+        const start = Math.max(0, cursorRow - n);
+        const out = [];
+        for (let i = start; i <= cursorRow; i++) {
+          const line = buf.getLine(i);
+          out.push(line ? line.translateToString(true) : '');
+        }
+        return out;
+      },
+      { n: lines },
+    )
+    .catch(() => []);
+  return out;
+}
+
+/**
+ * Send raw bytes to claude TUI via xterm's internal data path, bypassing
+ * bracketed-paste wrapping. Caller appends '\r' for Enter / newline.
+ *
+ * Throws if `window.__ccsmTerm` / triggerDataEvent unavailable.
+ */
+export async function sendToClaudeTui(win, text) {
+  const ok = await win
+    .evaluate(
+      (t) => {
+        const term = window.__ccsmTerm;
+        if (!term || !term._core) return false;
+        const cs = term._core._coreService || term._core.coreService;
+        if (!cs || typeof cs.triggerDataEvent !== 'function') return false;
+        // Focus first so claude's Ink TUI registers the input.
+        try {
+          const ta = document.querySelector('.xterm-helper-textarea');
+          if (ta) ta.focus();
+          if (typeof term.focus === 'function') term.focus();
+        } catch (_) { /* ignore */ }
+        cs.triggerDataEvent(t, true);
+        return true;
+      },
+      text,
+    )
+    .catch(() => false);
+  if (!ok) {
+    throw new Error('sendToClaudeTui: window.__ccsmTerm / triggerDataEvent unavailable');
   }
-  return await electronApp.evaluate(
-    async ({ webContents }, { id, expr }) => {
-      const wc = webContents.fromId(id);
-      if (!wc) throw new Error(`no webContents with id ${id}`);
-      return await wc.executeJavaScript(expr, true);
-    },
-    { id: wcId, expr: scriptString },
-  );
 }
 
 /**
@@ -140,14 +182,14 @@ export async function executeJavaScriptOnWebview(electronApp, wcId, scriptString
  * Returns { matched, full, screen } on success.
  * Throws on timeout, including the last buffer tail in the error message.
  */
-export async function waitForXtermBuffer(electronApp, wcId, pattern, { timeout = 15000 } = {}) {
+export async function waitForXtermBuffer(win, pattern, { timeout = 15000 } = {}) {
   if (!(pattern instanceof RegExp)) {
     throw new TypeError('waitForXtermBuffer: pattern must be a RegExp');
   }
   const deadline = Date.now() + timeout;
   let lastBuf = null;
   while (Date.now() < deadline) {
-    lastBuf = await readXtermBuffer(electronApp, wcId).catch(() => null);
+    lastBuf = await readXtermBuffer(win).catch(() => null);
     if (lastBuf && (pattern.test(lastBuf.full) || pattern.test(lastBuf.screen))) {
       return { matched: true, full: lastBuf.full, screen: lastBuf.screen };
     }
@@ -159,75 +201,31 @@ export async function waitForXtermBuffer(electronApp, wcId, pattern, { timeout =
   );
 }
 
-/**
- * Send raw bytes to claude TUI via xterm's internal data path, bypassing
- * bracketed-paste wrapping. Caller appends '\r' for Enter / newline.
- */
-export async function sendToClaudeTui(electronApp, wcId, text) {
-  const ok = await executeJavaScriptOnWebview(
-    electronApp,
-    wcId,
-    `(function(text){
-      const t = window.term;
-      if (!t || !t._core) return false;
-      const cs = t._core._coreService || t._core.coreService;
-      if (!cs || typeof cs.triggerDataEvent !== 'function') return false;
-      // Focus first so claude's Ink TUI registers the input.
-      try {
-        const ta = document.querySelector('.xterm-helper-textarea');
-        if (ta) ta.focus();
-        if (typeof t.focus === 'function') t.focus();
-      } catch (_) {}
-      cs.triggerDataEvent(text, true);
-      return true;
-    })(${JSON.stringify(text)})`,
-  );
-  if (!ok) {
-    throw new Error('sendToClaudeTui: window.term / triggerDataEvent unavailable in webview');
-  }
-}
-
-/**
- * Read the last N non-empty lines from the xterm buffer. Useful for
- * assertions / debug dumps.
- */
-export async function readXtermLines(electronApp, wcId, { lines = 30 } = {}) {
-  const buf = await readXtermBuffer(electronApp, wcId);
-  const all = buf.full.split('\n').map((l) => l.trimEnd());
-  const nonEmpty = all.filter((l) => l.length > 0);
-  return nonEmpty.slice(-lines);
-}
-
-// Internal: full + screen buffer dump. Not exported — prefer
-// `waitForXtermBuffer` / `readXtermLines` for assertion ergonomics.
-async function readXtermBuffer(electronApp, wcId) {
-  return await executeJavaScriptOnWebview(
-    electronApp,
-    wcId,
-    `(function(){
-      if (!window.term || !window.term.buffer || !window.term.buffer.active) {
-        return { full: '', screen: '' };
-      }
-      const term = window.term;
-      const buf = term.buffer.active;
-      const total = buf.length;
-      const fullLines = [];
-      for (let i = 0; i < total; i++) {
-        const line = buf.getLine(i);
-        if (!line) continue;
-        fullLines.push(line.translateToString(true));
-      }
-      const rows = term.rows || 24;
-      const viewportY = buf.viewportY || 0;
-      const screenLines = [];
-      for (let r = 0; r < rows; r++) {
-        const line = buf.getLine(viewportY + r);
-        if (!line) continue;
-        screenLines.push(line.translateToString(true));
-      }
-      return { full: fullLines.join('\\n'), screen: screenLines.join('\\n') };
-    })()`,
-  );
+// Internal: full + screen buffer dump.
+async function readXtermBuffer(win) {
+  return await win.evaluate(() => {
+    const term = window.__ccsmTerm;
+    if (!term || !term.buffer || !term.buffer.active) {
+      return { full: '', screen: '' };
+    }
+    const buf = term.buffer.active;
+    const total = buf.length;
+    const fullLines = [];
+    for (let i = 0; i < total; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      fullLines.push(line.translateToString(true));
+    }
+    const rows = term.rows || 24;
+    const viewportY = buf.viewportY || 0;
+    const screenLines = [];
+    for (let r = 0; r < rows; r++) {
+      const line = buf.getLine(viewportY + r);
+      if (!line) continue;
+      screenLines.push(line.translateToString(true));
+    }
+    return { full: fullLines.join('\n'), screen: screenLines.join('\n') };
+  });
 }
 
 // ============================================================================
@@ -258,7 +256,7 @@ function installCleanupHooks() {
   const runAll = () => {
     // Iterate in reverse insertion order (LIFO) so process-kill cleanups
     // registered after tempdir cleanups run FIRST. Order matters on
-    // Windows: rmSync on a tempdir fails if electron / ttyd / claude still
+    // Windows: rmSync on a tempdir fails if electron / claude still
     // hold file locks inside it.
     const fns = Array.from(cleanupRegistry).reverse();
     for (const fn of fns) {
@@ -394,11 +392,10 @@ export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}
   });
 
   // Force-kill cleanup. Registered AFTER tempdir/userdata cleanups so that
-  // LIFO iteration in `runAll` runs this FIRST — electron + ttyd + claude
-  // die before rmSync touches the dirs (Windows fails to remove locked
-  // files otherwise). User reported leaked processes (2 electron / 5 ttyd
-  // / 2 claude) after probe runs because the previous cleanup only rm-ed
-  // tempdirs and never killed the process tree.
+  // LIFO iteration in `runAll` runs this FIRST — electron + claude die
+  // before rmSync touches the dirs (Windows fails to remove locked files
+  // otherwise). User reported leaked processes after probe runs because
+  // the previous cleanup only rm-ed tempdirs and never killed the process tree.
   const electronPid = electronApp.process()?.pid ?? null;
   const killCleanup = () => {
     cleanupRegistry.delete(killCleanup);
@@ -476,80 +473,6 @@ export async function seedSession(win, { sid, name = 'probe-session', cwd, group
 }
 
 /**
- * Wait for TtydPane <webview> to mount for the given session. Returns the
- * webview WebContents id (caller can immediately drive the buffer).
- *
- * Polls for both:
- *   1. host-page <webview title="ttyd session <sid>"> element present
- *   2. webContents.fromId for that webview is reachable AND xterm + window.term
- *      have initialized inside the OOPIF.
- */
-export async function waitForWebviewMounted(win, electronApp, sessionId, { timeout = 10000 } = {}) {
-  // Step 1: wait for the host-page <webview> tag for THIS session.
-  //
-  // Use `state: 'attached'` rather than the Playwright default `visible`.
-  // Electron `<webview>` elements report visibility inconsistently to
-  // Playwright on Windows — PR #462's failure showed the webview fully
-  // wired (ttyd up, websocket connected, claude PID running) yet the
-  // default visibility check timed out. `attached` is the right semantic
-  // for OOPIF probes: presence in DOM is sufficient because the xterm
-  // readiness check in step 3 already validates the inner page is live.
-  const selector = `webview[title="ttyd session ${sessionId}"]`;
-  await win.waitForSelector(selector, { timeout, state: 'attached' });
-
-  // Step 2: poll for the matching WebContents in main process.
-  //
-  // Look up THIS session's ttyd port via the cliBridge IPC so we can
-  // filter webContents by URL — picking the highest-id webContents
-  // (the previous default) misfires on switch-session probes where
-  // multiple ttyd webviews are alive simultaneously.
-  const port = await win
-    .evaluate(
-      (sid) => Promise.resolve(window.ccsmCliBridge?.getTtydForSession?.(sid)).catch(() => null),
-      sessionId,
-    )
-    .then((res) => (res && typeof res.port === 'number' ? res.port : null))
-    .catch(() => null);
-
-  const deadline = Date.now() + timeout;
-  let wcId = null;
-  while (Date.now() < deadline) {
-    try {
-      wcId = await getTtydWebContentsId(electronApp, { timeout: 1000, port });
-      if (wcId != null) break;
-    } catch (_) {
-      // Keep polling.
-    }
-    await sleep(200);
-  }
-  if (wcId == null) {
-    throw new Error(
-      `waitForWebviewMounted: no ttyd webContents found for session ${sessionId} (port=${port ?? 'unknown'}) within ${timeout}ms`,
-    );
-  }
-
-  // Step 3: wait for xterm + window.term inside the OOPIF.
-  const xtermDeadline = Date.now() + timeout;
-  while (Date.now() < xtermDeadline) {
-    const ready = await executeJavaScriptOnWebview(
-      electronApp,
-      wcId,
-      `(function(){
-        return !!document.querySelector('.xterm') &&
-               !!document.querySelector('.xterm-helper-textarea') &&
-               typeof window.term !== 'undefined' &&
-               !!window.term && !!window.term.buffer;
-      })()`,
-    ).catch(() => false);
-    if (ready) return wcId;
-    await sleep(300);
-  }
-  throw new Error(
-    `waitForWebviewMounted: webview mounted (wcId=${wcId}) but xterm/window.term not ready within ${timeout}ms`,
-  );
-}
-
-/**
  * Dismiss claude's "Welcome back!" / "Try /help" splash card that intercepts
  * the first keystrokes after a cold start. Sends Enter (via triggerDataEvent,
  * NOT bracketed-paste) up to `maxAttempts` times until either:
@@ -566,8 +489,7 @@ export async function waitForWebviewMounted(win, electronApp, sessionId, { timeo
  * not the input field — claude never received the user message.
  */
 export async function dismissWelcomeSplash(
-  electronApp,
-  wcId,
+  win,
   { maxAttempts = 3, settleMs = 500 } = {},
 ) {
   // Heuristics for "splash is present":
@@ -582,7 +504,7 @@ export async function dismissWelcomeSplash(
   let attempts = 0;
   let finalScreen = '';
   for (let i = 0; i < maxAttempts; i++) {
-    const buf = await readXtermBufferSafe(electronApp, wcId);
+    const buf = await readXtermBufferSafe(win);
     finalScreen = buf.screen;
     const hasSplash = splashRe.test(buf.screen);
     const hasReady = readyRe.test(buf.screen);
@@ -595,7 +517,7 @@ export async function dismissWelcomeSplash(
     }
     // Send a bare Enter via triggerDataEvent (no bracketed-paste).
     try {
-      await sendToClaudeTui(electronApp, wcId, '\r');
+      await sendToClaudeTui(win, '\r');
       attempts++;
     } catch (_) {
       // term not reachable — bail without throwing.
@@ -604,15 +526,15 @@ export async function dismissWelcomeSplash(
     await sleep(settleMs);
   }
   // Final read so caller sees the post-attempt state.
-  const buf = await readXtermBufferSafe(electronApp, wcId);
+  const buf = await readXtermBufferSafe(win);
   finalScreen = buf.screen;
   const stillSplash = splashRe.test(buf.screen);
   return { dismissed: !stillSplash, attempts, finalScreen };
 }
 
-async function readXtermBufferSafe(electronApp, wcId) {
+async function readXtermBufferSafe(win) {
   try {
-    return await readXtermBuffer(electronApp, wcId);
+    return await readXtermBuffer(win);
   } catch (_) {
     return { full: '', screen: '' };
   }
