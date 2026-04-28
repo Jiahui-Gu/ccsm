@@ -687,6 +687,22 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
   await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
   await waitForTerminalReady(win, sidA, { timeout: 45000 });
 
+  // Dismiss claude's trust / welcome / theme splashes that intercept
+  // the first keystrokes after a cold start. Without this, the
+  // `echo MARKER` below would be eaten by the trust modal and the
+  // marker would never reach the shell.
+  for (let i = 0; i < 12; i++) {
+    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+    const screen = lines.join('\n');
+    if (/│\s*>/.test(screen) || /^\s*>\s/m.test(screen)) break;
+    if (/trust|do you trust/i.test(screen)) {
+      await sendToClaudeTui(win, '1\r').catch(() => {});
+    } else {
+      await sendToClaudeTui(win, '\r').catch(() => {});
+    }
+    await sleep(1500);
+  }
+
   // Snapshot pidA1 from window.ccsmPty.list().
   const pidA1 = await getPtyPidForSid(win, sidA);
   if (typeof pidA1 !== 'number') {

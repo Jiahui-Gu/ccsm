@@ -270,7 +270,8 @@ const en = {
     noOutput: '(no output)',
     starting: 'Starting…',
     spawnFailed: 'Failed to start terminal',
-    retryButton: 'Retry'
+    retryButton: 'Retry',
+    exited: 'Terminal exited unexpectedly'
   },
   chat: {
     cwdChipNoneLabel: '(none)',

@@ -35,7 +35,7 @@ import type { BrowserWindow, IpcMain, WebContents } from 'electron';
 import * as pty from 'node-pty';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { resolveClaude } from '../cliBridge/claudeResolver';
+import { resolveClaude } from './claudeResolver';
 
 // --- Public types ------------------------------------------------------------
 
@@ -377,6 +377,19 @@ export function registerPtyHostIpc(
   ipcMain.handle('pty:kill', (_event, sid: string) => killPtySession(sid));
 
   ipcMain.handle('pty:get', (_event, sid: string) => getPtySession(sid));
+
+  // Claude CLI availability probe. Folded into ptyHost (post-PR-8) from
+  // the deleted electron/cliBridge module: ccsm has a single CLI host
+  // surface now. Renderer consumes via window.ccsmPty.checkClaudeAvailable.
+  // `force: true` bypasses the resolver's success-cache so the user can
+  // install claude in another terminal and recover in-place via the
+  // ClaudeMissingGuide "Re-check" button without restarting the app.
+  ipcMain.handle('pty:checkClaudeAvailable', (_event, opts: unknown) => {
+    const force =
+      typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
+    const p = resolveClaude({ force });
+    return p ? { available: true as const, path: p } : { available: false as const };
+  });
 }
 
 // --- Test seam ---------------------------------------------------------------

@@ -259,7 +259,8 @@ const zh: EnCatalog = {
     noOutput: '（无输出）',
     starting: '启动中…',
     spawnFailed: '终端启动失败',
-    retryButton: '重试'
+    retryButton: '重试',
+    exited: '终端意外退出'
   },
   chat: {
     cwdChipNoneLabel: '（无）',

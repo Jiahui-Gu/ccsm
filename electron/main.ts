@@ -66,11 +66,6 @@ import {
   type ScannableSession,
 } from './import-scanner';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
-import {
-  registerCliBridgeIpc,
-  bindCliBridgeSender,
-  shutdownCliBridge,
-} from './cliBridge';
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
@@ -418,14 +413,11 @@ function createWindow() {
     try { win.webContents.setBackgroundThrottling(false); } catch { /* ignore */ }
   }
   installContextMenu(win);
-  // ttyd-exit events from the cliBridge module need a renderer to land on.
-  bindCliBridgeSender(win.webContents);
 
-  // If a prior window was hidden then had its WebContents destroyed (can
-  // happen under aggressive GC on minimize-to-tray), subsequent `wc.send`
-  // calls no-op silently. Rebinding on `show` and on the fresh window's
-  // `did-finish-load` picks up any still-live ttyd plumbing and routes
-  // events at the live renderer.
+  // Window-level lifecycle bookkeeping. (The pre-PR-8 ttyd-exit fan-out
+  // bound a renderer here via `bindCliBridgeSender`; ptyHost now reaches
+  // attached webContents directly through their per-session attach map,
+  // so no explicit binding step is needed.)
   win.on('show', () => {
     // Reset the renderer's fade-opacity in case the window was just
     // restored after a fade-to-hide (see `window:beforeHide` below).
@@ -779,15 +771,10 @@ app.whenReady().then(() => {
 
   installUpdaterIpc();
 
-  // Register cliBridge IPC (per-session ttyd lifecycle). The handlers are
-  // unused by the renderer until Worker 2 wires them; registering here
-  // unconditionally keeps the surface uniform with every other electron
-  // module and lets the e2e harness exercise them in isolation.
-  registerCliBridgeIpc();
-
-  // Register ptyHost IPC (in-process node-pty path replacing ttyd). Runs in
-  // parallel with cliBridge during the transition; cliBridge will be removed
-  // in the final cleanup PR once the renderer fully cuts over.
+  // Register ptyHost IPC (in-process node-pty path that replaced ttyd).
+  // Owns per-session pty lifecycle, attach/detach, snapshot serialization,
+  // and the `claude` CLI availability probe (folded in from the deleted
+  // cliBridge module — see ptyHost/index.ts pty:checkClaudeAvailable).
   registerPtyHostIpc(ipcMain, () => BrowserWindow.getAllWindows()[0] ?? null);
 
   // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
@@ -806,17 +793,9 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   isQuitting = true;
-  // Tear down any live ttyd processes before the event loop is torn down.
-  // Idempotent. Without this, ttyd + its claude child would leak past app
-  // quit on Windows (taskkill /T from killTtydForSession is the only
-  // reliable way to reap the conpty tree).
-  try {
-    shutdownCliBridge();
-  } catch {
-    /* ignore — best-effort cleanup on quit */
-  }
   // Reap any live node-pty children spawned through ptyHost. Idempotent;
-  // mirrors shutdownCliBridge so neither subsystem can leak past app quit.
+  // critical on Windows where conpty can otherwise leak the claude child
+  // past Electron quit.
   try {
     killAllPtySessions();
   } catch {

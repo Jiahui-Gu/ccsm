@@ -157,59 +157,12 @@ contextBridge.exposeInMainWorld('ccsm', api);
 
 export type CCSMAPI = typeof api;
 
-// ─────────────────────────── cliBridge ───────────────────────────────────
-//
-// Per-session ttyd lifecycle. Worker 2 will consume this surface from the
-// renderer to mount a `<iframe src="http://127.0.0.1:<port>">` per active
-// session. Exposed under a separate `window.ccsmCliBridge` namespace
-// (rather than merged into `api` above) so Worker 3's deletion of the
-// in-process SDK IPC stays a clean, isolated diff. We can fold this into
-// the main `ccsm` namespace once the SDK runner is gone.
-
-type CliBridgeOpenResult =
-  | { ok: true; port: number; sid: string }
-  | { ok: false; error: string };
-
-type CliBridgeKillResult =
-  | { ok: true; killed: boolean }
-  | { ok: false; error: string };
-
-type CliBridgeAvailability = { available: true; path: string } | { available: false };
-
-type TtydExitEvent = {
-  sessionId: string;
-  code: number | null;
-  signal: NodeJS.Signals | null;
-};
-
-const cliBridge = {
-  openTtydForSession: (sessionId: string, cwd: string): Promise<CliBridgeOpenResult> =>
-    ipcRenderer.invoke('cliBridge:openTtydForSession', sessionId, cwd),
-  resumeSession: (sessionId: string, cwd: string, sid: string): Promise<CliBridgeOpenResult> =>
-    ipcRenderer.invoke('cliBridge:resumeSession', sessionId, cwd, sid),
-  killTtydForSession: (sessionId: string): Promise<CliBridgeKillResult> =>
-    ipcRenderer.invoke('cliBridge:killTtydForSession', sessionId),
-  getTtydForSession: (sessionId: string): Promise<{ port: number; sid: string } | null> =>
-    ipcRenderer.invoke('cliBridge:getTtydForSession', sessionId),
-  checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CliBridgeAvailability> =>
-    ipcRenderer.invoke('cliBridge:checkClaudeAvailable', opts ?? {}),
-  onTtydExit: (handler: (e: TtydExitEvent) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: TtydExitEvent) => handler(payload);
-    ipcRenderer.on('cliBridge:ttyd-exit', wrap);
-    return () => ipcRenderer.removeListener('cliBridge:ttyd-exit', wrap);
-  },
-};
-
-contextBridge.exposeInMainWorld('ccsmCliBridge', cliBridge);
-
-export type CCSMCliBridgeAPI = typeof cliBridge;
-
 // ─────────────────────────── ccsmPty ─────────────────────────────────────
 //
 // In-process node-pty bridge that replaces the ttyd HTTP/WebSocket detour.
-// Exposed under `window.ccsmPty` in parallel with `window.ccsmCliBridge`
-// during the migration; PR-8 deletes the old ttyd surface once every
-// renderer call site has moved over.
+// Exposed under `window.ccsmPty`. Folded the former `window.ccsmCliBridge`
+// surface (just `checkClaudeAvailable`) in PR-8 — there is now a single
+// CLI host namespace.
 //
 // `onData` / `onExit` use a listener-set fan-out pattern (see spike
 // `xterm-attach/src/preload.cjs`) so multiple subscribers can attach
@@ -223,6 +176,10 @@ type PtyExitPayload = {
   code: number | null;
   signal: number | null;
 };
+
+type CheckClaudeAvailableResult =
+  | { available: true; path: string }
+  | { available: false };
 
 const ptyDataListeners = new Set<(e: PtyDataPayload) => void>();
 const ptyExitListeners = new Set<(e: PtyExitPayload) => void>();
@@ -275,6 +232,8 @@ const ccsmPty = {
     readText: (): string => clipboard.readText(),
     writeText: (text: string): void => clipboard.writeText(text),
   },
+  checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult> =>
+    ipcRenderer.invoke('pty:checkClaudeAvailable', opts ?? {}),
 };
 
 contextBridge.exposeInMainWorld('ccsmPty', ccsmPty);
