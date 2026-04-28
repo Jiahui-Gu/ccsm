@@ -233,6 +233,17 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
   });
   if (healthy.errorToast) throw new Error(`error toast surfaced: ${healthy.errorToast}`);
   if (healthy.terminalErrorVisible) throw new Error('terminal pane flipped to error state (Retry button visible)');
+
+  // Task #573 — the window title must stay "CCSM" even after claude has
+  // emitted ESC ]0;TITLE BEL sequences during the session. Previously
+  // TerminalPane forwarded those into document.title, hijacking the app
+  // window title. After 2s settle to give any pending ANSI title sequence
+  // time to land in the renderer.
+  await sleep(2000);
+  const docTitle = await win.title();
+  if (docTitle !== 'CCSM') {
+    throw new Error(`window title hijacked by CLI: expected "CCSM", got ${JSON.stringify(docTitle)}`);
+  }
 }
 
 // ============================================================================
