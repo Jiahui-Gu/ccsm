@@ -132,12 +132,6 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
     }
   });
 
-  // Window title follows xterm escape sequences (ESC ]0;TITLE BEL),
-  // matching ttyd's onTitleChange behaviour.
-  term.onTitleChange((t) => {
-    if (t) document.title = t;
-  });
-
   // Copy/paste keyboard shortcuts (Windows Terminal style):
   //   Ctrl+C  → if selection, copy; else fall through to SIGINT
   //   Ctrl+V  → paste
