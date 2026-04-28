@@ -7,11 +7,11 @@
 // is unused by the renderer until Worker 2 wires it).
 //
 // IPC contract (mirrored in preload.ts):
-//   cliBridge:openTtydForSession(sessionId)      → {ok,port,sid} | {ok:false,error}
-//   cliBridge:resumeSession(sessionId, sid)      → {ok,port,sid} | {ok:false,error}
-//   cliBridge:killTtydForSession(sessionId)      → {ok,killed}
-//   cliBridge:checkClaudeAvailable()             → {available, path?}
-//   event cliBridge:ttyd-exit                    → {sessionId, code, signal}
+//   cliBridge:openTtydForSession(sessionId, cwd)      → {ok,port,sid} | {ok:false,error}
+//   cliBridge:resumeSession(sessionId, cwd, sid)      → {ok,port,sid} | {ok:false,error}
+//   cliBridge:killTtydForSession(sessionId)           → {ok,killed}
+//   cliBridge:checkClaudeAvailable()                  → {available, path?}
+//   event cliBridge:ttyd-exit                         → {sessionId, code, signal}
 //
 // Security: every handler that takes an action gates on `fromMainFrame(e)`
 // — a compromised iframe (the ttyd one we host, future webviews, etc.)
@@ -35,18 +35,19 @@ function fromMainFrame(e: IpcMainInvokeEvent): boolean {
 export function registerCliBridgeIpc(): void {
   ipcMain.handle(
     'cliBridge:openTtydForSession',
-    async (e, sessionId: unknown) => {
+    async (e, sessionId: unknown, cwd: unknown) => {
       if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
       if (typeof sessionId !== 'string' || !sessionId) {
         return { ok: false, error: 'bad_session_id' };
       }
-      return openTtydForSession(sessionId);
+      const cwdStr = typeof cwd === 'string' ? cwd : '';
+      return openTtydForSession(sessionId, cwdStr);
     },
   );
 
   ipcMain.handle(
     'cliBridge:resumeSession',
-    async (e, sessionId: unknown, sid: unknown) => {
+    async (e, sessionId: unknown, cwd: unknown, sid: unknown) => {
       if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
       if (typeof sessionId !== 'string' || !sessionId) {
         return { ok: false, error: 'bad_session_id' };
@@ -54,7 +55,8 @@ export function registerCliBridgeIpc(): void {
       if (typeof sid !== 'string' || !sid) {
         return { ok: false, error: 'bad_sid' };
       }
-      return resumeTtydForSession(sessionId, sid);
+      const cwdStr = typeof cwd === 'string' ? cwd : '';
+      return resumeTtydForSession(sessionId, cwdStr, sid);
     },
   );
 

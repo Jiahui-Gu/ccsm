@@ -206,10 +206,10 @@ type TtydExitEvent = {
 };
 
 const cliBridge = {
-  openTtydForSession: (sessionId: string): Promise<CliBridgeOpenResult> =>
-    ipcRenderer.invoke('cliBridge:openTtydForSession', sessionId),
-  resumeSession: (sessionId: string, sid: string): Promise<CliBridgeOpenResult> =>
-    ipcRenderer.invoke('cliBridge:resumeSession', sessionId, sid),
+  openTtydForSession: (sessionId: string, cwd: string): Promise<CliBridgeOpenResult> =>
+    ipcRenderer.invoke('cliBridge:openTtydForSession', sessionId, cwd),
+  resumeSession: (sessionId: string, cwd: string, sid: string): Promise<CliBridgeOpenResult> =>
+    ipcRenderer.invoke('cliBridge:resumeSession', sessionId, cwd, sid),
   killTtydForSession: (sessionId: string): Promise<CliBridgeKillResult> =>
     ipcRenderer.invoke('cliBridge:killTtydForSession', sessionId),
   checkClaudeAvailable: (): Promise<CliBridgeAvailability> =>

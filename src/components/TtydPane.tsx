@@ -14,21 +14,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // Strings are intentionally hardcoded English placeholders for now; W2c
 // will swap them for i18n keys when wiring this into App.
 
-type Props = { sessionId: string };
+type Props = { sessionId: string; cwd: string };
 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; port: number }
   | { kind: 'error'; message: string };
 
-export function TtydPane({ sessionId }: Props) {
+export function TtydPane({ sessionId, cwd }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   // Track the sessionId we requested for so a stale resolve from a
   // previous session can't clobber the current one when the user
   // switches quickly.
   const activeSidRef = useRef<string>(sessionId);
 
-  const open = useCallback(async (sid: string) => {
+  const open = useCallback(async (sid: string, sessionCwd: string) => {
     const bridge = window.ccsmCliBridge;
     if (!bridge) {
       setState({ kind: 'error', message: 'cliBridge unavailable' });
@@ -36,7 +36,7 @@ export function TtydPane({ sessionId }: Props) {
     }
     setState({ kind: 'loading' });
     try {
-      const res = await bridge.openTtydForSession(sid);
+      const res = await bridge.openTtydForSession(sid, sessionCwd);
       if (activeSidRef.current !== sid) return; // session switched mid-flight
       if (res.ok) {
         setState({ kind: 'ready', port: res.port });
@@ -55,14 +55,14 @@ export function TtydPane({ sessionId }: Props) {
   // so prevSid is always the one we opened.
   useEffect(() => {
     activeSidRef.current = sessionId;
-    void open(sessionId);
+    void open(sessionId, cwd);
     const prevSid = sessionId;
     return () => {
       window.ccsmCliBridge?.killTtydForSession(prevSid).catch(() => {
         // best-effort cleanup; main process will reap on quit anyway
       });
     };
-  }, [sessionId, open]);
+  }, [sessionId, cwd, open]);
 
   // Subscribe to ttyd-exit broadcasts so an unexpected backend death
   // flips us into the error state with a Retry affordance.
@@ -98,7 +98,7 @@ export function TtydPane({ sessionId }: Props) {
         </div>
         <button
           type="button"
-          onClick={() => void open(sessionId)}
+          onClick={() => void open(sessionId, cwd)}
           className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400"
         >
           Retry

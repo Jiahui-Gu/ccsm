@@ -75,8 +75,15 @@ function emitExit(sessionId: string, code: number | null, signal: NodeJS.Signals
 // Shared spawn helper. `claudeArgs` is the list AFTER the ttyd-owned
 // flags (`-p <port> -W -t fontSize=14 <claudePath>`); for new sessions
 // it's `['--session-id', sid]`, for resumes `['--resume', sid]`.
+//
+// `cwd` is the directory `claude` should be launched in. Without it,
+// claude inherits Electron's cwd and writes its JSONL transcripts to
+// `~/.claude/projects/<electron-cwd>/...` instead of the user's chosen
+// project — also picking up settings/agents/skills from the wrong
+// project context (P0 dogfood blocker).
 async function spawnTtyd(
   sessionId: string,
+  cwd: string,
   claudeArgs: string[],
 ): Promise<OpenResult | OpenError> {
   // Refuse to start a second ttyd for the same ccsm session — the prior
@@ -140,6 +147,11 @@ async function spawnTtyd(
     proc = spawn(ttyd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      // Run claude inside the user's chosen project dir so JSONLs land
+      // under `~/.claude/projects/<this-dir>/<sid>.jsonl` and the CLI
+      // picks up settings/agents/skills from the right project root.
+      // Falsy cwd → fall back to Electron's cwd (early-boot only).
+      cwd: cwd && cwd.length > 0 ? cwd : undefined,
     });
   } catch (err) {
     return {
@@ -195,19 +207,21 @@ async function spawnTtyd(
 
 export async function openTtydForSession(
   sessionId: string,
+  cwd: string,
 ): Promise<OpenResult | OpenError> {
   const sid = randomUUID();
-  return spawnTtyd(sessionId, ['--session-id', sid]);
+  return spawnTtyd(sessionId, cwd, ['--session-id', sid]);
 }
 
 export async function resumeTtydForSession(
   sessionId: string,
+  cwd: string,
   sid: string,
 ): Promise<OpenResult | OpenError> {
   if (typeof sid !== 'string' || !sid) {
     return { ok: false, error: 'bad_sid' };
   }
-  return spawnTtyd(sessionId, ['--resume', sid]);
+  return spawnTtyd(sessionId, cwd, ['--resume', sid]);
 }
 
 // Kill the ttyd process tree for `sessionId`. On Windows we MUST use
