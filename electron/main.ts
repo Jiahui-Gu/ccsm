@@ -162,9 +162,11 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
 
 // ───────────── user-owned cwd list (ccsm's own LRU) ─────────────
 //
-// The new-session default cwd is always `os.homedir()`. The recent list shown
-// in the StatusBar cwd popover is a user-owned LRU that only the user can
-// extend (by explicitly picking a non-default cwd). Persisted in the
+// The new-session default cwd is the LRU head (the user's most-recently
+// picked cwd) when present, falling back to `os.homedir()` when the LRU
+// is empty (fresh install). The recent list shown in the StatusBar cwd
+// popover is a user-owned LRU that only the user can extend (by
+// explicitly picking a non-default cwd). Persisted in the
 // `app_state` SQLite table under key `userCwds` as a JSON string list.
 //
 // Reads return `[homedir()]` when the list is empty so the popover always has
