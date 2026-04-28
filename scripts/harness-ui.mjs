@@ -892,7 +892,21 @@ async function caseTitlebar({ app, win, log }) {
 
 // ---------- tray ----------
 // Closing the window hides it (does NOT quit) on win32/linux; show() restores.
+//
+// Post-#561 (close-to-tray ask/tray/quit dialog): the win32 default for
+// `closeAction` is `'ask'`, which surfaces a modal dialog instead of
+// hiding. The probe asserts the hide-on-close branch specifically, so we
+// pin `closeAction='tray'` via the same `db:save` IPC the Settings dialog
+// uses before triggering close. We restore the prior value in dispose so
+// later cases (and the persisted user preference, if running outside the
+// harness) aren't perturbed.
 async function caseTray({ app, win, log, registerDispose }) {
+  const prevCloseAction = await win.evaluate(async () => {
+    return await window.ccsm.loadState('closeAction');
+  });
+  await win.evaluate(async () => {
+    await window.ccsm.saveState('closeAction', 'tray');
+  });
   // Belt-and-suspenders: ensure the window is visible after we're done so
   // subsequent cases can interact with it (the harness window is shared).
   registerDispose(async () => {
@@ -900,6 +914,16 @@ async function caseTray({ app, win, log, registerDispose }) {
       const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
       try { w?.show(); } catch {}
     });
+    try {
+      await win.evaluate(async (prev) => {
+        if (prev == null) {
+          // No way to delete via the IPC; leave 'tray' (matches mac default
+          // and was the pre-#561 implicit behaviour).
+          return;
+        }
+        await window.ccsm.saveState('closeAction', prev);
+      }, prevCloseAction);
+    } catch {}
   });
 
   await app.evaluate(({ BrowserWindow }) => {
@@ -1903,17 +1927,26 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
 async function caseTerminalPaneMounted({ win, log }) {
   // Seed a real session so App's `active` resolves and the right-pane
   // branch runs. tutorialSeen=true skips the tutorial overlay.
-  await win.evaluate(() => {
+  //
+  // The cwd MUST be a real existing directory: TerminalPane's attach
+  // effect calls `pty.spawn(sid, cwd)` which routes to node-pty, which
+  // throws synchronously if cwd doesn't exist. Without a valid cwd the
+  // pty bridge wires up (`window.ccsmPty.list` is callable) but no pty
+  // entry ever lands, which is exactly the failure mode the assertion
+  // below was reporting. Use the harness process cwd (the repo root) —
+  // always present, no privilege issues.
+  const probeCwd = process.cwd().replace(/\\/g, '/');
+  await win.evaluate((cwd) => {
     window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
       sessions: [
-        { id: 's-term', name: 'terminal-probe', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
+        { id: 's-term', name: 'terminal-probe', state: 'idle', cwd, model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' },
       ],
       activeId: 's-term',
       messagesBySession: { 's-term': [] },
       tutorialSeen: true,
     });
-  });
+  }, probeCwd);
 
   // Wait for App to resolve the boot-time claudeAvailable check —
   // either the guide or the terminal host (or its loading shell) shows up.
