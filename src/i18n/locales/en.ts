@@ -75,6 +75,8 @@ const en = {
     expandSidebarAria: 'Expand sidebar',
     newSessionTooltip: 'New session',
     newSessionAria: 'New session',
+    pickCwdTooltip: 'New session in a different folder',
+    pickCwdAria: 'Pick working directory for new session',
     searchTooltip: 'Search  Ctrl+F',
     searchAriaShort: 'Search',
     importTooltip: 'Import session',

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Folder, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useTranslation } from '../i18n/useTranslation';
@@ -8,47 +8,70 @@ import { useStore } from '../stores/store';
 // `openPopoverId` in src/stores/store.ts: opening any popover sets the id
 // (closing whatever else was open), so clicking a different chip while the
 // cwd popover is open auto-dismisses this one.
-const POPOVER_ID = 'cwd';
+const POPOVER_ID_LEGACY = 'cwd';
 
-// Typeahead popover for the StatusBar `cwd` chip.
+// Typeahead popover for picking a working directory.
 //
-// History: PR #94 introduced a typeahead dropdown inside the (since-removed)
-// SessionCreateDialog so users could pick a recent cwd by typing. PR #106
-// dropped the dialog in favour of in-place session creation, which also
-// dropped the typeahead — leaving the native directory picker as the only
-// way to switch cwd. This popover restores the typeahead by mounting it on
-// the StatusBar cwd chip and keeps the native picker as a "Browse..." entry
-// point at the bottom of the list.
+// Two operating modes share one component:
+//
+//   1. LEGACY (uncontrolled, embedded trigger). When neither `open` nor
+//      `onOpenChange` is provided, the popover renders its own trigger button
+//      (the "cwd chip") and owns its open state via the global mutex slot.
+//      This is the original behaviour used by tests/cwd-popover.test.tsx.
+//
+//   2. CONTROLLED (external anchor). When `open` + `onOpenChange` are
+//      provided, the component renders ONLY the popover panel, anchored
+//      below the DOM element passed in via `anchorRef`. Used by Sidebar
+//      for the new chevron-next-to-`+` cwd picker (task #552). No trigger
+//      button is rendered; the caller owns trigger UI + open state.
+//
+// History: PR #94 introduced the typeahead inside SessionCreateDialog; PR
+// #106 dropped the dialog and moved it to the StatusBar cwd chip. The
+// StatusBar was later removed (direct-xterm refactor), leaving the legacy
+// embedded-trigger mode dormant in production but still tested. Task #552
+// resurrects the popover anchored to a sidebar chevron.
 //
 // Implementation notes:
 //   - We deliberately don't pull in `@radix-ui/react-popover` because the
-//     project doesn't have it as a direct dependency and the brief forbids
-//     adding new ones. Positioning is a simple absolute layout anchored to
-//     the trigger; click-outside + Escape close the popover.
+//     project doesn't have it as a direct dependency. Positioning is a
+//     simple absolute layout anchored to the trigger / external anchor;
+//     click-outside + Escape close the popover.
 //   - The recent list comes from `window.ccsm.recentCwds()` which the
 //     main process eager-scans at boot from `~/.claude/projects` (PR #94).
 //     The IPC is best-effort: if it fails or returns empty we render a
 //     friendly "no recent cwds" hint and still expose Browse.
-//   - Filtering is plain case-insensitive substring — no fuzzy match. The
-//     query input starts empty on every open so the Recent list is shown
-//     in full; the current cwd is surfaced as the input placeholder so
-//     users still see "where they are" without it acting as a filter
-//     (regression fix — see PR `fix(cwd-popover)`).
 
 const RECENT_LIMIT = 10;
 
-type Props = {
-  /** Current working directory. Used to label the trigger and shown as the input placeholder. */
-  cwd: string;
-  /** When true, show a dim ⚠ next to the trigger label and explain via tooltip. */
-  cwdMissing?: boolean;
-  /** Optional async loader override — useful for tests. Defaults to the IPC. */
-  loadRecent?: () => Promise<string[]>;
+type CommonProps = {
   /** Switch the active session to `path`. */
   onPick: (path: string) => void;
   /** Open the OS folder picker; called when "Browse..." is clicked. */
   onBrowse: () => void;
+  /** Optional async loader override — useful for tests. Defaults to the IPC. */
+  loadRecent?: () => Promise<string[]>;
+  /** Current working directory. Used for placeholder + (legacy) trigger label. */
+  cwd?: string;
+  /** When true (legacy mode only), show a dim ⚠ next to the trigger. */
+  cwdMissing?: boolean;
 };
+
+type LegacyProps = CommonProps & {
+  open?: undefined;
+  onOpenChange?: undefined;
+  anchorRef?: undefined;
+};
+
+type ControlledProps = CommonProps & {
+  /** Controlled open state. When provided, the embedded trigger is NOT rendered. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** DOM element to anchor the popover panel against. The panel positions
+   *  itself below the anchor's bottom edge, left-aligned to its left edge. */
+  anchorRef: React.RefObject<HTMLElement> | React.RefObject<HTMLElement | null>;
+};
+
+type Props = LegacyProps | ControlledProps;
 
 function lastSegment(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, '');
@@ -76,15 +99,32 @@ async function defaultLoadRecent(): Promise<string[]> {
   }
 }
 
-export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Props) {
+export function CwdPopover(props: Props) {
+  const isControlled = props.open !== undefined && props.onOpenChange !== undefined;
   const { t } = useTranslation();
-  // Open state is owned by the store so opening any other popover (or this
-  // one's trigger again) flips us shut without local listeners. The mousedown
-  // fallback below still calls closePopover for outside clicks that don't
-  // hit another mutex-aware trigger (e.g. blank chrome).
-  const open = useStore((s) => s.openPopoverId === POPOVER_ID);
+
+  // Legacy open state lives on the store mutex slot; controlled mode
+  // delegates to the caller. We compute `open` via a single source of truth
+  // so the rest of the component is mode-agnostic.
+  const legacyOpen = useStore((s) => s.openPopoverId === POPOVER_ID_LEGACY);
   const openPopover = useStore((s) => s.openPopover);
   const closePopover = useStore((s) => s.closePopover);
+  const open = isControlled ? (props.open as boolean) : legacyOpen;
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (isControlled) {
+        (props.onOpenChange as (o: boolean) => void)(next);
+      } else if (next) {
+        openPopover(POPOVER_ID_LEGACY);
+      } else {
+        closePopover(POPOVER_ID_LEGACY);
+      }
+    },
+    [isControlled, props, openPopover, closePopover]
+  );
+
+  const { onPick, onBrowse, loadRecent, cwd: cwdProp = '', cwdMissing } = props;
+  const cwd = cwdProp;
   const [query, setQuery] = useState('');
   const [recent, setRecent] = useState<string[]>([]);
   const [active, setActive] = useState(0);
@@ -92,11 +132,32 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
   const popRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // Controlled-mode panel positioning. We compute screen coords from the
+  // external anchor's bounding rect on every open + on resize/scroll while
+  // open, mounting the panel via a fixed-position wrapper so it escapes
+  // any clipping ancestors (the sidebar uses overflow:hidden).
+  const [panelPos, setPanelPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!isControlled || !open) return;
+    const anchor = (props as ControlledProps).anchorRef.current;
+    if (!anchor) return;
+    const recompute = () => {
+      const r = anchor.getBoundingClientRect();
+      setPanelPos({ top: r.bottom + 4, left: r.left });
+    };
+    recompute();
+    window.addEventListener('resize', recompute);
+    window.addEventListener('scroll', recompute, true);
+    return () => {
+      window.removeEventListener('resize', recompute);
+      window.removeEventListener('scroll', recompute, true);
+    };
+  }, [isControlled, open, props]);
+
   // task328: discoverability — pulse a faint accent ring on the FIRST hover
-  // after mount so brand-new users notice the chip is interactive. Sticky:
-  // once shown (or once the popover is opened by any path), we never replay
-  // for the lifetime of this mount. Keyed off mount, not session id, so
-  // switching between sessions in the same lifetime doesn't re-pulse.
+  // after mount so brand-new users notice the (legacy) chip is interactive.
+  // Only meaningful for the embedded-trigger mode; controlled mode hosts the
+  // trigger externally and doesn't need this.
   const [hoverHintShown, setHoverHintShown] = useState(false);
   const [hoverHintActive, setHoverHintActive] = useState(false);
   const triggerOnHoverHint = useCallback(() => {
@@ -104,16 +165,11 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     setHoverHintShown(true);
     setHoverHintActive(true);
   }, [hoverHintShown]);
-  // Pulse duration matches the menuIn ease (~600ms). Driven from an effect so
-  // the timer is cleared on unmount (or if the popover opens and we retire
-  // the hint early), avoiding a setState-after-unmount warning in tests.
   useEffect(() => {
     if (!hoverHintActive) return;
     const id = window.setTimeout(() => setHoverHintActive(false), 600);
     return () => window.clearTimeout(id);
   }, [hoverHintActive]);
-  // Opening the popover (via click, keyboard, whatever) also retires the
-  // hint — the user has discovered the chip.
   useEffect(() => {
     if (open && !hoverHintShown) {
       setHoverHintShown(true);
@@ -133,9 +189,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     return () => window.clearTimeout(id);
   }, [open, cwd]);
 
-  // Lazy-load recent cwds on first open. We refetch every open so newly-used
-  // cwds show up without forcing the user to restart the app — the IPC is
-  // cheap (returns from an in-memory cache).
+  // Lazy-load recent cwds on each open.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -149,21 +203,25 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     };
   }, [open, loadRecent]);
 
-  // Click-outside / Escape both close the popover. We use mousedown so the
-  // popover collapses before any click handlers on background controls fire,
-  // matching the SlashCommandPicker pattern elsewhere in the app.
+  // Click-outside / Escape both close the popover. In controlled mode the
+  // outside-click check must also exclude the EXTERNAL anchor so a click
+  // on the chevron toggles, not closes-then-reopens.
   useEffect(() => {
     if (!open) return;
+    const externalAnchor = isControlled
+      ? (props as ControlledProps).anchorRef.current
+      : null;
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       if (popRef.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
-      closePopover(POPOVER_ID);
+      if (externalAnchor && externalAnchor.contains(target)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        closePopover(POPOVER_ID);
+        setOpen(false);
       }
     };
     document.addEventListener('mousedown', onDown);
@@ -172,7 +230,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
     };
-  }, [open, closePopover]);
+  }, [open, isControlled, props, setOpen]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -187,10 +245,10 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
 
   const commit = useCallback(
     (path: string) => {
-      closePopover(POPOVER_ID);
+      setOpen(false);
       onPick(path);
     },
-    [onPick, closePopover]
+    [onPick, setOpen]
   );
 
   const onListKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -207,12 +265,119 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
     }
   };
 
-  // task328: when the active session has no cwd (empty string), surface a
-  // muted `(none)` placeholder instead of letting `lastSegment('')` fall back
-  // to the raw input — and skip auto-opening the popover (corner case: only
-  // happens when there's no CLI history AND no per-group prior cwd).
+  // Legacy-mode chip label. Controlled mode never renders this.
   const hasCwd = !!cwd;
   const triggerLabel = hasCwd ? lastSegment(cwd) : t('chat.cwdChipNoneLabel');
+
+  // The popover panel — shared between modes, but positioning differs.
+  const panel = open ? (
+    <div
+      ref={popRef}
+      role="dialog"
+      aria-label={t('statusBar.workingDirectory')}
+      style={
+        isControlled && panelPos
+          ? { position: 'fixed', top: panelPos.top, left: panelPos.left }
+          : undefined
+      }
+      className={cn(
+        isControlled
+          ? 'z-50 min-w-[320px] max-w-[480px]'
+          : 'absolute left-0 bottom-full mb-1 z-40 min-w-[320px] max-w-[480px]',
+        'rounded-md border border-border-default bg-bg-elevated',
+        'surface-highlight shadow-[var(--surface-shadow)]',
+        'text-chrome text-fg-secondary overflow-hidden',
+        'animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]'
+      )}
+      data-testid="cwd-popover-panel"
+    >
+      <div className="px-2 pt-2 pb-1.5 border-b border-border-subtle">
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={cwd ? truncateMiddle(cwd, 48) : t('cwdPopover.placeholder')}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={onListKeyDown}
+          className={cn(
+            'w-full h-7 px-2 rounded-sm bg-bg-panel border border-border-subtle',
+            'font-mono text-mono-md text-fg-primary placeholder:text-fg-tertiary',
+            'outline-none focus:border-border-strong'
+          )}
+        />
+      </div>
+
+      <span className="block px-3 pt-1.5 pb-1 font-mono text-mono-sm text-fg-tertiary select-none">
+        {t('cwdPopover.recent')}
+      </span>
+      <ul className="max-h-[260px] overflow-y-auto pb-1" role="listbox">
+        {filtered.length === 0 ? (
+          <li className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
+            {t('cwdPopover.empty')}
+          </li>
+        ) : (
+          filtered.map((path, i) => {
+            const isActive = i === active;
+            return (
+              <li
+                key={path}
+                role="option"
+                aria-selected={isActive}
+                onMouseEnter={() => setActive(i)}
+                // onMouseDown so the input doesn't blur first and close us.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  commit(path);
+                }}
+                title={path}
+                className={cn(
+                  'flex items-center h-7 px-3 mx-1 rounded-sm cursor-pointer select-none',
+                  'transition-colors duration-120 ease-out',
+                  isActive
+                    ? 'bg-bg-hover text-fg-primary'
+                    : 'text-fg-secondary hover:bg-bg-hover/60'
+                )}
+              >
+                <span className="font-mono text-mono-md truncate">
+                  {truncateMiddle(path)}
+                </span>
+              </li>
+            );
+          })
+        )}
+      </ul>
+
+      <div className="border-t border-border-subtle px-1 py-1">
+        <button
+          type="button"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setOpen(false);
+            onBrowse();
+          }}
+          className={cn(
+            'w-full flex items-center gap-2 h-7 px-2 mx-0 rounded-sm',
+            'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
+            'outline-none focus-ring',
+            'transition-colors duration-120 ease-out text-left text-mono-md'
+          )}
+        >
+          <Folder size={12} className="stroke-[1.75] text-fg-tertiary" />
+          <span>{t('cwdPopover.browse')}</span>
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  if (isControlled) {
+    // Controlled mode: caller renders the trigger; we only output the panel.
+    return panel;
+  }
 
   return (
     <span className="relative inline-flex">
@@ -222,7 +387,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
         data-cwd-chip
         data-hover-hint={hoverHintActive ? 'on' : undefined}
         title={cwdMissing ? t('cwdPopover.cwdMissingTooltip', { cwd }) : (hasCwd ? cwd : undefined)}
-        onClick={() => (open ? closePopover(POPOVER_ID) : openPopover(POPOVER_ID))}
+        onClick={() => setOpen(!open)}
         onMouseEnter={triggerOnHoverHint}
         onFocus={triggerOnHoverHint}
         aria-haspopup="dialog"
@@ -235,8 +400,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
             ? 'text-fg-tertiary italic hover:text-fg-secondary hover:bg-bg-hover'
             : 'text-fg-tertiary hover:text-fg-secondary hover:bg-bg-hover',
           'outline-none focus-ring',
-          // task328: first-hover discoverability pulse. Uses the existing
-          // --color-focus-ring token so we don't introduce a new color.
+          // task328: first-hover discoverability pulse.
           hoverHintActive &&
             'shadow-[0_0_0_2px_var(--color-focus-ring)] transition-shadow duration-300',
           'transition-colors duration-120 ease-out'
@@ -253,105 +417,7 @@ export function CwdPopover({ cwd, cwdMissing, loadRecent, onPick, onBrowse }: Pr
         <ChevronDown size={10} className="stroke-[1.75] opacity-70" />
       </button>
 
-      {open ? (
-        <div
-          ref={popRef}
-          role="dialog"
-          aria-label={t('statusBar.workingDirectory')}
-          // Anchor above the chip — StatusBar lives at the bottom of the
-          // window so a top-aligned popover would collide with the input
-          // bar above it. `bottom-full` puts us above the trigger; `mb-1`
-          // matches the breathing room used by the slash-command picker.
-          className={cn(
-            'absolute left-0 bottom-full mb-1 z-40 min-w-[320px] max-w-[480px]',
-            'rounded-md border border-border-default bg-bg-elevated',
-            'surface-highlight shadow-[var(--surface-shadow)]',
-            'text-chrome text-fg-secondary overflow-hidden',
-            'animate-[menuIn_140ms_cubic-bezier(0.32,0.72,0,1)]'
-          )}
-        >
-          <div className="px-2 pt-2 pb-1.5 border-b border-border-subtle">
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              spellCheck={false}
-              autoComplete="off"
-              placeholder={cwd ? truncateMiddle(cwd, 48) : t('cwdPopover.placeholder')}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setActive(0);
-              }}
-              onKeyDown={onListKeyDown}
-              className={cn(
-                'w-full h-7 px-2 rounded-sm bg-bg-panel border border-border-subtle',
-                'font-mono text-mono-md text-fg-primary placeholder:text-fg-tertiary',
-                'outline-none focus:border-border-strong'
-              )}
-            />
-          </div>
-
-          <span className="block px-3 pt-1.5 pb-1 font-mono text-mono-sm text-fg-tertiary select-none">
-            {t('cwdPopover.recent')}
-          </span>
-          <ul className="max-h-[260px] overflow-y-auto pb-1" role="listbox">
-            {filtered.length === 0 ? (
-              <li className="px-3 py-2 text-fg-tertiary text-mono-md leading-[16px]">
-                {t('cwdPopover.empty')}
-              </li>
-            ) : (
-              filtered.map((path, i) => {
-                const isActive = i === active;
-                return (
-                  <li
-                    key={path}
-                    role="option"
-                    aria-selected={isActive}
-                    onMouseEnter={() => setActive(i)}
-                    // onMouseDown so the input doesn't blur first and close us.
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      commit(path);
-                    }}
-                    title={path}
-                    className={cn(
-                      'flex items-center h-7 px-3 mx-1 rounded-sm cursor-pointer select-none',
-                      'transition-colors duration-120 ease-out',
-                      isActive
-                        ? 'bg-bg-hover text-fg-primary'
-                        : 'text-fg-secondary hover:bg-bg-hover/60'
-                    )}
-                  >
-                    <span className="font-mono text-mono-md truncate">
-                      {truncateMiddle(path)}
-                    </span>
-                  </li>
-                );
-              })
-            )}
-          </ul>
-
-          <div className="border-t border-border-subtle px-1 py-1">
-            <button
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                closePopover(POPOVER_ID);
-                onBrowse();
-              }}
-              className={cn(
-                'w-full flex items-center gap-2 h-7 px-2 mx-0 rounded-sm',
-                'text-fg-secondary hover:bg-bg-hover hover:text-fg-primary',
-                'outline-none focus-ring',
-                'transition-colors duration-120 ease-out text-left text-mono-md'
-              )}
-            >
-              <Folder size={12} className="stroke-[1.75] text-fg-tertiary" />
-              <span>{t('cwdPopover.browse')}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {panel}
     </span>
   );
 }

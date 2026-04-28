@@ -1192,6 +1192,300 @@ async function casePtySubtreeKilledOnQuit() {
 }
 
 // ============================================================================
+// Cases: cwd-picker-* (task #552 — chevron + popover cwd picker)
+//
+// The sidebar's New Session triggers (top + per-group) gained a `▾`
+// chevron next to the `+`. Clicking `+` creates a session with the LRU
+// default cwd; clicking `▾` opens a popover, the user picks a cwd, and the
+// session is created with that cwd. The Cmd+N / Cmd+Shift+N / Cmd+Shift+G
+// keyboard shortcuts were removed in the same change.
+//
+// All cases share a tempDir+launch with the rest of the shared group; each
+// pushes its own synthetic project dir into `userCwds` and verifies the
+// store mutation, never relying on cross-case ordering.
+// ============================================================================
+
+async function _waitBoot(win) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await win.evaluate(() => {
+    const useStore = window.__ccsmStore;
+    useStore.setState({ tutorialSeen: true });
+  });
+  await win.waitForSelector('[data-testid="sidebar-newsession-row"]', { timeout: 10000 });
+}
+
+async function _seedRecentCwd(win, projectDir) {
+  // Push the cwd through the real IPC and mirror lastUsedCwd, matching the
+  // boot path used by hydrateStore. See caseDefaultCwdFromUserCwdsLru.
+  mkdirSync(projectDir, { recursive: true });
+  const result = await win.evaluate(async (p) => {
+    const api = window.ccsm;
+    if (!api?.userCwds?.push || !api?.userCwds?.get) {
+      return { ok: false, reason: 'userCwds IPC unavailable' };
+    }
+    await api.userCwds.push(p);
+    const list = await api.userCwds.get();
+    const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
+    if (head) window.__ccsmStore.setState({ lastUsedCwd: head });
+    return { ok: true, head };
+  }, projectDir);
+  if (!result.ok) throw new Error(`userCwds.push failed: ${result.reason}`);
+  return result.head;
+}
+
+function _norm(p) {
+  return (p || '').replace(/[\\/]+$/, '');
+}
+
+async function _sessionCount(win) {
+  return await win.evaluate(() => window.__ccsmStore.getState().sessions.length);
+}
+
+async function _activeCwd(win) {
+  return await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    const a = st.sessions.find((s) => s.id === st.activeId);
+    return a?.cwd ?? null;
+  });
+}
+
+async function _deleteActive(win) {
+  await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    st.deleteSession?.(st.activeId);
+  });
+}
+
+async function _seedGroup(win, name) {
+  return await win.evaluate((nm) => {
+    const st = window.__ccsmStore.getState();
+    const id = st.createGroup(nm);
+    st.focusGroup(id);
+    return id;
+  }, name);
+}
+
+// Case: cwd-picker-top-default
+//   Click the top `+` (NOT the chevron). Asserts the new session uses the
+//   LRU default cwd (lastUsedCwd), proving that the `+` half is unaffected
+//   by the chevron addition.
+async function caseCwdPickerTopDefault({ win, tempDir }) {
+  await _waitBoot(win);
+  const projectDir = path.join(tempDir, 'cwd-pick-top-default-' + Math.random().toString(36).slice(2, 8));
+  const expected = _norm(await _seedRecentCwd(win, projectDir));
+
+  const before = await _sessionCount(win);
+  // The top "+" lives inside [data-sidebar-newsession-cluster] as the
+  // FIRST <button>. Click that, NOT the chevron sibling.
+  await win.evaluate(() => {
+    const cluster = document.querySelector('[data-sidebar-newsession-cluster]');
+    if (!cluster) throw new Error('top newsession cluster not found');
+    const plus = cluster.querySelector('button:not([data-testid="sidebar-newsession-cwd-chevron"])');
+    if (!plus) throw new Error('top + button not found');
+    plus.click();
+  });
+  await sleep(300);
+  const after = await _sessionCount(win);
+  if (after - before !== 1) throw new Error(`expected 1 new session, got delta=${after - before}`);
+  const actual = _norm(await _activeCwd(win));
+  if (actual !== expected) {
+    throw new Error(`top + did not honor LRU default. expected=${expected} actual=${actual}`);
+  }
+  await _deleteActive(win);
+}
+
+// Case: cwd-picker-top-chevron
+//   Click `▾` → popover opens → seed an alternative cwd into the LRU →
+//   click that recent row → assert new session uses the picked cwd, popover
+//   closes, no extra session is created from the chevron click itself.
+async function caseCwdPickerTopChevron({ win, tempDir }) {
+  await _waitBoot(win);
+  // Seed two cwds: the LRU head (which would be the default) and an
+  // alternate the user will pick.
+  const head = path.join(tempDir, 'top-chevron-head-' + Math.random().toString(36).slice(2, 8));
+  const alt = path.join(tempDir, 'top-chevron-alt-' + Math.random().toString(36).slice(2, 8));
+  await _seedRecentCwd(win, head);
+  await _seedRecentCwd(win, alt); // alt becomes the LRU head; head sits at index 1
+
+  const before = await _sessionCount(win);
+
+  // Click the chevron.
+  await win.click('[data-testid="sidebar-newsession-cwd-chevron"]');
+  // Popover panel must mount.
+  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
+  // Confirm no session was created by the chevron click.
+  const midCount = await _sessionCount(win);
+  if (midCount !== before) {
+    throw new Error(`chevron click leaked a session: before=${before} mid=${midCount}`);
+  }
+
+  // Pick the row whose path includes our seeded "head" path (NOT the
+  // current LRU head "alt"). This proves the user's pick — not the
+  // default — drives the new session's cwd.
+  const target = _norm(head);
+  await win.evaluate((needle) => {
+    const opts = Array.from(document.querySelectorAll('[data-testid="cwd-popover-panel"] [role="option"]'));
+    const hit = opts.find((el) => (el.getAttribute('title') || el.textContent || '').includes(needle.split(/[\\/]/).pop()));
+    if (!hit) throw new Error(`recent row not found for ${needle}`);
+    // The popover commits on mousedown so the input doesn't blur first.
+    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  }, target);
+  await sleep(300);
+
+  const after = await _sessionCount(win);
+  if (after - before !== 1) throw new Error(`expected 1 new session after pick, got delta=${after - before}`);
+  const actual = _norm(await _activeCwd(win));
+  if (actual !== target) {
+    throw new Error(`top chevron pick did not apply. picked=${target} actual=${actual}`);
+  }
+  // Popover must close.
+  const stillOpen = await win.evaluate(
+    () => !!document.querySelector('[data-testid="cwd-popover-panel"]'),
+  );
+  if (stillOpen) throw new Error('cwd popover did not close after pick');
+
+  await _deleteActive(win);
+}
+
+// Case: cwd-picker-group
+//   Open a normal group's chevron → pick a cwd → new session lands in that
+//   group AND uses the picked cwd.
+async function caseCwdPickerGroup({ win, tempDir }) {
+  await _waitBoot(win);
+  const groupId = await _seedGroup(win, 'cwd-picker-group');
+  // Wait for the new group's right-rail cluster to render.
+  await win.waitForFunction(
+    (gid) => !!document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`),
+    groupId,
+    { timeout: 4000 },
+  );
+  const pickPath = path.join(tempDir, 'group-pick-' + Math.random().toString(36).slice(2, 8));
+  await _seedRecentCwd(win, pickPath);
+  const target = _norm(pickPath);
+
+  const before = await _sessionCount(win);
+  await win.evaluate((gid) => {
+    const cluster = document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`);
+    if (!cluster) throw new Error('group cluster not found');
+    const chevron = cluster.querySelector('[data-testid="sidebar-group-newsession-cwd-chevron"]');
+    if (!chevron) throw new Error('group chevron not found');
+    chevron.click();
+  }, groupId);
+  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
+
+  await win.evaluate((needle) => {
+    const opts = Array.from(document.querySelectorAll('[data-testid="cwd-popover-panel"] [role="option"]'));
+    const hit = opts.find((el) => (el.getAttribute('title') || el.textContent || '').includes(needle.split(/[\\/]/).pop()));
+    if (!hit) throw new Error(`recent row not found for ${needle}`);
+    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  }, target);
+  await sleep(300);
+
+  const after = await _sessionCount(win);
+  if (after - before !== 1) throw new Error(`expected 1 new session, got delta=${after - before}`);
+  const result = await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    const a = st.sessions.find((s) => s.id === st.activeId);
+    return { cwd: a?.cwd ?? null, groupId: a?.groupId ?? null };
+  });
+  if (_norm(result.cwd) !== target) {
+    throw new Error(`group chevron pick cwd mismatch. picked=${target} actual=${result.cwd}`);
+  }
+  if (result.groupId !== groupId) {
+    throw new Error(`group chevron pick targeted wrong group. expected=${groupId} actual=${result.groupId}`);
+  }
+  await _deleteActive(win);
+}
+
+// Case: cwd-picker-no-shortcut
+//   Cmd+N / Ctrl+N must NOT create a session anymore — the keyboard shortcut
+//   was removed in the same task. Holds for both unmodified `n` (always was
+//   typed text) and `Mod+n` (the deleted binding).
+async function caseCwdPickerNoShortcut({ win }) {
+  await _waitBoot(win);
+  const before = await _sessionCount(win);
+
+  // Make sure focus is on document.body so the shortcut would have bubbled
+  // up to the App-level keydown listener under the old code.
+  await win.evaluate(() => {
+    if (document.activeElement && document.activeElement !== document.body) {
+      try { document.activeElement.blur(); } catch (_) { /* noop */ }
+    }
+    document.body.focus();
+  });
+
+  // Press Mod+N (Ctrl on Windows/Linux, Cmd on macOS — Playwright maps
+  // 'Control' deterministically; we send both for paranoia).
+  await win.keyboard.press('Control+n');
+  await win.keyboard.press('Meta+n');
+  // Also Cmd+Shift+G (deleted new-group shortcut).
+  await win.keyboard.press('Control+Shift+g');
+  await win.keyboard.press('Meta+Shift+g');
+  await sleep(400);
+
+  const after = await _sessionCount(win);
+  if (after !== before) {
+    throw new Error(`Cmd/Ctrl+N (or +Shift+G) still creates sessions. before=${before} after=${after}`);
+  }
+}
+
+// Case: cwd-picker-only-one-open
+//   Open the top chevron popover → click a group chevron → top popover
+//   closes, group popover opens. Mutex behaviour — only one cwd picker at
+//   a time.
+async function caseCwdPickerOnlyOneOpen({ win }) {
+  await _waitBoot(win);
+  const groupId = await _seedGroup(win, 'cwd-picker-mutex');
+  await win.waitForFunction(
+    (gid) => !!document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`),
+    groupId,
+    { timeout: 4000 },
+  );
+
+  // Open the TOP chevron.
+  await win.click('[data-testid="sidebar-newsession-cwd-chevron"]');
+  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
+  const panelsAfterTop = await win.evaluate(
+    () => document.querySelectorAll('[data-testid="cwd-popover-panel"]').length,
+  );
+  if (panelsAfterTop !== 1) throw new Error(`expected exactly 1 panel after top, got ${panelsAfterTop}`);
+
+  // Open the GROUP chevron — top must close.
+  await win.evaluate((gid) => {
+    const chevron = document.querySelector(
+      `[data-group-header-id="${gid}"] [data-testid="sidebar-group-newsession-cwd-chevron"]`,
+    );
+    if (!chevron) throw new Error('group chevron not found');
+    chevron.click();
+  }, groupId);
+  // Settle for state propagation.
+  await sleep(200);
+  const panelsAfterGroup = await win.evaluate(
+    () => document.querySelectorAll('[data-testid="cwd-popover-panel"]').length,
+  );
+  if (panelsAfterGroup !== 1) {
+    throw new Error(`expected exactly 1 panel open at a time, got ${panelsAfterGroup}`);
+  }
+
+  // Sanity: the top chevron's aria-expanded must now be false.
+  const topExpanded = await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="sidebar-newsession-cwd-chevron"]');
+    return el?.getAttribute('aria-expanded') ?? null;
+  });
+  if (topExpanded !== 'false') {
+    throw new Error(`top chevron should be aria-expanded=false after group opens, got ${topExpanded}`);
+  }
+
+  // Cleanup: close.
+  await win.keyboard.press('Escape');
+  await sleep(150);
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
@@ -1203,6 +1497,11 @@ const CASE_REGISTRY = [
   { name: 'default-cwd-from-userCwds-lru', group: 'shared', run: caseDefaultCwdFromUserCwdsLru },
   { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
+  { name: 'cwd-picker-top-default',      group: 'shared', run: caseCwdPickerTopDefault },
+  { name: 'cwd-picker-top-chevron',      group: 'shared', run: caseCwdPickerTopChevron },
+  { name: 'cwd-picker-group',            group: 'shared', run: caseCwdPickerGroup },
+  { name: 'cwd-picker-no-shortcut',      group: 'shared', run: caseCwdPickerNoShortcut },
+  { name: 'cwd-picker-only-one-open',    group: 'shared', run: caseCwdPickerOnlyOneOpen },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
   { name: 'pty-subtree-killed-on-quit',  group: 'standalone', run: casePtySubtreeKilledOnQuit },
 ];
