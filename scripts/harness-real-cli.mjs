@@ -6,9 +6,10 @@
 //   2. switch-session-keeps-chat     — UX F: session A↔B switch reuses pty, scrollback intact
 //   3. cwd-projects-claude           — UX E: real cwd flows into claude's JSONL hash
 //   4. import-resume                 — UX H: import existing JSONL, claude --resume restores
-//   5. new-session-focus-cli         — UX C': button focus does not double-fire
-//   6. pty-pid-stable-across-switch  — direct-xterm: pty pid stable across A→B→A switch
-//   7. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
+//   5. default-cwd-from-userCwds-lru — task #551: new-session cwd defaults to LRU head
+//   6. new-session-focus-cli         — UX C': button focus does not double-fire
+//   7. pty-pid-stable-across-switch  — direct-xterm: pty pid stable across A→B→A switch
+//   8. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
 //
 // Sharing strategy:
 //   * Cases 1–6 share ONE Electron launch + ONE isolated tempDir. Each case
@@ -625,6 +626,119 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: default-cwd-from-userCwds-lru (task #551)
+//
+// New session creation must default the cwd to the user's most-recently
+// used cwd from the ccsm-owned `userCwds` LRU (head of the list), with
+// a fallback to `userHome` only when the LRU is empty.
+//
+// Reproduces the bug from PR #392's "default cwd is always home" policy:
+// the user re-picks the same project on every new session because the
+// LRU is consulted only by the picker, never by the default.
+//
+// Steps:
+//   1. Read userHome from the renderer.
+//   2. Push a synthetic non-home cwd into the LRU via `window.ccsm.userCwds.push`.
+//   3. Wait for `lastUsedCwd` to reflect the new head in the store.
+//   4. Call `createSession()` with NO opts.cwd — the new session's cwd
+//      MUST equal the pushed path, NOT userHome.
+//   5. Soft-cleanup: delete the new session so subsequent cases see a
+//      clean shared launch.
+// ============================================================================
+
+async function caseDefaultCwdFromUserCwdsLru({ electronApp: _e, win, tempDir }) {
+  // Boot probe must have resolved (renderer needs userCwds IPC + store).
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Synthetic project dir distinct from tempDir so we don't collide with
+  // earlier cases that may have pushed tempDir already.
+  const projectDir = path.join(tempDir, 'lru-project-' + Math.random().toString(36).slice(2, 8));
+  mkdirSync(projectDir, { recursive: true });
+  const normalizedExpected = projectDir.replace(/[\\/]+$/, '');
+
+  // Push the cwd through the real IPC. The renderer-side `lastUsedCwd`
+  // cache is normally updated by store mutators (createSession /
+  // setSessionCwd / importSession) that wrap the push call; pushing the
+  // raw IPC bypasses those wrappers, so we mirror what `hydrateStore`
+  // does at boot — read the LRU back via `userCwds.get` and seed
+  // `lastUsedCwd` from the head. This matches the real path for the
+  // first `+` click of every fresh launch.
+  const pushed = await win.evaluate(async (p) => {
+    const api = window.ccsm;
+    if (!api?.userCwds?.push || !api?.userCwds?.get) {
+      return { ok: false, reason: 'userCwds IPC unavailable' };
+    }
+    await api.userCwds.push(p);
+    const list = await api.userCwds.get();
+    const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
+    if (head) {
+      window.__ccsmStore.setState({ lastUsedCwd: head });
+    }
+    return { ok: true, head };
+  }, projectDir);
+  if (!pushed.ok) throw new Error(`userCwds.push failed: ${pushed.reason}`);
+
+  // Wait briefly for the setState to flush. The check polls instead of
+  // relying on react-batching timing.
+  await win.waitForFunction(
+    (expected) => {
+      const st = window.__ccsmStore?.getState?.();
+      return !!st && (st.lastUsedCwd || '').replace(/[\\/]+$/, '') === expected;
+    },
+    normalizedExpected,
+    { timeout: 5000 },
+  );
+
+  // Snapshot pre-create state for the failure message.
+  const before = await win.evaluate(() => {
+    const st = window.__ccsmStore.getState();
+    return {
+      lastUsedCwd: st.lastUsedCwd,
+      userHome: st.userHome,
+      sessionCount: st.sessions.length,
+    };
+  });
+
+  // Create the new session WITHOUT specifying cwd — this is the defaulted
+  // path the bug is about. Read back the active session's cwd.
+  const result = await win.evaluate(() => {
+    const useStore = window.__ccsmStore;
+    const { createSession } = useStore.getState();
+    createSession({ name: 'lru-default-probe' });
+    const st = useStore.getState();
+    const active = st.sessions.find((s) => s.id === st.activeId);
+    return { sid: st.activeId, cwd: active?.cwd ?? null };
+  });
+
+  const actual = (result.cwd || '').replace(/[\\/]+$/, '');
+  if (actual !== normalizedExpected) {
+    throw new Error(
+      `default cwd did not honor userCwds LRU.\n` +
+        `  expected (LRU head): ${normalizedExpected}\n` +
+        `  actual (session.cwd): ${result.cwd}\n` +
+        `  store.lastUsedCwd:   ${before.lastUsedCwd}\n` +
+        `  store.userHome:      ${before.userHome}`,
+    );
+  }
+
+  // Negative: actual MUST NOT equal userHome (the regressed default).
+  if (before.userHome && actual === before.userHome.replace(/[\\/]+$/, '')) {
+    throw new Error(`default cwd fell back to userHome (${before.userHome}) despite non-empty LRU`);
+  }
+
+  // Cleanup so subsequent cases see no extra session row.
+  await win.evaluate((sid) => {
+    const useStore = window.__ccsmStore;
+    const { deleteSession } = useStore.getState();
+    deleteSession?.(sid);
+  }, result.sid);
+}
+
+// ============================================================================
 // Case: new-session-focus-cli — clicking "New Session" must transfer focus
 // AWAY from the trigger button so a subsequent Enter goes to the CLI, not
 // to the still-focused button (which would re-fire and spawn yet another
@@ -917,6 +1031,7 @@ const CASE_REGISTRY = [
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
+  { name: 'default-cwd-from-userCwds-lru', group: 'shared', run: caseDefaultCwdFromUserCwdsLru },
   { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },

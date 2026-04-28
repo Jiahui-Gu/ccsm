@@ -143,6 +143,20 @@ type State = {
    * the user on a randomly-open menu after restart).
    */
   openPopoverId: string | null;
+  /**
+   * Most-recent cwd from the ccsm-owned `userCwds` LRU (head of the list),
+   * cached in renderer state so `createSession` can read it synchronously
+   * to default a new session's cwd. Seeded at boot from
+   * `window.ccsm.userCwds.get()` and refreshed every time `userCwds.push`
+   * resolves. `null` when the LRU is empty (fresh install / user has never
+   * picked) — `createSession` falls back to `userHome` in that case.
+   *
+   * NOT persisted — derived from main-process state on every boot. Out of
+   * scope: cwd-missing degradation. If the head path no longer exists on
+   * disk we still hand it to the new session; the existing
+   * `cwd-missing` flag on Session continues to flag it after creation.
+   */
+  lastUsedCwd: string | null;
 };
 
 export interface CreateSessionOptions {
@@ -420,6 +434,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   hydrated: false,
   installerCorrupt: false,
   openPopoverId: null,
+  lastUsedCwd: null,
 
   selectSession: (id) => {
     set((s) => ({
@@ -445,6 +460,7 @@ export const useStore = create<State & Actions>((set, get) => ({
       activeId,
       userHome,
       claudeSettingsDefaultModel,
+      lastUsedCwd,
     } = get();
     const isUsable = (gid: string | null | undefined) => {
       if (!gid) return false;
@@ -466,15 +482,20 @@ export const useStore = create<State & Actions>((set, get) => ({
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
     const id = newSessionId();
-    // Default cwd is ALWAYS the user's home directory — no fallback chain,
-    // no inheritance from prior sessions, no derivation from CLI history.
-    // Per spec ("default cwd is home, no fallback chains"): the previous
-    // historyRecentCwds → recentProjects → groupRecentCwd cascade silently
-    // hijacked the new-session cwd from stale state, so we replaced it with
-    // a single deterministic source. The user can repick via the StatusBar
-    // cwd popover; that pick lands in the ccsm-owned `userCwds` LRU and
-    // surfaces in the popover's recent column.
-    const defaultCwd = userHome ?? '';
+    // Default cwd is the most recently used cwd from the ccsm-owned
+    // `userCwds` LRU (the head of the list), falling back to the user's
+    // home directory when the LRU is empty (fresh install / user has
+    // never explicitly picked a cwd). Per task #551 ("default new-session
+    // cwd to last-used"): repeat use of the same project should not
+    // require re-picking the cwd every time. Caller-provided `opts.cwd`
+    // always wins. The LRU itself is fed from three signals:
+    //   - explicit picks via the StatusBar cwd popover (`setSessionCwd`)
+    //   - new-session creation against an explicit cwd (below)
+    //   - importing an existing transcript (`importSession` below)
+    // Out of scope: cwd-missing degradation. If the LRU head no longer
+    // exists on disk we still hand it to the new session; the existing
+    // `cwd-missing` post-create flag continues to surface that case.
+    const defaultCwd = lastUsedCwd ?? userHome ?? '';
     // Default model reads `~/.claude/settings.json` `model` field — the SAME
     // value the CLI itself reads for `--model` defaulting (PR #386 made the
     // read CLAUDE_CONFIG_DIR-aware). When unset, leave `model` empty so the
@@ -514,7 +535,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     const finalCwd = newSession.cwd;
     if (finalCwd && userHome && finalCwd !== userHome) {
       const api = window.ccsm;
-      void api?.userCwds?.push(finalCwd).catch(() => {});
+      void api?.userCwds?.push(finalCwd)
+        .then((list) => {
+          if (Array.isArray(list) && list.length > 0) {
+            set({ lastUsedCwd: list[0] ?? null });
+          }
+        })
+        .catch(() => {});
+      // Optimistic local update so an immediately-following createSession
+      // (before the IPC resolves) sees the new head. Skipped when the
+      // value is already the head — avoids a redundant set + re-render.
+      if (finalCwd !== lastUsedCwd) set({ lastUsedCwd: finalCwd });
     }
   },
 
@@ -569,6 +600,21 @@ export const useStore = create<State & Actions>((set, get) => ({
       focusedGroupId: null,
       groups: ensured.groups
     });
+    // Importing an existing transcript is a strong "user is working in
+    // this cwd" signal — feed it into the same `userCwds` LRU that fresh
+    // sessions populate so the next `+` click defaults to it.
+    const userHome = get().userHome;
+    if (cwd && userHome && cwd !== userHome) {
+      const api = window.ccsm;
+      void api?.userCwds?.push(cwd)
+        .then((list) => {
+          if (Array.isArray(list) && list.length > 0) {
+            set({ lastUsedCwd: list[0] ?? null });
+          }
+        })
+        .catch(() => {});
+      if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
+    }
     return id;
   },
 
@@ -703,7 +749,14 @@ export const useStore = create<State & Actions>((set, get) => ({
     const userHome = get().userHome;
     if (cwd && cwd !== userHome) {
       const api = window.ccsm;
-      void api?.userCwds?.push(cwd).catch(() => {});
+      void api?.userCwds?.push(cwd)
+        .then((list) => {
+          if (Array.isArray(list) && list.length > 0) {
+            set({ lastUsedCwd: list[0] ?? null });
+          }
+        })
+        .catch(() => {});
+      if (cwd !== get().lastUsedCwd) set({ lastUsedCwd: cwd });
     }
   },
 
@@ -999,6 +1052,22 @@ export async function hydrateStore(): Promise<void> {
           userHome: typeof userHome === 'string' ? userHome : '',
           claudeSettingsDefaultModel: typeof defaultModel === 'string' ? defaultModel : null,
         });
+      }
+      // Seed `lastUsedCwd` from the ccsm-owned `userCwds` LRU so the very
+      // first `+` click after launch already lands in the user's most
+      // recent project. Without this, the first session of every boot
+      // would silently fall back to home and re-train the picker. Skip
+      // when the only entry is `userHome` — that's the empty-LRU sentinel
+      // (`getUserCwds()` always appends home), which means "no real
+      // pick", so we leave `lastUsedCwd` null and let createSession use
+      // userHome via the explicit fallback.
+      if (api?.userCwds?.get) {
+        const list = await api.userCwds.get().catch(() => [] as string[]);
+        const head = Array.isArray(list) && list.length > 0 ? list[0] : null;
+        const home = useStore.getState().userHome;
+        if (head && head !== home) {
+          useStore.setState({ lastUsedCwd: head });
+        }
       }
     } catch {
       /* IPC unavailable — boot continues with empty defaults */
