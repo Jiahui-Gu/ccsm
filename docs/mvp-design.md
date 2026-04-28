@@ -20,7 +20,7 @@ Electron · React 18 · TypeScript · Tailwind v4 (CSS-based config, `@import "t
 
 > Not using shadcn/ui: shell wrapper is ~30 lines, shadcn's high-value components (Dialog/Command/Form) don't cover this project's GUI-style rendering needs, and token mapping cost (`--sidebar-*` ↔ `bg-bg-sidebar`) is high. Build directly on Radix primitives instead.
 
-> Tauri 2 → Electron: pure shell choice. Visual/interaction is decided by React+Tailwind, independent of the shell. Electron chosen for mature ecosystem, smaller surface area for problems, and in-process integration of the Node SDK.
+> Tauri 2 → Electron: pure shell choice. Visual/interaction is decided by React+Tailwind, independent of the shell. Electron chosen for mature ecosystem, smaller surface area for problems, and clean iframe-based hosting of the Claude CLI via a bundled ttyd terminal sidecar.
 
 ## 3. MVP Scope
 
