@@ -347,6 +347,23 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
           }
         }
 
+        // Task #548 — transfer keyboard focus to the embedded xterm so the
+        // user's first keystroke after spawning / importing / resuming a
+        // session reaches claude's TUI rather than whichever sidebar
+        // button or shortcut element triggered the create. App.tsx blurs
+        // the trigger synchronously, but with no explicit handoff the
+        // body becomes the activeElement and Enter ends up as a no-op.
+        // Calling term.focus() here covers all entry paths (sidebar
+        // click, keyboard shortcut, import, reopen-resume) because they
+        // all funnel through this attach effect.
+        if (term) {
+          try {
+            term.focus();
+          } catch (e) {
+            console.warn('[TerminalPane] term.focus failed', e);
+          }
+        }
+
         if (!cancelled) setState({ kind: 'ready' });
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;

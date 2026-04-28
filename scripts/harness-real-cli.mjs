@@ -176,6 +176,12 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
 
   await waitForTerminalReady(win, sid, { timeout: 60000 });
 
+  // Task #548 — after the new session attaches, focus must land on the
+  // embedded xterm so the user's first keystroke goes to claude's TUI
+  // (not the trigger button or the document body). xterm's input target
+  // is the `.xterm-helper-textarea` element it injects under the host div.
+  await assertCliFocused(win, sid, 'new-session-chat');
+
   await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
 
   // Dismiss trust / welcome / theme splashes.
@@ -339,6 +345,42 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
     win.off('console', consoleHandler);
     win.off('pageerror', pageErrorHandler);
   }
+}
+
+// Task #548 — assert that the embedded xterm has DOM focus after a fresh
+// session attaches. Polls briefly because focus transfer can race the
+// React commit that sets state to 'ready'. Throws with rich context so
+// regressions point at the exact element that stole focus instead.
+async function assertCliFocused(win, sid, label, { timeout = 5000 } = {}) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await win.evaluate((expectedSid) => {
+      const host = document.querySelector(
+        `[data-terminal-host][data-active-sid="${expectedSid}"]`,
+      ) || document.querySelector('[data-terminal-host]');
+      const ta = host ? host.querySelector('.xterm-helper-textarea') : null;
+      const ae = document.activeElement;
+      const isHelper =
+        !!ta && ae === ta;
+      return {
+        ok: isHelper,
+        hostFound: !!host,
+        helperFound: !!ta,
+        activeTag: ae ? ae.tagName : null,
+        activeClass: ae && ae.className ? String(ae.className).slice(0, 120) : null,
+        activeTestid: ae && ae.getAttribute ? ae.getAttribute('data-testid') : null,
+        activeAriaLabel: ae && ae.getAttribute ? ae.getAttribute('aria-label') : null,
+      };
+    }, sid);
+    if (last.ok) return;
+    await sleep(150);
+  }
+  throw new Error(
+    `[${label}] expected document.activeElement === xterm helper textarea ` +
+      `inside [data-terminal-host][data-active-sid="${sid}"], but got ` +
+      `${JSON.stringify(last)}`,
+  );
 }
 
 async function sendAndAwaitReply(win, prompt, replyToken, { timeout = 90000 } = {}) {
@@ -561,6 +603,11 @@ async function caseImportResume({ electronApp, win, tempDir }) {
   await sleep(1500);
 
   await waitForTerminalReady(win, seedSid, { timeout: 30000 });
+
+  // Task #548 — same focus contract as new-session-chat: after the
+  // imported session's terminal attaches (claude --resume), focus must
+  // be on the xterm helper textarea, not the importing trigger or body.
+  await assertCliFocused(win, seedSid, 'import-resume');
 
   // Wait for claude --resume to replay PROBE_IMPORT_PING.
   await waitForXtermBuffer(win, /PROBE_IMPORT_PING/, { timeout: 30000 });
