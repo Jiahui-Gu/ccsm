@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
+  ChevronDown,
   ChevronRight,
   Download,
   Plus,
@@ -29,6 +30,7 @@ import { cn } from '../lib/cn';
 import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
 import { AgentIcon } from './AgentIcon';
+import { CwdPopover } from './CwdPopover';
 import { DragRegion } from './WindowControls';
 import {
   ContextMenu,
@@ -75,7 +77,9 @@ function GroupRow({
   autoRename,
   onSelectSession,
   onFocus,
-  normalGroups
+  normalGroups,
+  cwdPopoverOpen,
+  onCwdPopoverOpenChange
 }: {
   group: Group;
   sessions: Session[];
@@ -91,6 +95,11 @@ function GroupRow({
   /** Pre-filtered list of normal (non-archive) groups, hoisted to the parent
    *  Sidebar so we don't recompute per SessionRow per render. */
   normalGroups: Group[];
+  /** True when THIS group's chevron popover is the currently-open one.
+   *  Sidebar centralises the picker state so only one popover is open at
+   *  a time (top OR exactly one group). */
+  cwdPopoverOpen: boolean;
+  onCwdPopoverOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const sessionIds = sessions.map((s) => s.id);
@@ -138,6 +147,11 @@ function GroupRow({
       }
     };
   }, [isOver, collapsed, group.id, setGroupCollapsed]);
+  // Per-group chevron anchor + popover. The chevron sits next to the group's
+  // `+` button (task #552). Clicking `+` creates a session in this group
+  // with the LRU default cwd; clicking `▾` opens a popover so the user can
+  // pick a non-default cwd before creation.
+  const chevronRef = useRef<HTMLButtonElement>(null);
   return (
     <div className="mb-2">
       <ContextMenu>
@@ -206,20 +220,27 @@ function GroupRow({
             </button>
             {group.kind === 'normal' && !renaming && (
               <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
-                <IconButton
-                  size="xs"
-                  variant="ghost"
-                  aria-label={t('sidebar.newSessionInThisGroup')}
-                  tooltip={t('sidebar.newSessionInThisGroup')}
-                  tooltipSide="top"
-                  onClick={(e) => {
+                <NewSessionSplit
+                  chevronRef={chevronRef}
+                  cwdPopoverOpen={cwdPopoverOpen}
+                  onCwdPopoverOpenChange={onCwdPopoverOpenChange}
+                  onPlusClick={(e) => {
                     e.stopPropagation();
                     createSession({ groupId: group.id });
                   }}
-                  className="shrink-0"
-                >
-                  <Plus size={12} className="stroke-[1.75]" />
-                </IconButton>
+                  onChevronClick={(e) => {
+                    e.stopPropagation();
+                    onCwdPopoverOpenChange(!cwdPopoverOpen);
+                  }}
+                  onPickCwd={(picked) => {
+                    createSession({ groupId: group.id, cwd: picked });
+                    onCwdPopoverOpenChange(false);
+                  }}
+                  plusAria={t('sidebar.newSessionInThisGroup')}
+                  plusTooltip={t('sidebar.newSessionInThisGroup')}
+                  chevronAria={t('sidebar.pickCwdAria')}
+                  chevronTooltip={t('sidebar.pickCwdTooltip')}
+                />
               </span>
             )}
           </div>
@@ -303,6 +324,26 @@ function GroupRow({
           }
         }}
       />
+      {/* Per-group cwd picker. Rendered at the GroupRow level (not inside
+          the rail cell) so the popover panel — which uses fixed positioning
+          to escape sidebar overflow:hidden — has a single owner regardless
+          of whether the row is collapsed. */}
+      {group.kind === 'normal' && (
+        <CwdPopover
+          open={cwdPopoverOpen}
+          onOpenChange={onCwdPopoverOpenChange}
+          anchorRef={chevronRef}
+          onPick={(picked) => {
+            createSession({ groupId: group.id, cwd: picked });
+            onCwdPopoverOpenChange(false);
+          }}
+          onBrowse={() => {
+            // No native folder picker IPC yet; user can paste a path
+            // into the popover input and press Enter to commit.
+            onCwdPopoverOpenChange(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -502,18 +543,124 @@ export type SidebarProps = {
   onMoveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
 };
 
-function NewSessionButton({ onCreateSession }: { onCreateSession?: () => void }) {
+function NewSessionButton({
+  onCreateSession,
+  cwdPopoverOpen,
+  onCwdPopoverOpenChange,
+  chevronRef
+}: {
+  onCreateSession?: () => void;
+  cwdPopoverOpen: boolean;
+  onCwdPopoverOpenChange: (open: boolean) => void;
+  chevronRef: React.RefObject<HTMLButtonElement>;
+}) {
   const { t } = useTranslation();
+  // The "main" New Session button + "▾" cwd-picker chevron form a single
+  // visual cluster: shared raised pill with a hairline divider between the
+  // two halves. Each half has its own click target (44x44 hit padding via
+  // the buttons' own padding/grid), its own focus ring, and its own aria
+  // label. Tooltips help discoverability for the chevron specifically.
   return (
-    <Button
-      variant="raised"
-      size="md"
-      onClick={() => onCreateSession?.()}
-      className="flex-1 h-8 text-chrome gap-1.5"
-    >
-      <Plus size={14} className="stroke-[1.75]" />
-      <span>{t('sidebar.newSession')}</span>
-    </Button>
+    <div className="flex-1 inline-flex items-stretch h-8" data-sidebar-newsession-cluster>
+      <Button
+        variant="raised"
+        size="md"
+        onClick={() => onCreateSession?.()}
+        className={cn(
+          'flex-1 h-8 text-chrome gap-1.5',
+          // Strip the right-side rounded corners so the chevron sits flush.
+          '!rounded-r-none border-r-0'
+        )}
+      >
+        <Plus size={14} className="stroke-[1.75]" />
+        <span>{t('sidebar.newSession')}</span>
+      </Button>
+      <IconButton
+        ref={chevronRef}
+        variant="raised"
+        size="md"
+        aria-label={t('sidebar.pickCwdAria')}
+        aria-expanded={cwdPopoverOpen}
+        aria-haspopup="dialog"
+        tooltip={t('sidebar.pickCwdTooltip')}
+        tooltipSide="bottom"
+        onClick={() => onCwdPopoverOpenChange(!cwdPopoverOpen)}
+        data-testid="sidebar-newsession-cwd-chevron"
+        className={cn(
+          'h-8 w-7 shrink-0',
+          // Match the cluster: kill left rounding so we sit flush with the
+          // main button's right edge, keep right rounding from the cluster
+          // wrapper. Subtle inner-left hairline divides the two halves.
+          '!rounded-l-none',
+          'shadow-[inset_1px_0_0_0_oklch(0_0_0_/_0.35)]'
+        )}
+      >
+        <ChevronDown size={12} className="stroke-[1.75]" />
+      </IconButton>
+    </div>
+  );
+}
+
+/**
+ * Per-group cluster: the small ghost `+` IconButton + a sibling `▾` chevron,
+ * both visually grouped as one rounded-pill action. Used inside each group
+ * header's right-rail cell. Shared between every GroupRow but kept top-level
+ * (not inside <GroupRow>) so the prop wiring is explicit.
+ */
+function NewSessionSplit({
+  chevronRef,
+  cwdPopoverOpen,
+  onCwdPopoverOpenChange,
+  onPlusClick,
+  onChevronClick,
+  onPickCwd: _onPickCwd, // popover lives on the parent GroupRow; this prop documents intent
+  plusAria,
+  plusTooltip,
+  chevronAria,
+  chevronTooltip
+}: {
+  chevronRef: React.RefObject<HTMLButtonElement>;
+  cwdPopoverOpen: boolean;
+  onCwdPopoverOpenChange: (open: boolean) => void;
+  onPlusClick: (e: React.MouseEvent) => void;
+  onChevronClick: (e: React.MouseEvent) => void;
+  onPickCwd: (cwd: string) => void;
+  plusAria: string;
+  plusTooltip: string;
+  chevronAria: string;
+  chevronTooltip: string;
+}) {
+  void onCwdPopoverOpenChange;
+  return (
+    <span className="inline-flex items-stretch shrink-0" data-sidebar-group-newsession-cluster>
+      <IconButton
+        size="xs"
+        variant="ghost"
+        aria-label={plusAria}
+        tooltip={plusTooltip}
+        tooltipSide="top"
+        onClick={onPlusClick}
+        className="shrink-0 !rounded-r-none"
+        data-testid="sidebar-group-newsession-plus"
+      >
+        <Plus size={12} className="stroke-[1.75]" />
+      </IconButton>
+      <IconButton
+        ref={chevronRef}
+        size="xs"
+        variant="ghost"
+        aria-label={chevronAria}
+        aria-expanded={cwdPopoverOpen}
+        aria-haspopup="dialog"
+        tooltip={chevronTooltip}
+        tooltipSide="top"
+        onClick={onChevronClick}
+        className="shrink-0 !rounded-l-none w-4"
+        data-testid="sidebar-group-newsession-cwd-chevron"
+      >
+        <ChevronDown size={10} className="stroke-[1.75]" />
+      </IconButton>
+    </span>
   );
 }
 
@@ -538,6 +685,29 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   const [justCreatedGroupId, setJustCreatedGroupId] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
   const draggingSession = draggingId ? sessions.find((s) => s.id === draggingId) ?? null : null;
+
+  // Cwd picker mutex (task #552). Only ONE cwd popover may be open at a
+  // time across the whole sidebar — either the top "+ ▾" cluster or
+  // exactly one group's "+ ▾". Encoding it as a tagged-union picks the
+  // mutex without needing a string sentinel for the top slot.
+  const [openCwdPicker, setOpenCwdPicker] = useState<
+    { kind: 'top' } | { kind: 'group'; id: string } | null
+  >(null);
+  const topCwdPickerOpen = openCwdPicker?.kind === 'top';
+  const setTopCwdPickerOpen = (open: boolean) =>
+    setOpenCwdPicker(open ? { kind: 'top' } : null);
+  const setGroupCwdPickerOpen = (groupId: string, open: boolean) =>
+    setOpenCwdPicker(open ? { kind: 'group', id: groupId } : null);
+
+  // Anchor ref for the top New Session chevron — passed into both the
+  // <NewSessionButton> (which forwards to the IconButton) and the top-level
+  // <CwdPopover> instance for fixed-position anchoring.
+  const topChevronRef = useRef<HTMLButtonElement>(null);
+
+  // Wire the top picker through createSession({ cwd }). The renderer's
+  // `onCreateSession` prop only knows the LRU-default flow; for the chevron
+  // path we go straight to the store so we can pass an explicit cwd.
+  const createSession = useStore((s) => s.createSession);
 
   function handleNewGroup() {
     const id = createGroup();
@@ -685,7 +855,12 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
           <div data-testid="sidebar-newsession-row" className="px-3 pt-1 pb-3 flex items-center gap-2">
-            <NewSessionButton onCreateSession={onCreateSession} />
+            <NewSessionButton
+              onCreateSession={onCreateSession}
+              cwdPopoverOpen={topCwdPickerOpen}
+              onCwdPopoverOpenChange={setTopCwdPickerOpen}
+              chevronRef={topChevronRef}
+            />
             <IconButton
               variant="raised"
               size="md"
@@ -696,6 +871,16 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               <Search size={14} className="stroke-[1.5]" />
             </IconButton>
           </div>
+          <CwdPopover
+            open={topCwdPickerOpen}
+            onOpenChange={setTopCwdPickerOpen}
+            anchorRef={topChevronRef}
+            onPick={(picked) => {
+              createSession({ cwd: picked });
+              setTopCwdPickerOpen(false);
+            }}
+            onBrowse={() => setTopCwdPickerOpen(false)}
+          />
 
           {/* Middle: work zone — Groups (flex-grow, scrollable) on top,
               Archived Groups pinned to a fixed-height block above Settings.
@@ -737,6 +922,10 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
                 onSelectSession={onSelectSession}
                 onFocus={() => onFocusGroup(g.id)}
                 normalGroups={normal}
+                cwdPopoverOpen={
+                  openCwdPicker?.kind === 'group' && openCwdPicker.id === g.id
+                }
+                onCwdPopoverOpenChange={(o) => setGroupCwdPickerOpen(g.id, o)}
               />
             ))}
           </nav>
@@ -780,6 +969,10 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
                   onSelectSession={onSelectSession}
                   onFocus={() => onFocusGroup(g.id)}
                   normalGroups={normal}
+                  cwdPopoverOpen={
+                    openCwdPicker?.kind === 'group' && openCwdPicker.id === g.id
+                  }
+                  onCwdPopoverOpenChange={(o) => setGroupCwdPickerOpen(g.id, o)}
                 />
               ))}
             </nav>

@@ -77,7 +77,6 @@ export default function App() {
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
   const moveSession = useStore((s) => s.moveSession);
-  const createGroup = useStore((s) => s.createGroup);
   const createSession = useStore((s) => s.createSession);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
@@ -285,18 +284,17 @@ export default function App() {
       } else if (e.key === ',') {
         e.preventDefault();
         setSettingsOpen(true);
-      } else if (k === 'n' && e.shiftKey) {
-        e.preventDefault();
-        const id = createGroup();
-        focusGroup(id);
-      } else if (k === 'n') {
-        e.preventDefault();
-        newSession();
       }
+      // Task #552: Cmd+N (new session), Cmd+Shift+N (new session w/ picker
+      // — never shipped), and Cmd+Shift+G (new group) keyboard shortcuts
+      // were removed in favour of the chevron+popover affordance on the
+      // sidebar `+` triggers. The chevron is the single discoverable
+      // entry point for "new session, but with a different cwd"; the
+      // group `+` button (always visible) covers new-group.
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createGroup, focusGroup, toggleSidebar, newSession]);
+  }, [toggleSidebar]);
 
   if (!active) {
     // Pre-hydrate: render a minimal skeleton (sidebar + drag region only).

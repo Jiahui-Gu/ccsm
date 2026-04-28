@@ -71,6 +71,8 @@ const zh: EnCatalog = {
     expandSidebarAria: '展开侧边栏',
     newSessionTooltip: '新会话',
     newSessionAria: '新会话',
+    pickCwdTooltip: '在其他目录新建会话',
+    pickCwdAria: '为新会话选择工作目录',
     searchTooltip: '搜索  Ctrl+F',
     searchAriaShort: '搜索',
     importTooltip: '导入会话',
