@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/electron/main';
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -114,6 +114,60 @@ function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
 // bundle from `dist/renderer/index.html` even though we're invoked via
 // `electron .`, so they don't require a running webpack-dev-server.
 const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
+
+// Single-instance lock — the actual zombie-source plug. The custom title-bar
+// "X" button hides the window into the tray (intentional, see win.on('close')
+// below); subsequent double-clicks of the desktop icon would otherwise spawn
+// a brand-new main process every time, leaving the prior one alive and
+// hidden. Calling this at module load (before app.whenReady) ensures the
+// second instance bails out before it can build any window.
+//
+// Skipped under E2E so probe runs that spawn the app multiple times in
+// parallel (each with their own CCSM_TMP_HOME / CLAUDE_CONFIG_DIR) don't
+// collide on the global lock and exit unexpectedly.
+const skipSingleInstanceLock =
+  process.env.CCSM_E2E_HIDDEN === '1' || process.env.CCSM_E2E_NO_SINGLE_INSTANCE === '1';
+if (!skipSingleInstanceLock) {
+  const gotLock = app.requestSingleInstanceLock();
+  if (!gotLock) {
+    app.quit();
+    process.exit(0);
+  }
+  app.on('second-instance', () => {
+    const w = BrowserWindow.getAllWindows()[0];
+    if (w) {
+      if (w.isMinimized()) w.restore();
+      if (!w.isVisible()) w.show();
+      w.focus();
+    }
+  });
+}
+
+// Close-button preference: 'ask' shows a one-time dialog the first time the
+// user clicks the X (defaulting on Windows/Linux), 'tray' silently minimizes
+// to the tray (mac default — matches OS red-light convention), 'quit' really
+// quits. Persisted in app_state under key `closeAction` so the choice
+// survives restart. Read synchronously inside win.on('close') because the
+// close event itself is sync; the SQLite read is a single point lookup
+// (sub-millisecond) so the cost is negligible vs. the visible click latency.
+type CloseAction = 'ask' | 'tray' | 'quit';
+const CLOSE_ACTION_KEY = 'closeAction';
+function getCloseAction(): CloseAction {
+  try {
+    const raw = loadState(CLOSE_ACTION_KEY);
+    if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
+  } catch {
+    /* fall through to default */
+  }
+  return process.platform === 'darwin' ? 'tray' : 'ask';
+}
+function setCloseAction(value: CloseAction): void {
+  try {
+    saveState(CLOSE_ACTION_KEY, value);
+  } catch (err) {
+    console.warn('[main] setCloseAction failed', err);
+  }
+}
 
 // ───────────────────── importable-sessions cache ─────────────────────────
 //
@@ -432,23 +486,25 @@ function createWindow() {
   win.on('maximize', emitMax);
   win.on('unmaximize', emitMax);
 
-  // Minimize-to-tray: clicking close (or the OS X red dot, our own custom
-  // close button via window:close IPC) hides the window instead of quitting.
-  // The user can still really quit via the tray menu's Quit item, the
-  // app menu's Quit, or Ctrl-Q.
+  // Close-button behaviour. Three modes — see getCloseAction() above:
+  //   'quit' → don't preventDefault; let the window close, fall through to
+  //            window-all-closed → before-quit → app exit.
+  //   'tray' → preventDefault + fade-to-hide (the original behaviour).
+  //   'ask'  → preventDefault + native dialog with a "Don't ask again"
+  //            checkbox; on confirm we persist the choice via setCloseAction
+  //            so the next click goes straight to that branch.
+  // The `isQuitting` short-circuit at the top stays so explicit quit paths
+  // (tray menu Quit, app.before-quit safety net, electron-builder updater)
+  // bypass everything.
   //
   // Fade-to-hide: before actually calling `win.hide()` we send a
   // `window:beforeHide` event so the renderer can run a short opacity
   // fade-out. `HIDE_FADE_MS` matches `DURATION.standard` (180ms) from the
   // shared motion tokens — kept short so closing still feels responsive.
-  // Guarded by `fadePending` so repeated Ctrl+W presses don't stack
-  // timers. On real quit (`isQuitting === true`) we skip the fade entirely
-  // so shutdown stays fast.
+  // Guarded by `fadePending` so repeated Ctrl+W presses don't stack timers.
   const HIDE_FADE_MS = 180;
   let fadePending = false;
-  win.on('close', (e) => {
-    if (isQuitting) return;
-    e.preventDefault();
+  const fadeThenHide = () => {
     if (fadePending) return;
     fadePending = true;
     try {
@@ -463,6 +519,51 @@ function createWindow() {
       if (win.isDestroyed()) return;
       win.hide();
     }, HIDE_FADE_MS);
+  };
+  win.on('close', (e) => {
+    if (isQuitting) return;
+    const pref = getCloseAction();
+    if (pref === 'quit') {
+      isQuitting = true;
+      return;
+    }
+    e.preventDefault();
+    if (pref === 'tray') {
+      fadeThenHide();
+      return;
+    }
+    // pref === 'ask': prompt once. Showing the dialog is async, but
+    // preventDefault has already kept the window alive; we run the dialog
+    // and act on the user's choice in the resolved promise.
+    void (async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const i18n = require('./i18n') as typeof import('./i18n');
+      let result: { response: number; checkboxChecked: boolean };
+      try {
+        result = await dialog.showMessageBox(win, {
+          type: 'question',
+          buttons: [i18n.tCloseDialog('tray'), i18n.tCloseDialog('quit')],
+          defaultId: 0,
+          cancelId: 0,
+          message: i18n.tCloseDialog('message'),
+          detail: i18n.tCloseDialog('detail'),
+          checkboxLabel: i18n.tCloseDialog('dontAskAgain'),
+          checkboxChecked: false,
+        });
+      } catch (err) {
+        console.warn('[main] close-action dialog failed; falling back to tray', err);
+        fadeThenHide();
+        return;
+      }
+      const choice: CloseAction = result.response === 0 ? 'tray' : 'quit';
+      if (result.checkboxChecked) setCloseAction(choice);
+      if (choice === 'tray') {
+        fadeThenHide();
+      } else {
+        isQuitting = true;
+        app.quit();
+      }
+    })();
   });
 
   // After the window is shown again (tray click, dock click on macOS) the
