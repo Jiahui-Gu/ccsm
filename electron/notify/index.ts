@@ -63,6 +63,11 @@ export interface InstallNotifyBridgeOptions {
   /** Optional injected Notification impl — defaults to Electron's. The
    *  e2e test seam swaps this for an in-memory log. */
   notifyImpl?: NotifyImpl;
+  /** Optional unread-badge sink. When the bridge actually fires a
+   *  notification (i.e. it survived mute / focus / dedupe), the bridge
+   *  bumps unread for that sid. The badge sink owns its own clearing
+   *  via focus / active-sid listeners installed in main. */
+  onNotified?: (sid: string) => void;
 }
 
 const DEDUPE_WINDOW_MS = 5_000;
@@ -170,6 +175,14 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
       { sid: evt.sid, state: evt.state, ts: now, title: copy.title, body: copy.body },
       () => focusAndActivate(getMainWindow(), evt.sid),
     );
+
+    if (opts.onNotified) {
+      try {
+        opts.onNotified(evt.sid);
+      } catch (err) {
+        console.warn('[notify] onNotified threw', err);
+      }
+    }
   };
 
   sessionWatcher.on('state-changed', onStateChanged);

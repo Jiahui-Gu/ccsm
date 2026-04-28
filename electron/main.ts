@@ -69,6 +69,7 @@ import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/li
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 import { sessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
+import { BadgeManager } from './notify/badge';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -511,6 +512,10 @@ function createWindow() {
     }
   });
 
+  win.on('focus', () => {
+    clearBadgeForActiveIfFocused();
+  });
+
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
   win.on('maximize', emitMax);
   win.on('unmaximize', emitMax);
@@ -603,6 +608,20 @@ function createWindow() {
 
 let tray: Tray | null = null;
 let isQuitting = false;
+let badgeManager: BadgeManager | null = null;
+
+function getTrayBaseImage() {
+  return buildTrayIcon();
+}
+
+function clearBadgeForActiveIfFocused() {
+  if (!badgeManager) return;
+  const w = BrowserWindow.getAllWindows()[0];
+  const focused = !!(w && !w.isDestroyed() && w.isFocused());
+  if (!focused) return;
+  if (!activeSidFromRenderer) return;
+  badgeManager.clearSid(activeSidFromRenderer);
+}
 
 function buildTrayIcon() {
   // Tiny 16×16 placeholder (white square on transparent). Windows
@@ -920,11 +939,17 @@ app.whenReady().then(() => {
   ipcMain.on('session:setActive', (e, sid: unknown) => {
     if (!fromMainFrame(e)) return;
     activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
+    clearBadgeForActiveIfFocused();
   });
 
   // Desktop notification bridge — fires OS toasts on session 'idle' /
   // 'requires_action' transitions, with global-mute + active-window +
   // active-sid suppression and per-sid 5s dedupe. See electron/notify.
+  badgeManager = new BadgeManager({
+    getTray: () => tray,
+    getBaseTrayImage: getTrayBaseImage,
+    getWindows: () => BrowserWindow.getAllWindows(),
+  });
   installNotifyBridge({
     sessionWatcher,
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
@@ -934,7 +959,17 @@ app.whenReady().then(() => {
       const w = BrowserWindow.getAllWindows()[0];
       return !!(w && !w.isDestroyed() && w.isFocused());
     },
+    onNotified: (sid) => {
+      badgeManager?.incrementSid(sid);
+    },
   });
+
+  if (process.env.CCSM_NOTIFY_TEST_HOOK) {
+    (globalThis as unknown as Record<string, unknown>).__ccsmBadgeDebug = {
+      getTotal: () => badgeManager?.getTotal() ?? 0,
+      clearAll: () => badgeManager?.clearAll(),
+    };
+  }
 
   // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
   // notify subsystem cleanup — its only members exposed the dead notify /
