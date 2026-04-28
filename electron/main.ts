@@ -67,6 +67,8 @@ import {
 } from './import-scanner';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
+import { sessionWatcher } from './sessionWatcher';
+import { installNotifyBridge } from './notify';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -169,7 +171,34 @@ function setCloseAction(value: CloseAction): void {
   }
 }
 
-// ───────────────────── importable-sessions cache ─────────────────────────
+// Notification mute preference. Persisted in app_state under
+// `notifyEnabled` (default true → notifications on). Cached in main-process
+// memory so the per-event check in the notify bridge stays cheap; the
+// `db:save` handler invalidates the cache when the renderer writes the key
+// so the Settings toggle takes effect without a restart. Mirrors the
+// `closeAction` / `crashReportingOptOut` patterns above.
+const NOTIFY_ENABLED_KEY = 'notifyEnabled';
+let _notifyEnabledCached: boolean | undefined;
+function loadNotifyEnabled(): boolean {
+  if (_notifyEnabledCached !== undefined) return _notifyEnabledCached;
+  try {
+    const raw = loadState(NOTIFY_ENABLED_KEY);
+    // Default ON: missing row OR any non-explicit-off value → notifications fire.
+    const value = raw == null ? true : !(raw === 'false' || raw === '0');
+    _notifyEnabledCached = value;
+    return value;
+  } catch {
+    return true;
+  }
+}
+
+// Renderer pushes its current `activeId` here over IPC whenever it changes
+// (selectSession etc.). Main mirrors it so the notify bridge can suppress
+// toasts for the session the user is already looking at without a
+// synchronous round-trip to read renderer state.
+let activeSidFromRenderer: string | null = null;
+
+
 //
 // The CLI transcripts under ~/.claude/projects can run into hundreds of
 // files; the head-parse is fast per file but the cumulative latency makes
@@ -671,6 +700,11 @@ app.whenReady().then(() => {
       if (key === CRASH_OPT_OUT_KEY) {
         _crashOptOutCached = undefined;
       }
+      // Same idea for the notification mute toggle — invalidate so the next
+      // sessionWatcher event reads the fresh value.
+      if (key === NOTIFY_ENABLED_KEY) {
+        _notifyEnabledCached = undefined;
+      }
       return { ok: true };
     }
   );
@@ -879,6 +913,28 @@ app.whenReady().then(() => {
   // and the `claude` CLI availability probe (folded in from the deleted
   // cliBridge module — see ptyHost/index.ts pty:checkClaudeAvailable).
   registerPtyHostIpc(ipcMain, () => BrowserWindow.getAllWindows()[0] ?? null);
+
+  // Renderer mirrors its active session id here so the notify bridge can
+  // suppress toasts for the session the user is currently viewing. Plain
+  // `ipcMain.on` (no reply); the renderer fires this on every selectSession.
+  ipcMain.on('session:setActive', (e, sid: unknown) => {
+    if (!fromMainFrame(e)) return;
+    activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
+  });
+
+  // Desktop notification bridge — fires OS toasts on session 'idle' /
+  // 'requires_action' transitions, with global-mute + active-window +
+  // active-sid suppression and per-sid 5s dedupe. See electron/notify.
+  installNotifyBridge({
+    sessionWatcher,
+    getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    isMutedFn: () => !loadNotifyEnabled(),
+    getActiveSidFn: () => activeSidFromRenderer,
+    isWindowFocusedFn: () => {
+      const w = BrowserWindow.getAllWindows()[0];
+      return !!(w && !w.isDestroyed() && w.isFocused());
+    },
+  });
 
   // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
   // notify subsystem cleanup — its only members exposed the dead notify /

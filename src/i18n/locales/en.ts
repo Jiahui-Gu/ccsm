@@ -139,8 +139,8 @@ const en = {
     },
     notifications: {
       intro:
-        'OS-level toasts whenever a session needs you — permission requests, agent questions, and turn-done events all fire immediately. The toast title shows the group and session; the body shows the event type.',
-      enable: 'Enable notifications',
+        'Show a desktop toast when a session finishes its turn or needs your input. Suppressed when the CCSM window is focused on that session — no need to ping yourself.',
+      enable: 'Show desktop notifications when sessions need input',
       sound: 'Sound',
       soundHint: 'Play the OS default notification sound.'
     },
