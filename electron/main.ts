@@ -71,6 +71,7 @@ import {
   bindCliBridgeSender,
   shutdownCliBridge,
 } from './cliBridge';
+import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -339,13 +340,6 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // Enable Electron's <webview> tag so TtydPane can host the per-session
-      // ttyd HTTP server in an out-of-process Chromium frame. The plain
-      // <iframe> path leaves the embedded claude TUI black on Windows
-      // because the BrowserWindow's contextIsolation/sandbox combo blocks
-      // ttyd's xterm WebSocket; <webview> gets its own renderer process and
-      // session, which matches the working spike (spike/ttyd-embed/main.js).
-      webviewTag: true,
       // Hidden-mode animation correctness: Chromium throttles rAF
       // for offscreen / hidden windows down to ~1Hz. dnd-kit's
       // dropAnimation (150ms) and other CSS transitions then never
@@ -548,37 +542,6 @@ app.whenReady().then(() => {
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.ccsm.app');
-  }
-
-  // TEMPORARY DIAGNOSTIC — gate behind env var. Forwards every <webview>
-  // child renderer's console messages and load errors to the main process
-  // stdout so dogfood probes can capture xterm/ttyd failures that are
-  // otherwise hidden inside the OOPIF. Cheap and safe to leave in: zero
-  // overhead unless CCSM_DEBUG_WEBVIEW=1 is set.
-  if (process.env.CCSM_DEBUG_WEBVIEW === '1') {
-    app.on('web-contents-created', (_event, contents) => {
-      if (contents.getType() !== 'webview') return;
-      contents.on('console-message', (_e, level, message, line, source) => {
-        // eslint-disable-next-line no-console
-        console.log(`[webview console] [${level}] ${source}:${line} ${message}`);
-      });
-      contents.on('did-fail-load', (_e, code, desc, url) => {
-        // eslint-disable-next-line no-console
-        console.log(`[webview did-fail-load] code=${code} desc=${desc} url=${url}`);
-      });
-      contents.on('did-finish-load', () => {
-        // eslint-disable-next-line no-console
-        console.log(`[webview did-finish-load] ${contents.getURL()}`);
-      });
-      contents.on('did-start-loading', () => {
-        // eslint-disable-next-line no-console
-        console.log(`[webview did-start-loading]`);
-      });
-      contents.on('render-process-gone', (_e, details) => {
-        // eslint-disable-next-line no-console
-        console.log(`[webview render-process-gone] reason=${details.reason} exitCode=${details.exitCode}`);
-      });
-    });
   }
 
   initDb();
@@ -822,6 +785,11 @@ app.whenReady().then(() => {
   // module and lets the e2e harness exercise them in isolation.
   registerCliBridgeIpc();
 
+  // Register ptyHost IPC (in-process node-pty path replacing ttyd). Runs in
+  // parallel with cliBridge during the transition; cliBridge will be removed
+  // in the final cleanup PR once the renderer fully cuts over.
+  registerPtyHostIpc(ipcMain, () => BrowserWindow.getAllWindows()[0] ?? null);
+
   // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
   // notify subsystem cleanup — its only members exposed the dead notify /
   // notify-bootstrap modules. Re-add a fresh seam if a future probe needs
@@ -844,6 +812,13 @@ app.on('before-quit', () => {
   // reliable way to reap the conpty tree).
   try {
     shutdownCliBridge();
+  } catch {
+    /* ignore — best-effort cleanup on quit */
+  }
+  // Reap any live node-pty children spawned through ptyHost. Idempotent;
+  // mirrors shutdownCliBridge so neither subsystem can leak past app quit.
+  try {
+    killAllPtySessions();
   } catch {
     /* ignore — best-effort cleanup on quit */
   }
