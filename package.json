@@ -120,8 +120,9 @@
     ],
     "extraResources": [
       {
-        "from": "spike/ttyd-embed/bin/ttyd.exe",
-        "to": "ttyd.exe"
+        "from": "spike/ttyd-embed/bin",
+        "to": ".",
+        "filter": ["ttyd.exe", "*.dll"]
       }
     ],
     "directories": {

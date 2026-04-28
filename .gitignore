@@ -9,6 +9,8 @@ ccsm-data.db-journal
 scripts/spike-*
 scripts/e2e-artifacts/
 release/
+.dogfood-userdata/
+docs/screenshots/dogfood-current-ui/
 *.exe
 *.dmg
 *.AppImage
