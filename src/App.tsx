@@ -5,6 +5,7 @@ import { ToastProvider, useToast } from './components/ui/Toast';
 import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
 import { AppShell } from './components/AppShell';
+import { AppSkeleton } from './components/AppSkeleton';
 import { TerminalPane } from './components/TerminalPane';
 import { ClaudeMissingGuide } from './components/ClaudeMissingGuide';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -326,7 +327,9 @@ export default function App() {
   }, [toggleSidebar]);
 
   if (!active) {
-    // Pre-hydrate: render a minimal skeleton (sidebar + drag region only).
+    // Pre-hydrate: render a content-shaped skeleton (sidebar placeholder
+    // rows + main "Loading…" affordance) so the app does not paint as a
+    // blank white window during sqlite hydration. See AppSkeleton (#584).
     // The first-run/empty CTA branch below is reserved for when we're
     // CERTAIN there are no persisted sessions (i.e. hydrated === true).
     if (!hydrated) {
@@ -335,23 +338,7 @@ export default function App() {
           <ToastProvider>
             <PersistErrorBridge />
             <UpdateDownloadedBridge />
-            <AppShell
-              sidebar={<aside data-testid="sidebar-skeleton" aria-busy="true" />}
-              main={
-                <main
-                  className="flex-1 flex flex-col min-w-0 right-pane-frame relative"
-                  data-testid="main-skeleton"
-                  aria-busy="true"
-                >
-                  <DragRegion
-                    className="relative flex items-center justify-end shrink-0"
-                    style={{ height: 32 }}
-                  >
-                    <WindowControls />
-                  </DragRegion>
-                </main>
-              }
-            />
+            <AppSkeleton />
           </ToastProvider>
         </TooltipProvider>
       );
