@@ -40,9 +40,6 @@ const zh: EnCatalog = {
     dismiss: '关闭',
     undo: '撤销'
   },
-  assistantBlock: {
-    viaSkill: '通过 skill: {{name}}'
-  },
   sidebar: {
     newSession: '新会话',
     newSessionInThisGroup: '在此 Group 新建 Session',
@@ -176,35 +173,6 @@ const zh: EnCatalog = {
       downloadedToastAction: '重启'
     }
   },
-  permissions: {
-    promptTitle: '请求权限',
-    allow: '允许',
-    deny: '拒绝',
-    modeLabel: '权限模式',
-    modes: {
-      default: '默认',
-      acceptEdits: '自动接受编辑',
-      plan: '规划',
-      bypassPermissions: '跳过校验',
-      auto: '自动'
-    },
-    autoUnsupportedTitle: '自动模式不可用',
-    autoUnsupportedBody: '当前账号或模型暂不支持自动模式，已回退到默认。'
-  },
-  questionBlock: {
-    title: '等待你的回答',
-    submit: '提交回答',
-    submitted: '已提交',
-    cancel: '关闭',
-    other: '其他',
-    otherPlaceholder: '输入你的回答…',
-    pageHint: '第 {{current}} / {{total}} 题',
-    singleHint: '↑/↓ 切选项 · Enter 选中 · Esc 关闭',
-    tabFallback: '第 {{n}} 题',
-    timelineLabel: '已询问',
-    timelineAnswered: '你已回答',
-    timelineRejected: '未回答即关闭'
-  },
   notifications: {
     sessionWaitingTitle: '会话等待中',
     sessionWaitingBody: '{{name}} 需要你的输入',
@@ -222,24 +190,6 @@ const zh: EnCatalog = {
     permissionBody: '权限请求',
     backgroundSessionFallback: '后台会话',
     backgroundWaitingToastTitle: '{{name}} 需要你的输入'
-  },
-  tray: {
-    show: '显示 CCSM',
-    quit: '退出',
-    tooltip: 'CCSM'
-  },
-  menu: {
-    edit: '编辑(&E)'
-  },
-  dialog: {
-    chooseCwd: '选择工作目录'
-  },
-  errors: {
-    generic: '出错了。',
-    network: '网络错误。请检查连接。',
-    sessionSpawnFailed: '会话启动失败。',
-    apiKeyMissing: '缺少 Anthropic API Key。',
-    cliMissing: '未安装 Claude Code CLI。'
   },
   installerCorrupt: {
     title: '安装包内的 Claude 程序缺失',
@@ -297,18 +247,6 @@ const zh: EnCatalog = {
     hintSelect: '选择',
     hintClose: '关闭'
   },
-  prDialog: {
-    title: '创建 Pull Request',
-    descriptionPushing: '推送 {{branch}} \u2192 {{base}} 并在 GitHub 创建 PR。',
-    descriptionPreflight: '正在执行预检…',
-    fieldTitle: '标题',
-    fieldBaseBranch: '基础分支',
-    fieldBody: '正文',
-    openAsDraft: '作为草稿打开',
-    cancel: '取消',
-    opening: '创建中…',
-    openPR: '创建 PR'
-  },
   toast: {
     dismiss: '关闭'
   },
@@ -325,10 +263,6 @@ const zh: EnCatalog = {
   },
   chat: {
     cwdChipNoneLabel: '（无）',
-    runningPlaceholderDefault: '执行中… 工具调用前会询问权限（Esc 中断，Enter 排队）',
-    runningPlaceholderAcceptEdits: '执行中… 自动接受编辑（Esc 中断，Enter 排队）',
-    runningPlaceholderBypass: '执行中… 跳过所有权限询问（Esc 中断，Enter 排队）',
-    runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）'
   },
   statusBar: {
     workingDirectory: '工作目录',
@@ -404,19 +338,6 @@ const zh: EnCatalog = {
     actionShortcuts: '显示快捷键面板',
     colShortcut: '快捷键',
     colAction: '动作'
-  },
-  banner: {
-    agentInitFailed: {
-      title: '无法启动 Claude',
-      retry: '重试',
-      retrying: '重试中\u2026',
-      reconfigure: '重新配置'
-    },
-    agentDiagnostic: {
-      titleError: 'Agent 错误',
-      titleWarning: 'Agent 警告',
-      dismiss: '关闭诊断信息'
-    }
   },
   // task #329 — first-run empty-state CTA shown when no active session.
   // 在 #353 精简为两个 CTA。
