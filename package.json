@@ -115,6 +115,7 @@
     "appId": "com.ccsm.app",
     "productName": "CCSM",
     "copyright": "Copyright (c) 2026 Jiahui Gu",
+    "npmRebuild": false,
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
