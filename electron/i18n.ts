@@ -36,10 +36,19 @@ type DialogCatalog = {
   chooseCwd: string;
 };
 
+type CloseDialogCatalog = {
+  message: string;
+  detail: string;
+  tray: string;
+  quit: string;
+  dontAskAgain: string;
+};
+
 type NotificationKey = keyof NotificationCatalog;
 type TrayKey = keyof TrayCatalog;
 type MenuKey = keyof MenuCatalog;
 type DialogKey = keyof DialogCatalog;
+type CloseDialogKey = keyof CloseDialogCatalog;
 
 // IMPORTANT: keep these strings byte-identical to the renderer catalog
 // `notifications` namespace. The renderer catalog is the source of truth.
@@ -102,6 +111,29 @@ const dialogCatalogs: Record<SupportedLanguage, DialogCatalog> = {
   }
 };
 
+// Native "close to tray or quit?" prompt shown the first time the user
+// clicks the window X (when their preference is still 'ask'). Keep parity
+// with the renderer catalog `closeDialog` namespace — the same strings are
+// surfaced in the Settings explainer hint so wording stays consistent.
+const closeDialogCatalogs: Record<SupportedLanguage, CloseDialogCatalog> = {
+  en: {
+    message: 'Close ccsm?',
+    detail:
+      'Minimize to tray keeps ccsm running so notifications and background sessions stay active.',
+    tray: 'Minimize to tray',
+    quit: 'Quit',
+    dontAskAgain: "Don't ask again"
+  },
+  zh: {
+    message: '关闭 ccsm？',
+    detail:
+      '最小化到托盘会让 ccsm 继续运行，通知和后台会话保持活跃。',
+    tray: '最小化到托盘',
+    quit: '退出',
+    dontAskAgain: '不再询问'
+  }
+};
+
 let activeLanguage: SupportedLanguage = 'en';
 
 export function setMainLanguage(lang: SupportedLanguage): void {
@@ -143,6 +175,11 @@ export function tMenu(key: MenuKey): string {
 export function tDialog(key: DialogKey): string {
   const catalog = dialogCatalogs[activeLanguage] ?? dialogCatalogs.en;
   return catalog[key] ?? dialogCatalogs.en[key] ?? key;
+}
+
+export function tCloseDialog(key: CloseDialogKey): string {
+  const catalog = closeDialogCatalogs[activeLanguage] ?? closeDialogCatalogs.en;
+  return catalog[key] ?? closeDialogCatalogs.en[key] ?? key;
 }
 
 // Resolve a system locale tag into one of the two supported languages.

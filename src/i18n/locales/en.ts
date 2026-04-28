@@ -118,6 +118,14 @@ const en = {
       en: 'English',
       zh: '中文'
     },
+    closeBehavior: 'Close button behavior',
+    closeBehaviorHint:
+      'What clicking the window X (or pressing Ctrl+W) should do. Minimizing to tray keeps notifications and background sessions running.',
+    closeBehaviorOptions: {
+      ask: 'Ask every time',
+      tray: 'Minimize to tray',
+      quit: 'Quit'
+    },
     version: 'Version',
     checkForUpdates: 'Check for updates',
     crashReporting: {

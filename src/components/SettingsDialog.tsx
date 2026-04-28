@@ -231,7 +231,60 @@ function AppearancePane() {
           <span className="text-meta font-mono text-fg-secondary tabular-nums w-10">{fontSizePx}px</span>
         </div>
       </Field>
+      <CloseBehaviorField />
     </>
+  );
+}
+
+// Close-button behaviour preference. Persisted via the existing `db:save` /
+// `db:load` IPC under the `closeAction` app_state key — main reads the same
+// key on every win.on('close') so the choice takes effect without a restart.
+// Default is platform-derived inside main (win/linux=ask, mac=tray); the
+// renderer mirrors that fallback so the segmented control reflects the
+// current effective value before the user ever picks a row.
+type CloseBehavior = 'ask' | 'tray' | 'quit';
+function CloseBehaviorField() {
+  const { t } = useTranslation('settings');
+  const platformDefault: CloseBehavior =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'tray' : 'ask';
+  const [value, setValue] = useState<CloseBehavior>(platformDefault);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await window.ccsm?.loadState('closeAction');
+        if (cancelled) return;
+        if (raw === 'ask' || raw === 'tray' || raw === 'quit') setValue(raw);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onChange = (next: CloseBehavior) => {
+    setValue(next);
+    void window.ccsm?.saveState('closeAction', next);
+  };
+
+  return (
+    <Field label={t('closeBehavior')} hint={t('closeBehaviorHint')}>
+      <div className={cn(!hydrated && 'opacity-60')} data-close-behavior>
+        <Segmented
+          value={value}
+          onChange={onChange}
+          options={[
+            { value: 'ask', label: t('closeBehaviorOptions.ask') },
+            { value: 'tray', label: t('closeBehaviorOptions.tray') },
+            { value: 'quit', label: t('closeBehaviorOptions.quit') }
+          ]}
+        />
+      </div>
+    </Field>
   );
 }
 

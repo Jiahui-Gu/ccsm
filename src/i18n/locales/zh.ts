@@ -113,6 +113,14 @@ const zh: EnCatalog = {
       en: 'English',
       zh: '中文'
     },
+    closeBehavior: '关闭按钮行为',
+    closeBehaviorHint:
+      '点击窗口右上角 X（或按 Ctrl+W）时执行的操作。最小化到托盘可让通知和后台会话保持运行。',
+    closeBehaviorOptions: {
+      ask: '每次询问',
+      tray: '最小化到托盘',
+      quit: '退出'
+    },
     version: '版本',
     checkForUpdates: '检查更新',
     crashReporting: {
