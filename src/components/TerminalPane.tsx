@@ -6,6 +6,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
+import { useTranslation } from '../i18n/useTranslation';
 
 // TerminalPane mounts a singleton xterm.js Terminal that we attach/detach
 // against per-session PTYs over IPC (window.ccsmPty). This is the React
@@ -182,11 +183,14 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
     return true;
   });
 
-  // Probe hook for e2e harness — exposed in dev/test only so production
-  // bundles don't leak the Terminal handle to user JS.
-  if (process.env.NODE_ENV !== 'production') {
-    window.__ccsmTerm = term;
-  }
+  // Probe hook for e2e harness — exposed unconditionally because the
+  // direct-xterm probes (harness-real-cli pty-pid-stable-across-switch /
+  // switch-session-keeps-chat) drive the production webpack bundle and
+  // would otherwise have no way to reach the live Terminal handle. This
+  // mirrors the unconditional `window.__ccsmStore` exposure in App.tsx —
+  // a debug affordance, not a security boundary, since the renderer is
+  // already a single-origin Electron context with no remote content.
+  window.__ccsmTerm = term;
 
   return term;
 }
@@ -194,6 +198,7 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
 export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<State>({ kind: 'attaching' });
+  const { t } = useTranslation();
   // Tracks the sessionId we're currently attaching for so a stale resolve
   // from a previous session can't clobber the current one when the user
   // switches quickly.
@@ -287,7 +292,29 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
       if (term) term.reset();
 
       try {
-        const { snapshot, cols, rows } = await pty.attach(sessionId);
+        // Spawn-on-attach-null fallback. The renderer drives session
+        // lifecycle, so an attach against a sid main has not seen yet
+        // returns null — we then ask main to spawn the pty (using the
+        // session's cwd) and re-attach. Subsequent attaches reuse the
+        // existing pty (spawnPtySession is idempotent on sid).
+        let res = (await pty.attach(sessionId)) as
+          | { snapshot: string; cols: number; rows: number; pid: number }
+          | null;
+        if (!res) {
+          const spawnResult = (await pty.spawn(sessionId, _cwd ?? '')) as
+            | { ok: true; sid: string; pid: number; cols: number; rows: number }
+            | { ok: false; error: string };
+          if (!spawnResult || spawnResult.ok === false) {
+            const reason =
+              spawnResult && spawnResult.ok === false ? spawnResult.error : 'spawn_failed';
+            throw new Error(reason);
+          }
+          res = (await pty.attach(sessionId)) as
+            | { snapshot: string; cols: number; rows: number; pid: number }
+            | null;
+          if (!res) throw new Error('attach_failed_after_spawn');
+        }
+        const { snapshot, cols, rows } = res;
         if (cancelled || requestedSidRef.current !== sessionId) return;
 
         activeSid = sessionId;
@@ -335,19 +362,25 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
   }, [sessionId, attachNonce]);
 
   // pty:exit subscription for the active session → flip to error state.
+  // `t` is intentionally excluded from deps: changing language while a
+  // session is alive should not re-subscribe; the localized string is
+  // resolved at exit time via a ref so it always reflects the current
+  // language.
+  const tRef = useRef(t);
+  tRef.current = t;
   useEffect(() => {
     const pty = window.ccsmPty;
     if (!pty?.onExit) return;
     const unsubscribe = pty.onExit(
-      (evt: { sid: string; code?: number | null; signal?: string | number | null }) => {
-        if (evt.sid !== activeSid) return;
+      (evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => {
+        if (evt.sessionId !== activeSid) return;
         const detail =
           evt.signal != null
             ? `signal ${evt.signal}`
             : evt.code != null
               ? `exit code ${evt.code}`
               : 'unknown reason';
-        setState({ kind: 'error', message: `pty exited (${detail})` });
+        setState({ kind: 'error', message: `${tRef.current('terminal.exited')} (${detail})` });
       },
     );
     return () => {

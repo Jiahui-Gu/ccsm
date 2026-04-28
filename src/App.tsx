@@ -5,7 +5,7 @@ import { ToastProvider, useToast } from './components/ui/Toast';
 import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
 import { AppShell } from './components/AppShell';
-import { TtydPane } from './components/TtydPane';
+import { TerminalPane } from './components/TerminalPane';
 import { ClaudeMissingGuide } from './components/ClaudeMissingGuide';
 import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
@@ -191,7 +191,7 @@ export default function App() {
   // state because the install state doesn't change mid-session — only
   // when the user runs `npm install -g …` in another terminal and hits
   // "Re-check" inside ClaudeMissingGuide, which calls
-  // `cliBridge.checkClaudeAvailable` itself and signals success via
+  // `ccsmPty.checkClaudeAvailable` itself and signals success via
   // its `onResolved` prop.
   //
   // `undefined` = still probing (render nothing claude-gated yet);
@@ -199,10 +199,10 @@ export default function App() {
   const [claudeAvailable, setClaudeAvailable] = React.useState<boolean | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
-    const bridge = window.ccsmCliBridge;
-    if (!bridge) {
+    const bridge = window.ccsmPty;
+    if (!bridge?.checkClaudeAvailable) {
       // Preload missing — treat as unavailable so the guide surfaces
-      // rather than silently rendering an empty TtydPane.
+      // rather than silently rendering an empty TerminalPane.
       setClaudeAvailable(false);
       return;
     }
@@ -225,21 +225,14 @@ export default function App() {
   // surfaces in the popover's recent column on subsequent opens. See
   // createSession() in stores/store.ts.
   //
-  // After creation we bump `cliFocusNonce`, which TtydPane watches as a
-  // "user wants to type into the CLI now" signal. We do NOT auto-focus on
-  // every session switch — only on this explicit new-session intent — so
-  // navigating between existing sessions (arrow keys in sidebar, palette
-  // selection, etc.) keeps the user's prior focus context.
+  // The pre-direct-xterm TtydPane needed an external "focus the CLI now"
+  // counter prop (cliFocusNonce) to bridge React state into a webview that
+  // mounted asynchronously. TerminalPane (post-PR-8) hosts xterm in-process
+  // and takes focus naturally on click/keyboard, so the counter is gone.
   //
-  // We ALSO blur the trigger element synchronously here. PR #467 only
-  // moved focus *into* the webview when its dom-ready had already fired
-  // — but a fresh TtydPane is in 'loading' state at click time, so
-  // flushFocus is a no-op and the trigger button retains DOM focus.
-  // Pressing Enter again then re-activates the button → spawns yet
-  // another session. Blurring the active element synchronously breaks
-  // that loop regardless of webview readiness; the subsequent dom-ready
-  // → flushFocus path then moves focus into the CLI as intended.
-  const [cliFocusNonce, setCliFocusNonce] = React.useState(0);
+  // We still blur the trigger element synchronously so repeated Enter
+  // presses on the "New session" button do not spawn extra sessions
+  // before xterm has had a chance to take focus.
   const newSession = React.useCallback(() => {
     if (typeof document !== 'undefined') {
       const active = document.activeElement;
@@ -248,7 +241,6 @@ export default function App() {
       }
     }
     createSession(null);
-    setCliFocusNonce((n) => n + 1);
   }, [createSession]);
 
   const active = useMemo(
@@ -459,7 +451,7 @@ export default function App() {
               {claudeAvailable === false ? (
                 <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
               ) : claudeAvailable === true ? (
-                <TtydPane sessionId={active.id} cwd={active.cwd ?? ''} focusRequestNonce={cliFocusNonce} />
+                <TerminalPane sessionId={active.id} cwd={active.cwd ?? ''} />
               ) : (
                 // Probing claude availability — render an empty flex spacer
                 // so the layout doesn't jump once the boot check resolves.

@@ -623,13 +623,13 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
     // Also drop any persisted draft for this session.
     deleteDrafts([id]);
-    // Kill the per-session ttyd process so the underlying claude CLI doesn't
+    // Kill the per-session pty so the underlying claude CLI doesn't
     // outlive its ccsm session row. Without this, deleting from the sidebar
-    // leaves an orphan ttyd + claude pair holding the JSONL transcript open.
+    // leaves an orphan claude child holding the JSONL transcript open.
     // Fire-and-forget — main reaps on quit anyway and we don't want to
     // gate the optimistic UI / undo flow on an IPC roundtrip.
     try {
-      void window.ccsmCliBridge?.killTtydForSession(id).catch(() => {});
+      void window.ccsmPty?.kill(id).catch(() => {});
     } catch {
       /* renderer started without preload (tests) — no-op */
     }

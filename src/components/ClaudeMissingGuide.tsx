@@ -9,7 +9,7 @@ import { useTranslation } from '../i18n/useTranslation';
  * fails, the rest of the app cannot function, so we replace the entire UI
  * with this guide rather than letting users dig through broken sessions.
  *
- * The re-check button calls `cliBridge.checkClaudeAvailable` so the user
+ * The re-check button calls `ccsmPty.checkClaudeAvailable` so the user
  * can install via npm in a separate terminal and resolve in-place without
  * restarting the app. App wiring (deciding when to mount this vs. the
  * normal shell) lands in W2c.
@@ -25,10 +25,10 @@ export function ClaudeMissingGuide({ onResolved }: Props) {
     if (checking) return;
     setChecking(true);
     try {
-      // `window.ccsmCliBridge` is typed via `src/cliBridge.d.ts` (added
-      // in W2a alongside the TtydPane wiring).
-      const bridge = window.ccsmCliBridge;
-      if (!bridge) return;
+      // `window.ccsmPty.checkClaudeAvailable` was folded in from the
+      // deleted ccsmCliBridge surface in PR-8 (single CLI host namespace).
+      const bridge = window.ccsmPty;
+      if (!bridge?.checkClaudeAvailable) return;
       const result = await bridge.checkClaudeAvailable({ force: true });
       if (result.available) {
         onResolved();

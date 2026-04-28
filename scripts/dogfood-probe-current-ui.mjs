@@ -59,15 +59,15 @@ const initial = await win.evaluate(async () => {
   const root = document.getElementById('root');
   let claudeProbe = null;
   try {
-    if (window.ccsmCliBridge?.checkClaudeAvailable) {
-      claudeProbe = await window.ccsmCliBridge.checkClaudeAvailable();
+    if (window.ccsmPty?.checkClaudeAvailable) {
+      claudeProbe = await window.ccsmPty.checkClaudeAvailable();
     }
   } catch (e) { claudeProbe = { error: String(e) }; }
   const s = window.__ccsmStore?.getState?.();
   return {
     rootHTML: root?.outerHTML?.slice(0, 4000) ?? '<no #root>',
-    bridgePresent: typeof window.ccsmCliBridge !== 'undefined',
-    bridgeKeys: window.ccsmCliBridge ? Object.keys(window.ccsmCliBridge) : null,
+    bridgePresent: typeof window.ccsmPty !== 'undefined',
+    bridgeKeys: window.ccsmPty ? Object.keys(window.ccsmPty) : null,
     ptyBridgePresent: typeof window.ccsmPty !== 'undefined',
     ptyBridgeKeys: window.ccsmPty ? Object.keys(window.ccsmPty) : null,
     claudeProbe,
