@@ -243,7 +243,7 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
   let lastLines = [];
   while (Date.now() - start < 90_000) {
     await sleep(2000);
-    lastLines = await readXtermLines(win, { lines: 60 }).catch(() => []);
+    lastLines = await readXtermLines(win, { lines: 60 });
     if (!lastLines.length) continue;
     const joined = lastLines.join('\n');
     const idx = joined.lastIndexOf(CHAT_PROMPT);
@@ -587,7 +587,7 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
 
     // Advance any first-run prompts.
     for (let i = 0; i < 6; i++) {
-      const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+      const lines = await readXtermLines(win, { lines: 30 });
       const tail = lines.join('\n');
       if (/│\s*>/m.test(tail) || /^\s*>\s/m.test(tail)) break;
       await sendToClaudeTui(win, '\r');
@@ -621,7 +621,7 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
 
     // Re-dismiss trust/splash on the rebound terminal.
     for (let i = 0; i < 6; i++) {
-      const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+      const lines = await readXtermLines(win, { lines: 30 });
       const tail = lines.join('\n');
       if (/│\s*>/m.test(tail) || /^\s*>\s/m.test(tail)) break;
       await sendToClaudeTui(win, '\r');
@@ -709,7 +709,7 @@ async function sendAndAwaitReply(win, prompt, replyToken, { timeout = 90000 } = 
   let lastTail = '';
   while (Date.now() < deadline) {
     await sleep(2000);
-    const lines = await readXtermLines(win, { lines: 200 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 200 });
     const full = lines.join('\n');
     lastTail = full.slice(-800);
     const after = full.split(prompt).slice(1).join(prompt);
@@ -749,7 +749,7 @@ async function caseCwdProjectsClaude({ electronApp, win, tempDir }) {
   await sendToClaudeTui(win, PROMPT);
   await sleep(800);
   {
-    const tailLines = await readXtermLines(win, { lines: 12 }).catch(() => []);
+    const tailLines = await readXtermLines(win, { lines: 12 });
     if (!tailLines.some((l) => l.includes(MARKER_TOKEN.slice(0, 8)))) {
       await sleep(1000);
       await sendToClaudeTui(win, PROMPT);
@@ -1410,7 +1410,7 @@ async function caseReopenResume() {
     const start = Date.now();
     while (Date.now() - start < 90000) {
       await sleep(2000);
-      const lines = await readXtermLines(win2, { lines: 200 }).catch(() => []);
+      const lines = await readXtermLines(win2, { lines: 200 });
       const full = lines.join('\n');
       lastTail = full.slice(-1200);
       const parts = full.split(PROMPT_2);
