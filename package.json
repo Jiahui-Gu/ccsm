@@ -47,6 +47,14 @@
     "@radix-ui/react-tooltip": "^1.1.6",
     "@sentry/electron": "7.11.0",
     "@sentry/react": "10.49.0",
+    "@xterm/addon-canvas": "^0.7.0",
+    "@xterm/addon-clipboard": "^0.2.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/headless": "^5.5.0",
+    "@xterm/xterm": "^5.5.0",
     "better-sqlite3": "^11.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -55,6 +63,7 @@
     "fuse.js": "^7.0.0",
     "i18next": "^26.0.6",
     "lucide-react": "^0.469.0",
+    "node-pty": "1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.4",
@@ -107,7 +116,8 @@
     "copyright": "Copyright (c) 2026 Jiahui Gu",
     "asar": true,
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**"
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/node-pty/**"
     ],
     "afterPack": "scripts/after-pack.cjs",
     "files": [
