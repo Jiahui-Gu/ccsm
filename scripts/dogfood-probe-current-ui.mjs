@@ -2,10 +2,19 @@
 //
 // 1. Boot packaged dist via electron+playwright with isolated user-data.
 // 2. Capture rootHTML / store snapshot / bridge keys / console events.
-// 3. Click "New session" CTA, wait for ttyd iframe to mount.
-// 4. Verify ttyd.exe is running on host.
-// 5. Inside the iframe, type a prompt to claude, wait for reply.
+// 3. Click "New session" CTA, wait for the in-renderer terminal to mount.
+// 4. Verify a pty exists for the active session via window.ccsmPty.list()
+//    and confirm the claude pid is alive via process.kill(pid, 0).
+// 5. Inside the terminal, type a prompt to claude, wait for reply.
 // 6. Screenshot populated session.
+//
+// ARCHITECTURE NOTE — direct-xterm (post-PR-1..PR-6):
+//   The renderer hosts xterm.js directly (no <webview>, no ttyd HTTP
+//   server). The pty is owned by main and exposed to the renderer via
+//   `window.ccsmPty.{list,attach,detach,input,resize,kill,spawn,onData,
+//   onExit}`. Probes drive the terminal via
+//   `win.evaluate(() => window.__ccsmTerm....)` and assert pty health
+//   via `window.ccsmPty.list()` + `process.kill(pid, 0)`.
 
 import { _electron as electron } from 'playwright';
 import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -59,6 +68,8 @@ const initial = await win.evaluate(async () => {
     rootHTML: root?.outerHTML?.slice(0, 4000) ?? '<no #root>',
     bridgePresent: typeof window.ccsmCliBridge !== 'undefined',
     bridgeKeys: window.ccsmCliBridge ? Object.keys(window.ccsmCliBridge) : null,
+    ptyBridgePresent: typeof window.ccsmPty !== 'undefined',
+    ptyBridgeKeys: window.ccsmPty ? Object.keys(window.ccsmPty) : null,
     claudeProbe,
     storeSnapshot: s ? {
       sessionsCount: s.sessions?.length ?? null,
@@ -96,75 +107,133 @@ try {
 
 await new Promise((r) => setTimeout(r, 2500));
 
-// ---------- STEP C: wait for webview ----------
-// TtydPane now renders an Electron <webview> tag (not <iframe>) — see
-// src/components/TtydPane.tsx for why. Webview hosts the page in an
-// out-of-process Chromium frame and Playwright doesn't expose it via
-// frameLocator the same way; we just verify the tag mounts + the src
-// points at a 127.0.0.1 ttyd port. Inner-text validation moved to the
-// process check + screenshot review.
-let iframePort = null;
-let iframeMounted = false;
+// ---------- STEP C: wait for terminal host to mount ----------
+let terminalMounted = false;
+let activeSidAfterCreate = null;
 try {
-  const ifSelector = 'webview[title^="ttyd session"]';
-  await win.waitForSelector(ifSelector, { timeout: 15000 });
-  iframeMounted = true;
-  iframePort = await win.evaluate((sel) => {
-    const ifr = document.querySelector(sel);
-    return ifr ? ifr.getAttribute('src') : null;
-  }, ifSelector);
-  log('webview-mounted', true, { src: iframePort });
+  await win.waitForSelector('[data-terminal-host]', { timeout: 15000 });
+  terminalMounted = true;
+  activeSidAfterCreate = await win.evaluate(() => {
+    const el = document.querySelector('[data-terminal-host]');
+    return el ? el.getAttribute('data-active-sid') : null;
+  });
+  // Wait for window.__ccsmTerm singleton to exist too — proves xterm.js
+  // initialised against the host DIV.
+  await win.waitForFunction(() => !!window.__ccsmTerm, null, { timeout: 10000 });
+  log('terminal-mounted', true, { activeSid: activeSidAfterCreate });
 } catch (err) {
-  log('webview-mounted', false, String(err).slice(0, 200));
+  log('terminal-mounted', false, String(err).slice(0, 200));
 }
 
 await win.screenshot({ path: path.join(screenshotDir, '02-after-create.png') });
 
-// ---------- STEP D: ttyd.exe process check ----------
-let ttydRunning = false;
+// ---------- STEP D: pty health check ----------
+// Direct-xterm: instead of `tasklist /FI "IMAGENAME eq ttyd.exe"`, query
+// the renderer's window.ccsmPty.list() bridge for the pid main spawned,
+// then verify it's alive via process.kill(pid, 0) (the canonical Unix /
+// Node "is process alive" probe; works on Windows too via libuv).
+let ptyAlive = false;
+let ptyDetail = null;
 try {
-  const out = execSync('tasklist /FI "IMAGENAME eq ttyd.exe" /FO CSV', { encoding: 'utf8' });
-  ttydRunning = /ttyd\.exe/i.test(out);
-  log('ttyd-process-running', ttydRunning, out.split('\n').filter((l) => /ttyd\.exe/i.test(l)));
+  const ptyList = await win.evaluate(async () => {
+    if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') {
+      return { ok: false, reason: 'window.ccsmPty.list unavailable' };
+    }
+    try {
+      const arr = await window.ccsmPty.list();
+      return { ok: true, entries: arr };
+    } catch (err) {
+      return { ok: false, reason: String(err) };
+    }
+  });
+  if (!ptyList.ok) {
+    ptyDetail = { reason: ptyList.reason };
+  } else if (!Array.isArray(ptyList.entries) || ptyList.entries.length === 0) {
+    ptyDetail = { reason: 'pty list empty' };
+  } else {
+    // Pick the entry matching the active session if we have one;
+    // otherwise the first.
+    const targetSid = activeSidAfterCreate;
+    const entry =
+      (targetSid && ptyList.entries.find((x) => x.sid === targetSid)) ||
+      ptyList.entries[0];
+    const pid = entry && typeof entry.pid === 'number' ? entry.pid : null;
+    if (!pid) {
+      ptyDetail = { reason: 'no pid on pty entry', entry };
+    } else {
+      try {
+        // process.kill(pid, 0) throws if the process is gone; succeeds (no-op
+        // signal) if alive. Works on win32 + posix.
+        process.kill(pid, 0);
+        ptyAlive = true;
+        ptyDetail = { sid: entry.sid, pid };
+      } catch (err) {
+        ptyDetail = { reason: `process.kill(pid, 0) threw: ${String(err)}`, sid: entry.sid, pid };
+      }
+    }
+  }
+  log('pty-process-alive', ptyAlive, ptyDetail);
 } catch (err) {
-  log('ttyd-process-running', false, String(err).slice(0, 200));
+  log('pty-process-alive', false, String(err).slice(0, 200));
 }
 
-// ---------- STEP E: type into webview ----------
-// frameLocator() doesn't reach into Electron <webview> the same way as
-// <iframe> — we'd need page.context().pages() to grab the webview's
-// out-of-process page. For now keep this best-effort; the real validation
-// is the screenshot + ttyd-process-running. Mark gracefully skipped if
-// the locator API can't see the webview's xterm DOM.
+// ---------- STEP E: type into the terminal ----------
+// Direct-xterm: type via window.__ccsmTerm._core._coreService.triggerDataEvent
+// (claude TUI swallows bracketed-paste, so .paste() doesn't work).
 let typedOk = false;
-let iframeText = null;
+let bufferText = null;
 let claudeReplied = false;
-if (iframeMounted) {
+if (terminalMounted) {
   try {
-    const frame = win.frameLocator('webview[title^="ttyd session"]').first();
-    // ttyd uses xterm.js; the input target is .xterm-helper-textarea
-    await frame.locator('.xterm-helper-textarea').waitFor({ timeout: 10000 });
-    await frame.locator('.xterm-helper-textarea').click();
-    // Wait for claude TUI to render its initial prompt area before typing
+    // Wait for the host to be interactive before sending.
     await new Promise((r) => setTimeout(r, 3000));
-    await frame.locator('.xterm-helper-textarea').type('say hello in 3 words', { delay: 30 });
+    const sendOk = await win.evaluate((text) => {
+      const term = window.__ccsmTerm;
+      if (!term || !term._core) return false;
+      const cs = term._core._coreService || term._core.coreService;
+      if (!cs || typeof cs.triggerDataEvent !== 'function') return false;
+      try {
+        const ta = document.querySelector('.xterm-helper-textarea');
+        if (ta) ta.focus();
+        if (typeof term.focus === 'function') term.focus();
+      } catch (_) { /* ignore */ }
+      cs.triggerDataEvent(text, true);
+      return true;
+    }, 'say hello in 3 words');
+    if (!sendOk) throw new Error('triggerDataEvent unavailable');
     await new Promise((r) => setTimeout(r, 500));
-    await frame.locator('.xterm-helper-textarea').press('Enter');
+    await win.evaluate(() => {
+      const term = window.__ccsmTerm;
+      const cs = term._core._coreService || term._core.coreService;
+      cs.triggerDataEvent('\r', true);
+    });
     typedOk = true;
-    log('webview-type', true, null);
+    log('terminal-type', true, null);
 
-    // Wait up to 30s for "hello" to appear in screen text
+    // Wait up to 30s for "hello" to appear in the xterm buffer.
+    const readBuffer = async () => await win.evaluate(() => {
+      const term = window.__ccsmTerm;
+      if (!term || !term.buffer || !term.buffer.active) return '';
+      const buf = term.buffer.active;
+      const out = [];
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (!line) continue;
+        out.push(line.translateToString(true));
+      }
+      return out.join('\n');
+    });
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 1000));
-      iframeText = await frame.locator('.xterm-screen').textContent({ timeout: 2000 }).catch(() => null);
-      if (iframeText && /hello/i.test(iframeText)) {
+      bufferText = await readBuffer().catch(() => null);
+      if (bufferText && /hello/i.test(bufferText)) {
         claudeReplied = true;
         break;
       }
     }
-    log('claude-replied', claudeReplied, iframeText ? iframeText.slice(0, 400) : null);
+    log('claude-replied', claudeReplied, bufferText ? bufferText.slice(-400) : null);
   } catch (err) {
-    log('webview-type', false, String(err).slice(0, 300));
+    log('terminal-type', false, String(err).slice(0, 300));
   }
 }
 
@@ -185,20 +254,19 @@ log('final-state', true, final);
 // Lifecycle deferred-fixes coverage (P1-1, P1-2, P0-1, P0-3)
 // ===================================================================
 
-const tasklistPids = () => {
-  try {
-    const out = execSync('tasklist /FI "IMAGENAME eq ttyd.exe" /FO CSV /NH', { encoding: 'utf8' });
-    return out
-      .split(/\r?\n/)
-      .filter((l) => /ttyd\.exe/i.test(l))
-      .map((l) => {
-        const cols = l.split('","').map((c) => c.replace(/^"|"$/g, ''));
-        return cols[1]; // PID column
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+const ptyPidsForSid = async (sid) => {
+  return await win.evaluate(async (s) => {
+    if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') return [];
+    try {
+      const arr = await window.ccsmPty.list();
+      return (arr || [])
+        .filter((x) => !s || x.sid === s)
+        .map((x) => x.pid)
+        .filter((p) => typeof p === 'number');
+    } catch {
+      return [];
+    }
+  }, sid);
 };
 
 // ---------- Case A: JSONL filename matches ccsm sessionId ----------
@@ -232,17 +300,16 @@ try {
   log('case-A jsonl-matches-ccsm-sid', false, String(err).slice(0, 200));
 }
 
-// ---------- Case B: switch sessions does not respawn ttyd ----------
-// Capture initial port + tasklist; create a 2nd session; switch back; verify
-// the original session's getTtydForSession returns the SAME port and the
-// PID list shape is preserved (original PID still present).
+// ---------- Case B: switch sessions does not respawn pty ----------
+// Capture A's pid via window.ccsmPty.list(); create session B; switch back;
+// verify A's pid is unchanged AND still alive.
 let caseBOk = false;
 let caseBdetail = null;
 try {
   const sidA = final.activeId;
-  const beforePids = tasklistPids();
-  const lookupBefore = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), sidA);
-  if (!lookupBefore?.port) throw new Error('no ttyd for sessionA pre-switch');
+  const beforePidsA = await ptyPidsForSid(sidA);
+  if (beforePidsA.length === 0) throw new Error('no pty for sessionA pre-switch');
+  const pidA1 = beforePidsA[0];
   // Create session B + switch
   const sidB = await win.evaluate(() => {
     const s = window.__ccsmStore?.getState?.();
@@ -255,35 +322,40 @@ try {
     window.__ccsmStore?.getState?.()?.selectSession?.(sid);
   }, sidA);
   await new Promise((r) => setTimeout(r, 1500));
-  const lookupAfter = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), sidA);
-  const afterPids = tasklistPids();
-  caseBOk =
-    lookupAfter?.port === lookupBefore.port &&
-    beforePids.every((p) => afterPids.includes(p));
-  caseBdetail = { sidA, sidB, beforePort: lookupBefore.port, afterPort: lookupAfter?.port, beforePids, afterPids };
-  log('case-B switch-preserves-ttyd', caseBOk, caseBdetail);
+  const afterPidsA = await ptyPidsForSid(sidA);
+  const pidA2 = afterPidsA[0];
+  let stillAlive = false;
+  if (typeof pidA2 === 'number') {
+    try { process.kill(pidA2, 0); stillAlive = true; } catch { stillAlive = false; }
+  }
+  caseBOk = pidA2 === pidA1 && stillAlive;
+  caseBdetail = { sidA, sidB, pidA1, pidA2, stillAlive };
+  log('case-B switch-preserves-pty', caseBOk, caseBdetail);
 } catch (err) {
-  log('case-B switch-preserves-ttyd', false, String(err).slice(0, 200));
+  log('case-B switch-preserves-pty', false, String(err).slice(0, 200));
 }
 
-// ---------- Case C: deleteSession reaps ttyd ----------
+// ---------- Case C: deleteSession reaps pty ----------
 let caseCOk = false;
 let caseCdetail = null;
 try {
   const targetSid = final.activeId;
-  const lookupBefore = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), targetSid);
-  if (!lookupBefore?.port) throw new Error('no ttyd to delete');
+  const beforePids = await ptyPidsForSid(targetSid);
+  if (beforePids.length === 0) throw new Error('no pty to delete');
+  const pidBefore = beforePids[0];
   await win.evaluate((sid) => {
     window.__ccsmStore?.getState?.()?.deleteSession?.(sid);
   }, targetSid);
-  // Give the IPC + taskkill a moment
+  // Give the IPC + kill a moment.
   await new Promise((r) => setTimeout(r, 2500));
-  const lookupAfter = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), targetSid);
-  caseCOk = lookupAfter == null;
-  caseCdetail = { targetSid, lookupBefore, lookupAfter };
-  log('case-C delete-reaps-ttyd', caseCOk, caseCdetail);
+  const afterPids = await ptyPidsForSid(targetSid);
+  let processGone = true;
+  try { process.kill(pidBefore, 0); processGone = false; } catch { processGone = true; }
+  caseCOk = afterPids.length === 0 && processGone;
+  caseCdetail = { targetSid, pidBefore, afterPids, processGone };
+  log('case-C delete-reaps-pty', caseCOk, caseCdetail);
 } catch (err) {
-  log('case-C delete-reaps-ttyd', false, String(err).slice(0, 200));
+  log('case-C delete-reaps-pty', false, String(err).slice(0, 200));
 }
 
 // ---------- Case D: resolveClaude force re-scan ----------

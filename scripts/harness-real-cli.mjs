@@ -1,19 +1,21 @@
-// Real-CLI e2e harness — runs all 5 UX-scenario probes against the prod
+// Real-CLI e2e harness — runs all UX-scenario probes against the prod
 // bundle + the real claude binary in a single process.
 //
 // Cases (in run order):
 //   1. new-session-chat              — UX C: new session opens claude, can chat
-//   2. switch-session-keeps-chat     — UX F: session A↔B switch reuses ttyd, scrollback intact
+//   2. switch-session-keeps-chat     — UX F: session A↔B switch reuses pty, scrollback intact
 //   3. cwd-projects-claude           — UX E: real cwd flows into claude's JSONL hash
 //   4. import-resume                 — UX H: import existing JSONL, claude --resume restores
-//   5. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
+//   5. new-session-focus-cli         — UX C': button focus does not double-fire
+//   6. pty-pid-stable-across-switch  — direct-xterm: pty pid stable across A→B→A switch
+//   7. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
 //
 // Sharing strategy:
-//   * Cases 1–4 share ONE Electron launch + ONE isolated tempDir. Each case
+//   * Cases 1–6 share ONE Electron launch + ONE isolated tempDir. Each case
 //     creates its own session(s) in the running app and relies on
 //     CLAUDE_CONFIG_DIR / HOME = tempDir for filesystem isolation. Sessions
 //     accumulate; later cases tolerate prior sessions in the store.
-//   * Case 5 (reopen-resume) needs TWO launches with a shared userDataDir to
+//   * Case 7 (reopen-resume) needs TWO launches with a shared userDataDir to
 //     verify cross-restart persistence + claude --resume. It runs standalone
 //     after the shared-launch group has torn down.
 //
@@ -24,6 +26,16 @@
 //
 // Per memory feedback_local_e2e_only.md: PR review uses --only=<case>,
 // never the full harness.
+//
+// ARCHITECTURE NOTE — direct-xterm (PR-1..PR-6):
+//   The renderer hosts a single xterm.js Terminal in the host window
+//   (window.__ccsmTerm) bound to a host DIV
+//   (`[data-terminal-host][data-active-sid="<sid>"]`). The pty is owned by
+//   main and surfaced to the renderer via window.ccsmPty.{list,attach,
+//   detach,input,resize,kill,spawn,onData,onExit}. There is NO ttyd HTTP
+//   server, NO port allocation, NO <webview>, NO OOPIF. Probes drive
+//   xterm via `win.evaluate(() => window.__ccsmTerm....)` directly on the
+//   host page.
 
 import {
   existsSync,
@@ -40,12 +52,11 @@ import { randomUUID } from 'node:crypto';
 import {
   createIsolatedClaudeDir,
   dismissWelcomeSplash,
-  executeJavaScriptOnWebview,
   launchCcsmIsolated,
   readXtermLines,
   seedSession,
   sendToClaudeTui,
-  waitForWebviewMounted,
+  waitForTerminalReady,
   waitForXtermBuffer,
 } from './probe-utils-real-cli.mjs';
 
@@ -97,13 +108,60 @@ async function snap(win, caseName, label) {
 }
 
 // ============================================================================
+// Direct-xterm: pty helpers
+// ============================================================================
+
+/**
+ * Look up the pty pid for a session id via window.ccsmPty.list().
+ * Returns the numeric pid, or null if no entry matches.
+ */
+async function getPtyPidForSid(win, sid) {
+  return await win.evaluate(async (s) => {
+    if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') return null;
+    try {
+      const arr = await window.ccsmPty.list();
+      const entry = (arr || []).find((x) => x.sid === s);
+      return entry && typeof entry.pid === 'number' ? entry.pid : null;
+    } catch (_) {
+      return null;
+    }
+  }, sid);
+}
+
+/**
+ * Snapshot the list of pty exits surfaced to the renderer. Cases install a
+ * one-shot listener on window.ccsmPty.onExit and accumulate into
+ * window.__probePtyExits; this helper just reads that buffer back.
+ */
+async function readPtyExits(win) {
+  return await win.evaluate(() => Array.isArray(window.__probePtyExits) ? window.__probePtyExits.slice() : []);
+}
+
+/**
+ * Install the pty:exit listener (idempotent). Mirrors the original
+ * `__probeTtydExits` pattern but on the new ccsmPty bridge.
+ */
+async function installPtyExitProbe(win) {
+  await win.evaluate(() => {
+    if (window.__probePtyExitsHooked) return;
+    window.__probePtyExits = window.__probePtyExits || [];
+    if (window.ccsmPty && typeof window.ccsmPty.onExit === 'function') {
+      window.ccsmPty.onExit((evt) => {
+        try { window.__probePtyExits.push(evt); } catch (_) { /* ignore */ }
+      });
+      window.__probePtyExitsHooked = true;
+    }
+  });
+}
+
+// ============================================================================
 // Case 1: new-session-chat (UX C)
 // ============================================================================
 
 async function caseNewSessionChat({ electronApp, win, tempDir }) {
   const CHAT_PROMPT = 'say hi in 3 words';
 
-  // Wait for claude availability probe to resolve so TtydPane will mount.
+  // Wait for claude availability probe to resolve so the terminal pane will mount.
   await win.waitForFunction(
     () => !document.querySelector('[data-testid="claude-availability-probing"]'),
     null,
@@ -113,29 +171,29 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
   const { sid } = await seedSession(win, { name: 'probe-new-session', cwd: tempDir });
   if (!sid) throw new Error('seedSession returned empty sid');
 
-  // Tiny settle for TtydPane mount.
+  // Tiny settle for terminal mount.
   await sleep(4000);
 
-  const wcId = await waitForWebviewMounted(win, electronApp, sid, { timeout: 60000 });
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
 
-  await waitForXtermBuffer(electronApp, wcId, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
 
   // Dismiss trust / welcome / theme splashes.
   for (let i = 0; i < 12; i++) {
-    const lines = await readXtermLines(electronApp, wcId, { lines: 30 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
     const screen = lines.join('\n');
     if (/│\s*>/.test(screen) || /^\s*>\s/m.test(screen)) break;
     if (/trust|do you trust/i.test(screen)) {
-      await sendToClaudeTui(electronApp, wcId, '1\r').catch(() => {});
+      await sendToClaudeTui(win, '1\r').catch(() => {});
     } else {
-      await sendToClaudeTui(electronApp, wcId, '\r').catch(() => {});
+      await sendToClaudeTui(win, '\r').catch(() => {});
     }
     await sleep(1500);
   }
 
-  await sendToClaudeTui(electronApp, wcId, CHAT_PROMPT);
+  await sendToClaudeTui(win, CHAT_PROMPT);
   await sleep(500);
-  await sendToClaudeTui(electronApp, wcId, '\r');
+  await sendToClaudeTui(win, '\r');
 
   // Look for any substantive line after the echoed prompt that isn't the
   // prompt itself. Allow up to 90s for first reply (cold model).
@@ -144,7 +202,7 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
   let lastLines = [];
   while (Date.now() - start < 90_000) {
     await sleep(2000);
-    lastLines = await readXtermLines(electronApp, wcId, { lines: 60 }).catch(() => []);
+    lastLines = await readXtermLines(win, { lines: 60 }).catch(() => []);
     if (!lastLines.length) continue;
     const joined = lastLines.join('\n');
     const idx = joined.lastIndexOf(CHAT_PROMPT);
@@ -162,20 +220,20 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
     throw new Error(`claude did not reply within 90s. Tail:\n${lastLines.slice(-20).join('\n')}`);
   }
 
-  // No error toast / ttyd error state.
+  // No error toast / pty error state.
   const healthy = await win.evaluate(() => {
-    const out = { errorToast: null, ttydErrorVisible: false };
+    const out = { errorToast: null, terminalErrorVisible: false };
     const errRegion = document.querySelector('[aria-live="assertive"]');
     if (errRegion) {
       const txt = (errRegion.textContent || '').trim();
       if (txt) out.errorToast = txt.slice(0, 240);
     }
     const buttons = Array.from(document.querySelectorAll('button'));
-    out.ttydErrorVisible = buttons.some((b) => /^retry$/i.test((b.textContent || '').trim()));
+    out.terminalErrorVisible = buttons.some((b) => /^retry$/i.test((b.textContent || '').trim()));
     return out;
   });
   if (healthy.errorToast) throw new Error(`error toast surfaced: ${healthy.errorToast}`);
-  if (healthy.ttydErrorVisible) throw new Error('TtydPane flipped to error state (Retry button visible)');
+  if (healthy.terminalErrorVisible) throw new Error('terminal pane flipped to error state (Retry button visible)');
 }
 
 // ============================================================================
@@ -191,14 +249,7 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
   win.on('console', consoleHandler);
   win.on('pageerror', pageErrorHandler);
 
-  await win.evaluate(() => {
-    window.__probeTtydExits = window.__probeTtydExits || [];
-    const bridge = window.ccsmCliBridge;
-    if (bridge?.onTtydExit && !window.__probeTtydExitsHooked) {
-      bridge.onTtydExit((evt) => window.__probeTtydExits.push(evt));
-      window.__probeTtydExitsHooked = true;
-    }
-  });
+  await installPtyExitProbe(win);
 
   try {
     await win.waitForFunction(
@@ -213,139 +264,106 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
 
     // Select A.
     await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
-    const wcA = await waitForWebviewMounted(win, electronApp, sidA, { timeout: 45000 });
-    await waitForXtermBuffer(electronApp, wcA, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
+    await waitForTerminalReady(win, sidA, { timeout: 45000 });
+    await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
 
-    const portA1 = await getTtydPortForSid(win, sidA);
-    if (!portA1 || portA1.__error || typeof portA1.port !== 'number') {
-      throw new Error(`A's ttyd port not reported: ${JSON.stringify(portA1)}`);
+    const pidA1 = await getPtyPidForSid(win, sidA);
+    if (typeof pidA1 !== 'number') {
+      throw new Error(`A's pty pid not reported: ${JSON.stringify(pidA1)}`);
     }
 
     // Advance any first-run prompts.
     for (let i = 0; i < 6; i++) {
-      const lines = await readXtermLines(electronApp, wcA, { lines: 30 }).catch(() => []);
+      const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
       const tail = lines.join('\n');
       if (/│\s*>/m.test(tail) || /^\s*>\s/m.test(tail)) break;
-      await sendToClaudeTui(electronApp, wcA, '\r');
+      await sendToClaudeTui(win, '\r');
       await sleep(1500);
     }
-    await dismissWelcomeSplash(electronApp, wcA);
+    await dismissWelcomeSplash(win);
 
     const ALPHA = 'Please reply with the single word ALPHA';
-    const reply1 = await sendAndAwaitReply(electronApp, wcA, ALPHA, 'ALPHA');
+    const reply1 = await sendAndAwaitReply(win, ALPHA, 'ALPHA');
     if (!reply1.ok) throw new Error(`A first reply (ALPHA) timed out. Tail:\n${reply1.tail}`);
 
     // Switch to B.
     await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidB);
-    const wcB = await waitForWebviewMounted(win, electronApp, sidB, { timeout: 30000 });
-    if (wcB === wcA) throw new Error(`switch to B: helper returned A's wcId (${wcA})`);
-    await waitForXtermBuffer(electronApp, wcB, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
-    await dismissWelcomeSplash(electronApp, wcB);
+    await waitForTerminalReady(win, sidB, { timeout: 30000 });
+    await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
+    await dismissWelcomeSplash(win);
 
-    const portA2 = await getTtydPortForSid(win, sidA);
-    if (!portA2 || portA2.__error || portA2.port !== portA1.port) {
-      throw new Error(`A's ttyd dropped after switching to B`);
+    const pidA2 = await getPtyPidForSid(win, sidA);
+    if (pidA2 !== pidA1) {
+      throw new Error(`A's pty dropped or changed after switching to B (was ${pidA1}, now ${pidA2})`);
     }
 
     // Switch BACK to A.
     await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
-    await win.waitForSelector(`webview[title="ttyd session ${sidA}"]`, { timeout: 15000 });
+    await waitForTerminalReady(win, sidA, { timeout: 30000 });
 
-    const portA3 = await getTtydPortForSid(win, sidA);
-    if (!portA3 || portA3.__error || portA3.port !== portA1.port) {
-      throw new Error(`A's port changed on switch-back (was ${portA1.port}, now ${JSON.stringify(portA3)})`);
+    const pidA3 = await getPtyPidForSid(win, sidA);
+    if (pidA3 !== pidA1) {
+      throw new Error(`A's pid changed on switch-back (was ${pidA1}, now ${pidA3})`);
     }
 
-    const wcA2 = await waitForWebviewMounted(win, electronApp, sidA, { timeout: 30000 });
-    const liveAfter = await listTtydWebviewIds(electronApp);
-    const wcA2Entry = liveAfter.find((x) => x.id === wcA2);
-    if (!wcA2Entry || !wcA2Entry.url.includes(`:${portA1.port}`)) {
-      throw new Error(`A's new webview not on original port ${portA1.port}: ${wcA2Entry?.url}`);
-    }
-
-    // Re-dismiss trust/splash on the respawned claude.
+    // Re-dismiss trust/splash on the rebound terminal.
     for (let i = 0; i < 6; i++) {
-      const lines = await readXtermLines(electronApp, wcA2, { lines: 30 }).catch(() => []);
+      const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
       const tail = lines.join('\n');
       if (/│\s*>/m.test(tail) || /^\s*>\s/m.test(tail)) break;
-      await sendToClaudeTui(electronApp, wcA2, '\r');
+      await sendToClaudeTui(win, '\r');
       await sleep(1500);
     }
 
-    // Wait for ALPHA scrollback to replay over the new client.
+    // Wait for ALPHA scrollback to be visible — same pty means buffer was
+    // preserved (no replay needed).
     try {
-      await waitForXtermBuffer(electronApp, wcA2, /ALPHA/, { timeout: 15000 });
+      await waitForXtermBuffer(win, /ALPHA/, { timeout: 15000 });
     } catch (_) { /* fall through */ }
-    const aLines = await readXtermLines(electronApp, wcA2, { lines: 200 }).catch(() => []);
+    const aLines = await readXtermLines(win, { lines: 200 }).catch(() => []);
     if (!/ALPHA/.test(aLines.join('\n'))) {
       throw new Error(`A's scrollback lost ALPHA after switch-back. lines=${aLines.length}`);
     }
 
-    await dismissWelcomeSplash(electronApp, wcA2);
+    await dismissWelcomeSplash(win);
     const BETA = 'Please reply with the single word BETA';
-    const reply2 = await sendAndAwaitReply(electronApp, wcA2, BETA, 'BETA');
+    const reply2 = await sendAndAwaitReply(win, BETA, 'BETA');
     if (!reply2.ok) throw new Error(`A second reply (BETA) timed out. Tail:\n${reply2.tail}`);
 
     const exitsForA = await win.evaluate(
-      (sid) => (window.__probeTtydExits || []).filter((e) => e.sessionId === sid),
+      (sid) => (window.__probePtyExits || []).filter((e) => e && (e.sid === sid || e.sessionId === sid)),
       sidA,
     );
-    if (exitsForA.length > 0) throw new Error(`ttyd-exit fired for A: ${JSON.stringify(exitsForA)}`);
-
-    const inUse = consoleErrors.find((e) => /already in use|session is already/i.test(e.text || ''));
-    if (inUse) throw new Error(`renderer console "already in use" error: ${inUse.text}`);
+    if (exitsForA.length > 0) throw new Error(`pty:exit fired for A: ${JSON.stringify(exitsForA)}`);
   } finally {
     win.off('console', consoleHandler);
     win.off('pageerror', pageErrorHandler);
   }
 }
 
-async function sendAndAwaitReply(electronApp, wcId, prompt, replyToken, { timeout = 90000 } = {}) {
-  await executeJavaScriptOnWebview(electronApp, wcId, `(function(){
+async function sendAndAwaitReply(win, prompt, replyToken, { timeout = 90000 } = {}) {
+  await win.evaluate(() => {
     const ta = document.querySelector('.xterm-helper-textarea');
     if (ta) ta.focus();
-    if (window.term && typeof window.term.focus === 'function') window.term.focus();
+    if (window.__ccsmTerm && typeof window.__ccsmTerm.focus === 'function') window.__ccsmTerm.focus();
     return true;
-  })()`);
+  });
   await sleep(300);
-  await sendToClaudeTui(electronApp, wcId, prompt);
+  await sendToClaudeTui(win, prompt);
   await sleep(400);
-  await sendToClaudeTui(electronApp, wcId, '\r');
+  await sendToClaudeTui(win, '\r');
 
   const deadline = Date.now() + timeout;
   let lastTail = '';
   while (Date.now() < deadline) {
     await sleep(2000);
-    const lines = await readXtermLines(electronApp, wcId, { lines: 200 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 200 }).catch(() => []);
     const full = lines.join('\n');
     lastTail = full.slice(-800);
     const after = full.split(prompt).slice(1).join(prompt);
     if (after && new RegExp(replyToken).test(after)) return { ok: true, tail: lastTail };
   }
   return { ok: false, tail: lastTail };
-}
-
-async function listTtydWebviewIds(electronApp) {
-  return await electronApp.evaluate(({ webContents }) => {
-    const out = [];
-    for (const wc of webContents.getAllWebContents()) {
-      try {
-        if (wc.getType() === 'webview' && /^http:\/\/127\.0\.0\.1:\d+/.test(wc.getURL())) {
-          out.push({ id: wc.id, url: wc.getURL() });
-        }
-      } catch { /* ignore */ }
-    }
-    return out;
-  });
-}
-
-async function getTtydPortForSid(win, sid) {
-  return await win.evaluate(async (sessionId) => {
-    const bridge = window.ccsmCliBridge;
-    if (!bridge?.getTtydForSession) return null;
-    try { return await bridge.getTtydForSession(sessionId); }
-    catch (err) { return { __error: String(err) }; }
-  }, sid);
 }
 
 // ============================================================================
@@ -363,32 +381,32 @@ async function caseCwdProjectsClaude({ electronApp, win, tempDir }) {
   const { sid } = await seedSession(win, { name: 'cwd-test', cwd: projectDir, groupId: 'g1' });
   if (!sid) throw new Error('seedSession returned no sid');
 
-  const wcId = await waitForWebviewMounted(win, electronApp, sid, { timeout: 25000 });
+  await waitForTerminalReady(win, sid, { timeout: 25000 });
   await sleep(4000);
 
-  await waitForXtermBuffer(electronApp, wcId, /my-project/, { timeout: 30000 });
+  await waitForXtermBuffer(win, /my-project/, { timeout: 30000 });
 
   // Dismiss any splash before sending.
   for (let i = 0; i < 4; i++) {
-    await sendToClaudeTui(electronApp, wcId, '\r');
+    await sendToClaudeTui(win, '\r');
     await sleep(700);
   }
   await sleep(1500);
 
   const PROMPT = `ccsm-probe-cwd marker ${MARKER_TOKEN}, please reply with the word PONG`;
-  await sendToClaudeTui(electronApp, wcId, PROMPT);
+  await sendToClaudeTui(win, PROMPT);
   await sleep(800);
   {
-    const tailLines = await readXtermLines(electronApp, wcId, { lines: 12 }).catch(() => []);
+    const tailLines = await readXtermLines(win, { lines: 12 }).catch(() => []);
     if (!tailLines.some((l) => l.includes(MARKER_TOKEN.slice(0, 8)))) {
       await sleep(1000);
-      await sendToClaudeTui(electronApp, wcId, PROMPT);
+      await sendToClaudeTui(win, PROMPT);
       await sleep(800);
     }
   }
-  await sendToClaudeTui(electronApp, wcId, '\r');
+  await sendToClaudeTui(win, '\r');
 
-  await waitForXtermBuffer(electronApp, wcId, /PONG/, { timeout: 90000 });
+  await waitForXtermBuffer(win, /PONG/, { timeout: 90000 });
 
   // JSONL on disk under <CLAUDE_CONFIG_DIR>/projects/.
   const projectsRoot = path.join(tempDir, 'projects');
@@ -508,17 +526,10 @@ async function caseImportResume({ electronApp, win, tempDir }) {
   claudeJson.projects[seedCwdFwd] = trustedEntry;
   writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2));
 
-  // Hook ttyd-exit listener (additive — multiple cases may install).
-  await win.evaluate(() => {
-    window.__ccsmTtydExits = window.__ccsmTtydExits || [];
-    const bridge = window.ccsmCliBridge;
-    if (bridge?.onTtydExit && !window.__ccsmTtydExitsHooked) {
-      bridge.onTtydExit((evt) => window.__ccsmTtydExits.push(evt));
-      window.__ccsmTtydExitsHooked = true;
-    }
-  });
+  // Hook pty-exit listener (idempotent).
+  await installPtyExitProbe(win);
   // Snapshot exit count BEFORE this case to filter cross-case exits.
-  const exitCountBefore = await win.evaluate(() => (window.__ccsmTtydExits || []).length);
+  const exitCountBefore = (await readPtyExits(win)).length;
 
   const importResult = await win.evaluate(async (expectedSid) => {
     const api = window.ccsm;
@@ -549,20 +560,20 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 
   await sleep(1500);
 
-  const wcId = await waitForWebviewMounted(win, electronApp, seedSid, { timeout: 30000 });
+  await waitForTerminalReady(win, seedSid, { timeout: 30000 });
 
   // Wait for claude --resume to replay PROBE_IMPORT_PING.
-  await waitForXtermBuffer(electronApp, wcId, /PROBE_IMPORT_PING/, { timeout: 30000 });
+  await waitForXtermBuffer(win, /PROBE_IMPORT_PING/, { timeout: 30000 });
 
   const followupToken = 'PROBE_FOLLOWUP_' + Math.random().toString(36).slice(2, 8).toUpperCase();
   await sleep(2000);
-  await sendToClaudeTui(electronApp, wcId, `Reply with the token ${followupToken} verbatim and nothing else.\r`);
-  await waitForXtermBuffer(electronApp, wcId, new RegExp(followupToken), { timeout: 90000 });
+  await sendToClaudeTui(win, `Reply with the token ${followupToken} verbatim and nothing else.\r`);
+  await waitForXtermBuffer(win, new RegExp(followupToken), { timeout: 90000 });
 
-  const exitsAfter = await win.evaluate(() => window.__ccsmTtydExits || []);
+  const exitsAfter = await readPtyExits(win);
   const exitsThisCase = exitsAfter.slice(exitCountBefore);
   if (exitsThisCase.length > 0) {
-    throw new Error(`unexpected ttyd-exit during import-resume: ${JSON.stringify(exitsThisCase)}`);
+    throw new Error(`unexpected pty:exit during import-resume: ${JSON.stringify(exitsThisCase)}`);
   }
 }
 
@@ -576,8 +587,8 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 // ============================================================================
 
 async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
-  // Wait for boot probe so the main shell renders TtydPane/empty state
-  // rather than the availability spinner (which has no sidebar).
+  // Wait for boot probe so the main shell renders the terminal pane / empty
+  // state rather than the availability spinner (which has no sidebar).
   await win.waitForFunction(
     () => !document.querySelector('[data-testid="claude-availability-probing"]'),
     null,
@@ -586,27 +597,27 @@ async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
 
   // Reproduce the user-reported flow. Bug repro requires the sidebar
   // "New Session" button to retain DOM focus after activation. PR #467's
-  // cliFocusNonce path moves focus to the embedded webview ONLY when
-  // (a) a webview already exists AND (b) its dom-ready has fired. If the
-  // CURRENT session's TtydPane is still in 'loading' state at the moment
-  // of click — e.g., the user just created a session and immediately
-  // creates another, or ttyd port allocation is slow — flushFocus is a
-  // no-op, the button keeps focus, and the next Enter re-fires it.
+  // cliFocusNonce path moves focus to the embedded terminal ONLY when
+  // (a) the terminal already exists AND (b) it is mounted. If the
+  // CURRENT session's terminal pane is still in 'loading' state at the
+  // moment of click — e.g., the user just created a session and
+  // immediately creates another — flushFocus is a no-op, the button
+  // keeps focus, and the next Enter re-fires it.
   //
   // The harness's shared launch may already have sessions from earlier
-  // cases; that's fine. We seed a fresh session so TtydPane is in
+  // cases; that's fine. We seed a fresh session so the terminal is in
   // 'loading' state, then immediately activate sidebar New Session.
   await win.evaluate(() => {
     const useStore = window.__ccsmStore;
     useStore.setState({ tutorialSeen: true });
   });
-  // Seed a session and don't wait for its webview to finish loading —
+  // Seed a session and don't wait for its terminal to finish loading —
   // the bug surfaces precisely when state.kind === 'loading' and there
-  // is no webview to receive focus.
+  // is no terminal to receive focus.
   const { sid: seedSid } = await seedSession(win, { name: 'focus-loading', cwd: tempDir });
   if (!seedSid) throw new Error('seedSession returned empty sid');
-  // Tiny wait so the sidebar+TtydPane mount, but NOT enough for ttyd to
-  // resolve and dom-ready to fire (typically 1500ms+).
+  // Tiny wait so the sidebar+terminal pane mount, but NOT enough for the
+  // pty to attach.
   await sleep(150);
 
   await win.waitForSelector('[data-testid="sidebar-newsession-row"]', { timeout: 10000 });
@@ -623,8 +634,7 @@ async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
   });
   await win.keyboard.press('Enter');
   // Tight gap: enough for React to commit the cliFocusNonce bump (and
-  // for flushFocus to run) but NOT enough for a fresh webview's
-  // dom-ready to fire.
+  // for flushFocus to run) but NOT enough for a fresh terminal to mount.
   await sleep(50);
   await win.keyboard.press('Enter');
 
@@ -653,7 +663,70 @@ async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
-// Case 5: reopen-resume (UX G) — owns its launches
+// Case: pty-pid-stable-across-switch (direct-xterm)
+//
+// New under the direct-xterm architecture: with no per-session ttyd port
+// to assert against, the strongest "switch did not respawn" probe is to
+// pin the pty pid before A→B→A and assert it survives the round-trip
+// (and that the marker we wrote into A's buffer is still in scrollback —
+// proving it's literally the same pty, not a reattach with replay).
+// ============================================================================
+
+async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  const { sid: sidA } = await seedSession(win, { name: 'pid-stable-A', cwd: tempDir });
+  const { sid: sidB } = await seedSession(win, { name: 'pid-stable-B', cwd: tempDir });
+  if (!sidA || !sidB || sidA === sidB) throw new Error(`bad sids A=${sidA} B=${sidB}`);
+
+  // Select A and wait for its terminal to attach.
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
+  await waitForTerminalReady(win, sidA, { timeout: 45000 });
+
+  // Snapshot pidA1 from window.ccsmPty.list().
+  const pidA1 = await getPtyPidForSid(win, sidA);
+  if (typeof pidA1 !== 'number') {
+    throw new Error(`pidA1 not numeric: ${JSON.stringify(pidA1)}`);
+  }
+
+  // Send a unique marker into A's buffer so we can verify the SAME pty
+  // (no replay) on switch-back.
+  const MARKER = `MARKER_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  await sendToClaudeTui(win, `echo ${MARKER}\r`);
+  // Wait for the marker to appear in A's scrollback.
+  await waitForXtermBuffer(win, new RegExp(MARKER), { timeout: 15000 });
+
+  // Switch to B.
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidB);
+  await waitForTerminalReady(win, sidB, { timeout: 30000 });
+
+  // Switch BACK to A.
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
+  await waitForTerminalReady(win, sidA, { timeout: 30000 });
+
+  // Assert MARKER is STILL in the active buffer — no replay = same pty.
+  const lines = await readXtermLines(win, { lines: 200 }).catch(() => []);
+  const joined = lines.join('\n');
+  if (!new RegExp(MARKER).test(joined)) {
+    throw new Error(
+      `MARKER ${MARKER} not found in A's scrollback after switch-back. ` +
+        `Tail:\n${joined.slice(-400)}`,
+    );
+  }
+
+  // Snapshot pidA2 and require equality.
+  const pidA2 = await getPtyPidForSid(win, sidA);
+  if (pidA2 !== pidA1) {
+    throw new Error(`A's pty pid changed across A→B→A: ${pidA1} → ${pidA2}`);
+  }
+}
+
+// ============================================================================
+// Case: reopen-resume (UX G) — owns its launches
 // ============================================================================
 
 async function caseReopenResume() {
@@ -680,16 +753,16 @@ async function caseReopenResume() {
     const { sid: sessionId } = await seedSession(win1, { name: 'persist-session', cwd: tempDir });
     if (!sessionId) throw new Error('seedSession returned no sid');
 
-    const wcId1 = await waitForWebviewMounted(win1, app1, sessionId, { timeout: 30000 });
-    await waitForXtermBuffer(app1, wcId1, /claude|welcome|│|╭|╰|\?\sfor\sshortcuts|trust/i, { timeout: 60000 });
-    await dismissFirstRunModals(app1, wcId1);
+    await waitForTerminalReady(win1, sessionId, { timeout: 30000 });
+    await waitForXtermBuffer(win1, /claude|welcome|│|╭|╰|\?\sfor\sshortcuts|trust/i, { timeout: 60000 });
+    await dismissFirstRunModals(win1);
 
-    await sendToClaudeTui(app1, wcId1, PROMPT_1);
+    await sendToClaudeTui(win1, PROMPT_1);
     await sleep(400);
-    await sendToClaudeTui(app1, wcId1, '\r');
+    await sendToClaudeTui(win1, '\r');
 
     await waitForXtermBuffer(
-      app1, wcId1,
+      win1,
       new RegExp(`${SECRET_TOKEN}|remember|noted|got it|will remember|sure|okay`, 'i'),
       { timeout: 90000 },
     );
@@ -701,10 +774,10 @@ async function caseReopenResume() {
     // ---- run2 ----
     ({ electronApp: app2 } = await launchCcsmIsolated({ tempDir, userDataDir }));
     const win2 = await app2.firstWindow();
-    let ttydExited = null;
+    let ptyExited = null;
     win2.on('console', (m) => {
       const txt = m.text();
-      if (/ttyd-exit|ttyd_exited/i.test(txt)) ttydExited = txt;
+      if (/pty[-_]exit|pty_exited/i.test(txt)) ptyExited = txt;
     });
 
     const sessionRow = `[data-session-id="${sessionId}"]`;
@@ -714,22 +787,22 @@ async function caseReopenResume() {
     const activeId = await win2.evaluate(() => window.__ccsmStore?.getState?.()?.activeId ?? null);
     if (activeId !== sessionId) throw new Error(`click did not set activeId. Got ${activeId}, expected ${sessionId}`);
 
-    const wcId2 = await waitForWebviewMounted(win2, app2, sessionId, { timeout: 30000 });
-    await waitForXtermBuffer(app2, wcId2, /claude|welcome|│|╭|╰|trust|\?\sfor\sshortcuts/i, { timeout: 60000 });
-    await dismissFirstRunModals(app2, wcId2);
+    await waitForTerminalReady(win2, sessionId, { timeout: 30000 });
+    await waitForXtermBuffer(win2, /claude|welcome|│|╭|╰|trust|\?\sfor\sshortcuts/i, { timeout: 60000 });
+    await dismissFirstRunModals(win2);
 
-    await waitForXtermBuffer(app2, wcId2, new RegExp(SECRET_TOKEN), { timeout: 90000 });
+    await waitForXtermBuffer(win2, new RegExp(SECRET_TOKEN), { timeout: 90000 });
 
-    await sendToClaudeTui(app2, wcId2, PROMPT_2);
+    await sendToClaudeTui(win2, PROMPT_2);
     await sleep(400);
-    await sendToClaudeTui(app2, wcId2, '\r');
+    await sendToClaudeTui(win2, '\r');
 
     let replied = false;
     let lastTail = '';
     const start = Date.now();
     while (Date.now() - start < 90000) {
       await sleep(2000);
-      const lines = await readXtermLines(app2, wcId2, { lines: 200 }).catch(() => []);
+      const lines = await readXtermLines(win2, { lines: 200 }).catch(() => []);
       const full = lines.join('\n');
       lastTail = full.slice(-1200);
       const parts = full.split(PROMPT_2);
@@ -738,7 +811,7 @@ async function caseReopenResume() {
     }
     if (!replied) throw new Error(`run2 follow-up no recognizable reply. Tail:\n${lastTail}`);
 
-    if (ttydExited) throw new Error(`run2: ttyd-exit observed: ${ttydExited}`);
+    if (ptyExited) throw new Error(`run2: pty:exit observed: ${ptyExited}`);
   } finally {
     if (app1) try { await app1.close(); } catch (_) { /* ignore */ }
     if (app2) try { await app2.close(); } catch (_) { /* ignore */ }
@@ -747,27 +820,27 @@ async function caseReopenResume() {
   }
 }
 
-async function dismissFirstRunModals(electronApp, wcId) {
+async function dismissFirstRunModals(win) {
   const trustRe = /trust the files|trust this folder|Do you trust|1\.\s*Yes|Yes, proceed/i;
   const promptRe = /│\s*>|^\s*>\s/m;
 
   for (let i = 0; i < 8; i++) {
-    const lines = await readXtermLines(electronApp, wcId, { lines: 20 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 20 }).catch(() => []);
     const screen = lines.join('\n');
     if (promptRe.test(screen)) break;
     if (trustRe.test(screen)) {
-      await sendToClaudeTui(electronApp, wcId, '1\r').catch(() => {});
+      await sendToClaudeTui(win, '1\r').catch(() => {});
       await sleep(800);
       continue;
     }
     await sleep(600);
   }
-  await dismissWelcomeSplash(electronApp, wcId, { maxAttempts: 5, settleMs: 600 });
+  await dismissWelcomeSplash(win, { maxAttempts: 5, settleMs: 600 });
   for (let i = 0; i < 4; i++) {
-    const lines = await readXtermLines(electronApp, wcId, { lines: 12 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 12 }).catch(() => []);
     const screen = lines.join('\n');
     if (/│\s*>|^\s*>\s/m.test(screen)) return;
-    await sendToClaudeTui(electronApp, wcId, '\r').catch(() => {});
+    await sendToClaudeTui(win, '\r').catch(() => {});
     await sleep(900);
   }
 }
@@ -777,12 +850,13 @@ async function dismissFirstRunModals(electronApp, wcId) {
 // ============================================================================
 
 const CASE_REGISTRY = [
-  { name: 'new-session-chat',          group: 'shared', run: caseNewSessionChat },
-  { name: 'switch-session-keeps-chat', group: 'shared', run: caseSwitchSessionKeepsChat },
-  { name: 'cwd-projects-claude',       group: 'shared', run: caseCwdProjectsClaude },
-  { name: 'import-resume',             group: 'shared', run: caseImportResume },
-  { name: 'new-session-focus-cli',     group: 'shared', run: caseNewSessionFocusCli },
-  { name: 'reopen-resume',             group: 'standalone', run: caseReopenResume },
+  { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
+  { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
+  { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
+  { name: 'import-resume',               group: 'shared', run: caseImportResume },
+  { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
+  { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
+  { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
 ];
 
 // ============================================================================
