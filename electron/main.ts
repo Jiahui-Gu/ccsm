@@ -549,6 +549,38 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.ccsm.app');
   }
+
+  // TEMPORARY DIAGNOSTIC — gate behind env var. Forwards every <webview>
+  // child renderer's console messages and load errors to the main process
+  // stdout so dogfood probes can capture xterm/ttyd failures that are
+  // otherwise hidden inside the OOPIF. Cheap and safe to leave in: zero
+  // overhead unless CCSM_DEBUG_WEBVIEW=1 is set.
+  if (process.env.CCSM_DEBUG_WEBVIEW === '1') {
+    app.on('web-contents-created', (_event, contents) => {
+      if (contents.getType() !== 'webview') return;
+      contents.on('console-message', (_e, level, message, line, source) => {
+        // eslint-disable-next-line no-console
+        console.log(`[webview console] [${level}] ${source}:${line} ${message}`);
+      });
+      contents.on('did-fail-load', (_e, code, desc, url) => {
+        // eslint-disable-next-line no-console
+        console.log(`[webview did-fail-load] code=${code} desc=${desc} url=${url}`);
+      });
+      contents.on('did-finish-load', () => {
+        // eslint-disable-next-line no-console
+        console.log(`[webview did-finish-load] ${contents.getURL()}`);
+      });
+      contents.on('did-start-loading', () => {
+        // eslint-disable-next-line no-console
+        console.log(`[webview did-start-loading]`);
+      });
+      contents.on('render-process-gone', (_e, details) => {
+        // eslint-disable-next-line no-console
+        console.log(`[webview render-process-gone] reason=${details.reason} exitCode=${details.exitCode}`);
+      });
+    });
+  }
+
   initDb();
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
