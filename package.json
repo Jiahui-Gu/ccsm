@@ -158,8 +158,7 @@
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CCSM",
-      "disableWebInstaller": true
+      "shortcutName": "CCSM"
     },
     "mac": {
       "target": [
