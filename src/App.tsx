@@ -439,7 +439,7 @@ export default function App() {
               {claudeAvailable === false ? (
                 <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
               ) : claudeAvailable === true ? (
-                <TtydPane sessionId={active.id} />
+                <TtydPane sessionId={active.id} cwd={active.cwd ?? ''} />
               ) : (
                 // Probing claude availability — render an empty flex spacer
                 // so the layout doesn't jump once the boot check resolves.

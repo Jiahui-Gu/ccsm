@@ -28,8 +28,8 @@ type TtydExitEvent = {
 declare global {
   interface Window {
     ccsmCliBridge?: {
-      openTtydForSession: (sessionId: string) => Promise<CliBridgeOpenResult>;
-      resumeSession: (sessionId: string, sid: string) => Promise<CliBridgeOpenResult>;
+      openTtydForSession: (sessionId: string, cwd: string) => Promise<CliBridgeOpenResult>;
+      resumeSession: (sessionId: string, cwd: string, sid: string) => Promise<CliBridgeOpenResult>;
       killTtydForSession: (sessionId: string) => Promise<CliBridgeKillResult>;
       checkClaudeAvailable: () => Promise<CliBridgeAvailability>;
       onTtydExit: (handler: (e: TtydExitEvent) => void) => () => void;
