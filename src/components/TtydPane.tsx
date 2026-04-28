@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // TtydPane mounts a per-session Electron <webview> that points at the ttyd
 // HTTP server spawned by the main-process cliBridge. Each session owns its
 // own ttyd instance on a dedicated 127.0.0.1 port; this component is the
-// renderer-side lifecycle owner for that pairing.
+// renderer-side view onto that pairing.
 //
 // Why <webview> and not <iframe>: the plain iframe path leaves the embedded
 // claude TUI black on Windows because the host BrowserWindow's contextIsolation
@@ -14,10 +14,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // host BrowserWindow's webPreferences (set in electron/main.ts).
 //
 // Lifecycle (per sessionId):
-//   1. mount / sessionId change → openTtydForSession(sid)
+//   1. mount / sessionId change → if a ttyd is already running for the
+//      session (user previously opened it this app-launch), reuse its
+//      port instead of spawning. Otherwise openTtydForSession to spawn.
 //   2. on ok → render <iframe src="http://127.0.0.1:<port>/">
 //   3. on error or ttyd-exit for this sid → flip to error state w/ Retry
-//   4. unmount / sessionId change → killTtydForSession(prevSid)
+//   4. unmount / sessionId change → DO NOT kill. ttyd lifecycle is owned
+//      by the ccsm session itself (created here, destroyed on
+//      deleteSession). Killing on unmount would tear down the chat the
+//      moment the user navigates away — and on switch-back we'd need to
+//      respawn from scratch, losing all in-memory context.
 //
 // Strings are intentionally hardcoded English placeholders for now; W2c
 // will swap them for i18n keys when wiring this into App.
@@ -44,6 +50,15 @@ export function TtydPane({ sessionId, cwd }: Props) {
     }
     setState({ kind: 'loading' });
     try {
+      // Reuse-first: if main already has a running ttyd for this session
+      // (reopened tab, switch-back, etc.) attach to its port directly so
+      // the existing claude conversation continues without restart.
+      const existing = await bridge.getTtydForSession?.(sid).catch(() => null);
+      if (activeSidRef.current !== sid) return;
+      if (existing) {
+        setState({ kind: 'ready', port: existing.port });
+        return;
+      }
       const res = await bridge.openTtydForSession(sid, sessionCwd);
       if (activeSidRef.current !== sid) return; // session switched mid-flight
       if (res.ok) {
@@ -58,18 +73,11 @@ export function TtydPane({ sessionId, cwd }: Props) {
     }
   }, []);
 
-  // Mount / sessionId change: open the new session, kill the previous on
-  // cleanup. Effect cleanup runs before the next effect for the new sid,
-  // so prevSid is always the one we opened.
+  // Mount / sessionId change: open (or reuse) the new session's ttyd.
+  // Cleanup intentionally does NOT kill — see the lifecycle note above.
   useEffect(() => {
     activeSidRef.current = sessionId;
     void open(sessionId, cwd);
-    const prevSid = sessionId;
-    return () => {
-      window.ccsmCliBridge?.killTtydForSession(prevSid).catch(() => {
-        // best-effort cleanup; main process will reap on quit anyway
-      });
-    };
   }, [sessionId, cwd, open]);
 
   // Subscribe to ttyd-exit broadcasts so an unexpected backend death

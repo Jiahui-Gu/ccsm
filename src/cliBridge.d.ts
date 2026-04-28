@@ -31,7 +31,8 @@ declare global {
       openTtydForSession: (sessionId: string, cwd: string) => Promise<CliBridgeOpenResult>;
       resumeSession: (sessionId: string, cwd: string, sid: string) => Promise<CliBridgeOpenResult>;
       killTtydForSession: (sessionId: string) => Promise<CliBridgeKillResult>;
-      checkClaudeAvailable: () => Promise<CliBridgeAvailability>;
+      getTtydForSession: (sessionId: string) => Promise<{ port: number; sid: string } | null>;
+      checkClaudeAvailable: (opts?: { force?: boolean }) => Promise<CliBridgeAvailability>;
       onTtydExit: (handler: (e: TtydExitEvent) => void) => () => void;
     };
   }

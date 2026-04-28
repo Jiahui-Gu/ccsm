@@ -22,9 +22,10 @@
 // show actionable copy.
 //
 // Result is cached after the first successful lookup. The user can re-
-// install claude or change PATH while ccsm runs; we don't bust the
-// cache automatically — that's a "restart ccsm" event in practice. A
-// future task can add a `cliBridge:rescanClaude` IPC if the need arises.
+// install claude or change PATH while ccsm runs; pass `{force: true}` to
+// bypass the cache (the renderer's "Re-check" button on ClaudeMissingGuide
+// uses this so the user can install claude in a separate terminal and
+// recover in-place without restarting the app).
 
 import { spawnSync } from 'node:child_process';
 
@@ -42,8 +43,8 @@ function tryWhere(name: string): string | null {
   }
 }
 
-export function resolveClaude(): string | null {
-  if (cached !== undefined) return cached;
+export function resolveClaude({ force = false }: { force?: boolean } = {}): string | null {
+  if (!force && cached !== undefined) return cached;
   if (process.platform === 'win32') {
     cached = tryWhere('claude.cmd') ?? tryWhere('claude');
   } else {

@@ -31,7 +31,7 @@
 // fallback needed.
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { WebContents } from 'electron';
 import { pickFreePort } from './portAllocator';
 import { resolveClaude } from './claudeResolver';
@@ -57,6 +57,28 @@ export interface OpenError {
 
 const sessions = new Map<string, TtydEntry>();
 let sender: WebContents | null = null;
+
+// claude --session-id requires a valid UUID. ccsm session ids are raw UUID v4
+// for sessions created after the store.ts switch to crypto.randomUUID(); but
+// legacy persisted rows carry the older `s-<uuid>` shape, and other prefixes
+// may exist too. To keep ccsm session.id ↔ claude session-id ↔ JSONL filename
+// in lockstep WITHOUT a side-table, we accept any string and deterministically
+// project it onto a UUID v4 string: SHA-256 the input, splice into the v4
+// layout (xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx). The same ccsm sid always
+// maps to the same claude sid, so reopening a session targets the same JSONL
+// file — and a raw UUID input round-trips to itself when checked against the
+// regex first (no double-mapping for new sessions).
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function toClaudeSid(ccsmSessionId: string): string {
+  if (UUID_V4_RE.test(ccsmSessionId)) return ccsmSessionId.toLowerCase();
+  const hex = createHash('sha256').update(ccsmSessionId).digest('hex');
+  const yNibble = (parseInt(hex[16], 16) & 0x3) | 0x8; // RFC 4122 variant
+  return (
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-` +
+    `${yNibble.toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+  );
+}
 
 export function bindSender(wc: WebContents): void {
   sender = wc;
@@ -209,7 +231,21 @@ export async function openTtydForSession(
   sessionId: string,
   cwd: string,
 ): Promise<OpenResult | OpenError> {
-  const sid = randomUUID();
+  // Reuse existing ttyd if one is already running for this session — keeps
+  // the conversation alive across renderer-side TtydPane unmount/remount
+  // (e.g. user switches sessionA → sessionB → sessionA). Without this,
+  // returning `session_already_running` here would force the renderer to
+  // either kill+respawn (losing context) or special-case the error.
+  const existing = sessions.get(sessionId);
+  if (existing && existing.status === 'running') {
+    return { ok: true, port: existing.port, sid: existing.sid };
+  }
+  // Use the ccsm session id as the claude --session-id (UUID-projected so
+  // legacy `s-<uuid>` rows still satisfy claude's UUID requirement). Same
+  // ccsm sid → same JSONL file under ~/.claude/projects/<cwd>/<sid>.jsonl
+  // → ccsm sidebar ↔ on-disk transcript stay aligned (the previous
+  // randomUUID() per spawn caused divergence + orphaned JSONLs).
+  const sid = toClaudeSid(sessionId);
   return spawnTtyd(sessionId, cwd, ['--session-id', sid]);
 }
 
@@ -270,6 +306,18 @@ export function killAll(): void {
   for (const sessionId of [...sessions.keys()]) {
     killTtydForSession(sessionId);
   }
+}
+
+// Look up the running ttyd for `sessionId` so the renderer can reuse it
+// instead of always spawning a new one on TtydPane mount. Returns the
+// {port, sid} pair when the entry exists and is still running; null
+// otherwise (never started, or already exited). The renderer uses this
+// to render <iframe> against the existing port when switching back to a
+// session it had open earlier.
+export function getTtydForSession(sessionId: string): { port: number; sid: string } | null {
+  const entry = sessions.get(sessionId);
+  if (!entry || entry.status !== 'running') return null;
+  return { port: entry.port, sid: entry.sid };
 }
 
 // Test seam — used by harness-real-cli's ttyd cases to inspect the
