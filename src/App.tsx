@@ -117,6 +117,35 @@ export default function App() {
     document.documentElement.style.setProperty('--app-font-size', `${fontSizePx}px`);
   }, [fontSizePx]);
 
+  // Mirror the renderer's active session id to main so the desktop-notify
+  // bridge can suppress toasts for the session the user is already looking
+  // at. Fires once on mount and on every activeId change. Bridge is a
+  // no-op in the test/storybook environments where `window.ccsmSession` is
+  // missing.
+  useEffect(() => {
+    type Bridge = { setActive: (sid: string | null) => void };
+    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
+    if (!bridge || typeof bridge.setActive !== 'function') return;
+    bridge.setActive(activeId || null);
+  }, [activeId]);
+
+  // Listen for `session:activate` from main (fired when the user clicks a
+  // desktop notification). Re-selects the named session so it lands focused
+  // in the sidebar and chat pane. Mirrors the IPC subscription pattern of
+  // `UpdateDownloadedBridge`.
+  useEffect(() => {
+    type Bridge = {
+      onActivate: (cb: (e: { sid: string }) => void) => () => void;
+    };
+    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
+    if (!bridge || typeof bridge.onActivate !== 'function') return;
+    return bridge.onActivate((evt) => {
+      if (evt && typeof evt.sid === 'string' && evt.sid.length > 0) {
+        selectSession(evt.sid);
+      }
+    });
+  }, [selectSession]);
+
   // Locale: ask main for the OS locale, feed it into the preferences store
   // so a "system" preference resolves correctly. Falls back to navigator.
   // Then mirror the resolved language to main for any OS-level surfaces

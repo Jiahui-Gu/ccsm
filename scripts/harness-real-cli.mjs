@@ -365,6 +365,117 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
 }
 
 // ============================================================================
+// Case: notify-fires-on-idle (PR-B desktop notifications)
+// ============================================================================
+//
+// Verifies the notify bridge:
+//   - listens to sessionWatcher 'state-changed'
+//   - fires when the user is NOT looking at the session
+//   - records via the test-hook impl (CCSM_NOTIFY_TEST_HOOK=1, set in runner)
+//
+// Strategy: seed one session, send a prompt, then BEFORE the idle event lands
+// clear the renderer's active sid via window.ccsmSession.setActive('') — that
+// removes the active-window+active-sid suppression so the notify fires. Read
+// the in-memory log via electronApp.evaluate() against the main process.
+
+async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Sanity-check the test hook is wired (env set + bridge installed).
+  const hookReady = await electronApp.evaluate(() => {
+    const g = globalThis;
+    if (!Array.isArray(g.__ccsmNotifyLog)) {
+      g.__ccsmNotifyLog = [];
+    }
+    return true;
+  });
+  if (!hookReady) throw new Error('CCSM_NOTIFY_TEST_HOOK seam not initialized');
+  // Snapshot baseline length so we only count NEW notifications fired by THIS case.
+  const baseline = await electronApp.evaluate(() => globalThis.__ccsmNotifyLog?.length ?? 0);
+
+  const { sid } = await seedSession(win, { name: 'notify-probe', cwd: tempDir });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  await sleep(3000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+
+  // Disable the active-window+active-sid suppression by clearing the
+  // renderer's notion of "active session". Main caches '' as null and the
+  // bridge then treats every state event as background.
+  await win.evaluate(() => {
+    const bridge = window.ccsmSession;
+    if (bridge && typeof bridge.setActive === 'function') bridge.setActive('');
+  });
+  // Tiny pause so the IPC reaches main before the next state event fires.
+  await sleep(200);
+
+  await sendToClaudeTui(win, 'reply with: ack');
+  await sleep(300);
+  await sendToClaudeTui(win, '\r');
+
+  // Wait up to 180s for a notification entry whose sid matches.
+  const start = Date.now();
+  let entry = null;
+  let pokeAttempted = false;
+  while (Date.now() - start < 180_000) {
+    await sleep(2000);
+    // After ~6s, poke the sessionWatcher to re-attach for this sid. This
+    // works around a PR-A (#553) startWatching limitation: when the parent
+    // projects/<projectKey>/ dir does not exist at startWatching time,
+    // sessionWatcher silently skips installing the dir watcher and never
+    // re-scans. By re-attaching after the JSONL has been written, the
+    // watcher picks up the file and emits idle. Production code paths hit
+    // this less often because parent dirs typically exist from prior runs.
+    if (!pokeAttempted && Date.now() - start > 6000) {
+      pokeAttempted = true;
+      const pokeResult = await electronApp.evaluate((electron, s) => {
+        const dbg = globalThis.__ccsmTestDebug;
+        return dbg?.reAttachWatcher ? dbg.reAttachWatcher(s) : 'no-debug-seam';
+      }, sid);
+      console.log(`[HARNESS]   reAttachWatcher: ${JSON.stringify(pokeResult)}`);
+    }
+    const nextEntries = await electronApp.evaluate(
+      (_electron, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
+      [sid, baseline],
+    );
+    if (nextEntries.length > 0) { entry = nextEntries[0]; break; }
+  }
+  if (!entry) {
+    const diag = await electronApp.evaluate((electron, s) => {
+      const dbg = globalThis.__ccsmTestDebug;
+      const env = dbg?.env ? dbg.env() : null;
+      const lastEmitted = dbg?.getLastEmittedForSid
+        ? dbg.getLastEmittedForSid(s)
+        : 'no-debug-seam';
+      const jsonl = dbg?.jsonl ? dbg.jsonl() : null;
+      return {
+        log: globalThis.__ccsmNotifyLog || [],
+        lastEmitted,
+        env,
+        jsonl,
+        hookEnv: process.env.CCSM_NOTIFY_TEST_HOOK ?? null,
+      };
+    }, sid);
+    throw new Error(
+      `no notify entry for sid=${sid} within 180s. Diag: ${JSON.stringify(diag)}`,
+    );
+  }
+  if (!entry.title || !entry.body) {
+    throw new Error(`notify entry missing title/body: ${JSON.stringify(entry)}`);
+  }
+  if (entry.state !== 'idle' && entry.state !== 'requires_action') {
+    throw new Error(`unexpected notify state=${entry.state}`);
+  }
+  console.log(`[HARNESS]   notify fired: state=${entry.state} title="${entry.title}" body="${entry.body}"`);
+}
+
+// ============================================================================
 // Case 2: switch-session-keeps-chat (UX F)
 // ============================================================================
 
@@ -1744,6 +1855,7 @@ async function caseCwdPickerOnlyOneOpen({ win }) {
 const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
+  { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
@@ -1791,7 +1903,14 @@ async function main() {
     let launched = null;
     try {
       isolated = await createIsolatedClaudeDir();
-      launched = await launchCcsmIsolated({ tempDir: isolated.tempDir });
+      launched = await launchCcsmIsolated({
+        tempDir: isolated.tempDir,
+        // Swap the desktop notify impl for an in-memory log accessible via
+        // `globalThis.__ccsmNotifyLog` from the main process. Keeps the e2e
+        // run silent (no OS toasts during a probe batch) and gives the
+        // notify-fires-on-idle case something to assert against.
+        env: { CCSM_NOTIFY_TEST_HOOK: '1' },
+      });
       const ctx = { electronApp: launched.electronApp, win: launched.win, tempDir: isolated.tempDir };
       console.log(`\n[HARNESS] shared launch ready (tempDir=${isolated.tempDir})`);
       for (const c of sharedCases) {

@@ -67,6 +67,8 @@ import {
 } from './import-scanner';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
+import { sessionWatcher } from './sessionWatcher';
+import { installNotifyBridge } from './notify';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -169,7 +171,34 @@ function setCloseAction(value: CloseAction): void {
   }
 }
 
-// ───────────────────── importable-sessions cache ─────────────────────────
+// Notification mute preference. Persisted in app_state under
+// `notifyEnabled` (default true → notifications on). Cached in main-process
+// memory so the per-event check in the notify bridge stays cheap; the
+// `db:save` handler invalidates the cache when the renderer writes the key
+// so the Settings toggle takes effect without a restart. Mirrors the
+// `closeAction` / `crashReportingOptOut` patterns above.
+const NOTIFY_ENABLED_KEY = 'notifyEnabled';
+let _notifyEnabledCached: boolean | undefined;
+function loadNotifyEnabled(): boolean {
+  if (_notifyEnabledCached !== undefined) return _notifyEnabledCached;
+  try {
+    const raw = loadState(NOTIFY_ENABLED_KEY);
+    // Default ON: missing row OR any non-explicit-off value → notifications fire.
+    const value = raw == null ? true : !(raw === 'false' || raw === '0');
+    _notifyEnabledCached = value;
+    return value;
+  } catch {
+    return true;
+  }
+}
+
+// Renderer pushes its current `activeId` here over IPC whenever it changes
+// (selectSession etc.). Main mirrors it so the notify bridge can suppress
+// toasts for the session the user is already looking at without a
+// synchronous round-trip to read renderer state.
+let activeSidFromRenderer: string | null = null;
+
+
 //
 // The CLI transcripts under ~/.claude/projects can run into hundreds of
 // files; the head-parse is fast per file but the cumulative latency makes
@@ -671,6 +700,11 @@ app.whenReady().then(() => {
       if (key === CRASH_OPT_OUT_KEY) {
         _crashOptOutCached = undefined;
       }
+      // Same idea for the notification mute toggle — invalidate so the next
+      // sessionWatcher event reads the fresh value.
+      if (key === NOTIFY_ENABLED_KEY) {
+        _notifyEnabledCached = undefined;
+      }
       return { ok: true };
     }
   );
@@ -880,10 +914,134 @@ app.whenReady().then(() => {
   // cliBridge module — see ptyHost/index.ts pty:checkClaudeAvailable).
   registerPtyHostIpc(ipcMain, () => BrowserWindow.getAllWindows()[0] ?? null);
 
+  // Renderer mirrors its active session id here so the notify bridge can
+  // suppress toasts for the session the user is currently viewing. Plain
+  // `ipcMain.on` (no reply); the renderer fires this on every selectSession.
+  ipcMain.on('session:setActive', (e, sid: unknown) => {
+    if (!fromMainFrame(e)) return;
+    activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
+  });
+
+  // Desktop notification bridge — fires OS toasts on session 'idle' /
+  // 'requires_action' transitions, with global-mute + active-window +
+  // active-sid suppression and per-sid 5s dedupe. See electron/notify.
+  installNotifyBridge({
+    sessionWatcher,
+    getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    isMutedFn: () => !loadNotifyEnabled(),
+    getActiveSidFn: () => activeSidFromRenderer,
+    isWindowFocusedFn: () => {
+      const w = BrowserWindow.getAllWindows()[0];
+      return !!(w && !w.isDestroyed() && w.isFocused());
+    },
+  });
+
   // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
   // notify subsystem cleanup — its only members exposed the dead notify /
   // notify-bootstrap modules. Re-add a fresh seam if a future probe needs
   // main-process internals via `app.evaluate`.
+  if (process.env.CCSM_NOTIFY_TEST_HOOK) {
+    // E2E diagnostic seam — only when the notify test-hook env is set, so
+    // production never carries this. Lets the harness inspect watcher state
+    // and JSONL paths via electronApp.evaluate without needing access to
+    // main's CommonJS `require` (Playwright's evaluate runs in a Function
+    // wrapper where `require` isn't in scope).
+    (globalThis as unknown as Record<string, unknown>).__ccsmTestDebug = {
+      getLastEmittedForSid: (sid: string) =>
+        sessionWatcher.getLastEmittedForTest(sid),
+      // Force the watcher to re-attach for `sid`. Used by the e2e to work
+      // around a PR-A (#553) startWatching limitation: when the parent
+      // projects/<projectKey>/ dir does not exist at startWatching time
+      // (claude has never run in this cwd before — fresh isolated config),
+      // sessionWatcher silently bails on the dir watcher and never re-scans.
+      // The harness pokes this seam after seedSession + first prompt so the
+      // re-attach picks up the now-existing JSONL. Tracked for upstream fix.
+      reAttachWatcher: (sid: string) => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const fs = require('node:fs');
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const path = require('node:path');
+          const root =
+            process.env.CCSM_CLAUDE_CONFIG_DIR ||
+            process.env.CLAUDE_CONFIG_DIR;
+          if (!root) return { ok: false, reason: 'no-config-root' };
+          const projDir = path.join(root, 'projects');
+          if (!fs.existsSync(projDir))
+            return { ok: false, reason: 'no-projects-dir' };
+          const projects = fs.readdirSync(projDir);
+          for (const p of projects) {
+            const fp = path.join(projDir, p, `${sid}.jsonl`);
+            if (fs.existsSync(fp)) {
+              sessionWatcher.stopWatching(sid);
+              sessionWatcher.startWatching(sid, fp);
+              return { ok: true, fp };
+            }
+          }
+          return { ok: false, reason: 'no-jsonl-found' };
+        } catch (e) {
+          return { ok: false, err: String(e) };
+        }
+      },
+      env: () => ({
+        CCSM_CLAUDE_CONFIG_DIR: process.env.CCSM_CLAUDE_CONFIG_DIR ?? null,
+        CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
+        HOME: process.env.HOME ?? null,
+        USERPROFILE: process.env.USERPROFILE ?? null,
+      }),
+      jsonl: () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const fs = require('node:fs');
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const path = require('node:path');
+          const root =
+            process.env.CCSM_CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR;
+          const projDir = root ? path.join(root, 'projects') : null;
+          if (!projDir || !fs.existsSync(projDir))
+            return { projDir, exists: false };
+          const projects = fs.readdirSync(projDir);
+          return projects.map((p: string) => {
+            const dir = path.join(projDir, p);
+            try {
+              const files = fs.readdirSync(dir).map((f: string) => {
+                const fp = path.join(dir, f);
+                let size = -1;
+                let tail = '';
+                try {
+                  size = fs.statSync(fp).size;
+                  if (size > 0 && f.endsWith('.jsonl')) {
+                    const buf = Buffer.alloc(Math.min(size, 4000));
+                    const fd = fs.openSync(fp, 'r');
+                    try {
+                      fs.readSync(
+                        fd,
+                        buf,
+                        0,
+                        buf.length,
+                        Math.max(0, size - buf.length),
+                      );
+                      tail = buf.toString('utf8');
+                    } finally {
+                      fs.closeSync(fd);
+                    }
+                  }
+                } catch {
+                  /* */
+                }
+                return { f, size, tail };
+              });
+              return { project: p, files };
+            } catch (e) {
+              return { project: p, err: String(e) };
+            }
+          });
+        } catch (e) {
+          return `err: ${String(e)}`;
+        }
+      },
+    };
+  }
 
   createWindow();
   ensureTray();

@@ -252,8 +252,10 @@ export type CCSMPtyAPI = typeof ccsmPty;
 
 export type SessionState = 'idle' | 'running' | 'requires_action';
 type SessionStatePayload = { sid: string; state: SessionState };
+type SessionActivatePayload = { sid: string };
 
 const sessionStateListeners = new Set<(e: SessionStatePayload) => void>();
+const sessionActivateListeners = new Set<(e: SessionActivatePayload) => void>();
 
 ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayload) => {
   for (const cb of sessionStateListeners) {
@@ -265,12 +267,37 @@ ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayl
   }
 });
 
+// Main pushes `session:activate` when the user clicks a desktop notification.
+// Renderer subscribes via `window.ccsmSession.onActivate` and calls its
+// `selectSession(sid)` so the chosen session lands focused.
+ipcRenderer.on('session:activate', (_e: IpcRendererEvent, payload: SessionActivatePayload) => {
+  for (const cb of sessionActivateListeners) {
+    try {
+      cb(payload);
+    } catch (err) {
+      console.error('[ccsmSession] onActivate listener threw', err);
+    }
+  }
+});
+
 const ccsmSession = {
   onState: (cb: (e: SessionStatePayload) => void): (() => void) => {
     sessionStateListeners.add(cb);
     return () => {
       sessionStateListeners.delete(cb);
     };
+  },
+  onActivate: (cb: (e: SessionActivatePayload) => void): (() => void) => {
+    sessionActivateListeners.add(cb);
+    return () => {
+      sessionActivateListeners.delete(cb);
+    };
+  },
+  // Renderer pushes its active session id to main so the notify bridge can
+  // suppress toasts for the session the user is currently viewing. Fire on
+  // every selectSession; main caches the latest value.
+  setActive: (sid: string | null): void => {
+    ipcRenderer.send('session:setActive', sid ?? '');
   },
 };
 
