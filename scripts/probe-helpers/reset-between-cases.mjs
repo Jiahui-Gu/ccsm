@@ -88,7 +88,6 @@ export async function resetBetweenCases(app, win, opts = {}) {
       focusTarget: null,
       paletteOpen: false,
       dialogOpen: null,
-      recentProjects: [],
     });
   }).catch(() => {});
 

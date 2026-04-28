@@ -40,12 +40,6 @@ const en = {
     dismiss: 'Dismiss',
     undo: 'Undo'
   },
-  assistantBlock: {
-    // Sentence case — surfaced as a small badge above any assistant text
-    // generated while a Skill tool invocation is active. Discoverability
-    // marker only, not a quality signal. Task #318.
-    viaSkill: 'via skill: {{name}}'
-  },
   sidebar: {
     newSession: 'New Session',
     newSessionInThisGroup: 'New session in this group',
@@ -190,39 +184,6 @@ const en = {
       downloadedToastAction: 'Restart'
     }
   },
-  permissions: {
-    promptTitle: 'Permission requested',
-    allow: 'Allow',
-    deny: 'Deny',
-    // Display labels for the official permission modes. The underlying
-    // VALUES (default / acceptEdits / plan / bypassPermissions / auto) are
-    // CLI argv and remain in English everywhere — only these human-readable
-    // labels are localized.
-    modeLabel: 'Permission mode',
-    modes: {
-      default: 'default',
-      acceptEdits: 'accept edits',
-      plan: 'plan',
-      bypassPermissions: 'bypass',
-      auto: 'auto'
-    },
-    autoUnsupportedTitle: 'Auto mode unavailable',
-    autoUnsupportedBody: 'This account or model does not support auto mode yet. Reverted to default.'
-  },
-  questionBlock: {
-    title: 'Question awaiting answer',
-    submit: 'Submit answer',
-    submitted: 'Submitted',
-    cancel: 'Dismiss',
-    other: 'Other',
-    otherPlaceholder: 'Type your answer…',
-    pageHint: 'Question {{current}} of {{total}}',
-    singleHint: '↑/↓ option · Enter select · Esc dismiss',
-    tabFallback: 'Q{{n}}',
-    timelineLabel: 'Asked',
-    timelineAnswered: 'You answered',
-    timelineRejected: 'Dismissed without answer'
-  },
   notifications: {
     sessionWaitingTitle: 'Session waiting',
     sessionWaitingBody: '{{name}} needs your input',
@@ -240,24 +201,6 @@ const en = {
     permissionBody: 'Permission',
     backgroundSessionFallback: 'Background session',
     backgroundWaitingToastTitle: '{{name}} needs your input'
-  },
-  tray: {
-    show: 'Show CCSM',
-    quit: 'Quit',
-    tooltip: 'CCSM'
-  },
-  menu: {
-    edit: '&Edit'
-  },
-  dialog: {
-    chooseCwd: 'Choose working directory'
-  },
-  errors: {
-    generic: 'Something went wrong.',
-    network: 'Network error. Check your connection.',
-    sessionSpawnFailed: 'Failed to start session.',
-    apiKeyMissing: 'Anthropic API key is missing.',
-    cliMissing: 'Claude Code CLI is not installed.'
   },
   installerCorrupt: {
     title: 'Claude binary missing from this install',
@@ -315,18 +258,6 @@ const en = {
     hintSelect: 'Select',
     hintClose: 'Close'
   },
-  prDialog: {
-    title: 'Create Pull Request',
-    descriptionPushing: 'Push {{branch}} \u2192 {{base}} and open a PR on GitHub.',
-    descriptionPreflight: 'Running preflight checks…',
-    fieldTitle: 'Title',
-    fieldBaseBranch: 'Base branch',
-    fieldBody: 'Body',
-    openAsDraft: 'Open as draft',
-    cancel: 'Cancel',
-    opening: 'Opening…',
-    openPR: 'Open PR'
-  },
   toast: {
     dismiss: 'Dismiss'
   },
@@ -343,10 +274,6 @@ const en = {
   },
   chat: {
     cwdChipNoneLabel: '(none)',
-    runningPlaceholderDefault: 'Running… will ask for permission on tool use (Esc to interrupt, Enter to queue)',
-    runningPlaceholderAcceptEdits: 'Running… auto-accepting edits (Esc to interrupt, Enter to queue)',
-    runningPlaceholderBypass: 'Running… bypassing permission prompts (Esc to interrupt, Enter to queue)',
-    runningPlaceholderPlan: 'Running… planning only, no edits (Esc to interrupt, Enter to queue)'
   },
   statusBar: {
     workingDirectory: 'Working directory',
@@ -428,19 +355,6 @@ const en = {
     actionShortcuts: 'Show this shortcuts overlay',
     colShortcut: 'Shortcut',
     colAction: 'Action'
-  },
-  banner: {
-    agentInitFailed: {
-      title: 'Failed to start Claude',
-      retry: 'Retry',
-      retrying: 'Retrying\u2026',
-      reconfigure: 'Reconfigure'
-    },
-    agentDiagnostic: {
-      titleError: 'Agent error',
-      titleWarning: 'Agent warning',
-      dismiss: 'Dismiss diagnostic'
-    }
   },
   // task #329 — first-run empty-state CTA shown when there is no active
   // session (fresh install, or all sessions deleted). Sentence case per

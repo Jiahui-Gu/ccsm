@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import type { RecentProject } from '../mock/data';
 import type { Group, Session } from '../types';
 import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, type PersistedKey } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
@@ -84,7 +83,6 @@ export type { ConnectionInfo };
 type State = {
   sessions: Session[];
   groups: Group[];
-  recentProjects: RecentProject[];
   /**
    * Resolved `os.homedir()` from the main process. Seeded once at boot via
    * `window.ccsm.userHome()`; empty string until the IPC resolves. Used as
@@ -197,7 +195,6 @@ type Actions = {
   restoreSession: (snapshot: SessionSnapshot) => void;
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
   changeCwd: (cwd: string) => void;
-  pushRecentProject: (path: string) => void;
   /** Update a specific session's model. Pushes the change to the live
    *  agent if the session has been started. */
   setSessionModel: (sessionId: string, model: ModelId) => void;
@@ -412,7 +409,6 @@ const defaultGroups: Group[] = [
 export const useStore = create<State & Actions>((set, get) => ({
   sessions: [],
   groups: defaultGroups,
-  recentProjects: [],
   userHome: '',
   claudeSettingsDefaultModel: null,
   activeId: '',
@@ -706,19 +702,6 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
   },
 
-  pushRecentProject: (p) => {
-    set((s) => {
-      const path = p.replace(/[\\/]+$/, '');
-      if (!path) return s;
-      const segs = path.split(/[\\/]/).filter(Boolean);
-      const name = segs[segs.length - 1] ?? path;
-      const without = s.recentProjects.filter((r) => r.path !== path);
-      const id = `p-${Date.now().toString(36)}`;
-      const next = [{ id, name, path }, ...without].slice(0, 8);
-      return { recentProjects: next };
-    });
-  },
-
   setSessionModel: (sessionId, model) => {
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x))
@@ -951,7 +934,6 @@ export async function hydrateStore(): Promise<void> {
       fontSizePx: persisted.fontSizePx !== undefined
         ? sanitizeFontSizePx(persisted.fontSizePx)
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
-      recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
     });
   }

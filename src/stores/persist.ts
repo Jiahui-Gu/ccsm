@@ -4,7 +4,6 @@ import type {
   FontSize,
   FontSizePx,
 } from './store';
-import type { RecentProject } from '../mock/data';
 
 export const STATE_KEY = 'main';
 
@@ -36,7 +35,6 @@ export const PERSISTED_KEYS = [
   'theme',
   'fontSize',
   'fontSizePx',
-  'recentProjects',
   'tutorialSeen',
 ] as const;
 
@@ -60,7 +58,6 @@ export interface PersistedState {
   fontSize?: FontSize;
   /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
   fontSizePx?: FontSizePx;
-  recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
 }
 

@@ -27,7 +27,6 @@ describe('persist: curated snapshot payload', () => {
         theme: 'system',
         fontSize: 'md',
         fontSizePx: 14,
-        recentProjects: [],
         tutorialSeen: false,
       };
       schedulePersist(snap);
@@ -49,7 +48,6 @@ describe('persist: curated snapshot payload', () => {
         'theme',
         'fontSize',
         'fontSizePx',
-        'recentProjects',
         'tutorialSeen'
       ]);
       const FORBIDDEN = [
@@ -66,7 +64,8 @@ describe('persist: curated snapshot payload', () => {
         // Removed in PR-D — orphan persisted keys with no live subscribers.
         'model',
         'permission',
-        'notificationSettings'
+        'notificationSettings',
+        'recentProjects'
       ];
       for (const k of Object.keys(parsed)) {
         expect(ALLOWED.has(k), `unexpected persisted key: ${k}`).toBe(true);
