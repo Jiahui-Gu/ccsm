@@ -117,8 +117,18 @@ export async function waitForTerminalReady(win, sid, { timeout = 10000 } = {}) {
  * cursor row. Returns an array of strings (one per row, top-to-bottom).
  * Empty rows are preserved so callers can see the cursor row context.
  *
- * If `window.__ccsmTerm` is unavailable, returns an empty array (safe for
- * polling loops).
+ * If `window.__ccsmTerm` is unavailable, the inner evaluate resolves to []
+ * (safe for polling loops).
+ *
+ * Error semantics (single source of truth — see #579):
+ * - Transient evaluate failures (page closed / context destroyed / target
+ *   closed mid-navigation) are absorbed and resolve to []. Polling loops
+ *   can keep polling.
+ * - Anything else (real driver / bridge / unexpected exception) is
+ *   re-thrown with a wrapped message + original stack so callers see the
+ *   actual root cause instead of a generic "buffer empty" assertion.
+ *   This was the #569 / #574 flake's actual root cause: the inner site
+ *   silently returned [] and the assertion blamed the wrong layer.
  */
 export async function readXtermLines(win, { lines = 30 } = {}) {
   const out = await win
@@ -138,7 +148,13 @@ export async function readXtermLines(win, { lines = 30 } = {}) {
       },
       { n: lines },
     )
-    .catch(() => []);
+    .catch((err) => {
+      // Page closed / context destroyed / evaluate timeout = transient,
+      // polling-friendly. Match Playwright/Electron driver phrasings.
+      if (/Target closed|Execution context|page has been closed|context.*was destroyed/i.test(String(err))) return [];
+      // Anything else is unexpected — surface real error with context.
+      throw new Error(`readXtermLines.evaluate failed: ${err?.stack || err?.message || err}`);
+    });
   return out;
 }
 

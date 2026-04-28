@@ -585,12 +585,10 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
     try {
       await waitForXtermBuffer(win, /ALPHA/, { timeout: 15000 });
     } catch (_) { /* fall through */ }
-    // Surface real errors instead of swallowing to []: a swallowed evaluate
-    // failure here would fire the generic "scrollback lost ALPHA" assertion
-    // and hide the actual buffer state (see #490 / #574 flake repro).
-    const aLines = await readXtermLines(win, { lines: 200 }).catch((err) => {
-      throw new Error(`readXtermLines failed after switch-back to sid=${sidA}: ${err && err.stack || err}`);
-    });
+    // readXtermLines (since #579) re-throws unexpected evaluate failures
+    // with context at the inner site, so a generic "scrollback lost ALPHA"
+    // assertion no longer hides the real buffer state (see #490 / #574).
+    const aLines = await readXtermLines(win, { lines: 200 });
     if (!/ALPHA/.test(aLines.join('\n'))) {
       throw new Error(`A's scrollback lost ALPHA after switch-back. lines=${aLines.length}`);
     }
@@ -1263,11 +1261,10 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
   await waitForActiveXtermBuffer(win, sidA, { minLines: 1, timeout: 5000 });
 
   // Assert MARKER is STILL in the active buffer — no replay = same pty.
-  // Surface real errors instead of swallowing to []: the prior flake hid
-  // the actual buffer state behind a generic "MARKER not found".
-  const lines = await readXtermLines(win, { lines: 200 }).catch((err) => {
-    throw new Error(`readXtermLines failed after switch-back to sid=${sidA}: ${err && err.stack || err}`);
-  });
+  // readXtermLines (since #579) re-throws unexpected evaluate failures
+  // with context at the inner site, so the prior "MARKER not found" flake
+  // can no longer hide a real driver error.
+  const lines = await readXtermLines(win, { lines: 200 });
   const joined = lines.join('\n');
   if (!new RegExp(MARKER).test(joined)) {
     throw new Error(
