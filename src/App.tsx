@@ -224,8 +224,16 @@ export default function App() {
   // cwd chip; the chosen path lands in the ccsm-owned `userCwds` LRU and
   // surfaces in the popover's recent column on subsequent opens. See
   // createSession() in stores/store.ts.
+  //
+  // After creation we bump `cliFocusNonce`, which TtydPane watches as a
+  // "user wants to type into the CLI now" signal. We do NOT auto-focus on
+  // every session switch — only on this explicit new-session intent — so
+  // navigating between existing sessions (arrow keys in sidebar, palette
+  // selection, etc.) keeps the user's prior focus context.
+  const [cliFocusNonce, setCliFocusNonce] = React.useState(0);
   const newSession = React.useCallback(() => {
     createSession(null);
+    setCliFocusNonce((n) => n + 1);
   }, [createSession]);
 
   const active = useMemo(
@@ -436,7 +444,7 @@ export default function App() {
               {claudeAvailable === false ? (
                 <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
               ) : claudeAvailable === true ? (
-                <TtydPane sessionId={active.id} cwd={active.cwd ?? ''} />
+                <TtydPane sessionId={active.id} cwd={active.cwd ?? ''} focusRequestNonce={cliFocusNonce} />
               ) : (
                 // Probing claude availability — render an empty flex spacer
                 // so the layout doesn't jump once the boot check resolves.
