@@ -585,7 +585,12 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
     try {
       await waitForXtermBuffer(win, /ALPHA/, { timeout: 15000 });
     } catch (_) { /* fall through */ }
-    const aLines = await readXtermLines(win, { lines: 200 }).catch(() => []);
+    // Surface real errors instead of swallowing to []: a swallowed evaluate
+    // failure here would fire the generic "scrollback lost ALPHA" assertion
+    // and hide the actual buffer state (see #490 / #574 flake repro).
+    const aLines = await readXtermLines(win, { lines: 200 }).catch((err) => {
+      throw new Error(`readXtermLines failed after switch-back to sid=${sidA}: ${err && err.stack || err}`);
+    });
     if (!/ALPHA/.test(aLines.join('\n'))) {
       throw new Error(`A's scrollback lost ALPHA after switch-back. lines=${aLines.length}`);
     }
