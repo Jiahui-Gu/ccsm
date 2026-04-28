@@ -1185,9 +1185,7 @@ async function caseLanguageToggle({ win, log, registerDispose }) {
 
 // ---------- i18n-settings-zh ----------
 // All three Settings panes (Appearance / Updates / Connection) render
-// Chinese labels when language=zh. The Notifications pane was removed in
-// PR-D (no production caller wired `dispatchNotification`); the assertions
-// for it were dropped in the same PR. Restores language to en.
+// Chinese labels when language=zh. Restores language to en.
 async function caseI18nSettingsZh({ win, log, registerDispose }) {
   registerDispose(async () => {
     // Same restore strategy as language-toggle — strip the persisted
@@ -1259,10 +1257,6 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   assertHasText(txt, '字号', 'appearance');
   assertNotHasText(txt, 'Theme', 'appearance');
 
-  // Notifications pane removed in PR-D (no production caller wired
-  // `dispatchNotification`); the per-event toggle / test-notification
-  // regression checks moved with it.
-
   // Updates.
   await switchTab(/^更新$/);
   txt = await paneText();
@@ -1285,11 +1279,6 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
 
   log('Appearance / Updates / Connection panes all render Chinese labels');
 }
-
-// notif-disabled-suppress was deleted in PR-D alongside the Notifications
-// settings pane and `src/notifications/dispatch.ts`. With no production
-// caller for `dispatchNotification`, the single-gate contract it pinned no
-// longer has anything to gate.
 
 // ---------- cap-skip-launch-bundle-shape (capability demo) ----------
 // Demonstrates `skipLaunch: true`: case runs as a pure Node script without

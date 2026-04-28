@@ -36,10 +36,6 @@ initI18n(usePreferences.getState().resolvedLanguage);
 // security boundary; same trade-off as `window.__ccsmI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
-  // The `__ccsmDispatchNotification` E2E seam was removed in PR-D alongside
-  // the Notifications settings pane and `src/notifications/dispatch.ts`. No
-  // production code wired it; the harness case that depended on it was
-  // dropped in the same PR.
 }
 
 /**
@@ -124,7 +120,8 @@ export default function App() {
 
   // Locale: ask main for the OS locale, feed it into the preferences store
   // so a "system" preference resolves correctly. Falls back to navigator.
-  // Then mirror the resolved language to main so OS notifications match.
+  // Then mirror the resolved language to main for any OS-level surfaces
+  // (tray menu, future notifications) to consume.
   const hydrateSystemLocale = usePreferences((s) => s.hydrateSystemLocale);
   const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
   useEffect(() => {
