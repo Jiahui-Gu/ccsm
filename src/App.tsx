@@ -17,7 +17,6 @@ import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { useStore } from './stores/store';
 import { resolveEffectiveTheme } from './stores/store';
 import { setPersistErrorHandler } from './stores/persist';
-import { dispatchNotification } from './notifications/dispatch';
 import { initI18n } from './i18n';
 import { i18next } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
@@ -37,12 +36,10 @@ initI18n(usePreferences.getState().resolvedLanguage);
 // security boundary; same trade-off as `window.__ccsmI18n`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
-  // E2E seam: harnesses drive dispatchNotification directly to verify the
-  // single-gate `enabled` suppression without spinning up a real agent. Same
-  // debug affordance, not a security boundary.
-  (window as unknown as {
-    __ccsmDispatchNotification?: typeof dispatchNotification;
-  }).__ccsmDispatchNotification = dispatchNotification;
+  // The `__ccsmDispatchNotification` E2E seam was removed in PR-D alongside
+  // the Notifications settings pane and `src/notifications/dispatch.ts`. No
+  // production code wired it; the harness case that depended on it was
+  // dropped in the same PR.
 }
 
 /**

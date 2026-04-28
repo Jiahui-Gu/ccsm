@@ -1,10 +1,8 @@
 import type { Group, Session } from '../types';
 import type {
-  PermissionMode,
   Theme,
   FontSize,
   FontSizePx,
-  NotificationSettings,
 } from './store';
 import type { RecentProject } from '../mock/data';
 
@@ -33,8 +31,6 @@ export const PERSISTED_KEYS = [
   'sessions',
   'groups',
   'activeId',
-  'model',
-  'permission',
   'sidebarCollapsed',
   'sidebarWidth',
   'theme',
@@ -42,7 +38,6 @@ export const PERSISTED_KEYS = [
   'fontSizePx',
   'recentProjects',
   'tutorialSeen',
-  'notificationSettings',
 ] as const;
 
 export type PersistedKey = typeof PERSISTED_KEYS[number];
@@ -52,11 +47,6 @@ export interface PersistedState {
   sessions: Session[];
   groups: Group[];
   activeId: string;
-  model: string;
-  // Loose type: older builds persisted legacy literals like `standard` /
-  // `ask` / `auto` / `yolo`. `migratePermission` in store.ts normalises on
-  // read. Writes always use the current `PermissionMode`.
-  permission: PermissionMode | string;
   sidebarCollapsed: boolean;
   /** Sidebar width in pixels. See State.sidebarWidth. */
   sidebarWidth?: number;
@@ -72,7 +62,6 @@ export interface PersistedState {
   fontSizePx?: FontSizePx;
   recentProjects?: RecentProject[];
   tutorialSeen?: boolean;
-  notificationSettings?: NotificationSettings;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

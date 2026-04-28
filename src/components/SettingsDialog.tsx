@@ -15,13 +15,19 @@ import { useFocusRestore } from '../lib/useFocusRestore';
 import { DURATION_RAW, EASING } from '../lib/motion';
 import type { UpdateStatus } from '../global';
 
-type Tab = 'appearance' | 'notifications' | 'connection' | 'updates';
+type Tab = 'appearance' | 'connection' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
+//
+// The Notifications tab was removed: the renderer never wired any production
+// caller to `dispatchNotification`, so the toggles only flipped store state
+// no production code read. Keeping the pane risked the user thinking they had
+// turned notifications on when nothing was actually emitting them. The
+// underlying electron/notify-* machinery stays — when a future PR wires real
+// callers, a fresh pane (or a single in-app affordance) can be added back.
 const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
-  { id: 'notifications', tabKey: 'notifications' },
   { id: 'connection', tabKey: 'connection' },
   { id: 'updates', tabKey: 'updates' }
 ];
@@ -59,19 +65,16 @@ export function SettingsDialog({
   // announce "Tab 2 of 4: Notifications, selected".
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
     appearance: null,
-    notifications: null,
     connection: null,
     updates: null
   });
   const tabIds: Record<Tab, string> = {
     appearance: 'settings-tab-appearance',
-    notifications: 'settings-tab-notifications',
     connection: 'settings-tab-connection',
     updates: 'settings-tab-updates'
   };
   const panelIds: Record<Tab, string> = {
     appearance: 'settings-panel-appearance',
-    notifications: 'settings-panel-notifications',
     connection: 'settings-panel-connection',
     updates: 'settings-panel-updates'
   };
@@ -161,7 +164,6 @@ export function SettingsDialog({
             tabIndex={0}
           >
             {tab === 'appearance' && <AppearancePane />}
-            {tab === 'notifications' && <NotificationsPane />}
             {tab === 'connection' && <ConnectionPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
@@ -282,37 +284,10 @@ function Segmented<T extends string>({
 }
 
 
-function NotificationsPane() {
-  const settings = useStore((s) => s.notificationSettings);
-  const setNotificationSettings = useStore((s) => s.setNotificationSettings);
-  const { t } = useTranslation('settings');
-
-  return (
-    <>
-      <div className="text-meta text-fg-tertiary mb-4">
-        {t('notifications.intro')}
-      </div>
-      <Field label={t('notifications.enable')}>
-        <Switch
-          checked={settings.enabled}
-          aria-label={t('notifications.enable')}
-          onCheckedChange={(v) => setNotificationSettings({ enabled: v })}
-        />
-      </Field>
-      <Field label={t('notifications.sound')} hint={t('notifications.soundHint')}>
-        <Switch
-          checked={settings.sound}
-          disabled={!settings.enabled}
-          aria-label={t('notifications.sound')}
-          onCheckedChange={(v) => setNotificationSettings({ sound: v })}
-        />
-      </Field>
-      <div className="mt-6 pt-5 border-t border-border-subtle">
-        <CrashReportingField />
-      </div>
-    </>
-  );
-}
+// Notifications pane removed in PR-D (settings cleanup): no production caller
+// wired `dispatchNotification`, so the toggles only flipped store state
+// nothing read. The CrashReportingField that used to live at the bottom of
+// this pane was moved to the Updates pane (both are app-meta concerns).
 
 // Persisted via the existing `db:save` / `db:load` IPC under the
 // `crashReportingOptOut` app_state key. We store the OPT-OUT flag (default
@@ -456,6 +431,9 @@ function UpdatesPane() {
             {t('updates.installButton')}
           </Button>
         )}
+      </div>
+      <div className="mt-6 pt-5 border-t border-border-subtle">
+        <CrashReportingField />
       </div>
     </>
   );

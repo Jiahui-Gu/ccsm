@@ -22,8 +22,6 @@ describe('persist: curated snapshot payload', () => {
         sessions: [],
         groups: [],
         activeId: '',
-        model: 'm',
-        permission: 'default',
         sidebarCollapsed: false,
         sidebarWidth: 260,
         theme: 'system',
@@ -31,13 +29,6 @@ describe('persist: curated snapshot payload', () => {
         fontSizePx: 14,
         recentProjects: [],
         tutorialSeen: false,
-        notificationSettings: {
-          enabled: true,
-          permission: true,
-          question: true,
-          turnDone: true,
-          sound: true
-        }
       };
       schedulePersist(snap);
       vi.advanceTimersByTime(500);
@@ -52,8 +43,6 @@ describe('persist: curated snapshot payload', () => {
         'sessions',
         'groups',
         'activeId',
-        'model',
-        'permission',
         'sidebarCollapsed',
         'sidebarWidth',
         'sidebarWidthPct',
@@ -61,8 +50,7 @@ describe('persist: curated snapshot payload', () => {
         'fontSize',
         'fontSizePx',
         'recentProjects',
-        'tutorialSeen',
-        'notificationSettings'
+        'tutorialSeen'
       ]);
       const FORBIDDEN = [
         'messagesBySession',
@@ -74,7 +62,11 @@ describe('persist: curated snapshot payload', () => {
         'focusInputNonce',
         'installerCorrupt',
         'models',
-        'connection'
+        'connection',
+        // Removed in PR-D — orphan persisted keys with no live subscribers.
+        'model',
+        'permission',
+        'notificationSettings'
       ];
       for (const k of Object.keys(parsed)) {
         expect(ALLOWED.has(k), `unexpected persisted key: ${k}`).toBe(true);
