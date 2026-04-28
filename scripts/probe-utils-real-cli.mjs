@@ -37,7 +37,11 @@
 //      CLAUDE_CONFIG_DIR.
 //
 //   6. Cleanup must run on Ctrl+C too — registered via process.on('exit')
-//      AND process.on('SIGINT') / SIGTERM.
+//      AND process.on('SIGINT') / SIGTERM / uncaughtException /
+//      unhandledRejection. Cleanups run LIFO so process force-kill
+//      (electron + ttyd + claude subtree, registered in launchCcsmIsolated)
+//      runs BEFORE tempdir rmSync — Windows can't remove a directory whose
+//      files are still locked by live processes.
 
 import { _electron as electron } from 'playwright';
 import {
@@ -52,6 +56,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 // ============================================================================
 // OOPIF helpers
@@ -65,25 +70,37 @@ import { randomUUID } from 'node:crypto';
  *
  * Throws if no matching webview is found within `timeout` ms.
  */
-export async function getTtydWebContentsId(electronApp, { timeout = 5000 } = {}) {
+export async function getTtydWebContentsId(electronApp, { timeout = 5000, port = null } = {}) {
   const deadline = Date.now() + timeout;
   let lastSeen = null;
+  // Build a port-specific URL prefix when caller supplies one. This lets
+  // multi-ttyd probes (switch-session) target the right webview instead of
+  // racing on highest-id heuristics.
+  const portRe = port != null
+    ? new RegExp(`^http:\\/\\/127\\.0\\.0\\.1:${port}(?:\\/|$)`)
+    : /^http:\/\/127\.0\.0\.1:\d+/;
   while (Date.now() < deadline) {
-    const found = await electronApp.evaluate(({ webContents }) => {
-      const all = webContents.getAllWebContents();
-      const matches = [];
-      for (const wc of all) {
-        const type = wc.getType();
-        const url = wc.getURL();
-        if (type === 'webview' && /^http:\/\/127\.0\.0\.1:\d+/.test(url)) {
-          matches.push({ id: wc.id, url });
+    const found = await electronApp.evaluate(
+      ({ webContents }, { reSrc }) => {
+        const re = new RegExp(reSrc);
+        const all = webContents.getAllWebContents();
+        const matches = [];
+        for (const wc of all) {
+          const type = wc.getType();
+          const url = wc.getURL();
+          if (type === 'webview' && re.test(url)) {
+            matches.push({ id: wc.id, url });
+          }
         }
-      }
-      return matches;
-    });
+        return matches;
+      },
+      { reSrc: portRe.source },
+    );
     if (found && found.length > 0) {
       // Prefer the most recently created (highest id) — matches the
       // "current session's ttyd" intent when multiple have been opened.
+      // When `port` was supplied this is already filtered to that ttyd,
+      // so the highest-id pick is just a tie-break.
       found.sort((a, b) => b.id - a.id);
       return found[0].id;
     }
@@ -91,7 +108,7 @@ export async function getTtydWebContentsId(electronApp, { timeout = 5000 } = {})
     await sleep(200);
   }
   throw new Error(
-    `getTtydWebContentsId: no <webview> with http://127.0.0.1:* URL found within ${timeout}ms (last seen: ${JSON.stringify(lastSeen)})`,
+    `getTtydWebContentsId: no <webview> with URL matching ${portRe} found within ${timeout}ms (last seen: ${JSON.stringify(lastSeen)})`,
   );
 }
 
@@ -239,7 +256,12 @@ function installCleanupHooks() {
   if (cleanupHooksInstalled) return;
   cleanupHooksInstalled = true;
   const runAll = () => {
-    for (const fn of cleanupRegistry) {
+    // Iterate in reverse insertion order (LIFO) so process-kill cleanups
+    // registered after tempdir cleanups run FIRST. Order matters on
+    // Windows: rmSync on a tempdir fails if electron / ttyd / claude still
+    // hold file locks inside it.
+    const fns = Array.from(cleanupRegistry).reverse();
+    for (const fn of fns) {
       try { fn(); } catch (_) { /* ignore */ }
     }
     cleanupRegistry.clear();
@@ -250,6 +272,12 @@ function installCleanupHooks() {
   process.on('uncaughtException', (err) => {
     runAll();
     // Re-throw so the original error still surfaces.
+    throw err;
+  });
+  process.on('unhandledRejection', (err) => {
+    // Async electron crashes surface here; without this the tempdir leaks.
+    runAll();
+    // Surface the rejection — let Node's default handler exit non-zero.
     throw err;
   });
 }
@@ -304,13 +332,19 @@ export async function createIsolatedClaudeDir({ keep = false } = {}) {
  * Sets CCSM_PROD_BUNDLE=1 + the full quartet of config-dir env vars (HOME,
  * USERPROFILE, CLAUDE_CONFIG_DIR, CCSM_CLAUDE_CONFIG_DIR).
  *
- * Returns { electronApp, win, userDataDir } from playwright. `userDataDir`
- * is registered for cleanup alongside the tempDir.
+ * Returns { electronApp, win, userDataDir } from playwright.
+ *
+ * `userDataDir` behaviour:
+ *   - If caller passes `userDataDir`: helper uses it verbatim and does NOT
+ *     register it for cleanup (caller owns it). This is the cross-restart
+ *     pattern used by reopen/import probes that need ccsm.db to persist
+ *     between two `launchCcsmIsolated` calls on the same dir.
+ *   - If omitted: helper mints a fresh tempdir and registers it for cleanup.
  *
  * Throws a clear error if `dist/renderer/index.html` doesn't exist (caller
  * forgot to run `npm run build`).
  */
-export async function launchCcsmIsolated({ tempDir, env = {} } = {}) {
+export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}) {
   if (!tempDir) throw new Error('launchCcsmIsolated: tempDir is required');
   const cwd = process.cwd();
   const distIndex = path.join(cwd, 'dist', 'renderer', 'index.html');
@@ -321,19 +355,26 @@ export async function launchCcsmIsolated({ tempDir, env = {} } = {}) {
   }
 
   // Per-launch electron user-data-dir, isolated from the user's real one.
-  const userDataDir = mkdtempSync(path.join(tmpdir(), 'ccsm-probe-userdata-'));
+  // If caller supplied one, they own its lifecycle (cross-restart pattern).
+  const callerOwnsUserData = typeof userDataDir === 'string' && userDataDir.length > 0;
+  const effectiveUserDataDir = callerOwnsUserData
+    ? userDataDir
+    : mkdtempSync(path.join(tmpdir(), 'ccsm-probe-userdata-'));
+
   let cleaned = false;
   const cleanupUd = () => {
     if (cleaned) return;
     cleaned = true;
     cleanupRegistry.delete(cleanupUd);
-    try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    try { rmSync(effectiveUserDataDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   };
-  installCleanupHooks();
-  cleanupRegistry.add(cleanupUd);
+  if (!callerOwnsUserData) {
+    installCleanupHooks();
+    cleanupRegistry.add(cleanupUd);
+  }
 
   const electronApp = await electron.launch({
-    args: ['.', `--user-data-dir=${userDataDir}`],
+    args: ['.', `--user-data-dir=${effectiveUserDataDir}`],
     cwd,
     env: {
       ...process.env,
@@ -351,11 +392,47 @@ export async function launchCcsmIsolated({ tempDir, env = {} } = {}) {
     },
     timeout: 60000,
   });
+
+  // Force-kill cleanup. Registered AFTER tempdir/userdata cleanups so that
+  // LIFO iteration in `runAll` runs this FIRST — electron + ttyd + claude
+  // die before rmSync touches the dirs (Windows fails to remove locked
+  // files otherwise). User reported leaked processes (2 electron / 5 ttyd
+  // / 2 claude) after probe runs because the previous cleanup only rm-ed
+  // tempdirs and never killed the process tree.
+  const electronPid = electronApp.process()?.pid ?? null;
+  const killCleanup = () => {
+    cleanupRegistry.delete(killCleanup);
+    // Best-effort async close so playwright tears down its IPC pipes.
+    // Fire-and-forget — the synchronous taskkill below is what guarantees
+    // death even from inside a sync `exit` handler.
+    try { electronApp.close(); } catch (_) { /* ignore */ }
+    if (electronPid) {
+      try {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/T', '/F', '/PID', String(electronPid)]);
+        } else {
+          // SIGKILL the whole process group; falls back to plain pid kill
+          // if the process wasn't started as group leader.
+          try { process.kill(-electronPid, 'SIGKILL'); } catch (_) {
+            try { process.kill(electronPid, 'SIGKILL'); } catch (_) { /* ignore */ }
+          }
+        }
+      } catch (_) { /* ignore */ }
+    }
+  };
+  installCleanupHooks();
+  cleanupRegistry.add(killCleanup);
+
   const win = await electronApp.firstWindow();
   await win.waitForLoadState('domcontentloaded');
   // Renderer needs a beat to mount App + populate window.__ccsmStore.
   await sleep(2500);
-  return { electronApp, win, userDataDir, cleanup: cleanupUd };
+  return {
+    electronApp,
+    win,
+    userDataDir: effectiveUserDataDir,
+    cleanup: callerOwnsUserData ? () => {} : cleanupUd,
+  };
 }
 
 // ============================================================================
@@ -409,15 +486,36 @@ export async function seedSession(win, { sid, name = 'probe-session', cwd, group
  */
 export async function waitForWebviewMounted(win, electronApp, sessionId, { timeout = 10000 } = {}) {
   // Step 1: wait for the host-page <webview> tag for THIS session.
+  //
+  // Use `state: 'attached'` rather than the Playwright default `visible`.
+  // Electron `<webview>` elements report visibility inconsistently to
+  // Playwright on Windows — PR #462's failure showed the webview fully
+  // wired (ttyd up, websocket connected, claude PID running) yet the
+  // default visibility check timed out. `attached` is the right semantic
+  // for OOPIF probes: presence in DOM is sufficient because the xterm
+  // readiness check in step 3 already validates the inner page is live.
   const selector = `webview[title="ttyd session ${sessionId}"]`;
-  await win.waitForSelector(selector, { timeout });
+  await win.waitForSelector(selector, { timeout, state: 'attached' });
 
   // Step 2: poll for the matching WebContents in main process.
+  //
+  // Look up THIS session's ttyd port via the cliBridge IPC so we can
+  // filter webContents by URL — picking the highest-id webContents
+  // (the previous default) misfires on switch-session probes where
+  // multiple ttyd webviews are alive simultaneously.
+  const port = await win
+    .evaluate(
+      (sid) => Promise.resolve(window.ccsmCliBridge?.getTtydForSession?.(sid)).catch(() => null),
+      sessionId,
+    )
+    .then((res) => (res && typeof res.port === 'number' ? res.port : null))
+    .catch(() => null);
+
   const deadline = Date.now() + timeout;
   let wcId = null;
   while (Date.now() < deadline) {
     try {
-      wcId = await getTtydWebContentsId(electronApp, { timeout: 1000 });
+      wcId = await getTtydWebContentsId(electronApp, { timeout: 1000, port });
       if (wcId != null) break;
     } catch (_) {
       // Keep polling.
@@ -425,7 +523,9 @@ export async function waitForWebviewMounted(win, electronApp, sessionId, { timeo
     await sleep(200);
   }
   if (wcId == null) {
-    throw new Error(`waitForWebviewMounted: no ttyd webContents found for session ${sessionId} within ${timeout}ms`);
+    throw new Error(
+      `waitForWebviewMounted: no ttyd webContents found for session ${sessionId} (port=${port ?? 'unknown'}) within ${timeout}ms`,
+    );
   }
 
   // Step 3: wait for xterm + window.term inside the OOPIF.
@@ -447,6 +547,75 @@ export async function waitForWebviewMounted(win, electronApp, sessionId, { timeo
   throw new Error(
     `waitForWebviewMounted: webview mounted (wcId=${wcId}) but xterm/window.term not ready within ${timeout}ms`,
   );
+}
+
+/**
+ * Dismiss claude's "Welcome back!" / "Try /help" splash card that intercepts
+ * the first keystrokes after a cold start. Sends Enter (via triggerDataEvent,
+ * NOT bracketed-paste) up to `maxAttempts` times until either:
+ *   - the splash text disappears from the visible buffer, OR
+ *   - the input prompt indicator (`│ >`) becomes visible (indicates input
+ *     box is interactive)
+ *
+ * Returns { dismissed: boolean, attempts: number, finalScreen: string }.
+ * Never throws — splash absence is the happy path. Callers can inspect the
+ * result if they want to assert the splash was actually present.
+ *
+ * Probes #505 (new-session-chat) and #506 (switch-session-keeps-chat)
+ * regressed because their first prompt keystrokes hit the splash card,
+ * not the input field — claude never received the user message.
+ */
+export async function dismissWelcomeSplash(
+  electronApp,
+  wcId,
+  { maxAttempts = 3, settleMs = 500 } = {},
+) {
+  // Heuristics for "splash is present":
+  //   - "Welcome back" greeting line
+  //   - "Try /" or "/help" hint card
+  //   - "press Enter" / "Press Enter" prompt to dismiss
+  // Heuristics for "input ready" (definitely past splash):
+  //   - "│ >" or "> " followed by cursor (claude TUI input row)
+  const splashRe = /Welcome back|Try \/|press Enter|Press Enter/;
+  const readyRe = /│\s*>|^\s*>\s*$/m;
+
+  let attempts = 0;
+  let finalScreen = '';
+  for (let i = 0; i < maxAttempts; i++) {
+    const buf = await readXtermBufferSafe(electronApp, wcId);
+    finalScreen = buf.screen;
+    const hasSplash = splashRe.test(buf.screen);
+    const hasReady = readyRe.test(buf.screen);
+    if (!hasSplash && hasReady) {
+      return { dismissed: i > 0, attempts, finalScreen };
+    }
+    if (!hasSplash && i > 0) {
+      // Splash gone, no explicit ready marker — accept.
+      return { dismissed: true, attempts, finalScreen };
+    }
+    // Send a bare Enter via triggerDataEvent (no bracketed-paste).
+    try {
+      await sendToClaudeTui(electronApp, wcId, '\r');
+      attempts++;
+    } catch (_) {
+      // term not reachable — bail without throwing.
+      return { dismissed: false, attempts, finalScreen };
+    }
+    await sleep(settleMs);
+  }
+  // Final read so caller sees the post-attempt state.
+  const buf = await readXtermBufferSafe(electronApp, wcId);
+  finalScreen = buf.screen;
+  const stillSplash = splashRe.test(buf.screen);
+  return { dismissed: !stillSplash, attempts, finalScreen };
+}
+
+async function readXtermBufferSafe(electronApp, wcId) {
+  try {
+    return await readXtermBuffer(electronApp, wcId);
+  } catch (_) {
+    return { full: '', screen: '' };
+  }
 }
 
 // ============================================================================
