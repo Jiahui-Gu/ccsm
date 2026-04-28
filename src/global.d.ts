@@ -2,8 +2,6 @@ import type {
   ConnectionInfo,
   OpenSettingsResult,
   DiscoveredModel,
-  LoadedCommand,
-  WorkspaceFile,
 } from './shared/ipc-types';
 
 // Updater status — exported so the renderer's `UpdatesPane` (and any
@@ -34,17 +32,6 @@ declare global {
         setLanguage: (l: 'en' | 'zh') => void;
       };
       getVersion: () => Promise<string>;
-      pickDirectory: () => Promise<string | null>;
-      saveFile: (args: {
-        defaultName?: string;
-        content: string;
-      }) => Promise<
-        { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
-      >;
-      // (#51) Open long tool output in the user's default text editor.
-      toolOpenInEditor: (args: {
-        content: string;
-      }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
 
       scanImportable: () => Promise<
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
@@ -89,34 +76,6 @@ declare global {
        */
       pathsExist: (paths: string[]) => Promise<Record<string, boolean>>;
 
-      memory: {
-        read: (p: string) => Promise<
-          | { ok: true; content: string; exists: boolean }
-          | { ok: false; error: string }
-        >;
-        write: (p: string, content: string) => Promise<
-          { ok: true } | { ok: false; error: string }
-        >;
-        exists: (p: string) => Promise<boolean>;
-        userPath: () => Promise<string>;
-        projectPath: (cwd: string) => Promise<string | null>;
-      };
-
-      commands: {
-        list: (cwd: string | null | undefined) => Promise<LoadedCommand[]>;
-      };
-
-      files: {
-        /**
-         * List workspace files relative to the session cwd for the
-         * InputBar's @file mention picker. Returns POSIX-style relative
-         * paths so the literal we splice into the composer is portable.
-         */
-        list: (cwd: string | null | undefined) => Promise<WorkspaceFile[]>;
-      };
-
-      openExternal: (url: string) => Promise<boolean>;
-
       notify: (payload: {
         sessionId: string;
         title: string;
@@ -139,18 +98,6 @@ declare global {
           cwd?: string;
         };
       }) => Promise<boolean>;
-      notifyAvailability: () => Promise<{ available: boolean; error: string | null }>;
-      notifySetRuntimeState: (
-        patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
-      ) => Promise<{ ok: true } | { ok: false }>;
-      onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
-      onNotifyToastAction?: (
-        handler: (e: {
-          sessionId: string;
-          requestId: string;
-          action: 'allow' | 'allow-always' | 'reject' | 'focus';
-        }) => void,
-      ) => () => void;
 
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
@@ -159,11 +106,7 @@ declare global {
       updatesGetAutoCheck: () => Promise<boolean>;
       updatesSetAutoCheck: (enabled: boolean) => Promise<boolean>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
-      onUpdateAvailable: (
-        handler: (info: { version: string; releaseDate?: string }) => void
-      ) => () => void;
       onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
-      onUpdateError: (handler: (info: { message: string }) => void) => () => void;
 
       window: {
         minimize: () => Promise<void>;

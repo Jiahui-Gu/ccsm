@@ -17,12 +17,10 @@ const initial = useStore.getState();
 
 function stubCCSM() {
   const api = {
-    pickDirectory: vi.fn().mockResolvedValue(null),
     pathsExist: vi.fn().mockResolvedValue({}),
     recentCwds: vi.fn().mockResolvedValue([]),
     defaultModel: vi.fn().mockResolvedValue(null),
     onUpdateDownloaded: vi.fn().mockReturnValue(() => {}),
-    onNotificationFocus: vi.fn().mockReturnValue(() => {}),
     cliCheck: vi.fn().mockResolvedValue({ state: 'found', binaryPath: '/usr/bin/claude' }),
     settingsLoad: vi.fn().mockResolvedValue({}),
     modelsList: vi.fn().mockResolvedValue([]),
