@@ -132,6 +132,48 @@ async function getPtyPidForSid(win, sid) {
 }
 
 /**
+ * Wait for the ACTIVE xterm buffer (window.__ccsmTerm) to be wired and to
+ * contain at least `minLines` rows. Polls every 100ms until ready or timeout.
+ *
+ * Motivation: after a session switch (A→B→A), waitForTerminalReady asserts
+ * the host element + term + buffer exist, but `__ccsmTerm` may briefly point
+ * at the previous session's term during the React re-render, so an immediate
+ * readXtermLines can hit `term.buffer.active.length === 0` and silently
+ * return []. This helper closes that window before the first read.
+ *
+ * Throws on timeout with the last seen state for diagnostics.
+ */
+async function waitForActiveXtermBuffer(win, sid, { minLines = 1, timeout = 3000 } = {}) {
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await win
+      .evaluate(
+        (s) => {
+          const host = document.querySelector(
+            `[data-terminal-host][data-active-sid="${s}"]`,
+          );
+          const term = window.__ccsmTerm;
+          const buf = term && term.buffer && term.buffer.active;
+          return {
+            host: !!host,
+            term: !!term,
+            buffer: !!buf,
+            length: buf ? buf.length : 0,
+          };
+        },
+        sid,
+      )
+      .catch((err) => ({ host: false, term: false, buffer: false, length: 0, err: String(err) }));
+    if (last.host && last.term && last.buffer && last.length >= minLines) return true;
+    await sleep(100);
+  }
+  throw new Error(
+    `waitForActiveXtermBuffer: sid=${sid} did not reach minLines=${minLines} within ${timeout}ms (last: ${JSON.stringify(last)})`,
+  );
+}
+
+/**
  * Snapshot the list of pty exits surfaced to the renderer. Cases install a
  * one-shot listener on window.ccsmPty.onExit and accumulate into
  * window.__probePtyExits; this helper just reads that buffer back.
@@ -1224,9 +1266,19 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
   // Switch BACK to A.
   await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
   await waitForTerminalReady(win, sidA, { timeout: 30000 });
+  // Post-switch, waitForTerminalReady asserts the host/term/buffer exist,
+  // but window.__ccsmTerm can briefly remain wired to B during the React
+  // re-render. Wait until A's buffer is actually populated before reading,
+  // otherwise readXtermLines returns [] and the MARKER assertion fires
+  // spuriously (see #574 flake repro).
+  await waitForActiveXtermBuffer(win, sidA, { minLines: 1, timeout: 5000 });
 
   // Assert MARKER is STILL in the active buffer — no replay = same pty.
-  const lines = await readXtermLines(win, { lines: 200 }).catch(() => []);
+  // Surface real errors instead of swallowing to []: the prior flake hid
+  // the actual buffer state behind a generic "MARKER not found".
+  const lines = await readXtermLines(win, { lines: 200 }).catch((err) => {
+    throw new Error(`readXtermLines failed after switch-back to sid=${sidA}: ${err && err.stack || err}`);
+  });
   const joined = lines.join('\n');
   if (!new RegExp(MARKER).test(joined)) {
     throw new Error(
