@@ -1808,18 +1808,111 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // re-evaluates. The init script runs on every navigation including
   // win.reload(). Wrap in a guard so prior cases that may have already
   // wrapped don't double-wrap.
+  //
+  // We ALSO install a MutationObserver that captures the first
+  // [data-testid="sidebar-skeleton"] element it sees and snapshots its
+  // geometry / placeholder count to `window.__ccsm584Skeleton`. The
+  // skeleton-vs-loaded handoff happens on a single React render once the
+  // `hydrated` flag flips, so observing it from the test thread is racy;
+  // pinning the snapshot synchronously inside the renderer is reliable.
+  // Install everything via context().addInitScript so it survives reload.
   await win.context().addInitScript(() => {
-    try {
-      const original = window.ccsm?.models?.list;
-      if (original && !window.ccsm.models.__delayedForStartupCase) {
-        window.ccsm.models.list = async (...args) => {
-          await new Promise((r) => setTimeout(r, 500));
-          return original.apply(window.ccsm.models, args);
-        };
-        window.ccsm.models.__delayedForStartupCase = true;
+    window.__ccsm584InitRan = (window.__ccsm584InitRan || 0) + 1;
+    // Init scripts run at document_start — BEFORE preload finishes attaching
+    // `window.ccsm`. Poll briefly so we can wrap the IPC surfaces once they
+    // appear. Bail after ~2s to avoid leaking timers if something is wrong.
+    const deadline = Date.now() + 2000;
+    const tryWrap = () => {
+      try {
+        const ccsm = window.ccsm;
+        if (!ccsm) {
+          if (Date.now() < deadline) setTimeout(tryWrap, 5);
+          return;
+        }
+        const original = ccsm.models?.list;
+        if (original && !ccsm.models.__delayedForStartupCase) {
+          ccsm.models.list = async (...args) => {
+            await new Promise((r) => setTimeout(r, 500));
+            return original.apply(ccsm.models, args);
+          };
+          ccsm.models.__delayedForStartupCase = true;
+        }
+        // #584: also delay loadState. Hydration sequence is fast (~30ms)
+        // because sqlite reads are local; the skeleton would otherwise
+        // paint for one frame and be gone before any test thread can
+        // observe it. Wrapping loadState extends the hydrated=false
+        // window long enough for the MutationObserver above to fire.
+        const originalLoad = ccsm.loadState;
+        if (originalLoad && !ccsm.__delayedLoadStateForStartupCase) {
+          ccsm.loadState = async (...args) => {
+            await new Promise((r) => setTimeout(r, 800));
+            return originalLoad.apply(ccsm, args);
+          };
+          ccsm.__delayedLoadStateForStartupCase = true;
+        }
+      } catch {
+        /* swallow — case will fail loudly below if wrap didn't take */
       }
-    } catch {
-      /* harness env without window.ccsm — case will fail loudly below */
+    };
+    tryWrap();
+
+    // #584: observer that snapshots the sidebar skeleton the first time it
+    // appears in the DOM. Survives the skeleton-to-loaded React handoff.
+    const installObserver = () => {
+      try {
+        window.__ccsm584ObserverInstalled = true;
+        const snapshot = (sidebar) => {
+          const box = sidebar.getBoundingClientRect();
+          const bg = window.getComputedStyle(sidebar).backgroundColor;
+          const rows = sidebar.querySelectorAll(
+            '[data-testid="sidebar-skeleton-row"]'
+          ).length;
+          const newSession = !!sidebar.querySelector(
+            '[data-testid="sidebar-skeleton-newsession"]'
+          );
+          const main = document.querySelector('[data-testid="main-skeleton"]');
+          const mainLoading = !!document.querySelector(
+            '[data-testid="main-skeleton-loading"]'
+          );
+          return {
+            width: box.width,
+            height: box.height,
+            bg,
+            rows,
+            newSession,
+            mainPresent: !!main,
+            mainLoading,
+            capturedAt: Date.now(),
+          };
+        };
+        const tryCapture = () => {
+          const sidebar = document.querySelector(
+            '[data-testid="sidebar-skeleton"]'
+          );
+          if (sidebar && !window.__ccsm584Skeleton) {
+            window.__ccsm584Skeleton = snapshot(sidebar);
+            return true;
+          }
+          return false;
+        };
+        if (tryCapture()) return;
+        const target = document.body || document.documentElement;
+        const obs = new MutationObserver(() => {
+          if (tryCapture()) obs.disconnect();
+        });
+        obs.observe(target, { childList: true, subtree: true });
+        // Stop observing after 5s either way to avoid leaks.
+        setTimeout(() => obs.disconnect(), 5000);
+      } catch (e) {
+        window.__ccsm584ObserverError = String(e);
+      }
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', installObserver, {
+        once: true,
+      });
+    } else {
+      installObserver();
     }
   });
 
@@ -1839,6 +1932,7 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   const earlySnap = await win.evaluate(() => {
     const trace = window.__ccsmHydrationTrace || {};
     const store = window.__ccsmStore?.getState?.();
+    const skeleton = window.__ccsm584Skeleton || null;
     return {
       renderedAt: trace.renderedAt,
       hydrateStartedAt: trace.hydrateStartedAt,
@@ -1846,6 +1940,7 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
       hydratedFlag: store?.hydrated,
       hasMain: !!document.querySelector('main'),
       hasAside: !!document.querySelector('aside'),
+      skeleton,
     };
   });
 
@@ -1885,6 +1980,69 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
     throw new Error('startup-paints-before-hydrate: neither <main> nor <aside> in DOM after reload');
   }
 
+  // Task #584: pre-hydrate skeleton must be CONTENT-SHAPED, not a literal
+  // empty <aside>. The MutationObserver installed in the init script
+  // captured the first sidebar-skeleton element it saw to
+  // window.__ccsm584Skeleton — pinning the snapshot inside the renderer
+  // survives the skeleton-to-loaded React handoff. Reverse-verify catch:
+  // stash the AppSkeleton change and the snapshot becomes either null
+  // (no element with that testid) or empty (no rows / no newsession / no
+  // mainLoading affordance).
+  const skel = earlySnap.skeleton;
+  if (!skel) {
+    const dbg = await win.evaluate(() => ({
+      initRan: window.__ccsm584InitRan,
+      observerInstalled: window.__ccsm584ObserverInstalled,
+      observerError: window.__ccsm584ObserverError,
+      hydrated: window.__ccsmStore?.getState?.().hydrated,
+      loadStateWrapped: !!window.ccsm?.__delayedLoadStateForStartupCase,
+      hasSidebarSkeleton: !!document.querySelector(
+        '[data-testid="sidebar-skeleton"]'
+      ),
+    }));
+    throw new Error(
+      'startup-paints-before-hydrate: pre-hydrate skeleton was never seen in ' +
+        'the DOM (window.__ccsm584Skeleton is null) — the [data-testid=' +
+        '"sidebar-skeleton"] element did not render before hydrate flipped, ' +
+        'or the skeleton path was removed entirely (#584). dbg=' +
+        JSON.stringify(dbg)
+    );
+  }
+  if (skel.width < 40) {
+    throw new Error(
+      `startup-paints-before-hydrate: sidebar skeleton too narrow (width=` +
+        `${skel.width.toFixed(1)}); expected at least the 48px collapsed-rail width.`
+    );
+  }
+  // Background must not be the default white / fully transparent — the
+  // skeleton has to read as the loaded sidebar surface (bg-bg-sidebar/80).
+  // 'rgba(0, 0, 0, 0)' is the literal "no background" string; anything else
+  // (including the dark or light theme oklch translation) passes.
+  if (
+    !skel.bg ||
+    skel.bg === 'rgba(0, 0, 0, 0)' ||
+    skel.bg === 'transparent' ||
+    skel.bg === 'rgb(255, 255, 255)'
+  ) {
+    throw new Error(
+      `startup-paints-before-hydrate: sidebar skeleton has no visible bg ` +
+        `(got "${skel.bg}"); should match bg-bg-sidebar.`
+    );
+  }
+  if (!skel.newSession || skel.rows < 1) {
+    throw new Error(
+      `startup-paints-before-hydrate: sidebar skeleton lacks placeholders ` +
+        `(newSessionRow=${skel.newSession}, sessionRowStubs=${skel.rows}); ` +
+        `skeleton must be content-shaped, not a literal empty <aside> (#584).`
+    );
+  }
+  if (!skel.mainLoading) {
+    throw new Error(
+      'startup-paints-before-hydrate: main pane skeleton missing the ' +
+        '[data-testid="main-skeleton-loading"] affordance — pane reads as blank (#584).'
+    );
+  }
+
   // After hydrate completes, the store flag flips and the populated UI
   // takes over from the skeleton. We confirm the flag goes true to prove
   // we're not asserting against a stuck-skeleton state.
@@ -1906,7 +2064,9 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
     `startup-paints-before-hydrate — renderedAt=${earlySnap.renderedAt} ` +
       `hydrateStartedAt=${earlySnap.hydrateStartedAt} ` +
       `hydrateDoneAt=${earlySnap.hydrateDoneAt ?? 'pending'} ` +
-      `hydratedFlag(early)=${earlySnap.hydratedFlag}`
+      `hydratedFlag(early)=${earlySnap.hydratedFlag} ` +
+      `skeleton=${skel.width.toFixed(0)}x${skel.height.toFixed(0)} ` +
+      `rows=${skel.rows} mainLoading=${skel.mainLoading}`
   );
 }
 
