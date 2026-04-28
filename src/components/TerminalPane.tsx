@@ -1,0 +1,394 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { ClipboardAddon } from '@xterm/addon-clipboard';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { CanvasAddon } from '@xterm/addon-canvas';
+import '@xterm/xterm/css/xterm.css';
+
+// TerminalPane mounts a singleton xterm.js Terminal that we attach/detach
+// against per-session PTYs over IPC (window.ccsmPty). This is the React
+// port of the validated spike at spike/xterm-attach/src/renderer/renderer.mjs.
+//
+// Why a module-scope singleton (NOT per-React-mount):
+//   - Recreating the Terminal on every session switch is expensive: the
+//     canvas renderer rebuilds its glyph atlas, addons re-allocate, and
+//     in dev React StrictMode would double-invoke the constructor.
+//   - More importantly, ccsm's session-keepalive guarantee says the user
+//     can flip between sessions without the underlying terminal/PTY pairing
+//     being torn down. The PTY lives in the main process; the rendered
+//     view is a single xterm bound to whichever sid is active. Switching
+//     sessions = `term.reset()` + IPC re-attach with the new sid's
+//     snapshot, no DOM reconstruction.
+//
+// Lifecycle:
+//   1. First mount creates the singleton: addons (fit/weblinks/clipboard/
+//      unicode11/canvas), key handler, selection→clipboard, title→document.
+//   2. sessionId effect: detach prev (dispose subs, await pty.detach),
+//      term.reset(), pty.attach(new sid) → write snapshot, subscribe to
+//      pty.onData filtered by activeSid, wire term.onData → pty.input,
+//      then fit().
+//   3. ResizeObserver (80ms debounce) → fit + pty.resize.
+//   4. pty.onExit for active sid → flip to error state with Retry.
+//
+// The host div carries [data-terminal-host] and [data-active-sid={sessionId}]
+// so the e2e probes (PR-7) can locate the active terminal deterministically.
+
+declare global {
+  interface Window {
+    // Local stub until PR-3 lands the proper src/pty.d.ts. PR-8 收口 may
+    // remove this if the global declaration is in place by then.
+    ccsmPty: any;
+    __ccsmTerm?: Terminal;
+  }
+}
+
+type Props = {
+  sessionId: string;
+  cwd: string;
+};
+
+type State =
+  | { kind: 'attaching' }
+  | { kind: 'ready' }
+  | { kind: 'error'; message: string };
+
+// Module-scope singleton state. Initialised lazily on first mount so we
+// don't run xterm constructors at import time (would explode in non-DOM
+// test environments).
+let term: Terminal | null = null;
+let fit: FitAddon | null = null;
+let activeSid: string | null = null;
+let unsubscribeData: (() => void) | null = null;
+let inputDisposable: { dispose: () => void } | null = null;
+
+function ensureTerminal(host: HTMLDivElement): Terminal {
+  if (term) {
+    // Re-open against the new host element if React remounted us into a
+    // different node (rare — App keeps the pane mounted — but harmless).
+    if ((term as any)._core?._parent !== host) {
+      try {
+        term.open(host);
+      } catch {
+        // open() throws if already attached to this exact host; ignore.
+      }
+    }
+    return term;
+  }
+
+  term = new Terminal({
+    fontFamily: 'Cascadia Mono, Consolas, "Courier New", monospace',
+    fontSize: 13,
+    cursorBlink: true,
+    allowProposedApi: true,
+    scrollback: 5000,
+    theme: { background: '#000000' },
+  });
+  fit = new FitAddon();
+  term.loadAddon(fit);
+  try {
+    term.loadAddon(new WebLinksAddon());
+  } catch (e) {
+    console.warn('[TerminalPane] web-links addon failed', e);
+  }
+  try {
+    term.loadAddon(new ClipboardAddon());
+  } catch (e) {
+    console.warn('[TerminalPane] clipboard addon failed', e);
+  }
+  try {
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = '11';
+  } catch (e) {
+    console.warn('[TerminalPane] unicode11 addon failed', e);
+  }
+  // Canvas renderer is the safe middle ground (DOM is slow on dense
+  // output, WebGL flakes under RDP). Fall back silently to default DOM
+  // renderer if the GPU path can't initialise.
+  try {
+    term.loadAddon(new CanvasAddon());
+  } catch (e) {
+    console.warn('[TerminalPane] canvas addon failed, falling back to DOM', e);
+  }
+
+  term.open(host);
+
+  // ttyd-style: auto-copy on selection change. Works in alt-screen apps
+  // (claude/Ink) when user holds Shift to bypass mouse tracking and
+  // drags. Use Electron's clipboard via preload because navigator.clipboard
+  // requires user-activation that xterm's keydown swallow doesn't reliably
+  // propagate, and silently fails under default contextIsolation.
+  term.onSelectionChange(() => {
+    if (!term) return;
+    const sel = term.getSelection();
+    if (sel) {
+      try {
+        window.ccsmPty?.clipboard?.writeText(sel);
+      } catch {
+        // ignore clipboard failures — selection still highlights.
+      }
+    }
+  });
+
+  // Window title follows xterm escape sequences (ESC ]0;TITLE BEL),
+  // matching ttyd's onTitleChange behaviour.
+  term.onTitleChange((t) => {
+    if (t) document.title = t;
+  });
+
+  // Copy/paste keyboard shortcuts (Windows Terminal style):
+  //   Ctrl+C  → if selection, copy; else fall through to SIGINT
+  //   Ctrl+V  → paste
+  //   Ctrl+Shift+C / Ctrl+Shift+V → explicit always-clipboard
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    const isC = ev.key === 'C' || ev.key === 'c';
+    const isV = ev.key === 'V' || ev.key === 'v';
+
+    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isC) {
+      const sel = term?.getSelection();
+      if (sel) {
+        try {
+          window.ccsmPty?.clipboard?.writeText(sel);
+        } catch {}
+        return false;
+      }
+      return true;
+    }
+    if (ev.ctrlKey && !ev.shiftKey && !ev.altKey && isV) {
+      try {
+        const text = window.ccsmPty?.clipboard?.readText();
+        if (text && activeSid) window.ccsmPty.input(activeSid, text);
+      } catch {}
+      return false;
+    }
+    if (ev.ctrlKey && ev.shiftKey && isC) {
+      const sel = term?.getSelection();
+      if (sel) {
+        try {
+          window.ccsmPty?.clipboard?.writeText(sel);
+        } catch {}
+      }
+      return false;
+    }
+    if (ev.ctrlKey && ev.shiftKey && isV) {
+      try {
+        const text = window.ccsmPty?.clipboard?.readText();
+        if (text && activeSid) window.ccsmPty.input(activeSid, text);
+      } catch {}
+      return false;
+    }
+    return true;
+  });
+
+  // Probe hook for e2e harness — exposed in dev/test only so production
+  // bundles don't leak the Terminal handle to user JS.
+  if (process.env.NODE_ENV !== 'production') {
+    window.__ccsmTerm = term;
+  }
+
+  return term;
+}
+
+export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [state, setState] = useState<State>({ kind: 'attaching' });
+  // Tracks the sessionId we're currently attaching for so a stale resolve
+  // from a previous session can't clobber the current one when the user
+  // switches quickly.
+  const requestedSidRef = useRef<string>(sessionId);
+  // Bumped by Retry to force the attach effect to re-run for the same sid.
+  const [attachNonce, setAttachNonce] = useState(0);
+
+  // Mount-once: instantiate the singleton against our host div.
+  useEffect(() => {
+    if (!hostRef.current) return;
+    ensureTerminal(hostRef.current);
+  }, []);
+
+  // ResizeObserver with 80ms debounce → fit + pty.resize.
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const ro = new ResizeObserver(() => {
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => {
+        if (!term || !fit || !activeSid) return;
+        try {
+          fit.fit();
+          const { cols, rows } = term;
+          window.ccsmPty?.resize(activeSid, cols, rows);
+        } catch (e) {
+          console.warn('[TerminalPane] fit failed', e);
+        }
+      }, 80);
+    });
+    ro.observe(host);
+    return () => {
+      if (debounce) clearTimeout(debounce);
+      ro.disconnect();
+    };
+  }, []);
+
+  // Attach effect: on sessionId change (or Retry), detach the previous
+  // session, reset the terminal, attach the new one, and wire data flow.
+  useEffect(() => {
+    requestedSidRef.current = sessionId;
+    let cancelled = false;
+    setState({ kind: 'attaching' });
+
+    (async () => {
+      const pty = window.ccsmPty;
+      if (!pty) {
+        if (!cancelled) setState({ kind: 'error', message: 'ccsmPty unavailable' });
+        return;
+      }
+
+      const prevSid = activeSid;
+      if (prevSid && prevSid !== sessionId) {
+        if (unsubscribeData) {
+          try {
+            unsubscribeData();
+          } catch {}
+          unsubscribeData = null;
+        }
+        if (inputDisposable) {
+          try {
+            inputDisposable.dispose();
+          } catch {}
+          inputDisposable = null;
+        }
+        try {
+          await pty.detach(prevSid);
+        } catch {
+          // detach failure is non-fatal — main may already have torn it down.
+        }
+      } else if (prevSid === sessionId) {
+        // Same sid (Retry path): tear down stale subscriptions before re-attaching
+        // so we don't double-write incoming chunks.
+        if (unsubscribeData) {
+          try {
+            unsubscribeData();
+          } catch {}
+          unsubscribeData = null;
+        }
+        if (inputDisposable) {
+          try {
+            inputDisposable.dispose();
+          } catch {}
+          inputDisposable = null;
+        }
+      }
+
+      if (cancelled || requestedSidRef.current !== sessionId) return;
+
+      if (term) term.reset();
+
+      try {
+        const { snapshot, cols, rows } = await pty.attach(sessionId);
+        if (cancelled || requestedSidRef.current !== sessionId) return;
+
+        activeSid = sessionId;
+        if (term) {
+          try {
+            term.resize(cols, rows);
+          } catch {}
+          if (snapshot) term.write(snapshot);
+        }
+
+        unsubscribeData = pty.onData((payload: { sid: string; chunk: string }) => {
+          if (payload.sid !== activeSid) return;
+          term?.write(payload.chunk);
+        });
+
+        if (term) {
+          inputDisposable = term.onData((data: string) => {
+            if (activeSid) window.ccsmPty.input(activeSid, data);
+          });
+        }
+
+        // Push the current container size to the backend so claude
+        // re-wraps to the visible viewport rather than the spawn-time cols/rows.
+        if (fit && term && activeSid) {
+          try {
+            fit.fit();
+            window.ccsmPty.resize(activeSid, term.cols, term.rows);
+          } catch (e) {
+            console.warn('[TerminalPane] post-attach fit failed', e);
+          }
+        }
+
+        if (!cancelled) setState({ kind: 'ready' });
+      } catch (err) {
+        if (cancelled || requestedSidRef.current !== sessionId) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setState({ kind: 'error', message });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // attachNonce is intentional: bumping it re-runs the attach for Retry.
+  }, [sessionId, attachNonce]);
+
+  // pty:exit subscription for the active session → flip to error state.
+  useEffect(() => {
+    const pty = window.ccsmPty;
+    if (!pty?.onExit) return;
+    const unsubscribe = pty.onExit(
+      (evt: { sid: string; code?: number | null; signal?: string | number | null }) => {
+        if (evt.sid !== activeSid) return;
+        const detail =
+          evt.signal != null
+            ? `signal ${evt.signal}`
+            : evt.code != null
+              ? `exit code ${evt.code}`
+              : 'unknown reason';
+        setState({ kind: 'error', message: `pty exited (${detail})` });
+      },
+    );
+    return () => {
+      try {
+        unsubscribe?.();
+      } catch {}
+    };
+  }, []);
+
+  const onRetry = useCallback(() => {
+    setAttachNonce((n) => n + 1);
+  }, []);
+
+  return (
+    <div
+      className="relative flex-1 w-full h-full bg-black ring-1 ring-inset ring-white/5"
+      data-terminal-host
+      data-active-sid={sessionId}
+    >
+      <div ref={hostRef} className="absolute inset-0" />
+      {state.kind === 'attaching' && (
+        <div className="absolute inset-0 flex items-center justify-center text-neutral-400 text-sm pointer-events-none">
+          Attaching...
+        </div>
+      )}
+      {state.kind === 'error' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-black/80">
+          <div className="text-red-400 max-w-md text-center break-words px-4">
+            {state.message}
+          </div>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default TerminalPane;
