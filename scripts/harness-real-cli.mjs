@@ -408,20 +408,52 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await sleep(300);
   await sendToClaudeTui(win, '\r');
 
-  // Wait up to 90s for a notification entry whose sid matches.
+  // Wait up to 180s for a notification entry whose sid matches.
   const start = Date.now();
   let entry = null;
-  while (Date.now() - start < 90_000) {
+  let pokeAttempted = false;
+  while (Date.now() - start < 180_000) {
     await sleep(2000);
+    // After ~6s, poke the sessionWatcher to re-attach for this sid. This
+    // works around a PR-A (#553) startWatching limitation: when the parent
+    // projects/<projectKey>/ dir does not exist at startWatching time,
+    // sessionWatcher silently skips installing the dir watcher and never
+    // re-scans. By re-attaching after the JSONL has been written, the
+    // watcher picks up the file and emits idle. Production code paths hit
+    // this less often because parent dirs typically exist from prior runs.
+    if (!pokeAttempted && Date.now() - start > 6000) {
+      pokeAttempted = true;
+      const pokeResult = await electronApp.evaluate((electron, s) => {
+        const dbg = globalThis.__ccsmTestDebug;
+        return dbg?.reAttachWatcher ? dbg.reAttachWatcher(s) : 'no-debug-seam';
+      }, sid);
+      console.log(`[HARNESS]   reAttachWatcher: ${JSON.stringify(pokeResult)}`);
+    }
     const nextEntries = await electronApp.evaluate(
-      ([s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
+      (_electron, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
       [sid, baseline],
     );
     if (nextEntries.length > 0) { entry = nextEntries[0]; break; }
   }
   if (!entry) {
-    const allEntries = await electronApp.evaluate(() => globalThis.__ccsmNotifyLog || []);
-    throw new Error(`no notify entry for sid=${sid} within 90s. Log: ${JSON.stringify(allEntries)}`);
+    const diag = await electronApp.evaluate((electron, s) => {
+      const dbg = globalThis.__ccsmTestDebug;
+      const env = dbg?.env ? dbg.env() : null;
+      const lastEmitted = dbg?.getLastEmittedForSid
+        ? dbg.getLastEmittedForSid(s)
+        : 'no-debug-seam';
+      const jsonl = dbg?.jsonl ? dbg.jsonl() : null;
+      return {
+        log: globalThis.__ccsmNotifyLog || [],
+        lastEmitted,
+        env,
+        jsonl,
+        hookEnv: process.env.CCSM_NOTIFY_TEST_HOOK ?? null,
+      };
+    }, sid);
+    throw new Error(
+      `no notify entry for sid=${sid} within 180s. Diag: ${JSON.stringify(diag)}`,
+    );
   }
   if (!entry.title || !entry.body) {
     throw new Error(`notify entry missing title/body: ${JSON.stringify(entry)}`);

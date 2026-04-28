@@ -150,6 +150,9 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
     // Suppress when the user is already looking at this session in a
     // focused window — they don't need a desktop ping for something
     // that's already on screen.
+    // TODO(multi-window): this assumes a single main BrowserWindow. If we
+    // ever support multiple windows, "focused" must be checked per-window
+    // and getActiveSidFn() must be scoped to the focused window's renderer.
     if (isWindowFocusedFn() && getActiveSidFn() === evt.sid) return;
 
     // Per-sid dedupe: ignore a second notification for the same sid
@@ -197,11 +200,4 @@ function focusAndActivate(win: BrowserWindow | null, sid: string): void {
   } catch (err) {
     console.warn('[notify] session:activate send failed', err);
   }
-}
-
-// Test-only: read + clear the internal dedupe state. Lets unit tests assert
-// independent behaviour case-by-case without leaking state between tests.
-export function __resetForTest(): void {
-  // No module-level state to reset — bridge is constructed per-install. The
-  // test impl's globalThis log is owned by the test; reset it there.
 }
