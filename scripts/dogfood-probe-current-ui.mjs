@@ -8,9 +8,10 @@
 // 6. Screenshot populated session.
 
 import { _electron as electron } from 'playwright';
-import { rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import * as path from 'node:path';
+import * as os from 'node:os';
 
 const userData = path.resolve('.dogfood-userdata');
 rmSync(userData, { recursive: true, force: true });
@@ -179,6 +180,118 @@ const final = await win.evaluate(() => {
   };
 });
 log('final-state', true, final);
+
+// ===================================================================
+// Lifecycle deferred-fixes coverage (P1-1, P1-2, P0-1, P0-3)
+// ===================================================================
+
+const tasklistPids = () => {
+  try {
+    const out = execSync('tasklist /FI "IMAGENAME eq ttyd.exe" /FO CSV /NH', { encoding: 'utf8' });
+    return out
+      .split(/\r?\n/)
+      .filter((l) => /ttyd\.exe/i.test(l))
+      .map((l) => {
+        const cols = l.split('","').map((c) => c.replace(/^"|"$/g, ''));
+        return cols[1]; // PID column
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+};
+
+// ---------- Case A: JSONL filename matches ccsm sessionId ----------
+let caseAOk = false;
+let caseAdetail = null;
+try {
+  const sid = final.activeId;
+  if (!sid) throw new Error('no activeId');
+  // claude encodes the cwd dir into ~/.claude/projects/<encoded>/<sid>.jsonl.
+  // The encoding replaces path separators + colons with `-` (Windows: `C:\foo\bar` → `C--foo-bar`).
+  // We don't know the exact encoding here; fall back to scanning all project
+  // dirs for a file named `<sid>.jsonl`.
+  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
+  let matched = null;
+  if (existsSync(projectsRoot)) {
+    const dirs = execSync(`dir /b "${projectsRoot}"`, { encoding: 'utf8', shell: 'cmd.exe' })
+      .split(/\r?\n/)
+      .filter(Boolean);
+    for (const d of dirs) {
+      const candidate = path.join(projectsRoot, d, `${sid}.jsonl`);
+      if (existsSync(candidate)) {
+        matched = candidate;
+        break;
+      }
+    }
+  }
+  caseAOk = !!matched;
+  caseAdetail = { sid, matched };
+  log('case-A jsonl-matches-ccsm-sid', caseAOk, caseAdetail);
+} catch (err) {
+  log('case-A jsonl-matches-ccsm-sid', false, String(err).slice(0, 200));
+}
+
+// ---------- Case B: switch sessions does not respawn ttyd ----------
+// Capture initial port + tasklist; create a 2nd session; switch back; verify
+// the original session's getTtydForSession returns the SAME port and the
+// PID list shape is preserved (original PID still present).
+let caseBOk = false;
+let caseBdetail = null;
+try {
+  const sidA = final.activeId;
+  const beforePids = tasklistPids();
+  const lookupBefore = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), sidA);
+  if (!lookupBefore?.port) throw new Error('no ttyd for sessionA pre-switch');
+  // Create session B + switch
+  const sidB = await win.evaluate(() => {
+    const s = window.__ccsmStore?.getState?.();
+    s?.createSession?.(null);
+    return window.__ccsmStore?.getState?.()?.activeId ?? null;
+  });
+  await new Promise((r) => setTimeout(r, 1500));
+  // Switch back to A
+  await win.evaluate((sid) => {
+    window.__ccsmStore?.getState?.()?.selectSession?.(sid);
+  }, sidA);
+  await new Promise((r) => setTimeout(r, 1500));
+  const lookupAfter = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), sidA);
+  const afterPids = tasklistPids();
+  caseBOk =
+    lookupAfter?.port === lookupBefore.port &&
+    beforePids.every((p) => afterPids.includes(p));
+  caseBdetail = { sidA, sidB, beforePort: lookupBefore.port, afterPort: lookupAfter?.port, beforePids, afterPids };
+  log('case-B switch-preserves-ttyd', caseBOk, caseBdetail);
+} catch (err) {
+  log('case-B switch-preserves-ttyd', false, String(err).slice(0, 200));
+}
+
+// ---------- Case C: deleteSession reaps ttyd ----------
+let caseCOk = false;
+let caseCdetail = null;
+try {
+  const targetSid = final.activeId;
+  const lookupBefore = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), targetSid);
+  if (!lookupBefore?.port) throw new Error('no ttyd to delete');
+  await win.evaluate((sid) => {
+    window.__ccsmStore?.getState?.()?.deleteSession?.(sid);
+  }, targetSid);
+  // Give the IPC + taskkill a moment
+  await new Promise((r) => setTimeout(r, 2500));
+  const lookupAfter = await win.evaluate((sid) => window.ccsmCliBridge?.getTtydForSession?.(sid), targetSid);
+  caseCOk = lookupAfter == null;
+  caseCdetail = { targetSid, lookupBefore, lookupAfter };
+  log('case-C delete-reaps-ttyd', caseCOk, caseCdetail);
+} catch (err) {
+  log('case-C delete-reaps-ttyd', false, String(err).slice(0, 200));
+}
+
+// ---------- Case D: resolveClaude force re-scan ----------
+// Skipped: requires moving the claude.cmd binary off PATH on the live
+// system, which would interfere with the user's own CLI install. The
+// {force:true} flag is exercised by the renderer button via a unit-level
+// path; e2e for this case is documented as deferred.
+log('case-D claude-force-rescan', false, 'skipped: would mutate user PATH');
 
 const summary = { initial, steps, final, consoleErrors: consoleEvents.filter((e) => e.type === 'error' || e.type === 'pageerror') };
 writeFileSync(path.join(screenshotDir, 'probe-summary.json'), JSON.stringify(summary, null, 2));

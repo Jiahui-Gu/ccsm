@@ -189,8 +189,10 @@ const cliBridge = {
     ipcRenderer.invoke('cliBridge:resumeSession', sessionId, cwd, sid),
   killTtydForSession: (sessionId: string): Promise<CliBridgeKillResult> =>
     ipcRenderer.invoke('cliBridge:killTtydForSession', sessionId),
-  checkClaudeAvailable: (): Promise<CliBridgeAvailability> =>
-    ipcRenderer.invoke('cliBridge:checkClaudeAvailable'),
+  getTtydForSession: (sessionId: string): Promise<{ port: number; sid: string } | null> =>
+    ipcRenderer.invoke('cliBridge:getTtydForSession', sessionId),
+  checkClaudeAvailable: (opts?: { force?: boolean }): Promise<CliBridgeAvailability> =>
+    ipcRenderer.invoke('cliBridge:checkClaudeAvailable', opts ?? {}),
   onTtydExit: (handler: (e: TtydExitEvent) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: TtydExitEvent) => handler(payload);
     ipcRenderer.on('cliBridge:ttyd-exit', wrap);

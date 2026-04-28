@@ -29,7 +29,7 @@ export function ClaudeMissingGuide({ onResolved }: Props) {
       // in W2a alongside the TtydPane wiring).
       const bridge = window.ccsmCliBridge;
       if (!bridge) return;
-      const result = await bridge.checkClaudeAvailable();
+      const result = await bridge.checkClaudeAvailable({ force: true });
       if (result.available) {
         onResolved();
         return;

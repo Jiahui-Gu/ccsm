@@ -21,6 +21,7 @@
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import {
   bindSender,
+  getTtydForSession,
   killAll,
   killTtydForSession,
   openTtydForSession,
@@ -71,8 +72,17 @@ export function registerCliBridgeIpc(): void {
     },
   );
 
-  ipcMain.handle('cliBridge:checkClaudeAvailable', () => {
-    const p = resolveClaude();
+  ipcMain.handle('cliBridge:getTtydForSession', (e, sessionId: unknown) => {
+    if (!fromMainFrame(e)) return null;
+    if (typeof sessionId !== 'string' || !sessionId) return null;
+    return getTtydForSession(sessionId);
+  });
+
+  ipcMain.handle('cliBridge:checkClaudeAvailable', (e, opts: unknown) => {
+    if (!fromMainFrame(e)) return { available: false } as const;
+    const force =
+      typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
+    const p = resolveClaude({ force });
     return p ? { available: true, path: p } : { available: false };
   });
 }
