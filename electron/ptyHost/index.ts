@@ -28,6 +28,7 @@
 // is PR-3. This file ships standalone and only typechecks once PR-1 has added
 // the node-pty / @xterm/headless / @xterm/addon-serialize deps.
 
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join as pathJoin } from 'node:path';
@@ -286,15 +287,55 @@ export function resizePtySession(sid: string, cols: number, rows: number): void 
 export function killPtySession(sid: string): boolean {
   const entry = sessions.get(sid);
   if (!entry) return false;
+  // Capture pid BEFORE pty.kill() — the binding may zero it after kill.
+  const pid = entry.pty.pid;
   try {
     entry.pty.kill();
   } catch {
     /* already dead */
   }
+  // ConPTY's kill only terminates the cmd.exe / OpenConsole wrapper; on Windows
+  // the claude.exe child (and its grandchildren) survive as orphans. On
+  // mac/linux the pgid may also have stragglers. Walk the tree via a
+  // platform-native call to guarantee a clean shutdown.
+  killProcessSubtree(pid);
   // headless dispose + map delete happen in the onExit handler so we don't
   // double-clean. Belt-and-braces drop here in case onExit doesn't fire (rare:
   // the binding has fired reliably on Windows conpty in spike testing).
   return true;
+}
+
+// Recursively terminate the entire subtree rooted at `pid`. Best-effort: any
+// already-dead pid is swallowed silently. Called from killPtySession after
+// pty.kill() so the IPC `pty:kill` path and `before-quit` both get cleanup.
+function killProcessSubtree(pid: number | undefined): void {
+  if (!pid || pid <= 0) return;
+  if (process.platform === 'win32') {
+    try {
+      // /T walks the entire tree, /F forces termination.
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+    } catch {
+      /* already dead or taskkill unavailable */
+    }
+    return;
+  }
+  // POSIX: signal the process group (negative pid). SIGTERM first; SIGKILL
+  // after a short grace period if anything refuses to exit.
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    /* group already gone */
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      /* already dead */
+    }
+  }, 500).unref();
 }
 
 export function getPtySession(sid: string): PtySessionInfo | null {

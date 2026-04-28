@@ -50,6 +50,7 @@ import {
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   createIsolatedClaudeDir,
   dismissFirstRunModals,
@@ -979,6 +980,218 @@ async function caseReopenResume() {
 }
 
 // ============================================================================
+// Case: pty-subtree-killed-on-quit (#554) — owns its own launch
+// ============================================================================
+//
+// Verifies that quitting ccsm tears down the ENTIRE PTY subtree, not just the
+// ConPTY wrapper. On Windows, node-pty.kill() only terminates the
+// cmd.exe / OpenConsole wrapper; without an explicit `taskkill /F /T` the
+// claude.exe grandchild (and anything it spawned) survives as an orphan.
+//
+// Flow: launch ccsm -> create 2 sessions -> walk pty pid + descendants ->
+// quit app -> confirm none of those pids are alive after a 2s settle.
+
+function listChildPids(parentPid) {
+  if (!parentPid || parentPid <= 0) return [];
+  if (process.platform === 'win32') {
+    // wmic is deprecated on newer Windows but still installed; fall back to
+    // PowerShell Get-CimInstance if it's missing.
+    const wmic = spawnSync(
+      'wmic',
+      ['process', 'where', `ParentProcessId=${parentPid}`, 'get', 'ProcessId'],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    if (wmic.status === 0 && wmic.stdout) {
+      return wmic.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l))
+        .map((l) => Number(l))
+        .filter((n) => n !== parentPid);
+    }
+    const ps = spawnSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | Select-Object -ExpandProperty ProcessId`,
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    if (ps.status === 0 && ps.stdout) {
+      return ps.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l))
+        .map((l) => Number(l));
+    }
+    return [];
+  }
+  const r = spawnSync('pgrep', ['-P', String(parentPid)], { encoding: 'utf8' });
+  if (r.status !== 0 || !r.stdout) return [];
+  return r.stdout
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^\d+$/.test(l))
+    .map((l) => Number(l));
+}
+
+function walkSubtree(rootPid) {
+  const all = new Set();
+  const queue = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    if (!pid || all.has(pid)) continue;
+    all.add(pid);
+    for (const child of listChildPids(pid)) {
+      if (!all.has(child)) queue.push(child);
+    }
+  }
+  return [...all];
+}
+
+function pidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  if (process.platform === 'win32') {
+    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (r.status !== 0 || !r.stdout) return false;
+    // tasklist prints "INFO: No tasks are running ..." when no match, otherwise
+    // a CSV row containing the pid.
+    return new RegExp(`"${pid}"`).test(r.stdout);
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === 'EPERM';
+  }
+}
+
+function processName(pid) {
+  if (process.platform === 'win32') {
+    const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (r.status === 0 && r.stdout) {
+      const m = r.stdout.match(/"([^"]+)"/);
+      if (m) return m[1];
+    }
+    return '?';
+  }
+  const r = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' });
+  return r.status === 0 && r.stdout ? r.stdout.trim() : '?';
+}
+
+async function casePtySubtreeKilledOnQuit() {
+  const isolated = await createIsolatedClaudeDir();
+  const tempDir = isolated.tempDir;
+
+  let app = null;
+  try {
+    const launched = await launchCcsmIsolated({ tempDir });
+    app = launched.electronApp;
+    const win = launched.win;
+    await sleep(1500);
+
+    await win.waitForFunction(
+      () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+      null,
+      { timeout: 30000 },
+    );
+
+    // Spawn 2 sessions so we exercise the kill loop, not just one entry.
+    const sessions = [];
+    for (const name of ['subtree-A', 'subtree-B']) {
+      const { sid } = await seedSession(win, { name, cwd: tempDir });
+      if (!sid) throw new Error(`seedSession (${name}) returned no sid`);
+      await waitForTerminalReady(win, sid, { timeout: 60000 });
+      await waitForXtermBuffer(win, /claude|welcome|│|╭|trust|\?\sfor\sshortcuts/i, {
+        timeout: 30000,
+      });
+      const pid = await getPtyPidForSid(win, sid);
+      if (typeof pid !== 'number') throw new Error(`no pty pid for ${name} (${sid})`);
+      sessions.push({ name, sid, pid });
+    }
+
+    // Walk the full subtree for each pty root. Capture BEFORE quit so we have
+    // ground truth — after the quit the kernel will recycle pid table entries
+    // and we'd miss children.
+    const allPids = new Map(); // pid -> { ownerName, name }
+    for (const s of sessions) {
+      const tree = walkSubtree(s.pid);
+      for (const p of tree) {
+        if (!allPids.has(p)) allPids.set(p, { ownerName: s.name, name: processName(p) });
+      }
+    }
+
+    if (allPids.size < sessions.length) {
+      throw new Error(
+        `expected at least ${sessions.length} pids in tree, got ${allPids.size}: ` +
+          JSON.stringify([...allPids]),
+      );
+    }
+    console.log(
+      `[pty-subtree] captured ${allPids.size} pids across ${sessions.length} sessions: ` +
+        [...allPids.entries()]
+          .map(([pid, m]) => `${pid}(${m.name})`)
+          .join(', '),
+    );
+
+    // Trigger graceful quit (drives the before-quit handler that calls
+    // killAllPtySessions). Tolerate the close raising — Electron is going down.
+    try {
+      await app.evaluate(({ app: a }) => a.quit());
+    } catch (_) {
+      /* expected if context tears down mid-evaluate */
+    }
+    try {
+      await app.close();
+    } catch (_) {
+      /* already closing */
+    }
+    app = null;
+
+    // 2s settle so taskkill /T can finish walking the tree and the OS reaps
+    // the children.
+    await sleep(2000);
+
+    const survivors = [];
+    for (const [pid, meta] of allPids.entries()) {
+      if (pidAlive(pid)) survivors.push({ pid, ...meta, currentName: processName(pid) });
+    }
+
+    if (survivors.length > 0) {
+      // Best-effort cleanup so a failed run doesn't leak claude.exe forever.
+      for (const s of survivors) {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/F', '/T', '/PID', String(s.pid)], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+        } else {
+          try { process.kill(s.pid, 'SIGKILL'); } catch (_) { /* ignore */ }
+        }
+      }
+      throw new Error(
+        `pty subtree leaked after app quit: ` +
+          survivors
+            .map((s) => `pid=${s.pid} name=${s.currentName} owner=${s.ownerName}`)
+            .join('; '),
+      );
+    }
+  } finally {
+    if (app) {
+      try { await app.close(); } catch (_) { /* ignore */ }
+    }
+    isolated.cleanup?.();
+  }
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
@@ -991,6 +1204,7 @@ const CASE_REGISTRY = [
   { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
+  { name: 'pty-subtree-killed-on-quit',  group: 'standalone', run: casePtySubtreeKilledOnQuit },
 ];
 
 // ============================================================================
