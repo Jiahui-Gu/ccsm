@@ -37,6 +37,8 @@ import * as pty from 'node-pty';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { resolveClaude } from './claudeResolver';
+import { sessionWatcher } from '../sessionWatcher';
+import { cwdToProjectKey } from '../sessionWatcher/projectKey';
 
 // --- Public types ------------------------------------------------------------
 
@@ -69,6 +71,10 @@ interface Entry {
 }
 
 const sessions = new Map<string, Entry>();
+
+// Module-singleton guard: registerPtyHostIpc may be called more than once
+// in dev/HMR; we only want one sessionWatcher → IPC bridge.
+let stateBridgeInstalled = false;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
@@ -124,6 +130,29 @@ function jsonlExistsForSid(sid: string): boolean {
     }
   }
   return false;
+}
+
+// Resolve the absolute path the CLI will write the session JSONL to:
+//   <root>/projects/<projectKey>/<claudeSid>.jsonl
+// where `<root>` is `$CLAUDE_CONFIG_DIR` (if set) else `~/.claude`, and
+// `<projectKey>` is `cwdToProjectKey(cwd)`. Returns null when we can't
+// determine a usable root (no env, no $HOME / $USERPROFILE) — the watcher
+// then never starts and the renderer just sees no state events for this
+// session, which is the correct degraded behaviour.
+//
+// We don't require the file to exist yet — the watcher installs a parent-
+// directory watcher and reads-on-create. We also prefer the encoded path
+// over scanning every project dir (which `jsonlExistsForSid` does for the
+// resume-vs-spawn decision) because the watcher is tied to a SPECIFIC
+// session and shouldn't latch onto a same-sid file in some other project.
+function resolveJsonlPath(claudeSid: string, cwd: string): string | null {
+  const projectKey = cwdToProjectKey(cwd);
+  if (!projectKey) return null;
+  const cfg = process.env.CLAUDE_CONFIG_DIR;
+  const home = process.env.USERPROFILE || process.env.HOME;
+  const root = cfg ? cfg : home ? pathJoin(home, '.claude') : null;
+  if (!root) return null;
+  return pathJoin(root, 'projects', projectKey, `${claudeSid}.jsonl`);
 }
 
 function makeEntry(
@@ -199,7 +228,22 @@ function makeEntry(
       /* already disposed */
     }
     sessions.delete(sid);
+    // Stop the JSONL tail-watcher so we don't keep an fs.watch handle
+    // pinned for a dead session.
+    try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
   });
+
+  // Start a JSONL tail-watcher for this session. The watcher emits
+  // 'state-changed' on the singleton in electron/sessionWatcher; main.ts
+  // bridges those events to the renderer (`session:state` IPC channel).
+  // Path resolution mirrors `jsonlExistsForSid` above: prefer
+  // CLAUDE_CONFIG_DIR/projects, fall back to ~/.claude/projects.
+  try {
+    const jsonlPath = resolveJsonlPath(claudeSid, cwd);
+    if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath);
+  } catch {
+    /* watcher start is best-effort; PTY still owns its lifecycle */
+  }
 
   return entry;
 }
@@ -299,6 +343,10 @@ export function killPtySession(sid: string): boolean {
   // mac/linux the pgid may also have stragglers. Walk the tree via a
   // platform-native call to guarantee a clean shutdown.
   killProcessSubtree(pid);
+  // Belt-and-braces: also stop the watcher synchronously here so a
+  // pty.kill that races with onExit can't leak the fs.watch handle.
+  // sessionWatcher.stopWatching is idempotent.
+  try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
   // headless dispose + map delete happen in the onExit handler so we don't
   // double-clean. Belt-and-braces drop here in case onExit doesn't fire (rare:
   // the binding has fired reliably on Windows conpty in spike testing).
@@ -362,7 +410,25 @@ export function registerPtyHostIpc(
   ipcMain: IpcMain,
   getMainWindow: () => BrowserWindow | null,
 ): void {
-  void getMainWindow;
+  // Fan out sessionWatcher's state-changed events to the renderer. We send
+  // to the main window (the only renderer that subscribes today); the
+  // preload bridges via `window.ccsmSession.onState`. Subscribed once at
+  // module init — sessionWatcher is a singleton and start/stopWatching
+  // happens in spawn/kill, so we never need to teardown this listener.
+  if (!stateBridgeInstalled) {
+    sessionWatcher.on('state-changed', (evt) => {
+      const win = getMainWindow();
+      if (!win || win.isDestroyed()) return;
+      const wc = win.webContents;
+      if (wc.isDestroyed()) return;
+      try {
+        wc.send('session:state', evt);
+      } catch {
+        /* renderer gone */
+      }
+    });
+    stateBridgeInstalled = true;
+  }
 
   ipcMain.handle('pty:list', () => listPtySessions());
 

@@ -1,0 +1,234 @@
+// Per-session JSONL tail-watcher.
+//
+// Owns one fs.watch + buffered read per active ccsm session. Emits
+// `'state-changed'` with `{sid, state}` on TRANSITION only (it dedups
+// against the last emitted state per sid so the renderer doesn't get
+// spammed on every tail tick).
+//
+// Why fs.watch over chokidar: chokidar isn't a dep yet and #553's spec
+// said to vote-and-stop before adding it silently. Plain `fs.watch` is
+// good enough here because:
+//   * We're watching a single file path per session, not a tree.
+//   * We re-stat on every event anyway (to detect truncation/rotation).
+//   * The CLI only writes frames at turn boundaries, so even Windows'
+//     coalesced events fire often enough — sub-second latency for
+//     idle-detection is fine.
+//
+// Robustness notes (per spec):
+//   * File doesn't exist yet — we still install the watcher on the parent
+//     directory and treat the missing file as state='running' (claude
+//     just spawned and hasn't written its first frame).
+//   * Mid-line read — `classifyJsonlText` tolerates JSON.parse failure on
+//     the trailing line; the next fs event will carry the full content.
+//   * Rotation / truncation — every read uses readFile (whole file), so
+//     truncation is naturally handled. Big files: see comment in
+//     `readAndClassify` — we cap reads at MAX_READ_BYTES from the tail.
+
+import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { classifyJsonlText, type WatcherState } from './inference';
+
+export type { WatcherState } from './inference';
+
+export interface StateChangedEvent {
+  sid: string;
+  state: WatcherState;
+}
+
+interface Entry {
+  sid: string;
+  jsonlPath: string;
+  // Watcher on the file itself (created lazily once the file exists) and a
+  // fallback watcher on the parent directory (so we notice the first
+  // creation even if claude hasn't written it at startWatching time).
+  fileWatcher: fs.FSWatcher | null;
+  dirWatcher: fs.FSWatcher | null;
+  lastEmitted: WatcherState | null;
+  // Coalesce bursts of fs events. fs.watch on Windows can fire 3-5 times
+  // for a single append; we don't want to re-read + reclassify each time.
+  pendingTimer: NodeJS.Timeout | null;
+  closed: boolean;
+}
+
+// fs.watch on Windows can emit multiple events per write (one per
+// metadata-change + data-change). 50ms is enough to coalesce without
+// adding visible UX latency.
+const DEBOUNCE_MS = 50;
+
+// Cap tail reads. Real transcripts grow to 100+ MB over long sessions and
+// re-reading the whole file on every event would be wasteful. We only need
+// the trailing few frames to classify state. 256 KiB ≈ several dozen
+// large frames, comfortably more than any single turn boundary needs.
+const MAX_READ_BYTES = 256 * 1024;
+
+class SessionWatcher extends EventEmitter {
+  private entries = new Map<string, Entry>();
+
+  startWatching(sid: string, jsonlPath: string): void {
+    if (!sid || !jsonlPath) return;
+    const existing = this.entries.get(sid);
+    if (existing) {
+      // Same path: no-op. Different path: tear down + re-install. (Path
+      // changes shouldn't happen in practice — the sid → jsonl mapping is
+      // stable for a session's lifetime — but defend anyway.)
+      if (existing.jsonlPath === jsonlPath) return;
+      this.stopWatching(sid);
+    }
+    const entry: Entry = {
+      sid,
+      jsonlPath,
+      fileWatcher: null,
+      dirWatcher: null,
+      lastEmitted: null,
+      pendingTimer: null,
+      closed: false,
+    };
+    this.entries.set(sid, entry);
+
+    // Initial classification — file may not exist yet, in which case
+    // classifyJsonlText('') returns 'running' (the empty-frames fallback).
+    this.scheduleRead(entry, /*immediate*/ true);
+
+    this.installFileWatcher(entry);
+    this.installDirWatcher(entry);
+  }
+
+  stopWatching(sid: string): void {
+    const entry = this.entries.get(sid);
+    if (!entry) return;
+    entry.closed = true;
+    if (entry.pendingTimer) {
+      clearTimeout(entry.pendingTimer);
+      entry.pendingTimer = null;
+    }
+    if (entry.fileWatcher) {
+      try { entry.fileWatcher.close(); } catch { /* already closed */ }
+      entry.fileWatcher = null;
+    }
+    if (entry.dirWatcher) {
+      try { entry.dirWatcher.close(); } catch { /* already closed */ }
+      entry.dirWatcher = null;
+    }
+    this.entries.delete(sid);
+  }
+
+  // For tests / shutdown.
+  closeAll(): void {
+    for (const sid of [...this.entries.keys()]) this.stopWatching(sid);
+  }
+
+  // Test seam.
+  getLastEmittedForTest(sid: string): WatcherState | null {
+    return this.entries.get(sid)?.lastEmitted ?? null;
+  }
+
+  private installFileWatcher(entry: Entry): void {
+    if (entry.closed) return;
+    if (!fs.existsSync(entry.jsonlPath)) return;
+    try {
+      entry.fileWatcher = fs.watch(entry.jsonlPath, () => {
+        if (entry.closed) return;
+        this.scheduleRead(entry);
+      });
+      entry.fileWatcher.on('error', () => {
+        // File rotated / deleted under us. Drop the file watcher and let
+        // the directory watcher notice the next creation.
+        if (entry.fileWatcher) {
+          try { entry.fileWatcher.close(); } catch { /* */ }
+          entry.fileWatcher = null;
+        }
+      });
+    } catch {
+      // ENOENT or perm error — leave fileWatcher null; the dir watcher
+      // will install us once the file appears.
+      entry.fileWatcher = null;
+    }
+  }
+
+  private installDirWatcher(entry: Entry): void {
+    if (entry.closed) return;
+    const dir = path.dirname(entry.jsonlPath);
+    const baseName = path.basename(entry.jsonlPath);
+    if (!fs.existsSync(dir)) {
+      // Parent doesn't exist yet — claude hasn't ever run for this cwd.
+      // We can't watch a non-existent directory portably; bail. The first
+      // re-attach (e.g. on session-switch) will re-run startWatching.
+      return;
+    }
+    try {
+      entry.dirWatcher = fs.watch(dir, (_evt, filename) => {
+        if (entry.closed) return;
+        // filename can be null on some platforms; in that case re-check
+        // existence anyway.
+        if (filename && filename !== baseName) return;
+        // (Re-)install the file watcher if it wasn't yet present.
+        if (!entry.fileWatcher) this.installFileWatcher(entry);
+        this.scheduleRead(entry);
+      });
+      entry.dirWatcher.on('error', () => {
+        if (entry.dirWatcher) {
+          try { entry.dirWatcher.close(); } catch { /* */ }
+          entry.dirWatcher = null;
+        }
+      });
+    } catch {
+      entry.dirWatcher = null;
+    }
+  }
+
+  private scheduleRead(entry: Entry, immediate = false): void {
+    if (entry.closed) return;
+    if (entry.pendingTimer) clearTimeout(entry.pendingTimer);
+    const fire = () => {
+      entry.pendingTimer = null;
+      if (entry.closed) return;
+      this.readAndClassify(entry);
+    };
+    entry.pendingTimer = setTimeout(fire, immediate ? 0 : DEBOUNCE_MS);
+  }
+
+  private readAndClassify(entry: Entry): void {
+    let text = '';
+    try {
+      const stat = fs.statSync(entry.jsonlPath);
+      if (stat.size === 0) {
+        text = '';
+      } else if (stat.size <= MAX_READ_BYTES) {
+        text = fs.readFileSync(entry.jsonlPath, 'utf8');
+      } else {
+        // Tail-read the last MAX_READ_BYTES bytes. We may slice into the
+        // middle of a frame; classifyJsonlText skips parse failures so
+        // the leading partial frame is dropped naturally.
+        const fd = fs.openSync(entry.jsonlPath, 'r');
+        try {
+          const buf = Buffer.alloc(MAX_READ_BYTES);
+          fs.readSync(fd, buf, 0, MAX_READ_BYTES, stat.size - MAX_READ_BYTES);
+          text = buf.toString('utf8');
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch {
+      // File doesn't exist (yet) or is otherwise unreadable. Treat as
+      // 'running' per spec.
+      text = '';
+    }
+    const next = classifyJsonlText(text);
+    if (next !== entry.lastEmitted) {
+      entry.lastEmitted = next;
+      this.emit('state-changed', { sid: entry.sid, state: next } as StateChangedEvent);
+    }
+  }
+}
+
+// Module-level singleton — main.ts wires one IPC fan-out off this
+// emitter and ptyHost calls start/stopWatching directly.
+export const sessionWatcher = new SessionWatcher();
+
+// Test factory — fresh instance per test, no shared state.
+export function __createForTest(): SessionWatcher {
+  return new SessionWatcher();
+}
+
+export type { SessionWatcher };
