@@ -52,6 +52,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   createIsolatedClaudeDir,
+  dismissFirstRunModals,
   dismissWelcomeSplash,
   launchCcsmIsolated,
   readXtermLines,
@@ -186,17 +187,7 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
   await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
 
   // Dismiss trust / welcome / theme splashes.
-  for (let i = 0; i < 12; i++) {
-    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
-    const screen = lines.join('\n');
-    if (/│\s*>/.test(screen) || /^\s*>\s/m.test(screen)) break;
-    if (/trust|do you trust/i.test(screen)) {
-      await sendToClaudeTui(win, '1\r').catch(() => {});
-    } else {
-      await sendToClaudeTui(win, '\r').catch(() => {});
-    }
-    await sleep(1500);
-  }
+  await dismissFirstRunModals(win);
 
   await sendToClaudeTui(win, CHAT_PROMPT);
   await sleep(500);
@@ -852,17 +843,7 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
   // the first keystrokes after a cold start. Without this, the
   // `echo MARKER` below would be eaten by the trust modal and the
   // marker would never reach the shell.
-  for (let i = 0; i < 12; i++) {
-    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
-    const screen = lines.join('\n');
-    if (/│\s*>/.test(screen) || /^\s*>\s/m.test(screen)) break;
-    if (/trust|do you trust/i.test(screen)) {
-      await sendToClaudeTui(win, '1\r').catch(() => {});
-    } else {
-      await sendToClaudeTui(win, '\r').catch(() => {});
-    }
-    await sleep(1500);
-  }
+  await dismissFirstRunModals(win);
 
   // Snapshot pidA1 from window.ccsmPty.list().
   const pidA1 = await getPtyPidForSid(win, sidA);
@@ -994,31 +975,6 @@ async function caseReopenResume() {
     if (app2) try { await app2.close(); } catch (_) { /* ignore */ }
     try { rmSync(userDataDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     isolated.cleanup?.();
-  }
-}
-
-async function dismissFirstRunModals(win) {
-  const trustRe = /trust the files|trust this folder|Do you trust|1\.\s*Yes|Yes, proceed/i;
-  const promptRe = /│\s*>|^\s*>\s/m;
-
-  for (let i = 0; i < 8; i++) {
-    const lines = await readXtermLines(win, { lines: 20 }).catch(() => []);
-    const screen = lines.join('\n');
-    if (promptRe.test(screen)) break;
-    if (trustRe.test(screen)) {
-      await sendToClaudeTui(win, '1\r').catch(() => {});
-      await sleep(800);
-      continue;
-    }
-    await sleep(600);
-  }
-  await dismissWelcomeSplash(win, { maxAttempts: 5, settleMs: 600 });
-  for (let i = 0; i < 4; i++) {
-    const lines = await readXtermLines(win, { lines: 12 }).catch(() => []);
-    const screen = lines.join('\n');
-    if (/│\s*>|^\s*>\s/m.test(screen)) return;
-    await sendToClaudeTui(win, '\r').catch(() => {});
-    await sleep(900);
   }
 }
 
