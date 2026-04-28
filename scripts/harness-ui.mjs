@@ -24,7 +24,7 @@
 //   - theme-toggle                         (probe-e2e-theme-toggle)
 //   - language-toggle                      (probe-e2e-language-toggle)
 //   - i18n-settings-zh                     (probe-e2e-i18n-settings-zh)
-//   - notif-disabled-suppress              (W5 single-gate notification dispatch)
+//   - notif-disabled-suppress              (REMOVED in PR-D alongside the Notifications pane)
 //   - app-icon-default                     (probe-e2e-app-icon-default, skipLaunch)
 //   - cap-skip-launch-bundle-shape         (capability demo, skipLaunch)
 //   - group-add                            (probe-e2e-group-add)
@@ -1184,8 +1184,10 @@ async function caseLanguageToggle({ win, log, registerDispose }) {
 }
 
 // ---------- i18n-settings-zh ----------
-// All four Settings panes (Appearance / Notifications / Updates / Connection)
-// render Chinese labels when language=zh. Restores language to en.
+// All three Settings panes (Appearance / Updates / Connection) render
+// Chinese labels when language=zh. The Notifications pane was removed in
+// PR-D (no production caller wired `dispatchNotification`); the assertions
+// for it were dropped in the same PR. Restores language to en.
 async function caseI18nSettingsZh({ win, log, registerDispose }) {
   registerDispose(async () => {
     // Same restore strategy as language-toggle — strip the persisted
@@ -1257,42 +1259,9 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
   assertHasText(txt, '字号', 'appearance');
   assertNotHasText(txt, 'Theme', 'appearance');
 
-  // Notifications. Post-W2 the tab only renders two toggles: enable + sound.
-  // Per-event toggle ('权限请求') and the test-notification button
-  // ('发送测试通知') were removed; assert they're gone so a regression that
-  // re-introduces either is caught here.
-  //
-  // NOTE: the per-event-toggle / test-notification absence checks are scoped
-  // to actual interactive controls (role=switch / role=button) instead of a
-  // raw page-text scan — the zh `notifications.intro` prose mentions
-  // "权限请求" as part of an explanatory sentence, which would false-positive
-  // a substring blacklist. The regression we actually care about is a
-  // re-introduced Field/Switch or button, not the word appearing in copy.
-  await switchTab(/^通知$/);
-  txt = await paneText();
-  assertHasText(txt, '启用通知', 'notifications');
-  assertHasText(txt, '声音', 'notifications');
-  assertNotHasText(txt, 'Enable notifications', 'notifications');
-  assertNotHasText(txt, 'Sound', 'notifications');
-
-  const notifSwitchCount = await dialog
-    .getByRole('switch', { name: /权限请求/ })
-    .count();
-  if (notifSwitchCount > 0) {
-    throw new Error(
-      `notifications: per-event toggle (role=switch name="权限请求") regressed — should not exist post-W2`,
-    );
-  }
-  for (const buttonName of [/发送测试通知/, /Test notification/i]) {
-    const btnCount = await dialog
-      .getByRole('button', { name: buttonName })
-      .count();
-    if (btnCount > 0) {
-      throw new Error(
-        `notifications: test-notification button (name=${buttonName}) regressed — should not exist post-W2`,
-      );
-    }
-  }
+  // Notifications pane removed in PR-D (no production caller wired
+  // `dispatchNotification`); the per-event toggle / test-notification
+  // regression checks moved with it.
 
   // Updates.
   await switchTab(/^更新$/);
@@ -1314,104 +1283,13 @@ async function caseI18nSettingsZh({ win, log, registerDispose }) {
 
   await closeDialog();
 
-  log('Appearance / Notifications / Updates / Connection panes all render Chinese labels');
+  log('Appearance / Updates / Connection panes all render Chinese labels');
 }
 
-// ---------- notif-disabled-suppress (W5) ----------
-// Verifies the post-W1 single-gate dispatch contract end-to-end: when the
-// renderer's `notificationSettings.enabled` is false, `dispatchNotification`
-// returns `{ dispatched: false, reason: 'global-disabled' }` and the
-// `window.ccsm.notify` IPC is NEVER fired. Drives `__ccsmDispatchNotification`
-// (debug seam in App.tsx) directly so the test doesn't need a real agent
-// permission request — pure renderer flow.
-async function caseNotifDisabledSuppress({ app, win, log }) {
-  // Replace the main-process `notification:show` handler with a recorder so a
-  // regression that DOES dispatch lands somewhere we can observe.
-  await app.evaluate(({ ipcMain }) => {
-    /** @type {any} */ (globalThis).__notifDisabledRecorderCalls = [];
-    ipcMain.removeHandler('notification:show');
-    ipcMain.handle('notification:show', (_e, payload) => {
-      /** @type {any} */ (globalThis).__notifDisabledRecorderCalls.push(payload);
-      return true;
-    });
-  });
-
-  // Seed a session and flip enabled=false.
-  await win.evaluate(() => {
-    const store = /** @type {any} */ (window).__ccsmStore;
-    store.setState({
-      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
-      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
-      activeId: 's1',
-      messagesBySession: { s1: [] },
-      tutorialSeen: true,
-    });
-    store.getState().setNotificationSettings({ enabled: false });
-  });
-
-  // Drive dispatch via the debug seam.
-  const result = await win.evaluate(async () => {
-    const w = /** @type {any} */ (window);
-    if (typeof w.__ccsmDispatchNotification !== 'function') {
-      return { ok: false, reason: 'no-seam' };
-    }
-    const res = await w.__ccsmDispatchNotification({
-      sessionId: 's1',
-      eventType: 'permission',
-      title: 'g / s',
-      body: 'Permission',
-      extras: { toastId: 'r1', sessionName: 's', groupName: 'g', eventType: 'permission' },
-    });
-    return { ok: true, res };
-  });
-  if (!result.ok) throw new Error(`dispatch seam unavailable: ${result.reason}`);
-  if (result.res.dispatched !== false) {
-    throw new Error(`expected dispatched=false, got ${JSON.stringify(result.res)}`);
-  }
-  if (result.res.reason !== 'global-disabled') {
-    throw new Error(`expected reason='global-disabled', got ${JSON.stringify(result.res)}`);
-  }
-
-  // Give the IPC a beat (it should NEVER land but verifying takes time).
-  await win.waitForTimeout(200);
-  const calls = await app.evaluate(
-    () => /** @type {any} */ (globalThis).__notifDisabledRecorderCalls ?? []
-  );
-  if (calls.length !== 0) {
-    throw new Error(`enabled=false suppressed dispatch but IPC fired ${calls.length} time(s): ${JSON.stringify(calls)}`);
-  }
-
-  // Now flip enabled=true and verify the same call DOES fire — proves the
-  // recorder is wired and the suppression was due to the gate, not a test bug.
-  await win.evaluate(() => {
-    /** @type {any} */ (window).__ccsmStore.getState().setNotificationSettings({ enabled: true });
-  });
-  const second = await win.evaluate(async () => {
-    const w = /** @type {any} */ (window);
-    return await w.__ccsmDispatchNotification({
-      sessionId: 's1',
-      eventType: 'permission',
-      title: 'g / s',
-      body: 'Permission',
-      extras: { toastId: 'r2', sessionName: 's', groupName: 'g', eventType: 'permission' },
-    });
-  });
-  if (second.dispatched !== true) {
-    throw new Error(`expected dispatched=true with enabled=true, got ${JSON.stringify(second)}`);
-  }
-  await win.waitForTimeout(200);
-  const calls2 = await app.evaluate(
-    () => /** @type {any} */ (globalThis).__notifDisabledRecorderCalls ?? []
-  );
-  if (calls2.length !== 1) {
-    throw new Error(`expected exactly 1 IPC call after re-enable, got ${calls2.length}`);
-  }
-  if (calls2[0].sessionId !== 's1' || calls2[0].eventType !== 'permission') {
-    throw new Error(`unexpected IPC payload: ${JSON.stringify(calls2[0])}`);
-  }
-
-  log('enabled=false suppressed dispatch with reason=global-disabled; re-enable fired exactly once');
-}
+// notif-disabled-suppress was deleted in PR-D alongside the Notifications
+// settings pane and `src/notifications/dispatch.ts`. With no production
+// caller for `dispatchNotification`, the single-gate contract it pinned no
+// longer has anything to gate.
 
 // ---------- cap-skip-launch-bundle-shape (capability demo) ----------
 // Demonstrates `skipLaunch: true`: case runs as a pure Node script without
@@ -2142,10 +2020,8 @@ await runHarness({
     // name must visually truncate to a single line with ellipsis AND expose
     // the full name through a `title` attr so users can hover-recover it.
     { id: 'sidebar-long-name-truncates', run: caseSidebarLongNameTruncates },
-    // notif-disabled-suppress: W5. Verifies the post-W1 single-gate dispatch
-    // contract — enabled=false → dispatched:false, reason:'global-disabled',
-    // zero notification:show IPC. Re-enabling proves recorder is wired.
-    { id: 'notif-disabled-suppress', run: caseNotifDisabledSuppress },
+    // notif-disabled-suppress was removed in PR-D — see comment block at the
+    // case definition site (now deleted) for context.
     // startup-paints-before-hydrate (perf/startup-render-gate): pins
     // render-before-hydrate ordering via window.__ccsmHydrationTrace.
     // Placed last because it calls win.reload() with a 500ms init-script

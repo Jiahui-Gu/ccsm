@@ -28,6 +28,11 @@ export type ModelId = string;
 // surface it in the picker and fall back to 'default' (with a toast) if the
 // SDK rejects it for the current account/model. `dontAsk` (legacy alias for
 // `default`) stays unsurfaced — it's redundant.
+//
+// The type is still exported for `runningPlaceholder.ts` (which renders mode
+// labels) even though the global `permission` store field was removed in
+// PR-D — per-session permission mode lives on the `Session` row directly,
+// not in the top-level store slot.
 export type PermissionMode = 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions' | 'auto';
 export type Theme = 'system' | 'light' | 'dark';
 /**
@@ -64,17 +69,10 @@ export interface DiscoveredModel {
 // in `src/shared/ipc-types.ts` (single source of truth).
 export type { ConnectionInfo };
 
-// OS-level notification preferences. Persisted as a single JSON blob alongside
-// the rest of app state.
-export interface NotificationSettings {
-  enabled: boolean;
-  sound: boolean;
-}
-
-export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
-  enabled: true,
-  sound: true
-};
+// OS-level notification preferences were removed in PR-D — no production
+// caller fired `dispatchNotification`, so the toggles only flipped store
+// state nothing read. Persisted blobs from older versions are silently
+// dropped at hydrate time (we just never touch the field).
 
 // Soft minimum was previously surfaced to the user via the now-deleted
 // first-run wizard. CCSM ships a fixed binary version inside the installer
@@ -104,8 +102,6 @@ type State = {
   claudeSettingsDefaultModel: string | null;
   activeId: string;
   focusedGroupId: string | null;
-  model: ModelId;
-  permission: PermissionMode;
   sidebarCollapsed: boolean;
   /**
    * Sidebar width in pixels. Persisted as px (not %) — for a fixed-content
@@ -119,7 +115,6 @@ type State = {
   fontSize: FontSize;
   fontSizePx: FontSizePx;
   tutorialSeen: boolean;
-  notificationSettings: NotificationSettings;
   models: DiscoveredModel[];
   modelsLoaded: boolean;
   connection: ConnectionInfo | null;
@@ -203,16 +198,9 @@ type Actions = {
   moveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
   changeCwd: (cwd: string) => void;
   pushRecentProject: (path: string) => void;
-  /** Update the global default model. Does NOT touch any per-session model;
-   *  callers that mean "change the active session" should use
-   *  `setSessionModel`. Splitting these prevents the StatusBar dropdown
-   *  silently rewriting other sessions' pinned model on a global change. */
-  setGlobalModel: (model: ModelId) => void;
   /** Update a specific session's model. Pushes the change to the live
-   *  agent if the session has been started. Does NOT touch the global
-   *  default. */
+   *  agent if the session has been started. */
   setSessionModel: (sessionId: string, model: ModelId) => void;
-  setPermission: (mode: PermissionMode) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
@@ -221,7 +209,6 @@ type Actions = {
   setSidebarWidth: (px: number) => void;
   resetSidebarWidth: () => void;
   markTutorialSeen: () => void;
-  setNotificationSettings: (patch: Partial<NotificationSettings>) => void;
 
   createGroup: (name?: string) => string;
   renameGroup: (id: string, name: string) => void;
@@ -301,48 +288,10 @@ function newSessionId(): string {
   return `${hex(8)}-${hex(4)}-4${hex(3)}-${y}${hex(3)}-${hex(12)}`;
 }
 
-// One-shot migration for persisted permission values. Legacy builds wrote
-// `standard` / `ask` / `auto` / `yolo` into the JSON blob; map them to the
-// official CLI names so no user sees an "undefined" permission chip after
-// upgrading. Unknown strings coerce to `default`.
-export function migratePermission(raw: unknown): PermissionMode {
-  switch (raw) {
-    case 'plan':
-    case 'default':
-    case 'acceptEdits':
-    case 'bypassPermissions':
-      return raw;
-    case 'standard':
-    case 'ask':
-      return 'default';
-    // Legacy `auto` was our alias for `acceptEdits`, NOT the CLI's
-    // classifier-driven `auto`. Migrate to what the user actually had.
-    case 'auto':
-      return 'acceptEdits';
-    case 'yolo':
-      return 'bypassPermissions';
-    default:
-      return 'default';
-  }
-}
-
-/**
- * Coerce a persisted notification-settings blob into the current
- * `{ enabled, sound }` shape. The pre-simplification shape carried per-event
- * toggles (`permission` / `question` / `turnDone`) plus a global `enabled`
- * and `sound`. Strip any unknown keys, fill missing fields with defaults
- * (true) so a partial blob doesn't silently mute the user.
- */
-export function migrateNotificationSettings(
-  raw: unknown
-): NotificationSettings {
-  if (!raw || typeof raw !== 'object') return { ...DEFAULT_NOTIFICATION_SETTINGS };
-  const r = raw as Record<string, unknown>;
-  return {
-    enabled: typeof r.enabled === 'boolean' ? r.enabled : true,
-    sound: typeof r.sound === 'boolean' ? r.sound : true
-  };
-}
+// `migratePermission` and `migrateNotificationSettings` were removed in PR-D
+// alongside the `permission` and `notificationSettings` store fields. Older
+// persisted snapshots may still carry those keys; they're silently ignored
+// when `hydrateStore` builds its `setState` payload.
 
 function firstUsableGroupId(groups: Group[]): string | null {
   const g = groups.find((x) => x.kind === 'normal');
@@ -468,15 +417,12 @@ export const useStore = create<State & Actions>((set, get) => ({
   claudeSettingsDefaultModel: null,
   activeId: '',
   focusedGroupId: null,
-  model: '',
-  permission: 'default',
   sidebarCollapsed: false,
   sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   theme: 'system',
   fontSize: 'md',
   fontSizePx: 14,
   tutorialSeen: false,
-  notificationSettings: DEFAULT_NOTIFICATION_SETTINGS,
   models: [],
   modelsLoaded: false,
   connection: null,
@@ -588,7 +534,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {
-    const { sessions, groups, model, models, connection } = get();
+    const { sessions, groups, models, connection } = get();
     // Re-importing the same transcript: just re-select the existing row.
     // The JSONL UUID uniquely identifies the conversation, and our session
     // record already holds it as `id` (see below), so a duplicate import
@@ -605,8 +551,11 @@ export const useStore = create<State & Actions>((set, get) => ({
     // `electron/agent-sdk/sessions.ts` fires a `session_id_mismatch`
     // diagnostic on the first SDK init frame after resume.
     const id = resumeSessionId;
-    let initialModel = model;
-    if (!initialModel) initialModel = connection?.model ?? '';
+    // Resolve initial model from the discovery sources only — the global
+    // `model` store slot was removed in PR-D (no readers). Order matches
+    // createSession's intent: connection profile first (the CLI's own
+    // configured default), then first discovered model as a last resort.
+    let initialModel = connection?.model ?? '';
     if (!initialModel) initialModel = models[0]?.id ?? '';
     // Safety net: if the caller passed a groupId that doesn't exist in the
     // store (e.g. stale id from a stripped persisted blob), ensureUsableGroup
@@ -770,16 +719,10 @@ export const useStore = create<State & Actions>((set, get) => ({
     });
   },
 
-  setGlobalModel: (model) => {
-    set({ model });
-  },
   setSessionModel: (sessionId, model) => {
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === sessionId ? { ...x, model } : x))
     }));
-  },
-  setPermission: (permission) => {
-    set({ permission });
   },
   setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
@@ -789,9 +732,6 @@ export const useStore = create<State & Actions>((set, get) => ({
   setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
   resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
   markTutorialSeen: () => set({ tutorialSeen: true }),
-
-  setNotificationSettings: (patch) =>
-    set((s) => ({ notificationSettings: { ...s.notificationSettings, ...patch } })),
 
   createGroup: (name) => {
     const id = nextId('g');
@@ -995,12 +935,15 @@ export async function hydrateStore(): Promise<void> {
   const persisted = await loadPersisted();
   if (persisted) {
     const stillActive = persisted.sessions.some((s) => s.id === persisted.activeId);
+    // Migration: older snapshots may carry `model`, `permission`, and
+    // `notificationSettings` keys (PR-D removed them as orphan persisted
+    // state with no subscribers). We simply don't read them — `loadPersisted`
+    // returns the parsed JSON unchanged, and unrecognised top-level keys
+    // bypass the setState below without errors.
     useStore.setState({
       sessions: persisted.sessions,
       groups: persisted.groups,
       activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
-      model: persisted.model,
-      permission: migratePermission(persisted.permission),
       sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       sidebarWidth: resolvePersistedSidebarWidth(persisted),
       theme: persisted.theme ?? 'system',
@@ -1010,7 +953,6 @@ export async function hydrateStore(): Promise<void> {
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
       recentProjects: persisted.recentProjects ?? [],
       tutorialSeen: persisted.tutorialSeen ?? false,
-      notificationSettings: migrateNotificationSettings(persisted.notificationSettings),
     });
   }
   // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components
