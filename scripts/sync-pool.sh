@@ -29,6 +29,10 @@ if [ "$FORCE" -eq 0 ]; then
     echo "sync-pool: uncommitted changes present, refusing to reset (use --force to override)" >&2
     exit 1
   fi
+  if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+    echo "sync-pool: untracked files present, refusing to wipe (use --force to override)" >&2
+    exit 1
+  fi
 fi
 
 git reset --hard "origin/$BRANCH"
