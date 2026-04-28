@@ -37,7 +37,11 @@
 //      CLAUDE_CONFIG_DIR.
 //
 //   6. Cleanup must run on Ctrl+C too — registered via process.on('exit')
-//      AND process.on('SIGINT') / SIGTERM.
+//      AND process.on('SIGINT') / SIGTERM / uncaughtException /
+//      unhandledRejection. Cleanups run LIFO so process force-kill
+//      (electron + ttyd + claude subtree, registered in launchCcsmIsolated)
+//      runs BEFORE tempdir rmSync — Windows can't remove a directory whose
+//      files are still locked by live processes.
 
 import { _electron as electron } from 'playwright';
 import {
@@ -52,6 +56,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 // ============================================================================
 // OOPIF helpers
@@ -251,7 +256,12 @@ function installCleanupHooks() {
   if (cleanupHooksInstalled) return;
   cleanupHooksInstalled = true;
   const runAll = () => {
-    for (const fn of cleanupRegistry) {
+    // Iterate in reverse insertion order (LIFO) so process-kill cleanups
+    // registered after tempdir cleanups run FIRST. Order matters on
+    // Windows: rmSync on a tempdir fails if electron / ttyd / claude still
+    // hold file locks inside it.
+    const fns = Array.from(cleanupRegistry).reverse();
+    for (const fn of fns) {
       try { fn(); } catch (_) { /* ignore */ }
     }
     cleanupRegistry.clear();
@@ -382,6 +392,37 @@ export async function launchCcsmIsolated({ tempDir, userDataDir, env = {} } = {}
     },
     timeout: 60000,
   });
+
+  // Force-kill cleanup. Registered AFTER tempdir/userdata cleanups so that
+  // LIFO iteration in `runAll` runs this FIRST — electron + ttyd + claude
+  // die before rmSync touches the dirs (Windows fails to remove locked
+  // files otherwise). User reported leaked processes (2 electron / 5 ttyd
+  // / 2 claude) after probe runs because the previous cleanup only rm-ed
+  // tempdirs and never killed the process tree.
+  const electronPid = electronApp.process()?.pid ?? null;
+  const killCleanup = () => {
+    cleanupRegistry.delete(killCleanup);
+    // Best-effort async close so playwright tears down its IPC pipes.
+    // Fire-and-forget — the synchronous taskkill below is what guarantees
+    // death even from inside a sync `exit` handler.
+    try { electronApp.close(); } catch (_) { /* ignore */ }
+    if (electronPid) {
+      try {
+        if (process.platform === 'win32') {
+          spawnSync('taskkill', ['/T', '/F', '/PID', String(electronPid)]);
+        } else {
+          // SIGKILL the whole process group; falls back to plain pid kill
+          // if the process wasn't started as group leader.
+          try { process.kill(-electronPid, 'SIGKILL'); } catch (_) {
+            try { process.kill(electronPid, 'SIGKILL'); } catch (_) { /* ignore */ }
+          }
+        }
+      } catch (_) { /* ignore */ }
+    }
+  };
+  installCleanupHooks();
+  cleanupRegistry.add(killCleanup);
+
   const win = await electronApp.firstWindow();
   await win.waitForLoadState('domcontentloaded');
   // Renderer needs a beat to mount App + populate window.__ccsmStore.
@@ -464,7 +505,7 @@ export async function waitForWebviewMounted(win, electronApp, sessionId, { timeo
   // multiple ttyd webviews are alive simultaneously.
   const port = await win
     .evaluate(
-      (sid) => window.ccsmCliBridge?.getTtydForSession?.(sid).catch(() => null),
+      (sid) => Promise.resolve(window.ccsmCliBridge?.getTtydForSession?.(sid)).catch(() => null),
       sessionId,
     )
     .then((res) => (res && typeof res.port === 'number' ? res.port : null))
