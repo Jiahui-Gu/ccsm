@@ -230,8 +230,23 @@ export default function App() {
   // every session switch — only on this explicit new-session intent — so
   // navigating between existing sessions (arrow keys in sidebar, palette
   // selection, etc.) keeps the user's prior focus context.
+  //
+  // We ALSO blur the trigger element synchronously here. PR #467 only
+  // moved focus *into* the webview when its dom-ready had already fired
+  // — but a fresh TtydPane is in 'loading' state at click time, so
+  // flushFocus is a no-op and the trigger button retains DOM focus.
+  // Pressing Enter again then re-activates the button → spawns yet
+  // another session. Blurring the active element synchronously breaks
+  // that loop regardless of webview readiness; the subsequent dom-ready
+  // → flushFocus path then moves focus into the CLI as intended.
   const [cliFocusNonce, setCliFocusNonce] = React.useState(0);
   const newSession = React.useCallback(() => {
+    if (typeof document !== 'undefined') {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== document.body) {
+        try { active.blur(); } catch { /* noop */ }
+      }
+    }
     createSession(null);
     setCliFocusNonce((n) => n + 1);
   }, [createSession]);
