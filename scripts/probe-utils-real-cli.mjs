@@ -532,6 +532,64 @@ export async function dismissWelcomeSplash(
   return { dismissed: !stillSplash, attempts, finalScreen };
 }
 
+/**
+ * Dismiss claude's first-run modals (trust dialog + welcome / theme splashes)
+ * that intercept keystrokes after a cold start. Without this, the probe's
+ * first `\r` / prompt would be eaten by the trust modal and never reach
+ * the shell.
+ *
+ * Behavior is the union of the patterns the harness probes evolved
+ * independently:
+ *   - Phase 1 (trust loop): up to `maxIters` iterations. Read the buffer;
+ *     if the input prompt (`│ >` or leading `> `) is visible, we're done.
+ *     If a trust prompt is visible, send `1\r` to accept. Otherwise send
+ *     a bare `\r` to advance any other intermediate splash.
+ *   - Phase 2 (welcome splash): delegate to `dismissWelcomeSplash` for
+ *     the "Welcome back" / "Try /" hint card that some claude versions
+ *     show after trust.
+ *   - Phase 3 (final settle): a few more bare-Enter retries in case a
+ *     theme picker or version hint is still visible after the welcome
+ *     card was dismissed.
+ *
+ * Returns once the input prompt regex matches, or after the iteration
+ * budget is exhausted. Never throws — caller can verify ready state via
+ * the next `readXtermLines` / `waitForXtermBuffer` call.
+ */
+export async function dismissFirstRunModals(win, opts = {}) {
+  const {
+    maxIters = 12,
+    intervalMs = 250,
+  } = opts;
+
+  const trustRe = /trust the files|trust this folder|Do you trust|trust|do you trust|1\.\s*Yes|Yes, proceed/i;
+  const promptRe = /│\s*>|^\s*>\s/m;
+
+  // Phase 1: trust + generic splash advance.
+  for (let i = 0; i < maxIters; i++) {
+    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+    const screen = lines.join('\n');
+    if (promptRe.test(screen)) return;
+    if (trustRe.test(screen)) {
+      await sendToClaudeTui(win, '1\r').catch(() => {});
+    } else {
+      await sendToClaudeTui(win, '\r').catch(() => {});
+    }
+    await sleep(Math.max(intervalMs, 600));
+  }
+
+  // Phase 2: welcome / hint card.
+  await dismissWelcomeSplash(win, { maxAttempts: 5, settleMs: 600 }).catch(() => {});
+
+  // Phase 3: final settle.
+  for (let i = 0; i < 4; i++) {
+    const lines = await readXtermLines(win, { lines: 12 }).catch(() => []);
+    const screen = lines.join('\n');
+    if (promptRe.test(screen)) return;
+    await sendToClaudeTui(win, '\r').catch(() => {});
+    await sleep(Math.max(intervalMs, 600));
+  }
+}
+
 async function readXtermBufferSafe(win) {
   try {
     return await readXtermBuffer(win);
