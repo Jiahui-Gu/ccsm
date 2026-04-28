@@ -115,20 +115,24 @@ try {
   await finish(electronApp, 1);
 }
 
-// ---------- WAIT FOR IFRAME ----------
-const ifSelector = 'iframe[title^="ttyd session"]';
+// ---------- WAIT FOR WEBVIEW ----------
+// TtydPane renders Electron <webview> (not <iframe>). frameLocator()
+// against a webview tag is best-effort — Playwright may or may not be
+// able to reach into the OOPIF's xterm DOM. The ttyd process check +
+// screenshot review are the load-bearing validations now.
+const ifSelector = 'webview[title^="ttyd session"]';
 let iframeMounted = false;
 try {
   await win.waitForSelector(ifSelector, { timeout: 20000 });
   iframeMounted = true;
   const src = await win.evaluate((sel) => document.querySelector(sel)?.getAttribute('src') ?? null, ifSelector);
-  log('iframe-mount', true, { src });
+  log('webview-mount', true, { src });
 } catch (err) {
-  log('iframe-mount', false, String(err).slice(0, 240));
+  log('webview-mount', false, String(err).slice(0, 240));
 }
 
 await new Promise((r) => setTimeout(r, 1500));
-await win.screenshot({ path: path.join(screenshotDir, '01-iframe-mount.png') });
+await win.screenshot({ path: path.join(screenshotDir, '01-webview-mount.png') });
 
 if (!iframeMounted) {
   await finish(electronApp, 1);

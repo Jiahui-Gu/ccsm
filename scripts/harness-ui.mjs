@@ -31,7 +31,7 @@
 //   - import-empty-groups                  (probe-e2e-import-empty-groups)
 //   - rename                               (sidebar session/group rename)
 //   - startup-paints-before-hydrate        (perf/startup-render-gate)
-//   - ttyd-pane-iframe-mounted             (W2c App→TtydPane wiring contract)
+//   - ttyd-pane-webview-mounted            (W2c App→TtydPane wiring contract)
 //
 // W3.5e cleanup: cases that exercised the SDK chat pane (composer/InputBar,
 // EffortChip, ContextPieChip, slash picker, ToolBlock, QuestionBlock,
@@ -43,7 +43,7 @@
 // empty-state-minimal composer hint, banner-i18n-toggle agent banners,
 // focus-orchestration composer textarea, sidebar-active-row-no-pulse
 // runningSessions store field) were deleted wholesale: the right pane is
-// now a ttyd iframe with no React chat surface to assert against.
+// now a ttyd webview with no React chat surface to assert against.
 //
 // NOT absorbed (split into its own visible-mode harness):
 //   - probe-e2e-dnd: needs CCSM_E2E_HIDDEN=0 (visible window) for dnd-kit
@@ -1886,19 +1886,21 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   );
 }
 
-// ---------- ttyd-pane-iframe-mounted ----------
+// ---------- ttyd-pane-webview-mounted ----------
 // W2c (ttyd-iframe refactor): pin the App→{TtydPane | ClaudeMissingGuide}
 // wiring contract. Two branches, both real verifications (no skips):
-//   - claudeAvailable=true  → right pane mounts an `<iframe>` whose src
-//     matches `http://127.0.0.1:<port>/` (the per-session ttyd HTTP
-//     server from electron/cliBridge).
+//   - claudeAvailable=true  → right pane mounts an Electron `<webview>`
+//     whose src matches `http://127.0.0.1:<port>/` (the per-session ttyd
+//     HTTP server from electron/cliBridge). The original `<iframe>` was
+//     swapped to `<webview>` because the iframe + sandbox combo blocked
+//     ttyd's xterm WebSocket on Windows mingw shells.
 //   - claudeAvailable=false → right pane mounts ClaudeMissingGuide
 //     (data-testid="claude-missing-guide"), proving the selector
 //     correctly chose the fallback path.
 // Backend ttyd spawn/teardown coverage lives in
 // `harness-real-cli.mjs::cli-bridge-ttyd-spawn-and-kill`; this case is
 // strictly the renderer-side wiring contract.
-async function caseTtydPaneIframeMounted({ win, log }) {
+async function caseTtydPaneWebviewMounted({ win, log }) {
   // Seed a real session so App's `active` resolves and the right-pane
   // branch runs. tutorialSeen=true skips the tutorial overlay.
   await win.evaluate(() => {
@@ -1914,11 +1916,11 @@ async function caseTtydPaneIframeMounted({ win, log }) {
   });
 
   // Wait for App to resolve the boot-time claudeAvailable check —
-  // either the guide or the iframe (or its loading shell) shows up.
+  // either the guide or the webview (or its loading shell) shows up.
   await win.waitForFunction(
     () =>
       !!document.querySelector('[data-testid="claude-missing-guide"]') ||
-      !!document.querySelector('iframe[title^="ttyd session"]') ||
+      !!document.querySelector('webview[title^="ttyd session"]') ||
       !!document.querySelector('[data-testid="claude-availability-probing"]') === false,
     null,
     { timeout: 8000 }
@@ -1927,36 +1929,36 @@ async function caseTtydPaneIframeMounted({ win, log }) {
   const guideCount = await win.locator('[data-testid="claude-missing-guide"]').count();
   if (guideCount > 0) {
     // claude not on PATH → fallback selector branch. Verify the guide
-    // is the only right-pane content (no leaked iframe).
-    const iframeCount = await win.locator('iframe[title^="ttyd session"]').count();
-    if (iframeCount > 0) {
+    // is the only right-pane content (no leaked webview).
+    const webviewCount = await win.locator('webview[title^="ttyd session"]').count();
+    if (webviewCount > 0) {
       throw new Error('both ClaudeMissingGuide and TtydPane rendered — selector logic broken');
     }
-    log('claudeAvailable=false branch: ClaudeMissingGuide rendered, no leaked iframe');
+    log('claudeAvailable=false branch: ClaudeMissingGuide rendered, no leaked webview');
     return;
   }
 
-  // claude available → iframe must mount. TtydPane goes through a
+  // claude available → webview must mount. TtydPane goes through a
   // brief `loading` state while it awaits openTtydForSession, then
-  // flips to `ready` and renders the iframe. 8s timeout absorbs ttyd
+  // flips to `ready` and renders the <webview>. 8s timeout absorbs ttyd
   // spawn cost on cold harness boot.
-  const iframe = win.locator('iframe[title^="ttyd session"]');
+  const webview = win.locator('webview[title^="ttyd session"]');
   try {
-    await iframe.first().waitFor({ state: 'attached', timeout: 8000 });
+    await webview.first().waitFor({ state: 'attached', timeout: 8000 });
   } catch {
-    throw new Error('TtydPane iframe did not mount within 8s — App→TtydPane wiring broken or ttyd spawn failed');
+    throw new Error('TtydPane webview did not mount within 8s — App→TtydPane wiring broken or ttyd spawn failed');
   }
 
-  const src = await iframe.first().getAttribute('src');
-  if (!src) throw new Error('iframe missing src attribute');
+  const src = await webview.first().getAttribute('src');
+  if (!src) throw new Error('webview missing src attribute');
   // Wiring contract: src must be a localhost HTTP URL on a non-zero
   // port. The exact port is allocated dynamically per session.
   const expected = /^http:\/\/127\.0\.0\.1:\d+\/?$/;
   if (!expected.test(src)) {
-    throw new Error(`iframe src does not match wiring contract: got "${src}", expected ${expected}`);
+    throw new Error(`webview src does not match wiring contract: got "${src}", expected ${expected}`);
   }
 
-  log(`claudeAvailable=true branch: iframe mounted with src=${src}`);
+  log(`claudeAvailable=true branch: webview mounted with src=${src}`);
 }
 
 // ---------- harness spec ----------
@@ -1982,7 +1984,7 @@ await runHarness({
     { id: 'sidebar-align', run: caseSidebarAlign },
     // UX audit Group A — task #311. Sidebar internal top/bottom symmetry.
     // (Bottom-edge alignment with InputBar wrapper deleted post-ttyd refactor:
-    // the chat composer is gone; the right pane is now a ttyd iframe.)
+    // the chat composer is gone; the right pane is now a ttyd webview.)
     { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
@@ -2017,12 +2019,13 @@ await runHarness({
     // delay on models.list, and the reload + delay perturb the page state
     // for any case that follows.
     { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate },
-    // ttyd-pane-iframe-mounted: W2c (ttyd-iframe refactor). Pins the
+    // ttyd-pane-webview-mounted: W2c (ttyd-iframe refactor). Pins the
     // App→TtydPane wiring contract — when claude is available and a
-    // session is active, the right pane mounts an `<iframe>` whose src
-    // points at the per-session ttyd HTTP server. cliBridge is stubbed
-    // in-renderer; backend spawn coverage lives in harness-real-cli.
-    { id: 'ttyd-pane-iframe-mounted', run: caseTtydPaneIframeMounted }
+    // session is active, the right pane mounts an Electron `<webview>`
+    // whose src points at the per-session ttyd HTTP server. cliBridge
+    // is stubbed in-renderer; backend spawn coverage lives in
+    // harness-real-cli.
+    { id: 'ttyd-pane-webview-mounted', run: caseTtydPaneWebviewMounted }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

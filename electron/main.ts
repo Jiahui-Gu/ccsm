@@ -339,6 +339,13 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // Enable Electron's <webview> tag so TtydPane can host the per-session
+      // ttyd HTTP server in an out-of-process Chromium frame. The plain
+      // <iframe> path leaves the embedded claude TUI black on Windows
+      // because the BrowserWindow's contextIsolation/sandbox combo blocks
+      // ttyd's xterm WebSocket; <webview> gets its own renderer process and
+      // session, which matches the working spike (spike/ttyd-embed/main.js).
+      webviewTag: true,
       // Hidden-mode animation correctness: Chromium throttles rAF
       // for offscreen / hidden windows down to ~1Hz. dnd-kit's
       // dropAnimation (150ms) and other CSS transitions then never

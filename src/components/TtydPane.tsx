@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-// TtydPane mounts a per-session iframe that points at the ttyd HTTP
-// server spawned by the main-process cliBridge. Each session owns its
+// TtydPane mounts a per-session Electron <webview> that points at the ttyd
+// HTTP server spawned by the main-process cliBridge. Each session owns its
 // own ttyd instance on a dedicated 127.0.0.1 port; this component is the
 // renderer-side lifecycle owner for that pairing.
+//
+// Why <webview> and not <iframe>: the plain iframe path leaves the embedded
+// claude TUI black on Windows because the host BrowserWindow's contextIsolation
+// + sandbox combo interferes with ttyd's xterm WebSocket. <webview> hosts
+// the page in an out-of-process Chromium frame with its own session — this
+// matches the working spike (`spike/ttyd-embed/main.js` + `index.html`) where
+// the same ttyd binary renders correctly. Requires `webviewTag: true` on the
+// host BrowserWindow's webPreferences (set in electron/main.ts).
 //
 // Lifecycle (per sessionId):
 //   1. mount / sessionId change → openTtydForSession(sid)
@@ -108,9 +116,17 @@ export function TtydPane({ sessionId, cwd }: Props) {
   }
 
   return (
-    <iframe
+    // Electron's <webview> tag is not in React's intrinsic JSX namespace,
+    // but React DOM passes through unknown lowercase tags as custom
+    // elements. The attributes mirror the working spike's index.html
+    // (allowpopups, partition). `partition="persist:ttyd"` isolates
+    // webview storage from the host BrowserWindow and makes Electron
+    // treat this as a real out-of-process webview rather than an iframe.
+    <webview
       src={`http://127.0.0.1:${state.port}/`}
       className="flex-1 w-full h-full border-0 bg-black"
+      // eslint-disable-next-line react/no-unknown-property -- Electron <webview> tag attribute, not a standard HTML prop
+      partition="persist:ttyd"
       title={`ttyd session ${sessionId}`}
     />
   );
