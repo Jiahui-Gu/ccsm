@@ -4,7 +4,6 @@ import type {
   ConnectionInfo,
   OpenSettingsResult,
   DiscoveredModel,
-  LoadedCommand,
 } from '../src/shared/ipc-types';
 
 type UpdateStatus =
@@ -45,18 +44,6 @@ const api = {
     }
   },
   getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-  pickDirectory: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickDirectory'),
-  saveFile: (
-    args: { defaultName?: string; content: string }
-  ): Promise<
-    { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
-  > => ipcRenderer.invoke('dialog:saveFile', args),
-  // (#51) Drop tool stdout into an OS temp file and open it in the user's
-  // default text editor via shell.openPath.
-  toolOpenInEditor: (
-    args: { content: string }
-  ): Promise<{ ok: true; path: string } | { ok: false; error: string }> =>
-    ipcRenderer.invoke('tool:open-in-editor', args),
 
   scanImportable: (): Promise<
     Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
@@ -109,46 +96,6 @@ const api = {
   pathsExist: (paths: string[]): Promise<Record<string, boolean>> =>
     ipcRenderer.invoke('paths:exist', paths),
 
-  memory: {
-    read: (p: string): Promise<
-      | { ok: true; content: string; exists: boolean }
-      | { ok: false; error: string }
-    > => ipcRenderer.invoke('memory:read', p),
-    write: (p: string, content: string): Promise<{ ok: true } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('memory:write', p, content),
-    exists: (p: string): Promise<boolean> => ipcRenderer.invoke('memory:exists', p),
-    /** Returns the absolute path to ~/.claude/CLAUDE.md (resolved in main). */
-    userPath: (): Promise<string> => ipcRenderer.invoke('memory:userPath'),
-    /** Returns <cwd>/CLAUDE.md, or null if cwd is empty / not absolute. */
-    projectPath: (cwd: string): Promise<string | null> =>
-      ipcRenderer.invoke('memory:projectPath', cwd),
-  },
-
-  commands: {
-    /**
-     * Discover slash commands from disk (user / project / plugin markdown).
-     * Pass the active session's cwd so project-level `.claude/commands/`
-     * can layer on top of user-level definitions.
-     */
-    list: (cwd: string | null | undefined): Promise<LoadedCommand[]> =>
-      ipcRenderer.invoke('commands:list', cwd),
-  },
-
-  files: {
-    /**
-     * Workspace files relative to the session cwd, used by the InputBar's
-     * @file mention picker. Returns POSIX-style relative paths so the
-     * mention literal stays portable. Heavy directories (node_modules,
-     * .git, dist, build, .venv, target, etc.) and hidden entries are
-     * pruned in main. See main.ts for caps (5000 entries / depth 12).
-     */
-    list: (cwd: string | null | undefined): Promise<{ path: string; name: string }[]> =>
-      ipcRenderer.invoke('files:list', cwd),
-  },
-
-  openExternal: (url: string): Promise<boolean> =>
-    ipcRenderer.invoke('shell:openExternal', url),
-
   notify: (payload: {
     sessionId: string;
     title: string;
@@ -171,45 +118,6 @@ const api = {
       cwd?: string;
     };
   }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
-  notifyAvailability: (): Promise<{ available: boolean; error: string | null }> =>
-    ipcRenderer.invoke('notify:availability'),
-  /**
-   * Push the renderer's notification runtime state into the main process
-   * mirror so the ask-question retry timer (#307) can recheck gates at
-   * fire time. Both fields independently optional. Returns `{ok}` mainly
-   * for parity with other handlers; renderers fire-and-forget.
-   */
-  notifySetRuntimeState: (
-    patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
-  ): Promise<{ ok: true } | { ok: false }> =>
-    ipcRenderer.invoke('notify:setRuntimeState', patch),
-  onNotificationFocus: (handler: (sessionId: string) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, sessionId: string) => handler(sessionId);
-    ipcRenderer.on('notification:focusSession', wrap);
-    return () => ipcRenderer.removeListener('notification:focusSession', wrap);
-  },
-  /**
-   * Wave 1D: notification of a Windows toast button activation routed back
-   * from the main process. The action `allow` / `allow-always` / `reject`
-   * mirrors the in-app PermissionPromptBlock buttons; the underlying agent
-   * permission resolution is performed in main BEFORE this fires, so the
-   * renderer just needs to update its store (clear the waiting block and,
-   * for `allow-always`, seed `allowAlwaysTools` with the tool name).
-   */
-  onNotifyToastAction: (
-    handler: (e: {
-      sessionId: string;
-      requestId: string;
-      action: 'allow' | 'allow-always' | 'reject' | 'focus';
-    }) => void,
-  ): (() => void) => {
-    const wrap = (
-      _e: IpcRendererEvent,
-      payload: { sessionId: string; requestId: string; action: 'allow' | 'allow-always' | 'reject' | 'focus' },
-    ) => handler(payload);
-    ipcRenderer.on('notify:toastAction', wrap);
-    return () => ipcRenderer.removeListener('notify:toastAction', wrap);
-  },
 
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
@@ -225,23 +133,10 @@ const api = {
     ipcRenderer.on('updates:status', wrap);
     return () => ipcRenderer.removeListener('updates:status', wrap);
   },
-  onUpdateAvailable: (
-    handler: (info: { version: string; releaseDate?: string }) => void
-  ): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: { version: string; releaseDate?: string }) =>
-      handler(payload);
-    ipcRenderer.on('update:available', wrap);
-    return () => ipcRenderer.removeListener('update:available', wrap);
-  },
   onUpdateDownloaded: (handler: (info: { version: string }) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
     ipcRenderer.on('update:downloaded', wrap);
     return () => ipcRenderer.removeListener('update:downloaded', wrap);
-  },
-  onUpdateError: (handler: (info: { message: string }) => void): (() => void) => {
-    const wrap = (_e: IpcRendererEvent, payload: { message: string }) => handler(payload);
-    ipcRenderer.on('update:error', wrap);
-    return () => ipcRenderer.removeListener('update:error', wrap);
   },
 
   window: {

@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/electron/main';
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -66,16 +66,12 @@ import {
   type ScannableSession,
 } from './import-scanner';
 import { showNotification, type ShowNotificationPayload } from './notifications';
-import { probeNotifyAvailability, notifyLastError } from './notify';
 import {
   bootstrapNotify,
-  setNotifyRuntimeState,
   createDefaultToastActionRouter,
   autoSetupAumid,
 } from './notify-bootstrap';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
-import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
-import { loadPickerCommands } from './commands-loader';
 import {
   registerCliBridgeIpc,
   bindCliBridgeSender,
@@ -707,113 +703,6 @@ app.whenReady().then(() => {
   });
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
-  ipcMain.handle('dialog:pickDirectory', async (e) => {
-    if (!fromMainFrame(e)) return null;
-    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const res = await dialog.showOpenDialog(win, {
-      properties: ['openDirectory'],
-      title: i18n.tDialog('chooseCwd')
-    });
-    if (res.canceled || res.filePaths.length === 0) return null;
-    return res.filePaths[0];
-  });
-
-  // Save tool output to a file the user picks. Used by the long-output
-  // viewer's `Save as .log` action — for >10MB outputs this is the ONLY
-  // way the user can see the full content. Capped at 50 MB per file:
-  // legitimate "save big tool dump" use cases live well under that, and
-  // anything bigger is almost certainly a runaway loop or accidental
-  // serialization of a giant in-memory buffer.
-  const MAX_SAVE_FILE_BYTES = 50 * 1024 * 1024;
-  ipcMain.handle(
-    'dialog:saveFile',
-    async (
-      e,
-      args: { defaultName?: string; content: string }
-    ): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      const content = typeof args?.content === 'string' ? args.content : '';
-      // String length is a fine proxy here — UTF-8 bytes can be at most 4×
-      // chars but realistic content (ASCII/UTF-8 text dumps) is ~1×, so we
-      // gate on raw length to avoid a wasted Buffer.byteLength roundtrip.
-      // The dialog filters offer .log/.txt only.
-      if (content.length > MAX_SAVE_FILE_BYTES) {
-        return { ok: false, error: 'content_too_large' };
-      }
-      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-      try {
-        const res = await dialog.showSaveDialog(win, {
-          defaultPath: args.defaultName ?? 'tool-output.log',
-          filters: [
-            { name: 'Log', extensions: ['log', 'txt'] },
-            { name: 'All Files', extensions: ['*'] }
-          ]
-        });
-        if (res.canceled || !res.filePath) return { ok: false, canceled: true };
-        await fs.promises.writeFile(res.filePath, content, 'utf8');
-        return { ok: true, path: res.filePath };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
-  // (#51 / P1-16) Open long tool output in the user's default text editor.
-  // Renderer pipes the full stdout text up; we drop it into a uniquely-named
-  // file under os.tmpdir() and ask the OS to open it via shell.openPath.
-  // The file lives until the OS cleans tmpdir — we do NOT auto-delete: a
-  // user may keep the editor window open for hours, and yanking the file
-  // out from under them would be a worse bug than a few stray temp files.
-  // Capped at the same 50 MB ceiling as saveFile so a runaway tool can't
-  // wedge the disk; legitimate "open this dump" cases live well under it.
-  const MAX_OPEN_IN_EDITOR_BYTES = 50 * 1024 * 1024;
-  ipcMain.handle(
-    'tool:open-in-editor',
-    async (
-      e,
-      args: { content: string }
-    ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      const content = typeof args?.content === 'string' ? args.content : '';
-      if (content.length > MAX_OPEN_IN_EDITOR_BYTES) {
-        return { ok: false, error: 'content_too_large' };
-      }
-      // High-resolution-ish unique name: ms timestamp + 6 random hex chars.
-      // ms alone is enough on a single click, but two parallel "Open in
-      // editor" clicks fired in the same tick would otherwise collide on
-      // the filename and one editor would silently re-open the other's
-      // file. Random suffix keeps them distinct without pulling in uuid.
-      const ts = Date.now();
-      const rand = Math.floor(Math.random() * 0xffffff)
-        .toString(16)
-        .padStart(6, '0');
-      const filePath = path.join(
-        os.tmpdir(),
-        `claude-tool-output-${ts}-${rand}.txt`
-      );
-      try {
-        await fs.promises.writeFile(filePath, content, 'utf8');
-        // Test/probe escape hatch: when CCSM_OPEN_IN_EDITOR_NOOP is set we
-        // write the file but don't actually launch the editor. Lets E2E
-        // probes verify the round-trip without spawning notepad/vim/etc.
-        // on the CI host. The renderer still sees `{ ok: true, path }`
-        // exactly as in production.
-        if (process.env.CCSM_OPEN_IN_EDITOR_NOOP) {
-          return { ok: true, path: filePath };
-        }
-        // shell.openPath returns an empty string on success, an error
-        // message string on failure. Treat empty as ok.
-        const openErr = await shell.openPath(filePath);
-        if (openErr) {
-          return { ok: false, error: openErr };
-        }
-        return { ok: true, path: filePath };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
   ipcMain.handle('window:minimize', (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
   });
@@ -891,118 +780,11 @@ app.whenReady().then(() => {
 
   // ─────────────────────── disk-based slash commands ──────────────────────
   //
-  // Picker discovery for user / project command markdown files. Renderer
-  // calls this on focus / cwd change. Execution stays pass-through:
-  // selecting one inserts `/<name>` into the textarea, which the existing
-  // send path forwards to claude.exe. We never parse the body.
-  //
-  // `loadPickerCommands` returns every disk-discovered source (user /
-  // project / plugin / skill / agent). Plugin and skill commands are
-  // executed by the bundled CLI itself — see commands-loader.ts
-  // PICKER_VISIBLE_SOURCES for the empirical rationale.
-  ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) => {
-    // commands-loader does its own fs reads against the supplied cwd; UNC or
-    // relative inputs get filtered out here so we don't leak NTLM (Windows)
-    // or descend into wherever a confused renderer points us. Empty list is
-    // the safe fallback for any unsafe input.
-    if (cwd != null && !isSafePath(cwd)) return [];
-    return loadPickerCommands({ cwd: cwd ?? null });
-  });
-
-  // ─────────────────────── @mention file listing ──────────────────────────
-  //
-  // Powers the InputBar's @file picker. Walks the session cwd recursively,
-  // skipping the usual heavy directories (node_modules, .git, dist, build,
-  // .next, .venv, target). Returns POSIX-style relative paths so the mention
-  // literal we splice into the composer (`@src/foo.ts`) stays portable
-  // across platforms — claude.exe on Windows happily accepts forward
-  // slashes too.
-  //
-  // Caps:
-  //   - max 5000 files (after which we bail; the picker fuzzy-search is
-  //     plenty accurate at that size, and walking >5k entries on every focus
-  //     is wasteful)
-  //   - max 12 directory depth (defense against symlink loops)
-  //
-  // Per-call, not cached: cwd swaps + on-disk edits should reflect quickly,
-  // and the renderer only invokes this on focus / @ trigger.
-  const FILE_LIST_MAX = 5000;
-  const FILE_LIST_MAX_DEPTH = 12;
-  const FILE_LIST_SKIP_DIRS = new Set([
-    'node_modules',
-    '.git',
-    '.svn',
-    '.hg',
-    'dist',
-    'build',
-    'out',
-    '.next',
-    '.nuxt',
-    '.turbo',
-    '.cache',
-    '.venv',
-    'venv',
-    '__pycache__',
-    'target',
-    '.idea',
-    '.vscode',
-  ]);
-
-  ipcMain.handle('files:list', async (e, cwd: string | null | undefined) => {
-    if (!fromMainFrame(e)) return [];
-    if (cwd == null || !isSafePath(cwd)) return [];
-    let rootStat: fs.Stats;
-    try {
-      rootStat = await fs.promises.stat(cwd);
-    } catch {
-      return [];
-    }
-    if (!rootStat.isDirectory()) return [];
-
-    const out: { path: string; name: string }[] = [];
-    async function walk(dir: string, rel: string, depth: number): Promise<void> {
-      if (out.length >= FILE_LIST_MAX) return;
-      if (depth > FILE_LIST_MAX_DEPTH) return;
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const ent of entries) {
-        if (out.length >= FILE_LIST_MAX) return;
-        // Skip hidden + heavy build dirs to keep the picker snappy.
-        if (ent.name.startsWith('.') && ent.name !== '.env' && ent.name !== '.env.local') {
-          if (ent.isDirectory()) continue;
-          // hidden file: skip too — usually noise (.DS_Store, .gitignore)
-          continue;
-        }
-        if (ent.isDirectory() && FILE_LIST_SKIP_DIRS.has(ent.name)) continue;
-        const childAbs = path.join(dir, ent.name);
-        const childRel = rel ? `${rel}/${ent.name}` : ent.name;
-        if (ent.isDirectory()) {
-          await walk(childAbs, childRel, depth + 1);
-        } else if (ent.isFile()) {
-          out.push({ path: childRel, name: ent.name });
-        }
-      }
-    }
-    await walk(cwd, '', 0);
-    return out;
-  });
-
-  ipcMain.handle('shell:openExternal', async (e, url: string) => {
-    if (!fromMainFrame(e)) return false;
-    // Only http(s). Everything else is a potential shell hijack.
-    if (!/^https?:\/\//i.test(url)) return false;
-    try {
-      await shell.openExternal(url);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-  // ──────────────────────── end commands + shell ───────────────────────────
+  // commands:list / files:list / shell:openExternal handlers were removed in
+  // PR-B (dead code sweep) — the renderer no longer consumes them. The
+  // commands-loader module is still imported by tests and may be re-wired
+  // when the picker is reinstated; the file walk in `files:list` would need
+  // re-derivation if/when the @file mention picker comes back.
 
   // ─────────── CLI wizard IPC removed (PR-I) ───────────
   // The first-run "find your claude binary" UI was deleted because CCSM
@@ -1013,28 +795,9 @@ app.whenReady().then(() => {
   // installer-corrupt banner via the `CLAUDE_NOT_FOUND` errorCode that
   // `electron/agent/manager.ts` still emits.
 
-  // Memory (CLAUDE.md) editor IPC. Paths are validated inside the memory
-  // module — see isAllowedMemoryPath(). Only files named CLAUDE.md are
-  // accepted; anything else returns an error so a compromised renderer can't
-  // use us as an arbitrary-file-read primitive.
-  ipcMain.handle('memory:read', (_e, p: string) => readMemoryFile(p));
-  ipcMain.handle('memory:write', (_e, p: string, content: string) =>
-    writeMemoryFile(p, content)
-  );
-  ipcMain.handle('memory:exists', (_e, p: string) => memoryFileExists(p));
-  ipcMain.handle('memory:userPath', () => {
-    // ~/.claude/CLAUDE.md. Resolved here so the renderer never has to know
-    // about homedir semantics (different on Windows vs Unix).
-    return path.join(os.homedir(), '.claude', 'CLAUDE.md');
-  });
-  ipcMain.handle('memory:projectPath', (_e, cwd: string) => {
-    // We still force CLAUDE.md basename in the *write* path, but we compose
-    // the full path here so the renderer doesn't have to remember the
-    // filename. If cwd is empty or not absolute, return null so the UI can
-    // show the "open a session" hint.
-    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return null;
-    return path.join(cwd, 'CLAUDE.md');
-  });
+  // Memory (CLAUDE.md) editor IPC removed in PR-B (dead code sweep) — no
+  // renderer caller. The `electron/memory` module is still kept for its
+  // unit tests and may be re-wired when a memory editor UI returns.
 
   ipcMain.handle(
     'notification:show',
@@ -1044,29 +807,11 @@ app.whenReady().then(() => {
     }
   );
 
-  ipcMain.handle('notify:availability', async () => {
-    const available = await probeNotifyAvailability();
-    return { available, error: notifyLastError() };
-  });
-
-  // Renderer → main mirror of notification runtime state (#307). The
-  // ask-question retry timer fires in main ~30s after the original toast;
-  // by then the user may have toggled notifications off or focused the
-  // question's session. The renderer's store is the source of truth, so
-  // it pushes the two fields the retry gate needs (`notificationsEnabled`,
-  // `activeSessionId`) whenever they change. Partial payload — both fields
-  // are independently optional.
-  ipcMain.handle(
-    'notify:setRuntimeState',
-    (
-      e,
-      patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
-    ): { ok: true } | { ok: false } => {
-      if (!fromMainFrame(e)) return { ok: false };
-      setNotifyRuntimeState(patch);
-      return { ok: true };
-    },
-  );
+  // notify:availability + notify:setRuntimeState handlers removed in PR-B
+  // (dead code sweep) — renderer no longer probes notification capability or
+  // pushes runtime state into main. The underlying probe / state setters in
+  // notify.ts and notify-bootstrap.ts are still consumed internally by the
+  // bootstrap routine so they stay in place.
 
   installUpdaterIpc();
 
