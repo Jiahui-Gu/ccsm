@@ -5,19 +5,27 @@
 // `<iframe src="http://127.0.0.1:<port>">`.
 //
 // Lifecycle:
-//   - openTtydForSession  → spawn ttyd with `claude --session-id <uuid>`
-//                           when no on-disk JSONL exists for the projected
-//                           sid (fresh session), OR `claude --resume <uuid>`
-//                           when one does (app restart, imported transcript,
-//                           prior in-app spawn that exited). The on-disk
-//                           JSONL is the only ground truth — fixes #507/#508
-//                           where always passing `--session-id` made claude
-//                           reject with "Session ID is already in use." on
-//                           any rehydrated session. Returns {port, sid}.
-//                           Caller keys ccsm's session row by `sid` so the
-//                           JSONL transcript on disk and ccsm's session id
-//                           agree (matches the existing agent:start
-//                           pre-allocated-uuid pattern).
+//   - openTtydForSession  → spawn ttyd with a tiny Node wrapper that
+//                           re-evaluates JSONL existence on every
+//                           ttyd-internal PTY spawn and chooses
+//                           `claude --session-id <uuid>` (no JSONL,
+//                           fresh) vs `claude --resume <uuid>` (JSONL
+//                           present, rehydrate). The wrapper — not
+//                           claude directly — is ttyd's command, so
+//                           the decision is re-made every time ttyd
+//                           respawns claude on a new ws-client (fixes
+//                           UX F switch-back: A→B→A would otherwise
+//                           reuse stale `--session-id` args and hit
+//                           "Session ID is already in use." once the
+//                           first turn had written the JSONL). Also
+//                           fixes #507/#508 (rehydrate on app
+//                           restart / imported transcripts) by the
+//                           same mechanism. Returns {port, sid}.
+//                           Caller keys ccsm's session row by `sid`
+//                           so the JSONL transcript on disk and
+//                           ccsm's session id agree (matches the
+//                           existing agent:start pre-allocated-uuid
+//                           pattern).
 //   - resumeTtydForSession → spawn ttyd with `claude --resume <sid>`
 //                            (re-attach to an existing CLI session).
 //   - killTtydForSession  → tree-kill the ttyd PID (Windows: taskkill
@@ -39,8 +47,8 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import type { WebContents } from 'electron';
 import { pickFreePort } from './portAllocator';
@@ -104,9 +112,86 @@ function emitExit(sessionId: string, code: number | null, signal: NodeJS.Signals
   }
 }
 
-// Shared spawn helper. `claudeArgs` is the list AFTER the ttyd-owned
-// flags (`-p <port> -W -t fontSize=14 <claudePath>`); for new sessions
-// it's `['--session-id', sid]`, for resumes `['--resume', sid]`.
+// Tiny .cmd wrapper that ttyd execs in place of `claude` directly.
+// Re-evaluates JSONL existence on EVERY invocation and chooses
+// `--session-id <sid>` (fresh) vs `--resume <sid>` (rehydrate)
+// accordingly.
+//
+// Why a wrapper at all: ttyd spawns a NEW PTY child per websocket
+// client (see protocol.c LWS_CALLBACK_CLOSED → pty_kill). When the
+// user switches session A → B → A, A's webview unmounts → ws-client
+// disconnects → ttyd kills claude-A. On switch back, ttyd respawns
+// claude with the SAME baked-in args. If we baked `--session-id sid`
+// at first launch (no JSONL yet) and JSONL now exists from the prior
+// turn, claude rejects the second spawn with "Session ID is already
+// in use." (UX F bug.) #464's `openTtydForSession` picker only fires
+// on the FIRST spawn — it can't influence ttyd's internal respawn.
+//
+// Solution: ttyd's command is the wrapper, not claude. The wrapper
+// re-runs the JSONL scan on every spawn, so the second (and Nth) PTY
+// launch always picks the right flag for current disk state.
+//
+// Why .cmd and not Node-as-script: launching `electron.exe`
+// (process.execPath) with ELECTRON_RUN_AS_NODE=1 inside ttyd's
+// conpty-driven PTY access-violates on Windows (ttyd exits with
+// 0xC0000409 STATUS_STACK_BUFFER_OVERRUN before it can serve the
+// HTTP listener). cmd.exe is the native PTY shell on Windows, so a
+// .cmd shim has zero binding overhead and zero risk of conpty
+// regression. Two-root scan mirrors the (now-removed) JS-side
+// jsonlExistsForSid: CLAUDE_CONFIG_DIR/projects/* (set in dev/probe)
+// and %USERPROFILE%/.claude/projects/* (production default).
+const TTYD_WRAPPER_CMD = `@echo off
+setlocal EnableDelayedExpansion
+set "SID=%~1"
+set "CLAUDE=%~2"
+set "FILENAME=!SID!.jsonl"
+set RESUME=0
+if defined CLAUDE_CONFIG_DIR if exist "%CLAUDE_CONFIG_DIR%\\projects" (
+  for /d %%D in ("%CLAUDE_CONFIG_DIR%\\projects\\*") do (
+    if exist "%%~D\\!FILENAME!" for %%S in ("%%~D\\!FILENAME!") do if not %%~zS==0 set RESUME=1
+  )
+)
+if exist "%USERPROFILE%\\.claude\\projects" (
+  for /d %%D in ("%USERPROFILE%\\.claude\\projects\\*") do (
+    if exist "%%~D\\!FILENAME!" for %%S in ("%%~D\\!FILENAME!") do if not %%~zS==0 set RESUME=1
+  )
+)
+if "!RESUME!"=="1" (
+  call "!CLAUDE!" --resume "!SID!"
+) else (
+  call "!CLAUDE!" --session-id "!SID!"
+)
+exit /b %ERRORLEVEL%
+`;
+
+let cachedWrapperPath: string | null = null;
+
+// Write the wrapper .cmd to a stable per-user temp path so ttyd can
+// invoke it as a normal file. Cached across the process lifetime — the
+// wrapper contents never change at runtime, and overwriting on every
+// spawn would race ttyd's PTY child startup. Returns null if the temp
+// dir is unwritable (caller falls back to direct mode).
+function ensureWrapperCmd(): string | null {
+  if (cachedWrapperPath && existsSync(cachedWrapperPath)) return cachedWrapperPath;
+  try {
+    const dir = pathJoin(tmpdir(), 'ccsm-ttyd-wrapper');
+    mkdirSync(dir, { recursive: true });
+    const filePath = pathJoin(dir, 'claude-auto.cmd');
+    writeFileSync(filePath, TTYD_WRAPPER_CMD);
+    cachedWrapperPath = filePath;
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+// Shared spawn helper. `claudeArgs` is the list of args appended to
+// the ttyd command line.
+//   - mode='direct' (default): `claudeArgs` is the args list claude
+//     receives directly, e.g. `['--resume', sid]` for explicit resumes.
+//   - mode='auto': `claudeArgs` is `[sid]` only — the wrapper script
+//     prepended by spawnTtyd picks --session-id vs --resume itself
+//     based on current JSONL state, on every ttyd-internal respawn.
 //
 // `cwd` is the directory `claude` should be launched in. Without it,
 // claude inherits Electron's cwd and writes its JSONL transcripts to
@@ -117,6 +202,7 @@ async function spawnTtyd(
   sessionId: string,
   cwd: string,
   claudeArgs: string[],
+  mode: 'auto' | 'direct' = 'direct',
 ): Promise<OpenResult | OpenError> {
   // Refuse to start a second ttyd for the same ccsm session — the prior
   // one would leak. Caller should explicitly kill first if they want a
@@ -166,8 +252,27 @@ async function spawnTtyd(
   //                       wasted-effort rounds (#499).
   //
   // Trailing positional args: the program ttyd should exec inside the
-  // pty — the absolute claude path + the per-mode args (--session-id
-  // for new, --resume for continue).
+  // pty.
+  //   - mode='direct': absolute claude path + per-mode args (e.g.
+  //     `<claudePath> --resume <sid>` for explicit resumes).
+  //   - mode='auto': the .cmd wrapper (see TTYD_WRAPPER_CMD comment)
+  //     called with `<sid> <claudePath>` so it picks --session-id vs
+  //     --resume on EVERY spawn — fixes UX F switch-back, where ttyd
+  //     respawns claude on each ws-client reconnect and the second
+  //     spawn must use --resume because the first turn already wrote
+  //     the JSONL. Falls back to direct --session-id if the wrapper
+  //     can't be written (e.g. unwritable temp).
+  let trailingArgs: string[];
+  if (mode === 'auto') {
+    const wrapper = ensureWrapperCmd();
+    if (wrapper) {
+      trailingArgs = [wrapper, ...claudeArgs, claudePath];
+    } else {
+      trailingArgs = [claudePath, '--session-id', ...claudeArgs];
+    }
+  } else {
+    trailingArgs = [claudePath, ...claudeArgs];
+  }
   const args = [
     '-p',
     String(port),
@@ -178,8 +283,7 @@ async function spawnTtyd(
     'fontSize=14',
     '-t',
     'theme={"background":"#0B0B0C"}',
-    claudePath,
-    ...claudeArgs,
+    ...trailingArgs,
   ];
 
   let proc: ChildProcess;
@@ -200,10 +304,10 @@ async function spawnTtyd(
     };
   }
 
-  // Determine sid: if --session-id was passed, the caller already chose
-  // it; if --resume was passed, the second arg is the existing sid.
-  // Either way, claudeArgs[1] is the sid we want to surface back.
-  const sid = claudeArgs[1] ?? '';
+  // Determine sid for the entry record. In auto mode `claudeArgs` is
+  // `[sid]`; in direct mode it's `['--resume', sid]` or
+  // `['--session-id', sid]`. The sid is the LAST element either way.
+  const sid = claudeArgs[claudeArgs.length - 1] ?? '';
 
   const entry: TtydEntry = { proc, port, sid, status: 'starting' };
   sessions.set(sessionId, entry);
@@ -264,78 +368,26 @@ export async function openTtydForSession(
   // → ccsm sidebar ↔ on-disk transcript stay aligned (the previous
   // randomUUID() per spawn caused divergence + orphaned JSONLs).
   const sid = toClaudeSid(sessionId);
-  // If the JSONL transcript already exists on disk for this sid (app
-  // restart, imported session, prior in-app spawn that exited), claude
-  // refuses `--session-id <sid>` with "Session ID is already in use." We
-  // must `--resume <sid>` instead so the prior conversation reattaches.
-  // Fixes #507 (UX G reopen-resume) and #508 (UX H import-resume).
+  // Use the wrapper-mode spawn so EVERY ttyd-internal claude respawn
+  // (one per ws-client connection — see TTYD_WRAPPER_SCRIPT comment)
+  // re-evaluates JSONL existence and picks --session-id vs --resume
+  // accordingly. Without this, the first spawn (no JSONL → uses
+  // --session-id) bakes args that the second spawn (JSONL now exists
+  // because the first turn wrote it) cannot reuse — claude rejects
+  // with "Session ID is already in use." (UX F switch-back bug).
   //
-  // Backend-decides over renderer-decides: the on-disk JSONL is the only
-  // source of truth — the renderer cannot distinguish a fresh-this-session
-  // sid from a rehydrated-from-persistence sid without a roundtrip anyway.
-  // Keeping the decision here means a single codepath for both new and
-  // rehydrated sessions, and no new IPC surface.
-  if (jsonlExistsForSid(sid)) {
-    return spawnTtyd(sessionId, cwd, ['--resume', sid]);
-  }
-  return spawnTtyd(sessionId, cwd, ['--session-id', sid]);
+  // Backend-decides over renderer-decides: the on-disk JSONL is the
+  // only source of truth — and the decision needs to be re-made on
+  // each spawn, not just the first. Keeping it inside the wrapper
+  // means a single codepath for new, rehydrated, and reconnected
+  // sessions, with no new IPC surface.
+  return spawnTtyd(sessionId, cwd, [sid], 'auto');
 }
 
-// Synchronously locate a `<sid>.jsonl` transcript anywhere under the
-// claude projects root(s). claude encodes each cwd as a flattened
-// directory name (e.g. `C:\foo\bar` → `C--foo-bar`); rather than
-// reproducing that encoding (which we don't fully own — it's a CLI
-// implementation detail), scan all project subdirs and return true on
-// first match. ~tens of dirs in steady state, single readdir + a per-dir
-// existsSync — well below the spawnTtyd 200ms warmup budget.
-//
-// Two roots to scan, mirroring two codepaths:
-//   1. `${CLAUDE_CONFIG_DIR}/projects/` when env is set — matches where
-//      ccsm-spawned claude writes transcripts (commands-loader.ts uses
-//      CLAUDE_CONFIG_DIR as a full replacement for ~/.claude).
-//   2. `${HOME}/.claude/projects/` — matches where the import scanner
-//      reads imported transcripts from (import-scanner.ts uses
-//      `os.homedir() + .claude` directly), and where production claude
-//      writes when CLAUDE_CONFIG_DIR is unset.
-// Production: both resolve to the same path so we deduplicate. The
-// probes set HOME and CLAUDE_CONFIG_DIR to the same tempDir but the
-// scanner places imports under `${tempDir}/.claude/projects/` while
-// spawned claude writes to `${tempDir}/projects/` — so we need both.
-//
-// Best-effort: any fs error → treat as "no transcript", which falls
-// back to `--session-id` (the prior behavior).
-function jsonlExistsForSid(sid: string): boolean {
-  const roots = new Set<string>();
-  if (process.env.CLAUDE_CONFIG_DIR) {
-    roots.add(pathJoin(process.env.CLAUDE_CONFIG_DIR, 'projects'));
-  }
-  roots.add(pathJoin(homedir(), '.claude', 'projects'));
-  const filename = `${sid}.jsonl`;
-  for (const root of roots) {
-    let dirs: string[];
-    try {
-      dirs = readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const d of dirs) {
-      const candidate = pathJoin(root, d, filename);
-      try {
-        if (existsSync(candidate)) {
-          // Guard against accidentally matching a 0-byte placeholder; only
-          // treat the file as a real transcript when there's content to
-          // resume. A truly fresh `--session-id` spawn has no JSONL yet,
-          // so a stat here can't false-positive on what we just spawned.
-          const st = statSync(candidate);
-          if (st.isFile() && st.size > 0) return true;
-        }
-      } catch {
-        /* skip unreadable entries */
-      }
-    }
-  }
-  return false;
-}
+// Note: the previous JS-side `jsonlExistsForSid` helper is gone — the
+// equivalent scan now lives inside TTYD_WRAPPER_SCRIPT and runs on
+// every ttyd PTY spawn (not just the first), which is what UX F
+// switch-back requires. See the wrapper script comment for details.
 
 export async function resumeTtydForSession(
   sessionId: string,
