@@ -68,11 +68,6 @@ export interface DiscoveredModel {
 // in `src/shared/ipc-types.ts` (single source of truth).
 export type { ConnectionInfo };
 
-// OS-level notification preferences were removed in PR-D — no production
-// caller fired `dispatchNotification`, so the toggles only flipped store
-// state nothing read. Persisted blobs from older versions are silently
-// dropped at hydrate time (we just never touch the field).
-
 // Soft minimum was previously surfaced to the user via the now-deleted
 // first-run wizard. CCSM ships a fixed binary version inside the installer
 // (PR-B), so the renderer no longer needs to know about CLI version floors.

@@ -25,8 +25,8 @@ declare global {
       // i18n bridge mirrors the API surface exposed in electron/preload.ts.
       // `getSystemLocale` returns the OS locale so the renderer's
       // preferences store can resolve a "system" preference; `setLanguage`
-      // pushes the resolved UI language back to main so OS notifications
-      // come out in the matching language.
+      // pushes the resolved UI language back to main for any future
+      // OS-level surfaces (tray menu, future notifications) to consume.
       i18n: {
         getSystemLocale: () => Promise<string | undefined>;
         setLanguage: (l: 'en' | 'zh') => void;
@@ -75,29 +75,6 @@ declare global {
        * persisted `cwd` was deleted between runs.
        */
       pathsExist: (paths: string[]) => Promise<Record<string, boolean>>;
-
-      notify: (payload: {
-        sessionId: string;
-        title: string;
-        body?: string;
-        eventType?: 'permission' | 'question' | 'turn_done' | 'test';
-        silent?: boolean;
-        extras?: {
-          toastId?: string;
-          sessionName?: string;
-          groupName?: string;
-          toolName?: string;
-          toolBrief?: string;
-          question?: string;
-          selectionKind?: 'single' | 'multi';
-          optionCount?: number;
-          lastUserMsg?: string;
-          lastAssistantMsg?: string;
-          elapsedMs?: number;
-          toolCount?: number;
-          cwd?: string;
-        };
-      }) => Promise<boolean>;
 
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;

@@ -96,29 +96,6 @@ const api = {
   pathsExist: (paths: string[]): Promise<Record<string, boolean>> =>
     ipcRenderer.invoke('paths:exist', paths),
 
-  notify: (payload: {
-    sessionId: string;
-    title: string;
-    body?: string;
-    eventType?: 'permission' | 'question' | 'turn_done' | 'test';
-    silent?: boolean;
-    extras?: {
-      toastId?: string;
-      sessionName?: string;
-      groupName?: string;
-      toolName?: string;
-      toolBrief?: string;
-      question?: string;
-      selectionKind?: 'single' | 'multi';
-      optionCount?: number;
-      lastUserMsg?: string;
-      lastAssistantMsg?: string;
-      elapsedMs?: number;
-      toolCount?: number;
-      cwd?: string;
-    };
-  }): Promise<boolean> => ipcRenderer.invoke('notification:show', payload),
-
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
   updatesDownload: (): Promise<{ ok: true } | { ok: false; reason: string }> =>

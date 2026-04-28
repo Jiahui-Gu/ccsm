@@ -19,13 +19,6 @@ type Tab = 'appearance' | 'connection' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
-//
-// The Notifications tab was removed: the renderer never wired any production
-// caller to `dispatchNotification`, so the toggles only flipped store state
-// no production code read. Keeping the pane risked the user thinking they had
-// turned notifications on when nothing was actually emitting them. The
-// underlying electron/notify-* machinery stays — when a future PR wires real
-// callers, a fresh pane (or a single in-app affordance) can be added back.
 const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'connection', tabKey: 'connection' },
@@ -283,11 +276,6 @@ function Segmented<T extends string>({
   );
 }
 
-
-// Notifications pane removed in PR-D (settings cleanup): no production caller
-// wired `dispatchNotification`, so the toggles only flipped store state
-// nothing read. The CrashReportingField that used to live at the bottom of
-// this pane was moved to the Updates pane (both are app-meta concerns).
 
 // Persisted via the existing `db:save` / `db:load` IPC under the
 // `crashReportingOptOut` app_state key. We store the OPT-OUT flag (default

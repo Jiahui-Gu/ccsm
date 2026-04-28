@@ -65,12 +65,6 @@ import {
   scanImportableSessions,
   type ScannableSession,
 } from './import-scanner';
-import { showNotification, type ShowNotificationPayload } from './notifications';
-import {
-  bootstrapNotify,
-  createDefaultToastActionRouter,
-  autoSetupAumid,
-} from './notify-bootstrap';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import {
   registerCliBridgeIpc,
@@ -543,37 +537,12 @@ function ensureTray() {
 }
 
 app.whenReady().then(() => {
-  // On Windows, notifications need a stable AppUserModelID so the OS knows
-  // which app the toast belongs to (otherwise it shows "electron.exe").
+  // On Windows, set a stable AppUserModelID so the OS attributes the app to
+  // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.ccsm.app');
-    // In dev, ensure the Start Menu .lnk that anchors the AUMID exists so
-    // toasts route correctly without manual `setup-aumid.ps1` invocation.
-    // Fire-and-forget; never blocks startup.
-    autoSetupAumid();
   }
   initDb();
-
-  // Wave 1D: bootstrap the optional the inlined notify module Adaptive Toast pipeline.
-  // Wrapped in try/catch by the bootstrap helper itself; failure (missing
-  // native deps, unregistered AUMID, non-win32) leaves the app running with
-  // the legacy Electron Notification path. The router below routes toast
-  // button clicks (Allow / Allow always / Reject / Focus) back into the same
-  // code paths the in-app prompts use.
-  try {
-    bootstrapNotify(
-      createDefaultToastActionRouter({
-        getMainWindow: () =>
-          BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null,
-      }),
-    );
-  } catch (err) {
-    // bootstrapNotify already swallows internally; this is belt-and-suspenders
-    // so an unexpected throw still can't take down app startup.
-    console.warn(
-      `[main] notify bootstrap threw: ${err instanceof Error ? err.message : err}`,
-    );
-  }
 
   ipcMain.handle('db:load', (_e, key: string) => loadState(key));
   // Cap renderer-supplied state values. Mirrors the per-block cap in
@@ -799,19 +768,12 @@ app.whenReady().then(() => {
   // renderer caller. The `electron/memory` module is still kept for its
   // unit tests and may be re-wired when a memory editor UI returns.
 
-  ipcMain.handle(
-    'notification:show',
-    (e, payload: ShowNotificationPayload) => {
-      const win = BrowserWindow.fromWebContents(e.sender);
-      return showNotification(payload, win);
-    }
-  );
-
-  // notify:availability + notify:setRuntimeState handlers removed in PR-B
-  // (dead code sweep) — renderer no longer probes notification capability or
-  // pushes runtime state into main. The underlying probe / state setters in
-  // notify.ts and notify-bootstrap.ts are still consumed internally by the
-  // bootstrap routine so they stay in place.
+  // notification:show / notify:availability / notify:setRuntimeState handlers
+  // and the entire electron/notify* subsystem were removed in the cleanup PR
+  // that retired the dead notify code. The renderer never had a production
+  // caller for `dispatchNotification`; under the new ttyd architecture the
+  // event source has shifted, so the next notification implementation will
+  // start fresh rather than retro-fitting the old toast pipeline.
 
   installUpdaterIpc();
 
@@ -821,24 +783,10 @@ app.whenReady().then(() => {
   // module and lets the e2e harness exercise them in isolation.
   registerCliBridgeIpc();
 
-  // Dev-only debug backdoor for E2E probes. Probes call this via
-  // `app.evaluate(() => globalThis.__ccsmDebug.activeSessionPids())` on
-  // the Electron main process (NOT the renderer — we intentionally don't
-  // widen preload.ts's surface for a test-only affordance). Guarded behind
-  // `!app.isPackaged` so prod bundles never expose it.
-  if (!app.isPackaged) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const notifyMod = require('./notify') as typeof import('./notify');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const bootstrapMod = require('./notify-bootstrap') as typeof import('./notify-bootstrap');
-    (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
-      // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
-      // can swap the inlined notify module importer for a fake without resorting to
-      // `require` from inside `app.evaluate` (where it's not in scope).
-      notify: notifyMod,
-      notifyBootstrap: bootstrapMod,
-    };
-  }
+  // Dev-only `globalThis.__ccsmDebug` backdoor was removed alongside the
+  // notify subsystem cleanup — its only members exposed the dead notify /
+  // notify-bootstrap modules. Re-add a fresh seam if a future probe needs
+  // main-process internals via `app.evaluate`.
 
   createWindow();
   ensureTray();
