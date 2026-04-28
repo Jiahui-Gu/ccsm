@@ -44,6 +44,12 @@ interface Entry {
   // creation even if claude hasn't written it at startWatching time).
   fileWatcher: fs.FSWatcher | null;
   dirWatcher: fs.FSWatcher | null;
+  // Install-day fallback: when the parent `projects/<projectKey>/` doesn't
+  // exist yet (claude has never run for this cwd), we watch the nearest
+  // existing ancestor and retry installDirWatcher when something is created
+  // there. Cleaned up the moment the real dirWatcher is in place.
+  ancestorWatcher: fs.FSWatcher | null;
+  ancestorPath: string | null;
   lastEmitted: WatcherState | null;
   // Coalesce bursts of fs events. fs.watch on Windows can fire 3-5 times
   // for a single append; we don't want to re-read + reclassify each time.
@@ -80,6 +86,8 @@ class SessionWatcher extends EventEmitter {
       jsonlPath,
       fileWatcher: null,
       dirWatcher: null,
+      ancestorWatcher: null,
+      ancestorPath: null,
       lastEmitted: null,
       pendingTimer: null,
       closed: false,
@@ -109,6 +117,10 @@ class SessionWatcher extends EventEmitter {
     if (entry.dirWatcher) {
       try { entry.dirWatcher.close(); } catch { /* already closed */ }
       entry.dirWatcher = null;
+    }
+    if (entry.ancestorWatcher) {
+      try { entry.ancestorWatcher.close(); } catch { /* already closed */ }
+      entry.ancestorWatcher = null;
     }
     this.entries.delete(sid);
   }
@@ -148,13 +160,23 @@ class SessionWatcher extends EventEmitter {
 
   private installDirWatcher(entry: Entry): void {
     if (entry.closed) return;
+    if (entry.dirWatcher) return;
     const dir = path.dirname(entry.jsonlPath);
     const baseName = path.basename(entry.jsonlPath);
     if (!fs.existsSync(dir)) {
-      // Parent doesn't exist yet — claude hasn't ever run for this cwd.
-      // We can't watch a non-existent directory portably; bail. The first
-      // re-attach (e.g. on session-switch) will re-run startWatching.
+      // Install-day case: parent `projects/<projectKey>/` doesn't exist yet
+      // (claude has never run for this cwd). We can't fs.watch a missing
+      // dir portably, so watch the nearest existing ancestor instead and
+      // retry once any descendant is created. Promotes itself to a real
+      // dirWatcher the moment `dir` appears.
+      this.installAncestorWatcher(entry, dir);
       return;
+    }
+    // dir exists — drop any ancestor fallback we had.
+    if (entry.ancestorWatcher) {
+      try { entry.ancestorWatcher.close(); } catch { /* */ }
+      entry.ancestorWatcher = null;
+      entry.ancestorPath = null;
     }
     try {
       entry.dirWatcher = fs.watch(dir, (_evt, filename) => {
@@ -174,6 +196,55 @@ class SessionWatcher extends EventEmitter {
       });
     } catch {
       entry.dirWatcher = null;
+    }
+  }
+
+  private installAncestorWatcher(entry: Entry, missingDir: string): void {
+    if (entry.closed) return;
+    // Walk up until we find an existing ancestor. fs.watch won't accept a
+    // missing path; the nearest existing ancestor is guaranteed to exist
+    // (worst case: the filesystem root).
+    let ancestor = path.dirname(missingDir);
+    let prev = missingDir;
+    while (!fs.existsSync(ancestor) && ancestor !== prev) {
+      prev = ancestor;
+      ancestor = path.dirname(ancestor);
+    }
+    // Already watching this same ancestor — nothing to do.
+    if (entry.ancestorWatcher && entry.ancestorPath === ancestor) return;
+    if (entry.ancestorWatcher) {
+      try { entry.ancestorWatcher.close(); } catch { /* */ }
+      entry.ancestorWatcher = null;
+      entry.ancestorPath = null;
+    }
+    try {
+      entry.ancestorWatcher = fs.watch(ancestor, () => {
+        if (entry.closed) return;
+        // Any change in the ancestor — retry the dir-watcher chain. If the
+        // immediate parent now exists, installDirWatcher will close this
+        // ancestor watcher and install the real one. Otherwise it'll just
+        // re-check (or re-anchor to a deeper ancestor that just appeared).
+        if (entry.dirWatcher) return;
+        this.installDirWatcher(entry);
+        // If we successfully promoted to a real dir watcher, also try to
+        // install the file watcher and re-classify in case the JSONL has
+        // already landed.
+        if (entry.dirWatcher) {
+          if (!entry.fileWatcher) this.installFileWatcher(entry);
+          this.scheduleRead(entry);
+        }
+      });
+      entry.ancestorPath = ancestor;
+      entry.ancestorWatcher.on('error', () => {
+        if (entry.ancestorWatcher) {
+          try { entry.ancestorWatcher.close(); } catch { /* */ }
+          entry.ancestorWatcher = null;
+          entry.ancestorPath = null;
+        }
+      });
+    } catch {
+      entry.ancestorWatcher = null;
+      entry.ancestorPath = null;
     }
   }
 
