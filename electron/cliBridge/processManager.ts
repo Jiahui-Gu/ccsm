@@ -148,6 +148,12 @@ async function spawnTtyd(
   //                       Without it the user could only watch.
   //   -t fontSize=14      pass-through to the embedded xterm.js client
   //                       (matches ccsm's renderer typography density).
+  //   -t theme=...        match xterm bg to ccsm host bg (#0B0B0C) so
+  //                       the embedded TUI doesn't visually appear as a
+  //                       broken/unrendered slab. xterm's default
+  //                       rgb(43,43,43) reads as off-by-a-shade against
+  //                       the ccsm window and previously caused multiple
+  //                       wasted-effort rounds (#499).
   //
   // Trailing positional args: the program ttyd should exec inside the
   // pty — the absolute claude path + the per-mode args (--session-id
@@ -160,6 +166,8 @@ async function spawnTtyd(
     '-W',
     '-t',
     'fontSize=14',
+    '-t',
+    'theme={"background":"#0B0B0C"}',
     claudePath,
     ...claudeArgs,
   ];

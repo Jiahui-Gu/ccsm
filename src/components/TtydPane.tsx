@@ -132,7 +132,11 @@ export function TtydPane({ sessionId, cwd }: Props) {
     // treat this as a real out-of-process webview rather than an iframe.
     <webview
       src={`http://127.0.0.1:${state.port}/`}
-      className="flex-1 w-full h-full border-0 bg-black"
+      // bg matches the ttyd `-t theme=...` background so the seam
+      // between host chrome and the embedded TUI is intentional rather
+      // than off-by-a-shade. The faint inner ring gives the user a
+      // visible boundary without competing with content.
+      className="flex-1 w-full h-full border-0 bg-[#0B0B0C] ring-1 ring-inset ring-white/5"
       // eslint-disable-next-line react/no-unknown-property -- Electron <webview> tag attribute, not a standard HTML prop
       partition="persist:ttyd"
       title={`ttyd session ${sessionId}`}
