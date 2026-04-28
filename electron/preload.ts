@@ -239,3 +239,41 @@ const ccsmPty = {
 contextBridge.exposeInMainWorld('ccsmPty', ccsmPty);
 
 export type CCSMPtyAPI = typeof ccsmPty;
+
+// ─────────────────────────── ccsmSession ─────────────────────────────────
+//
+// Per-session state signal sourced from the JSONL tail-watcher
+// (electron/sessionWatcher). Forwarded over the `session:state` IPC
+// channel as `{sid, state: 'idle' | 'running' | 'requires_action'}` and
+// fan-ed out here to all renderer subscribers (Sidebar today; ccsm-notify
+// integration tomorrow). Mirrors the listener-set fan-out pattern used
+// for ccsmPty.onData / onExit so multiple subscribers don't each register
+// an ipcRenderer listener on the same channel.
+
+export type SessionState = 'idle' | 'running' | 'requires_action';
+type SessionStatePayload = { sid: string; state: SessionState };
+
+const sessionStateListeners = new Set<(e: SessionStatePayload) => void>();
+
+ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayload) => {
+  for (const cb of sessionStateListeners) {
+    try {
+      cb(payload);
+    } catch (err) {
+      console.error('[ccsmSession] onState listener threw', err);
+    }
+  }
+});
+
+const ccsmSession = {
+  onState: (cb: (e: SessionStatePayload) => void): (() => void) => {
+    sessionStateListeners.add(cb);
+    return () => {
+      sessionStateListeners.delete(cb);
+    };
+  },
+};
+
+contextBridge.exposeInMainWorld('ccsmSession', ccsmSession);
+
+export type CCSMSessionAPI = typeof ccsmSession;
