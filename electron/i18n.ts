@@ -44,11 +44,16 @@ type CloseDialogCatalog = {
   dontAskAgain: string;
 };
 
+type BadgeCatalog = {
+  unreadOverlay: string;
+};
+
 type NotificationKey = keyof NotificationCatalog;
 type TrayKey = keyof TrayCatalog;
 type MenuKey = keyof MenuCatalog;
 type DialogKey = keyof DialogCatalog;
 type CloseDialogKey = keyof CloseDialogCatalog;
+type BadgeKey = keyof BadgeCatalog;
 
 // IMPORTANT: keep these strings byte-identical to the renderer catalog
 // `notifications` namespace. The renderer catalog is the source of truth.
@@ -134,6 +139,18 @@ const closeDialogCatalogs: Record<SupportedLanguage, CloseDialogCatalog> = {
   }
 };
 
+// Accessibility alt text for the Windows taskbar overlay icon. The visible
+// badge is just a digit ("1" / "9+"); screen readers announce this string.
+// Not surfaced in the renderer so no parity concern.
+const badgeCatalogs: Record<SupportedLanguage, BadgeCatalog> = {
+  en: {
+    unreadOverlay: '{{n}} unread'
+  },
+  zh: {
+    unreadOverlay: '{{n}} 条未读'
+  }
+};
+
 let activeLanguage: SupportedLanguage = 'en';
 
 export function setMainLanguage(lang: SupportedLanguage): void {
@@ -180,6 +197,15 @@ export function tDialog(key: DialogKey): string {
 export function tCloseDialog(key: CloseDialogKey): string {
   const catalog = closeDialogCatalogs[activeLanguage] ?? closeDialogCatalogs.en;
   return catalog[key] ?? closeDialogCatalogs.en[key] ?? key;
+}
+
+export function tBadge(
+  key: BadgeKey,
+  vars: Record<string, string | number> = {}
+): string {
+  const catalog = badgeCatalogs[activeLanguage] ?? badgeCatalogs.en;
+  const template = catalog[key] ?? badgeCatalogs.en[key] ?? key;
+  return interpolate(template, vars);
 }
 
 // Resolve a system locale tag into one of the two supported languages.

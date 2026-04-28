@@ -499,6 +499,54 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
     throw new Error(`unexpected notify state=${entry.state}`);
   }
   console.log(`[HARNESS]   notify fired: state=${entry.state} title="${entry.title}" body="${entry.body}"`);
+
+  // -- Tray + taskbar badge unread count (#572) ------------------------
+  // The notify bridge bumps BadgeManager.incrementSid(sid) ONLY when the
+  // notification actually fired (mute/focus/dedupe survived). We just
+  // observed the fire above, so total must be >= 1 and include our sid.
+  // On mac/linux app.getBadgeCount() is the source of truth; on win32 we
+  // assert via the BadgeManager debug seam since setOverlayIcon state
+  // can't be probed back out.
+  const totalAfterFire = await electronApp.evaluate(({ app }) => {
+    const dbg = globalThis.__ccsmBadgeDebug;
+    return {
+      app: app.getBadgeCount?.() ?? 0,
+      mgr: dbg?.getTotal ? dbg.getTotal() : null,
+    };
+  });
+  const observed = process.platform === 'win32' ? totalAfterFire.mgr : totalAfterFire.app;
+  if (observed === null || observed === undefined) {
+    throw new Error(`badge total unreadable. Diag: ${JSON.stringify(totalAfterFire)}`);
+  }
+  if (observed < 1) {
+    throw new Error(
+      `badge total expected >=1 after notify fire, got ${observed}. Diag: ${JSON.stringify(totalAfterFire)}`,
+    );
+  }
+  console.log(`[HARNESS]   badge total after fire: ${observed} (platform=${process.platform})`);
+
+  // Re-focus + re-set active sid → BadgeManager.clearSid(sid) → total back to 0.
+  await win.evaluate((s) => {
+    const bridge = window.ccsmSession;
+    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
+  }, sid);
+  // The window already has focus (Playwright keeps it focused); the
+  // session:setActive IPC arriving in main triggers clearBadgeForActiveIfFocused.
+  await sleep(300);
+  const totalAfterClear = await electronApp.evaluate(({ app }) => {
+    const dbg = globalThis.__ccsmBadgeDebug;
+    return {
+      app: app.getBadgeCount?.() ?? 0,
+      mgr: dbg?.getTotal ? dbg.getTotal() : null,
+    };
+  });
+  const cleared = process.platform === 'win32' ? totalAfterClear.mgr : totalAfterClear.app;
+  if (cleared !== 0) {
+    throw new Error(
+      `badge total expected 0 after re-focus, got ${cleared}. Diag: ${JSON.stringify(totalAfterClear)}`,
+    );
+  }
+  console.log(`[HARNESS]   badge total after clear: ${cleared}`);
 }
 
 // ============================================================================
