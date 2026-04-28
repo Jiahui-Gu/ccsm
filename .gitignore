@@ -10,7 +10,9 @@ scripts/spike-*
 scripts/e2e-artifacts/
 release/
 .dogfood-userdata/
+.dogfood-userdata-happy/
 docs/screenshots/dogfood-current-ui/
+docs/screenshots/dogfood-happy-path/
 *.exe
 *.dmg
 *.AppImage
