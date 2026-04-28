@@ -575,8 +575,10 @@ export async function dismissWelcomeSplash(
  *     card was dismissed.
  *
  * Returns once the input prompt regex matches, or after the iteration
- * budget is exhausted. Never throws — caller can verify ready state via
- * the next `readXtermLines` / `waitForXtermBuffer` call.
+ * budget is exhausted. Transient buffer-read errors (page closed / context
+ * destroyed) are swallowed by `readXtermLines` itself; real evaluation
+ * failures propagate so the calling case fails fast instead of looping
+ * blind.
  */
 export async function dismissFirstRunModals(win, opts = {}) {
   const {
@@ -589,7 +591,7 @@ export async function dismissFirstRunModals(win, opts = {}) {
 
   // Phase 1: trust + generic splash advance.
   for (let i = 0; i < maxIters; i++) {
-    const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 30 });
     const screen = lines.join('\n');
     if (promptRe.test(screen)) return;
     if (trustRe.test(screen)) {
@@ -605,7 +607,7 @@ export async function dismissFirstRunModals(win, opts = {}) {
 
   // Phase 3: final settle.
   for (let i = 0; i < 4; i++) {
-    const lines = await readXtermLines(win, { lines: 12 }).catch(() => []);
+    const lines = await readXtermLines(win, { lines: 12 });
     const screen = lines.join('\n');
     if (promptRe.test(screen)) return;
     await sendToClaudeTui(win, '\r').catch(() => {});
