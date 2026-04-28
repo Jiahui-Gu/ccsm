@@ -268,13 +268,20 @@ function installCleanupHooks() {
   process.on('SIGINT', () => { runAll(); process.exit(130); });
   process.on('SIGTERM', () => { runAll(); process.exit(143); });
   process.on('uncaughtException', (err) => {
-    runAll();
+    // #560 — if cleanup itself throws, preserve the ORIGINAL error.
+    // Without try/catch the cleanup throw would replace `err` and we'd
+    // lose the actual crash signal that the user needs to debug.
+    try { runAll(); } catch (cleanupErr) {
+      try { console.error('[probe-utils] cleanup threw during uncaughtException:', cleanupErr); } catch (_) { /* ignore */ }
+    }
     // Re-throw so the original error still surfaces.
     throw err;
   });
   process.on('unhandledRejection', (err) => {
     // Async electron crashes surface here; without this the tempdir leaks.
-    runAll();
+    try { runAll(); } catch (cleanupErr) {
+      try { console.error('[probe-utils] cleanup threw during unhandledRejection:', cleanupErr); } catch (_) { /* ignore */ }
+    }
     // Surface the rejection — let Node's default handler exit non-zero.
     throw err;
   });

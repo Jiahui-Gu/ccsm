@@ -606,6 +606,68 @@ async function caseCwdProjectsClaude({ electronApp, win, tempDir }) {
   if (!jsonlBody.includes(MARKER_TOKEN)) {
     throw new Error(`JSONL does not contain marker token ${MARKER_TOKEN}`);
   }
+
+  // #560 — sub-assertion: cwd with spaces still flows through the same
+  // hash-dir + JSONL-marker pipeline. Spaces are a common Windows footgun
+  // (e.g. `C:\Users\First Last\my project`); assert here so we catch any
+  // future shell-escaping or path-encoding regression.
+  const spacesProjectDir = path.join(tempDir, 'my project with spaces');
+  mkdirSync(spacesProjectDir, { recursive: true });
+  const SPACES_MARKER = `probe-cwd-spaces-${Math.random().toString(36).slice(2, 10)}`;
+  writeFileSync(path.join(spacesProjectDir, MARKER_FILENAME), `${SPACES_MARKER}\n`, 'utf8');
+
+  const { sid: sidSpaces } = await seedSession(win, {
+    name: 'cwd-test-spaces', cwd: spacesProjectDir, groupId: 'g1',
+  });
+  if (!sidSpaces) throw new Error('seedSession (spaces) returned no sid');
+
+  await waitForTerminalReady(win, sidSpaces, { timeout: 25000 });
+  await sleep(2000);
+
+  for (let i = 0; i < 4; i++) {
+    await sendToClaudeTui(win, '\r');
+    await sleep(700);
+  }
+  await sleep(1500);
+
+  const SPACES_PROMPT = `ccsm-probe-cwd marker ${SPACES_MARKER}, please reply with the word PONG`;
+  await sendToClaudeTui(win, SPACES_PROMPT);
+  await sleep(800);
+  await sendToClaudeTui(win, '\r');
+
+  await waitForXtermBuffer(win, /PONG/, { timeout: 90000 });
+
+  const spacesDeadline = Date.now() + 20000;
+  let spacesJsonl = null;
+  let spacesDir = null;
+  while (Date.now() < spacesDeadline) {
+    if (existsSync(projectsRoot)) {
+      for (const dirName of readdirSync(projectsRoot)) {
+        let entries;
+        try { entries = readdirSync(path.join(projectsRoot, dirName)); } catch { continue; }
+        if (entries.includes(`${sidSpaces}.jsonl`)) {
+          spacesJsonl = path.join(projectsRoot, dirName, `${sidSpaces}.jsonl`);
+          spacesDir = dirName;
+          break;
+        }
+      }
+    }
+    if (spacesJsonl) break;
+    await sleep(500);
+  }
+  if (!spacesJsonl) {
+    throw new Error(`spaces: no <sid>.jsonl found under ${projectsRoot}`);
+  }
+  // The hash-dir name should encode the project folder. Different CLI
+  // versions encode spaces as `-` or `_`; assert that some recognisable
+  // segment of the folder name survives.
+  if (!/my[-_ ]project[-_ ]with[-_ ]spaces/i.test(spacesDir)) {
+    throw new Error(`spaces: hash dir does not encode "my project with spaces": ${spacesDir}`);
+  }
+  const spacesBody = readFileSync(spacesJsonl, 'utf8');
+  if (!spacesBody.includes(SPACES_MARKER)) {
+    throw new Error(`spaces: JSONL does not contain marker ${SPACES_MARKER}`);
+  }
 }
 
 // ============================================================================
@@ -629,6 +691,7 @@ async function caseImportResume({ electronApp, win, tempDir }) {
   const claudeJsonlPath = path.join(claudeProjectDir, `${seedSid}.jsonl`);
 
   const seedUserText = 'PROBE_IMPORT_PING please remember the token PROBE_IMPORT_PINEAPPLE';
+  const assistantReplyMarker = `PROBE_IMPORT_ASSISTANT_REPLY_${randomUUID().slice(0, 8)}`;
   const userFrame = {
     parentUuid: null, isSidechain: false, type: 'user',
     message: { role: 'user', content: seedUserText },
@@ -646,7 +709,7 @@ async function caseImportResume({ electronApp, win, tempDir }) {
     message: {
       id: 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24),
       type: 'message', role: 'assistant', model: 'claude-sonnet-4-5-20250929',
-      content: [{ type: 'text', text: 'Got it, I will remember PROBE_IMPORT_PINEAPPLE.' }],
+      content: [{ type: 'text', text: `Got it, I will remember PROBE_IMPORT_PINEAPPLE. ${assistantReplyMarker}` }],
       stop_reason: 'end_turn', stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 1 },
     },
@@ -704,11 +767,34 @@ async function caseImportResume({ electronApp, win, tempDir }) {
     useStore.setState({ activeId: importedId, focusedGroupId: null });
     const after = useStore.getState();
     const session = after.sessions.find((s) => s.id === importedId);
-    return { ok: true, importedId, session: session ? { id: session.id, resumeSessionId: session.resumeSessionId } : null };
+    return {
+      ok: true,
+      importedId,
+      // Expose the scanner row's cwd + projectDir so the harness can
+      // verify the scanner read from `<HOME>/.claude/projects/` (#559).
+      scannerRow: { cwd: found.cwd, projectDir: found.projectDir, title: found.title },
+      session: session ? { id: session.id, resumeSessionId: session.resumeSessionId } : null,
+    };
   }, seedSid);
   if (!importResult?.ok) throw new Error(`import-flow failed: ${JSON.stringify(importResult)}`);
   if (importResult.importedId !== seedSid || importResult.session?.resumeSessionId !== seedSid) {
     throw new Error(`import id mismatch: ${JSON.stringify(importResult)}`);
+  }
+  // #559 — explicit per-path assertion: scanner returns the seeded entry
+  // from `<HOME>/.claude/projects/<projectDirName>/<sid>.jsonl`. Production
+  // import-scanner reads from `path.join(os.homedir(), '.claude',
+  // 'projects')`, so under HOME=tempDir that's `scannerProjectDir`.
+  if (importResult.scannerRow?.cwd !== seedCwd) {
+    throw new Error(
+      `scanner row cwd mismatch (scanner-path read failed): expected ${seedCwd}, ` +
+        `got ${importResult.scannerRow?.cwd}`,
+    );
+  }
+  if (importResult.scannerRow?.projectDir !== projectDirName) {
+    throw new Error(
+      `scanner row projectDir mismatch: expected ${projectDirName}, ` +
+        `got ${importResult.scannerRow?.projectDir}`,
+    );
   }
 
   await sleep(1500);
@@ -722,6 +808,10 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 
   // Wait for claude --resume to replay PROBE_IMPORT_PING.
   await waitForXtermBuffer(win, /PROBE_IMPORT_PING/, { timeout: 30000 });
+  // #559 — also assert the seeded ASSISTANT frame replayed. This proves
+  // claude --resume consumed the canonical CLI-path JSONL (`<HOME>/projects/`,
+  // not just the scanner-path one), end-to-end.
+  await waitForXtermBuffer(win, new RegExp(assistantReplyMarker), { timeout: 30000 });
 
   const followupToken = 'PROBE_FOLLOWUP_' + Math.random().toString(36).slice(2, 8).toUpperCase();
   await sleep(2000);
@@ -931,6 +1021,22 @@ async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
         `Active element after: ${JSON.stringify(focusAfter)}`,
     );
   }
+
+  // #528 — count delta alone proves "no double-fire", not "keystrokes
+  // reach the CLI". A regression where focus moves to <body> after
+  // activation (no-op typing) would still pass the delta check.
+  // Tighten by typing a unique marker into the newly-active session and
+  // asserting it lands in xterm's scrollback — that requires both
+  // (a) focus on the xterm helper textarea, and (b) live pty plumbing.
+  const newSid = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+  if (!newSid) throw new Error('no activeId after Enter+Enter');
+  await waitForTerminalReady(win, newSid, { timeout: 45000 });
+  await dismissFirstRunModals(win);
+  await assertCliFocused(win, newSid, 'new-session-focus-cli');
+
+  const focusMarker = `FOCUS_PROBE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  await sendToClaudeTui(win, `echo ${focusMarker}\r`);
+  await waitForXtermBuffer(win, new RegExp(focusMarker), { timeout: 15000 });
 }
 
 // ============================================================================
@@ -980,6 +1086,18 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
   // Switch to B.
   await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidB);
   await waitForTerminalReady(win, sidB, { timeout: 30000 });
+
+  // #560 — sanity: B must have its own pty pid distinct from A's. Cheap
+  // guard against a regression where window.ccsmPty.list() returns a stale
+  // single entry for every sid (which would silently make the A→B→A
+  // equality below trivially true).
+  const pidB = await getPtyPidForSid(win, sidB);
+  if (typeof pidB !== 'number') {
+    throw new Error(`pidB not numeric: ${JSON.stringify(pidB)}`);
+  }
+  if (pidB === pidA1) {
+    throw new Error(`A and B share the same pty pid (${pidA1}); list() is reading stale state`);
+  }
 
   // Switch BACK to A.
   await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
@@ -1040,7 +1158,12 @@ async function caseReopenResume() {
 
     await waitForXtermBuffer(
       win1,
-      new RegExp(`${SECRET_TOKEN}|remember|noted|got it|will remember|sure|okay`, 'i'),
+      // #560 — keep this strict: only assert the model produced an
+      // acknowledgement signal (the token, "remember", or "noted").
+      // Loose verbs like "sure"/"okay"/"got it"/"will remember" matched
+      // unrelated boilerplate (welcome text, trust dialog) and gave a
+      // false-green when claude actually never replied.
+      new RegExp(`${SECRET_TOKEN}|remember|noted`, 'i'),
       { timeout: 90000 },
     );
 
