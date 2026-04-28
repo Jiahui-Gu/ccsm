@@ -9,7 +9,8 @@
 //   5. default-cwd-from-userCwds-lru — task #551: new-session cwd defaults to LRU head
 //   6. new-session-focus-cli         — UX C': button focus does not double-fire
 //   7. pty-pid-stable-across-switch  — direct-xterm: pty pid stable across A→B→A switch
-//   8. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
+//   8. switch-session-during-streaming — task #558: switch mid-stream, no token loss
+//   9. reopen-resume                 — UX G: close ccsm, reopen, click session, --resume restores
 //
 // Sharing strategy:
 //   * Cases 1–6 share ONE Electron launch + ONE isolated tempDir. Each case
@@ -884,6 +885,194 @@ async function casePtyPidStableAcrossSwitch({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: switch-session-during-streaming (#558)
+// ============================================================================
+// Real user pain: switching to another session WHILE claude is still emitting
+// tokens in the current one would lose those tokens if the renderer-side
+// xterm detached and the pty stopped being drained / was killed. The
+// existing `switch-session-keeps-chat` case only switches AFTER a reply
+// has fully settled, so it cannot exercise the mid-stream path.
+//
+// Strategy:
+//   1. Seed A and B in the shared launch.
+//   2. Send A a deterministic long-output prompt: "Print the numbers 1 to N,
+//      one per line, no extra text." We pick N=50 — long enough to keep the
+//      stream flowing through the entire A→B→A round-trip in a typical env,
+//      short enough to keep wall-clock under ~90s.
+//   3. Wait for at least 5 numbers to appear (proves stream STARTED). Do not
+//      wait for it to finish — that would void the assertion.
+//   4. Switch to B, dwell ~1100ms (gives A time to keep emitting in the
+//      background), switch back to A.
+//   5. Wait until A's stream finishes (line count stops growing for 1.5s,
+//      or the prompt prefix reappears).
+//   6. Assert every integer 1..N appears on its own line in A's xterm
+//      buffer — no gaps, no duplicates.
+//   7. Assert pidA stable across the switch and no pty:exit fired for A.
+// ============================================================================
+
+async function caseSwitchSessionDuringStreaming({ electronApp, win, tempDir }) {
+  const N = 50;
+  const STREAM_PROMPT = `Print the numbers 1 to ${N}, one per line, no extra text.`;
+  const consoleErrors = [];
+  const consoleHandler = (msg) => {
+    if (msg.type() === 'error') consoleErrors.push({ type: 'error', text: msg.text() });
+  };
+  const pageErrorHandler = (err) => consoleErrors.push({ type: 'pageerror', text: String(err) });
+  win.on('console', consoleHandler);
+  win.on('pageerror', pageErrorHandler);
+
+  await installPtyExitProbe(win);
+
+  try {
+    await win.waitForFunction(
+      () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+      null,
+      { timeout: 30000 },
+    );
+
+    const { sid: sidA } = await seedSession(win, { name: 'stream-A', cwd: tempDir });
+    const { sid: sidB } = await seedSession(win, { name: 'stream-B', cwd: tempDir });
+    if (!sidA || !sidB || sidA === sidB) throw new Error(`bad sids A=${sidA} B=${sidB}`);
+
+    // Select A and wait for terminal + first-run modals.
+    await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
+    await waitForTerminalReady(win, sidA, { timeout: 45000 });
+    await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
+    await dismissFirstRunModals(win);
+
+    // Advance any leftover trust/welcome prompts so the stream prompt
+    // actually reaches claude.
+    for (let i = 0; i < 6; i++) {
+      const lines = await readXtermLines(win, { lines: 30 }).catch(() => []);
+      const tail = lines.join('\n');
+      if (/│\s*>/m.test(tail) || /^\s*>\s/m.test(tail)) break;
+      await sendToClaudeTui(win, '\r');
+      await sleep(1500);
+    }
+
+    const pidA1 = await getPtyPidForSid(win, sidA);
+    if (typeof pidA1 !== 'number') {
+      throw new Error(`pidA1 not numeric: ${JSON.stringify(pidA1)}`);
+    }
+
+    // Focus xterm and send the long-stream prompt to A.
+    await win.evaluate(() => {
+      const ta = document.querySelector('.xterm-helper-textarea');
+      if (ta) ta.focus();
+      if (window.__ccsmTerm && typeof window.__ccsmTerm.focus === 'function') window.__ccsmTerm.focus();
+      return true;
+    });
+    await sleep(300);
+    await sendToClaudeTui(win, STREAM_PROMPT);
+    await sleep(400);
+    await sendToClaudeTui(win, '\r');
+
+    // Wait for the stream to START — at least 5 distinct numbers visible.
+    // Do NOT wait for completion; the whole point is to switch mid-flight.
+    const startDeadline = Date.now() + 90_000;
+    let started = false;
+    let startTail = '';
+    while (Date.now() < startDeadline) {
+      await sleep(500);
+      const lines = await readXtermLines(win, { lines: 400 }).catch(() => []);
+      const joined = lines.join('\n');
+      startTail = joined.slice(-600);
+      let count = 0;
+      for (let i = 1; i <= 5; i++) {
+        if (new RegExp(`(^|\\n)\\s*${i}\\s*(\\n|$)`, 'm').test(joined)) count++;
+      }
+      if (count >= 5) { started = true; break; }
+    }
+    if (!started) {
+      throw new Error(`stream did not start (≥5 numbers) within 90s. Tail:\n${startTail}`);
+    }
+
+    // Switch to B mid-stream.
+    await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidB);
+    await waitForTerminalReady(win, sidB, { timeout: 30000 });
+
+    // Dwell in B so A's stream keeps flowing in the background.
+    await sleep(1100);
+
+    // pid of A must still be reported while we sit on B.
+    const pidA2 = await getPtyPidForSid(win, sidA);
+    if (pidA2 !== pidA1) {
+      throw new Error(`A's pid changed while focused on B (was ${pidA1}, now ${pidA2})`);
+    }
+
+    // Switch back to A.
+    await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
+    await waitForTerminalReady(win, sidA, { timeout: 30000 });
+
+    const pidA3 = await getPtyPidForSid(win, sidA);
+    if (pidA3 !== pidA1) {
+      throw new Error(`A's pid changed across A→B→A (was ${pidA1}, now ${pidA3})`);
+    }
+
+    // Wait for A's stream to FINISH: line count stable for 1.5s or N visible.
+    const finishDeadline = Date.now() + 120_000;
+    let prevCount = -1;
+    let stableSince = 0;
+    let lastJoined = '';
+    while (Date.now() < finishDeadline) {
+      await sleep(750);
+      const lines = await readXtermLines(win, { lines: 600 }).catch(() => []);
+      lastJoined = lines.join('\n');
+      const count = lines.length;
+      const haveN = new RegExp(`(^|\\n)\\s*${N}\\s*(\\n|$)`, 'm').test(lastJoined);
+      if (count === prevCount) {
+        if (!stableSince) stableSince = Date.now();
+        if (Date.now() - stableSince >= 1500 && haveN) break;
+      } else {
+        stableSince = 0;
+        prevCount = count;
+      }
+    }
+
+    // Assert every integer 1..N appears on its own line, no missing values.
+    // Each line in xterm is space-padded, so match \s*<n>\s* anchored to
+    // line boundaries.
+    const missing = [];
+    for (let i = 1; i <= N; i++) {
+      if (!new RegExp(`(^|\\n)\\s*${i}\\s*(\\n|$)`, 'm').test(lastJoined)) {
+        missing.push(i);
+      }
+    }
+    if (missing.length > 0) {
+      throw new Error(
+        `A's buffer is missing ${missing.length}/${N} numbers after switch-back. ` +
+          `Missing: ${missing.slice(0, 30).join(',')}${missing.length > 30 ? '...' : ''}\n` +
+          `Tail:\n${lastJoined.slice(-800)}`,
+      );
+    }
+
+    // Assert no duplicates: each number appears exactly once on its own line.
+    for (let i = 1; i <= N; i++) {
+      const re = new RegExp(`(^|\\n)\\s*${i}\\s*(?=\\n|$)`, 'gm');
+      const matches = lastJoined.match(re) || [];
+      if (matches.length !== 1) {
+        throw new Error(
+          `expected number ${i} exactly once on its own line, got ${matches.length} occurrences. ` +
+            `Tail:\n${lastJoined.slice(-800)}`,
+        );
+      }
+    }
+
+    // No pty:exit must have fired for A across the whole switch.
+    const exitsForA = await win.evaluate(
+      (sid) => (window.__probePtyExits || []).filter((e) => e && (e.sid === sid || e.sessionId === sid)),
+      sidA,
+    );
+    if (exitsForA.length > 0) {
+      throw new Error(`pty:exit fired for A during/after switch: ${JSON.stringify(exitsForA)}`);
+    }
+  } finally {
+    win.off('console', consoleHandler);
+    win.off('pageerror', pageErrorHandler);
+  }
+}
+
+// ============================================================================
 // Case: reopen-resume (UX G) — owns its launches
 // ============================================================================
 
@@ -990,6 +1179,7 @@ const CASE_REGISTRY = [
   { name: 'default-cwd-from-userCwds-lru', group: 'shared', run: caseDefaultCwdFromUserCwdsLru },
   { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
+  { name: 'switch-session-during-streaming', group: 'shared', run: caseSwitchSessionDuringStreaming },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
 ];
 
