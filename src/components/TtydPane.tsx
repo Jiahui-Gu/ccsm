@@ -28,19 +28,61 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 // Strings are intentionally hardcoded English placeholders for now; W2c
 // will swap them for i18n keys when wiring this into App.
 
-type Props = { sessionId: string; cwd: string };
+type Props = {
+  sessionId: string;
+  cwd: string;
+  /**
+   * Monotonic counter incremented by App whenever the user explicitly
+   * intends "I want to type into the CLI now" — currently bumped on
+   * new-session creation (sidebar button, command palette, Ctrl+N,
+   * first-run CTA, tutorial). When this changes we focus the embedded
+   * webview AND the xterm helper textarea inside it.
+   *
+   * Why a nonce instead of a focus event bus: the focus intent is local
+   * to App ↔ TtydPane and tied to React state changes; a counter prop
+   * keeps the dataflow trivially traceable and survives React StrictMode
+   * double-invocation without spurious focus jumps (we only act when
+   * the value actually changes from the previously-honored one).
+   *
+   * We deliberately do NOT auto-focus on every sessionId change —
+   * switching to an existing session keeps the user's prior focus
+   * context (e.g. arrow-key navigation in the sidebar).
+   */
+  focusRequestNonce?: number;
+};
 
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; port: number }
   | { kind: 'error'; message: string };
 
-export function TtydPane({ sessionId, cwd }: Props) {
+// Electron <webview> exposes `focus()` and `executeJavaScript()`; we
+// only call those two so we don't pull in @types/electron just for this.
+type WebviewElement = HTMLElement & {
+  focus: () => void;
+  executeJavaScript: (code: string) => Promise<unknown>;
+  addEventListener: HTMLElement['addEventListener'];
+  removeEventListener: HTMLElement['removeEventListener'];
+};
+
+export function TtydPane({ sessionId, cwd, focusRequestNonce }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   // Track the sessionId we requested for so a stale resolve from a
   // previous session can't clobber the current one when the user
   // switches quickly.
   const activeSidRef = useRef<string>(sessionId);
+  const webviewRef = useRef<WebviewElement | null>(null);
+  // Track which nonces we've already honored so re-renders (state flips,
+  // sessionId switches) don't re-fire focus for the same intent.
+  const honoredNonceRef = useRef<number | undefined>(undefined);
+  // Whether the current webview's `dom-ready` has fired. Focusing a
+  // webview before its underlying webContents is attached is a no-op,
+  // and `executeJavaScript` rejects, so we queue the focus and flush on
+  // dom-ready.
+  const domReadyRef = useRef<boolean>(false);
+  // Pending focus request that arrived before dom-ready (or before the
+  // webview element existed). Flushed once both conditions hold.
+  const pendingFocusRef = useRef<boolean>(false);
 
   const open = useCallback(async (sid: string, sessionCwd: string) => {
     const bridge = window.ccsmCliBridge;
@@ -98,6 +140,51 @@ export function TtydPane({ sessionId, cwd }: Props) {
     return unsubscribe;
   }, []);
 
+  // Focus orchestration. We focus the webview itself AND
+  // `document.querySelector('.xterm-helper-textarea')` inside the webview
+  // — xterm.js routes keyboard input through that hidden textarea, so
+  // focusing the webview alone leaves the cursor un-blinking and the
+  // first keystroke gets dropped.
+  const flushFocus = useCallback(() => {
+    const wv = webviewRef.current;
+    if (!wv || !domReadyRef.current) return;
+    pendingFocusRef.current = false;
+    try {
+      wv.focus();
+    } catch {
+      // focus() can throw if the webview was just detached; ignore
+      // — the next nonce bump will retry.
+    }
+    // Best-effort: if the embedded page hasn't loaded xterm yet
+    // (very fast new-session race) the selector returns null and the
+    // call is a no-op. The user's first keystroke after the webview
+    // itself has focus will still register inside xterm because
+    // <webview> forwards key events to its hosted page.
+    void wv
+      .executeJavaScript(
+        "(() => { const el = document.querySelector('.xterm-helper-textarea'); if (el) el.focus(); })();"
+      )
+      .catch(() => {});
+  }, []);
+
+  // Honor a new focus request when the nonce changes. If the webview
+  // hasn't finished `dom-ready` yet, queue it — the dom-ready listener
+  // (set on the webview element via `ref`) will flush.
+  useEffect(() => {
+    if (focusRequestNonce === undefined) return;
+    if (honoredNonceRef.current === focusRequestNonce) return;
+    honoredNonceRef.current = focusRequestNonce;
+    pendingFocusRef.current = true;
+    flushFocus();
+  }, [focusRequestNonce, flushFocus]);
+
+  // When sessionId changes the webview src changes too → dom-ready will
+  // fire again. Reset the gate so the next focus request waits for the
+  // new attach instead of false-firing on the stale flag.
+  useEffect(() => {
+    domReadyRef.current = false;
+  }, [sessionId]);
+
   if (state.kind === 'loading') {
     return (
       <div className="flex items-center justify-center h-full text-neutral-400 text-sm">
@@ -131,6 +218,27 @@ export function TtydPane({ sessionId, cwd }: Props) {
     // webview storage from the host BrowserWindow and makes Electron
     // treat this as a real out-of-process webview rather than an iframe.
     <webview
+      ref={(el: HTMLElement | null) => {
+        const wv = el as WebviewElement | null;
+        if (webviewRef.current === wv) return;
+        // Tear down listener on the previous element, if any.
+        type WithHandler = WebviewElement & { __ccsmDomReadyHandler?: (e: Event) => void };
+        const prev = webviewRef.current as WithHandler | null;
+        if (prev && prev.__ccsmDomReadyHandler) {
+          prev.removeEventListener('dom-ready', prev.__ccsmDomReadyHandler);
+        }
+        webviewRef.current = wv;
+        if (!wv) return;
+        const handler = () => {
+          domReadyRef.current = true;
+          if (pendingFocusRef.current) flushFocus();
+        };
+        // Stash the handler on the element so the next ref callback
+        // can detach it precisely (we need a stable reference for
+        // removeEventListener).
+        (wv as WithHandler).__ccsmDomReadyHandler = handler;
+        wv.addEventListener('dom-ready', handler);
+      }}
       src={`http://127.0.0.1:${state.port}/`}
       // bg matches the ttyd `-t theme=...` background so the seam
       // between host chrome and the embedded TUI is intentional rather
