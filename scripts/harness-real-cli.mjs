@@ -567,6 +567,92 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: new-session-focus-cli — clicking "New Session" must transfer focus
+// AWAY from the trigger button so a subsequent Enter goes to the CLI, not
+// to the still-focused button (which would re-fire and spawn yet another
+// session). Reproduces the user-reported bug behind the partial fix in
+// PR #467 (cliFocusNonce alone is insufficient — DOM focus stays on the
+// button).
+// ============================================================================
+
+async function caseNewSessionFocusCli({ electronApp, win, tempDir }) {
+  // Wait for boot probe so the main shell renders TtydPane/empty state
+  // rather than the availability spinner (which has no sidebar).
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Reproduce the user-reported flow. Bug repro requires the sidebar
+  // "New Session" button to retain DOM focus after activation. PR #467's
+  // cliFocusNonce path moves focus to the embedded webview ONLY when
+  // (a) a webview already exists AND (b) its dom-ready has fired. If the
+  // CURRENT session's TtydPane is still in 'loading' state at the moment
+  // of click — e.g., the user just created a session and immediately
+  // creates another, or ttyd port allocation is slow — flushFocus is a
+  // no-op, the button keeps focus, and the next Enter re-fires it.
+  //
+  // The harness's shared launch may already have sessions from earlier
+  // cases; that's fine. We seed a fresh session so TtydPane is in
+  // 'loading' state, then immediately activate sidebar New Session.
+  await win.evaluate(() => {
+    const useStore = window.__ccsmStore;
+    useStore.setState({ tutorialSeen: true });
+  });
+  // Seed a session and don't wait for its webview to finish loading —
+  // the bug surfaces precisely when state.kind === 'loading' and there
+  // is no webview to receive focus.
+  const { sid: seedSid } = await seedSession(win, { name: 'focus-loading', cwd: tempDir });
+  if (!seedSid) throw new Error('seedSession returned empty sid');
+  // Tiny wait so the sidebar+TtydPane mount, but NOT enough for ttyd to
+  // resolve and dom-ready to fire (typically 1500ms+).
+  await sleep(150);
+
+  await win.waitForSelector('[data-testid="sidebar-newsession-row"]', { timeout: 10000 });
+
+  const before = await win.evaluate(() => window.__ccsmStore.getState().sessions.length);
+
+  // Focus the sidebar "New Session" button via JS (mirrors keyboard-walk
+  // or post-mousedown DOM state) and activate via Enter, then immediately
+  // press Enter again.
+  await win.evaluate(() => {
+    const el = document.querySelector('[data-testid="sidebar-newsession-row"] button');
+    if (!el) throw new Error('sidebar new-session button not found');
+    el.focus();
+  });
+  await win.keyboard.press('Enter');
+  // Tight gap: enough for React to commit the cliFocusNonce bump (and
+  // for flushFocus to run) but NOT enough for a fresh webview's
+  // dom-ready to fire.
+  await sleep(50);
+  await win.keyboard.press('Enter');
+
+  // Wait long enough for any second createSession to land in the store.
+  await sleep(2500);
+
+  const after = await win.evaluate(() => window.__ccsmStore.getState().sessions.length);
+  const delta = after - before;
+  if (delta !== 1) {
+    const focusAfter = await win.evaluate(() => {
+      const el = document.activeElement;
+      if (!el) return { tag: null };
+      return {
+        tag: el.tagName,
+        text: (el.textContent || '').trim().slice(0, 80),
+        testid: el.getAttribute('data-testid'),
+        ariaLabel: el.getAttribute('aria-label'),
+      };
+    });
+    throw new Error(
+      `expected exactly 1 new session after focus+Enter+Enter, got ${delta} ` +
+        `(before=${before}, after=${after}). ` +
+        `Active element after: ${JSON.stringify(focusAfter)}`,
+    );
+  }
+}
+
+// ============================================================================
 // Case 5: reopen-resume (UX G) — owns its launches
 // ============================================================================
 
@@ -695,6 +781,7 @@ const CASE_REGISTRY = [
   { name: 'switch-session-keeps-chat', group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',       group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',             group: 'shared', run: caseImportResume },
+  { name: 'new-session-focus-cli',     group: 'shared', run: caseNewSessionFocusCli },
   { name: 'reopen-resume',             group: 'standalone', run: caseReopenResume },
 ];
 

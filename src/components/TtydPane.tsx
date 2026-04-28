@@ -145,6 +145,14 @@ export function TtydPane({ sessionId, cwd, focusRequestNonce }: Props) {
   // — xterm.js routes keyboard input through that hidden textarea, so
   // focusing the webview alone leaves the cursor un-blinking and the
   // first keystroke gets dropped.
+  //
+  // The xterm helper textarea is constructed AFTER dom-ready (the page
+  // has to download xterm.js, mount Terminal, then xterm injects the
+  // textarea). A single executeJavaScript right at dom-ready often hits
+  // a null selector. We retry on a short backoff so the focus actually
+  // lands inside xterm rather than only on the host webview tag (which
+  // forwards key events but leaves the cursor non-blinking and the
+  // first keystroke discarded by xterm's own focus gate).
   const flushFocus = useCallback(() => {
     const wv = webviewRef.current;
     if (!wv || !domReadyRef.current) return;
@@ -155,14 +163,21 @@ export function TtydPane({ sessionId, cwd, focusRequestNonce }: Props) {
       // focus() can throw if the webview was just detached; ignore
       // — the next nonce bump will retry.
     }
-    // Best-effort: if the embedded page hasn't loaded xterm yet
-    // (very fast new-session race) the selector returns null and the
-    // call is a no-op. The user's first keystroke after the webview
-    // itself has focus will still register inside xterm because
-    // <webview> forwards key events to its hosted page.
+    // Retry the helper-textarea focus a few times — xterm constructs
+    // the textarea asynchronously after the embedded page loads, so
+    // the first call (right at dom-ready) usually misses.
     void wv
       .executeJavaScript(
-        "(() => { const el = document.querySelector('.xterm-helper-textarea'); if (el) el.focus(); })();"
+        `(function(){
+          const tryFocus = (attemptsLeft) => {
+            const el = document.querySelector('.xterm-helper-textarea');
+            if (el) { el.focus(); return true; }
+            if (attemptsLeft <= 0) return false;
+            setTimeout(() => tryFocus(attemptsLeft - 1), 100);
+            return false;
+          };
+          return tryFocus(20);
+        })();`,
       )
       .catch(() => {});
   }, []);
