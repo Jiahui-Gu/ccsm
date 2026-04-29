@@ -96,13 +96,16 @@ async function caseDnd({ win, log }) {
   if (!(await groupContains('g2', 's1'))) throw new Error('s1 did not land in g2 after cross-group drag');
 
   // === Case 2: open → collapsed. s2 (g1) → g3 header. Hover must auto-expand. ===
+  // holdMs=1500 gives the timer plenty of slack on slower runners (was 700;
+  // macOS CI was racing the 400ms hover-to-expand timer because dnd-kit's
+  // collision detection takes longer to flag isOver=true than on win/linux).
   await dndDrag(
     win,
     'li[data-session-id="s2"]',
     '[data-group-header-id="g3"]',
-    { holdMs: 700 }
+    { holdMs: 1500 }
   );
-  if (!(await groupIsOpen('g3'))) throw new Error('g3 did NOT auto-expand after 400ms hover');
+  if (!(await groupIsOpen('g3'))) throw new Error('g3 did NOT auto-expand after 1500ms hover');
   if (await groupContains('g1', 's2')) throw new Error('s2 still in g1 after drag to g3 header');
   if (!(await groupContains('g3', 's2'))) throw new Error('s2 did not land in g3 after hover-expand drop');
 

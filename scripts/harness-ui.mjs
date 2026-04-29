@@ -855,10 +855,13 @@ async function caseTitlebar({ app, win, log }) {
   if (dragRegions.length < 2) {
     throw new Error(`expected >=2 top drag regions, got ${dragRegions.length}: ${JSON.stringify(dragRegions)}`);
   }
-  // After PR #347: sidebar drag region is 8px (macOS traffic-lights spacer removed),
-  // right pane stays 32px to host WindowControls.
+  // After PR #347 on win/linux: sidebar drag region is 8px (no traffic
+  // lights to clear). On macOS, commit b876e48 set it to 40px to clear the
+  // hiddenInset titlebar's traffic-light buttons. Right pane stays 32px to
+  // host WindowControls (or empty space on macOS).
+  const expectedLeft = platform === 'darwin' ? 40 : 8;
   for (const r of dragRegions) {
-    const expected = r.left === 0 ? 8 : 32;
+    const expected = r.left === 0 ? expectedLeft : 32;
     if (Math.abs(r.height - expected) > 2) {
       throw new Error(`drag region height expected ~${expected} (left=${r.left}), got ${r.height}. all=${JSON.stringify(dragRegions)}`);
     }
