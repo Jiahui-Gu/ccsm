@@ -135,12 +135,17 @@ async function caseDnd({ win, log }) {
     //      a fresh moveSession resets the row's identity and forces a
     //      remount-shaped re-render that clears any sticky useSortable
     //      transform.
-    //   2. Expand g3 so it has a real <ul> drop target.
-    //   3. Wait for both s2 to be back in g1's <ul> AND g3's <ul> to have
-    //      a non-zero bounding box (empty group <ul> can be 0-height which
-    //      Playwright's `state: 'visible'` rejects, surfacing as a
-    //      misleading source-side timeout when dndDrag's target waitFor
-    //      throws).
+    //   2. Expand g3 so the header is in its expanded state (matches what
+    //      a real auto-expand would have produced).
+    //   3. Wait for s2 to be back in g1's <ul> and the g3 header to exist.
+    //      We re-target the HEADER (data-group-header-id="g3") for the
+    //      second drop instead of the empty <ul data-group-id="g3">: an
+    //      empty group <ul> renders with no min-height (just `mt-px` in
+    //      GroupRow.tsx) so its boundingBox.height stays 0 until a session
+    //      lands inside — chicken-and-egg for `dndDrag`'s `state: 'visible'`
+    //      waitFor on the target. The header div has `h-7` (28px) and is
+    //      always visible, and dropping on a header routes into that group
+    //      (already exercised by the primary attempt above).
     //   4. Wait an extra animation frame so dnd-kit's drop animation +
     //      framer-motion exit transitions on the previous attempt have
     //      fully unwound before we start a new pointerdown sequence.
@@ -154,10 +159,8 @@ async function caseDnd({ win, log }) {
         const s2InG1 = !!document
           .querySelector('ul[data-group-id="g1"]')
           ?.querySelector('li[data-session-id="s2"]');
-        const g3Ul = document.querySelector('ul[data-group-id="g3"]');
-        const g3Box = g3Ul?.getBoundingClientRect();
-        const g3Visible = !!g3Ul && !!g3Box && g3Box.width > 0 && g3Box.height > 0;
-        return s2InG1 && g3Visible;
+        const g3Header = document.querySelector('[data-group-header-id="g3"]');
+        return s2InG1 && !!g3Header;
       },
       null,
       { timeout: 5000 }
@@ -173,7 +176,7 @@ async function caseDnd({ win, log }) {
     await dndDrag(
       win,
       'li[data-session-id="s2"]',
-      'ul[data-group-id="g3"]'
+      '[data-group-header-id="g3"]'
     );
   }
   if (await groupContains('g1', 's2')) throw new Error('s2 still in g1 after drag to g3 header');
