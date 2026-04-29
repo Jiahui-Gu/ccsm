@@ -1023,14 +1023,14 @@ app.whenReady().then(() => {
     if (!fromMainFrame(e)) return;
     activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
     badgeController.onFocusChange({ focused: isMainWindowFocused(), activeSid: activeSidFromRenderer });
-    // Notify pipeline (Phase C, #689) — keep ctx.activeSid in sync, and
-    // count the switch as a user-touch on that sid (Rule 1: 60s mute window
-    // after the user just acted on this session). The pipeline ignores
-    // null sid in setActiveSid; markUserInput skips empty sid implicitly.
+    // Notify pipeline (Phase C, #689) — keep ctx.activeSid in sync. Do NOT
+    // count a sidebar switch as user input: clicking a session in the
+    // sidebar is a navigation gesture, not user-typed input, and feeding
+    // it into Rule 1 would mute legitimate idle/waiting toasts for 60s
+    // every time the user merely opens the session (#715). Real user
+    // input is signalled separately via the `notify:userInput` IPC
+    // (PTY input + send-message + new/import/resume).
     notifyPipeline?.setActiveSid(activeSidFromRenderer);
-    if (activeSidFromRenderer) {
-      notifyPipeline?.markUserInput(activeSidFromRenderer);
-    }
   });
 
   // Explicit "user touched this session" IPC — fired by the renderer on
@@ -1166,15 +1166,6 @@ app.whenReady().then(() => {
         };
       },
       markUserInput: (sid: string) => pipelineInstance.markUserInput(sid),
-      // Test-only — wipe Rule-1 user-init mute by clearing lastUserInputTs.
-      // Probes need this to deterministically observe Rule-3 firing inside
-      // the 60s window (the implicit `setActive`+`markUserInput` from the
-      // probe's own session bookkeeping otherwise suppresses every event).
-      clearUserInput: (sid?: string) => {
-        const i = pipelineInstance._internals();
-        if (sid) i.ctx.lastUserInputTs.delete(sid);
-        else i.ctx.lastUserInputTs.clear();
-      },
     };
   }
 
