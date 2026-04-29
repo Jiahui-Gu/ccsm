@@ -1105,6 +1105,14 @@ app.whenReady().then(() => {
     getWindows: () => BrowserWindow.getAllWindows(),
   });
 
+  // Notify pipeline diag counters are gated behind `globalThis.__ccsmDebug`
+  // (#713). Production never carries them; e2e probes that consume diag via
+  // the test-hook seam need them on. Set the flag here so it's live before
+  // installNotifyPipeline reads it.
+  if (process.env.CCSM_NOTIFY_TEST_HOOK) {
+    (globalThis as unknown as Record<string, unknown>).__ccsmDebug = true;
+  }
+
   const pipelineInstance = installNotifyPipeline({
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
     isGlobalMutedFn: () => !loadNotifyEnabled(),
