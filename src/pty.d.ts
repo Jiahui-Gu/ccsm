@@ -11,6 +11,8 @@ export interface PtySessionInfo {
   pid: number;
   cols: number;
   rows: number;
+  /** Working directory the PTY was actually spawned with (post-fallback). */
+  cwd: string;
 }
 
 export interface AttachResult {

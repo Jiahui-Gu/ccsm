@@ -2651,6 +2651,33 @@ async function caseCwdPickerTopChevron({ win, tempDir }) {
   );
   if (stillOpen) throw new Error('cwd popover did not close after pick');
 
+  // #628: verify the picked cwd ALSO reaches the real PTY in main, not just
+  // the renderer store. ccsmPty.list() now returns each entry's resolved
+  // spawn cwd (post-`resolveSpawnCwd` fallback). If main were ignoring the
+  // renderer-supplied cwd (e.g. defaulting to homedir), this assert catches
+  // it even when the renderer-side store happens to look correct. Wait up
+  // to ~6s for the spawn to land — pty.attach drives spawn-on-attach-null.
+  const sid = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+  let actualPtyCwd = null;
+  for (let i = 0; i < 60; i++) {
+    actualPtyCwd = await win.evaluate(async (s) => {
+      const list = await window.ccsmPty?.list?.();
+      if (!Array.isArray(list)) return null;
+      const entry = list.find((x) => x.sid === s);
+      return entry && typeof entry.cwd === 'string' ? entry.cwd : null;
+    }, sid);
+    if (actualPtyCwd) break;
+    await sleep(100);
+  }
+  if (!actualPtyCwd) {
+    throw new Error(`PTY entry never appeared in ccsmPty.list() for sid=${sid}`);
+  }
+  if (_norm(actualPtyCwd) !== target) {
+    throw new Error(
+      `top chevron pick did not reach the real PTY. picked=${target} pty.cwd=${_norm(actualPtyCwd)} (store.cwd=${actual})`,
+    );
+  }
+
   await _deleteActive(win);
 }
 
@@ -2684,6 +2711,95 @@ async function caseCwdPickerNoShortcut({ win }) {
   if (after !== before) {
     throw new Error(`Cmd/Ctrl+N (or +Shift+G) still creates sessions. before=${before} after=${after}`);
   }
+}
+
+// Case: cwd-picker-browse
+//   Click the chevron → popover opens → click "Browse..." → assert main's
+//   `cwd:pick` IPC fires AND the picked path lands in BOTH the renderer
+//   `session.cwd` AND the real PTY entry's `cwd`. Repros #628: prior to
+//   the fix the Browse button was a no-op (just closed the popover) and
+//   sessions silently fell back to the LRU/home default ("在特定目录创建
+//   session，创建出来的session仍然在home目录"). We stub `dialog.showOpenDialog`
+//   in the main process so the test is deterministic and headless.
+async function caseCwdPickerBrowse({ electronApp, win, tempDir }) {
+  await _waitBoot(win);
+  // The dir Browse "returns" via the stubbed dialog. Real path so
+  // `resolveSpawnCwd` doesn't fall back to homedir on the PTY side.
+  const browseTarget = path.join(tempDir, 'browse-pick-' + Math.random().toString(36).slice(2, 8));
+  mkdirSync(browseTarget, { recursive: true });
+
+  // Stub electron.dialog.showOpenDialog in the main process. Captures the
+  // call so we know Browse really hit the IPC.
+  await electronApp.evaluate(async ({ dialog }, picked) => {
+    globalThis.__ccsmBrowseStub = { calls: 0, lastDefault: null };
+    dialog.showOpenDialog = async (_win, opts) => {
+      globalThis.__ccsmBrowseStub.calls += 1;
+      globalThis.__ccsmBrowseStub.lastDefault = opts && opts.defaultPath ? opts.defaultPath : null;
+      return { canceled: false, filePaths: [picked] };
+    };
+  }, browseTarget);
+
+  const before = await _sessionCount(win);
+  await win.click('[data-testid="sidebar-newsession-cwd-chevron"]');
+  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
+
+  // Click the "Browse..." button at the bottom of the panel. It commits via
+  // mousedown for the same blur-race reason the Recent rows do.
+  await win.evaluate(() => {
+    const panel = document.querySelector('[data-testid="cwd-popover-panel"]');
+    if (!panel) throw new Error('cwd popover panel not in DOM');
+    const buttons = Array.from(panel.querySelectorAll('button'));
+    const browse = buttons[buttons.length - 1]; // Browse is the last button in the panel.
+    if (!browse) throw new Error('browse button not found in cwd popover');
+    browse.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+  });
+
+  // Wait for the new session to appear (Browse → IPC → createSession is
+  // a few ticks of awaits across the main↔renderer boundary).
+  for (let i = 0; i < 40; i++) {
+    const n = await _sessionCount(win);
+    if (n - before === 1) break;
+    await sleep(100);
+  }
+  const after = await _sessionCount(win);
+  if (after - before !== 1) {
+    throw new Error(`Browse did not create a session. before=${before} after=${after}`);
+  }
+
+  // 1/ Renderer assertion: store cwd matches the picked path.
+  const storeCwd = _norm(await _activeCwd(win));
+  if (storeCwd !== _norm(browseTarget)) {
+    throw new Error(`Browse: store cwd != picked. picked=${browseTarget} store=${storeCwd}`);
+  }
+
+  // 2/ Main-side assertion: real PTY spawn cwd matches the picked path.
+  const sid = await win.evaluate(() => window.__ccsmStore.getState().activeId);
+  let actualPtyCwd = null;
+  for (let i = 0; i < 60; i++) {
+    actualPtyCwd = await win.evaluate(async (s) => {
+      const list = await window.ccsmPty?.list?.();
+      if (!Array.isArray(list)) return null;
+      const entry = list.find((x) => x.sid === s);
+      return entry && typeof entry.cwd === 'string' ? entry.cwd : null;
+    }, sid);
+    if (actualPtyCwd) break;
+    await sleep(100);
+  }
+  if (!actualPtyCwd) throw new Error(`Browse: PTY entry never appeared in ccsmPty.list() for sid=${sid}`);
+  if (_norm(actualPtyCwd) !== _norm(browseTarget)) {
+    throw new Error(
+      `Browse did not reach the real PTY. picked=${browseTarget} pty.cwd=${_norm(actualPtyCwd)} store.cwd=${storeCwd}`,
+    );
+  }
+
+  // 3/ Confirm the IPC stub really fired (proves Browse wired through, not
+  // some unrelated code path that happened to set cwd correctly).
+  const stubInfo = await electronApp.evaluate(() => globalThis.__ccsmBrowseStub || null);
+  if (!stubInfo || stubInfo.calls < 1) {
+    throw new Error(`Browse did not invoke dialog.showOpenDialog (calls=${stubInfo?.calls})`);
+  }
+
+  await _deleteActive(win);
 }
 
 // Case: sidebar-group-no-newsession-cluster
@@ -2811,6 +2927,7 @@ const CASE_REGISTRY = [
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
   { name: 'cwd-picker-top-default',      group: 'shared', run: caseCwdPickerTopDefault },
   { name: 'cwd-picker-top-chevron',      group: 'shared', run: caseCwdPickerTopChevron },
+  { name: 'cwd-picker-browse',           group: 'shared', run: caseCwdPickerBrowse },
   { name: 'cwd-picker-no-shortcut',      group: 'shared', run: caseCwdPickerNoShortcut },
   { name: 'sidebar-group-no-newsession-cluster', group: 'shared', run: caseSidebarGroupHasNoNewSessionCluster },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },

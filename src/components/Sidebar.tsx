@@ -794,7 +794,17 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               createSession({ cwd: picked });
               setTopCwdPickerOpen(false);
             }}
-            onBrowse={() => setTopCwdPickerOpen(false)}
+            onBrowse={async () => {
+              // Close the popover synchronously so a slow OS dialog doesn't
+              // leave a dangling Recent list under the modal. The popover's
+              // own click-outside handler would catch the dialog click on
+              // some platforms anyway, but explicit > implicit.
+              setTopCwdPickerOpen(false);
+              const picked = await window.ccsm?.pickCwd?.();
+              if (typeof picked === 'string' && picked.length > 0) {
+                createSession({ cwd: picked });
+              }
+            }}
           />
 
           {/* Middle: work zone — Groups (flex-grow, scrollable) on top,

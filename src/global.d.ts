@@ -62,6 +62,13 @@ declare global {
       };
 
       /**
+       * Open the OS folder picker for the cwd popover's "Browse..." button.
+       * Returns the picked absolute path on success, or `null` when the
+       * user cancelled. Backs the popover Browse action (#628).
+       */
+      pickCwd: (defaultPath?: string) => Promise<string | null>;
+
+      /**
        * Default model from `~/.claude/settings.json`'s `model` field — the
        * same value the CLI consults for `--model` defaulting. Seeds the
        * new-session picker. Null when unset, missing, or unparseable.
