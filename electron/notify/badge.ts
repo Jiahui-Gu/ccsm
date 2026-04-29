@@ -15,6 +15,17 @@
 import { app, BrowserWindow, nativeImage, type NativeImage, type Tray } from 'electron';
 import { tBadge } from '../i18n';
 
+// MVP: OS-visible badge display is disabled (#667). User reported the count
+// shown on the taskbar overlay + tray icon was incorrect; rather than
+// re-derive the count logic before MVP we suppress every OS-facing call so
+// neither chrome surface shows a number. The internal `unread` map keeps
+// running because the e2e probe (caseNotifyFiresOnIdle) reads it via
+// `BadgeManager.getTotal()` to verify the notify bridge fired — that signal
+// is decoupled from the visual badge. Flip this flag back to false to
+// restore the previous tray composite + setOverlayIcon + setBadgeCount
+// behaviour without touching anything else.
+const BADGE_DISABLED = true;
+
 export interface BadgeManagerDeps {
   getTray: () => Tray | null;
   getBaseTrayImage: () => NativeImage;
@@ -65,6 +76,13 @@ export class BadgeManager {
 
   private apply(): void {
     const total = this.getTotal();
+
+    if (BADGE_DISABLED) {
+      // OS-visible badge suppressed (#667). Internal `unread` map still
+      // tracks per-sid counters for any consumer that cares (e.g., the
+      // notify-fires e2e probe reads `getTotal()`).
+      return;
+    }
 
     if (process.platform !== 'win32') {
       try {
