@@ -67,6 +67,22 @@ export function createRunStateTracker(
   const mutedSids = new Map<string, number>();
   const lastFiredTs = new Map<string, number>();
   const lastUserInputTs = new Map<string, number>();
+  /**
+   * Per-sid gate (Task #767): true once we have observed a 'running' title
+   * for this sid in the current process lifetime. The decider's Rule 2
+   * ("foreground + active + short task") computes elapsed = now - start;
+   * when no 'running' was ever seen, runStartTs is unset and elapsed
+   * collapses to 0 < SHORT_TASK_MS, unconditionally tripping {flash:true}.
+   *
+   * claude.exe boot reliably emits an 'idle' / 'waiting' OSC title within
+   * a few hundred ms of spawn, so without this gate every fresh / imported /
+   * resumed session lights flashSink for FLASH_DURATION_MS, producing the
+   * 4-second AgentIcon "breath" the user reported in #767.
+   *
+   * Fix at the producer layer: skip decide() entirely until we've seen a
+   * legitimate run start. notifyDecider stays pure / unchanged.
+   */
+  const hasObservedRunning = new Set<string>();
   let focused = true;
   let activeSid: string | null = null;
 
@@ -84,6 +100,17 @@ export function createRunStateTracker(
 
       if (classification === 'running') {
         if (!runStartTs.has(sid)) runStartTs.set(sid, nowTs);
+        hasObservedRunning.add(sid);
+        return null;
+      }
+
+      // Task #767 gate: if we've never seen this sid go 'running', the
+      // incoming 'idle' / 'waiting' title is the CLI's boot banner (or a
+      // post-import resume settle). There is no real task to notify on, and
+      // the decider would otherwise mis-fire Rule 2 (elapsed = 0 < 60s).
+      if (!hasObservedRunning.has(sid)) {
+        // Still keep runStartTs clean if anything stray slipped in.
+        runStartTs.delete(sid);
         return null;
       }
 
@@ -118,6 +145,7 @@ export function createRunStateTracker(
       mutedSids.delete(sid);
       lastFiredTs.delete(sid);
       lastUserInputTs.delete(sid);
+      hasObservedRunning.delete(sid);
     },
     setFocused(next) {
       focused = next;
