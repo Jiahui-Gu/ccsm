@@ -79,6 +79,8 @@ import {
   enqueuePendingRename,
   flushPendingRename,
 } from './sessionTitles';
+import { normalizeCwd, pushLRU, withHomeFallback } from './userCwds';
+import { BadgeController } from './badgeController';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -164,14 +166,23 @@ if (!skipSingleInstanceLock) {
 // (sub-millisecond) so the cost is negligible vs. the visible click latency.
 type CloseAction = 'ask' | 'tray' | 'quit';
 const CLOSE_ACTION_KEY = 'closeAction';
+
+// Pure parser for the persisted close-action value. Decider only — no I/O.
+// Invalid / missing values fall back to the platform default ('tray' on
+// macOS to match the OS red-light convention, 'ask' elsewhere).
+function parseCloseAction(raw: unknown, platform: NodeJS.Platform): CloseAction {
+  if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
+  return platform === 'darwin' ? 'tray' : 'ask';
+}
+
 function getCloseAction(): CloseAction {
+  let raw: string | null = null;
   try {
-    const raw = loadState(CLOSE_ACTION_KEY);
-    if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
+    raw = loadState(CLOSE_ACTION_KEY);
   } catch {
     /* fall through to default */
   }
-  return process.platform === 'darwin' ? 'tray' : 'ask';
+  return parseCloseAction(raw, process.platform);
 }
 function setCloseAction(value: CloseAction): void {
   try {
@@ -284,12 +295,9 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
 const USER_CWDS_KEY = 'userCwds';
 const USER_CWDS_MAX = 20;
 
-function normalizeCwd(p: string): string {
-  // Trim trailing slashes/backslashes; leave the rest of the path raw so we
-  // don't accidentally break Windows drive-letter semantics. Comparison below
-  // also lower-cases for dedupe on case-insensitive filesystems.
-  return p.replace(/[\\/]+$/, '');
-}
+// I/O wrappers around the pure helpers in `./userCwds`. The decider logic
+// (LRU dedupe, normalize, cap, home-fallback) lives in that module; this
+// file only does the SQLite read/write side-effects.
 
 function readUserCwds(): string[] {
   try {
@@ -312,26 +320,13 @@ function writeUserCwds(list: string[]): void {
 }
 
 function getUserCwds(): string[] {
-  const list = readUserCwds();
-  const home = os.homedir();
-  // Spec: "永远至少有 home" — home must always be present in the recent list,
-  // even after the user has explicitly picked other cwds. We append home at
-  // the tail if it isn't already in the user list, so the home entry stays
-  // available as a fallback target without bumping it back to the head.
-  if (list.length === 0) return [home];
-  const lower = home.toLowerCase();
-  if (list.some((p) => p.toLowerCase() === lower)) return list;
-  return [...list, home];
+  return withHomeFallback(readUserCwds(), os.homedir());
 }
 
 function pushUserCwd(p: string): string[] {
   const norm = normalizeCwd(p);
   if (!norm) return readUserCwds();
-  const cur = readUserCwds();
-  // Case-insensitive dedupe (Windows + macOS default fs).
-  const lower = norm.toLowerCase();
-  const without = cur.filter((x) => x.toLowerCase() !== lower);
-  const next = [norm, ...without].slice(0, USER_CWDS_MAX);
+  const next = pushLRU(readUserCwds(), norm, USER_CWDS_MAX);
   writeUserCwds(next);
   return next;
 }
@@ -546,7 +541,7 @@ function createWindow() {
   });
 
   win.on('focus', () => {
-    clearBadgeForActiveIfFocused();
+    badgeController.onFocusChange({ focused: true, activeSid: activeSidFromRenderer });
   });
 
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
@@ -642,18 +637,15 @@ function createWindow() {
 let tray: Tray | null = null;
 let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
+const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
   return buildTrayIcon();
 }
 
-function clearBadgeForActiveIfFocused() {
-  if (!badgeManager) return;
+function isMainWindowFocused(): boolean {
   const w = BrowserWindow.getAllWindows()[0];
-  const focused = !!(w && !w.isDestroyed() && w.isFocused());
-  if (!focused) return;
-  if (!activeSidFromRenderer) return;
-  badgeManager.clearSid(activeSidFromRenderer);
+  return !!(w && !w.isDestroyed() && w.isFocused());
 }
 
 function applyTrayLocale() {
@@ -1017,7 +1009,7 @@ app.whenReady().then(() => {
   ipcMain.on('session:setActive', (e, sid: unknown) => {
     if (!fromMainFrame(e)) return;
     activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
-    clearBadgeForActiveIfFocused();
+    badgeController.onFocusChange({ focused: isMainWindowFocused(), activeSid: activeSidFromRenderer });
   });
 
   // Renderer pushes the user-visible name for a sid so notify toasts can
