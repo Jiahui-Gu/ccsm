@@ -171,7 +171,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
       // to the IPC hardening fixes that don't require a build-pipeline
       // change.
       sandbox: false,
-      preload: path.join(__dirname, '..', 'preload.js'),
+      preload: path.join(__dirname, '..', 'preload', 'index.js'),
     },
   });
 
