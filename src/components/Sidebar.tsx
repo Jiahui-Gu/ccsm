@@ -472,11 +472,13 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
           if (otherGroups.length === 0) return null;
           return (
             <ContextMenuSub>
-              <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
-              <ContextMenuSubContent>
+              <ContextMenuSubTrigger data-testid="move-to-group-trigger">{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
+              <ContextMenuSubContent data-testid="move-to-group-content">
                 {otherGroups.map((g) => (
                   <ContextMenuItem
                     key={g.id}
+                    data-move-to-group-item
+                    data-group-id={g.id}
                     onSelect={() => moveSession(session.id, g.id, null)}
                   >
                     {g.name}
