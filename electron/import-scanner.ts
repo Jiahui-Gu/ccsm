@@ -160,7 +160,7 @@ function readHead(file: string): Promise<Head | null> {
         return;
       }
       if (!line) return;
-      let d: any;
+      let d: unknown;
       try {
         d = JSON.parse(line);
       } catch {
@@ -174,16 +174,18 @@ function readHead(file: string): Promise<Head | null> {
           return;
         }
       }
-      if (typeof d.cwd === 'string' && !cwd) cwd = d.cwd;
-      if (d.type === 'ai-title' && typeof d.aiTitle === 'string') {
-        aiTitle = d.aiTitle;
+      const o = asRecord(d);
+      if (!o) return;
+      if (typeof o.cwd === 'string' && !cwd) cwd = o.cwd;
+      if (o.type === 'ai-title' && typeof o.aiTitle === 'string') {
+        aiTitle = o.aiTitle;
       }
-      if (!firstUserText && d.type === 'user' && d.message) {
-        const txt = extractUserText(d.message);
+      if (!firstUserText && o.type === 'user' && o.message) {
+        const txt = extractUserText(o.message);
         if (txt) firstUserText = truncate(txt, 80);
       }
       if (!model) {
-        const m = extractModel(d);
+        const m = extractModel(o);
         if (m) model = m;
       }
       if (cwd && aiTitle && model) {
@@ -195,13 +197,15 @@ function readHead(file: string): Promise<Head | null> {
   });
 }
 
-function extractUserText(message: any): string {
-  const c = message?.content;
+function extractUserText(message: unknown): string {
+  const m = asRecord(message);
+  const c = m?.content;
   if (typeof c === 'string') return cleanCommandWrapper(c);
   if (!Array.isArray(c)) return '';
   for (const part of c) {
-    if (part?.type === 'text' && typeof part.text === 'string') {
-      const cleaned = cleanCommandWrapper(part.text);
+    const p = asRecord(part);
+    if (p?.type === 'text' && typeof p.text === 'string') {
+      const cleaned = cleanCommandWrapper(p.text);
       if (cleaned) return cleaned;
     }
   }
@@ -285,7 +289,7 @@ export function parseHead(lines: string[]): Head | null {
   for (let i = 0; i < lines.length && i < MAX_HEAD_LINES; i++) {
     const line = lines[i];
     if (!line) continue;
-    let d: any;
+    let d: unknown;
     try {
       d = JSON.parse(line);
     } catch {
@@ -295,14 +299,16 @@ export function parseHead(lines: string[]): Head | null {
       firstFrameInspected = true;
       if (isSidechainFrame(d)) return null;
     }
-    if (typeof d.cwd === 'string' && !cwd) cwd = d.cwd;
-    if (d.type === 'ai-title' && typeof d.aiTitle === 'string') aiTitle = d.aiTitle;
-    if (!firstUserText && d.type === 'user' && d.message) {
-      const txt = extractUserText(d.message);
+    const o = asRecord(d);
+    if (!o) continue;
+    if (typeof o.cwd === 'string' && !cwd) cwd = o.cwd;
+    if (o.type === 'ai-title' && typeof o.aiTitle === 'string') aiTitle = o.aiTitle;
+    if (!firstUserText && o.type === 'user' && o.message) {
+      const txt = extractUserText(o.message);
       if (txt) firstUserText = truncate(txt, 80);
     }
     if (!model) {
-      const m = extractModel(d);
+      const m = extractModel(o);
       if (m) model = m;
     }
     if (cwd && aiTitle && model) break;
@@ -314,8 +320,18 @@ export function parseHead(lines: string[]): Head | null {
 
 // CLI transcripts carry the model on assistant frames as `message.model`.
 // Some older / synthetic frames may put it at the top level — accept both.
-function extractModel(d: any): string | null {
-  if (typeof d?.message?.model === 'string' && d.message.model) return d.message.model;
-  if (typeof d?.model === 'string' && d.model) return d.model;
+function extractModel(d: unknown): string | null {
+  const o = asRecord(d);
+  if (!o) return null;
+  const msg = asRecord(o.message);
+  if (msg && typeof msg.model === 'string' && msg.model) return msg.model;
+  if (typeof o.model === 'string' && o.model) return o.model;
   return null;
+}
+
+// Narrow `unknown` to `Record<string, unknown>` for safe property access on
+// JSONL frames. Mirrors the precedent set by `isSidechainFrame`.
+function asRecord(v: unknown): Record<string, unknown> | null {
+  if (!v || typeof v !== 'object') return null;
+  return v as Record<string, unknown>;
 }

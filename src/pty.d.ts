@@ -40,6 +40,10 @@ export interface PtyDataEvent {
   chunk: string;
 }
 
+export type CheckClaudeAvailableResult =
+  | { available: true; path: string }
+  | { available: false };
+
 export interface CcsmPtyApi {
   list(): Promise<PtySessionInfo[]>;
   spawn(sid: string, cwd: string): Promise<SpawnResult>;
@@ -55,12 +59,13 @@ export interface CcsmPtyApi {
     readText(): string;
     writeText(text: string): void;
   };
+  checkClaudeAvailable(opts?: { force?: boolean }): Promise<CheckClaudeAvailableResult>;
 }
 
 declare global {
   interface Window {
     ccsmPty: CcsmPtyApi;
-    __ccsmTerm?: unknown;
+    __ccsmTerm?: import('@xterm/xterm').Terminal;
   }
 }
 
