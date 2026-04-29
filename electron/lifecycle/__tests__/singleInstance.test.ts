@@ -1,4 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// Mock electron — singleInstance.ts top-level imports `app` and `BrowserWindow`,
+// which triggers "Electron failed to install correctly" on the lint+test runner
+// (no electron binary available on CI).
+vi.mock('electron', () => ({}));
+
 import { shouldSkipSingleInstanceLock } from '../singleInstance';
 
 describe('shouldSkipSingleInstanceLock', () => {
