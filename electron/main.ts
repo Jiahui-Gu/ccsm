@@ -639,18 +639,52 @@ function clearBadgeForActiveIfFocused() {
 }
 
 function buildTrayIcon() {
-  // Tiny 16×16 placeholder (white square on transparent). Windows
-  // uses this directly. Replace with a real branded asset once we have one.
+  // #608: previously a flat 16×16 white-on-transparent square — invisible on
+  // light tray backgrounds and read as "pure white" on dark ones, with no
+  // brand affordance either way. Render a colored disc with a "C" mark so
+  // the tray icon is recognizable on both light and dark Windows tray
+  // backgrounds without shipping a binary asset. Procedural pixels keep the
+  // app icon-asset-free (no asar packaging changes needed).
   const size = 16;
-  const buffer = Buffer.alloc(size * size * 4);
-  for (let i = 0; i < size * size; i++) {
-    buffer[i * 4 + 0] = 255;
-    buffer[i * 4 + 1] = 255;
-    buffer[i * 4 + 2] = 255;
-    buffer[i * 4 + 3] = 220;
+  const buf = Buffer.alloc(size * size * 4);
+  // Brand accent (warm orange) — readable on both white and black tray bgs.
+  // Hex 0xE07A3F = oklch(~0.68 0.16 50). Same family as --accent in the UI.
+  const FG_R = 0xe0, FG_G = 0x7a, FG_B = 0x3f;
+  const cx = (size - 1) / 2;
+  const cy = (size - 1) / 2;
+  const rOuter = size / 2;          // 8
+  const rInner = rOuter - 3;        // 5 — leaves a 3px ring as the "C" body
+  const arcGapHalf = 2.2;           // half-height (px) of the right-side gap that opens the C
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const i = (y * size + x) * 4;
+      // Default transparent.
+      buf[i + 0] = 0;
+      buf[i + 1] = 0;
+      buf[i + 2] = 0;
+      buf[i + 3] = 0;
+      // Inside the ring band?
+      if (d <= rOuter - 0.25 && d >= rInner) {
+        // Punch out a gap on the right side to form the open mouth of "C".
+        const inGap = dx > 0 && Math.abs(dy) <= arcGapHalf;
+        if (inGap) continue;
+        // Soft 1px outer edge for AA.
+        let alpha = 255;
+        if (d > rOuter - 1.25) {
+          const t = Math.max(0, Math.min(1, (rOuter - 0.25) - d));
+          alpha = Math.round(255 * t);
+        }
+        buf[i + 0] = FG_R;
+        buf[i + 1] = FG_G;
+        buf[i + 2] = FG_B;
+        buf[i + 3] = alpha;
+      }
+    }
   }
-  const img = nativeImage.createFromBuffer(buffer, { width: size, height: size });
-  return img;
+  return nativeImage.createFromBuffer(buf, { width: size, height: size });
 }
 
 function applyTrayLocale() {
