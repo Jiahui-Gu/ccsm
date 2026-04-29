@@ -1,0 +1,72 @@
+{
+  "build": "release/win-unpacked/CCSM.exe",
+  "workingTip": "26f85b3",
+  "runDate": "2026-04-29T04:14:25.396Z",
+  "results": [
+    {
+      "id": 1,
+      "name": "First-launch UX (PR #584 regression)",
+      "verdict": "PASS",
+      "notes": "skeleton present (0 bones, 0b), hydrated OK",
+      "screenshot": "path-1-first-launch-hydrated.png"
+    },
+    {
+      "id": 2,
+      "name": "Create session, send message, get response",
+      "verdict": "PASS",
+      "notes": "claude reply observed in buffer",
+      "screenshot": "path-2-new-session.png"
+    },
+    {
+      "id": 3,
+      "name": "Multi-session switching, history persists",
+      "verdict": "PASS",
+      "notes": "created sidB=12abc2a8; buffer preserved: 1237b -> 1233b",
+      "screenshot": "path-3-multi-session.png"
+    },
+    {
+      "id": 4,
+      "name": "Permission prompts (plumbing check)",
+      "verdict": "PARTIAL",
+      "notes": "permission state keys: (none); bridge perm keys: (none); Note: live permission prompt not exercised (requires real tool invocation by Claude)",
+      "screenshot": null
+    },
+    {
+      "id": 5,
+      "name": "Slash command / agent invocation",
+      "verdict": "PASS",
+      "notes": "slash text reached CLI pty",
+      "screenshot": "path-5-slash.png"
+    },
+    {
+      "id": 6,
+      "name": "Plugin / MCP / skill load (config forwarding)",
+      "verdict": "PARTIAL",
+      "notes": "pty count: 2; CCSM forwards CLAUDE_CONFIG_DIR via main process — verified by separate code path (electron/agent/sessions.ts); Live skill/plugin listing not exercised (would require driving CLI /plugins or /skills inside pty)",
+      "screenshot": null
+    },
+    {
+      "id": 7,
+      "name": "Tray + taskbar unread badge (PR #493 regression)",
+      "verdict": "PARTIAL",
+      "notes": "badge before: app=0 mgr=null hasDbg=false; __ccsmBadgeDebug seam absent in production build (debug-only?); plumbing verified by harness-real-cli case `notify-fires-on-idle`; tray class loadable: function",
+      "screenshot": "path-7-badge.png"
+    },
+    {
+      "id": 8,
+      "name": "Restart app, sessions restore",
+      "verdict": "PASS",
+      "notes": "pre-restart: 2 sessions, activeId=a3fbaa46; post-restart: 2 sessions, hydrated=true, activeId=a3fbaa46; all sessions restored",
+      "screenshot": "path-8-restart.png"
+    },
+    {
+      "id": 9,
+      "name": "Window controls / shortcuts / settings",
+      "verdict": "FAIL",
+      "notes": "Error: page.evaluate: SyntaxError: Failed to execute 'querySelector' on 'Document': 'button:has-text(\"New session\"), [data-testid*=\"new-session\"]' is not a valid selector.\n    at eval (eval at evaluat",
+      "screenshot": "path-9-settings.png"
+    }
+  ],
+  "consoleErrorsCount": 0,
+  "consoleErrorsSample": []
+}

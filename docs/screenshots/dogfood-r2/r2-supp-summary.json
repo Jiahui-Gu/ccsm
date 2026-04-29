@@ -1,0 +1,43 @@
+{
+  "path1Skeleton": {
+    "sawSidebarSkel": true,
+    "sawMainSkel": true,
+    "sawNewsessionSkel": true,
+    "frames": [
+      {
+        "t": 1777436110335,
+        "sidebarSkel": true,
+        "mainSkel": true,
+        "newSessionSkel": true,
+        "rowSkelCount": 3,
+        "hydrated": false
+      },
+      {
+        "t": 1777436110503,
+        "sidebarSkel": false,
+        "mainSkel": false,
+        "newSessionSkel": false,
+        "rowSkelCount": 0,
+        "hydrated": true
+      }
+    ]
+  },
+  "path9Controls": {
+    "before": {
+      "settingsBtn": false,
+      "searchBtn": true,
+      "newSessionBtn": true,
+      "windowControls": false,
+      "btnCount": 20
+    },
+    "palette": {
+      "dlgCount": 1,
+      "paletteEl": true,
+      "bodyHasPalette": true
+    },
+    "settings": {
+      "dlgCount": 1,
+      "settingsTextVisible": true
+    }
+  }
+}
