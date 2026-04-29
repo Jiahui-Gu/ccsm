@@ -153,5 +153,81 @@ export function classifyJsonlText(text: string): WatcherState {
   return classifyFrames(frames);
 }
 
+// ---------------------------------------------------------------------------
+// User-frame counting (notify arm-gate, see #631 / #633).
+//
+// The notify bridge needs to know "did the user just initiate a new turn?"
+// so it can fire on the FINAL idle of that turn (case #2 multi-segment
+// reply) instead of on every idle the inference engine emits. The on-disk
+// JSONL is the only signal we have — we count user frames per category:
+//
+//   * userTextFrames       — `user` frame whose content has a `text` block
+//                            (== the user typed something / sent a prompt).
+//   * userToolResultFrames — `user` frame whose content has a `tool_result`
+//                            block (== CLI bookkeeping after a tool ran).
+//
+// A NEW user(text) frame between two reads = the user kicked off a turn →
+// arm. A new user(tool_result) frame ALONE doesn't arm (the CLI writes
+// these on its own); the only exception is right after `requires_action`,
+// where the tool_result IS the user's allow/deny answer and re-arms.
+// ---------------------------------------------------------------------------
+
+export interface FrameCounts {
+  userTextFrames: number;
+  userToolResultFrames: number;
+}
+
+// Walks `frames` once and counts user frames by content-block type. A single
+// user frame that contains BOTH a text and tool_result block (rare in
+// practice but defensible) increments BOTH counters.
+export function countUserFrames(frames: unknown[]): FrameCounts {
+  const counts: FrameCounts = { userTextFrames: 0, userToolResultFrames: 0 };
+  if (!Array.isArray(frames)) return counts;
+  for (const f of frames) {
+    if (!f || typeof f !== 'object') continue;
+    const o = f as Record<string, unknown>;
+    if (o.type !== 'user') continue;
+    const msg = (o.message as Record<string, unknown> | undefined) ?? {};
+    const content = Array.isArray(msg.content) ? (msg.content as unknown[]) : [];
+    let hasText = false;
+    let hasToolResult = false;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === 'text') hasText = true;
+      else if (b.type === 'tool_result') hasToolResult = true;
+    }
+    if (hasText) counts.userTextFrames += 1;
+    if (hasToolResult) counts.userToolResultFrames += 1;
+  }
+  return counts;
+}
+
+// Combined parse: avoids double-parsing the same JSONL text in the watcher
+// hot path (one classify + one count per fs event). Matches the leniency of
+// `classifyJsonlText` (skips unparseable mid-write trailing lines).
+export interface ClassifyAndCountResult extends FrameCounts {
+  state: WatcherState;
+}
+export function classifyAndCount(text: string): ClassifyAndCountResult {
+  const lines = text.split(/\r?\n/);
+  const frames: unknown[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    try {
+      frames.push(JSON.parse(line));
+    } catch {
+      continue;
+    }
+  }
+  const counts = countUserFrames(frames);
+  return {
+    state: classifyFrames(frames),
+    userTextFrames: counts.userTextFrames,
+    userToolResultFrames: counts.userToolResultFrames,
+  };
+}
+
 // Exported for the watcher test harness to validate ToolUseRef typing.
 export type _ToolUseRef = ToolUseRef;
