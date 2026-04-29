@@ -132,6 +132,22 @@ export default function App() {
     bridge.setActive(activeId || null);
   }, [activeId]);
 
+  // Mirror per-session NAMES to main so the desktop-notify bridge can label
+  // toasts with the friendly name (custom rename or SDK auto-summary)
+  // instead of the bare UUID. Sister effect to `setActive` above; same
+  // reason — main needs a synchronous answer when an OS notification fires
+  // and we don't want a renderer round-trip on the notify path. Diffs over
+  // the previous snapshot so we only IPC for actual changes (mounts,
+  // renames, SDK title arrivals, deletions).
+  useEffect(() => {
+    type Bridge = { setName: (sid: string, name: string | null) => void };
+    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
+    if (!bridge || typeof bridge.setName !== 'function') return;
+    for (const sess of sessions) {
+      bridge.setName(sess.id, sess.name ?? null);
+    }
+  }, [sessions]);
+
   // Listen for `session:activate` from main (fired when the user clicks a
   // desktop notification). Re-selects the named session so it lands focused
   // in the sidebar and chat pane. Mirrors the IPC subscription pattern of

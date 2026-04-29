@@ -321,6 +321,14 @@ const ccsmSession = {
   setActive: (sid: string | null): void => {
     ipcRenderer.send('session:setActive', sid ?? '');
   },
+  // Renderer pushes the user-visible name for a sid so notify toasts can
+  // label the toast with the friendly name (rename or SDK auto-summary)
+  // rather than the UUID. Fire on every name change (rename, external
+  // title apply, new session creation). Empty name clears the mirror.
+  setName: (sid: string, name: string | null): void => {
+    if (!sid) return;
+    ipcRenderer.send('session:setName', { sid, name: name ?? '' });
+  },
 };
 
 contextBridge.exposeInMainWorld('ccsmSession', ccsmSession);
