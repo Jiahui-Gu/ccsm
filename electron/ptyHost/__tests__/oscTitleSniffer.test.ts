@@ -169,4 +169,64 @@ describe('OscTitleSniffer', () => {
     s.feed('sid-1', Buffer.from('\x1b]0;buf\x07', 'utf8'));
     expect(events).toEqual([{ sid: 'sid-1', title: 'buf', ts: Date.now() }]);
   });
+
+  // OSC 2 (window-title) coverage — Task #713 merged the inlined
+  // Osc2InlineSniffer (formerly in notify/sinks/pipeline.ts) into this
+  // single dual-mode producer.
+  describe('OSC 2 (window title)', () => {
+    it('emits on a single OSC 2 BEL-terminated escape', () => {
+      const s = new OscTitleSniffer();
+      const events = collect(s);
+      s.feed('sid-1', '\x1b]2;hello\x07');
+      expect(events).toEqual([
+        { sid: 'sid-1', title: 'hello', ts: Date.now() },
+      ]);
+    });
+
+    it('emits on a single OSC 2 ST-terminated escape', () => {
+      const s = new OscTitleSniffer();
+      const events = collect(s);
+      s.feed('sid-1', '\x1b]2;hi\x1b\\');
+      expect(events).toEqual([
+        { sid: 'sid-1', title: 'hi', ts: Date.now() },
+      ]);
+    });
+
+    it('handles an OSC 2 escape split across two chunks', () => {
+      const s = new OscTitleSniffer();
+      const events = collect(s);
+      s.feed('sid-1', 'noise \x1b]2;wai');
+      expect(events).toHaveLength(0);
+      s.feed('sid-1', 'ting\x07');
+      expect(events).toEqual([
+        { sid: 'sid-1', title: 'waiting', ts: Date.now() },
+      ]);
+    });
+
+    it('handles a stream mixing OSC 0 and OSC 2 in any order', () => {
+      const s = new OscTitleSniffer();
+      const events = collect(s);
+      s.feed(
+        'sid-1',
+        '\x1b]0;first\x07pad\x1b]2;second\x07more\x1b]0;third\x1b\\tail\x1b]2;fourth\x1b\\',
+      );
+      expect(events.map((e) => e.title)).toEqual([
+        'first',
+        'second',
+        'third',
+        'fourth',
+      ]);
+    });
+
+    it('handles a partial OSC 2 prefix split across chunks (\\x1b]2 then ;...)', () => {
+      const s = new OscTitleSniffer();
+      const events = collect(s);
+      s.feed('sid-1', 'pre\x1b]2');
+      expect(events).toHaveLength(0);
+      s.feed('sid-1', ';title\x07');
+      expect(events).toEqual([
+        { sid: 'sid-1', title: 'title', ts: Date.now() },
+      ]);
+    });
+  });
 });

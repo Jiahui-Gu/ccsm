@@ -2,7 +2,8 @@
 //
 // Wires the four phase-decoupled pieces of the new notify architecture:
 //
-//   producer  : OscTitleSniffer (#688) — feeds raw OSC 0 titles per sid.
+//   producer  : OscTitleSniffer (#688, dual-mode OSC 0+2 since #713) —
+//               feeds raw titles per sid.
 //   decider   : notifyDecider.decide(event, ctx) (#687) — pure 7-rule eval.
 //   sink #1   : toastSink — fires Electron Notification.
 //   sink #2   : flashSink — pushes transient flash state to renderer.
@@ -44,6 +45,16 @@ export interface NotifyPipelineOptions {
   onNotified?: (sid: string) => void;
 }
 
+export interface PipelineDiag {
+  bytesFed: number;
+  chunksFed: number;
+  snifferEvents: number;
+  titlesSeen: string[];
+  classifications: { idle: number; running: number; unknown: number };
+  decideCalls: number;
+  decisions: number;
+}
+
 export interface NotifyPipeline {
   /** Feed a PTY chunk for `sid` into the OSC sniffer. */
   feedChunk(sid: string, chunk: string | Buffer): void;
@@ -65,85 +76,9 @@ export interface NotifyPipeline {
     sniffer: OscTitleSniffer;
     toast: ToastSink;
     flash: FlashSink;
-    diag: {
-      bytesFed: number;
-      chunksFed: number;
-      snifferEvents: number;
-      osc2Events: number;
-      titlesSeen: string[];
-      classifications: { idle: number; running: number; unknown: number };
-      decideCalls: number;
-      decisions: number;
-    };
+    /** Diag counters; populated only when `globalThis.__ccsmDebug` is truthy. */
+    diag: PipelineDiag | null;
   };
-}
-
-// The Phase B sniffer (OscTitleSniffer in #688) only matches OSC 0
-// (`\x1b]0;...`). xterm.js and Windows conpty also accept OSC 2
-// (`\x1b]2;...`) for window-title updates, and at least some Claude CLI
-// builds emit OSC 2 instead of OSC 0 — that path was invisible to a pure
-// OSC-0 sniffer (the title-state bridge sees them via xterm.onTitleChange,
-// which handles both, but the main-process raw-stream sniffer did not).
-// To keep #688's sniffer untouched (per #689 scope: no change to merged
-// modules), the pipeline runs a tiny inline OSC-2 scanner alongside the
-// Phase B sniffer and forwards either-class title events through the same
-// `onOsc` handler. The buffering / split-chunk concern is handled the
-// same way as in the Phase B sniffer.
-class Osc2InlineSniffer {
-  private readonly buffers = new Map<string, string>();
-  // Cap matches Phase B sniffer.
-  private static readonly MAX_BUFFER_BYTES = 64 * 1024;
-
-  constructor(private readonly onTitle: (sid: string, title: string, ts: number) => void) {}
-
-  feed(sid: string, chunk: string | Buffer): void {
-    if (chunk == null) return;
-    const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    if (text.length === 0) return;
-    let buf = (this.buffers.get(sid) ?? '') + text;
-    let scanFrom = 0;
-    let lastEmitEnd = 0;
-    while (scanFrom < buf.length) {
-      const oscStart = buf.indexOf('\x1b]2;', scanFrom);
-      if (oscStart === -1) break;
-      const titleStart = oscStart + 4;
-      const belIdx = buf.indexOf('\x07', titleStart);
-      const stIdx = buf.indexOf('\x1b\\', titleStart);
-      let termIdx = -1;
-      let termLen = 0;
-      if (belIdx !== -1 && (stIdx === -1 || belIdx < stIdx)) {
-        termIdx = belIdx;
-        termLen = 1;
-      } else if (stIdx !== -1) {
-        termIdx = stIdx;
-        termLen = 2;
-      }
-      if (termIdx === -1) break;
-      const title = buf.slice(titleStart, termIdx);
-      this.onTitle(sid, title, Date.now());
-      scanFrom = termIdx + termLen;
-      lastEmitEnd = scanFrom;
-    }
-    let tail: string;
-    const incompleteOscStart = buf.indexOf('\x1b]2;', lastEmitEnd);
-    if (incompleteOscStart !== -1) {
-      tail = buf.slice(incompleteOscStart);
-    } else {
-      tail = buf.slice(Math.max(buf.length - 3, lastEmitEnd));
-    }
-    if (tail.length > Osc2InlineSniffer.MAX_BUFFER_BYTES) {
-      tail = tail.slice(tail.length - Osc2InlineSniffer.MAX_BUFFER_BYTES);
-    }
-    if (tail.length === 0) {
-      this.buffers.delete(sid);
-    } else {
-      this.buffers.set(sid, tail);
-    }
-  }
-
-  clear(sid: string): void {
-    this.buffers.delete(sid);
-  }
 }
 
 // Heuristic: a 'running' OSC title indicates the CLI is mid-turn. The CLI
@@ -192,30 +127,37 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
 
   // Diagnostics for e2e probes — counts what each layer sees so we can tell
   // whether failure is "no PTY data", "no OSC titles", "titles seen but
-  // unclassifiable", or "decider rejected".
-  const diag = {
-    bytesFed: 0,
-    chunksFed: 0,
-    snifferEvents: 0,
-    osc2Events: 0,
-    titlesSeen: [] as string[], // last 10
-    classifications: { idle: 0, running: 0, unknown: 0 },
-    decideCalls: 0,
-    decisions: 0,
-  };
+  // unclassifiable", or "decider rejected". Production builds skip the
+  // counters entirely; the diag block only allocates when a probe sets
+  // `globalThis.__ccsmDebug = true` before installing the pipeline.
+  const debugEnabled = Boolean((globalThis as { __ccsmDebug?: unknown }).__ccsmDebug);
+  const diag: PipelineDiag | null = debugEnabled
+    ? {
+        bytesFed: 0,
+        chunksFed: 0,
+        snifferEvents: 0,
+        titlesSeen: [],
+        classifications: { idle: 0, running: 0, unknown: 0 },
+        decideCalls: 0,
+        decisions: 0,
+      }
+    : null;
   function recordTitle(title: string): void {
+    if (!diag) return;
     diag.titlesSeen.push(title);
     if (diag.titlesSeen.length > 10) diag.titlesSeen.shift();
   }
 
   const onOsc = (evt: OscTitleEvent): void => {
     refreshNow();
-    diag.snifferEvents += 1;
+    if (diag) diag.snifferEvents += 1;
     recordTitle(evt.title);
     const cls = classifyTitleState(evt.title);
-    if (cls === 'idle') diag.classifications.idle += 1;
-    else if (cls === 'running') diag.classifications.running += 1;
-    else diag.classifications.unknown += 1;
+    if (diag) {
+      if (cls === 'idle') diag.classifications.idle += 1;
+      else if (cls === 'running') diag.classifications.running += 1;
+      else diag.classifications.unknown += 1;
+    }
     // Maintain runStartTs from running titles (used by Rule 2/3 elapsed).
     if (isRunningTitle(evt.title)) {
       if (!ctx.runStartTs.has(evt.sid)) {
@@ -246,8 +188,10 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
       { type: 'osc-title', sid: evt.sid, title: normalized, ts: evt.ts },
       ctx,
     );
-    diag.decideCalls += 1;
-    if (decision) diag.decisions += 1;
+    if (diag) {
+      diag.decideCalls += 1;
+      if (decision) diag.decisions += 1;
+    }
 
     // Clear run start on waiting/idle (after decide so the elapsed reading
     // is computed against the current run).
@@ -260,20 +204,14 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
   };
 
   sniffer.on('osc-title', onOsc);
-  // Inline OSC-2 sniffer feeds the same handler — the Claude CLI uses OSC 2
-  // (window title) in some builds; xterm.onTitleChange handles both, but
-  // the Phase B sniffer is OSC-0-only by design, so we cover OSC 2 here.
-  const osc2 = new Osc2InlineSniffer((sid, title, ts) => {
-    diag.osc2Events += 1;
-    onOsc({ sid, title, ts });
-  });
 
   return {
     feedChunk(sid, chunk) {
-      diag.chunksFed += 1;
-      diag.bytesFed += typeof chunk === 'string' ? chunk.length : chunk.length;
+      if (diag) {
+        diag.chunksFed += 1;
+        diag.bytesFed += typeof chunk === 'string' ? chunk.length : chunk.length;
+      }
       sniffer.feed(sid, chunk);
-      osc2.feed(sid, chunk);
     },
     markUserInput(sid) {
       refreshNow();
@@ -291,7 +229,6 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     },
     forgetSid(sid) {
       sniffer.clear(sid);
-      osc2.clear(sid);
       ctx.lastUserInputTs.delete(sid);
       ctx.runStartTs.delete(sid);
       ctx.mutedSids.delete(sid);
