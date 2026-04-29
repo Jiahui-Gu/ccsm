@@ -2921,6 +2921,491 @@ async function caseNotifyNameClearedOnSessionDelete({ electronApp, win, tempDir 
 }
 
 // ============================================================================
+// Notify rule probes — 7 user-confirmed rules (task #670)
+// ============================================================================
+//
+// User-locked rule table (do not redefine):
+//   Two outlets: (A) OS toast via Notification.show, (B) sidebar per-session
+//   icon flash. (B) is NOT the OS taskbar badge — that was disabled in #534.
+//
+//   Rule 1   — User-initiated (new/import/resume/switch)        : A=NO  B=NO
+//   Rule 2a  — Foreground + activeSid + turn finish (<60s)      : A=NO  B=NO
+//   Rule 2b  — Foreground + activeSid + turn finish (>=60s)     : A=YES B=NO
+//   Rule 3   — Foreground + OTHER sid in view + finish          : A=YES B=YES
+//   Rule 4   — ccsm unfocused/minimized + any finish            : A=YES B=YES
+//   Rule 5   — Mid-task (still running)                          : A=NO  B=NO
+//   Rule 6   — Multi-session simultaneous finish                 : each A=YES, each B=YES
+//   Rule 7   — System-notif mute ON                              : A=NO  B=YES
+//
+// Each case asserts BOTH outlets independently. Outlet (A) reads
+// __ccsmNotifyLog. Outlet (B) reads renderer flash state — currently NO such
+// state exists in src/components/Sidebar.tsx or src/stores/store.ts, so most
+// outlet (B) assertions will fail-loud. That failure IS the deliverable.
+//
+// TODO(#670 follow-up): no production-side 60s threshold exists today; rule
+// 2a/2b are encoded with a constant we mock via a CCSM_NOTIFY_THRESHOLD_MS
+// env-var override the production code MUST start honoring before these
+// pass. For now both 2a and 2b drive a short turn (<60s real) and assert the
+// expected outlet shape — 2a will fail because production unconditionally
+// fires; 2b will pass because the simulated long-turn happens to coincide
+// with prod's "always fire" behavior. Manager dispatches a fix worker to
+// implement the threshold.
+//
+// Helpers below are kept in this file (not pushed to probe-utils-real-cli.mjs)
+// to keep the infra delta minimal — they are only useful to these 7 cases.
+
+const NOTIFY_LONG_TURN_THRESHOLD_MS = 60_000;
+
+// Snapshot the current notify log length. Each rule case captures a baseline
+// at start so it counts only NEW entries the case produced.
+async function notifyLogBaseline(electronApp) {
+  return await electronApp.evaluate(() => globalThis.__ccsmNotifyLog?.length ?? 0);
+}
+
+// Count notify entries appended after `baseline`, optionally filtered by sid.
+async function notifyLogDelta(electronApp, baseline, sid = null) {
+  return await electronApp.evaluate(
+    (_e, [b, s]) => {
+      const log = globalThis.__ccsmNotifyLog || [];
+      const slice = log.slice(b);
+      return s ? slice.filter((x) => x.sid === s) : slice;
+    },
+    [baseline, sid],
+  );
+}
+
+// Wait up to `timeoutMs` for a notify entry whose sid === sid to land. Returns
+// the first match, or null on timeout.
+async function waitForNotify(electronApp, baseline, sid, timeoutMs = 60_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const entries = await notifyLogDelta(electronApp, baseline, sid);
+    if (entries.length > 0) return entries[0];
+    await sleep(500);
+  }
+  return null;
+}
+
+// Read the current per-sid sidebar flash state. Returns null if the renderer
+// exposes no flash machinery (= production gap; outlet B fails-loud).
+//
+// Probes the most-likely surfaces in order:
+//   - window.__ccsmFlashStates  (a flat map sid -> 'flashing' | 'idle')
+//   - window.__ccsmStore.getState().flashingSessionIds  (Set or array)
+//   - window.__ccsmStore.getState().flashSessionId      (single sid scalar)
+// If none exist, returns { kind: 'missing', diag }.
+async function readSidebarFlashState(win, sid) {
+  return await win.evaluate((s) => {
+    const w = window;
+    const probe = {
+      windowMap: w.__ccsmFlashStates ? w.__ccsmFlashStates[s] ?? null : 'no-window-map',
+      storeSet: null,
+      storeScalar: null,
+      hasStore: !!w.__ccsmStore,
+    };
+    if (w.__ccsmStore) {
+      const st = w.__ccsmStore.getState();
+      const set = st.flashingSessionIds;
+      if (set instanceof Set) probe.storeSet = set.has(s);
+      else if (Array.isArray(set)) probe.storeSet = set.includes(s);
+      else probe.storeSet = set === undefined ? 'no-store-set' : null;
+      probe.storeScalar = typeof st.flashSessionId === 'string' ? (st.flashSessionId === s) : 'no-store-scalar';
+    }
+    // Aggregate: flash is "on" if any surface reports truthy.
+    const anyKnown =
+      probe.windowMap === 'flashing' ||
+      probe.storeSet === true ||
+      probe.storeScalar === true;
+    const allMissing =
+      probe.windowMap === 'no-window-map' &&
+      probe.storeSet === 'no-store-set' &&
+      probe.storeScalar === 'no-store-scalar';
+    return { flashing: anyKnown, missing: allMissing, diag: probe };
+  }, sid);
+}
+
+// Toggle the OS window focus from the renderer's perspective. Uses
+// BrowserWindow.blur() / focus() in main. Sleeps briefly so the OS event
+// reaches the watcher.
+async function setWindowFocus(electronApp, focused) {
+  await electronApp.evaluate(({ BrowserWindow }, want) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    if (!w || w.isDestroyed()) return false;
+    if (want) w.focus(); else w.blur();
+    return w.isFocused();
+  }, focused);
+  await sleep(400);
+}
+
+// Toggle the user's notify mute setting via the persisted IPC (the same path
+// SettingsDialog uses). Main invalidates its cached value on `db:saveState`.
+async function setNotifyMuted(win, muted) {
+  await win.evaluate((m) => {
+    const v = m ? 'false' : 'true';
+    return window.ccsm?.saveState?.('notifyEnabled', v);
+  }, muted);
+  await sleep(300);
+}
+
+// Drive a single Claude turn on the active session and return when the user
+// prompt has been sent. Caller is responsible for waiting on the idle event.
+async function driveOneClaudeTurn(win, prompt = 'reply with: ack') {
+  await sendToClaudeTui(win, prompt);
+  await sleep(300);
+  await sendToClaudeTui(win, '\r');
+}
+
+// Seed a fresh session, wait for terminal+modal dismiss, return sid. Each
+// notify rule case starts from a clean session-ready state.
+async function seedAndReady(win, tempDir, name) {
+  const { sid } = await seedSession(win, { name, cwd: tempDir });
+  if (!sid) throw new Error(`seedSession returned no sid for ${name}`);
+  await sleep(2000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+  // Settle past the first-run modals' state-changed bursts (5s dedupe window
+  // in electron/notify/index.ts).
+  await sleep(6000);
+  return sid;
+}
+
+// ----------------------------------------------------------------------------
+// Rule 1: user-initiated session creation must NOT fire notify or flash.
+// ----------------------------------------------------------------------------
+async function caseNotifyRule1NoFireOnUserInit({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  // Make sure mute is OFF so a fire would actually be observable.
+  await setNotifyMuted(win, false);
+  const baseline = await notifyLogBaseline(electronApp);
+  // User initiates: new session via the same store action a click would call.
+  const { sid } = await seedSession(win, { name: 'rule1-user-init', cwd: tempDir });
+  if (!sid) throw new Error('seedSession returned no sid');
+  // Let the trust/welcome flow settle. Per rule 1, the user opening a session
+  // must NOT generate a system notification for the boot itself.
+  await sleep(2000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+  // Wait the full dedupe window plus a margin so any deferred fire shows up.
+  await sleep(8000);
+
+  const entries = await notifyLogDelta(electronApp, baseline, sid);
+  const flash = await readSidebarFlashState(win, sid);
+  const errs = [];
+  // Outlet A: must be 0.
+  if (entries.length !== 0) {
+    errs.push(`A: expected 0 toasts for user-init, got ${entries.length}: ${JSON.stringify(entries.map((e) => ({ state: e.state, title: e.title })))}`);
+  }
+  // Outlet B: must NOT be flashing. If flash machinery is missing, this part
+  // trivially holds (nothing flashes if the system can't flash) — so we only
+  // fail B when the system DID light up the flash for sid.
+  if (flash.flashing) {
+    errs.push(`B: expected no flash for user-init, got flashing=true diag=${JSON.stringify(flash.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule1 OK: user-init silent on both outlets');
+}
+
+// ----------------------------------------------------------------------------
+// Rule 2a: foreground + activeSid + short turn (<60s) must NOT fire toast.
+// ----------------------------------------------------------------------------
+async function caseNotifyRule2aShortTurnForegroundSilent({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  const sid = await seedAndReady(win, tempDir, 'rule2a-short-foreground');
+  // Active sid + window focused = the "looking at this session" state.
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sid);
+  await setWindowFocus(electronApp, true);
+  // The harness drives a "reply with: ack" prompt — Claude completes this in
+  // <60s. Per rule 2a, no toast should fire and no flash should happen.
+  const baseline = await notifyLogBaseline(electronApp);
+  const turnStart = Date.now();
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  // Wait long enough to observe the idle transition but short of 60s so we
+  // can verify the SHORT-turn branch.
+  const got = await waitForNotify(electronApp, baseline, sid, 50_000);
+  const turnDurationMs = Date.now() - turnStart;
+  const flash = await readSidebarFlashState(win, sid);
+  const errs = [];
+  if (turnDurationMs >= NOTIFY_LONG_TURN_THRESHOLD_MS) {
+    errs.push(`PROBE-INVALID: turn took ${turnDurationMs}ms (>= ${NOTIFY_LONG_TURN_THRESHOLD_MS}ms threshold), this is no longer a short-turn case`);
+  }
+  if (got) {
+    errs.push(`A: expected NO toast for short foreground turn (${turnDurationMs}ms), got entry state=${got.state} title="${got.title}"`);
+  }
+  if (flash.flashing) {
+    errs.push(`B: expected no flash, got flashing=true diag=${JSON.stringify(flash.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log(`[HARNESS]   rule2a OK: short turn (${turnDurationMs}ms) foreground silent`);
+}
+
+// ----------------------------------------------------------------------------
+// Rule 2b: foreground + activeSid + long turn (>=60s) must fire TOAST, no flash.
+// ----------------------------------------------------------------------------
+//
+// Mock strategy: there is no production threshold today, so we cannot easily
+// drive a >=60s turn deterministically inside <30s. Per the task: "Pick the
+// option that results in a test that runs in <30s and is deterministic." We
+// pick the fallback — encode the EXPECTED post-fix shape (toast YES, flash
+// NO) using the prod's current "always fire" path. After the threshold ships,
+// this case should be re-keyed to use a `CCSM_NOTIFY_THRESHOLD_MS=2000`
+// override and a 3s prompt (currently no such env var exists; production
+// would need to honor it).
+async function caseNotifyRule2bLongTurnForegroundToastNoFlash({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  const sid = await seedAndReady(win, tempDir, 'rule2b-long-foreground');
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sid);
+  await setWindowFocus(electronApp, true);
+  const baseline = await notifyLogBaseline(electronApp);
+  // Drive a normal short turn — production fires regardless of duration.
+  // After the threshold ships, we can drive a real >=60s turn or use the
+  // env-var override; for now this is the closest probe of the EXPECTED
+  // behaviour (toast YES, no flash) under the only path prod actually has.
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  const got = await waitForNotify(electronApp, baseline, sid, 90_000);
+  const flash = await readSidebarFlashState(win, sid);
+  const errs = [];
+  if (!got) errs.push('A: expected toast for foreground long turn, got none in 90s');
+  if (flash.flashing) errs.push(`B: expected no flash for foreground (active+focused), got flashing=true diag=${JSON.stringify(flash.diag)}`);
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log(`[HARNESS]   rule2b OK: foreground long-turn toast=YES flash=NO (state=${got.state})`);
+}
+
+// ----------------------------------------------------------------------------
+// Rule 3: foreground but OTHER sid in right-view -> toast YES + flash YES on
+//         the finishing session.
+// ----------------------------------------------------------------------------
+async function caseNotifyRule3OtherSidInViewBothFire({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  // Two sessions: A is the bystander (will finish a turn). B is the active
+  // sid in the right-view. Window stays focused.
+  const sidA = await seedAndReady(win, tempDir, 'rule3-bystander-A');
+  const sidB = await seedAndReady(win, tempDir, 'rule3-active-B');
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sidB);
+  await setWindowFocus(electronApp, true);
+  // Switch back the xterm to A so we can drive A's turn (the active terminal
+  // host follows the renderer's __ccsmTerm singleton, which tracks selected
+  // sid). To drive A's CLI we need to selectSession(A) just for the keystroke
+  // injection, then immediately select B again. This mirrors the real
+  // user flow only in the typing direction; the notify event only depends on
+  // A's title-state transition + main's mirror of activeSid (which is B).
+  await win.evaluate((s) => window.__ccsmStore.getState().selectSession(s), sidA);
+  await sleep(500);
+  await waitForTerminalReady(win, sidA, { timeout: 30000 });
+  const baseline = await notifyLogBaseline(electronApp);
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  // Re-select B so the renderer's activeId mirror = B at the moment A's
+  // idle event arrives.
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sidB);
+  const got = await waitForNotify(electronApp, baseline, sidA, 90_000);
+  const flashA = await readSidebarFlashState(win, sidA);
+  const errs = [];
+  if (!got) errs.push('A: expected toast for sidA finish (other sid in view), got none in 90s');
+  if (!flashA.flashing) {
+    errs.push(`B: expected sidA icon flash (other-than-active finished), got flashing=false missing=${flashA.missing} diag=${JSON.stringify(flashA.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule3 OK: foreground+other-sid both outlets fired');
+}
+
+// ----------------------------------------------------------------------------
+// Rule 4: ccsm unfocused -> toast YES + flash YES on any finishing session.
+// ----------------------------------------------------------------------------
+async function caseNotifyRule4UnfocusedBothFire({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  const sid = await seedAndReady(win, tempDir, 'rule4-unfocused');
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sid);
+  // Defocus the BrowserWindow before driving the turn. Note: on Win11 the
+  // OS sometimes refocuses popup-spawning processes; we verify post-blur
+  // state via isFocused() below for diagnostics.
+  await setWindowFocus(electronApp, false);
+  const isFocusedAfterBlur = await electronApp.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    return !!(w && w.isFocused());
+  });
+  const baseline = await notifyLogBaseline(electronApp);
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  const got = await waitForNotify(electronApp, baseline, sid, 90_000);
+  const flash = await readSidebarFlashState(win, sid);
+  // Refocus before assertions so a failed probe doesn't leave the test
+  // window invisible to the next case.
+  await setWindowFocus(electronApp, true);
+  const errs = [];
+  if (!got) errs.push(`A: expected toast on unfocused finish, got none in 90s (isFocusedAfterBlur=${isFocusedAfterBlur})`);
+  if (!flash.flashing) {
+    errs.push(`B: expected icon flash on unfocused finish, got flashing=false missing=${flash.missing} diag=${JSON.stringify(flash.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule4 OK: unfocused both outlets fired');
+}
+
+// ----------------------------------------------------------------------------
+// Rule 5: mid-task (still running) must NOT fire toast or flash.
+// ----------------------------------------------------------------------------
+async function caseNotifyRule5MidTaskSilent({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  const sid = await seedAndReady(win, tempDir, 'rule5-midtask');
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sid);
+  // Drive a turn but observe the notify state DURING the running phase, not
+  // after the idle transition. We sample mid-spinner: send a prompt that
+  // takes a few seconds to start producing output, then check the log delta
+  // before idle arrives.
+  const baseline = await notifyLogBaseline(electronApp);
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  // Sample WHILE the turn is still running. The OSC 0 spinner emits braille
+  // glyphs — those classify to 'running' which the bridge ignores. We must
+  // sample BEFORE the sparkle-glyph idle frame lands, so we keep this short.
+  await sleep(800);
+  const midTurnEntries = await notifyLogDelta(electronApp, baseline, sid);
+  const midTurnFlash = await readSidebarFlashState(win, sid);
+  const errs = [];
+  if (midTurnEntries.length !== 0) {
+    errs.push(`A: expected 0 toasts mid-task, got ${midTurnEntries.length}: ${JSON.stringify(midTurnEntries.map((e) => e.state))}`);
+  }
+  if (midTurnFlash.flashing) {
+    errs.push(`B: expected no flash mid-task, got flashing=true diag=${JSON.stringify(midTurnFlash.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule5 OK: mid-task silent on both outlets');
+}
+
+// ----------------------------------------------------------------------------
+// Rule 6: multi-session simultaneous finish -> each session toast=YES + flash=YES.
+// ----------------------------------------------------------------------------
+//
+// AMBIGUITY (flagged in worker report): rule 6 collapses the per-session
+// foreground/active distinctions of rules 2-4 into "everything fires". Encoded
+// literally below — if user wants rule 6 to inherit per-session 2a/3 logic,
+// this case needs reshaping.
+async function caseNotifyRule6MultiSessionPerSidFire({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  await setNotifyMuted(win, false);
+  const sidA = await seedAndReady(win, tempDir, 'rule6-multi-A');
+  const sidB = await seedAndReady(win, tempDir, 'rule6-multi-B');
+  await setWindowFocus(electronApp, true);
+
+  // Drive A's turn first (renderer's __ccsmTerm follows selected sid, so we
+  // drive each session sequentially with a brief gap — "simultaneous" in the
+  // user's meaning is "within the same human-perceptible window", not bit-
+  // identical timestamps).
+  await win.evaluate((s) => window.__ccsmStore.getState().selectSession(s), sidA);
+  await sleep(400);
+  await waitForTerminalReady(win, sidA, { timeout: 30000 });
+  const baseline = await notifyLogBaseline(electronApp);
+  await driveOneClaudeTurn(win, 'reply with: ack');
+
+  await win.evaluate((s) => window.__ccsmStore.getState().selectSession(s), sidB);
+  await sleep(400);
+  await waitForTerminalReady(win, sidB, { timeout: 30000 });
+  await driveOneClaudeTurn(win, 'reply with: ack');
+
+  const gotA = await waitForNotify(electronApp, baseline, sidA, 120_000);
+  const gotB = await waitForNotify(electronApp, baseline, sidB, 120_000);
+  const flashA = await readSidebarFlashState(win, sidA);
+  const flashB = await readSidebarFlashState(win, sidB);
+  const errs = [];
+  if (!gotA) errs.push('A(sidA): no toast in 120s');
+  if (!gotB) errs.push('A(sidB): no toast in 120s');
+  if (!flashA.flashing) errs.push(`B(sidA): expected flash, missing=${flashA.missing} diag=${JSON.stringify(flashA.diag)}`);
+  if (!flashB.flashing) errs.push(`B(sidB): expected flash, missing=${flashB.missing} diag=${JSON.stringify(flashB.diag)}`);
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule6 OK: both sessions both outlets fired');
+}
+
+// ----------------------------------------------------------------------------
+// Rule 7: mute ON -> toast=NO, flash=YES (mute kills toasts only).
+// ----------------------------------------------------------------------------
+async function caseNotifyRule7MutedFlashStill({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  // Seed BEFORE muting so the seed-time toasts don't race the mute write.
+  const sid = await seedAndReady(win, tempDir, 'rule7-muted');
+  await win.evaluate((s) => {
+    window.__ccsmStore.getState().selectSession(s);
+    window.ccsmSession?.setActive?.(s);
+  }, sid);
+  // Defocus so this becomes a "would-fire-toast under rule 4" event but mute
+  // suppresses A. (Foreground+activeSid would conflate with rule 2a's no-fire
+  // and we'd lose the mute signal.)
+  await setWindowFocus(electronApp, false);
+  await setNotifyMuted(win, true);
+  const baseline = await notifyLogBaseline(electronApp);
+  await driveOneClaudeTurn(win, 'reply with: ack');
+  // Wait the idle settle window. Even if no toast fires, give the OSC 0
+  // sparkle frame plenty of time so we know the silence is real.
+  await sleep(20000);
+  const entries = await notifyLogDelta(electronApp, baseline, sid);
+  const flash = await readSidebarFlashState(win, sid);
+  // Restore mute=off + focus=on for downstream cases.
+  await setNotifyMuted(win, false);
+  await setWindowFocus(electronApp, true);
+  const errs = [];
+  if (entries.length !== 0) {
+    errs.push(`A: expected 0 toasts when muted, got ${entries.length}: ${JSON.stringify(entries.map((e) => e.state))}`);
+  }
+  if (!flash.flashing) {
+    errs.push(`B: expected icon flash even when muted, got flashing=false missing=${flash.missing} diag=${JSON.stringify(flash.diag)}`);
+  }
+  if (errs.length) throw new Error(errs.join(' | '));
+  console.log('[HARNESS]   rule7 OK: muted toast=NO flash=YES');
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
@@ -2933,6 +3418,20 @@ const CASE_REGISTRY = [
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'notify-name-cleared-on-session-delete', group: 'shared', run: caseNotifyNameClearedOnSessionDelete },
   { name: 'notify-shows-session-name',   group: 'shared', run: caseNotifyShowsSessionName },
+  // 7 user-confirmed notify rules (#670). Each asserts BOTH outlets:
+  //   (A) OS toast via __ccsmNotifyLog
+  //   (B) sidebar per-session icon flash via window.__ccsmFlashStates / store
+  // Outlet (B) machinery does not exist in production today — most rules will
+  // fail-loud on (B). That failure IS the deliverable; the manager dispatches
+  // separate fix workers from this branch.
+  { name: 'notify-rule1-no-fire-on-user-init',           group: 'shared', run: caseNotifyRule1NoFireOnUserInit },
+  { name: 'notify-rule2a-short-turn-foreground-silent',  group: 'shared', run: caseNotifyRule2aShortTurnForegroundSilent },
+  { name: 'notify-rule2b-long-turn-foreground-toast',    group: 'shared', run: caseNotifyRule2bLongTurnForegroundToastNoFlash },
+  { name: 'notify-rule3-other-sid-in-view-both-fire',    group: 'shared', run: caseNotifyRule3OtherSidInViewBothFire },
+  { name: 'notify-rule4-unfocused-both-fire',            group: 'shared', run: caseNotifyRule4UnfocusedBothFire },
+  { name: 'notify-rule5-mid-task-silent',                group: 'shared', run: caseNotifyRule5MidTaskSilent },
+  { name: 'notify-rule6-multi-session-per-sid-fire',     group: 'shared', run: caseNotifyRule6MultiSessionPerSidFire },
+  { name: 'notify-rule7-muted-flash-still',              group: 'shared', run: caseNotifyRule7MutedFlashStill },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
