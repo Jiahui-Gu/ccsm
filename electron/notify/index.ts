@@ -12,11 +12,13 @@
 //     renderer. We listen to its EventEmitter directly in main so we don't
 //     have to round-trip through IPC just to read a value the main process
 //     already has.
-//   * Suppression is intentionally main-side: window-focus + active-sid
-//     belongs in main because the OS already knows whether our window is
-//     focused, and the renderer pushes its `activeId` here on every change
-//     via `'session:setActive'`. No notification fires when the user is
-//     already looking at the session that just transitioned.
+//   * Unconditional fire. Earlier iterations suppressed when the window was
+//     focused AND the user was already looking at the transitioned session.
+//     We dropped that: the user's actual workflow is "app foreground while I
+//     check my phone" — they NEED the OS toast to know a session is done,
+//     even when the matching tab is on screen. Only the user's global mute
+//     toggle and `Notification.isSupported()` (an OS capability check, not
+//     suppression) gate the fire.
 //   * Click → focus + activate. We re-show / re-focus the BrowserWindow and
 //     send `'session:activate'` to the renderer; the renderer subscribes via
 //     `window.ccsmSession.onActivate` and calls `selectSession(sid)`.
@@ -55,18 +57,13 @@ export interface InstallNotifyBridgeOptions {
   /** Returns the user's current global mute setting. Read FRESH on each
    *  event so the toggle takes effect without a restart. */
   isMutedFn: () => boolean;
-  /** Returns the renderer's currently-active session id. Used to suppress
-   *  notifications for the session the user is already looking at. */
-  getActiveSidFn: () => string | null;
-  /** Returns whether the main window currently has OS focus. */
-  isWindowFocusedFn: () => boolean;
   /** Optional injected Notification impl — defaults to Electron's. The
    *  e2e test seam swaps this for an in-memory log. */
   notifyImpl?: NotifyImpl;
   /** Optional unread-badge sink. When the bridge actually fires a
-   *  notification (i.e. it survived mute / focus / dedupe), the bridge
-   *  bumps unread for that sid. The badge sink owns its own clearing
-   *  via focus / active-sid listeners installed in main. */
+   *  notification (i.e. it survived mute / dedupe), the bridge bumps unread
+   *  for that sid. The badge sink owns its own clearing via focus /
+   *  active-sid listeners installed in main. */
   onNotified?: (sid: string) => void;
   /** Returns the user-visible session name for a sid (custom rename or
    *  SDK-derived auto-summary, whichever the renderer is showing). When
@@ -124,8 +121,6 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
     getMainWindow,
     sessionWatcher,
     isMutedFn,
-    getActiveSidFn,
-    isWindowFocusedFn,
   } = opts;
 
   const notifyImpl =
@@ -162,14 +157,6 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
     if (evt.state !== 'idle' && evt.state !== 'requires_action') return;
 
     if (isMutedFn()) return;
-
-    // Suppress when the user is already looking at this session in a
-    // focused window — they don't need a desktop ping for something
-    // that's already on screen.
-    // TODO(multi-window): this assumes a single main BrowserWindow. If we
-    // ever support multiple windows, "focused" must be checked per-window
-    // and getActiveSidFn() must be scoped to the focused window's renderer.
-    if (isWindowFocusedFn() && getActiveSidFn() === evt.sid) return;
 
     // Per-sid dedupe: ignore a second notification for the same sid
     // within 5s of the previous one (covers idle ↔ requires_action
