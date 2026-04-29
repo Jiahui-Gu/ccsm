@@ -2110,6 +2110,34 @@ async function caseCwdPickerNoShortcut({ win }) {
   }
 }
 
+// Case: sidebar-group-no-newsession-cluster
+//   Per-group `+` button + cwd chevron were removed (see PR #605). The only
+//   way to start a new session is now the top-of-sidebar NewSession cluster.
+//   Hard-asserts that no GroupRow renders any of the per-group split-button
+//   selectors, so the deletion can't silently regress.
+async function caseSidebarGroupHasNoNewSessionCluster({ win }) {
+  await _waitBoot(win);
+  // Seed >=1 user group so at least one <GroupRow> mounts. Without a group,
+  // the assertion would trivially pass even if the per-group cluster were
+  // re-introduced.
+  await _seedGroup(win, 'no-cluster-' + Math.random().toString(36).slice(2, 6));
+  // Give the sidebar a tick to render the new GroupRow.
+  await sleep(200);
+
+  const counts = await win.evaluate(() => ({
+    cluster: document.querySelectorAll('[data-sidebar-group-newsession-cluster]').length,
+    plus: document.querySelectorAll('[data-sidebar-group-newsession-plus]').length,
+    chevron: document.querySelectorAll('[data-sidebar-group-newsession-cwd-chevron]').length,
+    groupRows: document.querySelectorAll('[data-testid^="sidebar-group-row"], [data-sidebar-group-row]').length,
+  }));
+
+  if (counts.cluster !== 0 || counts.plus !== 0 || counts.chevron !== 0) {
+    throw new Error(
+      `per-group newsession cluster regressed: cluster=${counts.cluster} plus=${counts.plus} chevron=${counts.chevron}`,
+    );
+  }
+}
+
 // ============================================================================
 // Registry
 // ============================================================================
@@ -2129,6 +2157,7 @@ const CASE_REGISTRY = [
   { name: 'cwd-picker-top-default',      group: 'shared', run: caseCwdPickerTopDefault },
   { name: 'cwd-picker-top-chevron',      group: 'shared', run: caseCwdPickerTopChevron },
   { name: 'cwd-picker-no-shortcut',      group: 'shared', run: caseCwdPickerNoShortcut },
+  { name: 'sidebar-group-no-newsession-cluster', group: 'shared', run: caseSidebarGroupHasNoNewSessionCluster },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
   { name: 'pty-subtree-killed-on-quit',  group: 'standalone', run: casePtySubtreeKilledOnQuit },
 ];
