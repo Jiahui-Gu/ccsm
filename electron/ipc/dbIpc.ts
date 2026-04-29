@@ -65,14 +65,44 @@ export function handleDbSave(
     }
     return v;
   }
-  saveState(key, value);
+  // Wrap the sqlite write so a disk error (full disk, locked WAL, corrupt
+  // db) becomes a {ok:false} discriminant instead of crossing the IPC bridge
+  // as Electron's opaque "An object could not be cloned" rejection. The
+  // renderer's preload `saveState` wrapper unwraps this and re-throws so
+  // `setPersistErrorHandler` fires with a useful message. Audit risk #1.
+  try {
+    saveState(key, value);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[main] db:save failed for key=${key}:`, err);
+    return { ok: false, error: msg };
+  }
   dispatchSavedKeyInvalidation(key);
   return { ok: true };
 }
 
+/** Pure handler for `db:load`. Exported for unit testing. Returns `null` on
+ *  any sqlite read error so the renderer falls through to its default state
+ *  instead of receiving an opaque IPC rejection (Electron surfaces those as
+ *  "An object could not be cloned"). Audit risk #6. The cost of degrading to
+ *  null is a one-time blank app on a corrupt db; the alternative is a hard
+ *  bridge error with no diagnostic. The error is logged so dogfood surfaces
+ *  the underlying cause. */
+export function handleDbLoad(
+  _e: IpcMainInvokeEvent,
+  key: string,
+): string | null {
+  try {
+    return loadState(key);
+  } catch (err) {
+    console.error(`[main] db:load failed for key=${key}:`, err);
+    return null;
+  }
+}
+
 export function registerDbIpc(deps: DbIpcDeps): void {
   const { ipcMain } = deps;
-  ipcMain.handle('db:load', (_e, key: string) => loadState(key));
+  ipcMain.handle('db:load', handleDbLoad);
   // Cap renderer-supplied state values. Mirrors the per-block cap in the
   // (now-retired) db:saveMessages handler but tighter (1 MB total): a single
   // app_state row holds drafts/persist snapshots that should never approach

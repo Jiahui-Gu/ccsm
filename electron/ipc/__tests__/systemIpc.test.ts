@@ -4,15 +4,18 @@ import * as os from 'os';
 import * as path from 'path';
 
 vi.mock('electron', () => ({}));
+let listModelsImpl: () => Promise<{ models: unknown[] }> = async () => ({
+  models: [],
+});
 vi.mock('../../agent/list-models-from-settings', () => ({
-  listModelsFromSettings: async () => ({ models: [] }),
+  listModelsFromSettings: () => listModelsImpl(),
   readDefaultModelFromSettings: async () => null,
 }));
 vi.mock('../../security/ipcGuards', () => ({
   fromMainFrame: () => true,
 }));
 
-import { readConnectionView } from '../systemIpc';
+import { readConnectionView, handleModelsList } from '../systemIpc';
 
 let tmpDir = '';
 let tmpFile = '';
@@ -105,5 +108,34 @@ describe('readConnectionView', () => {
     );
     const v = readConnectionView({} as NodeJS.ProcessEnv, tmpFile);
     expect(v.hasAuthToken).toBe(false);
+  });
+});
+
+describe('handleModelsList', () => {
+  beforeEach(() => {
+    listModelsImpl = async () => ({ models: [] });
+  });
+
+  it('returns the models from settings on success', async () => {
+    listModelsImpl = async () => ({
+      models: [{ id: 'foo', label: 'Foo' }],
+    });
+    const result = await handleModelsList();
+    expect(result).toEqual([{ id: 'foo', label: 'Foo' }]);
+  });
+
+  // Audit risk #10 (tech-debt-03-errors.md): malformed settings.json must
+  // not propagate as an opaque IPC rejection — Settings pane should show
+  // an empty list, not a bridge crash. Reverse-verify: remove the try/catch
+  // in handleModelsList → this test FAILS with an uncaught throw.
+  it('returns [] and logs when listModelsFromSettings throws (audit risk #10)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    listModelsImpl = async () => {
+      throw new SyntaxError('Unexpected token } in JSON at position 17');
+    };
+    const result = await handleModelsList();
+    expect(result).toEqual([]);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 });
