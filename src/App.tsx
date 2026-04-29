@@ -78,6 +78,7 @@ export default function App() {
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
   const applyExternalTitle = useStore((s) => s._applyExternalTitle);
+  const applyPtyExit = useStore((s) => s._applyPtyExit);
   const moveSession = useStore((s) => s.moveSession);
   const createSession = useStore((s) => s.createSession);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -147,6 +148,28 @@ export default function App() {
       }
     });
   }, [selectSession]);
+
+  // Pipe `pty:exit` events into the store UNCONDITIONALLY (not filtered
+  // by activeSid). TerminalPane has its own filtered listener that drives
+  // the active-pane red overlay; this second listener is what surfaces
+  // background-session deaths in the sidebar (red dot via
+  // `disconnectedSessions[sid]`). Both coexist — different concerns, no
+  // duplication risk because the store action is idempotent on payload.
+  useEffect(() => {
+    const pty = (window as unknown as {
+      ccsmPty?: {
+        onExit?: (cb: (e: { sessionId: string; code?: number | null; signal?: string | number | null }) => void) => () => void;
+      };
+    }).ccsmPty;
+    if (!pty?.onExit) return;
+    return pty.onExit((evt) => {
+      if (!evt || typeof evt.sessionId !== 'string' || evt.sessionId.length === 0) return;
+      applyPtyExit(evt.sessionId, {
+        code: evt.code ?? null,
+        signal: evt.signal ?? null,
+      });
+    });
+  }, [applyPtyExit]);
 
   // Pipe `session:title` IPC events from main into the store. The watcher
   // emits when the SDK-derived `summary` changes for a session; the store

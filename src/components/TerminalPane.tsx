@@ -7,6 +7,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
+import { useStore } from '../stores/store';
 
 // TerminalPane mounts a singleton xterm.js Terminal that we attach/detach
 // against per-session PTYs over IPC (window.ccsmPty). This is the React
@@ -53,6 +54,13 @@ type Props = {
 type State =
   | { kind: 'attaching' }
   | { kind: 'ready' }
+  // `exit` is the new shape — distinguishes user-intentional clean exit
+  // (no signal, code 0) from a crash. The former renders a neutral
+  // overlay + "claude exited" copy; the latter renders the red overlay
+  // + "claude crashed... not a ccsm bug" copy. Both show Retry. The
+  // legacy `error` shape stays for spawn/attach failures (spawn IPC
+  // returned !ok, ccsmPty unavailable, etc.) which are NOT pty exits.
+  | { kind: 'exit'; exitKind: 'clean' | 'crashed'; detail: string }
   | { kind: 'error'; message: string };
 
 // Module-scope singleton state. Initialised lazily on first mount so we
@@ -193,6 +201,15 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<State>({ kind: 'attaching' });
   const { t } = useTranslation();
+  // Store action — clear the disconnect entry on respawn success so the
+  // sidebar red dot disappears the moment the pty is back. Pulled via
+  // selector so this component re-renders only when the function ref
+  // changes (it doesn't, in practice — zustand actions are stable). We
+  // route through a ref so the attach effect doesn't need to depend on
+  // it (and re-run unnecessarily).
+  const clearPtyExit = useStore((s) => s._clearPtyExit);
+  const clearPtyExitRef = useRef(clearPtyExit);
+  clearPtyExitRef.current = clearPtyExit;
   // Tracks the sessionId we're currently attaching for so a stale resolve
   // from a previous session can't clobber the current one when the user
   // switches quickly.
@@ -359,6 +376,11 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         }
 
         if (!cancelled) setState({ kind: 'ready' });
+        // Successful (re-)attach means whatever pty is running for this
+        // sid is healthy — drop any stale disconnect entry so the
+        // sidebar red dot clears and a future crash starts from a clean
+        // slate. Idempotent if no entry exists.
+        clearPtyExitRef.current(sessionId);
       } catch (err) {
         if (cancelled || requestedSidRef.current !== sessionId) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -372,26 +394,30 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
     // attachNonce is intentional: bumping it re-runs the attach for Retry.
   }, [sessionId, attachNonce]);
 
-  // pty:exit subscription for the active session → flip to error state.
-  // `t` is intentionally excluded from deps: changing language while a
-  // session is alive should not re-subscribe; the localized string is
-  // resolved at exit time via a ref so it always reflects the current
-  // language.
-  const tRef = useRef(t);
-  tRef.current = t;
+  // pty:exit subscription for the active session → flip to exit state
+  // with a classification (clean vs crashed). The classification rule
+  // mirrors the store's `_applyPtyExit` logic — kept in lockstep
+  // intentionally so the active-pane overlay and the sidebar red-dot
+  // signal are always consistent. `t` is intentionally excluded from
+  // deps: changing language while a session is alive should not re-
+  // subscribe; localized strings are resolved at render time.
   useEffect(() => {
     const pty = window.ccsmPty;
     if (!pty?.onExit) return;
     const unsubscribe = pty.onExit(
       (evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => {
         if (evt.sessionId !== activeSid) return;
+        const signal = evt.signal ?? null;
+        const code = evt.code ?? null;
+        const exitKind: 'clean' | 'crashed' =
+          signal == null && code === 0 ? 'clean' : 'crashed';
         const detail =
-          evt.signal != null
-            ? `signal ${evt.signal}`
-            : evt.code != null
-              ? `exit code ${evt.code}`
-              : 'unknown reason';
-        setState({ kind: 'error', message: `${tRef.current('terminal.exited')} (${detail})` });
+          signal != null
+            ? `signal ${signal}`
+            : code != null
+              ? `exit code ${code}`
+              : 'unknown';
+        setState({ kind: 'exit', exitKind, detail });
       },
     );
     return () => {
@@ -428,6 +454,41 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
             className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400"
           >
             Retry
+          </button>
+        </div>
+      )}
+      {state.kind === 'exit' && (
+        // Two-tone overlay: clean exits get a neutral/dim background
+        // (user typed /exit on purpose, no alarm); crashed exits keep
+        // the red treatment so the user notices. Copy is locked in
+        // i18n — `terminal.exitedClean` reassures, `terminal.exitedCrash`
+        // explicitly disclaims ccsm involvement and points at the
+        // on-disk transcript so the user knows their work is safe.
+        <div
+          data-pty-exit-kind={state.exitKind}
+          className={
+            state.exitKind === 'crashed'
+              ? 'absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-black/80'
+              : 'absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-neutral-900/85'
+          }
+        >
+          <div
+            className={
+              state.exitKind === 'crashed'
+                ? 'text-state-error-text max-w-md text-center break-words px-4'
+                : 'text-neutral-300 max-w-md text-center break-words px-4'
+            }
+          >
+            {state.exitKind === 'crashed'
+              ? t('terminal.exitedCrash', { detail: state.detail })
+              : t('terminal.exitedClean')}
+          </div>
+          <button
+            type="button"
+            onClick={onRetry}
+            className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-neutral-400"
+          >
+            {t('terminal.exitedRetry')}
           </button>
         </div>
       )}

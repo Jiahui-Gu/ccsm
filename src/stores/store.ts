@@ -144,6 +144,28 @@ type State = {
    */
   openPopoverId: string | null;
   /**
+   * Per-session pty exit classification. Populated by the app-boot
+   * unconditional `pty:exit` listener (App.tsx) so background-session
+   * deaths surface in the sidebar even when the user is focused on
+   * another session — previously this was invisible until the user
+   * clicked the dead session.
+   *
+   * `clean` → user typed `/exit` (or claude returned naturally) :
+   *   `signal == null && code === 0`. NO red dot in sidebar — this
+   *   is a user-intentional exit.
+   * `crashed` → anything else (signal, non-zero code, unknown). Surfaces
+   *   the red dot in the sidebar row and the red overlay in TerminalPane.
+   *
+   * Cleared when the renderer respawns the pty for that sid (TerminalPane
+   * Retry path → `_clearPtyExit`).
+   *
+   * NOT persisted — pty state is process-bound; re-derive on next boot.
+   */
+  disconnectedSessions: Record<
+    string,
+    { kind: 'clean' | 'crashed'; code: number | null; signal: string | number | null; at: number }
+  >;
+  /**
    * Most-recent cwd from the ccsm-owned `userCwds` LRU (head of the list),
    * cached in renderer state so `createSession` can read it synchronously
    * to default a new session's cwd. Seeded at boot from
@@ -205,6 +227,13 @@ type Actions = {
    *  src/App.tsx. SDK customTitle precedence guarantees user renames win
    *  over SDK auto-summaries, so no userRenamed flag is needed here. */
   _applyExternalTitle: (sid: string, title: string) => void;
+  /** Internal: classify and record a pty:exit event for `sid`. Decides
+   *  clean vs crashed using `signal == null && code === 0`. Idempotent —
+   *  calling twice with the same payload just overwrites the entry. */
+  _applyPtyExit: (sid: string, payload: { code: number | null; signal: string | number | null }) => void;
+  /** Internal: drop the disconnect entry for `sid`. Called from TerminalPane
+   *  when an attach/spawn succeeds so the red dot clears on respawn. */
+  _clearPtyExit: (sid: string) => void;
   deleteSession: (id: string) => SessionSnapshot | null;
   /** Re-insert a session previously removed by `deleteSession`. Restores the
    *  row at its original index, plus messages, draft, and runtime flags. */
@@ -442,6 +471,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   installerCorrupt: false,
   openPopoverId: null,
   lastUsedCwd: null,
+  disconnectedSessions: {},
 
   selectSession: (id) => {
     set((s) => ({
@@ -608,6 +638,29 @@ export const useStore = create<State & Actions>((set, get) => ({
       const next = s.sessions.slice();
       next[idx] = { ...next[idx], name: title };
       return { ...s, sessions: next };
+    });
+  },
+
+  _applyPtyExit: (sid, payload) => {
+    // Clean = no signal AND exit code zero. Anything else (signal,
+    // non-zero code, or both null) is treated as a crash so the user
+    // gets the "this is not ccsm's fault" overlay + sidebar red dot.
+    const kind: 'clean' | 'crashed' =
+      payload.signal == null && payload.code === 0 ? 'clean' : 'crashed';
+    set((s) => ({
+      disconnectedSessions: {
+        ...s.disconnectedSessions,
+        [sid]: { kind, code: payload.code, signal: payload.signal, at: Date.now() },
+      },
+    }));
+  },
+
+  _clearPtyExit: (sid) => {
+    set((s) => {
+      if (!s.disconnectedSessions[sid]) return s;
+      const next = { ...s.disconnectedSessions };
+      delete next[sid];
+      return { disconnectedSessions: next };
     });
   },
 

@@ -73,6 +73,7 @@ const en = {
     sessionStateIdle: 'Waiting for your reply',
     sessionStateRunning: 'Working',
     sessionStateRequiresAction: 'Needs your decision',
+    sessionCrashed: 'claude process crashed in this session',
     searchAria: 'Search',
     expandSidebarTooltip: 'Expand sidebar  Ctrl+B',
     expandSidebarAria: 'Expand sidebar',
@@ -284,7 +285,9 @@ const en = {
     starting: 'Starting…',
     spawnFailed: 'Failed to start terminal',
     retryButton: 'Retry',
-    exited: 'Terminal exited unexpectedly'
+    exitedClean: 'claude exited (you typed /exit or claude returned). Click Retry to start a new conversation in this session.',
+    exitedCrash: 'claude crashed ({{detail}}). This is not a ccsm bug — the underlying claude CLI exited unexpectedly. Your conversation is saved on disk; click Retry to resume.',
+    exitedRetry: 'Retry'
   },
   chat: {
     cwdChipNoneLabel: '(none)',
