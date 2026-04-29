@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, Folder, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useTranslation } from '../i18n/useTranslation';
@@ -135,7 +136,15 @@ export function CwdPopover(props: Props) {
   // Controlled-mode panel positioning. We compute screen coords from the
   // external anchor's bounding rect on every open + on resize/scroll while
   // open, mounting the panel via a fixed-position wrapper so it escapes
-  // any clipping ancestors (the sidebar uses overflow:hidden).
+  // any clipping ancestors (the sidebar uses `overflow:hidden` AND
+  // `backdrop-filter` which together would clip a non-portaled fixed
+  // descendant — see PR #598). The panel is also portaled to `document.body`
+  // below for the same reason.
+  //
+  // We clamp the computed `left` to the viewport so popovers anchored close
+  // to the right edge of the screen never overflow off-screen.
+  const PANEL_MIN_WIDTH = 320; // matches min-w-[320px] on the panel.
+  const VIEWPORT_PADDING = 8;
   const [panelPos, setPanelPos] = useState<{ top: number; left: number } | null>(null);
   useLayoutEffect(() => {
     if (!isControlled || !open) return;
@@ -143,7 +152,12 @@ export function CwdPopover(props: Props) {
     if (!anchor) return;
     const recompute = () => {
       const r = anchor.getBoundingClientRect();
-      setPanelPos({ top: r.bottom + 4, left: r.left });
+      const top = r.bottom + 4;
+      // Prefer left-aligned to anchor; if that would overflow the right edge
+      // of the viewport, shift left so the panel stays fully on-screen.
+      const maxLeft = window.innerWidth - PANEL_MIN_WIDTH - VIEWPORT_PADDING;
+      const left = Math.max(VIEWPORT_PADDING, Math.min(r.left, maxLeft));
+      setPanelPos({ top, left });
     };
     recompute();
     window.addEventListener('resize', recompute);
@@ -151,6 +165,7 @@ export function CwdPopover(props: Props) {
     return () => {
       window.removeEventListener('resize', recompute);
       window.removeEventListener('scroll', recompute, true);
+      setPanelPos(null);
     };
   }, [isControlled, open, props]);
 
@@ -270,7 +285,12 @@ export function CwdPopover(props: Props) {
   const triggerLabel = hasCwd ? lastSegment(cwd) : t('chat.cwdChipNoneLabel');
 
   // The popover panel — shared between modes, but positioning differs.
-  const panel = open ? (
+  // Controlled mode requires `panelPos` to be measured BEFORE rendering, so we
+  // never paint an unpositioned static block that pushes neighboring layout
+  // (e.g. the "+ New session" trigger to its left). Legacy mode positions
+  // itself via Tailwind absolute classes on the inline anchor.
+  const showPanel = open && (!isControlled || panelPos !== null);
+  const panel = showPanel ? (
     <div
       ref={popRef}
       role="dialog"
@@ -376,7 +396,12 @@ export function CwdPopover(props: Props) {
 
   if (isControlled) {
     // Controlled mode: caller renders the trigger; we only output the panel.
-    return panel;
+    // Portal the panel to document.body so it escapes the sidebar's
+    // `backdrop-filter` containing block (which would otherwise trap
+    // `position: fixed` descendants and cause clipping by `overflow: hidden`).
+    if (!panel) return null;
+    if (typeof document === 'undefined') return panel;
+    return createPortal(panel, document.body);
   }
 
   return (
