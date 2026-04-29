@@ -439,13 +439,19 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
     >
       <div ref={hostRef} className="absolute inset-0" />
       {state.kind === 'attaching' && (
-        <div className="absolute inset-0 flex items-center justify-center text-neutral-400 text-sm pointer-events-none">
+        <div className="absolute inset-0 z-10 flex items-center justify-center text-neutral-400 text-sm pointer-events-none">
           Attaching...
         </div>
       )}
       {state.kind === 'error' && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-black/80">
-          <div className="text-red-400 max-w-md text-center break-words px-4">
+        // z-10 so the overlay sits above xterm's canvas layers (the canvas
+        // renderer stacks its own absolutely-positioned canvases inside the
+        // host div with non-zero z-index — without an explicit z here the
+        // Retry button is rendered but unclickable). select-text on the
+        // message so the user can highlight + Ctrl+C the error to share
+        // (e.g. "spawn_failed: ... error code:267") with support.
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-sm bg-black/80">
+          <div className="text-red-400 max-w-md text-center break-words px-4 select-text">
             {state.message}
           </div>
           <button
@@ -464,19 +470,20 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         // i18n — `terminal.exitedClean` reassures, `terminal.exitedCrash`
         // explicitly disclaims ccsm involvement and points at the
         // on-disk transcript so the user knows their work is safe.
+        // z-10 + select-text rationale matches the `error` overlay above.
         <div
           data-pty-exit-kind={state.exitKind}
           className={
             state.exitKind === 'crashed'
-              ? 'absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-black/80'
-              : 'absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm bg-neutral-900/85'
+              ? 'absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-sm bg-black/80'
+              : 'absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-sm bg-neutral-900/85'
           }
         >
           <div
             className={
               state.exitKind === 'crashed'
-                ? 'text-state-error-text max-w-md text-center break-words px-4'
-                : 'text-neutral-300 max-w-md text-center break-words px-4'
+                ? 'text-state-error-text max-w-md text-center break-words px-4 select-text'
+                : 'text-neutral-300 max-w-md text-center break-words px-4 select-text'
             }
           >
             {state.exitKind === 'crashed'
