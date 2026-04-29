@@ -113,6 +113,17 @@ export function registerUtilityIpc(deps: UtilityIpcDeps): void {
   ipcMain.handle('app:userCwds:push', (e, p: unknown) => {
     if (!fromMainFrame(e)) return getUserCwds();
     if (typeof p !== 'string') return getUserCwds();
+    // Security gate (#804 risk #4): the LRU here feeds the cwd popover and
+    // is later replayed into `pty:spawn`. A single hostile push would
+    // persist a UNC trap path that statSync's later — see resolveSpawnCwd.
+    // Drop unsafe entries (UNC / relative / non-absolute) at the boundary
+    // so they never reach disk.
+    if (!isSafePath(p)) {
+      console.warn(
+        `[main] app:userCwds:push rejected unsafe path ${JSON.stringify(p)}`,
+      );
+      return getUserCwds();
+    }
     return pushUserCwd(p);
   });
   ipcMain.handle('app:userHome', () => os.homedir());

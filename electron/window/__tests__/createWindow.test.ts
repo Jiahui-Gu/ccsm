@@ -15,7 +15,7 @@ vi.mock('electron', () => {
   return { Menu };
 });
 
-import { installContextMenu } from '../createWindow';
+import { installContextMenu, isAllowedNavigation } from '../createWindow';
 
 interface ContextMenuParams {
   selectionText: string;
@@ -142,5 +142,45 @@ describe('installContextMenu', () => {
     const items = popupCalls[0].items as Array<Record<string, unknown>>;
     const paste = items.find((i) => i.role === 'paste');
     expect(paste?.enabled).toBe(false);
+  });
+});
+
+// #804 risk #7: the previous allowlist hardcoded `http://localhost:4100`
+// in addition to the env-driven port. Stale dev port + dev build = bypass
+// surface. The decider here only honors the env-driven origin (and `file:`
+// for the prod renderer load).
+describe('isAllowedNavigation (#804 risk #7)', () => {
+  it('allows the env-driven dev origin', () => {
+    expect(isAllowedNavigation('http://localhost:5174/foo', '5174')).toBe(true);
+  });
+
+  it('allows file: protocol for production renderer load', () => {
+    expect(isAllowedNavigation('file:///C:/app/renderer/index.html', '5174')).toBe(true);
+  });
+
+  it('falls back to port 4100 when env var unset', () => {
+    expect(isAllowedNavigation('http://localhost:4100/x', undefined)).toBe(true);
+    expect(isAllowedNavigation('http://localhost:4100/x', '')).toBe(true);
+  });
+
+  it('blocks the legacy hardcoded localhost:4100 when env points elsewhere', () => {
+    // The bug being fixed: when CCSM_DEV_PORT=5174, navigation to
+    // localhost:4100 must be denied. Previously both ports were allowed.
+    expect(isAllowedNavigation('http://localhost:4100/evil', '5174')).toBe(false);
+  });
+
+  it('blocks arbitrary external origins', () => {
+    expect(isAllowedNavigation('https://evil.example.com/', '5174')).toBe(false);
+    expect(isAllowedNavigation('http://attacker.test/x', '4100')).toBe(false);
+  });
+
+  it('blocks malformed URLs (returns false instead of throwing)', () => {
+    expect(isAllowedNavigation('not a url', '4100')).toBe(false);
+    expect(isAllowedNavigation('', '4100')).toBe(false);
+  });
+
+  it('blocks other protocols (javascript:, data:)', () => {
+    expect(isAllowedNavigation('javascript:alert(1)', '4100')).toBe(false);
+    expect(isAllowedNavigation('data:text/html,<script>x</script>', '4100')).toBe(false);
   });
 });

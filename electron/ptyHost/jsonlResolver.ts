@@ -15,7 +15,20 @@ import { cwdToProjectKey } from '../sessionWatcher/projectKey';
 // (which requires a valid UUID for --session-id / --resume) accepts it.
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// Defense-in-depth (#804 risk #6): the ccsm sid eventually lands in
+// `pty.spawn(claudePath, [flag, claudeSid], …)` as a real argv slot. node-pty
+// does NOT shell-interpret, but a sid like `--dangerous-flag` would be picked
+// up by the CLI as a real flag. Constrain the input character set + length to
+// the shape the renderer's `crypto.randomUUID()` (and the legacy
+// `<prefix>-<random>` fallback) actually produce — alphanumerics, dashes, and
+// underscores, 8-64 chars, AND require an alphanumeric first char so a sid
+// starting with `-` cannot be smuggled into argv as a CLI flag.
+const VALID_SID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{7,63}$/;
+
 export function toClaudeSid(ccsmSessionId: string): string {
+  if (typeof ccsmSessionId !== 'string' || !VALID_SID_RE.test(ccsmSessionId)) {
+    throw new Error(`invalid sid: ${JSON.stringify(ccsmSessionId)}`);
+  }
   if (UUID_V4_RE.test(ccsmSessionId)) return ccsmSessionId.toLowerCase();
   const hex = createHash('sha256').update(ccsmSessionId).digest('hex');
   const yNibble = (parseInt(hex[16]!, 16) & 0x3) | 0x8;
