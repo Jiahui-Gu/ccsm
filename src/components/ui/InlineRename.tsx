@@ -75,9 +75,27 @@ export function InlineRename({
     const armTimer = window.setTimeout(() => {
       armedRef.current = true;
     }, 50);
+    // Belt-and-suspenders re-focus AFTER the arm tick. The session row's
+    // dnd-kit listeners + tabIndex=0 LI can still win the focus race in
+    // edge cases (e.g. very slow renders where the rAF callback also
+    // loses to Radix focus restoration). This third re-focus catches
+    // those holes: if the input has lost focus by the time the arm tick
+    // fires, snap focus back and re-select. If we already hold focus,
+    // calling focus()/select() is a no-op for the user. Scheduled with
+    // setTimeout(0) chained AFTER the arm timer (51ms total) so it
+    // always lands after every Radix focus event.
+    const refocusTimer = window.setTimeout(() => {
+      const cur = ref.current;
+      if (!cur) return;
+      if (document.activeElement !== cur) {
+        cur.focus();
+        cur.select();
+      }
+    }, 51);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(armTimer);
+      window.clearTimeout(refocusTimer);
     };
   }, []);
 
@@ -137,6 +155,11 @@ export function InlineRename({
         } else if (e.key === 'Escape') {
           e.preventDefault();
           onCancel();
+        } else if (e.key === 'Tab') {
+          // Tab commits AND advances focus naturally (do not preventDefault).
+          // Matches the canonical inline-rename pattern in Finder / VS Code
+          // explorer / Slack channel rename: Tab = "save and move on".
+          commit();
         }
       }}
       placeholder={placeholder}

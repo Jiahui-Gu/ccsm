@@ -1764,7 +1764,157 @@ async function caseRename({ win, log }) {
     if (after !== 'Bravo') throw new Error(`group Escape cancel: expected "Bravo", got "${after}"`);
   }
 
-  log('session: Enter / Escape / whitespace / click-outside / IME guard; group: Enter / Escape');
+  // Case 7: SESSION focus race — after right-click → Rename, focus must
+  // land on the input AND a single typed char must overwrite the existing
+  // name (selection on focus). The user-reported repro lives in the
+  // production focus-event timing where Radix's onCloseAutoFocus restores
+  // focus to the LI trigger AFTER the input mounts; in headless Playwright
+  // that timing doesn't always trigger the steal naturally, so we
+  // explicitly simulate the steal by calling .focus() on the LI right
+  // after the input mounts. Pre-fix: the LI has dnd-kit listeners and
+  // tabIndex=0, so focus(LI) succeeds → typed char lands on LI, input
+  // value remains the original "second". Post-fix: LI has tabIndex=-1
+  // and no dnd listeners while renaming, so focus(LI) is a no-op and the
+  // input keeps focus.
+  {
+    const row = win.locator('li[data-session-id="s2"]').first();
+    await row.click({ button: 'right' });
+    await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
+    await win.locator('li[data-session-id="s2"] input').waitFor({ state: 'visible', timeout: 3000 });
+    // Simulate Radix onCloseAutoFocus restoration racing the input mount.
+    // In production, Radix focus-restores to the LI trigger after the
+    // ContextMenu closes; the LI's dnd-kit listeners + tabIndex=0 let it
+    // steal focus before the user's first keystroke. Replicate that race
+    // here by explicitly calling LI.focus() while the input is mounted.
+    await win.evaluate(() => {
+      const li = document.querySelector('li[data-session-id="s2"]');
+      li?.focus();
+    });
+    // Wait past the InlineRename arm window (50ms) + extra refocus tick
+    // (51ms) so the post-fix belt-and-suspenders refocus has a chance to
+    // run. Pre-fix: nothing reclaims focus → activeElement stays on LI.
+    await win.waitForTimeout(120);
+    const focused = await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s2"] input');
+      return document.activeElement === el;
+    });
+    if (!focused) throw new Error('session rename focus race: activeElement is not the input after Radix-style focus restoration to LI (focus stolen by LI listeners + tabIndex=0)');
+    // Type a single character via keyboard — should REPLACE the selected
+    // text "second" entirely, leaving only "X" (not "secondX" or "Xsecond").
+    await win.keyboard.type('X');
+    const inputVal = await win.locator('li[data-session-id="s2"] input').inputValue();
+    if (inputVal !== 'X') throw new Error(`session rename type-overwrite: expected input value "X" after typing one char, got "${inputVal}" (text was not pre-selected, or focus was on LI not input)`);
+    await win.locator('li[data-session-id="s2"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  // Case 8: ArrowDown / ArrowUp inside the rename input must NOT navigate
+  // the listbox (close the rename, move row focus). Same guard for the ul
+  // onKeyDown handler that the SessionRow's own onKeyDown already has.
+  {
+    const input = await openSessionRename('s2');
+    await input.fill('arrow probe');
+    await input.press('ArrowDown');
+    await win.waitForTimeout(100);
+    const stillOpen = await win.locator('li[data-session-id="s2"] input').count();
+    if (stillOpen !== 1) throw new Error('session ArrowDown in rename: input closed (listbox navigation hijacked the keystroke)');
+    const stillFocused = await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s2"] input');
+      return document.activeElement === el;
+    });
+    if (!stillFocused) throw new Error('session ArrowDown in rename: input lost focus');
+    const valStill = await win.locator('li[data-session-id="s2"] input').inputValue();
+    if (valStill !== 'arrow probe') throw new Error(`session ArrowDown in rename: input value mutated; got "${valStill}"`);
+    await input.press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  // Case 9: Tab commits the rename (and advances focus naturally).
+  {
+    const input = await openSessionRename('s3');
+    await input.fill('tab committed');
+    await input.press('Tab');
+    await win.waitForTimeout(200);
+    const after = await sessionName('s3');
+    if (after !== 'tab committed') throw new Error(`session Tab commit: expected "tab committed", got "${after}"`);
+    const stillEditing = await win.locator('li[data-session-id="s3"] input').count();
+    if (stillEditing !== 0) throw new Error('session Tab commit: input still visible after Tab');
+  }
+
+  // Case 10: F2 on a focused session row enters rename mode.
+  {
+    const row = win.locator('li[data-session-id="s2"]').first();
+    await row.click(); // selects + focuses the LI (selected → tabIndex=0)
+    await win.waitForTimeout(120);
+    // Make sure the LI itself is focused, not a child — the F2 handler
+    // guards on `e.target === e.currentTarget`.
+    await win.evaluate(() => {
+      const el = document.querySelector('li[data-session-id="s2"]');
+      el?.focus();
+    });
+    await win.keyboard.press('F2');
+    await win.waitForTimeout(150);
+    const inputCount = await win.locator('li[data-session-id="s2"] input').count();
+    if (inputCount !== 1) throw new Error('session F2 trigger: rename input did not open');
+    await win.locator('li[data-session-id="s2"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  // Case 11: double-click the session label enters rename mode.
+  {
+    const label = win.locator('li[data-session-id="s2"] span.truncate').first();
+    await label.dblclick();
+    await win.waitForTimeout(150);
+    const inputCount = await win.locator('li[data-session-id="s2"] input').count();
+    if (inputCount !== 1) throw new Error('session dblclick trigger: rename input did not open');
+    await win.locator('li[data-session-id="s2"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  // Case 12: GROUP focus / type-overwrite parity. Group rows already win
+  // the focus race today (no dnd-kit), but assert anyway as regression
+  // protection — Fix A1 also added onCloseAutoFocus to the GroupRow menu.
+  {
+    const header = win.locator('[data-group-header-id="g1"]').first();
+    await header.click({ button: 'right' });
+    await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
+    await win.locator('[data-group-header-id="g1"] input').waitFor({ state: 'visible', timeout: 3000 });
+    await win.waitForTimeout(120);
+    const focused = await win.evaluate(() => {
+      const el = document.querySelector('[data-group-header-id="g1"] input');
+      return document.activeElement === el;
+    });
+    if (!focused) throw new Error('group rename focus: activeElement is not the input');
+    await win.keyboard.type('Y');
+    const inputVal = await win.locator('[data-group-header-id="g1"] input').inputValue();
+    if (inputVal !== 'Y') throw new Error(`group rename type-overwrite: expected "Y", got "${inputVal}"`);
+    await win.locator('[data-group-header-id="g1"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  // Case 13: F2 on group rename + dblclick on group label.
+  {
+    const header = win.locator('[data-group-header-id="g1"]').first();
+    const btn = header.locator('button').first();
+    await btn.focus();
+    await win.keyboard.press('F2');
+    await win.waitForTimeout(150);
+    const inputCount = await win.locator('[data-group-header-id="g1"] input').count();
+    if (inputCount !== 1) throw new Error('group F2 trigger: rename input did not open');
+    await win.locator('[data-group-header-id="g1"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+  {
+    const label = win.locator('[data-group-header-id="g1"] span.truncate').first();
+    await label.dblclick();
+    await win.waitForTimeout(150);
+    const inputCount = await win.locator('[data-group-header-id="g1"] input').count();
+    if (inputCount !== 1) throw new Error('group dblclick trigger: rename input did not open');
+    await win.locator('[data-group-header-id="g1"] input').press('Escape');
+    await win.waitForTimeout(150);
+  }
+
+  log('session: Enter / Escape / whitespace / click-outside / IME guard / focus-race / type-overwrite / arrow-guard / Tab-commit / F2 / dblclick; group: Enter / Escape / focus / type-overwrite / F2 / dblclick');
 }
 
 // ---------- sidebar-vertical-symmetry ----------
