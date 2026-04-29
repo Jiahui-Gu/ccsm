@@ -109,6 +109,10 @@ type State = {
   fontSize: FontSize;
   fontSizePx: FontSizePx;
   tutorialSeen: boolean;
+  /** Per-sid transient attention flash. Mirrors main's flash sink — set
+   *  true on flash fire, cleared by main on timer. NOT persisted (resets
+   *  on app restart, which matches "transient attention" semantics). */
+  flashStates: Record<string, boolean>;
   models: DiscoveredModel[];
   modelsLoaded: boolean;
   connection: ConnectionInfo | null;
@@ -243,6 +247,14 @@ type Actions = {
    *  `subscribeAgentEvents()` IPC bridge wired in src/agent/lifecycle.ts
    *  calls this. */
   _applySessionState: (sid: string, state: 'idle' | 'waiting') => void;
+  /** Transient per-sid flash signal sourced from the main-process notify
+   *  pipeline (electron/notify/sinks/flashSink.ts) over `notify:flash`
+   *  IPC. AgentIcon ORs `flashStates[sid]` against `state === 'waiting'`
+   *  so a Rule 2 short-task gets a halo without the sidebar being marked
+   *  persistently waiting. Auto-clears via the main-side timer (4s) which
+   *  pushes `{on: false}`. Underscore prefix: only the `notify:flash` IPC
+   *  subscriber in src/App.tsx calls this. */
+  _setFlash: (sid: string, on: boolean) => void;
   /** Internal: patch `session.cwd` after the main-process import-resume copy
    *  helper relocates the JSONL into the spawn cwd's projectDir (#603). The
    *  sessionTitles SDK bridge keys off `session.cwd` to compute the
@@ -502,6 +514,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   fontSize: 'md',
   fontSizePx: 14,
   tutorialSeen: false,
+  flashStates: {},
   models: [],
   modelsLoaded: false,
   connection: null,
@@ -539,6 +552,17 @@ export const useStore = create<State & Actions>((set, get) => ({
         return { ...x, state: target };
       });
       return changed ? { sessions } : {};
+    });
+  },
+
+  _setFlash: (sid, on) => {
+    set((s) => {
+      const cur = s.flashStates[sid] === true;
+      if (cur === on) return {};
+      const next = { ...s.flashStates };
+      if (on) next[sid] = true;
+      else delete next[sid];
+      return { flashStates: next };
     });
   },
 

@@ -332,6 +332,10 @@ function GroupRow({
 function SessionRow({ session, active, selected, onSelect, normalGroups }: { session: Session; active: boolean; selected: boolean; onSelect: () => void; normalGroups: Group[] }) {
   const { t } = useTranslation();
   const [renaming, setRenaming] = useState(false);
+  // Transient flash from the notify pipeline (#689). ORed into AgentIcon's
+  // halo trigger via the `flashing` prop so Rule 2 short-task pulses appear
+  // even when `state === 'idle'`.
+  const flashing = useStore((s) => s.flashStates[session.id] === true);
   // Per-session pty disconnect classification — populated by the app-boot
   // unconditional `pty:exit` listener (App.tsx). We surface the red dot
   // ONLY for `crashed` (signal or non-zero exit) — `clean` exits are
@@ -469,7 +473,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent rounded-r-sm"
             />
           )}
-          <AgentIcon agentType={session.agentType} state={session.state} size="sm" />
+          <AgentIcon agentType={session.agentType} state={session.state} flashing={flashing} size="sm" />
           <span className="flex-1 min-w-0 leading-tight block">
             {renaming ? (
               <InlineRename

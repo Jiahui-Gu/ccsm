@@ -67,10 +67,11 @@ import {
   type ScannableSession,
 } from './import-scanner';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
-import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
+import { registerPtyHostIpc, killAllPtySessions, onPtyData } from './ptyHost';
 import { sessionWatcher, configureSessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
 import { createTitleStateBridge } from './notify/titleStateBridge';
+import { installNotifyPipeline } from './notify/sinks/pipeline';
 import { BadgeManager } from './notify/badge';
 import {
   getSessionTitle,
@@ -637,6 +638,7 @@ function createWindow() {
 let tray: Tray | null = null;
 let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
+let notifyPipeline: ReturnType<typeof installNotifyPipeline> | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -1021,6 +1023,25 @@ app.whenReady().then(() => {
     if (!fromMainFrame(e)) return;
     activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
     badgeController.onFocusChange({ focused: isMainWindowFocused(), activeSid: activeSidFromRenderer });
+    // Notify pipeline (Phase C, #689) — keep ctx.activeSid in sync, and
+    // count the switch as a user-touch on that sid (Rule 1: 60s mute window
+    // after the user just acted on this session). The pipeline ignores
+    // null sid in setActiveSid; markUserInput skips empty sid implicitly.
+    notifyPipeline?.setActiveSid(activeSidFromRenderer);
+    if (activeSidFromRenderer) {
+      notifyPipeline?.markUserInput(activeSidFromRenderer);
+    }
+  });
+
+  // Explicit "user touched this session" IPC — fired by the renderer on
+  // new-session create / import / resume, in addition to the implicit
+  // setActive trigger above. Decouples Rule 1's intent (the user just
+  // initiated this session) from the active-sid bookkeeping (which can
+  // happen for non-user-driven reasons, e.g. activate-on-toast-click).
+  ipcMain.on('notify:userInput', (e, sid: unknown) => {
+    if (!fromMainFrame(e)) return;
+    if (typeof sid !== 'string' || sid.length === 0) return;
+    notifyPipeline?.markUserInput(sid);
   });
 
   // Renderer pushes the user-visible name for a sid so notify toasts can
@@ -1063,30 +1084,104 @@ app.whenReady().then(() => {
     titleStateBridge.forgetSid(evt.sid);
   });
 
-  // Desktop notification bridge — fires OS toasts on session 'idle' /
-  // 'requires_action' transitions unconditionally (only the user's global
-  // mute toggle and per-sid 5s dedupe gate the fire). The user wants the
-  // OS ping even when the matching session is on screen — their actual
-  // workflow is "app foreground while I look at my phone". See
-  // electron/notify.
+  // ─────────────────────── notify pipeline (Phase C, #689) ───────────────────
+  //
+  // The Phase A/B/C pipeline replaces the legacy `installNotifyBridge` toast
+  // emission. Architecture:
+  //   producer  : ptyHost.onData → OscTitleSniffer (#688)
+  //   decider   : notifyDecider.decide(event, ctx) (#687)
+  //   sinks     : toastSink (Electron Notification) + flashSink (renderer push)
+  //
+  // The legacy `titleStateBridge` is still kept for its `state-changed`
+  // emitter (which feeds the JSONL→state pipe used by Sidebar / `session:state`
+  // rendering), but its toast emission via `installNotifyBridge` is gated
+  // off here so the new pipeline is the single toast producer. We keep the
+  // BadgeManager wired and have the new pipeline bump it via `onNotified`,
+  // matching the legacy bridge's badge contract for the `notify-fires-on-idle`
+  // e2e case.
   badgeManager = new BadgeManager({
     getTray: () => tray,
     getBaseTrayImage: getTrayBaseImage,
     getWindows: () => BrowserWindow.getAllWindows(),
   });
-  installNotifyBridge({
-    // Notify consumes the title-state bridge instead of the JSONL-driven
-    // sessionWatcher. The watcher still emits `state-changed` for sidebar
-    // status indicators — only notify is repointed. See PR #649 / eval #644
-    // for why OSC 0 is the right signal (it is what the CLI itself uses to
-    // tell the host "I am waiting", and matches the spinner the user sees).
-    sessionWatcher: titleStateBridge.emitter,
+
+  const pipelineInstance = installNotifyPipeline({
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
-    isMutedFn: () => !loadNotifyEnabled(),
+    isGlobalMutedFn: () => !loadNotifyEnabled(),
     getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
     onNotified: (sid) => {
       badgeManager?.incrementSid(sid);
     },
+  });
+  // Hoist into the module-level holder so the IPC handlers above (registered
+  // earlier in app.whenReady) can reach the pipeline. The handlers run later
+  // (on actual IPC dispatch), so the forward reference is safe — they use
+  // the optional-chained `notifyPipeline?.` form because the holder is null
+  // until this assignment lands.
+  notifyPipeline = pipelineInstance;
+
+  // Wire OSC sniffer producer: every PTY chunk feeds the sniffer.
+  onPtyData((sid, chunk) => {
+    pipelineInstance.feedChunk(sid, chunk);
+  });
+
+  // Focus/blur producer: the decider needs `ctx.focused` to differentiate
+  // foreground (Rules 2/3/4) from background (Rule 5). Subscribe at the app
+  // level so we cover both windows being created later and existing ones.
+  app.on('browser-window-focus', () => {
+    pipelineInstance.setFocused(true);
+  });
+  app.on('browser-window-blur', () => {
+    // browser-window-blur fires per-window. With only one BrowserWindow this
+    // is equivalent to "ccsm is no longer focused"; if multi-window lands
+    // we'd need to count instead. Until then, treat blur as defocus.
+    const anyFocused = BrowserWindow.getAllWindows().some(
+      (w) => !w.isDestroyed() && w.isFocused(),
+    );
+    pipelineInstance.setFocused(anyFocused);
+  });
+
+  // Drop sniffer/ctx state when a session is unwatched (PTY exit). The
+  // existing 'unwatched' emitter is reused so we don't add another teardown
+  // path. titleStateBridge.forgetSid stays wired below.
+  sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
+    if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
+    pipelineInstance.forgetSid(evt.sid);
+  });
+
+  if (process.env.CCSM_NOTIFY_TEST_HOOK) {
+    (globalThis as unknown as Record<string, unknown>).__ccsmNotifyPipeline = {
+      // Test seam — assert on internal Ctx shape from probes that need to
+      // verify rule firing (not just the final toast/flash output).
+      ctx: () => {
+        const i = pipelineInstance._internals();
+        return {
+          focused: i.ctx.focused,
+          activeSid: i.ctx.activeSid,
+          lastUserInputTs: Object.fromEntries(i.ctx.lastUserInputTs),
+          runStartTs: Object.fromEntries(i.ctx.runStartTs),
+          mutedSids: Array.from(i.ctx.mutedSids),
+          lastFiredTs: Object.fromEntries(i.ctx.lastFiredTs),
+        };
+      },
+      markUserInput: (sid: string) => pipelineInstance.markUserInput(sid),
+    };
+  }
+
+  // Legacy toast bridge — DEPRECATED in #689 but the JSONL-state classifier
+  // is still consumed by sidebar status. Install the bridge with a no-op
+  // `notifyImpl` so its EventEmitter wiring (state-changed plumbing) keeps
+  // working for any non-toast subscriber, but no toast actually fires from
+  // here. The new pipeline above is now the single toast producer.
+  //
+  // Followup: collapse `installNotifyBridge` once we confirm no other
+  // consumer needs `state-changed`. Tracked separately to keep #689 scoped.
+  installNotifyBridge({
+    sessionWatcher: titleStateBridge.emitter,
+    getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    isMutedFn: () => true, // hard-mute so legacy never fires a toast
+    getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
+    notifyImpl: { show: () => { /* no-op — new pipeline owns toast */ } },
   });
 
   if (process.env.CCSM_NOTIFY_TEST_HOOK) {
