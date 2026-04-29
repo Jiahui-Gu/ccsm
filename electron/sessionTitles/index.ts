@@ -194,7 +194,33 @@ export async function renameSessionTitle(
       titleCache.delete(sid);
       return { ok: true };
     } catch (err) {
+      // Sidebar rename hands us `session.cwd`. SDK derives the on-disk
+      // project-key directory from that cwd via `_1(realpath(dir))`
+      // (sdk.mjs `k6`/`_1`); when the cwd was renamed/moved/case-shifted
+      // since the session was created — common on Windows — the encoded key
+      // does not match the directory the JSONL actually lives under, and
+      // SDK throws `Session <sid> not found in project directory for <dir>`.
+      // The dir-less SDK path iterates every `~/.claude/projects/*` and
+      // appends to whichever subdir owns `<sid>.jsonl` (sdk.d.ts:2204
+      // documents this), so retrying without `dir` is the bulletproof
+      // recovery. ENOENT (no JSONL anywhere) is a different signal — bubble
+      // it up unchanged so the store can enqueue a pending rename.
       const cls = classifyError(err);
+      const isProjectMismatch =
+        dir !== undefined &&
+        cls.reason === 'sdk_threw' &&
+        typeof cls.message === 'string' &&
+        cls.message.includes('not found in project directory');
+      if (isProjectMismatch) {
+        try {
+          const { renameSession } = await loadSdk();
+          await renameSession(sid, title, undefined);
+          titleCache.delete(sid);
+          return { ok: true };
+        } catch (retryErr) {
+          return { ok: false, ...classifyError(retryErr) };
+        }
+      }
       return { ok: false, ...cls };
     }
   });
