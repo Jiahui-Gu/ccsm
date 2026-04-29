@@ -167,4 +167,80 @@ describe('runStateTracker — pure decider', () => {
     expect(dec).toBeNull();
     expect(t._internals().runStartTs.has('s1')).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // Task #767 regression — `hasObservedRunning` gate
+  //
+  // Before the gate, the very first 'idle' / 'waiting' OSC title for a sid
+  // (which claude.exe emits within ~100-300ms of boot) would call decide()
+  // with no runStartTs entry. notifyDecider Rule 2 then computed
+  //   elapsed = start === undefined ? 0 : now - start  →  0
+  //   0 < SHORT_TASK_MS (60s)                          →  TRUE
+  // so it returned `{toast:false, flash:true}` unconditionally. flashSink
+  // lit `flashStates[sid]=true` for FLASH_DURATION_MS (4s), driving 2.5
+  // AgentIcon framer-motion breath cycles on every fresh / imported /
+  // resumed session — the bug user reported in #767.
+  //
+  // Fix: producer-layer gate — skip decide() until we've seen a 'running'
+  // title for this sid. notifyDecider stays pure / unchanged.
+  // ---------------------------------------------------------------------------
+  it('Task #767: does not fire when first title for a sid is "idle"', () => {
+    const t = createRunStateTracker(decide);
+    // Default focused=true + activeSid set to s1 reproduces the exact
+    // foreground+active context where the unguarded code path tripped
+    // Rule 2 ("foreground-active-short").
+    t.setFocused(true);
+    t.setActiveSid('s1');
+    const dec = t.onTitle('s1', 'idle', NOW);
+    expect(dec).toBeNull();
+    // No mutation: lastFiredTs must stay empty (the bug also poisoned the
+    // 5s dedupe window with a phantom fire).
+    expect(t._internals().lastFiredTs.has('s1')).toBe(false);
+  });
+
+  it('Task #767: does not fire when first title for a sid is "waiting"', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(true);
+    t.setActiveSid('s1');
+    const dec = t.onTitle('s1', 'waiting', NOW);
+    expect(dec).toBeNull();
+    expect(t._internals().lastFiredTs.has('s1')).toBe(false);
+  });
+
+  it('Task #767 regression guard: still fires on idle AFTER a running title', () => {
+    // Sanity check that the gate only suppresses the boot-time false
+    // positive — once a real run has started, the existing rules apply
+    // exactly as before. This is the critical regression case: if the
+    // gate were too aggressive, legitimate Rule 2 flashes would silently
+    // disappear.
+    const t = createRunStateTracker(decide);
+    t.setFocused(true);
+    t.setActiveSid('s1');
+    // Real run starts.
+    expect(t.onTitle('s1', 'running', NOW)).toBeNull();
+    // Run finishes 1s later → Rule 2 (foreground+active+short) fires.
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).not.toBeNull();
+    expect(dec?.toast).toBe(false);
+    expect(dec?.flash).toBe(true);
+  });
+
+  it('Task #767: forgetSid resets the hasObservedRunning gate', () => {
+    // After session teardown, a brand-new lifetime for the same sid (e.g.
+    // re-import with a recycled id) must start gated again.
+    const t = createRunStateTracker(decide);
+    t.setFocused(true);
+    t.setActiveSid('s1');
+    t.onTitle('s1', 'running', NOW);
+    const dec1 = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec1).not.toBeNull(); // gate open after running
+
+    t.forgetSid('s1');
+
+    // Without the forgetSid clearing hasObservedRunning, this fresh idle
+    // would erroneously fire (gate would still be open from the previous
+    // lifetime).
+    const dec2 = t.onTitle('s1', 'idle', NOW + 10_000);
+    expect(dec2).toBeNull();
+  });
 });
