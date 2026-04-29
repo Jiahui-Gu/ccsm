@@ -25,9 +25,9 @@
  */
 
 import { promises as fsp } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { CLI_PICKER_MODELS, getCustomEnvOverrides } from './cli-picker-models';
+import { getClaudeConfigDir } from '../shared/claudePaths';
 
 export type ModelSource =
   | 'settings'
@@ -137,7 +137,7 @@ export async function readDefaultModelFromSettings(
   configDir?: string,
 ): Promise<string | null> {
   const dir =
-    configDir ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+    configDir ?? getClaudeConfigDir();
   const settings = await readSettings(dir);
   if (!settings) return null;
   if (typeof settings.model !== 'string') return null;
@@ -153,7 +153,7 @@ export async function listModelsFromSettings(
   opts: ListModelsFromSettingsOpts = {},
 ): Promise<ListModelsResult> {
   const configDir =
-    opts.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+    opts.configDir ?? getClaudeConfigDir();
   const env = opts.env ?? process.env;
 
   const settings = await readSettings(configDir);
