@@ -42,7 +42,6 @@ const en = {
   },
   sidebar: {
     newSession: 'New Session',
-    newSessionInThisGroup: 'New session in this group',
     newGroup: 'New group',
     newGroupEllipsis: 'New group…',
     groups: 'Groups',

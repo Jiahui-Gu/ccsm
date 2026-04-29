@@ -2092,56 +2092,6 @@ async function caseCwdPickerTopChevron({ win, tempDir }) {
   await _deleteActive(win);
 }
 
-// Case: cwd-picker-group
-//   Open a normal group's chevron → pick a cwd → new session lands in that
-//   group AND uses the picked cwd.
-async function caseCwdPickerGroup({ win, tempDir }) {
-  await _waitBoot(win);
-  const groupId = await _seedGroup(win, 'cwd-picker-group');
-  // Wait for the new group's right-rail cluster to render.
-  await win.waitForFunction(
-    (gid) => !!document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`),
-    groupId,
-    { timeout: 4000 },
-  );
-  const pickPath = path.join(tempDir, 'group-pick-' + Math.random().toString(36).slice(2, 8));
-  await _seedRecentCwd(win, pickPath);
-  const target = _norm(pickPath);
-
-  const before = await _sessionCount(win);
-  await win.evaluate((gid) => {
-    const cluster = document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`);
-    if (!cluster) throw new Error('group cluster not found');
-    const chevron = cluster.querySelector('[data-testid="sidebar-group-newsession-cwd-chevron"]');
-    if (!chevron) throw new Error('group chevron not found');
-    chevron.click();
-  }, groupId);
-  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
-
-  await win.evaluate((needle) => {
-    const opts = Array.from(document.querySelectorAll('[data-testid="cwd-popover-panel"] [role="option"]'));
-    const hit = opts.find((el) => (el.getAttribute('title') || el.textContent || '').includes(needle.split(/[\\/]/).pop()));
-    if (!hit) throw new Error(`recent row not found for ${needle}`);
-    hit.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-  }, target);
-  await sleep(300);
-
-  const after = await _sessionCount(win);
-  if (after - before !== 1) throw new Error(`expected 1 new session, got delta=${after - before}`);
-  const result = await win.evaluate(() => {
-    const st = window.__ccsmStore.getState();
-    const a = st.sessions.find((s) => s.id === st.activeId);
-    return { cwd: a?.cwd ?? null, groupId: a?.groupId ?? null };
-  });
-  if (_norm(result.cwd) !== target) {
-    throw new Error(`group chevron pick cwd mismatch. picked=${target} actual=${result.cwd}`);
-  }
-  if (result.groupId !== groupId) {
-    throw new Error(`group chevron pick targeted wrong group. expected=${groupId} actual=${result.groupId}`);
-  }
-  await _deleteActive(win);
-}
-
 // Case: cwd-picker-no-shortcut
 //   Cmd+N / Ctrl+N must NOT create a session anymore — the keyboard shortcut
 //   was removed in the same task. Holds for both unmodified `n` (always was
@@ -2174,56 +2124,32 @@ async function caseCwdPickerNoShortcut({ win }) {
   }
 }
 
-// Case: cwd-picker-only-one-open
-//   Open the top chevron popover → click a group chevron → top popover
-//   closes, group popover opens. Mutex behaviour — only one cwd picker at
-//   a time.
-async function caseCwdPickerOnlyOneOpen({ win }) {
+// Case: sidebar-group-no-newsession-cluster
+//   Per-group `+` button + cwd chevron were removed (see PR #605). The only
+//   way to start a new session is now the top-of-sidebar NewSession cluster.
+//   Hard-asserts that no GroupRow renders any of the per-group split-button
+//   selectors, so the deletion can't silently regress.
+async function caseSidebarGroupHasNoNewSessionCluster({ win }) {
   await _waitBoot(win);
-  const groupId = await _seedGroup(win, 'cwd-picker-mutex');
-  await win.waitForFunction(
-    (gid) => !!document.querySelector(`[data-group-header-id="${gid}"] [data-sidebar-group-newsession-cluster]`),
-    groupId,
-    { timeout: 4000 },
-  );
-
-  // Open the TOP chevron.
-  await win.click('[data-testid="sidebar-newsession-cwd-chevron"]');
-  await win.waitForSelector('[data-testid="cwd-popover-panel"]', { timeout: 4000 });
-  const panelsAfterTop = await win.evaluate(
-    () => document.querySelectorAll('[data-testid="cwd-popover-panel"]').length,
-  );
-  if (panelsAfterTop !== 1) throw new Error(`expected exactly 1 panel after top, got ${panelsAfterTop}`);
-
-  // Open the GROUP chevron — top must close.
-  await win.evaluate((gid) => {
-    const chevron = document.querySelector(
-      `[data-group-header-id="${gid}"] [data-testid="sidebar-group-newsession-cwd-chevron"]`,
-    );
-    if (!chevron) throw new Error('group chevron not found');
-    chevron.click();
-  }, groupId);
-  // Settle for state propagation.
+  // Seed >=1 user group so at least one <GroupRow> mounts. Without a group,
+  // the assertion would trivially pass even if the per-group cluster were
+  // re-introduced.
+  await _seedGroup(win, 'no-cluster-' + Math.random().toString(36).slice(2, 6));
+  // Give the sidebar a tick to render the new GroupRow.
   await sleep(200);
-  const panelsAfterGroup = await win.evaluate(
-    () => document.querySelectorAll('[data-testid="cwd-popover-panel"]').length,
-  );
-  if (panelsAfterGroup !== 1) {
-    throw new Error(`expected exactly 1 panel open at a time, got ${panelsAfterGroup}`);
-  }
 
-  // Sanity: the top chevron's aria-expanded must now be false.
-  const topExpanded = await win.evaluate(() => {
-    const el = document.querySelector('[data-testid="sidebar-newsession-cwd-chevron"]');
-    return el?.getAttribute('aria-expanded') ?? null;
-  });
-  if (topExpanded !== 'false') {
-    throw new Error(`top chevron should be aria-expanded=false after group opens, got ${topExpanded}`);
-  }
+  const counts = await win.evaluate(() => ({
+    cluster: document.querySelectorAll('[data-sidebar-group-newsession-cluster]').length,
+    plus: document.querySelectorAll('[data-sidebar-group-newsession-plus]').length,
+    chevron: document.querySelectorAll('[data-sidebar-group-newsession-cwd-chevron]').length,
+    groupRows: document.querySelectorAll('[data-testid^="sidebar-group-row"], [data-sidebar-group-row]').length,
+  }));
 
-  // Cleanup: close.
-  await win.keyboard.press('Escape');
-  await sleep(150);
+  if (counts.cluster !== 0 || counts.plus !== 0 || counts.chevron !== 0) {
+    throw new Error(
+      `per-group newsession cluster regressed: cluster=${counts.cluster} plus=${counts.plus} chevron=${counts.chevron}`,
+    );
+  }
 }
 
 // ============================================================================
@@ -2244,9 +2170,8 @@ const CASE_REGISTRY = [
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
   { name: 'cwd-picker-top-default',      group: 'shared', run: caseCwdPickerTopDefault },
   { name: 'cwd-picker-top-chevron',      group: 'shared', run: caseCwdPickerTopChevron },
-  { name: 'cwd-picker-group',            group: 'shared', run: caseCwdPickerGroup },
   { name: 'cwd-picker-no-shortcut',      group: 'shared', run: caseCwdPickerNoShortcut },
-  { name: 'cwd-picker-only-one-open',    group: 'shared', run: caseCwdPickerOnlyOneOpen },
+  { name: 'sidebar-group-no-newsession-cluster', group: 'shared', run: caseSidebarGroupHasNoNewSessionCluster },
   { name: 'reopen-resume',               group: 'standalone', run: caseReopenResume },
   { name: 'pty-subtree-killed-on-quit',  group: 'standalone', run: casePtySubtreeKilledOnQuit },
 ];
