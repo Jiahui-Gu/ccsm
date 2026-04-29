@@ -1,5 +1,10 @@
 // Desktop notification bridge.
 //
+// NOTE: This module owns the OS-toast path (window UNFOCUSED). The mutually
+// exclusive in-app attention path (window FOCUSED, different session) lives
+// in `./attention.ts` — both subscribe to the same `state-changed` events
+// and share the focus / mute / active-sid suppression rules.
+//
 // Subscribes to the in-process `sessionWatcher` ('state-changed' events) and
 // fires an OS notification via Electron's built-in `Notification` API when a
 // session transitions to a state the user actually cares about — `'idle'`

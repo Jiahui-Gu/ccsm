@@ -69,6 +69,7 @@ import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/li
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 import { sessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
+import { installAttentionFlash, type AttentionHandle } from './notify/attention';
 import { BadgeManager } from './notify/badge';
 import {
   getSessionTitle,
@@ -521,6 +522,11 @@ function createWindow() {
 
   win.on('focus', () => {
     clearBadgeForActiveIfFocused();
+    // Cancel any pending app-icon attention cue (Windows flashFrame /
+    // macOS dock bounce). Once the user is looking at the window, the
+    // signal has done its job.
+    try { attentionFlash?.cancel(); } catch { /* ignore */ }
+    try { win.flashFrame(false); } catch { /* ignore */ }
   });
 
   const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
@@ -616,6 +622,7 @@ function createWindow() {
 let tray: Tray | null = null;
 let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
+let attentionFlash: AttentionHandle | null = null;
 
 function getTrayBaseImage() {
   return buildTrayIcon();
@@ -979,6 +986,9 @@ app.whenReady().then(() => {
     if (!fromMainFrame(e)) return;
     activeSidFromRenderer = typeof sid === 'string' && sid.length > 0 ? sid : null;
     clearBadgeForActiveIfFocused();
+    // The user just switched session in the sidebar — cancel any
+    // pending attention flash (the new selection IS the response).
+    try { attentionFlash?.cancel(); } catch { /* ignore */ }
   });
 
   // Desktop notification bridge — fires OS toasts on session 'idle' /
@@ -1000,6 +1010,21 @@ app.whenReady().then(() => {
     },
     onNotified: (sid) => {
       badgeManager?.incrementSid(sid);
+    },
+  });
+
+  // In-app attention flash. Mutually exclusive with the notify bridge:
+  // notify fires when the window is UNFOCUSED, attention-flash fires when
+  // the window IS focused but the user is on a different session. See
+  // electron/notify/attention.ts for platform mapping.
+  attentionFlash = installAttentionFlash({
+    sessionWatcher,
+    getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
+    isMutedFn: () => !loadNotifyEnabled(),
+    getActiveSidFn: () => activeSidFromRenderer,
+    isWindowFocusedFn: () => {
+      const w = BrowserWindow.getAllWindows()[0];
+      return !!(w && !w.isDestroyed() && w.isFocused());
     },
   });
 
