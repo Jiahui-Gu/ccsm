@@ -32,6 +32,20 @@ export function InlineRename({
   // a ref so blur / mousedown handlers (which don't see the keydown event)
   // can short-circuit too.
   const composingRef = useRef(false);
+  // "Armed" gate for the auto-cancel paths (onBlur + outside-mousedown).
+  // When InlineRename is mounted from a Radix ContextMenuItem.onSelect, Radix
+  // closes the menu and dispatches `onCloseAutoFocus` which calls .focus() on
+  // the trigger element AFTER our own mount-effect focus(). That trigger
+  // .focus() blurs our input → onBlur → commit() → onCancel() → row
+  // unmounts the rename input INSTANTLY before the user can type a single
+  // character. Same race fires the document-mousedown auto-commit listener
+  // for the synthetic events Radix dispatches during close. Gate both auto-
+  // cancel paths on `armedRef.current === true`, which we only set AFTER the
+  // deferred mount focus settles — by which time Radix's focus restoration
+  // has already lost the race for the input element. Explicit Enter/Escape
+  // keypresses bypass this gate (see onKeyDown) so the user can still
+  // commit/cancel even before the arm tick fires.
+  const armedRef = useRef(false);
 
   useEffect(() => {
     const el = ref.current;
@@ -50,7 +64,21 @@ export function InlineRename({
       cur.focus();
       cur.select();
     });
-    return () => cancelAnimationFrame(raf);
+    // Arm auto-cancel paths AFTER a short timer so any focus / blur /
+    // pointer events Radix dispatches during ContextMenu close + focus
+    // restoration are swallowed. rAF (~16ms) is too tight on slow renders;
+    // the second tick from setTimeout(0) bumps us past Radix's microtask
+    // queue + focus restoration. We still bypass this gate for explicit
+    // Enter/Escape keypresses (see onKeyDown) so the user can never be
+    // blocked from committing/cancelling even if their first keystroke
+    // lands within the arm window.
+    const armTimer = window.setTimeout(() => {
+      armedRef.current = true;
+    }, 50);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(armTimer);
+    };
   }, []);
 
   function commit() {
@@ -69,6 +97,9 @@ export function InlineRename({
   // ourselves and commit/cancel when a click lands outside.
   useEffect(() => {
     function onPointerDown(e: MouseEvent) {
+      // Pre-arm: ignore synthetic mousedown events Radix may dispatch
+      // during context-menu close + focus restoration.
+      if (!armedRef.current) return;
       const el = ref.current;
       if (!el) return;
       if (e.target instanceof Node && el.contains(e.target)) return;
@@ -84,7 +115,16 @@ export function InlineRename({
       ref={ref}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
+      onBlur={() => {
+        // Pre-arm: swallow the blur Radix triggers when its
+        // onCloseAutoFocus calls .focus() on the context-menu trigger
+        // element, which steals focus from this just-mounted input.
+        // Without this guard the very first blur (which fires before the
+        // user has had any chance to type) would call commit() →
+        // onCancel() → instant unmount.
+        if (!armedRef.current) return;
+        commit();
+      }}
       onCompositionStart={() => { composingRef.current = true; }}
       onCompositionEnd={() => { composingRef.current = false; }}
       onKeyDown={(e) => {
