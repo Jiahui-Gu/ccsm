@@ -62,3 +62,65 @@ describe('loadNotifyEnabled', () => {
     expect(loadNotifyEnabled()).toBe(true);
   });
 });
+
+// Task #818 / tech-debt-12 leak #5: cache invalidation predicate now lives
+// in this module and subscribes to the stateSavedBus rather than being
+// dispatched by the db:save handler. These tests verify the wiring.
+describe('subscribeNotifyEnabledInvalidation', () => {
+  it('invalidates the cache when stateSavedBus emits NOTIFY_ENABLED_KEY', async () => {
+    stateStore.set('notifyEnabled', 'false');
+    const { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } =
+      await import('../notifyEnabled');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeNotifyEnabledInvalidation();
+    expect(loadNotifyEnabled()).toBe(false);
+
+    // A renderer save flips the underlying value AND emits the bus event.
+    stateStore.set('notifyEnabled', 'true');
+    emitStateSaved('notifyEnabled');
+    expect(loadNotifyEnabled()).toBe(true);
+    off();
+  });
+
+  it('ignores unrelated keys', async () => {
+    stateStore.set('notifyEnabled', 'false');
+    const { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } =
+      await import('../notifyEnabled');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeNotifyEnabledInvalidation();
+    expect(loadNotifyEnabled()).toBe(false);
+
+    // An unrelated key save must NOT invalidate this cache.
+    stateStore.set('notifyEnabled', 'true');
+    emitStateSaved('crashReportingOptOut');
+    expect(loadNotifyEnabled()).toBe(false);
+    off();
+  });
+
+  // Reverse-verify: if the subscription is detached, a subsequent emit MUST
+  // NOT invalidate. Proves the bus subscription is what drives invalidation
+  // (not some other side path).
+  it('reverse-verify: unsubscribed listener no longer invalidates', async () => {
+    stateStore.set('notifyEnabled', 'false');
+    const { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } =
+      await import('../notifyEnabled');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeNotifyEnabledInvalidation();
+    loadNotifyEnabled(); // prime cache to false
+    off();
+
+    stateStore.set('notifyEnabled', 'true');
+    emitStateSaved('notifyEnabled');
+    // Cache still reports the stale value because the listener was removed.
+    expect(loadNotifyEnabled()).toBe(false);
+  });
+});

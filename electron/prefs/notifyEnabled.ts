@@ -3,11 +3,13 @@
 //
 // Persisted in app_state under `notifyEnabled` (default true → notifications
 // on). Cached in main-process memory so the per-event check in the notify
-// bridge stays cheap; the `db:save` handler invalidates the cache when the
-// renderer writes the key so the Settings toggle takes effect without a
-// restart. Mirrors the `closeAction` / `crashReportingOptOut` patterns.
+// bridge stays cheap; the cache subscribes to the `stateSavedBus`
+// (see `electron/shared/stateSavedBus.ts`) so writes from the renderer
+// (db:save) invalidate it without an app restart. Predicate ownership lives
+// here — see `tech-debt-12-functional-core.md` leak #5.
 
 import { loadState } from '../db';
+import { onStateSaved } from '../shared/stateSavedBus';
 
 export const NOTIFY_ENABLED_KEY = 'notifyEnabled';
 
@@ -27,8 +29,16 @@ export function loadNotifyEnabled(): boolean {
 }
 
 // Drop the cached value; the next `loadNotifyEnabled()` will re-read from DB.
-// Called by the `db:save` IPC handler in main.ts when the renderer writes
-// `notifyEnabled` so the Settings toggle takes effect immediately.
+// Subscribed to the stateSavedBus from `subscribeNotifyEnabledInvalidation()`
+// so the renderer's Settings toggle takes effect immediately.
 export function invalidateNotifyEnabledCache(): void {
   _notifyEnabledCached = undefined;
+}
+
+/** Wire the cache invalidation to the stateSavedBus. Call once during boot
+ *  (before `registerDbIpc`). Returns the unsubscribe handle. */
+export function subscribeNotifyEnabledInvalidation(): () => void {
+  return onStateSaved((key) => {
+    if (key === NOTIFY_ENABLED_KEY) invalidateNotifyEnabledCache();
+  });
 }
