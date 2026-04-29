@@ -62,15 +62,6 @@ function emit(emitter: EventEmitter, evt: StateEvt): void {
   emitter.emit('state-changed', evt);
 }
 
-// Helper: arm + emit idle. Post-#631 the bridge requires a `user-prompt`
-// arm signal from the watcher before idle fires; tests that aren't
-// specifically testing the arm gate still need to mimic the realistic
-// "user typed → CLI replied → idle" flow.
-function armAndEmitIdle(emitter: EventEmitter, sid: string): void {
-  emitter.emit('user-prompt', { sid });
-  emitter.emit('state-changed', { sid, state: 'idle' });
-}
-
 describe('installNotifyBridge', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -78,7 +69,7 @@ describe('installNotifyBridge', () => {
 
   it('fires on transition to idle', () => {
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-1');
+    emit(h.emitter, { sid: 'sid-1', state: 'idle' });
     expect(h.log).toHaveLength(1);
     expect(h.log[0].state).toBe('idle');
     expect(h.log[0].sid).toBe('sid-1');
@@ -104,11 +95,11 @@ describe('installNotifyBridge', () => {
 
   it('suppresses when global mute is on', () => {
     const h = makeHarness({ isMuted: true });
-    armAndEmitIdle(h.emitter, 'sid-4');
+    emit(h.emitter, { sid: 'sid-4', state: 'idle' });
     expect(h.log).toHaveLength(0);
     // Toggle mute off — next event fires.
     h.isMuted = false;
-    armAndEmitIdle(h.emitter, 'sid-4-b');
+    emit(h.emitter, { sid: 'sid-4-b', state: 'idle' });
     expect(h.log).toHaveLength(1);
     h.dispose();
   });
@@ -118,7 +109,7 @@ describe('installNotifyBridge', () => {
     // exact session in a focused window, fire the OS notification — they may
     // have the app foreground while looking at their phone.
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-5');
+    h.emitter.emit('state-changed', { sid: 'sid-5', state: 'idle' });
     expect(h.log).toHaveLength(1);
     expect(h.log[0].sid).toBe('sid-5');
     h.dispose();
@@ -129,7 +120,7 @@ describe('installNotifyBridge', () => {
     // is just another idle-fire path. Asserts the bridge accepts events for
     // sids it has never seen before.
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-target');
+    h.emitter.emit('state-changed', { sid: 'sid-target', state: 'idle' });
     expect(h.log).toHaveLength(1);
     expect(h.log[0].sid).toBe('sid-target');
     h.dispose();
@@ -139,7 +130,7 @@ describe('installNotifyBridge', () => {
     // Sanity: no focus / activeSid signals are accepted by the options
     // interface anymore; every notify-eligible event fires.
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-bg');
+    h.emitter.emit('state-changed', { sid: 'sid-bg', state: 'idle' });
     h.emitter.emit('state-changed', { sid: 'sid-bg-2', state: 'requires_action' });
     expect(h.log).toHaveLength(2);
     h.dispose();
@@ -148,15 +139,15 @@ describe('installNotifyBridge', () => {
   it('dedupes a second event for the same sid within 5s', () => {
     vi.useFakeTimers();
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-dd');
+    emit(h.emitter, { sid: 'sid-dd', state: 'idle' });
     expect(h.log).toHaveLength(1);
-    // Within window — RA suppressed by dedupe (would otherwise always fire).
+    // Within window — suppressed.
     vi.advanceTimersByTime(2_000);
     emit(h.emitter, { sid: 'sid-dd', state: 'requires_action' });
     expect(h.log).toHaveLength(1);
-    // After window — fires again (re-arm + idle).
+    // After window — fires again.
     vi.advanceTimersByTime(4_000);
-    armAndEmitIdle(h.emitter, 'sid-dd');
+    emit(h.emitter, { sid: 'sid-dd', state: 'idle' });
     expect(h.log).toHaveLength(2);
     h.dispose();
   });
@@ -164,19 +155,19 @@ describe('installNotifyBridge', () => {
   it('dedupe is per-sid (different sids both fire within window)', () => {
     vi.useFakeTimers();
     const h = makeHarness();
-    armAndEmitIdle(h.emitter, 'sid-A');
+    emit(h.emitter, { sid: 'sid-A', state: 'idle' });
     vi.advanceTimersByTime(500);
-    armAndEmitIdle(h.emitter, 'sid-B');
+    emit(h.emitter, { sid: 'sid-B', state: 'idle' });
     expect(h.log).toHaveLength(2);
     h.dispose();
   });
 
   it('reads mute fresh on every event (not cached at install time)', () => {
     const h = makeHarness({ isMuted: true });
-    armAndEmitIdle(h.emitter, 'sid-toggle');
+    emit(h.emitter, { sid: 'sid-toggle', state: 'idle' });
     expect(h.log).toHaveLength(0);
     h.isMuted = false;
-    armAndEmitIdle(h.emitter, 'sid-toggle-2');
+    emit(h.emitter, { sid: 'sid-toggle-2', state: 'idle' });
     expect(h.log).toHaveLength(1);
     h.dispose();
   });
@@ -184,7 +175,7 @@ describe('installNotifyBridge', () => {
   it('dispose stops further notifications', () => {
     const h = makeHarness();
     h.dispose();
-    armAndEmitIdle(h.emitter, 'sid-after-dispose');
+    emit(h.emitter, { sid: 'sid-after-dispose', state: 'idle' });
     expect(h.log).toHaveLength(0);
   });
 
@@ -198,120 +189,6 @@ describe('installNotifyBridge', () => {
     h.dispose();
   });
 
-  describe('arm gate (#631)', () => {
-    // Pre-fix: idle always fired (modulo dedupe + mute), so multi-segment
-    // turns produced 2+ toasts. Post-fix: idle requires the per-sid armed
-    // flag (set via the watcher's `user-prompt` event) to fire.
-
-    it('idle does NOT fire when sid was never armed', () => {
-      const h = makeHarness();
-      emit(h.emitter, { sid: 'sid-no-arm', state: 'idle' });
-      expect(h.log).toHaveLength(0);
-      h.dispose();
-    });
-
-    it('idle fires once after a `user-prompt` arm and then stops', () => {
-      vi.useFakeTimers();
-      const h = makeHarness();
-      h.emitter.emit('user-prompt', { sid: 'sid-armed' });
-      emit(h.emitter, { sid: 'sid-armed', state: 'idle' });
-      expect(h.log).toHaveLength(1);
-      // Wait past dedupe — second idle still suppressed (arm consumed).
-      vi.advanceTimersByTime(10_000);
-      emit(h.emitter, { sid: 'sid-armed', state: 'idle' });
-      expect(h.log).toHaveLength(1);
-      h.dispose();
-    });
-
-    it('multi-segment turn with a >5s gap fires only once (#631 reproduction)', () => {
-      vi.useFakeTimers();
-      const h = makeHarness();
-      // User typed → watcher arms.
-      h.emitter.emit('user-prompt', { sid: 'sid-multi' });
-      // First segment finishes → idle fires (consumes arm).
-      emit(h.emitter, { sid: 'sid-multi', state: 'idle' });
-      expect(h.log).toHaveLength(1);
-      // 6.5s gap (past DEDUPE_WINDOW_MS=5s).
-      vi.advanceTimersByTime(6_500);
-      // CLI continues without a new user prompt → tool_use → end_turn idle.
-      // No `user-prompt` between, so arm is still false.
-      emit(h.emitter, { sid: 'sid-multi', state: 'running' });
-      emit(h.emitter, { sid: 'sid-multi', state: 'idle' });
-      // Pre-fix: this would be 2. Post-fix: 1.
-      expect(h.log).toHaveLength(1);
-      h.dispose();
-    });
-
-    it('requires_action ALWAYS fires regardless of arm state', () => {
-      const h = makeHarness();
-      // Not armed → idle wouldn't fire, but RA must.
-      emit(h.emitter, { sid: 'sid-ra', state: 'requires_action' });
-      expect(h.log).toHaveLength(1);
-      expect(h.log[0].state).toBe('requires_action');
-      h.dispose();
-    });
-
-    it('arm is per-sid (arming sid A does not arm sid B)', () => {
-      const h = makeHarness();
-      h.emitter.emit('user-prompt', { sid: 'sid-A' });
-      emit(h.emitter, { sid: 'sid-B', state: 'idle' });
-      expect(h.log).toHaveLength(0);
-      emit(h.emitter, { sid: 'sid-A', state: 'idle' });
-      expect(h.log).toHaveLength(1);
-      expect(h.log[0].sid).toBe('sid-A');
-      h.dispose();
-    });
-
-    it('case #4: each requires_action + tool_result re-arm cycle fires once each, plus final idle', () => {
-      vi.useFakeTimers();
-      const h = makeHarness();
-      h.emitter.emit('user-prompt', { sid: 'sid-perm' });
-      // RA #1.
-      emit(h.emitter, { sid: 'sid-perm', state: 'requires_action' });
-      expect(h.log).toHaveLength(1);
-      // User answers → watcher emits user-prompt (re-arm).
-      vi.advanceTimersByTime(6_000);
-      h.emitter.emit('user-prompt', { sid: 'sid-perm' });
-      // RA #2.
-      emit(h.emitter, { sid: 'sid-perm', state: 'requires_action' });
-      expect(h.log).toHaveLength(2);
-      // User answers again.
-      vi.advanceTimersByTime(6_000);
-      h.emitter.emit('user-prompt', { sid: 'sid-perm' });
-      // Final idle.
-      emit(h.emitter, { sid: 'sid-perm', state: 'idle' });
-      expect(h.log).toHaveLength(3);
-      h.dispose();
-    });
-
-    it('malformed user-prompt events are ignored', () => {
-      const h = makeHarness();
-      // @ts-expect-error — null payload
-      h.emitter.emit('user-prompt', null);
-      h.emitter.emit('user-prompt', { sid: '' });
-      emit(h.emitter, { sid: 'sid-x', state: 'idle' });
-      expect(h.log).toHaveLength(0);
-      h.dispose();
-    });
-
-    it('dispose clears the armed map (re-install starts unarmed)', () => {
-      const h = makeHarness();
-      h.emitter.emit('user-prompt', { sid: 'sid-leak' });
-      h.dispose();
-      // Same emitter, fresh bridge — must NOT be armed.
-      const log2: NotifyPayload[] = [];
-      const dispose2 = installNotifyBridge({
-        sessionWatcher: h.emitter,
-        getMainWindow: () => null,
-        isMutedFn: () => false,
-        notifyImpl: { show: (p) => log2.push(p) },
-      });
-      emit(h.emitter, { sid: 'sid-leak', state: 'idle' });
-      expect(log2).toHaveLength(0);
-      dispose2();
-    });
-  });
-
   describe('name resolution in body', () => {
     // The bug we're fixing: pre-fix, the body always interpolated the short
     // sid prefix, so users saw "1a2b3c4d completed its task" instead of the
@@ -320,7 +197,7 @@ describe('installNotifyBridge', () => {
     it('uses the friendly name from getNameFn when present', () => {
       const sid = '11112222-aaaa-bbbb-cccc-deadbeefcafe';
       const h = makeHarness({ names: { [sid]: 'my-feature' } });
-      armAndEmitIdle(h.emitter, sid);
+      emit(h.emitter, { sid, state: 'idle' });
       expect(h.log).toHaveLength(1);
       // Body must contain the friendly name, NOT the sid prefix.
       expect(h.log[0].body).toContain('my-feature');
@@ -331,7 +208,7 @@ describe('installNotifyBridge', () => {
     it('falls back to short sid when name missing', () => {
       const sid = 'deadbeef-1111-2222-3333-444455556666';
       const h = makeHarness();
-      armAndEmitIdle(h.emitter, sid);
+      emit(h.emitter, { sid, state: 'idle' });
       expect(h.log).toHaveLength(1);
       expect(h.log[0].body).toContain('deadbeef');
       h.dispose();
@@ -340,7 +217,7 @@ describe('installNotifyBridge', () => {
     it('falls back to short sid when name is the "New session" placeholder', () => {
       const sid = 'cafebabe-1111-2222-3333-444455556666';
       const h = makeHarness({ names: { [sid]: 'New session' } });
-      armAndEmitIdle(h.emitter, sid);
+      emit(h.emitter, { sid, state: 'idle' });
       expect(h.log).toHaveLength(1);
       expect(h.log[0].body).toContain('cafebabe');
       expect(h.log[0].body).not.toContain('New session');
@@ -350,7 +227,7 @@ describe('installNotifyBridge', () => {
     it('falls back to short sid when name is the Chinese placeholder', () => {
       const sid = 'feedface-1111-2222-3333-444455556666';
       const h = makeHarness({ names: { [sid]: '新会话' } });
-      armAndEmitIdle(h.emitter, sid);
+      emit(h.emitter, { sid, state: 'idle' });
       expect(h.log).toHaveLength(1);
       expect(h.log[0].body).toContain('feedface');
       h.dispose();
@@ -359,7 +236,7 @@ describe('installNotifyBridge', () => {
     it('falls back to short sid when name is empty/whitespace', () => {
       const sid = '0badc0de-1111-2222-3333-444455556666';
       const h = makeHarness({ names: { [sid]: '   ' } });
-      armAndEmitIdle(h.emitter, sid);
+      emit(h.emitter, { sid, state: 'idle' });
       expect(h.log).toHaveLength(1);
       expect(h.log[0].body).toContain('0badc0de');
       h.dispose();
