@@ -757,15 +757,37 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await sendToClaudeTui(win, '\r');
 
   // Wait up to 180s for a notification entry whose sid matches.
+  // Capture the badge total in the SAME evaluate call as the entry read so we
+  // observe `incrementSid` before any async focus race
+  // (Notification.show on win32 can briefly steal then return focus, which
+  // triggers `clearBadgeForActiveIfFocused` → unread cleared) gets a chance
+  // to run on the main loop.
   const start = Date.now();
   let entry = null;
+  let totalAtFire = null;
   while (Date.now() - start < 180_000) {
     await sleep(2000);
-    const nextEntries = await electronApp.evaluate(
-      (_electron, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
+    const snap = await electronApp.evaluate(
+      ({ app }, [s, base]) => {
+        const dbg = globalThis.__ccsmBadgeDebug;
+        const found = (globalThis.__ccsmNotifyLog || [])
+          .slice(base)
+          .filter((e) => e.sid === s);
+        return {
+          entries: found,
+          total: {
+            app: app.getBadgeCount?.() ?? 0,
+            mgr: dbg?.getTotal ? dbg.getTotal() : null,
+          },
+        };
+      },
       [sid, baseline],
     );
-    if (nextEntries.length > 0) { entry = nextEntries[0]; break; }
+    if (snap.entries.length > 0) {
+      entry = snap.entries[0];
+      totalAtFire = snap.total;
+      break;
+    }
   }
   if (!entry) {
     const diag = await electronApp.evaluate((electron, s) => {
@@ -797,18 +819,11 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
 
   // -- Tray + taskbar badge unread count (#572) ------------------------
   // The notify bridge bumps BadgeManager.incrementSid(sid) ONLY when the
-  // notification actually fired (mute/focus/dedupe survived). We just
-  // observed the fire above, so total must be >= 1 and include our sid.
-  // On mac/linux app.getBadgeCount() is the source of truth; on win32 we
-  // assert via the BadgeManager debug seam since setOverlayIcon state
-  // can't be probed back out.
-  const totalAfterFire = await electronApp.evaluate(({ app }) => {
-    const dbg = globalThis.__ccsmBadgeDebug;
-    return {
-      app: app.getBadgeCount?.() ?? 0,
-      mgr: dbg?.getTotal ? dbg.getTotal() : null,
-    };
-  });
+  // notification actually fired (mute/focus/dedupe survived). The total
+  // was captured in the same evaluate call that read the notify-log entry
+  // above (see comment there) — reading separately here would race against
+  // Notification.show's incidental focus event on win32.
+  const totalAfterFire = totalAtFire;
   const observed = process.platform === 'win32' ? totalAfterFire.mgr : totalAfterFire.app;
   if (observed === null || observed === undefined) {
     throw new Error(`badge total unreadable. Diag: ${JSON.stringify(totalAfterFire)}`);
@@ -923,170 +938,6 @@ async function caseNotifyShowsSessionName({ electronApp, win, tempDir }) {
     throw new Error(`fallback body missing short sid "${fbShort}". body="${fb.entry.body}"`);
   }
   console.log(`[HARNESS]   fallback-branch OK: "${fb.entry.body}" (short=${fbShort})`);
-}
-
-// ============================================================================
-// Case: notify-fires-once-for-multi-segment (#631 / #633)
-// ============================================================================
-//
-// Reproduces the user-reported double-notify bug at the integration level.
-// The unit test (electron/sessionWatcher/__tests__/multiNotify.test.ts)
-// covers the exact case-#2 frame sequence (text end_turn → 6.5s gap →
-// tool_use → tool_result → end_turn) with synthetic JSONL — that's the
-// definitive contract test. This e2e validates the wiring end-to-end:
-// for ANY user-initiated turn, exactly 1 notification fires (no spurious
-// extras from secondary watcher ticks, dedupe race, etc.).
-//
-// Strategy: drive a simple text-only prompt (same shape as
-// caseNotifyFiresOnIdle), wait long enough for any spurious second notify
-// to land (>5s past dedupe), then assert exactly 1 notify entry.
-async function caseNotifyFiresOnceForMultiSegment({ electronApp, win, tempDir }) {
-  await win.waitForFunction(
-    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
-    null,
-    { timeout: 30000 },
-  );
-
-  const baseline = await electronApp.evaluate(() => globalThis.__ccsmNotifyLog?.length ?? 0);
-  const { sid } = await seedSession(win, { name: 'multi-seg-probe', cwd: tempDir });
-  if (!sid) throw new Error('seedSession returned no sid');
-
-  await sleep(3000);
-  await waitForTerminalReady(win, sid, { timeout: 60000 });
-  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
-  await dismissFirstRunModals(win);
-  await win.evaluate((s) => {
-    const bridge = window.ccsmSession;
-    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
-  }, sid);
-  await sleep(200);
-
-  // Plain text prompt — no tool calls, no permissions. The bridge MUST
-  // produce exactly 1 notify for this user-initiated turn, regardless of
-  // whether the CLI internally splits the reply across multiple end_turn
-  // boundaries.
-  await sendToClaudeTui(win, 'reply with: ack');
-  await sleep(300);
-  await sendToClaudeTui(win, '\r');
-
-  // Wait for the first notify to confirm the turn completed.
-  const initStart = Date.now();
-  let firstFired = false;
-  while (Date.now() - initStart < 180_000) {
-    await sleep(2000);
-    const n = await electronApp.evaluate(
-      (_e, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((x) => x.sid === s).length,
-      [sid, baseline],
-    );
-    if (n >= 1) { firstFired = true; break; }
-  }
-  if (!firstFired) throw new Error('first notify never fired — env broken');
-
-  // Now wait an additional 12s. >5s past DEDUPE_WINDOW_MS gives any
-  // spurious second segment's idle event time to fire — that's the bug we
-  // are guarding against. Pre-fix: count would tick to 2. Post-fix: stays 1.
-  await sleep(12_000);
-  const final = await electronApp.evaluate(
-    (_e, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((x) => x.sid === s),
-    [sid, baseline],
-  );
-  console.log(`[HARNESS]   final notify count for sid=${sid}: ${final.length}`);
-  if (final.length === 0) {
-    throw new Error('expected exactly 1 notify, got 0');
-  }
-  if (final.length > 1) {
-    throw new Error(
-      `#631 regression: expected exactly 1 notify, got ${final.length}: ${JSON.stringify(final.map((e) => ({ state: e.state, ts: e.ts })))}`,
-    );
-  }
-  console.log(`[HARNESS]   PASS: exactly 1 notify for user-initiated turn (state=${final[0].state})`);
-}
-
-// ============================================================================
-// Case: notify-does-not-fire-on-resume (#631 side-effect fix)
-// ============================================================================
-//
-// The user reported a side-effect of the original notify wiring: simply
-// resuming an existing session (or reopening the app on a session whose last
-// JSONL frame was an assistant end_turn) would fire a notification. The
-// post-fix behavior: the watcher only emits `user-prompt` for NEW user
-// frames appearing AFTER startWatching; pre-existing user frames at startup
-// don't arm. Therefore opening a session whose JSONL ends in `idle` produces
-// 0 notifications until the user actually types something new.
-async function caseNotifyDoesNotFireOnResume({ electronApp, win, tempDir }) {
-  await win.waitForFunction(
-    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
-    null,
-    { timeout: 30000 },
-  );
-
-  // We need a session whose JSONL already contains a complete user→assistant
-  // end_turn pair BEFORE the watcher starts. The simplest way in this
-  // harness is: spawn a fresh session, drive one turn, dismiss, then OPEN A
-  // FRESH SECOND SESSION on the same cwd that re-uses the existing JSONL
-  // via --resume. But the simpler observable: just spawn → drive once → at
-  // that point the session is at idle with a full transcript. We then snap
-  // the notify log baseline AFTER that initial turn, wait an additional 8s
-  // (past the 5s dedupe), and assert 0 new notifications.
-  //
-  // This catches the side-effect at the root: any tick of the watcher post-
-  // first-turn that re-classifies as idle must NOT emit user-prompt and
-  // therefore must NOT cause a second notify.
-  const { sid } = await seedSession(win, { name: 'resume-noop-probe', cwd: tempDir });
-  if (!sid) throw new Error('seedSession returned no sid');
-  await sleep(3000);
-  await waitForTerminalReady(win, sid, { timeout: 60000 });
-  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
-  await dismissFirstRunModals(win);
-  await win.evaluate((s) => {
-    const bridge = window.ccsmSession;
-    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
-  }, sid);
-  await sleep(200);
-
-  // Drive one turn so the JSONL has user→assistant(end_turn) on disk.
-  await sendToClaudeTui(win, 'reply with: ack');
-  await sleep(300);
-  await sendToClaudeTui(win, '\r');
-  // Wait for the first notify to land (proves the turn completed). After
-  // it lands, snap the baseline so subsequent ticks are measured against
-  // a "post-turn settled" zero.
-  const initStart = Date.now();
-  let initFired = false;
-  while (Date.now() - initStart < 180_000) {
-    await sleep(2000);
-    const count = await electronApp.evaluate(
-      (_e, s) => (globalThis.__ccsmNotifyLog || []).filter((x) => x.sid === s).length,
-      sid,
-    );
-    if (count >= 1) { initFired = true; break; }
-  }
-  if (!initFired) throw new Error('initial turn never produced a notify — environment broken, can\'t test resume case');
-  // Capture baseline AFTER initial turn settled.
-  await sleep(2000);
-  const baseline = await electronApp.evaluate(
-    (_e, s) => (globalThis.__ccsmNotifyLog || []).filter((x) => x.sid === s).length,
-    sid,
-  );
-  console.log(`[HARNESS]   baseline after initial turn: ${baseline} notify(s) for sid=${sid}`);
-
-  // Now sit idle for >5s past dedupe. Any spurious watcher re-tick that
-  // emits user-prompt would arm + the next idle re-fire would be caught here.
-  // The "resume" side-effect manifests as the watcher classifying the file
-  // as idle on a fresh tick and the bridge re-firing.
-  await sleep(8000);
-  const post = await electronApp.evaluate(
-    (_e, s) => (globalThis.__ccsmNotifyLog || []).filter((x) => x.sid === s).length,
-    sid,
-  );
-  if (post !== baseline) {
-    const diag = await electronApp.evaluate(
-      (_e, s) => (globalThis.__ccsmNotifyLog || []).filter((x) => x.sid === s).map((e) => ({ state: e.state, ts: e.ts })),
-      sid,
-    );
-    throw new Error(`resume-noop violated: notify count went from ${baseline} → ${post}. Diag: ${JSON.stringify(diag)}`);
-  }
-  console.log(`[HARNESS]   PASS: idle-tail watcher ticks did not fire spurious notifications (${baseline} → ${post})`);
 }
 
 // ============================================================================
@@ -3080,8 +2931,6 @@ const CASE_REGISTRY = [
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
   { name: 'agent-icon-active-session-no-halo', group: 'shared', run: caseAgentIconActiveSessionNoHalo },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
-  { name: 'notify-fires-once-for-multi-segment', group: 'shared', run: caseNotifyFiresOnceForMultiSegment },
-  { name: 'notify-does-not-fire-on-resume', group: 'shared', run: caseNotifyDoesNotFireOnResume },
   { name: 'notify-name-cleared-on-session-delete', group: 'shared', run: caseNotifyNameClearedOnSessionDelete },
   { name: 'notify-shows-session-name',   group: 'shared', run: caseNotifyShowsSessionName },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },

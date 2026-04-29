@@ -1,12 +1,6 @@
 // Pure inference tests. No fs/process — just JSONL strings → classified state.
 import { describe, it, expect } from 'vitest';
-import {
-  classifyJsonlText,
-  classifyFrames,
-  countUserFrames,
-  classifyAndCount,
-  type WatcherState,
-} from '../inference';
+import { classifyJsonlText, classifyFrames, type WatcherState } from '../inference';
 
 // Helper: build a minimal assistant frame.
 function assistantFrame(opts: {
@@ -143,65 +137,5 @@ describe('sessionWatcher inference', () => {
       // t2 and t3 still outstanding
     ]);
     expect(classifyJsonlText(text)).toBe<WatcherState>('running');
-  });
-});
-
-describe('countUserFrames (notify arm-gate)', () => {
-  it('counts a single user(text) frame', () => {
-    const c = countUserFrames([userTextFrame('hi')]);
-    expect(c.userTextFrames).toBe(1);
-    expect(c.userToolResultFrames).toBe(0);
-  });
-
-  it('counts multiple user(text) frames', () => {
-    const c = countUserFrames([
-      userTextFrame('one'),
-      assistantFrame({ stopReason: 'end_turn', text: 'a' }),
-      userTextFrame('two'),
-      assistantFrame({ stopReason: 'end_turn', text: 'b' }),
-      userTextFrame('three'),
-    ]);
-    expect(c.userTextFrames).toBe(3);
-    expect(c.userToolResultFrames).toBe(0);
-  });
-
-  it('counts user(tool_result) frames separately from text', () => {
-    const c = countUserFrames([
-      userTextFrame('do thing'),
-      assistantFrame({ stopReason: 'tool_use', toolUseIds: ['t1'] }),
-      userToolResultFrame('t1'),
-    ]);
-    expect(c.userTextFrames).toBe(1);
-    expect(c.userToolResultFrames).toBe(1);
-  });
-
-  it('returns zeros for an empty / non-array input', () => {
-    expect(countUserFrames([])).toEqual({ userTextFrames: 0, userToolResultFrames: 0 });
-    // @ts-expect-error — defensive runtime guard
-    expect(countUserFrames(null)).toEqual({ userTextFrames: 0, userToolResultFrames: 0 });
-  });
-
-  it('mixed transcript: assistant + user(text) + user(tool_result)', () => {
-    const c = countUserFrames([
-      userTextFrame('hi'),
-      assistantFrame({ stopReason: 'tool_use', toolUseIds: ['t1', 't2'] }),
-      userToolResultFrame('t1'),
-      userToolResultFrame('t2'),
-      assistantFrame({ stopReason: 'end_turn', text: 'done' }),
-      userTextFrame('again'),
-    ]);
-    expect(c.userTextFrames).toBe(2);
-    expect(c.userToolResultFrames).toBe(2);
-  });
-
-  it('classifyAndCount returns combined state + counts in one pass', () => {
-    const text = toJsonl([
-      userTextFrame('hi'),
-      assistantFrame({ stopReason: 'end_turn', text: 'hello' }),
-    ]);
-    const r = classifyAndCount(text);
-    expect(r.state).toBe<WatcherState>('idle');
-    expect(r.userTextFrames).toBe(1);
-    expect(r.userToolResultFrames).toBe(0);
   });
 });

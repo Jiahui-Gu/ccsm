@@ -364,6 +364,15 @@ const ccsmSession = {
     if (!sid) return;
     ipcRenderer.send('session:setName', { sid, name: name ?? '' });
   },
+  // Renderer pushes the raw OSC 0 title from xterm's `onTitleChange` so
+  // main can classify the leading glyph (Sparkle = idle / Braille = running)
+  // and drive the notify bridge off CLI state transitions. The CLI emits
+  // these per state change — same signal Windows Terminal uses for its tab
+  // titles. See electron/notify/titleStateBridge.ts.
+  reportTitleState: (sid: string, title: string): void => {
+    if (!sid) return;
+    ipcRenderer.send('session:title-state', { sid, title: title ?? '' });
+  },
 };
 
 contextBridge.exposeInMainWorld('ccsmSession', ccsmSession);

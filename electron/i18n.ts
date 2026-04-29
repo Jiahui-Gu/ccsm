@@ -59,18 +59,24 @@ type BadgeKey = keyof BadgeCatalog;
 // `notifications` namespace. The renderer catalog is the source of truth.
 const catalogs: Record<SupportedLanguage, NotificationCatalog> = {
   en: {
-    sessionWaitingTitle: 'Session waiting',
+    // State-neutral copy: the OSC 0 ✳ glyph fires on CLI idle which covers
+    // both "turn done" and "permission prompt waiting". The user-attention
+    // semantic is identical (= "your turn") so both code paths in
+    // electron/notify/index.ts use the same wording. Keep `sessionDone*`
+    // and `sessionWaiting*` byte-identical until we have a real way to
+    // distinguish the two states.
+    sessionWaitingTitle: 'Waiting for you',
     sessionWaitingBody: '{{name}} needs your input',
-    sessionDoneTitle: 'Session finished',
-    sessionDoneBody: '{{name}} completed its task',
+    sessionDoneTitle: 'Waiting for you',
+    sessionDoneBody: '{{name}} needs your input',
     permissionRequestTitle: 'Permission requested',
     permissionRequestBody: '{{name}} is asking to {{action}}'
   },
   zh: {
-    sessionWaitingTitle: '会话等待中',
-    sessionWaitingBody: '{{name}} 需要你的输入',
-    sessionDoneTitle: '会话已完成',
-    sessionDoneBody: '{{name}} 完成了任务',
+    sessionWaitingTitle: '需要你的输入',
+    sessionWaitingBody: '{{name}} 在等你',
+    sessionDoneTitle: '需要你的输入',
+    sessionDoneBody: '{{name}} 在等你',
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}'
   }

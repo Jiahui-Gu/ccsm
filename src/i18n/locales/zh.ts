@@ -184,10 +184,10 @@ const zh: EnCatalog = {
     }
   },
   notifications: {
-    sessionWaitingTitle: '会话等待中',
-    sessionWaitingBody: '{{name}} 需要你的输入',
-    sessionDoneTitle: '会话已完成',
-    sessionDoneBody: '{{name}} 完成了任务',
+    sessionWaitingTitle: '需要你的输入',
+    sessionWaitingBody: '{{name}} 在等你',
+    sessionDoneTitle: '需要你的输入',
+    sessionDoneBody: '{{name}} 在等你',
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}',
     turnDoneTitle: '{{name}} 已完成',

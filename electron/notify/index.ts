@@ -129,23 +129,6 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
 
   const lastNotifiedAt = new Map<string, number>();
 
-  // Per-sid arm gate (#631 / #633).
-  //
-  // The watcher emits `user-prompt {sid}` whenever it sees a NEW user(text)
-  // frame appear in the JSONL (or a user(tool_result) right after a
-  // permission prompt). We flip armed=true on that signal and consume it on
-  // the NEXT idle/requires_action. This collapses the multi-segment-turn
-  // case (#2) — only the FINAL idle of a user-initiated turn fires a
-  // notification, not every intermediate idle the inference engine emits.
-  //
-  // Why not just trust the watcher's idle event? The CLI sometimes splits
-  // one user-initiated reply into multiple end_turn boundaries (text segment
-  // → tool_use → end_turn) with >5s gaps that our dedupe window can't catch.
-  // The disk-side "did the user just type?" signal is the only reliable
-  // disambiguation between "user-initiated turn finished" and "CLI is doing
-  // its own multi-step work that happens to have an end_turn marker".
-  const armed = new Map<string, boolean>();
-
   function buildCopy(sid: string, state: WatcherState): { title: string; body: string } | null {
     // Resolve the user-visible name. Renderer pushes its name map to main
     // via 'session:setName' (see electron/main.ts), mirroring the activeSid
@@ -175,26 +158,9 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
 
     if (isMutedFn()) return;
 
-    // Arm-gate (#631):
-    //   * idle → fire ONLY if armed; consume the arm regardless. The arm
-    //     was set when the watcher saw a user(text) appear on disk; the
-    //     idle we're handling now is the final boundary of that turn.
-    //   * requires_action → ALWAYS fires (per case #3 contract: every
-    //     permission prompt pings the user). Reset the arm so the
-    //     subsequent tool_result doesn't double-fire on the same turn —
-    //     case #4 explicitly re-arms via the watcher's `user-prompt` after
-    //     the user answers.
-    if (evt.state === 'idle') {
-      if (!armed.get(evt.sid)) return;
-      armed.set(evt.sid, false);
-    } else if (evt.state === 'requires_action') {
-      armed.set(evt.sid, false);
-    }
-
     // Per-sid dedupe: ignore a second notification for the same sid
     // within 5s of the previous one (covers idle ↔ requires_action
-    // bounces while the CLI writes the next turn frames). Belt-and-
-    // suspenders alongside the arm gate.
+    // bounces while the CLI writes the next turn frames).
     const now = Date.now();
     const prev = lastNotifiedAt.get(evt.sid);
     if (prev && now - prev < DEDUPE_WINDOW_MS) return;
@@ -217,19 +183,11 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
     }
   };
 
-  const onUserPrompt = (evt: { sid: string } | null | undefined): void => {
-    if (!evt || !evt.sid) return;
-    armed.set(evt.sid, true);
-  };
-
   sessionWatcher.on('state-changed', onStateChanged);
-  sessionWatcher.on('user-prompt', onUserPrompt);
 
   return () => {
     sessionWatcher.off('state-changed', onStateChanged);
-    sessionWatcher.off('user-prompt', onUserPrompt);
     lastNotifiedAt.clear();
-    armed.clear();
   };
 }
 

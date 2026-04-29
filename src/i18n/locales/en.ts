@@ -195,10 +195,10 @@ const en = {
     }
   },
   notifications: {
-    sessionWaitingTitle: 'Session waiting',
+    sessionWaitingTitle: 'Waiting for you',
     sessionWaitingBody: '{{name}} needs your input',
-    sessionDoneTitle: 'Session finished',
-    sessionDoneBody: '{{name}} completed its task',
+    sessionDoneTitle: 'Waiting for you',
+    sessionDoneBody: '{{name}} needs your input',
     permissionRequestTitle: 'Permission requested',
     permissionRequestBody: '{{name}} is asking to {{action}}',
     turnDoneTitle: '{{name}} is done',

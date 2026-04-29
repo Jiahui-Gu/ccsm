@@ -27,7 +27,7 @@
 import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { classifyAndCount, type WatcherState } from './inference';
+import { classifyJsonlText, type WatcherState } from './inference';
 import { getSessionTitle, flushPendingRename } from '../sessionTitles';
 
 export type { WatcherState } from './inference';
@@ -42,16 +42,7 @@ export interface TitleChangedEvent {
   title: string;
 }
 
-// Emitted when the watcher detects a NEW user-initiated input on disk —
-// i.e. a fresh user(text) frame, or a user(tool_result) frame that arrived
-// in answer to an outstanding `requires_action` permission prompt. The
-// notify bridge subscribes to this to "arm" itself per-sid so the next idle
-// transition fires a notification (case #1, #2, #15 in #633's contract).
-//
-// IMPORTANT: emitted BEFORE the corresponding `state-changed` so the bridge's
-// state-change handler reads an already-armed map (the bridge consumes the
-// arm gate on the same idle event that triggers the notification).
-export interface UserPromptEvent {
+export interface UnwatchedEvent {
   sid: string;
 }
 
@@ -86,19 +77,6 @@ interface Entry {
   // for a single append; we don't want to re-read + reclassify each time.
   pendingTimer: NodeJS.Timeout | null;
   closed: boolean;
-  // ---- notify arm-gate (#631) ----
-  // Last-seen counts of user-side frame types in the JSONL. We diff these
-  // on every read; a new user(text) → emit `user-prompt`. A new
-  // user(tool_result) → emit `user-prompt` ONLY if the previous emitted
-  // state was `requires_action` (the tool_result IS the user's allow/deny
-  // answer to the permission prompt). Counts are delta-based: on a decrease
-  // (file rotated / truncated) we update silently without emitting.
-  userTextFrameCount: number;
-  userToolResultFrameCount: number;
-  // Set true after the FIRST classify completes. Prevents emitting
-  // `user-prompt` for frames that were already on disk when the watcher
-  // started (resume / reopen / import case #5 — must be 0 notify).
-  firstReadComplete: boolean;
 }
 
 // fs.watch on Windows can emit multiple events per write (one per
@@ -138,9 +116,6 @@ class SessionWatcher extends EventEmitter {
       jsonlSeen: false,
       pendingTimer: null,
       closed: false,
-      userTextFrameCount: 0,
-      userToolResultFrameCount: 0,
-      firstReadComplete: false,
     };
     this.entries.set(sid, entry);
 
@@ -173,6 +148,11 @@ class SessionWatcher extends EventEmitter {
       entry.ancestorWatcher = null;
     }
     this.entries.delete(sid);
+    // Signal session teardown so other main-process state keyed by sid can
+    // drop its entry. titleStateBridge subscribes to this to release its
+    // per-sid lastState map (otherwise the map grows unbounded as sessions
+    // come and go over a long-running app session).
+    this.emit('unwatched', { sid } as UnwatchedEvent);
   }
 
   // For tests / shutdown.
@@ -337,40 +317,11 @@ class SessionWatcher extends EventEmitter {
       // 'running' per spec.
       text = '';
     }
-    const result = classifyAndCount(text);
-    const next = result.state;
-
-    // ---- Notify arm-gate (#631) ----
-    // Skip arm-emission on the very first read after startWatching: any user
-    // frames already on disk are pre-existing transcript history (resume /
-    // reopen / import — case #5 must be 0 notify). After firstReadComplete,
-    // diff the counts to detect NEW user frames and emit `user-prompt`
-    // BEFORE `state-changed` so the bridge's onStateChanged sees an
-    // already-armed map.
-    if (entry.firstReadComplete) {
-      const newText = result.userTextFrames > entry.userTextFrameCount;
-      const newToolResult =
-        result.userToolResultFrames > entry.userToolResultFrameCount;
-      // R2': delta-based, never emit on a decrease (file rotated/truncated).
-      // We still update the counts below to re-baseline.
-      if (newText) {
-        // Fresh user(text) frame — always arm.
-        this.emit('user-prompt', { sid: entry.sid });
-      } else if (newToolResult && entry.lastEmitted === 'requires_action') {
-        // Tool-result arrived as the answer to a permission prompt — re-arm
-        // (case #4: each RA → final idle = N+1 notifies).
-        this.emit('user-prompt', { sid: entry.sid });
-      }
-    }
-    // Always update counts (also covers decreases without emitting).
-    entry.userTextFrameCount = result.userTextFrames;
-    entry.userToolResultFrameCount = result.userToolResultFrames;
-
+    const next = classifyJsonlText(text);
     if (next !== entry.lastEmitted) {
       entry.lastEmitted = next;
       this.emit('state-changed', { sid: entry.sid, state: next } as StateChangedEvent);
     }
-    entry.firstReadComplete = true;
 
     // First time we've ever seen the JSONL land for this sid: PR2 may have
     // queued a user-set title before the file existed (renameSession would
