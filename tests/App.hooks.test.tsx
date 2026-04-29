@@ -8,7 +8,7 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
-import { useStore } from '../src/stores/store';
+import { resetStore } from './util/resetStore';
 
 // Mock all hook modules BEFORE importing App. Each export is a vi.fn so
 // we can introspect call counts after render. The hooks return either
@@ -88,8 +88,6 @@ import { useCwdRedirectedBridge } from '../src/app-effects/useCwdRedirectedBridg
 import { useHydrateSystemLocale } from '../src/app-effects/useHydrateSystemLocale';
 import { useExitAnimation } from '../src/app-effects/useExitAnimation';
 
-const initial = useStore.getState();
-
 function stubCCSM() {
   const api = {
     pathsExist: vi.fn().mockResolvedValue({}),
@@ -140,23 +138,19 @@ function stubMatchMedia() {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
-  useStore.setState(
-    {
-      ...initial,
-      sessions: [],
-      groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-      activeId: '',
-      focusedGroupId: null,
-      tutorialSeen: true,
-      hydrated: true,
-      messagesBySession: {},
-      startedSessions: {},
-      runningSessions: {},
-      messageQueues: {},
-      focusInputNonce: 0,
-    },
-    true
-  );
+  resetStore({
+    sessions: [],
+    groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+    activeId: '',
+    focusedGroupId: null,
+    tutorialSeen: true,
+    hydrated: true,
+    messagesBySession: {},
+    startedSessions: {},
+    runningSessions: {},
+    messageQueues: {},
+    focusInputNonce: 0,
+  });
   stubCCSM();
   stubMatchMedia();
 });
