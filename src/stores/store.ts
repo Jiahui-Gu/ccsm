@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, type PersistedKey } from './persist';
 import { hydrateDrafts } from './drafts';
-import { createSessionsSlice } from './slices/sessionsSlice';
+import { createSessionCrudSlice } from './slices/sessionCrudSlice';
+import { createSessionRuntimeSlice } from './slices/sessionRuntimeSlice';
+import { createSessionTitleBackfillSlice } from './slices/sessionTitleBackfillSlice';
 import { createGroupsSlice } from './slices/groupsSlice';
 import {
   createAppearanceSlice,
@@ -58,7 +60,9 @@ export {
 // when `hydrateStore` builds its `setState` payload.
 
 export const useStore = create<RootStore>((set, get) => ({
-  ...createSessionsSlice(set, get),
+  ...createSessionCrudSlice(set, get),
+  ...createSessionRuntimeSlice(set, get),
+  ...createSessionTitleBackfillSlice(set, get),
   ...createGroupsSlice(set, get),
   ...createAppearanceSlice(set, get),
   ...createModelPickerSlice(set, get),
