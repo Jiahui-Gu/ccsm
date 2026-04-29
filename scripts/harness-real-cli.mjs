@@ -408,6 +408,165 @@ async function caseSessionRenameWritesJsonl({ electronApp: _e, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: session-title-syncs-from-jsonl (PR4 #593 — live-tail title backfill)
+// ============================================================================
+//
+// Verifies the live JSONL tail-watcher → IPC → store → sidebar flow for
+// SDK-derived session titles. This is the renderer-visible counterpart to
+// PR3's titleChanged.test.ts (which only covers main-process emission):
+//   1. Spawn a fresh session whose store name is the literal default
+//      'New session' (we set it explicitly so we have a known starting
+//      point regardless of what seedSession defaults to).
+//   2. Send a real prompt so claude writes the JSONL transcript and the
+//      SDK's session-summary derivation kicks in.
+//   3. Wait for `<sid>.jsonl` to land under <tempDir>/projects/<key>/ —
+//      the projectKey encoder mirrors the CLI's `[\\/:]` → `-` rule.
+//   4. Wait for the renderer's session row .name to flip from
+//      'New session' to a non-default value (the SDK summary). This is
+//      driven by `electron/sessionWatcher` → `session:title` IPC →
+//      `_applyExternalTitle` (App.tsx subscribes; PR3 wiring).
+//   5. Cross-check via `useStore.getState().sessions.find(...)` so we
+//      assert against the canonical store value, not just the rendered DOM.
+async function caseSessionTitleSyncsFromJsonl({ electronApp: _e, win, tempDir }) {
+  const PROMPT = 'reply with two short sentences about the moon.';
+
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  const projectDir = path.join(tempDir, 'title-sync-project');
+  mkdirSync(projectDir, { recursive: true });
+
+  // Seed with name 'New session' explicitly so the backfill / live-tail
+  // overwrite path has a known placeholder to swap. seedSession defaults
+  // to a custom name otherwise.
+  const { sid } = await seedSession(win, {
+    name: 'New session',
+    cwd: projectDir,
+  });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  await sleep(4000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+
+  // Send a substantive prompt so claude writes more than just an init frame —
+  // the SDK's summary derivation needs an actual user message + assistant
+  // response to produce a real summary string.
+  await sendToClaudeTui(win, PROMPT);
+  await sleep(500);
+  await sendToClaudeTui(win, '\r');
+
+  // Wait for the JSONL to appear under <tempDir>/projects/<hash>/.
+  const projectsRoot = path.join(tempDir, 'projects');
+  let matchedJsonl = null;
+  {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline && !matchedJsonl) {
+      if (existsSync(projectsRoot)) {
+        for (const dirName of readdirSync(projectsRoot)) {
+          let entries;
+          try { entries = readdirSync(path.join(projectsRoot, dirName)); } catch { continue; }
+          if (entries.includes(`${sid}.jsonl`)) {
+            matchedJsonl = path.join(projectsRoot, dirName, `${sid}.jsonl`);
+            break;
+          }
+        }
+      }
+      if (!matchedJsonl) await sleep(1000);
+    }
+  }
+  if (!matchedJsonl) {
+    throw new Error(`no <sid>.jsonl found under ${projectsRoot} within 90s for sid=${sid}`);
+  }
+
+  // Wait for claude to actually finish replying so the SDK can derive a
+  // session summary. SDKSessionInfo.summary is "custom title, auto-derived
+  // summary, or first prompt" (per `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`),
+  // so once the JSONL has at least the first user message frame, getSessionInfo
+  // returns a non-empty value. We poll the bridge directly instead of grepping
+  // disk — the SDK derives `summary` in-memory; there's no `"summary"` field
+  // written into the user/assistant frames.
+  let sdkSummary = null;
+  {
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline && !sdkSummary) {
+      const result = await win.evaluate(async ({ s, dir }) => {
+        const bridge = window.ccsmSessionTitles;
+        if (!bridge || typeof bridge.get !== 'function') return { err: 'no-bridge' };
+        try {
+          const info = await bridge.get(s, dir);
+          return { ok: true, summary: info?.summary ?? null };
+        } catch (e) {
+          return { err: String(e?.message || e) };
+        }
+      }, { s: sid, dir: projectDir });
+      if (result?.err === 'no-bridge') {
+        throw new Error('window.ccsmSessionTitles bridge missing — preload wiring broken');
+      }
+      if (result?.summary && typeof result.summary === 'string' && result.summary.length > 0) {
+        sdkSummary = result.summary;
+        break;
+      }
+      await sleep(2000);
+    }
+  }
+  if (!sdkSummary) {
+    throw new Error(
+      `bridge.get(${sid}) never returned a non-empty summary within 180s. ` +
+        `JSONL tail: ${readFileSync(matchedJsonl, 'utf8').split('\n').slice(-2).join('\n').slice(0, 800)}`,
+    );
+  }
+  console.log(`[HARNESS]   sdk-derived summary: ${JSON.stringify(sdkSummary)}`);
+
+  // Now wait for the renderer-side store.name to swap away from
+  // 'New session'. The watcher's debounce + IPC roundtrip + React render
+  // cycle is well under a second; budget 30s to absorb cold-cache /
+  // slow-CI variance.
+  let finalName = null;
+  {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const observed = await win.evaluate((s) => {
+        const useStore = window.__ccsmStore;
+        if (!useStore) return null;
+        const sess = useStore.getState().sessions.find((x) => x.id === s);
+        return sess ? sess.name : null;
+      }, sid);
+      if (observed && observed !== 'New session') {
+        finalName = observed;
+        break;
+      }
+      await sleep(500);
+    }
+  }
+  if (!finalName) {
+    throw new Error(
+      `session ${sid} name still equals 'New session' after 30s — live-tail title sync did not fire. ` +
+        `sdkSummary=${JSON.stringify(sdkSummary)}`,
+    );
+  }
+  console.log(`[HARNESS]   store.name now: ${JSON.stringify(finalName)}`);
+
+  // Sanity: the rendered sidebar row should reflect the same value (DOM
+  // and store agree). data-session-id is set by the SessionRow component.
+  const domName = await win.evaluate((s) => {
+    const row = document.querySelector(`[data-session-id="${s}"]`);
+    return row ? (row.textContent || '').trim() : null;
+  }, sid);
+  if (!domName || !domName.includes(finalName)) {
+    // Don't fail hard — the sidebar template may add status pills etc.
+    // around the name. Log for visibility.
+    console.log(
+      `[HARNESS]   sidebar row text: ${JSON.stringify(domName)} (does not contain "${finalName}" verbatim — acceptable if wrapped)`,
+    );
+  }
+}
+
+// ============================================================================
 // Case 1b: session-state-becomes-idle (#553 — JSONL tail-watcher signal)
 // ============================================================================
 //
@@ -2060,6 +2219,7 @@ async function caseCwdPickerOnlyOneOpen({ win }) {
 const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
   { name: 'session-rename-writes-jsonl', group: 'shared', run: caseSessionRenameWritesJsonl },
+  { name: 'session-title-syncs-from-jsonl', group: 'shared', run: caseSessionTitleSyncsFromJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
