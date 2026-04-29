@@ -79,6 +79,16 @@ const api = {
   },
 
   /**
+   * Open the OS folder picker so the user can choose a working directory
+   * for a new session. Returns the picked absolute path on success, or
+   * `null` when the user cancelled. Backs the cwd popover's "Browse..."
+   * button (#628) — prior to this IPC the button was a no-op (just closed
+   * the popover), causing user-picked cwds to silently fall back to home.
+   */
+  pickCwd: (defaultPath?: string): Promise<string | null> =>
+    ipcRenderer.invoke('cwd:pick', { defaultPath }),
+
+  /**
    * The user's CLI default-model preference, read directly from
    * `~/.claude/settings.json`'s `model` field. Seeds the new-session model
    * picker so ccsm matches whatever the user already configured for the

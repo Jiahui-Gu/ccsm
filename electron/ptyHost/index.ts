@@ -48,6 +48,12 @@ export interface PtySessionInfo {
   pid: number;
   cols: number;
   rows: number;
+  /** Working directory the PTY was actually spawned with (post-`resolveSpawnCwd`
+   *  fallback). Diverges from the renderer's `session.cwd` ONLY when the
+   *  requested cwd was missing/unreadable, in which case `resolveSpawnCwd`
+   *  falls back to homedir. Surfaced so e2e probes can verify that picked
+   *  cwds reach the real PTY (#628). */
+  cwd: string;
 }
 
 export interface AttachResult {
@@ -69,6 +75,9 @@ interface Entry {
   attached: Map<number, WebContents>;
   cols: number;
   rows: number;
+  /** Resolved spawn cwd (after `resolveSpawnCwd` fallback). Captured here
+   *  so `listPtySessions` / `getPtySession` can return it without re-deriving. */
+  cwd: string;
 }
 
 const sessions = new Map<string, Entry>();
@@ -332,6 +341,7 @@ function makeEntry(
     attached: new Map(),
     cols,
     rows,
+    cwd: spawnCwd,
   };
 
   p.onData((chunk) => {
@@ -405,13 +415,14 @@ export function spawnPtySession(
       pid: existing.pty.pid,
       cols: existing.cols,
       rows: existing.rows,
+      cwd: existing.cwd,
     };
   }
   const cols = opts?.cols ?? DEFAULT_COLS;
   const rows = opts?.rows ?? DEFAULT_ROWS;
   const entry = makeEntry(sid, cwd, claudePath, cols, rows, opts?.onCwdRedirect);
   sessions.set(sid, entry);
-  return { sid, pid: entry.pty.pid, cols, rows };
+  return { sid, pid: entry.pty.pid, cols, rows, cwd: entry.cwd };
 }
 
 export function listPtySessions(): PtySessionInfo[] {
@@ -420,6 +431,7 @@ export function listPtySessions(): PtySessionInfo[] {
     pid: e.pty.pid,
     cols: e.cols,
     rows: e.rows,
+    cwd: e.cwd,
   }));
 }
 
@@ -531,7 +543,7 @@ function killProcessSubtree(pid: number | undefined): void {
 export function getPtySession(sid: string): PtySessionInfo | null {
   const entry = sessions.get(sid);
   if (!entry) return null;
-  return { sid, pid: entry.pty.pid, cols: entry.cols, rows: entry.rows };
+  return { sid, pid: entry.pty.pid, cols: entry.cols, rows: entry.rows, cwd: entry.cwd };
 }
 
 // Kill every running pty. Call from app `before-quit` so renderer-side

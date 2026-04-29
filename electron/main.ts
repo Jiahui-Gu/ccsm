@@ -939,6 +939,34 @@ app.whenReady().then(() => {
     return pushUserCwd(p);
   });
   ipcMain.handle('app:userHome', () => os.homedir());
+  // OS folder picker for the cwd popover's "Browse..." button. Returns the
+  // chosen absolute path on success, or null when the user cancelled or no
+  // window is available. Anchored on the requesting BrowserWindow so the
+  // dialog is modal to the right surface (relevant when devtools are popped
+  // out into their own window). Bug #628: prior to this handler the Browse
+  // button was a no-op (just closed the popover) and users picking a cwd
+  // via Browse silently fell through to the LRU/home default — matching
+  // the dogfood report "在特定目录创建session，创建出来的session仍然在home目录".
+  ipcMain.handle('cwd:pick', async (e, opts?: { defaultPath?: string }) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win || win.isDestroyed()) return null;
+    const defaultPath =
+      typeof opts?.defaultPath === 'string' && opts.defaultPath.length > 0
+        ? opts.defaultPath
+        : os.homedir();
+    try {
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Pick working directory',
+        defaultPath,
+        properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
+      });
+      if (result.canceled) return null;
+      const picked = result.filePaths[0];
+      return typeof picked === 'string' && picked.length > 0 ? picked : null;
+    } catch {
+      return null;
+    }
+  });
   // The new-session default model comes straight from the user's CLI
   // settings.json — same source the CLI itself reads for `--model`. Replaces
   // the old `import:topModel` frequency-vote IPC (PR #369), which produced
