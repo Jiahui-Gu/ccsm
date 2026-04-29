@@ -116,8 +116,25 @@ describe('installNotifyBridge', () => {
     h.dispose();
   });
 
-  it('still fires when window is focused but a DIFFERENT sid is active', () => {
+  it('suppresses when window focused even if a DIFFERENT sid is active (#611)', () => {
+    // App-level suppression: if the user is in the ccsm app, no OS toast
+    // for any session. The in-app sidebar dot / icon-flash bridge handle
+    // surfacing the event in-app.
     const h = makeHarness({ windowFocused: true, activeSid: 'sid-other' });
+    emit(h.emitter, { sid: 'sid-target', state: 'idle' });
+    expect(h.log).toHaveLength(0);
+    h.dispose();
+  });
+
+  it('suppresses when window focused with no active sid (#611)', () => {
+    const h = makeHarness({ windowFocused: true, activeSid: null });
+    emit(h.emitter, { sid: 'sid-x', state: 'requires_action' });
+    expect(h.log).toHaveLength(0);
+    h.dispose();
+  });
+
+  it('fires when window NOT focused and a different sid transitions', () => {
+    const h = makeHarness({ windowFocused: false, activeSid: 'sid-other' });
     emit(h.emitter, { sid: 'sid-target', state: 'idle' });
     expect(h.log).toHaveLength(1);
     expect(h.log[0].sid).toBe('sid-target');

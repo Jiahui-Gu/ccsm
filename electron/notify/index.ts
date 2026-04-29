@@ -12,11 +12,14 @@
 //     renderer. We listen to its EventEmitter directly in main so we don't
 //     have to round-trip through IPC just to read a value the main process
 //     already has.
-//   * Suppression is intentionally main-side: window-focus + active-sid
-//     belongs in main because the OS already knows whether our window is
-//     focused, and the renderer pushes its `activeId` here on every change
-//     via `'session:setActive'`. No notification fires when the user is
-//     already looking at the session that just transitioned.
+//   * Suppression is intentionally main-side: window focus belongs in main
+//     because the OS already knows whether our window is focused, and the
+//     renderer pushes its `activeId` here on every change via
+//     `'session:setActive'`. The primary gate is **app-level**: if the
+//     ccsm window is focused, NO session fires an OS notification (the
+//     user is already in the app — surface it in-app instead via sidebar
+//     dot / icon flash). The per-session active-sid check remains as
+//     defense-in-depth in case focus reporting is stale.
 //   * Click → focus + activate. We re-show / re-focus the BrowserWindow and
 //     send `'session:activate'` to the renderer; the renderer subscribes via
 //     `window.ccsmSession.onActivate` and calls `selectSession(sid)`.
@@ -116,9 +119,11 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
     getMainWindow,
     sessionWatcher,
     isMutedFn,
-    getActiveSidFn,
     isWindowFocusedFn,
   } = opts;
+  // `getActiveSidFn` is accepted for backward compatibility with callers
+  // that already wire it (e.g. main.ts) but is no longer consulted: as of
+  // #611 the focus check is app-level. See header comment for rationale.
 
   const notifyImpl =
     opts.notifyImpl ??
@@ -152,13 +157,20 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
 
     if (isMutedFn()) return;
 
-    // Suppress when the user is already looking at this session in a
-    // focused window — they don't need a desktop ping for something
-    // that's already on screen.
+    // App-focus gate: when the ccsm window has OS focus, the user is
+    // already in the app — any session's transition can be surfaced
+    // in-app (sidebar dot, icon flash via the attention bridge, etc.).
+    // An OS toast on top of that is noisy and redundant. This holds
+    // regardless of which session is the active one in the renderer; the
+    // user explicitly asked for app-level suppression (#611).
+    //
+    // Note: getActiveSidFn is intentionally NOT used as a fallback gate
+    // here. A user with the app minimised but with a session "active" in
+    // the renderer still wants the OS ping when that session finishes —
+    // otherwise they'd never know.
     // TODO(multi-window): this assumes a single main BrowserWindow. If we
-    // ever support multiple windows, "focused" must be checked per-window
-    // and getActiveSidFn() must be scoped to the focused window's renderer.
-    if (isWindowFocusedFn() && getActiveSidFn() === evt.sid) return;
+    // ever support multiple windows, "focused" must be checked per-window.
+    if (isWindowFocusedFn()) return;
 
     // Per-sid dedupe: ignore a second notification for the same sid
     // within 5s of the previous one (covers idle ↔ requires_action
