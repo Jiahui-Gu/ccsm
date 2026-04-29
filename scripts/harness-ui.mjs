@@ -953,6 +953,134 @@ async function caseTray({ app, win, log, registerDispose }) {
   log('hide-on-close=true; restore-via-show=true');
 }
 
+// ---------- close-dialog-is-native ----------
+// Regression for the user dogfood report:
+//   "关闭的时候，弹出的提醒仍然不是electron原生的"
+//   (the close-confirmation popup is still not Electron-native)
+//
+// PR #561 wired `win.on('close')` to call `dialog.showMessageBox` (a native
+// Win32 task dialog) when `closeAction === 'ask'`. This probe locks the
+// preference to 'ask', monkey-patches `electron.dialog.showMessageBox` in
+// the main process to record invocations and stub a 'tray' response, then
+// fires close. The native dialog API MUST have been called — if any other
+// code path (renderer-side HTML modal, window.confirm, custom overlay) had
+// surfaced the confirmation instead, our spy would record zero calls.
+//
+// Reverse-verify: temporarily swap the `showMessageBox` call site in
+// `electron/main.ts` for `webContents.executeJavaScript('window.confirm(...)')`
+// and re-run — Playwright auto-dismisses the renderer-side confirm and the
+// spy records zero invocations, so the probe fails.
+async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
+  const prevCloseAction = await win.evaluate(async () => {
+    return await window.ccsm.loadState('closeAction');
+  });
+  await win.evaluate(async () => {
+    await window.ccsm.saveState('closeAction', 'ask');
+  });
+  registerDispose(async () => {
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      try { w?.show(); } catch {}
+    });
+    try {
+      await win.evaluate(async (prev) => {
+        if (prev == null) {
+          // Restore to the win32/linux default to keep the harness baseline
+          // sane (mac default is 'tray'). The next case can rely on this.
+          await window.ccsm.saveState('closeAction', 'ask');
+          return;
+        }
+        await window.ccsm.saveState('closeAction', prev);
+      }, prevCloseAction);
+    } catch {}
+    // Pop the spy off so subsequent cases see the real dialog API.
+    await app.evaluate(({ dialog }) => {
+      const spied = /** @type {any} */ (dialog).__ccsmOriginalShowMessageBox;
+      if (spied) {
+        dialog.showMessageBox = spied;
+        delete (/** @type {any} */ (dialog)).__ccsmOriginalShowMessageBox;
+        delete (/** @type {any} */ (globalThis)).__ccsmCloseDialogLog;
+      }
+    });
+  });
+
+  // Install the spy. Replace `dialog.showMessageBox` with a stub that
+  // records the call and resolves to "Minimize to tray" (button 0). This
+  // keeps the existing in-tree behaviour after the dialog returns (the
+  // window hides, the harness window stays available).
+  await app.evaluate(({ dialog }) => {
+    /** @type {any} */ (globalThis).__ccsmCloseDialogLog = [];
+    /** @type {any} */ (dialog).__ccsmOriginalShowMessageBox = dialog.showMessageBox;
+    dialog.showMessageBox = (/** @type {any} */ ...args) => {
+      // Two overloads: showMessageBox(opts) and showMessageBox(window, opts).
+      const opts = args.length >= 2 ? args[1] : args[0];
+      const hasParent = args.length >= 2;
+      /** @type {any} */ (globalThis).__ccsmCloseDialogLog.push({
+        hasParent,
+        message: opts?.message ?? null,
+        detail: opts?.detail ?? null,
+        type: opts?.type ?? null,
+        buttonCount: Array.isArray(opts?.buttons) ? opts.buttons.length : 0,
+        checkboxLabel: opts?.checkboxLabel ?? null,
+      });
+      return Promise.resolve({ response: 0, checkboxChecked: false });
+    };
+  });
+
+  // Fire close. The 'ask' branch preventDefaults and awaits the (now
+  // stubbed) dialog promise; on response=0 it falls through to fadeThenHide.
+  await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+    w?.close();
+  });
+  // Allow the async dialog promise + fadeThenHide (180ms) to settle.
+  await new Promise((r) => setTimeout(r, 600));
+
+  const calls = await app.evaluate(() => {
+    return /** @type {any} */ (globalThis).__ccsmCloseDialogLog ?? [];
+  });
+
+  if (!Array.isArray(calls) || calls.length === 0) {
+    throw new Error(
+      'dialog.showMessageBox not invoked — close confirmation is going through a non-native code path (HTML overlay / window.confirm / etc.)'
+    );
+  }
+  const call = calls[0];
+  if (!call.hasParent) {
+    throw new Error('dialog.showMessageBox called without a parent BrowserWindow (should be modal to the app window)');
+  }
+  if (call.type !== 'question') {
+    throw new Error(`dialog.showMessageBox type='${call.type}', expected 'question'`);
+  }
+  if (call.buttonCount < 2) {
+    throw new Error(`dialog.showMessageBox got ${call.buttonCount} buttons, expected ≥2 (tray + quit)`);
+  }
+  if (!call.checkboxLabel) {
+    throw new Error('dialog.showMessageBox missing checkboxLabel ("Don\'t ask again")');
+  }
+  if (!call.message || !call.detail) {
+    throw new Error('dialog.showMessageBox missing message/detail strings');
+  }
+
+  // Confirm the close path actually completed (window hidden) so we know
+  // the dialog response was honoured, not just consumed.
+  const state = await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+    return { exists: !!w, visible: w?.isVisible() ?? null };
+  });
+  if (!state.exists || state.visible !== false) {
+    throw new Error(`window should be hidden after close+tray response; exists=${state.exists} visible=${state.visible}`);
+  }
+
+  // Restore the window for subsequent cases.
+  await app.evaluate(({ BrowserWindow }) => {
+    const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+    w?.show();
+  });
+
+  log(`dialog.showMessageBox invoked count=${calls.length} hasParent=${call.hasParent} buttons=${call.buttonCount}`);
+}
+
 // ---------- theme-toggle ----------
 // Theme dark↔light: class flip lands within a frame, body bg luminance
 // changes substantially, contrast remains readable. Restores theme to dark.
@@ -2275,6 +2403,11 @@ await runHarness({
     { id: 'tutorial', run: caseTutorial },
     { id: 'titlebar', run: caseTitlebar },
     { id: 'tray', run: caseTray },
+    // close-dialog-is-native: regression for the dogfood report
+    // "关闭的时候，弹出的提醒仍然不是electron原生的". Asserts the close
+    // confirmation goes through `dialog.showMessageBox` (native Win32 task
+    // dialog), not a renderer-side HTML overlay or `window.confirm`.
+    { id: 'close-dialog-is-native', run: caseCloseDialogIsNative },
     { id: 'theme-toggle', run: caseThemeToggle },
     { id: 'language-toggle', run: caseLanguageToggle },
     { id: 'i18n-settings-zh', run: caseI18nSettingsZh },
