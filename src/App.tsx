@@ -16,14 +16,19 @@ import { DragRegion, WindowControls } from './components/WindowControls';
 import { Tutorial } from './components/Tutorial';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { useStore } from './stores/store';
-import { resolveEffectiveTheme } from './stores/store';
-import { setPersistErrorHandler } from './stores/persist';
 import { initI18n } from './i18n';
-import { i18next } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { DURATION, EASING } from './lib/motion';
-import { subscribeAgentEvents } from './agent/lifecycle';
+import { useThemeEffect } from './app-effects/useThemeEffect';
+import { useLanguageEffect } from './app-effects/useLanguageEffect';
+import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
+import { useShortcutHandlers } from './app-effects/useShortcutHandlers';
+import { useSessionActivateBridge } from './app-effects/useSessionActivateBridge';
+import { useFocusBridge } from './app-effects/useFocusBridge';
+import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
+import { usePersistErrorBridge } from './app-effects/usePersistErrorBridge';
+import { useTutorialOverlay } from './app-effects/useTutorialOverlay';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -41,24 +46,19 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * True when the event target is a text-editable surface where printable
- * keys (like "?") should remain composition input rather than trigger a
- * global shortcut. Checked by the document-level `keydown` listener in
- * `App` to gate the modifier-free "?" shortcut-overlay binding.
+ * Inner zero-render component that lives inside `<ToastProvider>` so it
+ * can call `useToast()`. Hosts the two toast-bound effect hooks
+ * (`useUpdateDownloadedBridge` + `usePersistErrorBridge`) that previously
+ * lived in standalone `<UpdateDownloadedBridge />` / `<PersistErrorBridge />`
+ * components at the bottom of this file. Keeping them in a single inner
+ * component (rather than two) avoids a second `useToast()` call and the
+ * extra component boundary.
  */
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  const tag = target.tagName;
-  if (tag === 'TEXTAREA') return true;
-  if (tag === 'INPUT') {
-    const type = (target as HTMLInputElement).type;
-    // checkbox/radio/button-like inputs don't capture printable keys;
-    // treat them as non-editable so "?" still opens the overlay there.
-    const nonText = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file']);
-    return !nonText.has(type);
-  }
-  return false;
+function AppEffectsBridge(): null {
+  const { push } = useToast();
+  useUpdateDownloadedBridge({ push });
+  usePersistErrorBridge({ push });
+  return null;
 }
 
 export default function App() {
@@ -90,29 +90,59 @@ export default function App() {
   const tutorialSeen = useStore((s) => s.tutorialSeen);
   const markTutorialSeen = useStore((s) => s.markTutorialSeen);
 
-  // Theme application — reactive to both the user's explicit choice AND, when
-  // the choice is `system`, the OS theme. We set BOTH `.dark` (historical,
-  // still referenced by legacy Tailwind variants) AND `.theme-light` (new,
-  // drives the light palette overrides in global.css). The mutual exclusion
-  // keeps the `html.theme-light` selector unambiguous — no `.dark.theme-light`
-  // combo will ever exist.
-  useEffect(() => {
-    const root = document.documentElement;
-    const apply = () => {
-      const osPrefersDark =
-        typeof window !== 'undefined' &&
-        window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const effective = resolveEffectiveTheme(theme, osPrefersDark);
-      root.classList.toggle('dark', effective === 'dark');
-      root.classList.toggle('theme-light', effective === 'light');
-      root.dataset.theme = effective;
-    };
-    apply();
-    if (theme !== 'system') return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    mq.addEventListener('change', apply);
-    return () => mq.removeEventListener('change', apply);
-  }, [theme]);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+  const [importOpen, setImportOpen] = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+
+  // ---- Extracted effect hooks (Task #732 Phase B) -----------------------
+  // Theme application — reactive to user choice + (when system) OS scheme.
+  useThemeEffect(theme);
+
+  // Pipe `session:state` IPC events into the store via subscribeAgentEvents.
+  // Drives the AgentIcon attention halo for non-active sessions.
+  useAgentEventBridge();
+
+  // `session:activate` from main → re-select the named session (desktop
+  // notification click).
+  useSessionActivateBridge(selectSession);
+
+  // OS focus regained → drop the active session's attention halo per
+  // notify spec (`_applySessionState` carries the symmetric suppression).
+  useFocusBridge(React.useCallback(() => {
+    const st = useStore.getState();
+    const id = st.activeId;
+    if (!id) return;
+    const sess = st.sessions.find((x) => x.id === id);
+    if (!sess || sess.state !== 'waiting') return;
+    useStore.setState((s) => ({
+      sessions: s.sessions.map((x) =>
+        x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
+      ),
+    }));
+  }, []));
+
+  // Tutorial overlay show/hide derivation. `dismiss()` flips the persisted
+  // store flag so it does not return on the next launch.
+  const tutorial = useTutorialOverlay({ tutorialSeen, markTutorialSeen });
+
+  // Global keyboard shortcuts (Ctrl+/, "?", Ctrl+F, Ctrl+B, Ctrl+,).
+  useShortcutHandlers({
+    toggleShortcuts: React.useCallback(() => setShortcutsOpen((p) => !p), []),
+    togglePalette: React.useCallback(() => setPaletteOpen((p) => !p), []),
+    toggleSidebar,
+    openSettings: React.useCallback(() => setSettingsOpen(true), []),
+  });
+
+  // Mirror resolved language to main for OS-level surfaces (tray menu,
+  // future native notifications).
+  const hydrateSystemLocale = usePreferences((s) => s.hydrateSystemLocale);
+  const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
+  useLanguageEffect(resolvedLanguage);
+
+  // -----------------------------------------------------------------------
+  // Remaining inline effects (NOT extracted — Phase C territory).
+  // -----------------------------------------------------------------------
 
   // Font size slider applies via CSS variable on <html>. Child text utilities
   // honor this transitively through `font-size: var(--app-font-size)` on
@@ -165,23 +195,6 @@ export default function App() {
     prevSidsRef.current = currentSids;
   }, [sessions]);
 
-  // Listen for `session:activate` from main (fired when the user clicks a
-  // desktop notification). Re-selects the named session so it lands focused
-  // in the sidebar and chat pane. Mirrors the IPC subscription pattern of
-  // `UpdateDownloadedBridge`.
-  useEffect(() => {
-    type Bridge = {
-      onActivate: (cb: (e: { sid: string }) => void) => () => void;
-    };
-    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
-    if (!bridge || typeof bridge.onActivate !== 'function') return;
-    return bridge.onActivate((evt) => {
-      if (evt && typeof evt.sid === 'string' && evt.sid.length > 0) {
-        selectSession(evt.sid);
-      }
-    });
-  }, [selectSession]);
-
   // Pipe `pty:exit` events into the store UNCONDITIONALLY (not filtered
   // by activeSid). TerminalPane has its own filtered listener that drives
   // the active-pane red overlay; this second listener is what surfaces
@@ -222,47 +235,6 @@ export default function App() {
       applyExternalTitle(evt.sid, evt.title);
     });
   }, [applyExternalTitle]);
-
-  // Pipe `session:state` IPC events from main into the store. The watcher
-  // emits `'idle' | 'running' | 'requires_action'` for each session as the
-  // JSONL transcript transitions; subscribeAgentEvents() maps that into
-  // the renderer's two-state attention model and writes through the
-  // store's `_applySessionState` action — which carries the active-session
-  // suppression so the row the user is currently viewing never enters
-  // `'waiting'` (no halo flicker on the row already on screen). This is
-  // the re-wire of the deleted `src/agent/lifecycle.ts` (commit 08bce04
-  // dropped the SDK-event subscriber when ccsm switched to spawning the
-  // CLI as a subprocess; the AgentIcon halo went silently dark for every
-  // session). Bridge install is idempotent so StrictMode double-mount
-  // doesn't double-pipe events.
-  useEffect(() => {
-    return subscribeAgentEvents();
-  }, []);
-
-  // Per the notify spec, when ccsm regains OS focus the row the user is
-  // returning to (the active sid) must drop its attention halo — they're
-  // here, the breadcrumb has done its job. Other 'waiting' rows keep the
-  // halo until the user actually clicks them (selectSession clears those
-  // symmetrically). Mirrors the rule encoded in `_applySessionState`'s
-  // active-session suppression: "the active row never pulses while the
-  // user is at the window".
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const onFocus = () => {
-      const st = useStore.getState();
-      const id = st.activeId;
-      if (!id) return;
-      const sess = st.sessions.find((x) => x.id === id);
-      if (!sess || sess.state !== 'waiting') return;
-      useStore.setState((s) => ({
-        sessions: s.sessions.map((x) =>
-          x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
-        ),
-      }));
-    };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, []);
 
   // Pipe `notify:flash` IPC events from main into the store. The flash sink
   // (`electron/notify/sinks/flashSink.ts`) sets `flashStates[sid] = true`
@@ -322,10 +294,6 @@ export default function App() {
 
   // Locale: ask main for the OS locale, feed it into the preferences store
   // so a "system" preference resolves correctly. Falls back to navigator.
-  // Then mirror the resolved language to main for any OS-level surfaces
-  // (tray menu, future notifications) to consume.
-  const hydrateSystemLocale = usePreferences((s) => s.hydrateSystemLocale);
-  const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
   useEffect(() => {
     let cancelled = false;
     const bridge = window.ccsm;
@@ -345,9 +313,6 @@ export default function App() {
       cancelled = true;
     };
   }, [hydrateSystemLocale]);
-  useEffect(() => {
-    window.ccsm?.i18n?.setLanguage(resolvedLanguage);
-  }, [resolvedLanguage]);
 
   // Exit animation (UI-10 / #213):
   // When the user closes the window (Ctrl+W, X button) the Electron main
@@ -383,11 +348,6 @@ export default function App() {
       root.style.opacity = '';
     };
   }, []);
-
-  const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [paletteOpen, setPaletteOpen] = React.useState(false);
-  const [importOpen, setImportOpen] = React.useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   // Boot-time check: is the `claude` CLI on PATH? Cached in App-level
   // state because the install state doesn't change mid-session — only
@@ -450,55 +410,6 @@ export default function App() {
     [sessions, activeId]
   );
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
-      // Ctrl+/ opens the shortcuts overlay. We handle it BEFORE the
-      // `if (!mod) return` guard below so it sits alongside the other
-      // modified-key bindings, even though the `?` alternative handled
-      // further down is modifier-free.
-      if (mod && e.key === '/' && !e.shiftKey) {
-        e.preventDefault();
-        setShortcutsOpen((p) => !p);
-        return;
-      }
-      if (!mod) {
-        // Modifier-free bindings: the "?" shortcut for the shortcuts
-        // overlay. We deliberately DO NOT fire when the user is typing
-        // into a text field — "?" is a printable glyph and must not be
-        // stolen mid-composition. Activating only when focus is on body
-        // or a non-editable element matches macOS/GitHub conventions.
-        if (e.key === '?' && !isEditableTarget(e.target)) {
-          e.preventDefault();
-          setShortcutsOpen((p) => !p);
-        }
-        return;
-      }
-      const k = e.key.toLowerCase();
-      if (k === 'f' && !e.shiftKey) {
-        // Ctrl+F opens the global Search / Command Palette. We
-        // explicitly preventDefault so the browser/Electron's default
-        // find-in-page (when present) doesn't also fire.
-        e.preventDefault();
-        setPaletteOpen((p) => !p);
-      } else if (k === 'b' && !e.shiftKey) {
-        e.preventDefault();
-        toggleSidebar();
-      } else if (e.key === ',') {
-        e.preventDefault();
-        setSettingsOpen(true);
-      }
-      // Task #552: Cmd+N (new session), Cmd+Shift+N (new session w/ picker
-      // — never shipped), and Cmd+Shift+G (new group) keyboard shortcuts
-      // were removed in favour of the chevron+popover affordance on the
-      // sidebar `+` triggers. The chevron is the single discoverable
-      // entry point for "new session, but with a different cwd"; the
-      // group `+` button (always visible) covers new-group.
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [toggleSidebar]);
-
   if (!active) {
     // Pre-hydrate: render a content-shaped skeleton (sidebar placeholder
     // rows + main "Loading…" affordance) so the app does not paint as a
@@ -509,8 +420,7 @@ export default function App() {
       return (
         <TooltipProvider delayDuration={400} skipDelayDuration={100}>
           <ToastProvider>
-            <PersistErrorBridge />
-            <UpdateDownloadedBridge />
+            <AppEffectsBridge />
             <AppSkeleton />
           </ToastProvider>
         </TooltipProvider>
@@ -519,8 +429,7 @@ export default function App() {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>
-        <PersistErrorBridge />
-        <UpdateDownloadedBridge />
+        <AppEffectsBridge />
         <AppShell
           sidebar={
             <Sidebar
@@ -543,7 +452,7 @@ export default function App() {
               </DragRegion>
               <InstallerCorruptBanner />
               <div className="flex-1 flex items-center justify-center min-h-0">
-                  {tutorialSeen ? (
+                  {!tutorial.show ? (
                     // First-run / no-active-session empty state. Task #329 — we
                     // explicitly do NOT auto-create a session at boot; instead
                     // the user lands on this clean palette of CTAs. The wording
@@ -578,14 +487,14 @@ export default function App() {
                   ) : (
                     <Tutorial
                       onNewSession={() => {
-                        markTutorialSeen();
+                        tutorial.dismiss();
                         newSession();
                       }}
                       onImport={() => {
-                        markTutorialSeen();
+                        tutorial.dismiss();
                         setImportOpen(true);
                       }}
-                      onSkip={markTutorialSeen}
+                      onSkip={tutorial.dismiss}
                     />
                   )}
                 </div>
@@ -612,8 +521,7 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
       <ToastProvider>
-        <PersistErrorBridge />
-        <UpdateDownloadedBridge />
+        <AppEffectsBridge />
         <AppShell
           sidebar={
             <Sidebar
@@ -662,59 +570,4 @@ export default function App() {
       </ToastProvider>
     </TooltipProvider>
   );
-}
-
-function PersistErrorBridge() {
-  const { push } = useToast();
-  useEffect(() => {
-    let lastShown = 0;
-    setPersistErrorHandler(() => {
-      const now = Date.now();
-      if (now - lastShown < 5000) return;
-      lastShown = now;
-      push({
-        kind: 'error',
-        title: 'Failed to save state',
-        body: 'Your recent changes may not survive restart. Check disk space.'
-      });
-    });
-    return () => setPersistErrorHandler(() => {});
-  }, [push]);
-  return null;
-}
-
-/**
- * Listens for `update:downloaded` from the main process and shows a persistent
- * toast with a Restart button. We only show the toast once per session — the
- * Settings → Updates pane shows the same state for users who dismiss.
- */
-function UpdateDownloadedBridge() {
-  const { push } = useToast();
-  useEffect(() => {
-    let shown = false;
-    const off = window.ccsm?.onUpdateDownloaded((info) => {
-      if (shown) return;
-      shown = true;
-      // Strings live in `settings:updates.downloadedToast*` so the toast
-      // localizes alongside the Settings → Updates pane copy. Using
-      // `i18next.t` (not the React hook) keeps this callback pure — it
-      // fires from an IPC subscription, not a render.
-      push({
-        kind: 'info',
-        title: i18next.t('settings:updates.downloadedToastTitle'),
-        body: i18next.t('settings:updates.downloadedToastBody', { version: info.version }),
-        persistent: true,
-        action: {
-          label: i18next.t('settings:updates.downloadedToastAction'),
-          onClick: () => {
-            void window.ccsm?.updatesInstall();
-          }
-        }
-      });
-    });
-    return () => {
-      if (off) off();
-    };
-  }, [push]);
-  return null;
 }
