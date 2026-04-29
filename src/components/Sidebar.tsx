@@ -410,6 +410,14 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
   // sid — sessions that have never been spawned in this app launch will
   // show no dot, matching the pre-watcher behaviour.
   const liveState = useSessionLiveState(session.id);
+  // Per-session pty disconnect classification — populated by the app-boot
+  // unconditional `pty:exit` listener (App.tsx). We surface the red dot
+  // ONLY for `crashed` (signal or non-zero exit) — `clean` exits are
+  // user-intentional (typed `/exit`) and shouldn't grab attention. The
+  // dot clears when the user retries (TerminalPane → `_clearPtyExit`).
+  const crashed = useStore(
+    (s) => s.disconnectedSessions[session.id]?.kind === 'crashed'
+  );
   // Perf: receive `normalGroups` as a prop computed once in the parent
   // <Sidebar>, rather than calling `s.groups.filter(...)` per row per render.
   const groups = normalGroups;
@@ -556,6 +564,23 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
           {!active && liveState && (
             <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
               <SessionStateDot state={liveState} t={t} />
+            </span>
+          )}
+          {crashed && (
+            // Crash indicator — sits to the right of the existing
+            // state pip (separate rail cell so it doesn't displace
+            // the live-state dot when both apply, e.g. a previously-
+            // running session that just died). Reuses the canonical
+            // `bg-state-error` token (no new red shade introduced).
+            <span
+              className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0"
+              data-session-crashed
+              title={t('sidebar.sessionCrashed')}
+            >
+              <span
+                aria-label={t('sidebar.sessionCrashed')}
+                className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-error"
+              />
             </span>
           )}
         </li>

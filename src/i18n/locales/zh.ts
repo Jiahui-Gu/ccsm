@@ -69,6 +69,7 @@ const zh: EnCatalog = {
     sessionStateIdle: '等待你的回复',
     sessionStateRunning: '正在处理',
     sessionStateRequiresAction: '需要你的决定',
+    sessionCrashed: '本 session 的 claude 进程崩溃了',
     searchAria: '搜索',
     expandSidebarTooltip: '展开侧边栏  Ctrl+B',
     expandSidebarAria: '展开侧边栏',
@@ -273,7 +274,9 @@ const zh: EnCatalog = {
     starting: '启动中…',
     spawnFailed: '终端启动失败',
     retryButton: '重试',
-    exited: '终端意外退出'
+    exitedClean: 'claude 已退出（你输入了 /exit 或 claude 主动结束）。点 Retry 在本 session 开新对话。',
+    exitedCrash: 'claude 异常退出（{{detail}}）。这不是 ccsm 的问题，是底层 claude CLI 自己挂了。对话已保存到磁盘，点 Retry 恢复。',
+    exitedRetry: '重试'
   },
   chat: {
     cwdChipNoneLabel: '（无）',
