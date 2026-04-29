@@ -5,7 +5,7 @@ import type { Session } from '../src/types';
 // Covers the three outcomes of `renameSession` SDK writeback wired in PR2:
 //   1. ok          → local name updated, no enqueue
 //   2. no_jsonl    → local name updated, enqueuePending called
-//   3. sdk_threw   → local name updated, enqueuePending NOT called, console.warn
+//   3. sdk_threw   → local name updated, enqueuePending NOT called, console.error
 //
 // `window.ccsmSessionTitles` is the IPC bridge created in `electron/preload.ts`;
 // jsdom doesn't expose it by default. We install a mock per case and tear it
@@ -45,16 +45,19 @@ function seedSession(id: string, name: string, cwd: string): void {
 
 describe('store.renameSession (SDK writeback)', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     // Wipe sessions from prior cases so id collisions can't pollute.
     useStore.setState({ sessions: [] });
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
     delete (window as unknown as { ccsmSessionTitles?: unknown }).ccsmSessionTitles;
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
     useStore.setState({ sessions: [] });
   });
 
@@ -90,7 +93,7 @@ describe('store.renameSession (SDK writeback)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('sdk_threw: local name updated, no enqueue, warn logged', async () => {
+  it('sdk_threw: local name updated, no enqueue, error logged', async () => {
     const { enqueuePending } = installBridge(async () => ({
       ok: false,
       reason: 'sdk_threw',
@@ -103,8 +106,13 @@ describe('store.renameSession (SDK writeback)', () => {
     const after = useStore.getState().sessions.find((s) => s.id === 'sid-threw');
     expect(after?.name).toBe('attempted');
     expect(enqueuePending).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0][0])).toContain('sid-threw');
+    // sdk_threw escalates to console.error (not warn) so dogfood actually
+    // sees writeback regressions instead of silently shipping a UI-vs-JSONL
+    // split-brain (eval #647 root cause).
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(String(errorSpy.mock.calls[0][0])).toContain('sid-threw');
+    expect(String(errorSpy.mock.calls[0][0])).toContain('rename:writeback-failed');
   });
 
   it('local update happens even before the SDK promise resolves (optimistic)', async () => {

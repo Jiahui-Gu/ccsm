@@ -677,14 +677,18 @@ export const useStore = create<State & Actions>((set, get) => ({
         await bridge.enqueuePending(id, name, dir);
         return;
       }
-      // sdk_threw — best-effort. Local name stays; we just log.
-      console.warn(
-        `[store] renameSession SDK writeback failed for ${id}: ${result.message ?? '(no message)'}`
+      // sdk_threw — best-effort. Local name stays so the user's intent
+      // doesn't visibly flicker back, but we elevate this to console.error
+      // (with a grep-friendly tag) so future regressions in the SDK
+      // writeback path are visible during dogfood instead of being silently
+      // swallowed (eval #647 / #650 root cause: warn was lost in noise).
+      console.error(
+        `[rename:writeback-failed] sid=${id} message=${result.message ?? '(no message)'}`
       );
     } catch (err) {
-      // IPC channel itself failed — extremely unlikely, but don't surface a
-      // toast (per task spec "do not toast SDK errors").
-      console.warn(`[store] renameSession IPC failed for ${id}:`, err);
+      // IPC channel itself failed — extremely unlikely, but still surface
+      // it as an error so the bug doesn't hide.
+      console.error(`[rename:writeback-failed] ipc sid=${id}`, err);
     }
   },
 
