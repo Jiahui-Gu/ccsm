@@ -8,11 +8,15 @@
 // to dropping a crash because the DB happened to be locked.
 //
 // Sentry's beforeSend runs on the hot error path, so we cache the value in
-// a module-scope variable after the first read. The `db:save` handler in
-// main.ts invalidates the cache when the renderer writes the key, so the
-// toggle in Settings still takes effect immediately.
+// a module-scope variable after the first read. To stay consistent with the
+// renderer Settings toggle without an app restart, the cache subscribes to
+// the `stateSavedBus` (see `electron/shared/stateSavedBus.ts`) at boot:
+// when `db:save` succeeds for our key, we drop the cache. Predicate ownership
+// lives here, not in the db handler — see `tech-debt-12-functional-core.md`
+// leak #5.
 
 import { loadState } from '../db';
+import { onStateSaved } from '../shared/stateSavedBus';
 
 export const CRASH_OPT_OUT_KEY = 'crashReportingOptOut';
 
@@ -31,9 +35,18 @@ export function loadCrashReportingOptOut(): boolean {
 }
 
 // Drop the cached value; the next `loadCrashReportingOptOut()` will re-read
-// from DB. Called by the `db:save` IPC handler in main.ts when the renderer
-// writes `crashReportingOptOut` so the Settings toggle takes effect on the
-// next error without an app restart.
+// from DB. Subscribed to the stateSavedBus from `subscribeCrashReportingInvalidation()`
+// so the renderer's Settings toggle takes effect on the next error without
+// an app restart.
 export function invalidateCrashReportingCache(): void {
   _crashOptOutCached = undefined;
+}
+
+/** Wire the cache invalidation to the stateSavedBus. Call once during boot
+ *  (before `registerDbIpc`). Returns the unsubscribe handle so tests can
+ *  reverse-verify (and so a future hot-reload could detach). */
+export function subscribeCrashReportingInvalidation(): () => void {
+  return onStateSaved((key) => {
+    if (key === CRASH_OPT_OUT_KEY) invalidateCrashReportingCache();
+  });
 }

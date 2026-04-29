@@ -62,3 +62,61 @@ describe('invalidateCrashReportingCache', () => {
     expect(loadCrashReportingOptOut()).toBe(false);
   });
 });
+
+// Task #818 / tech-debt-12 leak #5: cache invalidation predicate now lives
+// in this module and subscribes to the stateSavedBus rather than being
+// dispatched by the db:save handler. These tests verify the wiring.
+describe('subscribeCrashReportingInvalidation', () => {
+  it('invalidates the cache when stateSavedBus emits CRASH_OPT_OUT_KEY', async () => {
+    stateStore.set('crashReportingOptOut', 'true');
+    const { loadCrashReportingOptOut, subscribeCrashReportingInvalidation } =
+      await import('../crashReporting');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeCrashReportingInvalidation();
+    expect(loadCrashReportingOptOut()).toBe(true);
+
+    stateStore.set('crashReportingOptOut', 'false');
+    emitStateSaved('crashReportingOptOut');
+    expect(loadCrashReportingOptOut()).toBe(false);
+    off();
+  });
+
+  it('ignores unrelated keys', async () => {
+    stateStore.set('crashReportingOptOut', 'true');
+    const { loadCrashReportingOptOut, subscribeCrashReportingInvalidation } =
+      await import('../crashReporting');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeCrashReportingInvalidation();
+    expect(loadCrashReportingOptOut()).toBe(true);
+
+    stateStore.set('crashReportingOptOut', 'false');
+    emitStateSaved('notifyEnabled');
+    expect(loadCrashReportingOptOut()).toBe(true);
+    off();
+  });
+
+  // Reverse-verify: if the subscription is detached, a subsequent emit MUST
+  // NOT invalidate. Proves the bus subscription is what drives invalidation.
+  it('reverse-verify: unsubscribed listener no longer invalidates', async () => {
+    stateStore.set('crashReportingOptOut', 'true');
+    const { loadCrashReportingOptOut, subscribeCrashReportingInvalidation } =
+      await import('../crashReporting');
+    const { emitStateSaved, _resetStateSavedBusForTests } = await import(
+      '../../shared/stateSavedBus'
+    );
+    _resetStateSavedBusForTests();
+    const off = subscribeCrashReportingInvalidation();
+    loadCrashReportingOptOut(); // prime cache to true
+    off();
+
+    stateStore.set('crashReportingOptOut', 'false');
+    emitStateSaved('crashReportingOptOut');
+    expect(loadCrashReportingOptOut()).toBe(true);
+  });
+});

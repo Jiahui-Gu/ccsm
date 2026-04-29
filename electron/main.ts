@@ -63,7 +63,8 @@ import {
   getSessionTitle,
   flushPendingRename,
 } from './sessionTitles';
-import { loadNotifyEnabled } from './prefs/notifyEnabled';
+import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/notifyEnabled';
+import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
 import { BadgeController } from './badgeController';
 import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
@@ -174,6 +175,12 @@ app.whenReady().then(() => {
   initDb();
 
   // ─────────────────────────── IPC registration ──────────────────────────
+  // Wire prefs cache invalidation to the stateSavedBus BEFORE registering
+  // the db:save handler so the very first renderer-driven save (e.g. an
+  // auto-persisted setting on first paint) reaches the cache subscribers.
+  // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
+  subscribeCrashReportingInvalidation();
+  subscribeNotifyEnabledInvalidation();
   // Order is significant for systemIpc: it seeds the active i18n language
   // from the OS locale, so any subsequent producer that calls i18n.t()
   // sees the correct active language.
