@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createSessionsSlice } from '../../../src/stores/slices/sessionsSlice';
+import { createSessionCrudSlice } from '../../../src/stores/slices/sessionCrudSlice';
 import { createGroupsSlice, defaultGroups } from '../../../src/stores/slices/groupsSlice';
 import type { RootStore } from '../../../src/stores/slices/types';
 import type { Session, Group } from '../../../src/types';
 
-// The sessions slice reaches into `get().groups` via `ensureUsableGroup`,
-// so the harness composes both sessions + groups slices into a single root
+// The CRUD slice reaches into `get().groups` via `ensureUsableGroup`,
+// so the harness composes both crud + groups slices into a single root
 // just like `useStore` does in `store.ts`. This keeps the tests isolated
 // from the real Zustand store while exercising the realistic interaction
 // between the two slices.
 function harness(initial?: Partial<RootStore>) {
   let state: Partial<RootStore> = {
-    // Seed model-picker fields the sessions slice reads via `get()`
+    // Seed model-picker fields the CRUD slice reads via `get()`
     // (`importSession` consults `models` + `connection`). The real
     // `useStore` gets these from `createModelPickerSlice`; we mirror them
     // here so each slice test stays self-contained.
@@ -26,7 +26,7 @@ function harness(initial?: Partial<RootStore>) {
     state = { ...state, ...patch };
   };
   const get = () => state as RootStore;
-  const sessions = createSessionsSlice(set, get);
+  const sessions = createSessionCrudSlice(set, get);
   const groups = createGroupsSlice(set, get);
   state = { ...state, ...sessions, ...groups, ...initial };
   return { state: () => state, sessions, groups, set, get };
@@ -45,7 +45,7 @@ function mkSession(id: string, groupId: string, extra: Partial<Session> = {}): S
   };
 }
 
-describe('sessionsSlice', () => {
+describe('sessionCrudSlice', () => {
   beforeEach(() => {
     (window as unknown as { ccsm?: unknown }).ccsm = undefined;
     (window as unknown as { ccsmPty?: unknown }).ccsmPty = undefined;
@@ -63,9 +63,7 @@ describe('sessionsSlice', () => {
     expect(s.sessions).toEqual([]);
     expect(s.activeId).toBe('');
     expect(s.focusedGroupId).toBeNull();
-    expect(s.flashStates).toEqual({});
     expect(s.lastUsedCwd).toBeNull();
-    expect(s.disconnectedSessions).toEqual({});
     expect(s.userHome).toBe('');
     expect(s.claudeSettingsDefaultModel).toBeNull();
   });
@@ -146,61 +144,6 @@ describe('sessionsSlice', () => {
     });
     await h.sessions.renameSession('a', 'New name');
     expect(h.state().sessions[0].name).toBe('New name');
-  });
-
-  it('_applyExternalTitle patches matching session, no-op for unknowns', () => {
-    const h = harness({
-      sessions: [mkSession('a', 'g1', { name: 'old' })],
-    });
-    h.sessions._applyExternalTitle('a', 'new');
-    expect(h.state().sessions[0].name).toBe('new');
-    h.sessions._applyExternalTitle('zzz', 'ignored');
-    expect(h.state().sessions[0].name).toBe('new');
-  });
-
-  it('_applyExternalTitle is a no-op when name unchanged (reference stable)', () => {
-    const h = harness({ sessions: [mkSession('a', 'g1', { name: 'same' })] });
-    const before = h.state().sessions;
-    h.sessions._applyExternalTitle('a', 'same');
-    expect(h.state().sessions).toBe(before);
-  });
-
-  it('_applyCwdRedirect patches cwd; rejects empty', () => {
-    const h = harness({ sessions: [mkSession('a', 'g1', { cwd: '/old' })] });
-    h.sessions._applyCwdRedirect('a', '/new');
-    expect(h.state().sessions[0].cwd).toBe('/new');
-    h.sessions._applyCwdRedirect('a', '');
-    expect(h.state().sessions[0].cwd).toBe('/new');
-  });
-
-  it('_applyPtyExit classifies clean vs crashed', () => {
-    const h = harness({ sessions: [mkSession('a', 'g1')] });
-    h.sessions._applyPtyExit('a', { code: 0, signal: null });
-    expect(h.state().disconnectedSessions['a'].kind).toBe('clean');
-    h.sessions._applyPtyExit('a', { code: 1, signal: null });
-    expect(h.state().disconnectedSessions['a'].kind).toBe('crashed');
-    h.sessions._clearPtyExit('a');
-    expect(h.state().disconnectedSessions['a']).toBeUndefined();
-  });
-
-  it('_applySessionState suppresses waiting on the active session', () => {
-    const h = harness({
-      sessions: [mkSession('a', 'g1', { state: 'idle' })],
-      activeId: 'a',
-    });
-    h.sessions._applySessionState('a', 'waiting');
-    expect(h.state().sessions[0].state).toBe('idle');
-    h.set({ activeId: 'b' });
-    h.sessions._applySessionState('a', 'waiting');
-    expect(h.state().sessions[0].state).toBe('waiting');
-  });
-
-  it('_setFlash adds and removes', () => {
-    const h = harness();
-    h.sessions._setFlash('a', true);
-    expect(h.state().flashStates['a']).toBe(true);
-    h.sessions._setFlash('a', false);
-    expect(h.state().flashStates['a']).toBeUndefined();
   });
 
   it('deleteSession returns snapshot, drops row, picks same-group sibling as next active', () => {

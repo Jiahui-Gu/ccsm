@@ -1,7 +1,7 @@
 // Model picker slice: discovered models list + connection profile +
 // `installerCorrupt` banner flag + `claudeSettingsDefaultModel` boot
 // signal. Owns the renderer-side IPC reads (`loadModels`,
-// `loadConnection`); per-session model writes live in `sessionsSlice`
+// `loadConnection`); per-session model writes live in `sessionCrudSlice`
 // (`setSessionModel`) since they touch the session row, not picker state.
 //
 // `claudeSettingsDefaultModel` is initialised to null and seeded by

@@ -1,21 +1,21 @@
-// Sessions slice: session CRUD + active selection + LRU cwd seed +
-// per-session transient state (`flashStates`, `disconnectedSessions`).
-// Houses the cross-cut into the SDK title/cwd-redirect IPC bridges
-// (`renameSession`, `_applyExternalTitle`, `_applyCwdRedirect`,
-// `_backfillTitles`) and the pty exit classifier (`_applyPtyExit`).
+// Session CRUD slice: create / import / delete / restore / move /
+// rename / changeCwd / setSessionModel + active selection + LRU cwd
+// seed.
 //
-// `ensureUsableGroup` is colocated here because the only caller is
-// session creation/import — it picks (or synthesizes) a target group so a
-// fresh row is always attached to a `kind === 'normal'` parent.
+// `ensureUsableGroup` is colocated here because the only callers are
+// session creation/import — it picks (or synthesizes) a target group so
+// a fresh row is always attached to a `kind === 'normal'` parent.
 //
 // `userHome` and `claudeSettingsDefaultModel` are read by `createSession`
 // but live as initial state on this slice (sessions are the main consumer
 // of those boot-seeded values).
+//
+// Runtime mutations (`_apply*`, flash, disconnected state) live on
+// `sessionRuntimeSlice`. Title backfill / SDK-derived title sync lives on
+// `sessionTitleBackfillSlice` (split per Task #736 / PR #754 review).
 
 import type { Group, Session } from '../../types';
 import { hydrateDrafts as _unused, deleteDrafts, snapshotDraft, restoreDraft } from '../drafts';
-import { partitionSessionsForBackfill, BACKFILL_DEFAULT_NAMES } from '../lib/sessionPartition';
-import { classifyPtyExit } from '../../lib/ptyExitClassifier';
 import { resolvePreferredGroup } from '../lib/preferredGroupResolver';
 import { defaultGroupName } from './groupsSlice';
 import type {
@@ -98,28 +98,19 @@ function ensureUsableGroup(
   return { groups: [synth, ...groups], groupId: synth.id };
 }
 
-export type SessionsSlice = Pick<
+export type SessionCrudSlice = Pick<
   RootStore,
   | 'sessions'
   | 'activeId'
   | 'focusedGroupId'
   | 'userHome'
   | 'claudeSettingsDefaultModel'
-  | 'flashStates'
   | 'lastUsedCwd'
-  | 'disconnectedSessions'
   | 'selectSession'
   | 'focusGroup'
   | 'createSession'
   | 'importSession'
   | 'renameSession'
-  | '_applyExternalTitle'
-  | '_applySessionState'
-  | '_setFlash'
-  | '_applyCwdRedirect'
-  | '_applyPtyExit'
-  | '_clearPtyExit'
-  | '_backfillTitles'
   | 'deleteSession'
   | 'restoreSession'
   | 'moveSession'
@@ -127,7 +118,7 @@ export type SessionsSlice = Pick<
   | 'setSessionModel'
 >;
 
-export function createSessionsSlice(set: SetFn, get: GetFn): SessionsSlice {
+export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice {
   return {
     // initial state
     sessions: [],
@@ -135,9 +126,7 @@ export function createSessionsSlice(set: SetFn, get: GetFn): SessionsSlice {
     focusedGroupId: null,
     userHome: '',
     claudeSettingsDefaultModel: null,
-    flashStates: {},
     lastUsedCwd: null,
-    disconnectedSessions: {},
 
     selectSession: (id) => {
       set((s) => ({
@@ -147,32 +136,6 @@ export function createSessionsSlice(set: SetFn, get: GetFn): SessionsSlice {
           x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
         ),
       }));
-    },
-
-    _applySessionState: (sid, state) => {
-      set((s) => {
-        const target =
-          state === 'waiting' && sid === s.activeId ? 'idle' : state;
-        let changed = false;
-        const sessions = s.sessions.map((x) => {
-          if (x.id !== sid) return x;
-          if (x.state === target) return x;
-          changed = true;
-          return { ...x, state: target };
-        });
-        return changed ? { sessions } : {};
-      });
-    },
-
-    _setFlash: (sid, on) => {
-      set((s) => {
-        const cur = s.flashStates[sid] === true;
-        if (cur === on) return {};
-        const next = { ...s.flashStates };
-        if (on) next[sid] = true;
-        else delete next[sid];
-        return { flashStates: next };
-      });
     },
 
     focusGroup: (id) => set({ focusedGroupId: id }),
@@ -271,95 +234,6 @@ export function createSessionsSlice(set: SetFn, get: GetFn): SessionsSlice {
       } catch (err) {
         console.error(`[rename:writeback-failed] ipc sid=${id}`, err);
       }
-    },
-
-    _applyExternalTitle: (sid, title) => {
-      set((s) => {
-        const idx = s.sessions.findIndex((x) => x.id === sid);
-        if (idx === -1) return s;
-        if (s.sessions[idx].name === title) return s;
-        const next = s.sessions.slice();
-        next[idx] = { ...next[idx], name: title };
-        return { ...s, sessions: next };
-      });
-    },
-
-    _applyCwdRedirect: (sid, newCwd) => {
-      if (typeof newCwd !== 'string' || newCwd.length === 0) return;
-      set((s) => {
-        const idx = s.sessions.findIndex((x) => x.id === sid);
-        if (idx === -1) return s;
-        if (s.sessions[idx].cwd === newCwd) return s;
-        const next = s.sessions.slice();
-        next[idx] = { ...next[idx], cwd: newCwd };
-        return { ...s, sessions: next };
-      });
-    },
-
-    _applyPtyExit: (sid, payload) => {
-      const kind = classifyPtyExit({ code: payload.code, signal: payload.signal });
-      set((s) => ({
-        disconnectedSessions: {
-          ...s.disconnectedSessions,
-          [sid]: { kind, code: payload.code, signal: payload.signal, at: Date.now() },
-        },
-      }));
-    },
-
-    _clearPtyExit: (sid) => {
-      set((s) => {
-        if (!s.disconnectedSessions[sid]) return s;
-        const next = { ...s.disconnectedSessions };
-        delete next[sid];
-        return { disconnectedSessions: next };
-      });
-    },
-
-    _backfillTitles: async () => {
-      type Bridge = {
-        listForProject: (projectKey: string) => Promise<Array<{
-          sid: string;
-          summary: string | null;
-          mtime: number;
-        }>>;
-      };
-      const bridge =
-        typeof window !== 'undefined'
-          ? (window as unknown as { ccsmSessionTitles?: Bridge }).ccsmSessionTitles
-          : undefined;
-      if (!bridge || typeof bridge.listForProject !== 'function') return;
-
-      const byProject = partitionSessionsForBackfill(get().sessions);
-      if (byProject.size === 0) return;
-
-      await Promise.all(
-        Array.from(byProject.entries()).map(async ([projectKey, sids]) => {
-          let summaries: Array<{ sid: string; summary: string | null; mtime: number }>;
-          try {
-            summaries = await bridge.listForProject(projectKey);
-          } catch (err) {
-            console.warn('[store._backfillTitles] listForProject failed for', projectKey, err);
-            return;
-          }
-          if (!Array.isArray(summaries)) return;
-          const summaryMap = new Map<string, string | null>();
-          for (const entry of summaries) {
-            if (entry && typeof entry.sid === 'string') {
-              summaryMap.set(entry.sid, entry.summary);
-            }
-          }
-          const apply = get()._applyExternalTitle;
-          for (const sid of sids) {
-            const sum = summaryMap.get(sid);
-            if (typeof sum === 'string' && sum.length > 0) {
-              const current = get().sessions.find((s) => s.id === sid);
-              if (current && BACKFILL_DEFAULT_NAMES.has(current.name)) {
-                apply(sid, sum);
-              }
-            }
-          }
-        })
-      );
     },
 
     importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {
