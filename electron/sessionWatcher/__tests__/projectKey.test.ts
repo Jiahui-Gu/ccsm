@@ -28,11 +28,11 @@ describe('cwdToProjectKey', () => {
   });
 
   it('non-string input returns empty string (defensive)', () => {
-    // @ts-expect-error — runtime defensive branch
+    // @ts-expect-error — runtime defensive branch (undefined)
     expect(cwdToProjectKey(undefined)).toBe('');
-    // @ts-expect-error
+    // @ts-expect-error — runtime defensive branch (null)
     expect(cwdToProjectKey(null)).toBe('');
-    // @ts-expect-error
+    // @ts-expect-error — runtime defensive branch (number)
     expect(cwdToProjectKey(123)).toBe('');
   });
 
