@@ -20,14 +20,9 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 //
 // All three terminal hooks (useXtermSingleton, usePtyAttach,
 // useTerminalResize) share this state via the accessors below.
-
-declare global {
-  interface Window {
-    // Local stub until PR-3 lands the proper src/pty.d.ts.
-    ccsmPty: any;
-    __ccsmTerm?: Terminal;
-  }
-}
+//
+// `window.ccsmPty` and `window.__ccsmTerm` are typed via `src/pty.d.ts`,
+// which is the canonical renderer-side view of the preload bridge surface.
 
 let term: Terminal | null = null;
 let fit: FitAddon | null = null;

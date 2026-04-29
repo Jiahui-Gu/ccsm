@@ -19,13 +19,7 @@ export function usePtyExitBridge(
   applyPtyExit: (sid: string, evt: PtyExitEvent) => void
 ): void {
   useEffect(() => {
-    const pty = (window as unknown as {
-      ccsmPty?: {
-        onExit?: (
-          cb: (e: { sessionId: string; code?: number | null; signal?: string | number | null }) => void
-        ) => () => void;
-      };
-    }).ccsmPty;
+    const pty = window.ccsmPty;
     if (!pty?.onExit) return;
     return pty.onExit((evt) => {
       if (!evt || typeof evt.sessionId !== 'string' || evt.sessionId.length === 0) return;
