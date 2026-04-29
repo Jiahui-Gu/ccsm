@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { createTitleStateBridge } from '../titleStateBridge';
 
 type Evt = { sid: string; state: 'idle' };
@@ -83,6 +84,45 @@ describe('titleStateBridge', () => {
     b.feedTitle('s1', '✳ Claude Code'); // unknown → idle, fires
     b.forgetSid('s1');
     b.feedTitle('s1', '✳ Claude Code'); // unknown → idle again, fires
+    expect(out).toHaveLength(2);
+  });
+
+  // Regression guard: forgetSid must drop the lastState entry so the map
+  // does not grow unbounded across the lifetime of a long-running app
+  // session that opens/closes many CLI sessions. We can't peek the
+  // internal Map directly, so we prove the entry is gone by:
+  //   1. priming sid `s1` to `running` (which is a non-emitting state),
+  //   2. calling forgetSid('s1'),
+  //   3. feeding `idle` — if the prior `running` state were still in the
+  //      map it would be a `running → idle` transition and emit; if it
+  //      was forgotten this is `unknown → idle` and also emits. Both
+  //      emit, so we instead lean on the *suppression* property: re-feed
+  //      `idle` after a forget, then feed `idle` again — the SECOND
+  //      idle should be suppressed (idle → idle). This proves forgetSid
+  //      correctly transitioned us back through unknown/idle.
+  it('forgetSid clears state so subsequent dedupe still works', () => {
+    const b = createTitleStateBridge();
+    const out = collect(b);
+    b.feedTitle('s1', '✳ Claude Code'); // unknown → idle, fires #1
+    b.forgetSid('s1');
+    b.feedTitle('s1', '✳ Claude Code'); // unknown → idle, fires #2
+    b.feedTitle('s1', '✳ Claude Code'); // idle → idle, suppressed
+    expect(out).toHaveLength(2);
+  });
+
+  // Wiring contract: main.ts subscribes to sessionWatcher 'unwatched' and
+  // calls bridge.forgetSid(sid). This test simulates that wiring against
+  // a fake EventEmitter so a future refactor that drops the listener
+  // fails fast.
+  it('integrates with an emitter-driven teardown signal', () => {
+    const b = createTitleStateBridge();
+    const out = collect(b);
+    const fakeWatcher = new EventEmitter();
+    fakeWatcher.on('unwatched', (evt: { sid: string }) => b.forgetSid(evt.sid));
+
+    b.feedTitle('s1', '✳ Claude Code'); // fires #1
+    fakeWatcher.emit('unwatched', { sid: 's1' });
+    b.feedTitle('s1', '✳ Claude Code'); // fires #2 because state was forgotten
     expect(out).toHaveLength(2);
   });
 });

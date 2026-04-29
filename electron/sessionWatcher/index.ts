@@ -42,6 +42,10 @@ export interface TitleChangedEvent {
   title: string;
 }
 
+export interface UnwatchedEvent {
+  sid: string;
+}
+
 interface Entry {
   sid: string;
   jsonlPath: string;
@@ -144,6 +148,11 @@ class SessionWatcher extends EventEmitter {
       entry.ancestorWatcher = null;
     }
     this.entries.delete(sid);
+    // Signal session teardown so other main-process state keyed by sid can
+    // drop its entry. titleStateBridge subscribes to this to release its
+    // per-sid lastState map (otherwise the map grows unbounded as sessions
+    // come and go over a long-running app session).
+    this.emit('unwatched', { sid } as UnwatchedEvent);
   }
 
   // For tests / shutdown.

@@ -1052,6 +1052,14 @@ app.whenReady().then(() => {
     titleStateBridge.feedTitle(sid, title);
   });
 
+  // Drop the per-sid lastState entry when the session is torn down so the
+  // bridge's internal map doesn't grow unbounded. ptyHost.onExit calls
+  // sessionWatcher.stopWatching, which now emits 'unwatched'.
+  sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
+    if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
+    titleStateBridge.forgetSid(evt.sid);
+  });
+
   // Desktop notification bridge — fires OS toasts on session 'idle' /
   // 'requires_action' transitions unconditionally (only the user's global
   // mute toggle and per-sid 5s dedupe gate the fire). The user wants the
