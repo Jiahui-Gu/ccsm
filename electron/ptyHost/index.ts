@@ -31,6 +31,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import type { BrowserWindow, IpcMain, WebContents } from 'electron';
 import * as pty from 'node-pty';
@@ -155,6 +156,32 @@ function resolveJsonlPath(claudeSid: string, cwd: string): string | null {
   return pathJoin(root, 'projects', projectKey, `${claudeSid}.jsonl`);
 }
 
+// Resolve the cwd we'll hand to `pty.spawn`. node-pty surfaces an invalid
+// cwd as a hard spawn failure — on Windows this is `error code: 267`
+// (ERROR_DIRECTORY) which is not actionable for the user and looks like
+// ccsm crashing the CLI. Validate first; if the requested path is empty,
+// missing, or not a directory, fall back to the user's home directory
+// (always exists by definition for an interactive Electron session) and
+// log a warning so the cause is visible in the console. Exposed for
+// `electron/ptyHost/__tests__/cwd-fallback.test.ts`.
+export function resolveSpawnCwd(requested: string | null | undefined): string {
+  const fallback = homedir();
+  if (!requested || requested.length === 0) return fallback;
+  try {
+    const st = statSync(requested);
+    if (st.isDirectory()) return requested;
+    console.warn(
+      `[ptyHost] cwd ${JSON.stringify(requested)} is not a directory; falling back to ${fallback}`,
+    );
+    return fallback;
+  } catch (err) {
+    console.warn(
+      `[ptyHost] cwd ${JSON.stringify(requested)} unusable (${err instanceof Error ? err.message : String(err)}); falling back to ${fallback}`,
+    );
+    return fallback;
+  }
+}
+
 function makeEntry(
   sid: string,
   cwd: string,
@@ -166,11 +193,13 @@ function makeEntry(
   const flag = jsonlExistsForSid(claudeSid) ? '--resume' : '--session-id';
   const args = [flag, claudeSid];
 
+  const spawnCwd = resolveSpawnCwd(cwd);
+
   const p = pty.spawn(claudePath, args, {
     name: 'xterm-256color',
     cols,
     rows,
-    cwd: cwd && cwd.length > 0 ? cwd : process.cwd(),
+    cwd: spawnCwd,
     env: process.env as { [key: string]: string },
   });
 
@@ -239,8 +268,8 @@ function makeEntry(
   // Path resolution mirrors `jsonlExistsForSid` above: prefer
   // CLAUDE_CONFIG_DIR/projects, fall back to ~/.claude/projects.
   try {
-    const jsonlPath = resolveJsonlPath(claudeSid, cwd);
-    if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath, cwd);
+    const jsonlPath = resolveJsonlPath(claudeSid, spawnCwd);
+    if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath, spawnCwd);
   } catch {
     /* watcher start is best-effort; PTY still owns its lifecycle */
   }
