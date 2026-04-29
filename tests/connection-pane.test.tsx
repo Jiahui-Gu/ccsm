@@ -1,14 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import React from 'react';
-import { useStore } from '../src/stores/store';
 import { SettingsDialog } from '../src/components/SettingsDialog';
-
-const initial = useStore.getState();
-
-function resetStore() {
-  useStore.setState({ ...initial, connection: null, models: [], modelsLoaded: false }, true);
-}
+import { resetStore } from './util/resetStore';
 
 function setClipboard(impl: { writeText: (s: string) => Promise<void> }) {
   Object.defineProperty(navigator, 'clipboard', {
@@ -19,7 +13,7 @@ function setClipboard(impl: { writeText: (s: string) => Promise<void> }) {
 }
 
 beforeEach(() => {
-  resetStore();
+  resetStore({ connection: null, models: [], modelsLoaded: false });
   (globalThis as { window: Window & typeof globalThis }).window.ccsm = {
     connection: {
       read: vi.fn(async () => ({

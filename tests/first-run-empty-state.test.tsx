@@ -12,8 +12,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import App from '../src/App';
 import { useStore } from '../src/stores/store';
-
-const initial = useStore.getState();
+import { resetStore } from './util/resetStore';
 
 function stubCCSM() {
   const api = {
@@ -66,27 +65,23 @@ beforeEach(() => {
   cleanup();
   // Fresh boot: no sessions, no active id, but tutorialSeen=true so the
   // empty-state CTA renders (Tutorial path is exercised separately).
-  useStore.setState(
-    {
-      ...initial,
-      sessions: [],
-      groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-      activeId: '',
-      focusedGroupId: null,
-      tutorialSeen: true,
-      // perf/startup-render-gate: App now renders a skeleton until
-      // `hydrated` flips true. The empty-state CTA branch (what this test
-      // pins) is gated behind hydrated=true so users with persisted
-      // sessions still loading don't flash the first-run landing.
-      hydrated: true,
-      messagesBySession: {},
-      startedSessions: {},
-      runningSessions: {},
-      messageQueues: {},
-      focusInputNonce: 0
-    },
-    true
-  );
+  resetStore({
+    sessions: [],
+    groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+    activeId: '',
+    focusedGroupId: null,
+    tutorialSeen: true,
+    // perf/startup-render-gate: App now renders a skeleton until
+    // `hydrated` flips true. The empty-state CTA branch (what this test
+    // pins) is gated behind hydrated=true so users with persisted
+    // sessions still loading don't flash the first-run landing.
+    hydrated: true,
+    messagesBySession: {},
+    startedSessions: {},
+    runningSessions: {},
+    messageQueues: {},
+    focusInputNonce: 0
+  });
   stubCCSM();
   stubMatchMedia();
 });

@@ -73,3 +73,23 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
+      # keep the matrix lean (coverage instrumentation roughly doubles
+      # wall-clock; one OS is enough for the lcov artifact). Threshold
+      # misses do NOT fail CI yet — this is the initial roll-out; we wrap
+      # with `continue-on-error: true` to keep CI green during the bake-in
+      # period. Bump and enforce in a follow-up once we've watched a few
+      # PRs.
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run coverage
+        continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: warn
