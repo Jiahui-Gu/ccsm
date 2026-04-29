@@ -932,6 +932,87 @@ async function caseAttentionFlashesOnNonActiveIdle({ electronApp }) {
 }
 
 // ============================================================================
+// Case: notify-shows-session-name (regression for PR #509)
+// ============================================================================
+//
+// PR #509 fixed: notify body interpolated `shortSid(sid)` instead of the
+// user-visible name. Resolver in electron/notify/index.ts: getNameFn(sid) ->
+// trim/placeholder filter -> fallback to shortSid; renderer mirrors names to
+// main via 'session:setName'. This probe locks both branches end-to-end:
+//   1. NAMED — push a known name via window.ccsmSession.setName, drive idle,
+//      assert body contains the name and NOT the short sid.
+//   2. FALLBACK — clear the mirror (setName(sid, '')), drive idle, assert
+//      body contains the short sid prefix.
+
+async function caseNotifyShowsSessionName({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+  const KNOWN_NAME = `MyTestSession-${Math.random().toString(36).slice(2, 8)}`;
+
+  async function driveAndCapture(probeName, mirrorName) {
+    const baseline = await electronApp.evaluate(() => globalThis.__ccsmNotifyLog?.length ?? 0);
+    const { sid } = await seedSession(win, { name: probeName, cwd: tempDir });
+    if (!sid) throw new Error(`seedSession returned no sid (${probeName})`);
+    await sleep(3000);
+    await waitForTerminalReady(win, sid, { timeout: 60000 });
+    await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+    await dismissFirstRunModals(win);
+    // Set the mirror via the real IPC the production path uses; calling
+    // setName directly bypasses App.tsx's effect so SDK auto-summary can't
+    // race our explicit value mid-probe. Also clears active-sid suppression.
+    // Repeated long after first-run modals so any setActive side-effects
+    // from the renderer have stopped before we drive the user prompt.
+    await win.evaluate(({ s, n }) => {
+      const b = window.ccsmSession;
+      if (b?.setActive) b.setActive('');
+      if (b?.setName) b.setName(s, n);
+    }, { s: sid, n: mirrorName });
+    // Generous settle so the IPC reaches main, the dedupe window from any
+    // earlier trust-prompt requires_action notification expires (5s), and
+    // the next notification we trigger is a fresh fire — see notify
+    // bridge's DEDUPE_WINDOW_MS in electron/notify/index.ts.
+    await sleep(6000);
+    const postSetBaseline = await electronApp.evaluate(() => globalThis.__ccsmNotifyLog?.length ?? 0);
+    await sendToClaudeTui(win, 'reply with: ack');
+    await sleep(300);
+    await sendToClaudeTui(win, '\r');
+    const start = Date.now();
+    while (Date.now() - start < 180_000) {
+      await sleep(2000);
+      const matches = await electronApp.evaluate(
+        (_e, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((x) => x.sid === s),
+        [sid, postSetBaseline],
+      );
+      if (matches.length > 0) return { sid, entry: matches[matches.length - 1], baseline };
+    }
+    throw new Error(`no notify entry for sid=${sid} within 180s (${probeName})`);
+  }
+
+  // Branch 1: named — body must contain KNOWN_NAME and NOT short sid.
+  const named = await driveAndCapture('notify-name-probe', KNOWN_NAME);
+  const namedShort = named.sid.slice(0, 8);
+  if (KNOWN_NAME.includes(namedShort)) throw new Error(`KNOWN_NAME collides with short sid ${namedShort}`);
+  if (!named.entry.body.includes(KNOWN_NAME)) {
+    throw new Error(`named body missing "${KNOWN_NAME}". body="${named.entry.body}"`);
+  }
+  if (named.entry.body.includes(namedShort)) {
+    throw new Error(`named body leaked short sid "${namedShort}". body="${named.entry.body}"`);
+  }
+  console.log(`[HARNESS]   named-branch OK: "${named.entry.body}"`);
+
+  // Branch 2: fallback — empty mirror, body must contain short sid.
+  const fb = await driveAndCapture('notify-fallback-probe', '');
+  const fbShort = fb.sid.slice(0, 8);
+  if (!fb.entry.body.includes(fbShort)) {
+    throw new Error(`fallback body missing short sid "${fbShort}". body="${fb.entry.body}"`);
+  }
+  console.log(`[HARNESS]   fallback-branch OK: "${fb.entry.body}" (short=${fbShort})`);
+}
+
+// ============================================================================
 // Case 2: switch-session-keeps-chat (UX F)
 // ============================================================================
 
@@ -2668,6 +2749,7 @@ const CASE_REGISTRY = [
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'notify-name-cleared-on-session-delete', group: 'shared', run: caseNotifyNameClearedOnSessionDelete },
+  { name: 'notify-shows-session-name',   group: 'shared', run: caseNotifyShowsSessionName },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
