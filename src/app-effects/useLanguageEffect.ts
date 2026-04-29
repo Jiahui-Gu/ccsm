@@ -8,7 +8,7 @@ import { useEffect } from 'react';
  *
  * No-op when the preload bridge is missing (test/storybook).
  */
-export function useLanguageEffect(resolvedLanguage: string): void {
+export function useLanguageEffect(resolvedLanguage: 'en' | 'zh'): void {
   useEffect(() => {
     window.ccsm?.i18n?.setLanguage(resolvedLanguage);
   }, [resolvedLanguage]);
