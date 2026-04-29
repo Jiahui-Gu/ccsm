@@ -82,16 +82,16 @@ export function SettingsDialog({
     const order = TABS.map((x) => x.id);
     if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
       e.preventDefault();
-      focusTab(order[(idx + 1) % order.length]);
+      focusTab(order[(idx + 1) % order.length]!);
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      focusTab(order[(idx - 1 + order.length) % order.length]);
+      focusTab(order[(idx - 1 + order.length) % order.length]!);
     } else if (e.key === 'Home') {
       e.preventDefault();
-      focusTab(order[0]);
+      focusTab(order[0]!);
     } else if (e.key === 'End') {
       e.preventDefault();
-      focusTab(order[order.length - 1]);
+      focusTab(order[order.length - 1]!);
     }
   };
 

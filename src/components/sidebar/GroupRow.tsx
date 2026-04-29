@@ -246,7 +246,7 @@ export function GroupRow({
             else if (key === 'End') next = items.length - 1;
             if (next !== idx && items[next]) {
               e.preventDefault();
-              items[next].focus();
+              items[next]!.focus();
             }
           }}
         >

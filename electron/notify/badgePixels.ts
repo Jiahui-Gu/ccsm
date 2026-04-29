@@ -153,10 +153,10 @@ export function compositeTrayImage(
       const si = (sy * baseSize.width + sx) * 4;
       const di = (y * size + x) * 4;
       // Electron's toBitmap is BGRA on every platform we care about.
-      buf[di + 0] = baseBuf[si + 2];
-      buf[di + 1] = baseBuf[si + 1];
-      buf[di + 2] = baseBuf[si + 0];
-      buf[di + 3] = baseBuf[si + 3];
+      buf[di + 0] = baseBuf[si + 2]!;
+      buf[di + 1] = baseBuf[si + 1]!;
+      buf[di + 2] = baseBuf[si + 0]!;
+      buf[di + 3] = baseBuf[si + 3]!;
     }
   }
 
@@ -222,13 +222,13 @@ export function drawLabel(
   const startX = Math.round((size - totalW) / 2);
   const startY = Math.round((size - glyphH) / 2);
   for (let ci = 0; ci < label.length; ci++) {
-    const ch = label[ci];
+    const ch = label[ci]!;
     const glyph = GLYPHS[ch];
     if (!glyph) continue;
     const gx0 = startX + ci * (glyphW + gap);
     for (let gy = 0; gy < GLYPH_H; gy++) {
       for (let gx = 0; gx < GLYPH_W; gx++) {
-        if (!glyph[gy][gx]) continue;
+        if (!glyph[gy]![gx]) continue;
         for (let sy = 0; sy < scale; sy++) {
           for (let sx = 0; sx < scale; sx++) {
             const px = gx0 + gx * scale + sx;
@@ -257,7 +257,7 @@ export function blit(
   for (let y = 0; y < srcSize; y++) {
     for (let x = 0; x < srcSize; x++) {
       const si = (y * srcSize + x) * 4;
-      const sa = src[si + 3];
+      const sa = src[si + 3]!;
       if (sa === 0) continue;
       const dx = ox + x;
       const dy = oy + y;
@@ -266,10 +266,10 @@ export function blit(
       // Source-over alpha blend.
       const a = sa / 255;
       const inv = 1 - a;
-      dst[di + 0] = Math.round(src[si + 0] * a + dst[di + 0] * inv);
-      dst[di + 1] = Math.round(src[si + 1] * a + dst[di + 1] * inv);
-      dst[di + 2] = Math.round(src[si + 2] * a + dst[di + 2] * inv);
-      dst[di + 3] = Math.max(dst[di + 3], sa);
+      dst[di + 0] = Math.round(src[si + 0]! * a + dst[di + 0]! * inv);
+      dst[di + 1] = Math.round(src[si + 1]! * a + dst[di + 1]! * inv);
+      dst[di + 2] = Math.round(src[si + 2]! * a + dst[di + 2]! * inv);
+      dst[di + 3] = Math.max(dst[di + 3]!, sa);
     }
   }
 }

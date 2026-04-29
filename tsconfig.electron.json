@@ -4,6 +4,8 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",

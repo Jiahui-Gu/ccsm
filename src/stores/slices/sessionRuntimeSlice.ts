@@ -71,9 +71,9 @@ export function createSessionRuntimeSlice(
       set((s) => {
         const idx = s.sessions.findIndex((x) => x.id === sid);
         if (idx === -1) return s;
-        if (s.sessions[idx].cwd === newCwd) return s;
+        if (s.sessions[idx]!.cwd === newCwd) return s;
         const next = s.sessions.slice();
-        next[idx] = { ...next[idx], cwd: newCwd };
+        next[idx] = { ...next[idx]!, cwd: newCwd };
         return { ...s, sessions: next };
       });
     },

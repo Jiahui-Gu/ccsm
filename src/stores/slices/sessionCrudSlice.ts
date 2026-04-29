@@ -282,7 +282,7 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
       const prev = get();
       const idx = prev.sessions.findIndex((x) => x.id === id);
       if (idx === -1) return null;
-      const target = prev.sessions[idx];
+      const target = prev.sessions[idx]!;
       const snapshot: SessionSnapshot = {
         session: target,
         index: idx,
@@ -303,9 +303,9 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
               .map((x, i) => ({ x, i }))
               .filter(({ x, i }) => x.groupId === sourceGroupId && i > idx);
             if (afterIdxOrig.length > 0) {
-              nextActive = afterIdxOrig[0].x.id;
+              nextActive = afterIdxOrig[0]!.x.id;
             } else if (beforeIdxOrig.length > 0) {
-              nextActive = beforeIdxOrig[beforeIdxOrig.length - 1].x.id;
+              nextActive = beforeIdxOrig[beforeIdxOrig.length - 1]!.x.id;
             } else {
               nextActive = remaining[0]?.id ?? '';
             }

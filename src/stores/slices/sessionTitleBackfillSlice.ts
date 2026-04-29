@@ -31,9 +31,9 @@ export function createSessionTitleBackfillSlice(
       set((s) => {
         const idx = s.sessions.findIndex((x) => x.id === sid);
         if (idx === -1) return s;
-        if (s.sessions[idx].name === title) return s;
+        if (s.sessions[idx]!.name === title) return s;
         const next = s.sessions.slice();
-        next[idx] = { ...next[idx], name: title };
+        next[idx] = { ...next[idx]!, name: title };
         return { ...s, sessions: next };
       });
     },

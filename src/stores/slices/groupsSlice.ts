@@ -92,7 +92,7 @@ export function createGroupsSlice(set: SetFn, get: GetFn): GroupsSlice {
       const prev = get();
       const groupIndex = prev.groups.findIndex((g) => g.id === id);
       if (groupIndex === -1) return null;
-      const group = prev.groups[groupIndex];
+      const group = prev.groups[groupIndex]!;
       const memberSnapshots: SessionSnapshot[] = prev.sessions
         .map((s, i) => ({ s, i }))
         .filter(({ s }) => s.groupId === id)
