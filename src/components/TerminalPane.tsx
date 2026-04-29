@@ -8,6 +8,7 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 import { useTranslation } from '../i18n/useTranslation';
 import { useStore } from '../stores/store';
+import { classifyPtyExit } from '../lib/ptyExitClassifier';
 
 // TerminalPane mounts a singleton xterm.js Terminal that we attach/detach
 // against per-session PTYs over IPC (window.ccsmPty). This is the React
@@ -432,13 +433,13 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
     // attachNonce is intentional: bumping it re-runs the attach for Retry.
   }, [sessionId, attachNonce]);
 
-  // pty:exit subscription for the active session → flip to exit state
-  // with a classification (clean vs crashed). The classification rule
-  // mirrors the store's `_applyPtyExit` logic — kept in lockstep
-  // intentionally so the active-pane overlay and the sidebar red-dot
-  // signal are always consistent. `t` is intentionally excluded from
-  // deps: changing language while a session is alive should not re-
-  // subscribe; localized strings are resolved at render time.
+  // pty:exit subscription for the active session → flip to exit state with
+  // a classification (clean vs crashed) shared with the store via
+  // `classifyPtyExit` (src/lib/ptyExitClassifier.ts), so the active-pane
+  // overlay and the sidebar red-dot signal stay consistent. `t` is
+  // intentionally excluded from deps: changing language while a session is
+  // alive should not re-subscribe; localized strings are resolved at
+  // render time.
   useEffect(() => {
     const pty = window.ccsmPty;
     if (!pty?.onExit) return;
@@ -447,8 +448,7 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         if (evt.sessionId !== activeSid) return;
         const signal = evt.signal ?? null;
         const code = evt.code ?? null;
-        const exitKind: 'clean' | 'crashed' =
-          signal == null && code === 0 ? 'clean' : 'crashed';
+        const exitKind = classifyPtyExit({ code, signal });
         const detail =
           signal != null
             ? `signal ${signal}`
