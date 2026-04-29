@@ -240,7 +240,7 @@ function makeEntry(
   // CLAUDE_CONFIG_DIR/projects, fall back to ~/.claude/projects.
   try {
     const jsonlPath = resolveJsonlPath(claudeSid, cwd);
-    if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath);
+    if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath, cwd);
   } catch {
     /* watcher start is best-effort; PTY still owns its lifecycle */
   }
@@ -423,6 +423,20 @@ export function registerPtyHostIpc(
       if (wc.isDestroyed()) return;
       try {
         wc.send('session:state', evt);
+      } catch {
+        /* renderer gone */
+      }
+    });
+    // Title fan-out mirrors the state-changed bridge above. The watcher
+    // emits `{sid, title}` only when the SDK-derived summary changes, so
+    // there is no extra dedupe needed on this side.
+    sessionWatcher.on('title-changed', (evt) => {
+      const win = getMainWindow();
+      if (!win || win.isDestroyed()) return;
+      const wc = win.webContents;
+      if (wc.isDestroyed()) return;
+      try {
+        wc.send('session:title', evt);
       } catch {
         /* renderer gone */
       }

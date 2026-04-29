@@ -20,8 +20,14 @@ export interface SessionStatePayload {
   state: SessionState;
 }
 
+export interface SessionTitlePayload {
+  sid: string;
+  title: string;
+}
+
 export interface CcsmSessionApi {
   onState(cb: (e: SessionStatePayload) => void): () => void;
+  onTitle?(cb: (e: SessionTitlePayload) => void): () => void;
 }
 
 declare global {
