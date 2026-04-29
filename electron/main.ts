@@ -68,7 +68,7 @@ import {
 } from './import-scanner';
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
-import { sessionWatcher } from './sessionWatcher';
+import { sessionWatcher, configureSessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
 import { createTitleStateBridge } from './notify/titleStateBridge';
 import { BadgeManager } from './notify/badge';
@@ -996,6 +996,17 @@ app.whenReady().then(() => {
   // start fresh rather than retro-fitting the old toast pipeline.
 
   installUpdaterIpc();
+
+  // Wire the sessionWatcher singleton's production callbacks. The watcher
+  // module-graph stays free of any reverse import to sessionTitles (#690
+  // follow-up to #536) — it boots with noop defaults and main.ts injects
+  // the real `getSessionTitle` / `flushPendingRename` here, before
+  // ptyHost (which is the only production caller of startWatching) is
+  // registered.
+  configureSessionWatcher({
+    fetchTitle: getSessionTitle,
+    flushRename: flushPendingRename,
+  });
 
   // Register ptyHost IPC (in-process node-pty path that replaced ttyd).
   // Owns per-session pty lifecycle, attach/detach, snapshot serialization,

@@ -48,4 +48,11 @@ export class PendingRenameFlusherSink {
   forget(sid: string): void {
     this.jsonlSeen.delete(sid);
   }
+
+  /** Replace the flush callback. Used at boot to wire production deps into
+   *  a singleton constructed with a noop default — keeps the watcher
+   *  module-graph free of any reverse import to sessionTitles. */
+  setFlush(flush: PendingFlusher): void {
+    this.flush = flush;
+  }
 }

@@ -61,6 +61,13 @@ export class TitleEmitterSink {
     this.state.delete(sid);
   }
 
+  /** Replace the title fetcher. Used at boot to wire production deps into
+   *  a singleton constructed with a noop default — keeps the watcher
+   *  module-graph free of any reverse import to sessionTitles. */
+  setFetcher(fetchTitle: TitleFetcher): void {
+    this.fetchTitle = fetchTitle;
+  }
+
   private async maybeEmit(
     sid: string,
     cwd: string | undefined,

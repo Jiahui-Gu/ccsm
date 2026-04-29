@@ -6,7 +6,7 @@
 //     to dodge tsc's CommonJS rewrite of dynamic imports, which also
 //     dodges `vi.mock`. The bridge exposes `__setSdkForTests` exactly so
 //     unit tests can wire fakes.
-//   * Drive synthetic JSONL writes via a tmp dir + `__createForTest()` so
+//   * Drive synthetic JSONL writes via a tmp dir + `__createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename })` so
 //     we get a fresh watcher instance per test (no shared module state).
 //   * Assert the event fires once per change, not on no-op identical-title
 //     ticks, and that the dedupe is via the entry's `lastEmittedTitle`.
@@ -31,6 +31,8 @@ import {
   __resetForTests as __resetTitleBridge,
   __setSdkForTests as __setTitleBridgeSdk,
   enqueuePendingRename,
+  getSessionTitle,
+  flushPendingRename,
 } from '../../sessionTitles';
 
 let tmpRoot: string;
@@ -98,7 +100,7 @@ describe('SessionWatcher title-changed', () => {
 
   it('emits title-changed once when SDK reports a new summary', async () => {
     const { jsonlPath } = freshTmp();
-    const watcher = __createForTest();
+    const watcher = __createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename });
     const events: TitleChangedEvent[] = [];
     watcher.on('title-changed', (e: TitleChangedEvent) => events.push(e));
 
@@ -117,7 +119,7 @@ describe('SessionWatcher title-changed', () => {
 
   it('dedupes identical titles via lastEmittedTitle', async () => {
     const { jsonlPath } = freshTmp();
-    const watcher = __createForTest();
+    const watcher = __createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename });
     const events: TitleChangedEvent[] = [];
     watcher.on('title-changed', (e: TitleChangedEvent) => events.push(e));
 
@@ -147,7 +149,7 @@ describe('SessionWatcher title-changed', () => {
 
   it('emits again when the SDK reports a different summary', async () => {
     const { jsonlPath } = freshTmp();
-    const watcher = __createForTest();
+    const watcher = __createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename });
     const events: TitleChangedEvent[] = [];
     watcher.on('title-changed', (e: TitleChangedEvent) => events.push(e));
 
@@ -169,7 +171,7 @@ describe('SessionWatcher title-changed', () => {
 
   it('skips emit when SDK returns null or empty summary', async () => {
     const { jsonlPath } = freshTmp();
-    const watcher = __createForTest();
+    const watcher = __createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename });
     const events: TitleChangedEvent[] = [];
     watcher.on('title-changed', (e: TitleChangedEvent) => events.push(e));
 
@@ -198,7 +200,7 @@ describe('SessionWatcher title-changed', () => {
     // (renameSession would have thrown ENOENT).
     enqueuePendingRename('sid-E', 'pending-title', projectDir);
 
-    const watcher = __createForTest();
+    const watcher = __createForTest({ fetchTitle: getSessionTitle, flushRename: flushPendingRename });
     watcher.startWatching('sid-E', jsonlPath, projectDir);
 
     // Initial tick fires immediate=true; file does NOT exist yet, so the
