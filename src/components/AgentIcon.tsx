@@ -31,18 +31,26 @@ function ClaudeAsterisk({ size }: { size: number }) {
 // an amber halo to call the user; everything else is `idle` (neutral). The
 // halo is the *only* attention signal — no corner badge — because at sidebar
 // scale a single, large pulsing element is more perceivable than a 9px dot.
+//
+// `flashing` (#689) is the transient flash signal from the new notify
+// pipeline's flash sink. ORed with `state === 'waiting'` so Rule 2
+// (foreground active short task → flash, no toast) still pulses the halo
+// even though the row's persistent state stays at `idle`. Sourced from the
+// renderer store's `flashStates: Record<sid, boolean>` (see App.tsx).
 export function AgentIcon({
   agentType,
   state,
+  flashing = false,
   size = 'sm'
 }: {
   agentType: AgentType;
   state: SessionState;
+  flashing?: boolean;
   size?: Size;
 }) {
   const px = SIZE_PX[size];
   const glyph = GLYPH_PX[size];
-  const isWaiting = state === 'waiting';
+  const isWaiting = state === 'waiting' || flashing;
   const inner = agentType === 'claude-code' ? <ClaudeAsterisk size={glyph} /> : null;
   return (
     <motion.span

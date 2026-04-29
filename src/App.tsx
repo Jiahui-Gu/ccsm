@@ -64,6 +64,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 export default function App() {
   const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
+  const flashStates = useStore((s) => s.flashStates);
   const activeId = useStore((s) => s.activeId);
   const focusedGroupId = useStore((s) => s.focusedGroupId);
   // perf/startup-render-gate: App now mounts BEFORE `hydrateStore()`
@@ -237,6 +238,68 @@ export default function App() {
   useEffect(() => {
     return subscribeAgentEvents();
   }, []);
+
+  // Per the notify spec, when ccsm regains OS focus the row the user is
+  // returning to (the active sid) must drop its attention halo — they're
+  // here, the breadcrumb has done its job. Other 'waiting' rows keep the
+  // halo until the user actually clicks them (selectSession clears those
+  // symmetrically). Mirrors the rule encoded in `_applySessionState`'s
+  // active-session suppression: "the active row never pulses while the
+  // user is at the window".
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onFocus = () => {
+      const st = useStore.getState();
+      const id = st.activeId;
+      if (!id) return;
+      const sess = st.sessions.find((x) => x.id === id);
+      if (!sess || sess.state !== 'waiting') return;
+      useStore.setState((s) => ({
+        sessions: s.sessions.map((x) =>
+          x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
+        ),
+      }));
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
+  // Pipe `notify:flash` IPC events from main into the store. The flash sink
+  // (`electron/notify/sinks/flashSink.ts`) sets `flashStates[sid] = true`
+  // for transient pulses driven by the 7-rule decider — Rule 2 (foreground
+  // active sid + short task) is flash-only with no toast, so the AgentIcon
+  // halo MUST react to this signal in addition to `state === 'waiting'`.
+  // Auto-clear is driven by main's 4s timer, which pushes `{on:false}`.
+  useEffect(() => {
+    type Bridge = { onFlash?: (cb: (e: { sid: string; on: boolean }) => void) => () => void };
+    const bridge = (window as unknown as { ccsmNotify?: Bridge }).ccsmNotify;
+    if (!bridge || typeof bridge.onFlash !== 'function') return;
+    return bridge.onFlash((evt) => {
+      if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
+      useStore.getState()._setFlash(evt.sid, evt.on === true);
+    });
+  }, []);
+
+  // E2E debug seam: project the per-sid attention state onto
+  // `window.__ccsmFlashStates` as `{ sid: 'flashing' | undefined }` for the
+  // notify-rule probes in scripts/harness-real-cli.mjs. The probe reads this
+  // map directly to assert the sidebar row icon is in its attention state
+  // (rules 3 / 4 / 6 / 7) or NOT (rules 1 / 2a / 2b / 5). The visual state
+  // is the AgentIcon amber halo driven by `Session.state === 'waiting'` OR
+  // the transient `flashStates[sid]` signal from the new notify pipeline
+  // (#689). Keeping this as a derived projection (not a separate slice)
+  // means the halo and the seam can never disagree — same source of truth.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const map: Record<string, 'flashing' | undefined> = {};
+    for (const sess of sessions) {
+      if (sess.state === 'waiting') map[sess.id] = 'flashing';
+    }
+    for (const sid of Object.keys(flashStates)) {
+      if (flashStates[sid]) map[sid] = 'flashing';
+    }
+    (window as unknown as { __ccsmFlashStates?: Record<string, 'flashing' | undefined> }).__ccsmFlashStates = map;
+  }, [sessions, flashStates]);
 
   // Pipe `session:cwdRedirected` IPC events from main into the store. Fired
   // by the ptyHost spawn handler when the import-resume copy helper (#603)

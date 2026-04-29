@@ -41,6 +41,26 @@ import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
 import { cwdToProjectKey } from '../sessionWatcher/projectKey';
 
+// --- Module-level data fan-out -----------------------------------------------
+//
+// Subscribers (currently only the notify pipeline's OSC sniffer in
+// electron/notify/sinks/pipeline.ts) register here to receive every PTY
+// chunk for every session. We fan out inside the per-session `p.onData`
+// callback below. Errors in subscribers are caught so a misbehaving sink
+// cannot wedge the PTY.
+type PtyDataListener = (sid: string, chunk: string) => void;
+const dataListeners = new Set<PtyDataListener>();
+
+/** Register a listener for every PTY chunk across all sessions. Returns an
+ *  unsubscribe function. Idempotent — adding the same callback twice is
+ *  silently deduped by Set semantics. */
+export function onPtyData(cb: PtyDataListener): () => void {
+  dataListeners.add(cb);
+  return () => {
+    dataListeners.delete(cb);
+  };
+}
+
 // --- Public types ------------------------------------------------------------
 
 export interface PtySessionInfo {
@@ -353,6 +373,17 @@ function makeEntry(
         } catch {
           /* renderer gone — best effort */
         }
+      }
+    }
+    // Fan out to module-level data listeners (notify pipeline OSC sniffer
+    // is the only production consumer today). Listeners are best-effort —
+    // throws don't propagate back to ptyHost so a misbehaving sink can't
+    // wedge the PTY.
+    for (const cb of dataListeners) {
+      try {
+        cb(sid, chunk);
+      } catch (err) {
+        console.warn('[ptyHost] data listener threw', err);
       }
     }
   });

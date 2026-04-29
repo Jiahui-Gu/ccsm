@@ -72,7 +72,37 @@ export function subscribeAgentEvents(): Unsubscribe {
     if (evt.state !== 'idle' && evt.state !== 'running' && evt.state !== 'requires_action') {
       return;
     }
-    apply(evt.sid, mapState(evt.state));
+    const sid = evt.sid;
+    const mapped = mapState(evt.state);
+    // Active-session suppression in `_applySessionState` keeps the row at
+    // 'idle' when sid === activeId — which silences the halo for rules
+    // 2a / 2b (foreground, the user is here). Rule 4 (window unfocused +
+    // any sid finishes) needs the OPPOSITE: even if sid === activeId, when
+    // the user is not at the window, the row MUST flash so they see it on
+    // return. The store action can't read window focus, so we bypass it
+    // here and write `'waiting'` directly when the window is unfocused.
+    // `requires_action` and `idle` both map to `'waiting'`; only that
+    // bypass is needed because `'idle'` (mapped from CLI 'running') is
+    // never an attention signal regardless of focus.
+    if (
+      mapped === 'waiting' &&
+      typeof document !== 'undefined' &&
+      typeof document.hasFocus === 'function' &&
+      !document.hasFocus()
+    ) {
+      useStore.setState((s) => {
+        let changed = false;
+        const sessions = s.sessions.map((x) => {
+          if (x.id !== sid) return x;
+          if (x.state === 'waiting') return x;
+          changed = true;
+          return { ...x, state: 'waiting' as const };
+        });
+        return changed ? { sessions } : {};
+      });
+      return;
+    }
+    apply(sid, mapped);
   });
   return () => {
     try { off(); } catch { /* already torn down */ }
