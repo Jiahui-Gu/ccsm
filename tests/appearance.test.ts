@@ -9,7 +9,7 @@ import {
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_MAX,
-} from '../src/stores/store';
+} from '../src/stores/slices/appearanceSlice';
 
 describe('resolveEffectiveTheme', () => {
   it('dark selection is always dark regardless of OS', () => {

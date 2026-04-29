@@ -5,7 +5,8 @@ import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
-import { useStore, resolveEffectiveTheme } from '../stores/store';
+import { useStore } from '../stores/store';
+import { resolveEffectiveTheme } from '../stores/slices/appearanceSlice';
 import { useTranslation } from '../i18n/useTranslation';
 import { useFocusRestore } from '../lib/useFocusRestore';
 
