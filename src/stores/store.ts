@@ -4,6 +4,7 @@ import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, ty
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
+import { classifyPtyExit } from '../lib/ptyExitClassifier';
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -716,11 +717,7 @@ export const useStore = create<State & Actions>((set, get) => ({
   },
 
   _applyPtyExit: (sid, payload) => {
-    // Clean = no signal AND exit code zero. Anything else (signal,
-    // non-zero code, or both null) is treated as a crash so the user
-    // gets the "this is not ccsm's fault" overlay + sidebar red dot.
-    const kind: 'clean' | 'crashed' =
-      payload.signal == null && payload.code === 0 ? 'clean' : 'crashed';
+    const kind = classifyPtyExit({ code: payload.code, signal: payload.signal });
     set((s) => ({
       disconnectedSessions: {
         ...s.disconnectedSessions,
