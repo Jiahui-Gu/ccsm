@@ -8,10 +8,6 @@
 // Output buffers are tightly packed RGBA (4 bytes per pixel, row-major,
 // origin at top-left), suitable for `nativeImage.createFromBuffer({ width,
 // height })`.
-//
-// Phase A of Task #722: this is a copy of the pixel helpers currently in
-// `electron/notify/badge.ts`. badge.ts is unchanged in this PR; Phase B
-// will switch the import and delete the originals.
 
 export interface RgbaBitmap {
   buffer: Buffer;

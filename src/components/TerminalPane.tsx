@@ -4,9 +4,6 @@ import { useTranslation } from '../i18n/useTranslation';
 import { useXtermSingleton } from '../terminal/useXtermSingleton';
 import { useTerminalResize } from '../terminal/useTerminalResize';
 import { usePtyAttach, type PtyAttachState } from '../terminal/usePtyAttach';
-// classifyPtyExit is re-exported for backward compat with any direct
-// importers; the actual exit classification now lives inside usePtyAttach.
-export { classifyPtyExit } from '../lib/ptyExitClassifier';
 
 // TerminalPane is the host shell for the singleton xterm view. The three
 // concerns it used to mash together — singleton bring-up, PTY lifecycle,
