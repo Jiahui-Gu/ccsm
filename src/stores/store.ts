@@ -227,6 +227,21 @@ type Actions = {
    *  src/App.tsx. SDK customTitle precedence guarantees user renames win
    *  over SDK auto-summaries, so no userRenamed flag is needed here. */
   _applyExternalTitle: (sid: string, title: string) => void;
+  /** Internal: apply an externally-sourced session-state transition (sourced
+   *  from the JSONL tail-watcher's `session:state` IPC, mapped renderer-side
+   *  from the CLI's `'idle' | 'running' | 'requires_action'` vocabulary into
+   *  the renderer's two-state attention model `'idle' | 'waiting'`).
+   *
+   *  Active-session suppression: when `sid === activeId` and the incoming
+   *  mapped state is `'waiting'`, we KEEP the row at `'idle'` (skip the
+   *  transition entirely). The user is already looking at this session, so
+   *  pulsing its sidebar AgentIcon would be visual noise for content they
+   *  can already see. Mirrors selectSession's symmetric `waiting → idle`
+   *  clear so the rule lives in two places: at click and at write.
+   *  Underscore prefix marks this as not user-facing — only the
+   *  `subscribeAgentEvents()` IPC bridge wired in src/agent/lifecycle.ts
+   *  calls this. */
+  _applySessionState: (sid: string, state: 'idle' | 'waiting') => void;
   /** Internal: patch `session.cwd` after the main-process import-resume copy
    *  helper relocates the JSONL into the spawn cwd's projectDir (#603). The
    *  sessionTitles SDK bridge keys off `session.cwd` to compute the
@@ -503,6 +518,27 @@ export const useStore = create<State & Actions>((set, get) => ({
         x.id === id && x.state === 'waiting' ? { ...x, state: 'idle' } : x
       ),
     }));
+  },
+
+  _applySessionState: (sid, state) => {
+    set((s) => {
+      // Active-session suppression: never let the active row enter
+      // `'waiting'`. The user is already looking at it; pulsing the
+      // sidebar AgentIcon halo for the row they're focused on is noise
+      // for content they can already see. Mirrors the symmetric
+      // `waiting → idle` clear in selectSession() above so the rule
+      // lives in both directions (write-time and click-time).
+      const target =
+        state === 'waiting' && sid === s.activeId ? 'idle' : state;
+      let changed = false;
+      const sessions = s.sessions.map((x) => {
+        if (x.id !== sid) return x;
+        if (x.state === target) return x;
+        changed = true;
+        return { ...x, state: target };
+      });
+      return changed ? { sessions } : {};
+    });
   },
 
   focusGroup: (id) => set({ focusedGroupId: id }),

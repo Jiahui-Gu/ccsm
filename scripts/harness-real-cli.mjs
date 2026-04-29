@@ -926,6 +926,144 @@ async function caseNotifyShowsSessionName({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: agent-icon-active-session-no-halo
+// ============================================================================
+//
+// Re-wire of the deleted `src/agent/lifecycle.ts` (commit 08bce04). The store
+// action `_applySessionState` carries the active-session suppression rule:
+// when the inbound IPC state would push the active session into 'waiting',
+// we KEEP it at 'idle' so the AgentIcon halo never pulses on the row the
+// user is currently looking at. (Mirrors selectSession's symmetric
+// waiting -> idle clear at click-time.)
+//
+// Strategy: drive the store action directly via window.__ccsmStore — no
+// claude.exe required, this is a pure store-rule + DOM assertion. The
+// upstream IPC plumbing is already covered by caseSessionStateBecomesIdle.
+// User intent quote: "唯一要抑制的只有我焦点在当前session, session上的icon
+// 不能闪" / "它可能闪了, 但是立刻被消除".
+async function caseAgentIconActiveSessionNoHalo({ win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Two sessions; A will be active, B in the background.
+  const { sid: sidA } = await seedSession(win, { name: 'halo-active', cwd: tempDir });
+  const { sid: sidB } = await seedSession(win, { name: 'halo-bystander', cwd: tempDir });
+  if (!sidA || !sidB || sidA === sidB) {
+    throw new Error(`bad sids active=${sidA} bystander=${sidB}`);
+  }
+
+  // Make A the active session.
+  await win.evaluate((sa) => {
+    window.__ccsmStore.getState().selectSession(sa);
+  }, sidA);
+
+  // Drive the store action that the IPC bridge feeds: ask both sessions
+  // to enter 'waiting'.
+  const after = await win.evaluate(({ sa, sb }) => {
+    const apply = window.__ccsmStore.getState()._applySessionState;
+    if (typeof apply !== 'function') {
+      return { error: '_applySessionState action not on store' };
+    }
+    apply(sa, 'waiting');
+    apply(sb, 'waiting');
+    const sessions = window.__ccsmStore.getState().sessions;
+    const a = sessions.find((x) => x.id === sa);
+    const b = sessions.find((x) => x.id === sb);
+    return {
+      activeId: window.__ccsmStore.getState().activeId,
+      aState: a ? a.state : null,
+      bState: b ? b.state : null,
+    };
+  }, { sa: sidA, sb: sidB });
+
+  if (after.error) throw new Error(after.error);
+  if (after.activeId !== sidA) {
+    throw new Error(`activeId mismatch: expected ${sidA}, got ${after.activeId}`);
+  }
+  if (after.aState !== 'idle') {
+    throw new Error(
+      `active-session suppression broken: A's state should stay 'idle' on incoming 'waiting' (active sid). ` +
+      `Got state='${after.aState}'. This means the AgentIcon halo would pulse for the row the user ` +
+      `is already viewing — exactly the noise the user called out ` +
+      `("唯一要抑制的只有我焦点在当前session").`,
+    );
+  }
+  if (after.bState !== 'waiting') {
+    throw new Error(
+      `bystander session must enter 'waiting' on incoming 'waiting' IPC (no suppression). ` +
+      `Got B.state='${after.bState}'.`,
+    );
+  }
+  console.log('[HARNESS]   store rule OK: active stays idle, bystander goes waiting');
+
+  // Now assert the same on the DOM: the AgentIcon for A reports
+  // data-agent-icon-state="idle", and B reports "waiting".
+  await sleep(120);
+  const dom = await win.evaluate(({ sa, sb }) => {
+    function pick(sid) {
+      const row = document.querySelector(`[data-session-id="${sid}"]`);
+      if (!row) return { rowFound: false };
+      const icon = row.querySelector('[data-agent-icon-state]');
+      if (!icon) return { rowFound: true, iconFound: false };
+      return {
+        rowFound: true,
+        iconFound: true,
+        state: icon.getAttribute('data-agent-icon-state'),
+      };
+    }
+    return { a: pick(sa), b: pick(sb) };
+  }, { sa: sidA, sb: sidB });
+
+  if (!dom.a.rowFound || !dom.b.rowFound) {
+    throw new Error(`sidebar row(s) missing: a=${JSON.stringify(dom.a)} b=${JSON.stringify(dom.b)}`);
+  }
+  if (!dom.a.iconFound || !dom.b.iconFound) {
+    throw new Error(
+      `data-agent-icon-state attribute missing — AgentIcon e2e hook regressed: ` +
+      `a=${JSON.stringify(dom.a)} b=${JSON.stringify(dom.b)}`,
+    );
+  }
+  if (dom.a.state !== 'idle') {
+    throw new Error(
+      `AgentIcon for active session A should render data-agent-icon-state="idle" ` +
+      `(no halo). Got "${dom.a.state}".`,
+    );
+  }
+  if (dom.b.state !== 'waiting') {
+    throw new Error(
+      `AgentIcon for bystander B should render data-agent-icon-state="waiting" ` +
+      `(halo). Got "${dom.b.state}".`,
+    );
+  }
+  console.log('[HARNESS]   DOM OK: A icon=idle, B icon=waiting');
+
+  // Sub-case: switching A away (selecting B) and re-applying 'waiting' to A
+  // (now non-active) should let A enter 'waiting'.
+  const after2 = await win.evaluate(({ sa, sb }) => {
+    window.__ccsmStore.getState().selectSession(sb);
+    window.__ccsmStore.getState()._applySessionState(sa, 'waiting');
+    const sessions = window.__ccsmStore.getState().sessions;
+    return {
+      activeId: window.__ccsmStore.getState().activeId,
+      aState: sessions.find((x) => x.id === sa)?.state ?? null,
+    };
+  }, { sa: sidA, sb: sidB });
+  if (after2.activeId !== sidB) {
+    throw new Error(`expected B active after select, got ${after2.activeId}`);
+  }
+  if (after2.aState !== 'waiting') {
+    throw new Error(
+      `after switch-away: A (now non-active) should accept 'waiting'. Got '${after2.aState}'. ` +
+      `This means the suppression is over-suppressing — non-active sessions must still pulse.`,
+    );
+  }
+  console.log('[HARNESS]   switch-away OK: A enters waiting once non-active');
+}
+
+// ============================================================================
 // Case 2: switch-session-keeps-chat (UX F)
 // ============================================================================
 
@@ -2660,6 +2798,7 @@ const CASE_REGISTRY = [
   { name: 'session-rename-writes-jsonl', group: 'shared', run: caseSessionRenameWritesJsonl },
   { name: 'session-title-syncs-from-jsonl', group: 'shared', run: caseSessionTitleSyncsFromJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
+  { name: 'agent-icon-active-session-no-halo', group: 'shared', run: caseAgentIconActiveSessionNoHalo },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'notify-name-cleared-on-session-delete', group: 'shared', run: caseNotifyNameClearedOnSessionDelete },
   { name: 'notify-shows-session-name',   group: 'shared', run: caseNotifyShowsSessionName },

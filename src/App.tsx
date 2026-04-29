@@ -23,6 +23,7 @@ import { i18next } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { DURATION, EASING } from './lib/motion';
+import { subscribeAgentEvents } from './agent/lifecycle';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -220,6 +221,22 @@ export default function App() {
       applyExternalTitle(evt.sid, evt.title);
     });
   }, [applyExternalTitle]);
+
+  // Pipe `session:state` IPC events from main into the store. The watcher
+  // emits `'idle' | 'running' | 'requires_action'` for each session as the
+  // JSONL transcript transitions; subscribeAgentEvents() maps that into
+  // the renderer's two-state attention model and writes through the
+  // store's `_applySessionState` action — which carries the active-session
+  // suppression so the row the user is currently viewing never enters
+  // `'waiting'` (no halo flicker on the row already on screen). This is
+  // the re-wire of the deleted `src/agent/lifecycle.ts` (commit 08bce04
+  // dropped the SDK-event subscriber when ccsm switched to spawning the
+  // CLI as a subprocess; the AgentIcon halo went silently dark for every
+  // session). Bridge install is idempotent so StrictMode double-mount
+  // doesn't double-pipe events.
+  useEffect(() => {
+    return subscribeAgentEvents();
+  }, []);
 
   // Pipe `session:cwdRedirected` IPC events from main into the store. Fired
   // by the ptyHost spawn handler when the import-resume copy helper (#603)
