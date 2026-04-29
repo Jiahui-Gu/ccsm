@@ -55,6 +55,26 @@ export interface CreateWindowDeps {
   setIsQuitting: (v: boolean) => void;
 }
 
+// Pure decider for the `will-navigate` allowlist (#804 risk #7). Allows the
+// env-driven dev server origin (`CCSM_DEV_PORT`, defaulting to 4100 when
+// unset) and any `file:` navigation (production renderer load). The literal
+// `localhost:4100` was previously allowed unconditionally in addition to the
+// env-driven origin — drop the literal so a stale dev port + dev build is not
+// a navigation-bypass surface. Exported for the `installContextMenu`-style
+// unit test in `__tests__/createWindow.test.ts`.
+export function isAllowedNavigation(
+  url: string,
+  envDevPort: string | undefined,
+): boolean {
+  try {
+    const u = new URL(url);
+    const devPort = envDevPort && envDevPort.length > 0 ? envDevPort : '4100';
+    return u.origin === `http://localhost:${devPort}` || u.protocol === 'file:';
+  } catch {
+    return false;
+  }
+}
+
 // Right-click context menu for the renderer — Copy/Cut/Paste/Select All,
 // contextually enabled based on selection + editable state. Attached per
 // window in createWindow().
@@ -186,15 +206,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   // should never navigate; all external links go through `shell:openExternal`
   // (which itself filters to http(s) only).
   win.webContents.on('will-navigate', (event, url) => {
-    try {
-      const u = new URL(url);
-      const devPort = process.env.CCSM_DEV_PORT || '4100';
-      const allowed =
-        u.origin === `http://localhost:${devPort}` ||
-        u.origin === 'http://localhost:4100' ||
-        u.protocol === 'file:';
-      if (!allowed) event.preventDefault();
-    } catch {
+    if (!isAllowedNavigation(url, process.env.CCSM_DEV_PORT)) {
       event.preventDefault();
     }
   });

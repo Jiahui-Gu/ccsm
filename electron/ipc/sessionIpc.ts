@@ -26,7 +26,7 @@ import {
   enqueuePendingRename,
   flushPendingRename,
 } from '../sessionTitles';
-import { fromMainFrame } from '../security/ipcGuards';
+import { fromMainFrame, isSafePath } from '../security/ipcGuards';
 
 export interface SessionIpcDeps {
   ipcMain: IpcMain;
@@ -57,13 +57,20 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
   } = deps;
 
   // ─────────────────────── sessionTitles bridge ──────────────────────────
+  // Security gate (#804 risk #5): the renderer-supplied `dir` arg is
+  // forwarded straight into the Anthropic SDK which fs.joins it under
+  // ~/.claude/projects/<key>/... — UNC / relative dirs are an NTLM-leak +
+  // path-traversal primitive. Drop the `dir` (SDK falls back to scanning
+  // every project dir) when it fails the safety filter.
+  const safeDir = (dir: unknown): string | undefined =>
+    typeof dir === 'string' && isSafePath(dir) ? dir : undefined;
   ipcMain.handle('sessionTitles:get', (_e, sid: string, dir?: string) =>
-    getSessionTitle(sid, dir),
+    getSessionTitle(sid, safeDir(dir)),
   );
   ipcMain.handle(
     'sessionTitles:rename',
     (_e, sid: string, title: string, dir?: string) =>
-      renameSessionTitle(sid, title, dir),
+      renameSessionTitle(sid, title, safeDir(dir)),
   );
   ipcMain.handle('sessionTitles:listForProject', (_e, projectKey: string) =>
     listProjectSummaries(projectKey),
@@ -75,7 +82,7 @@ export function registerSessionIpc(deps: SessionIpcDeps): void {
   ipcMain.handle(
     'sessionTitles:enqueuePending',
     (_e, sid: string, title: string, dir?: string) => {
-      enqueuePendingRename(sid, title, dir);
+      enqueuePendingRename(sid, title, safeDir(dir));
     },
   );
   ipcMain.handle('sessionTitles:flushPending', (_e, sid: string) =>

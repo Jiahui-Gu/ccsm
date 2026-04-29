@@ -73,18 +73,38 @@ describe('toClaudeSid', () => {
   });
 
   it('is deterministic across calls', () => {
-    expect(toClaudeSid('foo')).toBe(toClaudeSid('foo'));
+    expect(toClaudeSid('ccsm-session-foo')).toBe(toClaudeSid('ccsm-session-foo'));
   });
 
   it('produces different outputs for different inputs', () => {
-    expect(toClaudeSid('foo')).not.toBe(toClaudeSid('bar'));
+    expect(toClaudeSid('ccsm-session-foo')).not.toBe(toClaudeSid('ccsm-session-bar'));
   });
 
-  it('handles empty string deterministically', () => {
-    const a = toClaudeSid('');
-    const b = toClaudeSid('');
-    expect(a).toBe(b);
-    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  // #804 risk #6: sid is argv to `pty.spawn`. Reject anything outside
+  // [a-zA-Z0-9_-]{8,64} so a hostile renderer cannot smuggle `--dangerous-flag`
+  // or empty-string into the CLI as a positional arg.
+  it('rejects empty string', () => {
+    expect(() => toClaudeSid('')).toThrow(/invalid sid/);
+  });
+
+  it('rejects too-short sid', () => {
+    expect(() => toClaudeSid('abc')).toThrow(/invalid sid/);
+  });
+
+  it('rejects too-long sid (>64 chars)', () => {
+    expect(() => toClaudeSid('a'.repeat(65))).toThrow(/invalid sid/);
+  });
+
+  it('rejects sid containing argv-injection characters', () => {
+    expect(() => toClaudeSid('--dangerous-flag')).toThrow(/invalid sid/);
+    expect(() => toClaudeSid('sid with space')).toThrow(/invalid sid/);
+    expect(() => toClaudeSid('sid;rm-rf/')).toThrow(/invalid sid/);
+  });
+
+  it('rejects non-string inputs', () => {
+    expect(() => toClaudeSid(undefined as unknown as string)).toThrow(/invalid sid/);
+    expect(() => toClaudeSid(null as unknown as string)).toThrow(/invalid sid/);
+    expect(() => toClaudeSid(42 as unknown as string)).toThrow(/invalid sid/);
   });
 });
 

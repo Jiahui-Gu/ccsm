@@ -10,10 +10,22 @@
 
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { isSafePath } from '../security/ipcGuards';
 
 export function resolveSpawnCwd(requested: string | null | undefined): string {
   const fallback = homedir();
   if (!requested || requested.length === 0) return fallback;
+  // Security gate (#804 risk #1): reject UNC / relative / non-string paths
+  // BEFORE the statSync. On Windows `statSync('\\\\evil\\share')` triggers
+  // an SMB handshake that leaks the user's NTLM hash. The renderer-supplied
+  // cwd flows directly here from `pty:spawn`, so this is the only choke
+  // point that protects the entire spawn pipeline.
+  if (!isSafePath(requested)) {
+    console.warn(
+      `[ptyHost] cwd ${JSON.stringify(requested)} rejected by isSafePath (UNC / relative); falling back to ${fallback}`,
+    );
+    return fallback;
+  }
   try {
     const st = statSync(requested);
     if (st.isDirectory()) return requested;
