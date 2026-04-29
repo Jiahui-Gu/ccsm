@@ -10,6 +10,7 @@ import {
   closeDb,
 } from './db';
 import { validateSaveStateInput } from './db-validate';
+import { buildAppIcon, buildTrayIcon } from './branding/icon';
 
 // Reads the user's opt-out preference for crash reporting from app_state.
 // Returns false when the row is missing or the read errors — i.e. reporting
@@ -424,6 +425,15 @@ function createWindow() {
     // flight. Doesn't affect Chromium's "is the window active"
     // signal, so rAF / focus / animations stay un-throttled.
     skipTaskbar: hiddenForE2E,
+    // Brand icon for the Windows taskbar / Alt-Tab thumbnail / window-switcher
+    // preview. Matches the system tray icon (electron/branding/icon.ts) so the
+    // taskbar entry, tray entry, and installer (build/icon.ico) all show the
+    // same "C" mark. #630 — without this, Windows falls back to the default
+    // Electron atom logo when CCSM is run unpackaged in dev, and the packaged
+    // build's window icon disagrees with the tray icon on some systems.
+    // Multi-resolution NativeImage so Windows picks the right pixel size for
+    // the surface it's rendering.
+    icon: buildAppIcon(),
     // Solid app background — we deliver depth via layered surfaces in CSS,
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
@@ -643,55 +653,6 @@ function clearBadgeForActiveIfFocused() {
   if (!focused) return;
   if (!activeSidFromRenderer) return;
   badgeManager.clearSid(activeSidFromRenderer);
-}
-
-function buildTrayIcon() {
-  // #608: previously a flat 16×16 white-on-transparent square — invisible on
-  // light tray backgrounds and read as "pure white" on dark ones, with no
-  // brand affordance either way. Render a colored disc with a "C" mark so
-  // the tray icon is recognizable on both light and dark Windows tray
-  // backgrounds without shipping a binary asset. Procedural pixels keep the
-  // app icon-asset-free (no asar packaging changes needed).
-  const size = 16;
-  const buf = Buffer.alloc(size * size * 4);
-  // Brand accent (warm orange) — readable on both white and black tray bgs.
-  // Hex 0xE07A3F = oklch(~0.68 0.16 50). Same family as --accent in the UI.
-  const FG_R = 0xe0, FG_G = 0x7a, FG_B = 0x3f;
-  const cx = (size - 1) / 2;
-  const cy = (size - 1) / 2;
-  const rOuter = size / 2;          // 8
-  const rInner = rOuter - 3;        // 5 — leaves a 3px ring as the "C" body
-  const arcGapHalf = 2.2;           // half-height (px) of the right-side gap that opens the C
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const dx = x - cx;
-      const dy = y - cy;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const i = (y * size + x) * 4;
-      // Default transparent.
-      buf[i + 0] = 0;
-      buf[i + 1] = 0;
-      buf[i + 2] = 0;
-      buf[i + 3] = 0;
-      // Inside the ring band?
-      if (d <= rOuter - 0.25 && d >= rInner) {
-        // Punch out a gap on the right side to form the open mouth of "C".
-        const inGap = dx > 0 && Math.abs(dy) <= arcGapHalf;
-        if (inGap) continue;
-        // Soft 1px outer edge for AA.
-        let alpha = 255;
-        if (d > rOuter - 1.25) {
-          const t = Math.max(0, Math.min(1, (rOuter - 0.25) - d));
-          alpha = Math.round(255 * t);
-        }
-        buf[i + 0] = FG_R;
-        buf[i + 1] = FG_G;
-        buf[i + 2] = FG_B;
-        buf[i + 3] = alpha;
-      }
-    }
-  }
-  return nativeImage.createFromBuffer(buf, { width: size, height: size });
 }
 
 function applyTrayLocale() {
