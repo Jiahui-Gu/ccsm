@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { Plus, Download } from 'lucide-react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
@@ -140,13 +140,27 @@ export default function App() {
   // and we don't want a renderer round-trip on the notify path. Diffs over
   // the previous snapshot so we only IPC for actual changes (mounts,
   // renames, SDK title arrivals, deletions).
+  //
+  // Also tracks sids seen in the previous render and clears (`setName(sid,
+  // null)`) any that have since disappeared, so main's
+  // `sessionNamesFromRenderer` map doesn't grow unbounded across the app
+  // lifetime as sessions are created and deleted (#613, follow-up to #509).
+  const prevSidsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     type Bridge = { setName: (sid: string, name: string | null) => void };
     const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
     if (!bridge || typeof bridge.setName !== 'function') return;
+    const currentSids = new Set<string>();
     for (const sess of sessions) {
       bridge.setName(sess.id, sess.name ?? null);
+      currentSids.add(sess.id);
     }
+    for (const staleSid of prevSidsRef.current) {
+      if (!currentSids.has(staleSid)) {
+        bridge.setName(staleSid, null);
+      }
+    }
+    prevSidsRef.current = currentSids;
   }, [sessions]);
 
   // Listen for `session:activate` from main (fired when the user clicks a

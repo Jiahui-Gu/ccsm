@@ -2583,6 +2583,81 @@ async function caseSidebarGroupHasNoNewSessionCluster({ win }) {
 }
 
 // ============================================================================
+// Case: notify-name-cleared-on-session-delete (#613)
+// Renderer mirrors (sid, name) pairs to main's `sessionNamesFromRenderer`
+// Map so notify toasts can show the user-visible name. Before #613 the
+// renderer never emitted a clearing call when a session was deleted, so
+// the map grew unbounded. This case asserts that deleting a session
+// removes its sid key from the main-side map within a short window.
+// ============================================================================
+
+async function caseNotifyNameClearedOnSessionDelete({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  const seamReady = await electronApp.evaluate(() => {
+    return globalThis.__ccsmSessionNamesFromRenderer instanceof Map;
+  });
+  if (!seamReady) {
+    throw new Error('__ccsmSessionNamesFromRenderer seam missing — CCSM_NOTIFY_TEST_HOOK should be set in launch env');
+  }
+
+  const probeName = `DeleteMe-${randomUUID().slice(0, 8)}`;
+  const { sid } = await seedSession(win, { name: probeName, cwd: tempDir });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  // Wait for the renderer's setName mirror to propagate to main.
+  let propagated = false;
+  for (let i = 0; i < 30; i++) {
+    const present = await electronApp.evaluate(
+      (_e, [s, expected]) => globalThis.__ccsmSessionNamesFromRenderer.get(s) === expected,
+      [sid, probeName],
+    );
+    if (present) { propagated = true; break; }
+    await sleep(200);
+  }
+  if (!propagated) {
+    const snapshot = await electronApp.evaluate((_e, s) => ({
+      has: globalThis.__ccsmSessionNamesFromRenderer.has(s),
+      val: globalThis.__ccsmSessionNamesFromRenderer.get(s) ?? null,
+      size: globalThis.__ccsmSessionNamesFromRenderer.size,
+    }), sid);
+    throw new Error(`name mirror never propagated for sid=${sid} (expected="${probeName}"). Diag: ${JSON.stringify(snapshot)}`);
+  }
+  console.log(`[HARNESS]   name mirror propagated: sid=${sid} name="${probeName}"`);
+
+  // Delete the session via the store (same path the user takes via UI).
+  await win.evaluate((s) => {
+    const useStore = window.__ccsmStore;
+    const { deleteSession } = useStore.getState();
+    deleteSession?.(s);
+  }, sid);
+
+  // Wait for the clearing IPC to land in main.
+  let cleared = false;
+  for (let i = 0; i < 30; i++) {
+    await sleep(200);
+    const stillThere = await electronApp.evaluate(
+      (_e, s) => globalThis.__ccsmSessionNamesFromRenderer.has(s),
+      sid,
+    );
+    if (!stillThere) { cleared = true; break; }
+  }
+  if (!cleared) {
+    const snapshot = await electronApp.evaluate((_e, s) => ({
+      has: globalThis.__ccsmSessionNamesFromRenderer.has(s),
+      val: globalThis.__ccsmSessionNamesFromRenderer.get(s) ?? null,
+      size: globalThis.__ccsmSessionNamesFromRenderer.size,
+    }), sid);
+    throw new Error(`name entry NOT cleared after delete for sid=${sid}. Diag: ${JSON.stringify(snapshot)}`);
+  }
+  console.log(`[HARNESS]   name entry cleared after delete: sid=${sid}`);
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
@@ -2592,6 +2667,7 @@ const CASE_REGISTRY = [
   { name: 'session-title-syncs-from-jsonl', group: 'shared', run: caseSessionTitleSyncsFromJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
+  { name: 'notify-name-cleared-on-session-delete', group: 'shared', run: caseNotifyNameClearedOnSessionDelete },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },

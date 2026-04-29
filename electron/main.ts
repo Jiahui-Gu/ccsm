@@ -214,6 +214,13 @@ let activeSidFromRenderer: string | null = null;
 // rename / external-title update / new-session creation.
 const sessionNamesFromRenderer = new Map<string, string>();
 
+// Test seam: when CCSM_NOTIFY_TEST_HOOK is set, expose the names map on
+// globalThis so harness e2e probes can inspect it without an extra IPC
+// surface. Off by default; production never reads CCSM_NOTIFY_TEST_HOOK.
+if (process.env.CCSM_NOTIFY_TEST_HOOK) {
+  (globalThis as unknown as { __ccsmSessionNamesFromRenderer?: Map<string, string> }).__ccsmSessionNamesFromRenderer = sessionNamesFromRenderer;
+}
+
 
 //
 // The CLI transcripts under ~/.claude/projects can run into hundreds of
