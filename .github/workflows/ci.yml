@@ -64,5 +64,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Build is required before `npm test` because the load-smoke harness
+      # (tests/electron-load-smoke.test.ts) require()s dist/electron/*.js
+      # to verify CJS load cleanliness. Without dist present, those tests
+      # fail loud — see Task #764.
+      - name: Build
+        run: npm run build
+
       - name: Test
         run: npm test
