@@ -2937,9 +2937,11 @@ async function caseNotifyNameClearedOnSessionDelete({ electronApp, win, tempDir 
 //   * the flash signal reaches the renderer (`window.__ccsmFlashStates[sid]
 //     === 'flashing'` after the OSC waiting transition).
 //
-// To deterministically clear Rule 1 mute we use the `__ccsmNotifyPipeline`
-// debug seam to overwrite `lastUserInputTs` with a stale timestamp before
-// triggering the response, so the decider falls through to Rule 3.
+// To deterministically observe Rule 3 firing within 60s of session creation
+// we relied on a `clearUserInput` test seam to wipe `lastUserInputTs`. After
+// the #715 fix `session:setActive` no longer counts as user input, so the
+// implicit setActive plumbing the probe triggers no longer mutes Rule 3 —
+// the seam is gone and these probes run unaided.
 
 async function caseNotifyPipelineForeground({ electronApp, win, tempDir }) {
   await win.waitForFunction(
@@ -2966,9 +2968,8 @@ async function caseNotifyPipelineForeground({ electronApp, win, tempDir }) {
   await dismissFirstRunModals(win);
 
   // Foreground active-sid state — Rule 3 (foreground+active+long task) is
-  // the target. We push the OSC-waiting trigger by sending a real prompt;
-  // to make Rule 3 win over Rule 1 (60s post-user-input mute) we age out
-  // lastUserInputTs via the debug seam by clearing the map entirely.
+  // the target. After #715, setActive no longer feeds Rule 1's
+  // `lastUserInputTs`, so the next idle title lands on Rule 3 directly.
   await win.evaluate((s) => {
     const bridge = window.ccsmSession;
     if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
@@ -2979,15 +2980,7 @@ async function caseNotifyPipelineForeground({ electronApp, win, tempDir }) {
   await sleep(300);
   await sendToClaudeTui(win, '\r');
 
-  // Clear Rule-1 user-init mute via the test seam so the next idle title
-  // event lands on Rule 3 (foreground+active+long) instead of being
-  // suppressed by the 60s post-user-input window. The CLI is mid-run at
-  // this point; clearing now is safe — the decider only consults
-  // lastUserInputTs at decision time (when the idle title arrives).
   await sleep(800);
-  await electronApp.evaluate(() => {
-    globalThis.__ccsmNotifyPipeline?.clearUserInput?.();
-  });
 
   // Poll the pipeline log for any entry on this sid. Up to 180s.
   const start = Date.now();
@@ -3084,14 +3077,6 @@ async function caseNotifyPipelineBackground({ electronApp, win, tempDir }) {
     if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
   }, sidA);
   await sleep(500);
-
-  // Clear Rule-1 user-init mute via the test seam so B's idle title fires
-  // Rule 4 (foreground+other-sid) instead of being suppressed by the 60s
-  // post-user-input window. Both A and B accumulate lastUserInputTs from
-  // the seedSession setActive plumbing.
-  await electronApp.evaluate(() => {
-    globalThis.__ccsmNotifyPipeline?.clearUserInput?.();
-  });
 
   // Poll up to 180s for a B-sid toast OR flash.
   const start = Date.now();
