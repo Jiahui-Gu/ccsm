@@ -1,22 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import {
-  ChevronRight,
-  Download,
-  Plus,
-  Search,
-  Settings
-} from 'lucide-react';
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent
-} from '@dnd-kit/core';
+import { ChevronRight, Download, Plus, Search, Settings } from 'lucide-react';
+import { DndContext, DragOverlay, closestCenter } from '@dnd-kit/core';
 import { useStore } from '../stores/store';
 import { cn } from '../lib/cn';
 import { IconButton } from './ui/IconButton';
@@ -25,14 +10,13 @@ import { AgentIcon } from './AgentIcon';
 import { CwdPopover } from './CwdPopover';
 import { DragRegion } from './WindowControls';
 import { useTranslation } from '../i18n/useTranslation';
-import {
-  DURATION_RAW,
-  EASING,
-} from '../lib/motion';
+import { DURATION_RAW, EASING } from '../lib/motion';
 import type { Session } from '../types';
 import { GroupRow } from './sidebar/GroupRow';
 import { NewSessionButton } from './sidebar/NewSessionButton';
-import { parseHeaderDroppable } from './sidebar/dnd';
+import { CollapsedRail } from './sidebar/CollapsedRail';
+import { ArchivedSection } from './sidebar/ArchivedSection';
+import { useSidebarDnd } from './sidebar/useSidebarDnd';
 
 // Session order inside a group is user-controlled (drag to reorder) — not
 // derived from state. The array order handed down from the store is the
@@ -68,14 +52,17 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   // re-renders triggered by unrelated store mutations.
   const normal = useMemo(() => groups.filter((g) => g.kind === 'normal'), [groups]);
   const archived = useMemo(() => groups.filter((g) => g.kind === 'archive'), [groups]);
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
   // J2: track the most recently created group so its <GroupRow> mounts in
   // inline-rename mode. Cleared after the next render cycle so toggling rename
   // off (or remounting) doesn't accidentally re-trigger it.
   const [justCreatedGroupId, setJustCreatedGroupId] = useState<string | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
-  const draggingSession = draggingId ? sessions.find((s) => s.id === draggingId) ?? null : null;
+
+  const { sensors, draggingSession, onDragStart, onDragEnd, onDragCancel } = useSidebarDnd({
+    groups,
+    normalGroups: normal,
+    sessions,
+    onMoveSession
+  });
 
   // Cwd picker for the top "+ New session" cluster. The per-group chevron
   // was removed (#605) — only the top picker remains, so a plain boolean
@@ -108,50 +95,13 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
     return () => window.clearTimeout(h);
   }, [justCreatedGroupId]);
 
-  function handleDragStart(e: DragStartEvent) {
-    setDraggingId(String(e.active.id));
-  }
-
-  function handleDragEnd(e: DragEndEvent) {
-    setDraggingId(null);
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    const activeId = String(active.id);
-    const overId = String(over.id);
-    const headerGroupId = parseHeaderDroppable(overId);
-    if (headerGroupId) {
-      // J14: reject drops onto archived (or otherwise non-normal) group
-      // headers. The archive panel is a "viewer" surface — live sessions
-      // stay in their source group when the user accidentally hovers there.
-      const headerGroup = groups.find((g) => g.id === headerGroupId);
-      if (!headerGroup || headerGroup.kind !== 'normal') return;
-      // Dropped on a group header → append to that group.
-      onMoveSession(activeId, headerGroupId, null);
-      return;
-    }
-    const overSession = sessions.find((s) => s.id === overId);
-    if (overSession) {
-      onMoveSession(activeId, overSession.groupId, overSession.id);
-      return;
-    }
-    // Dropped on an empty SortableContext keyed by group id.
-    if (normal.some((g) => g.id === overId)) {
-      // Same archive guard: SortableContext for archived groups isn't
-      // rendered today, but defend anyway in case the archive list grows
-      // empty-drop targets later.
-      const target = groups.find((g) => g.id === overId);
-      if (!target || target.kind !== 'normal') return;
-      onMoveSession(activeId, overId, null);
-    }
-  }
-
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
-      onDragStart={handleDragStart}
-      onDragEnd={handleDragEnd}
-      onDragCancel={() => setDraggingId(null)}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
     >
     <motion.aside
       initial={false}
@@ -170,64 +120,13 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           as visually empty. */}
       <DragRegion className="shrink-0 w-full" style={{ height: window.ccsm?.window.platform === 'darwin' ? 40 : 8 }} />
       {collapsed ? (
-        <div className={`flex flex-col items-center w-full h-full gap-2 ${window.ccsm?.window.platform === 'darwin' ? 'py-1' : 'py-3'}`}>
-          <IconButton
-            variant="raised"
-            size="md"
-            onClick={toggleSidebar}
-            tooltip={t('sidebar.expandSidebarTooltip')}
-            tooltipSide="right"
-            aria-label={t('sidebar.expandSidebarAria')}
-            className="h-8 w-8"
-          >
-            <ChevronRight size={14} className="stroke-[1.5]" />
-          </IconButton>
-          <IconButton
-            variant="raised"
-            size="md"
-            onClick={() => onCreateSession?.()}
-            tooltip={t('sidebar.newSessionTooltip')}
-            tooltipSide="right"
-            aria-label={t('sidebar.newSessionAria')}
-            className="h-8 w-8"
-          >
-            <Plus size={14} className="stroke-[1.75]" />
-          </IconButton>
-          <IconButton
-            variant="raised"
-            size="md"
-            onClick={onOpenPalette}
-            tooltip={t('sidebar.searchTooltip')}
-            tooltipSide="right"
-            aria-label={t('sidebar.searchAriaShort')}
-            className="h-8 w-8"
-          >
-            <Search size={14} className="stroke-[1.5]" />
-          </IconButton>
-          <div className="flex-1" />
-          <IconButton
-            variant="raised"
-            size="md"
-            onClick={onOpenImport}
-            tooltip={t('sidebar.importTooltip')}
-            tooltipSide="right"
-            aria-label={t('sidebar.importAriaShort')}
-            className="h-8 w-8"
-          >
-            <Download size={14} className="stroke-[1.5]" />
-          </IconButton>
-          <IconButton
-            variant="raised"
-            size="md"
-            onClick={onOpenSettings}
-            tooltip={t('sidebar.settingsTooltip')}
-            tooltipSide="right"
-            aria-label={t('sidebar.settingsAria')}
-            className="h-8 w-8"
-          >
-            <Settings size={14} className="stroke-[1.5]" />
-          </IconButton>
-        </div>
+        <CollapsedRail
+          onToggleSidebar={toggleSidebar}
+          onCreateSession={onCreateSession}
+          onOpenPalette={onOpenPalette}
+          onOpenImport={onOpenImport}
+          onOpenSettings={onOpenSettings}
+        />
       ) : (
       <div className="flex flex-col w-full h-full">
           {/* Top: action zone — Search + New Session in one row.
@@ -327,47 +226,15 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
 
           {/* Archived Groups — pinned bottom block. Header is clickable to
               fold/unfold; folded by default so it stays out of the way. */}
-          <div data-testid="sidebar-divider-archived" className="border-t border-border-subtle shrink-0" />
-          <button
-            type="button"
-            onClick={() => setArchiveOpen((o) => !o)}
-            aria-expanded={archiveOpen}
-            className={cn(
-              'flex w-full items-center gap-1.5 px-3 py-2 outline-none shrink-0',
-              'text-label-faint transition-colors duration-150',
-              'hover:[&]:text-fg-tertiary'
-            )}
-          >
-            <motion.span
-              initial={false}
-              animate={{ rotate: archiveOpen ? 90 : 0 }}
-              transition={{ duration: DURATION_RAW.ms200, ease: EASING.enter }}
-              className="inline-flex shrink-0 text-fg-faint"
-            >
-              <ChevronRight size={12} className="stroke-[1.75]" />
-            </motion.span>
-            <span>{t('sidebar.archivedGroups')}</span>
-            <span className="ml-1 text-mono-sm leading-[14px] font-normal text-fg-faint tabular-nums">
-              {archived.length}
-            </span>
-          </button>
-          {archiveOpen && (
-            <nav className="h-40 shrink-0 overflow-y-auto px-1.5 py-1">
-              {archived.map((g) => (
-                <GroupRow
-                  key={g.id}
-                  group={g}
-                  sessions={sessions.filter((s) => s.groupId === g.id)}
-                  activeSessionId={activeSessionId}
-                  focused={focusedGroupId === g.id}
-                  anyGroupFocused={focusedGroupId !== null}
-                  onSelectSession={onSelectSession}
-                  onFocus={() => onFocusGroup(g.id)}
-                  normalGroups={normal}
-                />
-              ))}
-            </nav>
-          )}
+          <ArchivedSection
+            archivedGroups={archived}
+            normalGroups={normal}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            focusedGroupId={focusedGroupId}
+            onSelectSession={onSelectSession}
+            onFocusGroup={onFocusGroup}
+          />
 
           {/* Settings — its own zone at the bottom. Mirrors the top zone's
               two-button rhythm (flex-1 text Button + fixed-width IconButton)
