@@ -529,7 +529,11 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               <InlineRename
                 value={session.name}
                 onCommit={(next) => {
-                  renameSession(session.id, next);
+                  // renameSession is now async (optimistic update + SDK
+                  // writeback); we don't await — local name updates
+                  // synchronously and the JSONL writeback runs in the
+                  // background. Errors are logged, not toasted.
+                  void renameSession(session.id, next);
                   setRenaming(false);
                 }}
                 onCancel={() => setRenaming(false)}

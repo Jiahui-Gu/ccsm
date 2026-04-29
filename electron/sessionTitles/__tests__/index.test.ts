@@ -2,16 +2,15 @@
 // these tests don't touch ~/.claude/projects/.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-// Hoisted mock targets. `vi.mock` factories are hoisted to the top of the
-// file, so the spies must be declared via `vi.hoisted` (or assigned inside
-// the factory and re-imported) for the test bodies to control them.
-const sdkMocks = vi.hoisted(() => ({
+// The bridge resolves the ESM-only `@anthropic-ai/claude-agent-sdk` via a
+// `new Function('return import(spec)')` shim (see `loadSdk` in ../index.ts).
+// That shim defeats vitest's `vi.mock` resolver, so we inject fakes through
+// the bridge's `__setSdkForTests` test seam instead.
+const sdkMocks = {
   getSessionInfo: vi.fn(),
   renameSession: vi.fn(),
   listSessions: vi.fn(),
-}));
-
-vi.mock('@anthropic-ai/claude-agent-sdk', () => sdkMocks);
+};
 
 import {
   getSessionTitle,
@@ -20,6 +19,7 @@ import {
   enqueuePendingRename,
   flushPendingRename,
   __resetForTests,
+  __setSdkForTests,
 } from '../index';
 
 beforeEach(() => {
@@ -27,6 +27,9 @@ beforeEach(() => {
   sdkMocks.getSessionInfo.mockReset();
   sdkMocks.renameSession.mockReset();
   sdkMocks.listSessions.mockReset();
+  __setSdkForTests(
+    sdkMocks as unknown as Parameters<typeof __setSdkForTests>[0]
+  );
 });
 
 describe('getSessionTitle cache TTL', () => {

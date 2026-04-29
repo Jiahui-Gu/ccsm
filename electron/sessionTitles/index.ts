@@ -34,11 +34,49 @@
  *    interaction in one place.
  */
 
-import {
-  getSessionInfo,
-  renameSession,
-  listSessions,
+import type {
+  getSessionInfo as GetSessionInfoFn,
+  renameSession as RenameSessionFn,
+  listSessions as ListSessionsFn,
 } from '@anthropic-ai/claude-agent-sdk';
+
+// `@anthropic-ai/claude-agent-sdk` is published as ESM-only (sdk.mjs). Our
+// Electron main bundle compiles to CommonJS (tsconfig.electron.json:
+// `module: CommonJS`), so a static `import { ... } from '...'` becomes a
+// `require()` call at runtime — which Node refuses for an ESM module
+// (ERR_REQUIRE_ESM, blocks the whole app from booting). We resolve the SDK
+// once via dynamic `import()` and cache the live exports for every later
+// call. The first SDK-touching IPC pays the import cost (~tens of ms);
+// every subsequent call is a Map / Promise hit only.
+type SdkExports = {
+  getSessionInfo: typeof GetSessionInfoFn;
+  renameSession: typeof RenameSessionFn;
+  listSessions: typeof ListSessionsFn;
+};
+let sdkPromise: Promise<SdkExports> | null = null;
+async function loadSdk(): Promise<SdkExports> {
+  if (!sdkPromise) {
+    // CommonJS-build trap: a literal `await import('@anthropic-ai/...')` is
+    // transpiled by `tsc` (with `module: CommonJS`) into `require(...)`,
+    // which Node refuses for an ESM-only package (ERR_REQUIRE_ESM). Wrap
+    // the dynamic import in `new Function` so the call survives transpile
+    // intact and is evaluated as a real ESM `import()` at runtime.
+    //
+    // Side effect: vitest's `vi.mock('@anthropic-ai/claude-agent-sdk', …)`
+    // can't intercept this loader (the mock resolver only sees static
+    // imports). Tests inject mocks via `__setSdkForTests` instead.
+    const dynamicImport = new Function(
+      'spec',
+      'return import(spec)'
+    ) as (spec: string) => Promise<typeof import('@anthropic-ai/claude-agent-sdk')>;
+    sdkPromise = dynamicImport('@anthropic-ai/claude-agent-sdk').then((mod) => ({
+      getSessionInfo: mod.getSessionInfo,
+      renameSession: mod.renameSession,
+      listSessions: mod.listSessions,
+    }));
+  }
+  return sdkPromise;
+}
 
 // ─────────────────────────── Public types ────────────────────────────────
 
@@ -121,6 +159,7 @@ export async function getSessionTitle(
 
   const result = await chain(sid, async (): Promise<SummaryResult> => {
     try {
+      const { getSessionInfo } = await loadSdk();
       const info = await getSessionInfo(sid, dir ? { dir } : undefined);
       if (!info) return { summary: null, mtime: null };
       return {
@@ -149,6 +188,7 @@ export async function renameSessionTitle(
 ): Promise<RenameResult> {
   return chain(sid, async (): Promise<RenameResult> => {
     try {
+      const { renameSession } = await loadSdk();
       await renameSession(sid, title, dir ? { dir } : undefined);
       // Invalidate cached title — next read must reflect the new value.
       titleCache.delete(sid);
@@ -167,6 +207,7 @@ export async function listProjectSummaries(
   // session file in the project, and serializing per-project would defeat
   // the parallelism that makes this useful for backfill.
   try {
+    const { listSessions } = await loadSdk();
     const sessions = await listSessions({ dir: projectKey });
     return sessions.map((s) => ({
       sid: s.sessionId,
@@ -211,4 +252,15 @@ export function __resetForTests(): void {
   titleCache.clear();
   opChains.clear();
   pendingRenames.clear();
+  sdkPromise = null;
+}
+
+/**
+ * Inject SDK fakes for tests. The real loader uses a `new Function`
+ * dynamic-import shim (see `loadSdk` above) to dodge tsc's CommonJS rewrite,
+ * which also dodges `vi.mock`. Tests call this with the same shape the
+ * production loader resolves to. Pass `null` to fall back to the real SDK.
+ */
+export function __setSdkForTests(fakes: SdkExports | null): void {
+  sdkPromise = fakes ? Promise.resolve(fakes) : null;
 }
