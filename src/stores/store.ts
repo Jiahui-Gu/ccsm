@@ -5,6 +5,7 @@ import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './draf
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { classifyPtyExit } from '../lib/ptyExitClassifier';
+import { resolvePreferredGroup } from './lib/preferredGroupResolver';
 
 // Resolve the localized default-group name with a hard-coded English fallback
 // so non-renderer call paths (tests, eager hydration before initI18n runs)
@@ -558,22 +559,16 @@ export const useStore = create<State & Actions>((set, get) => ({
       claudeSettingsDefaultModel,
       lastUsedCwd,
     } = get();
-    const isUsable = (gid: string | null | undefined) => {
-      if (!gid) return false;
-      const g = groups.find((x) => x.id === gid);
-      return !!g && g.kind === 'normal';
-    };
     const activeGroupId = sessions.find((s) => s.id === activeId)?.groupId;
     // Resolve preference order without touching synthesis: caller-provided →
     // focused → active session's group → ensureUsableGroup will pick first
     // normal group or synthesize one (with nameKey).
-    const preferred = isUsable(opts.groupId)
-      ? opts.groupId!
-      : isUsable(focusedGroupId)
-      ? focusedGroupId!
-      : isUsable(activeGroupId)
-      ? activeGroupId!
-      : null;
+    const preferred = resolvePreferredGroup(
+      groups,
+      opts.groupId,
+      focusedGroupId,
+      activeGroupId,
+    );
     const ensured = ensureUsableGroup(groups, preferred);
     const targetGroupId = ensured.groupId;
     const baseGroups = ensured.groups;
