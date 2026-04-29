@@ -18,7 +18,7 @@ const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 export function toClaudeSid(ccsmSessionId: string): string {
   if (UUID_V4_RE.test(ccsmSessionId)) return ccsmSessionId.toLowerCase();
   const hex = createHash('sha256').update(ccsmSessionId).digest('hex');
-  const yNibble = (parseInt(hex[16], 16) & 0x3) | 0x8;
+  const yNibble = (parseInt(hex[16]!, 16) & 0x3) | 0x8;
   return (
     `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-` +
     `${yNibble.toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`

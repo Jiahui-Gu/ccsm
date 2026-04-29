@@ -41,9 +41,9 @@ export function detectAtTrigger(value: string, caret: number): AtTriggerState {
   // we're past the end of any candidate mention token.
   let i = caret - 1;
   while (i >= 0) {
-    const ch = value[i];
+    const ch = value[i]!;
     if (ch === '@') {
-      const prev = i === 0 ? '' : value[i - 1];
+      const prev = i === 0 ? '' : value[i - 1]!;
       if (i === 0 || /\s/.test(prev)) {
         return {
           active: true,

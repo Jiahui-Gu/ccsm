@@ -48,7 +48,7 @@ export function Tutorial({ onNewSession, onImport, onSkip }: Props) {
     }
   ];
 
-  const step = steps[stepIdx];
+  const step = steps[stepIdx]!;
   const isLast = stepIdx === steps.length - 1;
   const isFirst = stepIdx === 0;
 

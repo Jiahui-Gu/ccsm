@@ -72,7 +72,7 @@ export function parseFrontmatter(raw: string): {
 } {
   const m = FRONTMATTER_RE.exec(raw);
   if (!m) return { data: {}, body: raw };
-  const yamlBlock = m[1];
+  const yamlBlock = m[1]!;
   const body = raw.slice(m[0].length);
   const data: Record<string, string> = {};
   for (const line of yamlBlock.split(/\r?\n/)) {
