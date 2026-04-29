@@ -13,7 +13,9 @@ import { subscribeAgentEvents } from '../src/agent/lifecycle';
 // and rely on the unsubscribe handle to clear the install guard between
 // tests.
 
-type Listener = (e: { sid: string; state: 'idle' | 'running' | 'requires_action' }) => void;
+import type { SessionState } from '../src/shared/sessionState';
+
+type Listener = (e: { sid: string; state: SessionState }) => void;
 
 let fire: Listener = () => undefined;
 

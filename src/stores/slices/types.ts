@@ -4,7 +4,7 @@
 // every slice). The store re-exports the public-facing types so existing
 // call sites continue to import from `../store`.
 
-import type { Group, Session } from '../../types';
+import type { Group, Session, SessionState } from '../../types';
 import type { ConnectionInfo } from '../../shared/ipc-types';
 
 export type ModelId = string;
@@ -104,7 +104,7 @@ export type Actions = {
   }) => string;
   renameSession: (id: string, name: string) => Promise<void>;
   _applyExternalTitle: (sid: string, title: string) => void;
-  _applySessionState: (sid: string, state: 'idle' | 'waiting') => void;
+  _applySessionState: (sid: string, state: SessionState) => void;
   _setFlash: (sid: string, on: boolean) => void;
   _applyCwdRedirect: (sid: string, newCwd: string) => void;
   _applyPtyExit: (

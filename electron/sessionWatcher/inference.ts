@@ -31,7 +31,12 @@
 //     hasn't written its first frame yet — caller's fs.watch will tick
 //     us again as soon as anything lands).
 
-export type WatcherState = 'idle' | 'running' | 'requires_action';
+// Alias of the canonical `SessionState` (`src/shared/sessionState.ts`).
+// Kept as `WatcherState` because every existing caller in this subtree
+// (emitDecider, stateEmitter, tests) imports it under that name. Tech-debt
+// audit #10 item #2: dedupe the 3-state union without churning callers.
+import type { SessionState } from '../../src/shared/sessionState';
+export type WatcherState = SessionState;
 
 interface ToolUseRef { id: string }
 
