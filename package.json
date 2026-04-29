@@ -29,6 +29,7 @@
     "make:win": "npm run build && electron-builder --win --publish never",
     "make:mac": "npm run build && electron-builder --mac --publish never",
     "make:linux": "npm run build && electron-builder --linux --publish never",
+    "build:icon": "electron scripts/build-icon.cjs",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
@@ -150,6 +151,7 @@
           ]
         }
       ],
+      "icon": "build/icon.ico",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
@@ -211,6 +213,7 @@
       "category": "Development",
       "maintainer": "Jiahui Gu <noreply@ccsm.dev>",
       "synopsis": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
+      "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
