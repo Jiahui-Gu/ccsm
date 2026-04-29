@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Plus, Download } from 'lucide-react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
@@ -19,7 +19,6 @@ import { useStore } from './stores/store';
 import { initI18n } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
-import { DURATION, EASING } from './lib/motion';
 import { useThemeEffect } from './app-effects/useThemeEffect';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
 import { useAgentEventBridge } from './app-effects/useAgentEventBridge';
@@ -29,6 +28,14 @@ import { useFocusBridge } from './app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
 import { usePersistErrorBridge } from './app-effects/usePersistErrorBridge';
 import { useTutorialOverlay } from './app-effects/useTutorialOverlay';
+import { useSessionActiveBridge } from './app-effects/useSessionActiveBridge';
+import { useSessionNameBridge } from './app-effects/useSessionNameBridge';
+import { usePtyExitBridge } from './app-effects/usePtyExitBridge';
+import { useSessionTitleBridge } from './app-effects/useSessionTitleBridge';
+import { useNotifyFlashBridge } from './app-effects/useNotifyFlashBridge';
+import { useCwdRedirectedBridge } from './app-effects/useCwdRedirectedBridge';
+import { useHydrateSystemLocale } from './app-effects/useHydrateSystemLocale';
+import { useExitAnimation } from './app-effects/useExitAnimation';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -95,7 +102,7 @@ export default function App() {
   const [importOpen, setImportOpen] = React.useState(false);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
-  // ---- Extracted effect hooks (Task #732 Phase B) -----------------------
+  // ---- Extracted effect hooks (Task #732 Phase B + Task #758 Phase C) ----
   // Theme application — reactive to user choice + (when system) OS scheme.
   useThemeEffect(theme);
 
@@ -140,8 +147,41 @@ export default function App() {
   const resolvedLanguage = usePreferences((s) => s.resolvedLanguage);
   useLanguageEffect(resolvedLanguage);
 
+  // Mirror the renderer's active session id to main so the desktop-notify
+  // bridge can suppress toasts for the session the user is already on.
+  useSessionActiveBridge(activeId);
+
+  // Mirror per-session names to main; diffs over previous render and
+  // emits clears for sids that have disappeared.
+  useSessionNameBridge(sessions);
+
+  // Pipe `pty:exit` events into the store unconditionally (drives the
+  // sidebar red dot for background-session deaths).
+  usePtyExitBridge(applyPtyExit);
+
+  // Pipe `session:title` IPC events from main into the store (SDK-derived
+  // summary changes).
+  useSessionTitleBridge(applyExternalTitle);
+
+  // Pipe `notify:flash` IPC events from main into the store (transient
+  // pulses driven by the 7-rule decider).
+  useNotifyFlashBridge();
+
+  // Pipe `session:cwdRedirected` IPC events into the store (import-resume
+  // copy helper relocates a JSONL into the spawn cwd's projectDir).
+  useCwdRedirectedBridge(applyCwdRedirect);
+
+  // Boot-time: ask main for the OS locale and feed preferences. Falls
+  // back to navigator.
+  useHydrateSystemLocale(hydrateSystemLocale);
+
+  // Window hide-to-tray exit animation: fade <html> opacity in/out on
+  // `window:beforeHide` / `window:afterShow`.
+  useExitAnimation();
+
   // -----------------------------------------------------------------------
-  // Remaining inline effects (NOT extracted — Phase C territory).
+  // Remaining inline effects (intentionally NOT extracted — couple to
+  // local React state too tightly to be worth a hook indirection).
   // -----------------------------------------------------------------------
 
   // Font size slider applies via CSS variable on <html>. Child text utilities
@@ -152,105 +192,6 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--app-font-size', `${fontSizePx}px`);
   }, [fontSizePx]);
-
-  // Mirror the renderer's active session id to main so the desktop-notify
-  // bridge can suppress toasts for the session the user is already looking
-  // at. Fires once on mount and on every activeId change. Bridge is a
-  // no-op in the test/storybook environments where `window.ccsmSession` is
-  // missing.
-  useEffect(() => {
-    type Bridge = { setActive: (sid: string | null) => void };
-    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
-    if (!bridge || typeof bridge.setActive !== 'function') return;
-    bridge.setActive(activeId || null);
-  }, [activeId]);
-
-  // Mirror per-session NAMES to main so the desktop-notify bridge can label
-  // toasts with the friendly name (custom rename or SDK auto-summary)
-  // instead of the bare UUID. Sister effect to `setActive` above; same
-  // reason — main needs a synchronous answer when an OS notification fires
-  // and we don't want a renderer round-trip on the notify path. Diffs over
-  // the previous snapshot so we only IPC for actual changes (mounts,
-  // renames, SDK title arrivals, deletions).
-  //
-  // Also tracks sids seen in the previous render and clears (`setName(sid,
-  // null)`) any that have since disappeared, so main's
-  // `sessionNamesFromRenderer` map doesn't grow unbounded across the app
-  // lifetime as sessions are created and deleted (#613, follow-up to #509).
-  const prevSidsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    type Bridge = { setName: (sid: string, name: string | null) => void };
-    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
-    if (!bridge || typeof bridge.setName !== 'function') return;
-    const currentSids = new Set<string>();
-    for (const sess of sessions) {
-      bridge.setName(sess.id, sess.name ?? null);
-      currentSids.add(sess.id);
-    }
-    for (const staleSid of prevSidsRef.current) {
-      if (!currentSids.has(staleSid)) {
-        bridge.setName(staleSid, null);
-      }
-    }
-    prevSidsRef.current = currentSids;
-  }, [sessions]);
-
-  // Pipe `pty:exit` events into the store UNCONDITIONALLY (not filtered
-  // by activeSid). TerminalPane has its own filtered listener that drives
-  // the active-pane red overlay; this second listener is what surfaces
-  // background-session deaths in the sidebar (red dot via
-  // `disconnectedSessions[sid]`). Both coexist — different concerns, no
-  // duplication risk because the store action is idempotent on payload.
-  useEffect(() => {
-    const pty = (window as unknown as {
-      ccsmPty?: {
-        onExit?: (cb: (e: { sessionId: string; code?: number | null; signal?: string | number | null }) => void) => () => void;
-      };
-    }).ccsmPty;
-    if (!pty?.onExit) return;
-    return pty.onExit((evt) => {
-      if (!evt || typeof evt.sessionId !== 'string' || evt.sessionId.length === 0) return;
-      applyPtyExit(evt.sessionId, {
-        code: evt.code ?? null,
-        signal: evt.signal ?? null,
-      });
-    });
-  }, [applyPtyExit]);
-
-  // Pipe `session:title` IPC events from main into the store. The watcher
-  // emits when the SDK-derived `summary` changes for a session; the store
-  // applies via `_applyExternalTitle` (no-ops if the row is missing or
-  // the name is already current). Bridge is a no-op in the
-  // test/storybook environments where `window.ccsmSession` is missing or
-  // the older preload didn't expose `onTitle`.
-  useEffect(() => {
-    type Bridge = {
-      onTitle?: (cb: (e: { sid: string; title: string }) => void) => () => void;
-    };
-    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
-    if (!bridge || typeof bridge.onTitle !== 'function') return;
-    return bridge.onTitle((evt) => {
-      if (!evt || typeof evt.sid !== 'string' || typeof evt.title !== 'string') return;
-      if (evt.sid.length === 0 || evt.title.length === 0) return;
-      applyExternalTitle(evt.sid, evt.title);
-    });
-  }, [applyExternalTitle]);
-
-  // Pipe `notify:flash` IPC events from main into the store. The flash sink
-  // (`electron/notify/sinks/flashSink.ts`) sets `flashStates[sid] = true`
-  // for transient pulses driven by the 7-rule decider — Rule 2 (foreground
-  // active sid + short task) is flash-only with no toast, so the AgentIcon
-  // halo MUST react to this signal in addition to `state === 'waiting'`.
-  // Auto-clear is driven by main's 4s timer, which pushes `{on:false}`.
-  useEffect(() => {
-    type Bridge = { onFlash?: (cb: (e: { sid: string; on: boolean }) => void) => () => void };
-    const bridge = (window as unknown as { ccsmNotify?: Bridge }).ccsmNotify;
-    if (!bridge || typeof bridge.onFlash !== 'function') return;
-    return bridge.onFlash((evt) => {
-      if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
-      useStore.getState()._setFlash(evt.sid, evt.on === true);
-    });
-  }, []);
 
   // E2E debug seam: project the per-sid attention state onto
   // `window.__ccsmFlashStates` as `{ sid: 'flashing' | undefined }` for the
@@ -272,82 +213,6 @@ export default function App() {
     }
     (window as unknown as { __ccsmFlashStates?: Record<string, 'flashing' | undefined> }).__ccsmFlashStates = map;
   }, [sessions, flashStates]);
-
-  // Pipe `session:cwdRedirected` IPC events from main into the store. Fired
-  // by the ptyHost spawn handler when the import-resume copy helper (#603)
-  // relocates a JSONL into the spawn cwd's projectDir. Patching
-  // `session.cwd` is what keeps the sessionTitles SDK bridge pointing at
-  // the live COPY rather than the now-frozen SOURCE on subsequent
-  // `renameSession` / `getSessionInfo` / `listForProject` calls.
-  useEffect(() => {
-    type Bridge = {
-      onCwdRedirected?: (cb: (e: { sid: string; newCwd: string }) => void) => () => void;
-    };
-    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
-    if (!bridge || typeof bridge.onCwdRedirected !== 'function') return;
-    return bridge.onCwdRedirected((evt) => {
-      if (!evt || typeof evt.sid !== 'string' || typeof evt.newCwd !== 'string') return;
-      if (evt.sid.length === 0 || evt.newCwd.length === 0) return;
-      applyCwdRedirect(evt.sid, evt.newCwd);
-    });
-  }, [applyCwdRedirect]);
-
-  // Locale: ask main for the OS locale, feed it into the preferences store
-  // so a "system" preference resolves correctly. Falls back to navigator.
-  useEffect(() => {
-    let cancelled = false;
-    const bridge = window.ccsm;
-    void (async () => {
-      let locale: string | undefined;
-      try {
-        locale = await bridge?.i18n?.getSystemLocale();
-      } catch {
-        locale = undefined;
-      }
-      if (cancelled) return;
-      hydrateSystemLocale(
-        locale ?? (typeof navigator !== 'undefined' ? navigator.language : undefined)
-      );
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [hydrateSystemLocale]);
-
-  // Exit animation (UI-10 / #213):
-  // When the user closes the window (Ctrl+W, X button) the Electron main
-  // process hides-to-tray instead of destroying. It sends
-  // `window:beforeHide` with a duration first so we can fade the whole
-  // document out, then hides ~180ms later — giving the user a graceful
-  // exit rather than an abrupt disappearance. On restore, `window:afterShow`
-  // resets opacity. Uses the shared motion tokens (DURATION.standard /
-  // EASING.exit) for consistency with the rest of the app.
-  //
-  // Implementation note: we drive `document.documentElement.style.opacity`
-  // directly instead of wrapping the React tree in a `<motion.div>` — a
-  // root-level wrapper would be invasive and risk layout regressions,
-  // while this approach is zero-DOM, zero-rerender, and survives when
-  // React state is about to be torn down.
-  useEffect(() => {
-    const bridge = window.ccsm?.window;
-    if (!bridge?.onBeforeHide || !bridge?.onAfterShow) return;
-    const root = document.documentElement;
-    const transition = `opacity ${DURATION.standard}s cubic-bezier(${EASING.exit.join(',')})`;
-    const offHide = bridge.onBeforeHide(() => {
-      root.style.transition = transition;
-      root.style.opacity = '0';
-    });
-    const offShow = bridge.onAfterShow(() => {
-      root.style.transition = transition;
-      root.style.opacity = '1';
-    });
-    return () => {
-      offHide();
-      offShow();
-      root.style.transition = '';
-      root.style.opacity = '';
-    };
-  }, []);
 
   // Boot-time check: is the `claude` CLI on PATH? Cached in App-level
   // state because the install state doesn't change mid-session — only

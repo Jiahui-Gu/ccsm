@@ -1,15 +1,16 @@
-// Task #732 Phase B — verify App.tsx wires the 9 effect hooks merged in
-// PR #552. Each hook module is mocked so we can assert it was called
-// exactly once per render. This pins the contract that the App
-// composition root delegates these effects to dedicated hooks rather than
-// inlining them — guards against future regressions where someone
-// re-inlines logic and silently bypasses the SRP boundary.
+// Task #732 Phase B + Task #758 Phase C — verify App.tsx wires the
+// extracted effect hooks merged in PR #552 / PR #559 / PR #758. Each hook
+// module is mocked so we can assert it was called exactly once per render.
+// This pins the contract that the App composition root delegates these
+// effects to dedicated hooks rather than inlining them — guards against
+// future regressions where someone re-inlines logic and silently bypasses
+// the SRP boundary.
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { useStore } from '../src/stores/store';
 
-// Mock all 9 hook modules BEFORE importing App. Each export is a vi.fn so
+// Mock all hook modules BEFORE importing App. Each export is a vi.fn so
 // we can introspect call counts after render. The hooks return either
 // `void` or, in the tutorial case, a `{ show, dismiss }` shape — match
 // the production return so App's render path doesn't crash.
@@ -40,6 +41,31 @@ vi.mock('../src/app-effects/usePersistErrorBridge', () => ({
 vi.mock('../src/app-effects/useTutorialOverlay', () => ({
   useTutorialOverlay: vi.fn(() => ({ show: false, dismiss: vi.fn() })),
 }));
+// Phase C hooks (Task #758).
+vi.mock('../src/app-effects/useSessionActiveBridge', () => ({
+  useSessionActiveBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/useSessionNameBridge', () => ({
+  useSessionNameBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/usePtyExitBridge', () => ({
+  usePtyExitBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/useSessionTitleBridge', () => ({
+  useSessionTitleBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/useNotifyFlashBridge', () => ({
+  useNotifyFlashBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/useCwdRedirectedBridge', () => ({
+  useCwdRedirectedBridge: vi.fn(),
+}));
+vi.mock('../src/app-effects/useHydrateSystemLocale', () => ({
+  useHydrateSystemLocale: vi.fn(),
+}));
+vi.mock('../src/app-effects/useExitAnimation', () => ({
+  useExitAnimation: vi.fn(),
+}));
 
 // Imports MUST come after vi.mock calls (vi.mock is hoisted, but explicit
 // ordering keeps the read order obvious to humans).
@@ -53,6 +79,14 @@ import { useFocusBridge } from '../src/app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from '../src/app-effects/useUpdateDownloadedBridge';
 import { usePersistErrorBridge } from '../src/app-effects/usePersistErrorBridge';
 import { useTutorialOverlay } from '../src/app-effects/useTutorialOverlay';
+import { useSessionActiveBridge } from '../src/app-effects/useSessionActiveBridge';
+import { useSessionNameBridge } from '../src/app-effects/useSessionNameBridge';
+import { usePtyExitBridge } from '../src/app-effects/usePtyExitBridge';
+import { useSessionTitleBridge } from '../src/app-effects/useSessionTitleBridge';
+import { useNotifyFlashBridge } from '../src/app-effects/useNotifyFlashBridge';
+import { useCwdRedirectedBridge } from '../src/app-effects/useCwdRedirectedBridge';
+import { useHydrateSystemLocale } from '../src/app-effects/useHydrateSystemLocale';
+import { useExitAnimation } from '../src/app-effects/useExitAnimation';
 
 const initial = useStore.getState();
 
@@ -128,7 +162,7 @@ beforeEach(() => {
 });
 
 describe('App composition root wires extracted effect hooks (Task #732)', () => {
-  it('calls each of the 9 app-effects hooks during render', () => {
+  it('calls each of the 9 Phase A/B app-effects hooks during render', () => {
     render(<App />);
     expect(useThemeEffect).toHaveBeenCalled();
     expect(useLanguageEffect).toHaveBeenCalled();
@@ -180,5 +214,57 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
     expect(calls.length).toBeGreaterThan(0);
     expect(typeof calls[0][0].tutorialSeen).toBe('boolean');
     expect(typeof calls[0][0].markTutorialSeen).toBe('function');
+  });
+});
+
+describe('App composition root wires Phase C effect hooks (Task #758)', () => {
+  it('calls each of the 8 Phase C app-effects hooks during render', () => {
+    render(<App />);
+    expect(useSessionActiveBridge).toHaveBeenCalled();
+    expect(useSessionNameBridge).toHaveBeenCalled();
+    expect(usePtyExitBridge).toHaveBeenCalled();
+    expect(useSessionTitleBridge).toHaveBeenCalled();
+    expect(useNotifyFlashBridge).toHaveBeenCalled();
+    expect(useCwdRedirectedBridge).toHaveBeenCalled();
+    expect(useHydrateSystemLocale).toHaveBeenCalled();
+    expect(useExitAnimation).toHaveBeenCalled();
+  });
+
+  it('passes activeId (string or null/empty) to useSessionActiveBridge', () => {
+    render(<App />);
+    const calls = (useSessionActiveBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    // activeId is '' on the empty fixture; the hook accepts string|null|undefined.
+    const first = calls[0][0];
+    expect(typeof first === 'string' || first === null || first === undefined).toBe(true);
+  });
+
+  it('passes the sessions array to useSessionNameBridge', () => {
+    render(<App />);
+    const calls = (useSessionNameBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    expect(Array.isArray(calls[0][0])).toBe(true);
+  });
+
+  it('passes store action functions to the IPC-bridge hooks that take a callback', () => {
+    render(<App />);
+    const ptyCalls = (usePtyExitBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const titleCalls = (useSessionTitleBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const cwdCalls = (useCwdRedirectedBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const hydrateCalls = (useHydrateSystemLocale as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(typeof ptyCalls[0][0]).toBe('function');
+    expect(typeof titleCalls[0][0]).toBe('function');
+    expect(typeof cwdCalls[0][0]).toBe('function');
+    expect(typeof hydrateCalls[0][0]).toBe('function');
+  });
+
+  it('useNotifyFlashBridge and useExitAnimation take no args (zero-arg subscriptions)', () => {
+    render(<App />);
+    const flashCalls = (useNotifyFlashBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const exitCalls = (useExitAnimation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(flashCalls.length).toBeGreaterThan(0);
+    expect(exitCalls.length).toBeGreaterThan(0);
+    expect(flashCalls[0].length).toBe(0);
+    expect(exitCalls[0].length).toBe(0);
   });
 });
