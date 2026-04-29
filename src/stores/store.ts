@@ -198,6 +198,13 @@ type Actions = {
   createSession: (cwd: string | null | CreateSessionOptions) => void;
   importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string; projectDir?: string }) => string;
   renameSession: (id: string, name: string) => void;
+  /** Internal: apply an externally-sourced title (from the JSONL
+   *  tail-watcher's `session:title` IPC). Skips if the row is missing or
+   *  the name is already current. Underscore prefix marks this as not
+   *  user-facing — callers are limited to the IPC subscriber wired in
+   *  src/App.tsx. SDK customTitle precedence guarantees user renames win
+   *  over SDK auto-summaries, so no userRenamed flag is needed here. */
+  _applyExternalTitle: (sid: string, title: string) => void;
   deleteSession: (id: string) => SessionSnapshot | null;
   /** Re-insert a session previously removed by `deleteSession`. Restores the
    *  row at its original index, plus messages, draft, and runtime flags. */
@@ -553,6 +560,17 @@ export const useStore = create<State & Actions>((set, get) => ({
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, name } : x))
     }));
+  },
+
+  _applyExternalTitle: (sid, title) => {
+    set((s) => {
+      const idx = s.sessions.findIndex((x) => x.id === sid);
+      if (idx === -1) return s;
+      if (s.sessions[idx].name === title) return s;
+      const next = s.sessions.slice();
+      next[idx] = { ...next[idx], name: title };
+      return { ...s, sessions: next };
+    });
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {

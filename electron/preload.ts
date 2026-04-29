@@ -253,9 +253,11 @@ export type CCSMPtyAPI = typeof ccsmPty;
 export type SessionState = 'idle' | 'running' | 'requires_action';
 type SessionStatePayload = { sid: string; state: SessionState };
 type SessionActivatePayload = { sid: string };
+type SessionTitlePayload = { sid: string; title: string };
 
 const sessionStateListeners = new Set<(e: SessionStatePayload) => void>();
 const sessionActivateListeners = new Set<(e: SessionActivatePayload) => void>();
+const sessionTitleListeners = new Set<(e: SessionTitlePayload) => void>();
 
 ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayload) => {
   for (const cb of sessionStateListeners) {
@@ -263,6 +265,20 @@ ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayl
       cb(payload);
     } catch (err) {
       console.error('[ccsmSession] onState listener threw', err);
+    }
+  }
+});
+
+// Title pushes from main: sourced by the JSONL tail-watcher
+// (electron/sessionWatcher) when the SDK-derived `summary` for a session
+// changes. Renderer subscribes via `window.ccsmSession.onTitle` and pipes
+// into the store's `_applyExternalTitle` action.
+ipcRenderer.on('session:title', (_e: IpcRendererEvent, payload: SessionTitlePayload) => {
+  for (const cb of sessionTitleListeners) {
+    try {
+      cb(payload);
+    } catch (err) {
+      console.error('[ccsmSession] onTitle listener threw', err);
     }
   }
 });
@@ -291,6 +307,12 @@ const ccsmSession = {
     sessionActivateListeners.add(cb);
     return () => {
       sessionActivateListeners.delete(cb);
+    };
+  },
+  onTitle: (cb: (e: SessionTitlePayload) => void): (() => void) => {
+    sessionTitleListeners.add(cb);
+    return () => {
+      sessionTitleListeners.delete(cb);
     };
   },
   // Renderer pushes its active session id to main so the notify bridge can

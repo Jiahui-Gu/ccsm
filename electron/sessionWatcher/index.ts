@@ -28,6 +28,7 @@ import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { classifyJsonlText, type WatcherState } from './inference';
+import { getSessionTitle, flushPendingRename } from '../sessionTitles';
 
 export type { WatcherState } from './inference';
 
@@ -36,9 +37,18 @@ export interface StateChangedEvent {
   state: WatcherState;
 }
 
+export interface TitleChangedEvent {
+  sid: string;
+  title: string;
+}
+
 interface Entry {
   sid: string;
   jsonlPath: string;
+  // Optional cwd, threaded through to `getSessionTitle({dir})` so the SDK
+  // resolves the right project's JSONL. Not required (SDK falls back to a
+  // global scan), but supplying it avoids an O(projects) probe per tick.
+  cwd?: string;
   // Watcher on the file itself (created lazily once the file exists) and a
   // fallback watcher on the parent directory (so we notice the first
   // creation even if claude hasn't written it at startWatching time).
@@ -51,6 +61,14 @@ interface Entry {
   ancestorWatcher: fs.FSWatcher | null;
   ancestorPath: string | null;
   lastEmitted: WatcherState | null;
+  // Last title we emitted to listeners. Used to dedupe `title-changed` —
+  // the watcher tick fires on every fs event, but only changes in the
+  // SDK-derived `summary` warrant a renderer update.
+  lastEmittedTitle: string | null;
+  // Tracks whether we've ever observed the JSONL file landing on disk.
+  // Used as the trigger for `flushPendingRename` (PR2's queue): the first
+  // time the file appears, we know `renameSession` will succeed.
+  jsonlSeen: boolean;
   // Coalesce bursts of fs events. fs.watch on Windows can fire 3-5 times
   // for a single append; we don't want to re-read + reclassify each time.
   pendingTimer: NodeJS.Timeout | null;
@@ -71,7 +89,7 @@ const MAX_READ_BYTES = 256 * 1024;
 class SessionWatcher extends EventEmitter {
   private entries = new Map<string, Entry>();
 
-  startWatching(sid: string, jsonlPath: string): void {
+  startWatching(sid: string, jsonlPath: string, cwd?: string): void {
     if (!sid || !jsonlPath) return;
     const existing = this.entries.get(sid);
     if (existing) {
@@ -84,11 +102,14 @@ class SessionWatcher extends EventEmitter {
     const entry: Entry = {
       sid,
       jsonlPath,
+      cwd,
       fileWatcher: null,
       dirWatcher: null,
       ancestorWatcher: null,
       ancestorPath: null,
       lastEmitted: null,
+      lastEmittedTitle: null,
+      jsonlSeen: false,
       pendingTimer: null,
       closed: false,
     };
@@ -261,8 +282,10 @@ class SessionWatcher extends EventEmitter {
 
   private readAndClassify(entry: Entry): void {
     let text = '';
+    let fileExists = false;
     try {
       const stat = fs.statSync(entry.jsonlPath);
+      fileExists = true;
       if (stat.size === 0) {
         text = '';
       } else if (stat.size <= MAX_READ_BYTES) {
@@ -290,6 +313,51 @@ class SessionWatcher extends EventEmitter {
       entry.lastEmitted = next;
       this.emit('state-changed', { sid: entry.sid, state: next } as StateChangedEvent);
     }
+
+    // First time we've ever seen the JSONL land for this sid: PR2 may have
+    // queued a user-set title before the file existed (renameSession would
+    // have thrown ENOENT). Flush now. Wrapped in try/catch so a queue
+    // failure never crashes the watcher tick.
+    if (fileExists && !entry.jsonlSeen) {
+      entry.jsonlSeen = true;
+      try {
+        void flushPendingRename(entry.sid);
+      } catch (err) {
+        console.warn(
+          `[sessionWatcher] flushPendingRename(${entry.sid}) threw:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+
+    // Emit title-changed if the SDK-derived summary has changed since our
+    // last emission. We piggy-back on this same debounced tick (no second
+    // timer). Skip the SDK call entirely until the JSONL exists — without
+    // a file `getSessionInfo` would always return null.
+    if (fileExists) {
+      void this.maybeEmitTitle(entry);
+    }
+  }
+
+  private async maybeEmitTitle(entry: Entry): Promise<void> {
+    if (entry.closed) return;
+    let summary: string | null = null;
+    try {
+      const result = await getSessionTitle(entry.sid, entry.cwd);
+      summary = result.summary;
+    } catch {
+      // Bridge swallows ENOENT internally; anything reaching here is
+      // unexpected. Skip silently — the next tick will retry.
+      return;
+    }
+    if (entry.closed) return;
+    // Only emit when we have an actual non-empty title. Both null (no
+    // summary yet) and '' (empty string) are skipped — the renderer should
+    // keep its existing name until the SDK has something real.
+    if (typeof summary !== 'string' || summary.length === 0) return;
+    if (summary === entry.lastEmittedTitle) return;
+    entry.lastEmittedTitle = summary;
+    this.emit('title-changed', { sid: entry.sid, title: summary } as TitleChangedEvent);
   }
 }
 
