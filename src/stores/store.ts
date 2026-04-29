@@ -197,7 +197,7 @@ type Actions = {
   focusGroup: (id: string | null) => void;
   createSession: (cwd: string | null | CreateSessionOptions) => void;
   importSession: (opts: { name: string; cwd: string; groupId: string; resumeSessionId: string; projectDir?: string }) => string;
-  renameSession: (id: string, name: string) => void;
+  renameSession: (id: string, name: string) => Promise<void>;
   /** Internal: apply an externally-sourced title (from the JSONL
    *  tail-watcher's `session:title` IPC). Skips if the row is missing or
    *  the name is already current. Underscore prefix marks this as not
@@ -556,10 +556,48 @@ export const useStore = create<State & Actions>((set, get) => ({
     }
   },
 
-  renameSession: (id, name) => {
+  renameSession: async (id, name) => {
+    // 1. Optimistic local update — UI renders the new name immediately
+    //    regardless of what the SDK writeback does. Capture the cwd off the
+    //    pre-update snapshot so we don't race a concurrent setSessionCwd.
+    const session = get().sessions.find((x) => x.id === id);
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === id ? { ...x, name } : x))
     }));
+
+    // 2. Forward to the main-process SDK bridge so the JSONL gets a
+    //    `customTitle` frame. Renderer-side bridge is only present in the
+    //    real Electron build; vitest jsdom runs may not have it injected.
+    const bridge =
+      typeof window !== 'undefined'
+        ? (window as unknown as { ccsmSessionTitles?: {
+            rename: (sid: string, title: string, dir?: string) =>
+              Promise<{ ok: true } | { ok: false; reason: 'no_jsonl' | 'sdk_threw'; message?: string }>;
+            enqueuePending: (sid: string, title: string, dir?: string) => Promise<void>;
+          } }).ccsmSessionTitles
+        : undefined;
+    if (!bridge) return;
+
+    const dir = session?.cwd;
+    try {
+      const result = await bridge.rename(id, name, dir);
+      if (result.ok) return;
+      if (result.reason === 'no_jsonl') {
+        // Pre-first-message rename. Stash so PR3's watcher can replay once
+        // the JSONL exists. Local name already updated above; SDK will catch
+        // up on flush.
+        await bridge.enqueuePending(id, name, dir);
+        return;
+      }
+      // sdk_threw — best-effort. Local name stays; we just log.
+      console.warn(
+        `[store] renameSession SDK writeback failed for ${id}: ${result.message ?? '(no message)'}`
+      );
+    } catch (err) {
+      // IPC channel itself failed — extremely unlikely, but don't surface a
+      // toast (per task spec "do not toast SDK errors").
+      console.warn(`[store] renameSession IPC failed for ${id}:`, err);
+    }
   },
 
   _applyExternalTitle: (sid, title) => {

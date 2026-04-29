@@ -364,6 +364,15 @@ const ccsmSessionTitles = {
     ipcRenderer.invoke('sessionTitles:rename', sid, title, dir),
   listForProject: (projectKey: string): Promise<SessionTitleProjectEntry[]> =>
     ipcRenderer.invoke('sessionTitles:listForProject', projectKey),
+  // Pending-rename queue (PR2). When `rename` returns `{ok:false,
+  // reason:'no_jsonl'}` the store calls `enqueuePending` so the title is
+  // remembered locally; PR3's sessionWatcher invokes `flushPending` once the
+  // JSONL appears. The queue lives in-memory in main and is intentionally
+  // not persisted — see `electron/sessionTitles/index.ts` header.
+  enqueuePending: (sid: string, title: string, dir?: string): Promise<void> =>
+    ipcRenderer.invoke('sessionTitles:enqueuePending', sid, title, dir),
+  flushPending: (sid: string): Promise<void> =>
+    ipcRenderer.invoke('sessionTitles:flushPending', sid),
 };
 
 contextBridge.exposeInMainWorld('ccsmSessionTitles', ccsmSessionTitles);

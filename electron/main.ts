@@ -74,6 +74,8 @@ import {
   getSessionTitle,
   renameSessionTitle,
   listProjectSummaries,
+  enqueuePendingRename,
+  flushPendingRename,
 } from './sessionTitles';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
@@ -842,6 +844,21 @@ app.whenReady().then(() => {
   );
   ipcMain.handle('sessionTitles:listForProject', (_e, projectKey: string) =>
     listProjectSummaries(projectKey)
+  );
+  // Pending-rename queue. Renderer enqueues when SDK reports `no_jsonl`
+  // (rename happened before the first message flushed the JSONL file). PR3's
+  // sessionWatcher is the only production caller of `flushPending` — it
+  // fires when the watcher first sees the JSONL appear. Exposed here so the
+  // renderer's store action can reach the in-memory queue that lives in
+  // `electron/sessionTitles`.
+  ipcMain.handle(
+    'sessionTitles:enqueuePending',
+    (_e, sid: string, title: string, dir?: string) => {
+      enqueuePendingRename(sid, title, dir);
+    }
+  );
+  ipcMain.handle('sessionTitles:flushPending', (_e, sid: string) =>
+    flushPendingRename(sid)
   );
 
   ipcMain.handle('window:minimize', (e) => {

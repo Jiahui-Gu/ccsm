@@ -289,6 +289,125 @@ async function caseNewSessionChat({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case 1c: session-rename-writes-jsonl (PR2 — store renameSession → SDK writeback)
+// ============================================================================
+//
+// Verifies the renderer's renameSession action forwards the new title through
+// the main-process SDK bridge installed in PR1. End-to-end flow:
+//   1. Spawn a fresh session in an isolated CLAUDE_CONFIG_DIR.
+//   2. Send a one-shot prompt so the JSONL transcript exists on disk.
+//   3. Trigger renameSession via window.__ccsmStore.getState().renameSession.
+//      The store update is async; await it from inside win.evaluate.
+//   4. Locate <sid>.jsonl under <tempDir>/projects/<hash>/ and grep for the
+//      custom title. The SDK writes a `customTitle` discriminator frame
+//      (or stamps `customTitle` on the existing summary frame); both shapes
+//      contain the literal string we set. Asserting on the literal is
+//      schema-tolerant.
+async function caseSessionRenameWritesJsonl({ electronApp: _e, win, tempDir }) {
+  const RENAME_PROMPT = 'reply with the single word: ack';
+  const CUSTOM_TITLE = `pr2-rename-${Math.random().toString(36).slice(2, 10)}`;
+
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  const projectDir = path.join(tempDir, 'rename-project');
+  mkdirSync(projectDir, { recursive: true });
+  const { sid } = await seedSession(win, { name: 'rename-probe', cwd: projectDir });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  await sleep(4000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+
+  // Drive a tiny chat so the JSONL gets written; renameSession's SDK bridge
+  // requires the session file to exist (otherwise it'd return no_jsonl and
+  // the title would be queued, never landing on disk during this case).
+  await sendToClaudeTui(win, RENAME_PROMPT);
+  await sleep(500);
+  await sendToClaudeTui(win, '\r');
+
+  // Wait for the JSONL to appear under <tempDir>/projects/<hash>/.
+  const projectsRoot = path.join(tempDir, 'projects');
+  let matchedJsonl = null;
+  {
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline && !matchedJsonl) {
+      if (existsSync(projectsRoot)) {
+        for (const dirName of readdirSync(projectsRoot)) {
+          let entries;
+          try { entries = readdirSync(path.join(projectsRoot, dirName)); } catch { continue; }
+          if (entries.includes(`${sid}.jsonl`)) {
+            matchedJsonl = path.join(projectsRoot, dirName, `${sid}.jsonl`);
+            break;
+          }
+        }
+      }
+      if (!matchedJsonl) await sleep(1000);
+    }
+  }
+  if (!matchedJsonl) {
+    throw new Error(`no <sid>.jsonl found under ${projectsRoot} within 90s for sid=${sid}`);
+  }
+
+  // Trigger the rename via the renderer store. The action is async — we
+  // await it so the IPC writeback round-trips before asserting on disk.
+  const renameOutcome = await win.evaluate(async ({ s, t }) => {
+    const store = window.__ccsmStore;
+    if (!store) return { ok: false, reason: 'no-store' };
+    const action = store.getState().renameSession;
+    if (typeof action !== 'function') return { ok: false, reason: 'no-action' };
+    try {
+      const ret = action(s, t);
+      // Action is async (returns a Promise); await it.
+      if (ret && typeof ret.then === 'function') await ret;
+      const after = store.getState().sessions.find((x) => x.id === s);
+      return { ok: true, localName: after?.name ?? null };
+    } catch (err) {
+      return { ok: false, reason: 'threw', message: String(err && err.message ? err.message : err) };
+    }
+  }, { s: sid, t: CUSTOM_TITLE });
+  if (!renameOutcome.ok) {
+    throw new Error(`renameSession failed: ${JSON.stringify(renameOutcome)}`);
+  }
+  if (renameOutcome.localName !== CUSTOM_TITLE) {
+    throw new Error(
+      `local store name not updated: expected "${CUSTOM_TITLE}", got "${renameOutcome.localName}"`
+    );
+  }
+
+  // Assert the JSONL gained the custom title. SDK writes asynchronously;
+  // poll the file for up to 10s.
+  let foundOnDisk = false;
+  let lastSnapshot = '';
+  {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        const contents = readFileSync(matchedJsonl, 'utf8');
+        lastSnapshot = contents;
+        if (contents.includes(CUSTOM_TITLE)) {
+          foundOnDisk = true;
+          break;
+        }
+      } catch {
+        /* keep polling */
+      }
+      await sleep(500);
+    }
+  }
+  if (!foundOnDisk) {
+    const tail = lastSnapshot.split('\n').slice(-6).join('\n');
+    throw new Error(
+      `customTitle "${CUSTOM_TITLE}" not present in ${matchedJsonl} after rename. tail:\n${tail}`,
+    );
+  }
+}
+
+// ============================================================================
 // Case 1b: session-state-becomes-idle (#553 — JSONL tail-watcher signal)
 // ============================================================================
 //
@@ -1940,6 +2059,7 @@ async function caseCwdPickerOnlyOneOpen({ win }) {
 
 const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
+  { name: 'session-rename-writes-jsonl', group: 'shared', run: caseSessionRenameWritesJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
   { name: 'notify-fires-on-idle',        group: 'shared', run: caseNotifyFiresOnIdle },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
