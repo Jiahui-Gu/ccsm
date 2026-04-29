@@ -28,6 +28,7 @@ export function ImportDialog({ open, onOpenChange }: Props) {
   const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
   const groups = useStore((s) => s.groups);
+  const focusedGroupId = useStore((s) => s.focusedGroupId);
   const importSession = useStore((s) => s.importSession);
   const createGroup = useStore((s) => s.createGroup);
   const renameGroup = useStore((s) => s.renameGroup);
@@ -102,10 +103,23 @@ export function ImportDialog({ open, onOpenChange }: Props) {
     if (!api || selected.size === 0) return;
     setImporting(true);
     try {
-      let groupId = groups.find((g) => g.kind === 'normal' && g.name === IMPORT_GROUP_NAME)?.id;
-      if (!groupId) {
-        groupId = createGroup(IMPORT_GROUP_NAME);
-        renameGroup(groupId, IMPORT_GROUP_NAME);
+      // Target the focused group if the user has one selected in the sidebar.
+      // Without a focus, fall back to the existing "Imported" bucket so casual
+      // imports stay grouped together rather than scattering into whichever
+      // group happened to be active last.
+      const focused = focusedGroupId
+        ? groups.find((g) => g.id === focusedGroupId && g.kind === 'normal')
+        : undefined;
+      let groupId: string;
+      if (focused) {
+        groupId = focused.id;
+      } else {
+        let bucketId = groups.find((g) => g.kind === 'normal' && g.name === IMPORT_GROUP_NAME)?.id;
+        if (!bucketId) {
+          bucketId = createGroup(IMPORT_GROUP_NAME);
+          renameGroup(bucketId, IMPORT_GROUP_NAME);
+        }
+        groupId = bucketId;
       }
       const picked = items.filter((i) => selected.has(i.sessionId));
       for (const it of picked) {
