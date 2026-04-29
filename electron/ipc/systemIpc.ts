@@ -14,8 +14,8 @@ import type { IpcMain, App } from 'electron';
 import { shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 import { fromMainFrame } from '../security/ipcGuards';
+import { getClaudeSettingsPath } from '../shared/claudePaths';
 import {
   listModelsFromSettings,
   readDefaultModelFromSettings,
@@ -34,10 +34,11 @@ export interface SystemIpcDeps {
 /** Pure helper: read ~/.claude/settings.json + env, return the connection
  *  view shown in the StatusBar / Settings dialog. Exported for unit tests.
  *  `settingsFile` is overridable so tests don't have to touch the real
- *  homedir file. */
+ *  homedir file. Default honors `CLAUDE_CONFIG_DIR` (#812 bug fix — used
+ *  to hardcode `os.homedir()` and silently ignore the env override). */
 export function readConnectionView(
   env: NodeJS.ProcessEnv,
-  settingsFile: string = path.join(os.homedir(), '.claude', 'settings.json'),
+  settingsFile: string = getClaudeSettingsPath(),
 ): {
   baseUrl: string | null;
   model: string | null;
@@ -132,7 +133,12 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
   ipcMain.handle('connection:read', () => readConnectionView(process.env));
   ipcMain.handle('connection:openSettingsFile', async (e) => {
     if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-    const file = path.join(os.homedir(), '.claude', 'settings.json');
+    // #812 bug fix: was `path.join(os.homedir(), '.claude', 'settings.json')`
+    // which silently ignored CLAUDE_CONFIG_DIR. With ccsm setting that env
+    // var so the bundled CLI uses a per-instance config tree, the "open
+    // settings file" action used to open a stale file in the real homedir
+    // instead of the active config tree.
+    const file = getClaudeSettingsPath();
     // shell.openPath returns '' on success, error string on failure. If the
     // file does not exist, create an empty stub so the editor opens cleanly.
     if (!fs.existsSync(file)) {

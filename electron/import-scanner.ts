@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import { getClaudeProjectsDir } from './shared/claudePaths';
 
 export type ScannableSession = {
   sessionId: string;
@@ -12,7 +13,14 @@ export type ScannableSession = {
   model: string | null;
 };
 
-const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
+// Lazily resolved per-call so `CLAUDE_CONFIG_DIR` mutations between scans
+// (tests, parallel CLI configs) are honored. Was a module-load constant
+// `path.join(os.homedir(), '.claude', 'projects')` which silently ignored
+// the env-var override and pinned the scanner to whichever config tree was
+// active at first import. See #812.
+function projectsRoot(): string {
+  return getClaudeProjectsDir();
+}
 
 // `os.tmpdir()` is platform-aware: returns `%LOCALAPPDATA%\Temp` on Windows,
 // `/tmp` on Linux, `/var/folders/.../T/` on macOS. We capture it at module
@@ -76,16 +84,17 @@ export function isCCSMTempCwd(cwd: string): boolean {
 const MAX_HEAD_LINES = 200;
 
 export async function scanImportableSessions(): Promise<ScannableSession[]> {
+  const root = projectsRoot();
   let dirs: string[];
   try {
-    dirs = await fs.promises.readdir(PROJECTS_ROOT);
+    dirs = await fs.promises.readdir(root);
   } catch {
     return [];
   }
 
   const out: ScannableSession[] = [];
   for (const dir of dirs) {
-    const projDir = path.join(PROJECTS_ROOT, dir);
+    const projDir = path.join(root, dir);
     let entries: string[];
     try {
       entries = await fs.promises.readdir(projDir);

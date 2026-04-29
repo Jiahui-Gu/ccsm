@@ -22,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { getClaudeConfigDir } from './shared/claudePaths';
 
 // Six logical sources surfaced by the slash-command palette. `skill` and
 // `agent` were previously folded into `user`; splitting them lets the picker
@@ -295,9 +295,10 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
   //      the binary and the GUI loader read the same tree; ignoring it would
   //      desync the picker from what claude.exe actually executes)
   //   3. `<os.homedir()>/.claude` (last-resort default)
+  // Steps 2-3 live in `getClaudeConfigDir()` (electron/shared/claudePaths.ts).
   const claudeRoot = opts.homeDir
     ? path.join(opts.homeDir, '.claude')
-    : (process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'));
+    : getClaudeConfigDir();
   const all: RawEntry[] = [];
 
   // 1. user
