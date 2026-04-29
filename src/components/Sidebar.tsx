@@ -27,7 +27,6 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useStore } from '../stores/store';
 import { cn } from '../lib/cn';
-import { useSessionLiveState } from '../hooks/useSessionLiveState';
 import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
 import { AgentIcon } from './AgentIcon';
@@ -58,59 +57,6 @@ import type { Group, Session } from '../types';
 // Session order inside a group is user-controlled (drag to reorder) — not
 // derived from state. The array order handed down from the store is the
 // source of truth; don't re-sort it here.
-
-// Live-state dot for inactive session rows. Source: JSONL tail-watcher
-// (electron/sessionWatcher) → window.ccsmSession.onState → useSessionLiveState.
-//
-// Color rules per #553 spec:
-//   running          → muted pulsing dot (claude is mid-turn — passive cue,
-//                      no need to grab attention; user already knows they
-//                      kicked off work).
-//   idle             → solid accent dot ("ccsm's standard needs-attention"
-//                      color — claude finished and the user owes the next
-//                      move).
-//   requires_action  → solid amber dot (state-waiting token — sharper visual
-//                      because a permission prompt is blocking forward
-//                      progress).
-//
-// Active row shows the existing accent dot in the rail-cell slot already;
-// this dot is only rendered when `!active` so we don't double-glyph the
-// focused row.
-import type { SessionState as LiveSessionState } from '../session';
-
-function SessionStateDot({
-  state,
-  t,
-}: {
-  state: LiveSessionState;
-  t: (key: string) => string;
-}) {
-  if (state === 'running') {
-    return (
-      <motion.span
-        aria-label={t('sidebar.sessionStateRunning')}
-        className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-fg-tertiary"
-        animate={{ opacity: [0.45, 1, 0.45] }}
-        transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
-      />
-    );
-  }
-  if (state === 'requires_action') {
-    return (
-      <span
-        aria-label={t('sidebar.sessionStateRequiresAction')}
-        className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-state-waiting"
-      />
-    );
-  }
-  // idle
-  return (
-    <span
-      aria-label={t('sidebar.sessionStateIdle')}
-      className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
-    />
-  );
-}
 
 // Cross-group DnD uses three drop-target id flavors via closestCenter:
 //   - session id            → insert before that session
@@ -405,11 +351,6 @@ function GroupRow({
 function SessionRow({ session, active, selected, onSelect, normalGroups }: { session: Session; active: boolean; selected: boolean; onSelect: () => void; normalGroups: Group[] }) {
   const { t } = useTranslation();
   const [renaming, setRenaming] = useState(false);
-  // Live state from the JSONL tail-watcher (electron/sessionWatcher).
-  // Undefined until the watcher has emitted at least one event for this
-  // sid — sessions that have never been spawned in this app launch will
-  // show no dot, matching the pre-watcher behaviour.
-  const liveState = useSessionLiveState(session.id);
   // Per-session pty disconnect classification — populated by the app-boot
   // unconditional `pty:exit` listener (App.tsx). We surface the red dot
   // ONLY for `crashed` (signal or non-zero exit) — `clean` exits are
@@ -559,11 +500,6 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
                 aria-label={t('sidebar.openInChat')}
                 className="shrink-0 inline-block w-1.5 h-1.5 rounded-full bg-accent"
               />
-            </span>
-          )}
-          {!active && liveState && (
-            <span className="sidebar-rail-cell sidebar-rail-cell--nested shrink-0">
-              <SessionStateDot state={liveState} t={t} />
             </span>
           )}
           {crashed && (

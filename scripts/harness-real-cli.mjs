@@ -657,31 +657,45 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
     );
   }
 
-  // Verify the sidebar renders a state dot for the bystander row (which
-  // is NOT the active session, so the dot rule kicks in). The bystander
-  // never received a prompt, so its inferred state is 'running' (file
-  // doesn't exist yet → empty-frames fallback) OR may show 'idle' if the
-  // CLI wrote an init frame. Either way the aria-label should match one
-  // of our three i18n strings. We scope the query to its data-session-id.
-  const bystanderDot = await win.evaluate((sb) => {
+  // Per #600 / PR e5deb8c: the sidebar row dot is now SELECTION-ONLY. The
+  // live-state dot (running/idle/requires_action) was deleted. The
+  // bystander row is NOT the active session AND NOT the selected row, so
+  // it must NOT render any of the three deleted state-dot aria-labels.
+  // If we find one, the SessionStateDot component (or an equivalent
+  // live-state coupling) has regressed back into the sidebar.
+  const FORBIDDEN_STATE_LABELS = [
+    // en (src/i18n/locales/en.ts pre-PR)
+    'Waiting for your reply',
+    'Working',
+    'Needs your decision',
+    // zh (src/i18n/locales/zh.ts pre-PR)
+    '等待你的回复',
+    '正在处理',
+    '需要你的决定',
+  ];
+  const bystanderScan = await win.evaluate(({ sb, forbidden }) => {
     const row = document.querySelector(`[data-session-id="${sb}"]`);
     if (!row) return { rowFound: false };
-    const dot = row.querySelector('[aria-label]');
-    if (!dot) return { rowFound: true, aria: null };
-    return { rowFound: true, aria: dot.getAttribute('aria-label') };
-  }, sidIdle);
-  if (!bystanderDot.rowFound) {
+    const labelled = Array.from(row.querySelectorAll('[aria-label]'));
+    const allLabels = labelled.map((el) => el.getAttribute('aria-label'));
+    const forbiddenHits = allLabels.filter((l) => forbidden.includes(l));
+    return { rowFound: true, allLabels, forbiddenHits };
+  }, { sb: sidIdle, forbidden: FORBIDDEN_STATE_LABELS });
+  if (!bystanderScan.rowFound) {
     throw new Error(`bystander row [data-session-id=${sidIdle}] not found in DOM`);
   }
-  // We don't fail when no dot has rendered yet — the CLI may not have
-  // written a frame for the bystander. Idle/running/requires-action dots
-  // share the rail-cell slot but only render when a state event has
-  // arrived. Log for visibility.
-  if (bystanderDot.aria) {
-    console.log(`[HARNESS]   bystander dot aria-label: "${bystanderDot.aria}"`);
-  } else {
-    console.log('[HARNESS]   bystander dot not rendered (no state event yet for that sid) — acceptable');
+  if (bystanderScan.forbiddenHits.length > 0) {
+    throw new Error(
+      `bystander row regressed: live-state dot rendered on non-selected row ` +
+      `(forbidden aria-labels: ${JSON.stringify(bystanderScan.forbiddenHits)}). ` +
+      `Per PR e5deb8c (#600 PR-A) the sidebar row dot is selection-only and ` +
+      `running/idle/requires_action dots must NOT appear on inactive rows. ` +
+      `All aria-labels seen on this row: ${JSON.stringify(bystanderScan.allLabels)}`,
+    );
   }
+  console.log(
+    `[HARNESS]   bystander row clean — no live-state dot (${bystanderScan.allLabels.length} aria-labels checked, none forbidden)`,
+  );
 }
 
 // ============================================================================
