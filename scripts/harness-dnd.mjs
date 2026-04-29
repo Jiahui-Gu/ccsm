@@ -128,12 +128,55 @@ async function caseDnd({ win, log }) {
       );
     }
     log('  macOS fallback: auto-expand isOver flag stuck false under Playwright synthetic events, opening g3 manually');
-    await win.evaluate(() => window.__ccsmStore.getState().setGroupCollapsed('g3', false));
-    await win.waitForTimeout(100);
+    // Defensive cleanup before the second drag attempt:
+    //   1. Re-pin s2 to g1 via the store. If the failed first drag left
+    //      dnd-kit in a transient "dropped to nowhere" state (DragOverlay
+    //      drop animation, transient transform/opacity on the row), driving
+    //      a fresh moveSession resets the row's identity and forces a
+    //      remount-shaped re-render that clears any sticky useSortable
+    //      transform.
+    //   2. Expand g3 so the header is in its expanded state (matches what
+    //      a real auto-expand would have produced).
+    //   3. Wait for s2 to be back in g1's <ul> and the g3 header to exist.
+    //      We re-target the HEADER (data-group-header-id="g3") for the
+    //      second drop instead of the empty <ul data-group-id="g3">: an
+    //      empty group <ul> renders with no min-height (just `mt-px` in
+    //      GroupRow.tsx) so its boundingBox.height stays 0 until a session
+    //      lands inside — chicken-and-egg for `dndDrag`'s `state: 'visible'`
+    //      waitFor on the target. The header div has `h-7` (28px) and is
+    //      always visible, and dropping on a header routes into that group
+    //      (already exercised by the primary attempt above).
+    //   4. Wait an extra animation frame so dnd-kit's drop animation +
+    //      framer-motion exit transitions on the previous attempt have
+    //      fully unwound before we start a new pointerdown sequence.
+    await win.evaluate(() => {
+      const st = window.__ccsmStore.getState();
+      st.moveSession('s2', 'g1');
+      st.setGroupCollapsed('g3', false);
+    });
+    await win.waitForFunction(
+      () => {
+        const s2InG1 = !!document
+          .querySelector('ul[data-group-id="g1"]')
+          ?.querySelector('li[data-session-id="s2"]');
+        const g3Header = document.querySelector('[data-group-header-id="g3"]');
+        return s2InG1 && !!g3Header;
+      },
+      null,
+      { timeout: 5000 }
+    );
+    // Wait for any leftover DragOverlay drop animation (150ms per Sidebar
+    // DragOverlay dropAnimation) plus a settle frame. Doing this via rAFs
+    // rather than a fixed sleep keeps it tight on fast runners.
+    await win.evaluate(
+      () =>
+        new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    );
+    await win.waitForTimeout(250);
     await dndDrag(
       win,
       'li[data-session-id="s2"]',
-      'ul[data-group-id="g3"]'
+      '[data-group-header-id="g3"]'
     );
   }
   if (await groupContains('g1', 's2')) throw new Error('s2 still in g1 after drag to g3 header');

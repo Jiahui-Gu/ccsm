@@ -389,15 +389,26 @@ async function caseToastA11y({ win, log }) {
   const stillThere = await win.evaluate(() => !!document.querySelector('[data-testid="toast-error"]'));
   if (!stillThere) throw new Error('error toast was dismissed by body click — should be sticky to close button + Esc');
 
-  // Close button DOES dismiss.
+  // Close button DOES dismiss. Poll for the AnimatePresence exit animation
+  // (200ms framer-motion DURATION_RAW.ms200) plus React commit + DOM
+  // unmount to complete. A fixed 250ms wait was structurally racy on macOS
+  // Chromium under Playwright where renderer scheduling + animation frames
+  // can push the unmount past 250ms (issue #759). Wait up to 3s for the
+  // toast element to leave the DOM — Win/linux still resolve in ~220ms.
   await win.evaluate(() => {
     const errToast = document.querySelector('[data-testid="toast-error"]');
     const btn = errToast?.querySelector('button[aria-label]');
     btn?.click();
   });
-  await win.waitForTimeout(250);
-  const gone = await win.evaluate(() => !document.querySelector('[data-testid="toast-error"]'));
-  if (!gone) throw new Error('error toast survived close-button click');
+  try {
+    await win.waitForFunction(
+      () => !document.querySelector('[data-testid="toast-error"]'),
+      null,
+      { timeout: 3000 }
+    );
+  } catch {
+    throw new Error('error toast survived close-button click');
+  }
 
   // Cleanup the persistent info toast.
   await win.evaluate((id) => window.__ccsmToast?.dismiss(id), ids.infoId);
