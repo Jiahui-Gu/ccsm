@@ -46,6 +46,7 @@ export function AgentIcon({
   const inner = agentType === 'claude-code' ? <ClaudeAsterisk size={glyph} /> : null;
   return (
     <motion.span
+      data-agent-icon-state={state}
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center rounded-md',
         'bg-bg-elevated border border-border-default text-fg-primary'
