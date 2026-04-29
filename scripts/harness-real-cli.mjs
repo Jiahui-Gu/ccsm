@@ -1121,6 +1121,253 @@ async function caseCwdProjectsClaude({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: badge-fires-and-clears-on-focus (#786 — PR #569 follow-up)
+// ============================================================================
+//
+// Verifies the BadgeManager integration end-to-end:
+//   producer : notify pipeline `onNotified(sid)` → `badgeManager.incrementSid`
+//   sink     : `badgeController.onFocusChange` → `badgeManager.clearSid`
+//
+// Why a dedicated probe: the trimmed `notify-fires-on-idle` case proves the
+// notify pipeline fires, but the BadgeManager bump + the focus-clear path
+// are a separate integration (badgeStore + badgeSink + BadgeController).
+// PR #569 reviewer flagged this as the missing coverage gap.
+//
+// Strategy:
+//   1. Seed session, drive to idle while activeSid is OTHER (so the
+//      focus-change clear branch doesn't fire and the unread count can
+//      actually accumulate).
+//   2. Poll `__ccsmBadgeDebug.getTotal()` until >= 1 — this proves
+//      `onNotified` flowed into `badgeManager.incrementSid`.
+//   3. Re-activate the test sid via `window.ccsmSession.setActive(sid)`,
+//      which triggers `session:setActive` IPC →
+//      `badgeController.onFocusChange({focused:true, activeSid:sid})` →
+//      `badgeManager.clearSid(sid)`.
+//   4. Poll `getTotal()` until 0 — this proves the focus-clear path works.
+//
+// Setup mirrors `caseNotifyFiresOnIdle`: the runner already passes
+// CCSM_NOTIFY_TEST_HOOK=1 (which gates `__ccsmBadgeDebug` install in main).
+// The harness-level `createIsolatedClaudeDir` + `launchCcsmIsolated` set
+// HOME / USERPROFILE / CLAUDE_CONFIG_DIR / CCSM_CLAUDE_CONFIG_DIR per
+// `project_probe_skill_injection.md` and `project_renderer_reads_claude_config_dir.md`.
+
+async function caseBadgeFiresAndClearsOnFocus({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Confirm the badge debug seam is wired (depends on CCSM_NOTIFY_TEST_HOOK).
+  const seamReady = await electronApp.evaluate(() => {
+    const dbg = globalThis.__ccsmBadgeDebug;
+    return !!(dbg && typeof dbg.getTotal === 'function' && typeof dbg.clearAll === 'function');
+  });
+  if (!seamReady) {
+    throw new Error('__ccsmBadgeDebug seam missing — CCSM_NOTIFY_TEST_HOOK not set on main?');
+  }
+
+  // Reset to a known baseline. Other cases in this shared launch may have
+  // accumulated unread counts; clearAll gives us a deterministic 0-start.
+  await electronApp.evaluate(() => globalThis.__ccsmBadgeDebug.clearAll());
+
+  const { sid } = await seedSession(win, { name: 'badge-probe', cwd: tempDir });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  await sleep(3000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+  await dismissFirstRunModals(win);
+
+  // Switch active sid AWAY from the test sid so the increment can land
+  // without `onFocusChange` immediately clearing it (decideBadgeClear
+  // requires focused && activeSid; setting it to null disables clear-on-bump).
+  // Empty string is treated as null by the IPC handler (line 588).
+  await win.evaluate(() => {
+    const bridge = window.ccsmSession;
+    if (bridge && typeof bridge.setActive === 'function') bridge.setActive('');
+  });
+  await sleep(200);
+
+  // Drive idle.
+  await sendToClaudeTui(win, 'reply with: ack');
+  await sleep(300);
+  await sendToClaudeTui(win, '\r');
+
+  // CRITICAL ASSERTION 1: badge total accumulates after notify fires.
+  let totalAfterIdle = 0;
+  {
+    const start = Date.now();
+    while (Date.now() - start < 180_000) {
+      await sleep(2000);
+      totalAfterIdle = await electronApp.evaluate(
+        () => globalThis.__ccsmBadgeDebug?.getTotal() ?? 0,
+      );
+      if (totalAfterIdle >= 1) break;
+    }
+  }
+  if (totalAfterIdle < 1) {
+    const diag = await electronApp.evaluate((_e, s) => ({
+      log: (globalThis.__ccsmNotifyLog || []).filter((x) => x.sid === s),
+      badgeTotal: globalThis.__ccsmBadgeDebug?.getTotal() ?? 0,
+      lastEmitted: globalThis.__ccsmTestDebug?.getLastEmittedForSid?.(s) ?? null,
+    }), sid);
+    throw new Error(
+      `badge total never went >= 1 within 180s after idle for sid=${sid}. Diag: ${JSON.stringify(diag)}`,
+    );
+  }
+  console.log(`[HARNESS]   badge incremented: total=${totalAfterIdle}`);
+
+  // CRITICAL ASSERTION 2: focus + setActive clears the badge.
+  // Re-set active to the test sid; main calls badgeController.onFocusChange
+  // with focused=isMainWindowFocused() (Playwright window IS focused).
+  await win.evaluate((s) => {
+    const bridge = window.ccsmSession;
+    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
+  }, sid);
+
+  let totalAfterFocus = totalAfterIdle;
+  {
+    const start = Date.now();
+    while (Date.now() - start < 10_000) {
+      await sleep(250);
+      totalAfterFocus = await electronApp.evaluate(
+        () => globalThis.__ccsmBadgeDebug?.getTotal() ?? 0,
+      );
+      if (totalAfterFocus === 0) break;
+    }
+  }
+  if (totalAfterFocus !== 0) {
+    throw new Error(
+      `badge total did not clear within 10s of setActive+focus. total=${totalAfterFocus} sid=${sid}`,
+    );
+  }
+  console.log(`[HARNESS]   badge cleared on focus: total=0`);
+}
+
+// ============================================================================
+// Case: spaces-in-cwd-spawns-correctly (#787 / #560 — PR #569 follow-up)
+// ============================================================================
+//
+// Verifies that a session whose cwd contains literal whitespace spawns its
+// pty without ENOENT / "bad path" / shell-quoting failures. Was a sub-case
+// of `caseCwdProjectsClaude` until PR #569 trim, deferred to its own probe
+// per reviewer follow-up.
+//
+// Smoke contract:
+//   1. Create cwd path with a literal space inside (e.g. `<tempDir>/ccsm test space/cwd`).
+//   2. createSession({ cwd }) via the renderer store; the store calls
+//      ccsmPty.spawn(sid, cwd) on attach.
+//   3. Wait for the terminal host to mount (this fails fast if the pty
+//      crashed on spawn — TerminalPane flips to a Retry button; we already
+//      assert against that).
+//   4. Cross-check `window.ccsmPty.list()` includes an entry for `sid`
+//      whose `cwd` field equals the requested path verbatim. This is what
+//      `lifecycle.list` returns (see electron/ptyHost/lifecycle.ts) and
+//      proves the spawn cwd round-tripped through ipc + node-pty intact.
+//   5. Cross-check the renderer store's session.cwd equals the requested
+//      path (no path-normalization stripping the spaces).
+
+async function caseSpacesInCwdSpawnsCorrectly({ electronApp: _e, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Build a cwd with spaces in BOTH a parent and the leaf — covers the two
+  // shell-quoting layers (parent dirname expansion + leaf cwd argv).
+  const spacedParent = path.join(tempDir, 'ccsm test space');
+  const spacedCwd = path.join(spacedParent, 'project cwd');
+  mkdirSync(spacedCwd, { recursive: true });
+  if (!/ /.test(spacedCwd)) {
+    throw new Error(`test setup error: spacedCwd has no space: ${spacedCwd}`);
+  }
+
+  const { sid } = await seedSession(win, { name: 'spaces-cwd-probe', cwd: spacedCwd });
+  if (!sid) throw new Error('seedSession returned no sid');
+
+  // If pty spawn fails, TerminalPane shows a Retry button; if spawn
+  // succeeds, the host DIV mounts. waitForTerminalReady asserts the host
+  // mounted. Generous timeout because cold spawn on Windows can take a few
+  // seconds.
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+
+  // Negative: no error toast, no Retry button.
+  const healthy = await win.evaluate(() => {
+    const out = { errorToast: null, terminalErrorVisible: false };
+    const errRegion = document.querySelector('[aria-live="assertive"]');
+    if (errRegion) {
+      const txt = (errRegion.textContent || '').trim();
+      if (txt) out.errorToast = txt.slice(0, 240);
+    }
+    const buttons = Array.from(document.querySelectorAll('button'));
+    out.terminalErrorVisible = buttons.some((b) => /^retry$/i.test((b.textContent || '').trim()));
+    return out;
+  });
+  if (healthy.errorToast) {
+    throw new Error(`error toast surfaced after spaced-cwd spawn: ${healthy.errorToast}`);
+  }
+  if (healthy.terminalErrorVisible) {
+    throw new Error('terminal flipped to error state (Retry visible) — spaced-cwd spawn failed');
+  }
+
+  // CRITICAL ASSERTION 1: pty:list reports the session with the exact
+  // requested cwd (proves spawn cwd survived ipc + node-pty round trip).
+  let ptyEntry = null;
+  {
+    const start = Date.now();
+    while (Date.now() - start < 15_000) {
+      ptyEntry = await win.evaluate(async (s) => {
+        if (!window.ccsmPty || typeof window.ccsmPty.list !== 'function') return null;
+        try {
+          const arr = await window.ccsmPty.list();
+          return (arr || []).find((x) => x.sid === s) ?? null;
+        } catch (_) {
+          return null;
+        }
+      }, sid);
+      if (ptyEntry) break;
+      await sleep(300);
+    }
+  }
+  if (!ptyEntry) {
+    throw new Error(`pty:list never returned an entry for sid=${sid} (spawn likely failed)`);
+  }
+  if (typeof ptyEntry.pid !== 'number' || ptyEntry.pid <= 0) {
+    throw new Error(`pty entry has invalid pid: ${JSON.stringify(ptyEntry)}`);
+  }
+  // node-pty / Windows may normalize separators; compare path.resolve forms
+  // so a backslash-vs-forward-slash difference doesn't false-fail. The
+  // critical assertion is that the SPACES survived — no truncation, no
+  // quote-escape mangling.
+  const wantResolved = path.resolve(spacedCwd);
+  const gotResolved = path.resolve(String(ptyEntry.cwd ?? ''));
+  if (gotResolved.toLowerCase() !== wantResolved.toLowerCase()) {
+    throw new Error(
+      `pty cwd mismatch: want=${wantResolved} got=${gotResolved} (entry=${JSON.stringify(ptyEntry)})`,
+    );
+  }
+  if (!/ /.test(String(ptyEntry.cwd))) {
+    throw new Error(`pty cwd lost its spaces: ${JSON.stringify(ptyEntry.cwd)}`);
+  }
+
+  // CRITICAL ASSERTION 2: renderer store preserved the cwd verbatim.
+  const storeCwd = await win.evaluate((s) => {
+    const useStore = window.__ccsmStore;
+    if (!useStore) return null;
+    const sess = useStore.getState().sessions.find((x) => x.id === s);
+    return sess?.cwd ?? null;
+  }, sid);
+  if (!storeCwd) throw new Error(`store has no session for sid=${sid}`);
+  const storeResolved = path.resolve(storeCwd);
+  if (storeResolved.toLowerCase() !== wantResolved.toLowerCase()) {
+    throw new Error(`store cwd mismatch: want=${wantResolved} got=${storeResolved}`);
+  }
+  console.log(`[HARNESS]   spaces-in-cwd spawn OK: pid=${ptyEntry.pid} cwd=${ptyEntry.cwd}`);
+}
+
+// ============================================================================
 // Case 4: import-resume (UX H)
 // ============================================================================
 
@@ -2859,6 +3106,8 @@ const CASE_REGISTRY = [
   { name: 'notify-pipeline-background',  group: 'shared', run: caseNotifyPipelineBackground },
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
+  { name: 'caseBadgeFiresAndClearsOnFocus', group: 'shared', run: caseBadgeFiresAndClearsOnFocus },
+  { name: 'caseSpacesInCwdSpawnsCorrectly', group: 'shared', run: caseSpacesInCwdSpawnsCorrectly },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
   { name: 'import-lands-in-focused-group', group: 'shared', run: caseImportLandsInFocusedGroup },
   { name: 'default-cwd-from-userCwds-lru', group: 'shared', run: caseDefaultCwdFromUserCwdsLru },
