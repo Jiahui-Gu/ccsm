@@ -113,7 +113,35 @@ export async function dndDrag(win, sourceSelector, targetSelector, opts = {}) {
     await win.waitForTimeout(15);
   }
   await win.waitForTimeout(settleMs);
-  if (holdMs > 0) await win.waitForTimeout(holdMs);
+  if (holdMs > 0) {
+    // Heartbeat: re-fire pointermove on the target every 100ms during the
+    // hold window. dnd-kit's collision detection (and the GroupRow
+    // hover-to-expand timer) only re-evaluates on pointermove; on macOS CI
+    // a single move-then-idle leaves isOver stuck false even after 1500ms.
+    // The heartbeat keeps the over state hot so the auto-expand timer
+    // actually fires. Win/linux were tolerant to a single move; this is
+    // defensive slack, not a behavior change.
+    const heartbeatMs = 100;
+    let elapsed = 0;
+    while (elapsed < holdMs) {
+      await win.evaluate(
+        ({ tx, ty }) =>
+          document.dispatchEvent(
+            new PointerEvent('pointermove', {
+              clientX: tx,
+              clientY: ty,
+              bubbles: true,
+              pointerType: 'mouse',
+              pointerId: 1,
+              isPrimary: true
+            })
+          ),
+        { tx, ty }
+      );
+      await win.waitForTimeout(heartbeatMs);
+      elapsed += heartbeatMs;
+    }
+  }
   await win.evaluate(
     ({ tx, ty }) =>
       document.dispatchEvent(

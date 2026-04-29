@@ -49,10 +49,22 @@ jobs:
         run: npm run build
       - name: Run e2e (Linux with xvfb)
         if: runner.os == 'Linux'
+        # E2E_SKIP=harness-real-cli — public CI runners have no `claude`
+        # CLI installed AND no Anthropic auth tokens, so every case in
+        # harness-real-cli that calls waitForTerminalReady deterministically
+        # times out (the renderer falls through to ClaudeMissingGuide and
+        # never mounts <TerminalPane>). The harness stays runnable locally
+        # via `node scripts/harness-real-cli.mjs` (or `npm run probe:e2e`
+        # without the env var) for the dev / dogfood loop, where the user's
+        # ~/.claude is real. (#726)
         run: xvfb-run -a npm run probe:e2e
+        env:
+          E2E_SKIP: harness-real-cli
       - name: Run e2e (mac/win)
         if: runner.os != 'Linux'
         run: npm run probe:e2e
+        env:
+          E2E_SKIP: harness-real-cli
       - name: Upload e2e logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

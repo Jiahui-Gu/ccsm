@@ -8,7 +8,7 @@
 //
 // Scope:
 //   - sidebar-align                        (probe-e2e-sidebar-align)
-//   - sidebar-vertical-symmetry            (UX audit Group A internal symmetry)
+//   - sidebar-vertical-symmetry            (REMOVED — top padding intentionally asymmetric per #606)
 //   - sidebar-long-name-truncates          (fp13-A, long name truncation + tooltip)
 //   - no-sessions-landing                  (probe-e2e-no-sessions-landing)
 //   - shortcut-overlay-opens               (UI-1 / #188)
@@ -25,9 +25,9 @@
 //   - language-toggle                      (probe-e2e-language-toggle)
 //   - i18n-settings-zh                     (probe-e2e-i18n-settings-zh)
 //   - notif-disabled-suppress              (REMOVED in PR-D alongside the Notifications pane)
-//   - app-icon-default                     (probe-e2e-app-icon-default, skipLaunch)
+//   - app-icon-default                     (REMOVED — PR #525/#630 reintroduced custom icon by design)
 //   - cap-skip-launch-bundle-shape         (capability demo, skipLaunch)
-//   - group-add                            (probe-e2e-group-add)
+//   - group-add                            (REMOVED — PR #514/#605 consolidated to top NewSession)
 //   - import-empty-groups                  (probe-e2e-import-empty-groups)
 //   - rename                               (sidebar session/group rename)
 //   - startup-paints-before-hydrate        (perf/startup-render-gate)
@@ -63,7 +63,7 @@ import { runHarness, mod } from './probe-helpers/harness-runner.mjs';
 import { seedStore } from './probe-utils.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+// readFile/stat were used by the removed app-icon-default case.
 
 // ---------- sidebar-align ----------
 async function caseSidebarAlign({ win, log }) {
@@ -855,10 +855,13 @@ async function caseTitlebar({ app, win, log }) {
   if (dragRegions.length < 2) {
     throw new Error(`expected >=2 top drag regions, got ${dragRegions.length}: ${JSON.stringify(dragRegions)}`);
   }
-  // After PR #347: sidebar drag region is 8px (macOS traffic-lights spacer removed),
-  // right pane stays 32px to host WindowControls.
+  // After PR #347 on win/linux: sidebar drag region is 8px (no traffic
+  // lights to clear). On macOS, commit b876e48 set it to 40px to clear the
+  // hiddenInset titlebar's traffic-light buttons. Right pane stays 32px to
+  // host WindowControls (or empty space on macOS).
+  const expectedLeft = platform === 'darwin' ? 40 : 8;
   for (const r of dragRegions) {
-    const expected = r.left === 0 ? 8 : 32;
+    const expected = r.left === 0 ? expectedLeft : 32;
     if (Math.abs(r.height - expected) > 2) {
       throw new Error(`drag region height expected ~${expected} (left=${r.left}), got ${r.height}. all=${JSON.stringify(dragRegions)}`);
     }
@@ -1452,106 +1455,18 @@ async function caseSkipLaunchBundleShape({ harnessRoot, log }) {
   log(`pkg.main=${pkg.main} bundle=${path.relative(harnessRoot, bundlePath)}`);
 }
 
-// ---------- app-icon-default (skipLaunch) ----------
-// Inverse of the previous "app-icon-present" probe (bug #332): we removed the
-// custom "A" app icon and now rely on Electron's default branding everywhere.
-// This probe locks that decision: no build/icon.* asset, no electron-builder
-// icon: field, no BrowserWindow `icon:` option in main.ts. If anyone re-adds
-// a custom icon they have to consciously update this case.
-async function caseAppIconDefault({ harnessRoot, log }) {
-  // 1) build/ must not contain any icon.{png,ico,icns,svg} — electron-builder
-  //    auto-picks any of those names from buildResources, so each is a
-  //    separate way to silently re-introduce a custom icon.
-  const buildDir = path.join(harnessRoot, 'build');
-  for (const name of ['icon.png', 'icon.ico', 'icon.icns', 'icon.svg']) {
-    const p = path.join(buildDir, name);
-    let exists = false;
-    try {
-      await stat(p);
-      exists = true;
-    } catch {
-      // missing is the desired state
-    }
-    if (exists) {
-      throw new Error(`${path.relative(harnessRoot, p)} exists; bug #332 requires falling back to Electron's default app icon`);
-    }
-  }
+// ---------- app-icon-default — REMOVED ----------
+// PR #525 (#630) "fix(branding): unify 'C' icon across taskbar, tray, and
+// installer" deliberately reintroduced the custom icon, overriding the prior
+// #332 "fall back to Electron default" decision. The probe asserted the
+// older state and is no longer applicable. Removed in fix(e2e) for #726.
 
-  // 2) package.json build.{win,mac,linux} must NOT set `icon:` — leaving the
-  //    field unset lets electron-builder fall back to its packaged default.
-  const pkgRaw = await readFile(path.join(harnessRoot, 'package.json'), 'utf8');
-  let pkg;
-  try {
-    pkg = JSON.parse(pkgRaw);
-  } catch (e) {
-    throw new Error(`package.json is not valid JSON: ${e.message}`);
-  }
-  const build = pkg && pkg.build;
-  if (build && typeof build === 'object') {
-    for (const platform of ['win', 'mac', 'linux']) {
-      const cfg = build[platform];
-      if (cfg && typeof cfg === 'object' && Object.prototype.hasOwnProperty.call(cfg, 'icon')) {
-        throw new Error(`package.json build.${platform}.icon is set to ${JSON.stringify(cfg.icon)}; bug #332 requires omitting this field so electron-builder uses its default icon`);
-      }
-    }
-  }
-
-  // 3) electron/main.ts must NOT pass `icon:` to BrowserWindow — that would
-  //    override the OS default in the running app even if the build config
-  //    is clean.
-  const mainSrc = await readFile(path.join(harnessRoot, 'electron', 'main.ts'), 'utf8');
-  // Match `icon:` only inside a `new BrowserWindow({...})` call so an
-  // unrelated `icon:` (e.g. tray placeholder, menu item) isn't a false hit.
-  const bwMatch = mainSrc.match(/new\s+BrowserWindow\s*\(\s*\{([\s\S]*?)\}\s*\)/);
-  if (bwMatch && /\bicon\s*:/.test(bwMatch[1])) {
-    throw new Error('electron/main.ts passes `icon:` to BrowserWindow; bug #332 requires letting Electron use its default window icon');
-  }
-
-  log('no build/icon.* asset; package.json build.{win,mac,linux}.icon unset; BrowserWindow uses Electron default');
-}
-
-// ---------- group-add ----------
-// Per-group + button creates a session in THAT group, makes it active, does
-// not collapse the group, and is hidden on archived groups.
-async function caseGroupAdd({ win, log }) {
-  await seedStore(win, {
-    groups: [
-      { id: 'g1', name: 'Alpha', collapsed: false, kind: 'normal' },
-      { id: 'g2', name: 'Bravo', collapsed: false, kind: 'normal' },
-      { id: 'gA', name: 'Archived', collapsed: false, kind: 'archive' }
-    ],
-    sessions: [
-      { id: 's1', name: 'a-only', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }
-    ],
-    activeId: 's1',
-    focusedGroupId: 'g1'
-  });
-
-  const before = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
-  const g2Plus = win.locator('[data-group-header-id="g2"] button[aria-label*="new session" i], [data-group-header-id="g2"] button[aria-label*="新建" i]').first();
-  await g2Plus.waitFor({ state: 'visible', timeout: 3000 });
-  await g2Plus.click();
-  await win.waitForTimeout(300);
-  const after = await win.evaluate(() => window.__ccsmStore.getState().sessions.map((s) => ({ id: s.id, groupId: s.groupId })));
-  const beforeIds = new Set(before.map((s) => s.id));
-  const fresh = after.filter((s) => !beforeIds.has(s.id));
-  if (fresh.length !== 1) throw new Error(`expected exactly 1 new session, got ${fresh.length}`);
-  if (fresh[0].groupId !== 'g2') throw new Error(`new session should land in g2, got ${fresh[0].groupId}`);
-
-  const activeId = await win.evaluate(() => window.__ccsmStore.getState().activeId);
-  if (activeId !== fresh[0].id) throw new Error(`new session should be active; activeId=${activeId}, fresh.id=${fresh[0].id}`);
-
-  const g2Open = await win.evaluate(() => {
-    const header = document.querySelector('[data-group-header-id="g2"]');
-    return header?.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded') === 'true';
-  });
-  if (!g2Open) throw new Error('g2 collapsed after + click — the click should not propagate to header toggle');
-
-  const archivedPlus = await win.locator('[data-group-header-id="gA"] button[aria-label*="new session" i]').count();
-  if (archivedPlus !== 0) throw new Error(`archived group should not have a + button (got ${archivedPlus})`);
-
-  log(`+ on g2 created session ${fresh[0].id} in g2 (not g1) and made it active; archived has no +`);
-}
+// ---------- group-add — REMOVED ----------
+// PR #514 "fix(ui): remove per-group + and chevron, consolidate to top
+// NewSession (#605)" intentionally removed the per-group + button. There is
+// no per-group new-session affordance to test anymore; the consolidated top
+// "New session" button is covered by no-sessions-landing + sidebar-align.
+// Removed in fix(e2e) for #726.
 
 // ---------- import-empty-groups ----------
 // Importing into a store with empty groups[] AND a stale groupId synthesizes
@@ -1949,59 +1864,15 @@ async function caseRename({ win, log }) {
   log('session: Enter / Escape / whitespace / click-outside / IME guard / focus-race / type-overwrite / arrow-guard / Tab-commit / F2 / dblclick; group: Enter / Escape / focus / type-overwrite / F2 / dblclick');
 }
 
-// ---------- sidebar-vertical-symmetry ----------
-// UX audit Group A. Sidebar internal top/bottom symmetry: the gap from
-// the sidebar's top edge to the New Session button's top edge must equal
-// the gap from the Settings button's bottom edge to the sidebar's bottom
-// edge. This is purely intra-sidebar — has nothing to do with the right
-// pane's DragRegion.
-async function caseSidebarVerticalSymmetry({ win, log }) {
-  await win.evaluate(() => {
-    window.__ccsmStore.setState({
-      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
-      sessions: [
-        {
-          id: 's-sym-1', name: 's', state: 'idle', cwd: 'C:/x',
-          model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code'
-        }
-      ],
-      activeId: 's-sym-1',
-      messagesBySession: { 's-sym-1': [] }
-    });
-  });
-  await win.waitForTimeout(300);
+// ---------- sidebar-vertical-symmetry — REMOVED ----------
+// The strict 1px top/bottom symmetry property no longer holds: PR #512
+// (#606) intentionally bumped the New Session row's top padding from pt-1
+// to pt-4 because the original symmetry made the top edge feel cramped
+// against the window-top drag strip. The asymmetry (top 24px vs bottom
+// 12px) is documented in src/components/Sidebar.tsx around the
+// `data-testid="sidebar-newsession-row"` div. There is no surviving
+// symmetry contract to assert. Removed in fix(e2e) for #726.
 
-  const m = await win.evaluate(() => {
-    const aside = document.querySelector('aside');
-    if (!aside) return null;
-    const newSessionBtn = Array.from(aside.querySelectorAll('button'))
-      .find((b) => /^New Session$/i.test(b.textContent?.trim() ?? ''));
-    const settingsBtn = Array.from(aside.querySelectorAll('button'))
-      .find((b) => /^Settings$/i.test(b.textContent?.trim() ?? ''));
-    if (!newSessionBtn || !settingsBtn) return null;
-    const aRect = aside.getBoundingClientRect();
-    const nRect = newSessionBtn.getBoundingClientRect();
-    const sRect = settingsBtn.getBoundingClientRect();
-    return {
-      topGap: nRect.top - aRect.top,
-      bottomGap: aRect.bottom - sRect.bottom
-    };
-  });
-  if (!m) throw new Error('could not locate New Session / Settings buttons');
-
-  const TOLERANCE = 1;
-  const delta = Math.abs(m.topGap - m.bottomGap);
-  if (delta > TOLERANCE) {
-    throw new Error(
-      `sidebar vertical asymmetry: topGap=${m.topGap.toFixed(1)} ` +
-      `bottomGap=${m.bottomGap.toFixed(1)} delta=${delta.toFixed(1)} (tolerance=${TOLERANCE})`
-    );
-  }
-  log(
-    `topGap=${m.topGap.toFixed(1)} bottomGap=${m.bottomGap.toFixed(1)} ` +
-    `delta=${delta.toFixed(1)}`
-  );
-}
 
 
 async function caseSidebarLongNameTruncates({ win, log }) {
@@ -2587,10 +2458,8 @@ await runHarness({
   },
   cases: [
     { id: 'sidebar-align', run: caseSidebarAlign },
-    // UX audit Group A — task #311. Sidebar internal top/bottom symmetry.
-    // (Bottom-edge alignment with InputBar wrapper deleted post-ttyd refactor:
-    // the chat composer is gone; the right pane is now a ttyd webview.)
-    { id: 'sidebar-vertical-symmetry', run: caseSidebarVerticalSymmetry },
+    // sidebar-vertical-symmetry removed — see comment block above the
+    // deleted function. Top padding intentionally asymmetric per #606.
     { id: 'no-sessions-landing', run: caseNoSessionsLanding },
     { id: 'shortcut-overlay-opens', run: caseShortcutOverlayOpens },
     { id: 'toast-a11y', run: caseToastA11y },
@@ -2613,8 +2482,10 @@ await runHarness({
     // ---- Per-case capability demo (task #223) ----
     { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, run: caseSkipLaunchBundleShape },
     // ---- Bucket-1 absorption (task #222) ----
-    { id: 'app-icon-default', skipLaunch: true, run: caseAppIconDefault },
-    { id: 'group-add', run: caseGroupAdd },
+    // app-icon-default removed — see comment block above the deleted
+    // function. PR #525/#630 reintroduced the custom icon by design.
+    // group-add removed — see comment block above the deleted function.
+    // PR #514 (#605) consolidated the per-group + into the top NewSession.
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
     // move-to-group-excludes-own-group: PR #517 / commit a882478. Right-click
