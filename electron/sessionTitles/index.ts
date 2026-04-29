@@ -40,6 +40,8 @@ import type {
   listSessions as ListSessionsFn,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { classifyError, decideRetry, decideRequeue } from './deciders';
+
 // `@anthropic-ai/claude-agent-sdk` is published as ESM-only (sdk.mjs). Our
 // Electron main bundle compiles to CommonJS (tsconfig.electron.json:
 // `module: CommonJS`), so a static `import { ... } from '...'` becomes a
@@ -126,24 +128,9 @@ type PendingRename = { title: string; dir?: string };
 const pendingRenames = new Map<string, PendingRename>();
 
 // ─────────────────────────── Helpers ─────────────────────────────────────
-
-function classifyError(err: unknown): { reason: 'no_jsonl' | 'sdk_threw'; message?: string } {
-  // node fs errors carry `.code`; SDK re-throws them verbatim (or wraps with a
-  // matching `.code` property). Treat anything ENOENT-shaped as the "session
-  // file does not exist yet" signal.
-  const code =
-    err && typeof err === 'object' && 'code' in err
-      ? (err as { code?: unknown }).code
-      : undefined;
-  if (code === 'ENOENT') return { reason: 'no_jsonl' };
-  const message =
-    err instanceof Error
-      ? err.message
-      : typeof err === 'string'
-        ? err
-        : undefined;
-  return { reason: 'sdk_threw', message };
-}
+// Pure deciders (classifyError, decideRetry, decideRequeue) live in
+// `./deciders.ts`. This file owns the side effects (caches, op chains,
+// pending queue) and the SDK loader; it imports the pure logic.
 
 // ─────────────────────────── Public API ──────────────────────────────────
 
@@ -205,13 +192,7 @@ export async function renameSessionTitle(
       // documents this), so retrying without `dir` is the bulletproof
       // recovery. ENOENT (no JSONL anywhere) is a different signal — bubble
       // it up unchanged so the store can enqueue a pending rename.
-      const cls = classifyError(err);
-      const isProjectMismatch =
-        dir !== undefined &&
-        cls.reason === 'sdk_threw' &&
-        typeof cls.message === 'string' &&
-        cls.message.includes('not found in project directory');
-      if (isProjectMismatch) {
+      if (decideRetry(err, dir)) {
         try {
           const { renameSession } = await loadSdk();
           await renameSession(sid, title, undefined);
@@ -221,7 +202,7 @@ export async function renameSessionTitle(
           return { ok: false, ...classifyError(retryErr) };
         }
       }
-      return { ok: false, ...cls };
+      return { ok: false, ...classifyError(err) };
     }
   });
 }
@@ -260,7 +241,7 @@ export async function flushPendingRename(sid: string): Promise<void> {
   if (!pending) return;
   pendingRenames.delete(sid);
   const result = await renameSessionTitle(sid, pending.title, pending.dir);
-  if (!result.ok && result.reason === 'no_jsonl') {
+  if (decideRequeue(result)) {
     // JSONL still not there — re-queue for the next flush attempt. PR3's
     // watcher will retry on the next frame.
     pendingRenames.set(sid, pending);
