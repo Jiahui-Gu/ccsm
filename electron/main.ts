@@ -1040,8 +1040,11 @@ app.whenReady().then(() => {
   });
 
   // Desktop notification bridge — fires OS toasts on session 'idle' /
-  // 'requires_action' transitions, with global-mute + active-window +
-  // active-sid suppression and per-sid 5s dedupe. See electron/notify.
+  // 'requires_action' transitions unconditionally (only the user's global
+  // mute toggle and per-sid 5s dedupe gate the fire). The user wants the
+  // OS ping even when the matching session is on screen — their actual
+  // workflow is "app foreground while I look at my phone". See
+  // electron/notify.
   badgeManager = new BadgeManager({
     getTray: () => tray,
     getBaseTrayImage: getTrayBaseImage,
@@ -1051,12 +1054,7 @@ app.whenReady().then(() => {
     sessionWatcher,
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
     isMutedFn: () => !loadNotifyEnabled(),
-    getActiveSidFn: () => activeSidFromRenderer,
     getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
-    isWindowFocusedFn: () => {
-      const w = BrowserWindow.getAllWindows()[0];
-      return !!(w && !w.isDestroyed() && w.isFocused());
-    },
     onNotified: (sid) => {
       badgeManager?.incrementSid(sid);
     },

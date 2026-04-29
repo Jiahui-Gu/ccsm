@@ -24,15 +24,11 @@ interface Harness {
   clickHandlers: Array<() => void>;
   notifyImpl: NotifyImpl;
   isMuted: boolean;
-  activeSid: string | null;
-  windowFocused: boolean;
   dispose: () => void;
 }
 
 function makeHarness(opts?: {
   isMuted?: boolean;
-  activeSid?: string | null;
-  windowFocused?: boolean;
   names?: Record<string, string>;
 }): Harness {
   const emitter = new EventEmitter();
@@ -49,8 +45,6 @@ function makeHarness(opts?: {
       },
     },
     isMuted: opts?.isMuted ?? false,
-    activeSid: opts?.activeSid ?? null,
-    windowFocused: opts?.windowFocused ?? false,
     dispose: () => { /* replaced below */ },
   };
   const names = opts?.names ?? {};
@@ -58,8 +52,6 @@ function makeHarness(opts?: {
     sessionWatcher: emitter,
     getMainWindow: () => null,
     isMutedFn: () => harness.isMuted,
-    getActiveSidFn: () => harness.activeSid,
-    isWindowFocusedFn: () => harness.windowFocused,
     notifyImpl: harness.notifyImpl,
     getNameFn: (sid) => names[sid] ?? null,
   });
@@ -112,27 +104,35 @@ describe('installNotifyBridge', () => {
     h.dispose();
   });
 
-  it('suppresses when window focused AND active sid matches the target', () => {
-    const h = makeHarness({ windowFocused: true, activeSid: 'sid-5' });
-    emit(h.emitter, { sid: 'sid-5', state: 'idle' });
-    expect(h.log).toHaveLength(0);
+  it('fires unconditionally — focus + active sid is NOT a suppression gate', () => {
+    // User direction: "完全无差别全通知". Even if the user is staring at this
+    // exact session in a focused window, fire the OS notification — they may
+    // have the app foreground while looking at their phone.
+    const h = makeHarness();
+    h.emitter.emit('state-changed', { sid: 'sid-5', state: 'idle' });
+    expect(h.log).toHaveLength(1);
+    expect(h.log[0].sid).toBe('sid-5');
     h.dispose();
   });
 
-  it('still fires when window is focused but a DIFFERENT sid is active', () => {
-    const h = makeHarness({ windowFocused: true, activeSid: 'sid-other' });
-    emit(h.emitter, { sid: 'sid-target', state: 'idle' });
+  it('fires when a different sid is active in a focused window', () => {
+    // No focus/active gate: the bridge no longer reads either signal, so this
+    // is just another idle-fire path. Asserts the bridge accepts events for
+    // sids it has never seen before.
+    const h = makeHarness();
+    h.emitter.emit('state-changed', { sid: 'sid-target', state: 'idle' });
     expect(h.log).toHaveLength(1);
     expect(h.log[0].sid).toBe('sid-target');
     h.dispose();
   });
 
-  it('still fires when active sid matches but window is NOT focused', () => {
-    // User minimised / switched apps with that session active. They want the
-    // ping, otherwise they'd never know it finished.
-    const h = makeHarness({ windowFocused: false, activeSid: 'sid-bg' });
-    emit(h.emitter, { sid: 'sid-bg', state: 'idle' });
-    expect(h.log).toHaveLength(1);
+  it('fires regardless of whether the bridge knows about a focused window', () => {
+    // Sanity: no focus / activeSid signals are accepted by the options
+    // interface anymore; every notify-eligible event fires.
+    const h = makeHarness();
+    h.emitter.emit('state-changed', { sid: 'sid-bg', state: 'idle' });
+    h.emitter.emit('state-changed', { sid: 'sid-bg-2', state: 'requires_action' });
+    expect(h.log).toHaveLength(2);
     h.dispose();
   });
 

@@ -704,13 +704,16 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
 //
 // Verifies the notify bridge:
 //   - listens to sessionWatcher 'state-changed'
-//   - fires when the user is NOT looking at the session
+//   - fires UNCONDITIONALLY (no focus / active-sid suppression). The user
+//     wants the OS ping even when the matching session tab is on screen,
+//     because their actual workflow is "app foreground while looking at
+//     phone".
 //   - records via the test-hook impl (CCSM_NOTIFY_TEST_HOOK=1, set in runner)
 //
-// Strategy: seed one session, send a prompt, then BEFORE the idle event lands
-// clear the renderer's active sid via window.ccsmSession.setActive('') — that
-// removes the active-window+active-sid suppression so the notify fires. Read
-// the in-memory log via electronApp.evaluate() against the main process.
+// Strategy: seed one session, ensure the renderer's active sid IS the test
+// sid (and the Playwright window is focused), send a prompt, then assert a
+// notify entry lands. This is the "window foreground + same sid" case the
+// user described, which used to be suppressed.
 
 async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await win.waitForFunction(
@@ -739,13 +742,13 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
   await dismissFirstRunModals(win);
 
-  // Disable the active-window+active-sid suppression by clearing the
-  // renderer's notion of "active session". Main caches '' as null and the
-  // bridge then treats every state event as background.
-  await win.evaluate(() => {
+  // CRITICAL ASSERTION: keep the renderer's active sid pointed at the test
+  // sid and let the Playwright window stay focused. Pre-fix, this combo
+  // would suppress the notification. Post-fix, the bridge fires regardless.
+  await win.evaluate((s) => {
     const bridge = window.ccsmSession;
-    if (bridge && typeof bridge.setActive === 'function') bridge.setActive('');
-  });
+    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
+  }, sid);
   // Tiny pause so the IPC reaches main before the next state event fires.
   await sleep(200);
 
