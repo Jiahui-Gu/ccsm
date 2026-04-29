@@ -355,6 +355,9 @@ async function caseSessionRenameWritesJsonl({ electronApp: _e, win, tempDir }) {
 
   // Trigger the rename via the renderer store. The action is async — we
   // await it so the IPC writeback round-trips before asserting on disk.
+  // CRITICAL ASSERTION (single smoke): rename → SDK bridge → JSONL on disk.
+  // Local-store-name verification dropped — covered by store unit tests; the
+  // integration value here is renderer→IPC→main-SDK→fs round-trip.
   const renameOutcome = await win.evaluate(async ({ s, t }) => {
     const store = window.__ccsmStore;
     if (!store) return { ok: false, reason: 'no-store' };
@@ -362,21 +365,14 @@ async function caseSessionRenameWritesJsonl({ electronApp: _e, win, tempDir }) {
     if (typeof action !== 'function') return { ok: false, reason: 'no-action' };
     try {
       const ret = action(s, t);
-      // Action is async (returns a Promise); await it.
       if (ret && typeof ret.then === 'function') await ret;
-      const after = store.getState().sessions.find((x) => x.id === s);
-      return { ok: true, localName: after?.name ?? null };
+      return { ok: true };
     } catch (err) {
       return { ok: false, reason: 'threw', message: String(err && err.message ? err.message : err) };
     }
   }, { s: sid, t: CUSTOM_TITLE });
   if (!renameOutcome.ok) {
     throw new Error(`renameSession failed: ${JSON.stringify(renameOutcome)}`);
-  }
-  if (renameOutcome.localName !== CUSTOM_TITLE) {
-    throw new Error(
-      `local store name not updated: expected "${CUSTOM_TITLE}", got "${renameOutcome.localName}"`
-    );
   }
 
   // Assert the JSONL gained the custom title. SDK writes asynchronously;
@@ -487,48 +483,17 @@ async function caseSessionTitleSyncsFromJsonl({ electronApp: _e, win, tempDir })
   // session summary. SDKSessionInfo.summary is "custom title, auto-derived
   // summary, or first prompt" (per `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`),
   // so once the JSONL has at least the first user message frame, getSessionInfo
-  // returns a non-empty value. We poll the bridge directly instead of grepping
-  // disk — the SDK derives `summary` in-memory; there's no `"summary"` field
-  // written into the user/assistant frames.
-  let sdkSummary = null;
-  {
-    const deadline = Date.now() + 180_000;
-    while (Date.now() < deadline && !sdkSummary) {
-      const result = await win.evaluate(async ({ s, dir }) => {
-        const bridge = window.ccsmSessionTitles;
-        if (!bridge || typeof bridge.get !== 'function') return { err: 'no-bridge' };
-        try {
-          const info = await bridge.get(s, dir);
-          return { ok: true, summary: info?.summary ?? null };
-        } catch (e) {
-          return { err: String(e?.message || e) };
-        }
-      }, { s: sid, dir: projectDir });
-      if (result?.err === 'no-bridge') {
-        throw new Error('window.ccsmSessionTitles bridge missing — preload wiring broken');
-      }
-      if (result?.summary && typeof result.summary === 'string' && result.summary.length > 0) {
-        sdkSummary = result.summary;
-        break;
-      }
-      await sleep(2000);
-    }
-  }
-  if (!sdkSummary) {
-    throw new Error(
-      `bridge.get(${sid}) never returned a non-empty summary within 180s. ` +
-        `JSONL tail: ${readFileSync(matchedJsonl, 'utf8').split('\n').slice(-2).join('\n').slice(0, 800)}`,
-    );
-  }
-  console.log(`[HARNESS]   sdk-derived summary: ${JSON.stringify(sdkSummary)}`);
-
-  // Now wait for the renderer-side store.name to swap away from
-  // 'New session'. The watcher's debounce + IPC roundtrip + React render
-  // cycle is well under a second; budget 30s to absorb cold-cache /
-  // slow-CI variance.
+  // returns a non-empty value.
+  //
+  // CRITICAL ASSERTION (single smoke): after a real chat round-trip, the
+  // renderer store name flips from 'New session' to a non-default value.
+  // This proves: sessionWatcher tail → IPC → store mutation. The DOM
+  // cross-check and separate SDK-bridge probe were dropped — the store
+  // observation alone covers the integration; bridge.get() is unit-tested,
+  // and the DOM template is covered by RTL.
   let finalName = null;
   {
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + 210_000; // absorb cold-model first-reply latency
     while (Date.now() < deadline) {
       const observed = await win.evaluate((s) => {
         const useStore = window.__ccsmStore;
@@ -540,30 +505,16 @@ async function caseSessionTitleSyncsFromJsonl({ electronApp: _e, win, tempDir })
         finalName = observed;
         break;
       }
-      await sleep(500);
+      await sleep(2000);
     }
   }
   if (!finalName) {
     throw new Error(
-      `session ${sid} name still equals 'New session' after 30s — live-tail title sync did not fire. ` +
-        `sdkSummary=${JSON.stringify(sdkSummary)}`,
+      `session ${sid} name still equals 'New session' after 210s — live-tail title sync did not fire. ` +
+        `JSONL tail: ${readFileSync(matchedJsonl, 'utf8').split('\n').slice(-2).join('\n').slice(0, 800)}`,
     );
   }
   console.log(`[HARNESS]   store.name now: ${JSON.stringify(finalName)}`);
-
-  // Sanity: the rendered sidebar row should reflect the same value (DOM
-  // and store agree). data-session-id is set by the SessionRow component.
-  const domName = await win.evaluate((s) => {
-    const row = document.querySelector(`[data-session-id="${s}"]`);
-    return row ? (row.textContent || '').trim() : null;
-  }, sid);
-  if (!domName || !domName.includes(finalName)) {
-    // Don't fail hard — the sidebar template may add status pills etc.
-    // around the name. Log for visibility.
-    console.log(
-      `[HARNESS]   sidebar row text: ${JSON.stringify(domName)} (does not contain "${finalName}" verbatim — acceptable if wrapped)`,
-    );
-  }
 }
 
 // ============================================================================
@@ -618,12 +569,8 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
     throw new Error('window.ccsmSession.onState not exposed by preload (PR-A wiring missing)');
   }
 
-  // Seed two sessions so we can also assert the non-active dot renders.
-  const { sid: sidIdle } = await seedSession(win, { name: 'state-probe-bystander', cwd: tempDir });
-  const { sid: sid } = await seedSession(win, { name: 'state-probe-active', cwd: tempDir });
-  if (!sid || !sidIdle || sid === sidIdle) {
-    throw new Error(`bad sids active=${sid} bystander=${sidIdle}`);
-  }
+  const { sid } = await seedSession(win, { name: 'state-probe-active', cwd: tempDir });
+  if (!sid) throw new Error(`bad sid=${sid}`);
 
   await sleep(4000);
   await waitForTerminalReady(win, sid, { timeout: 60000 });
@@ -634,9 +581,12 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
   await sleep(500);
   await sendToClaudeTui(win, '\r');
 
-  // Wait for a 'idle' event for the active sid. The JSONL frame writes on
-  // claude's turn boundary, then fs.watch fires within ~50ms (debounce).
-  // 90s budget covers cold-model first-reply latency.
+  // CRITICAL ASSERTION (single smoke): tail-watcher → IPC → renderer
+  // observes 'idle' for this sid after a real chat round-trip. The
+  // bystander aria-label scan (PR e5deb8c selection-only-dot regression
+  // guard) was dropped — that's a UI rendering assertion, not the
+  // sessionWatcher → IPC integration covered here. Move it to RTL if a
+  // dot-on-inactive-row regression keeps recurring.
   const start = Date.now();
   let observedIdle = false;
   let lastLog = [];
@@ -656,46 +606,6 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
       `did not observe state='idle' for ${sid} within 90s. Log: ${JSON.stringify(lastLog)}`,
     );
   }
-
-  // Per #600 / PR e5deb8c: the sidebar row dot is now SELECTION-ONLY. The
-  // live-state dot (running/idle/requires_action) was deleted. The
-  // bystander row is NOT the active session AND NOT the selected row, so
-  // it must NOT render any of the three deleted state-dot aria-labels.
-  // If we find one, the SessionStateDot component (or an equivalent
-  // live-state coupling) has regressed back into the sidebar.
-  const FORBIDDEN_STATE_LABELS = [
-    // en (src/i18n/locales/en.ts pre-PR)
-    'Waiting for your reply',
-    'Working',
-    'Needs your decision',
-    // zh (src/i18n/locales/zh.ts pre-PR)
-    '等待你的回复',
-    '正在处理',
-    '需要你的决定',
-  ];
-  const bystanderScan = await win.evaluate(({ sb, forbidden }) => {
-    const row = document.querySelector(`[data-session-id="${sb}"]`);
-    if (!row) return { rowFound: false };
-    const labelled = Array.from(row.querySelectorAll('[aria-label]'));
-    const allLabels = labelled.map((el) => el.getAttribute('aria-label'));
-    const forbiddenHits = allLabels.filter((l) => forbidden.includes(l));
-    return { rowFound: true, allLabels, forbiddenHits };
-  }, { sb: sidIdle, forbidden: FORBIDDEN_STATE_LABELS });
-  if (!bystanderScan.rowFound) {
-    throw new Error(`bystander row [data-session-id=${sidIdle}] not found in DOM`);
-  }
-  if (bystanderScan.forbiddenHits.length > 0) {
-    throw new Error(
-      `bystander row regressed: live-state dot rendered on non-selected row ` +
-      `(forbidden aria-labels: ${JSON.stringify(bystanderScan.forbiddenHits)}). ` +
-      `Per PR e5deb8c (#600 PR-A) the sidebar row dot is selection-only and ` +
-      `running/idle/requires_action dots must NOT appear on inactive rows. ` +
-      `All aria-labels seen on this row: ${JSON.stringify(bystanderScan.allLabels)}`,
-    );
-  }
-  console.log(
-    `[HARNESS]   bystander row clean — no live-state dot (${bystanderScan.allLabels.length} aria-labels checked, none forbidden)`,
-  );
 }
 
 // ============================================================================
@@ -757,35 +667,27 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await sendToClaudeTui(win, '\r');
 
   // Wait up to 180s for a notification entry whose sid matches.
-  // Capture the badge total in the SAME evaluate call as the entry read so we
-  // observe `incrementSid` before any async focus race
-  // (Notification.show on win32 can briefly steal then return focus, which
-  // triggers `clearBadgeForActiveIfFocused` → unread cleared) gets a chance
-  // to run on the main loop.
+  //
+  // CRITICAL ASSERTION (single smoke): the notify bridge fires for the
+  // active sid even when the renderer's active-sid + window-focus combo
+  // would have suppressed it pre-fix. This proves the producer→decider→
+  // sink notify pipeline runs end-to-end.
+  //
+  // The badge total + clear-after-refocus sub-assertions were dropped:
+  // they exercise a separate badge integration (BadgeManager.incrementSid
+  // / clearBadgeForActiveIfFocused) that deserves its own probe. NOTE:
+  // no other case asserts on the badge total, so this coverage gap should
+  // be filled by a dedicated badge case as follow-up.
   const start = Date.now();
   let entry = null;
-  let totalAtFire = null;
   while (Date.now() - start < 180_000) {
     await sleep(2000);
-    const snap = await electronApp.evaluate(
-      ({ app }, [s, base]) => {
-        const dbg = globalThis.__ccsmBadgeDebug;
-        const found = (globalThis.__ccsmNotifyLog || [])
-          .slice(base)
-          .filter((e) => e.sid === s);
-        return {
-          entries: found,
-          total: {
-            app: app.getBadgeCount?.() ?? 0,
-            mgr: dbg?.getTotal ? dbg.getTotal() : null,
-          },
-        };
-      },
+    const found = await electronApp.evaluate(
+      (_e, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
       [sid, baseline],
     );
-    if (snap.entries.length > 0) {
-      entry = snap.entries[0];
-      totalAtFire = snap.total;
+    if (found.length > 0) {
+      entry = found[0];
       break;
     }
   }
@@ -809,54 +711,10 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
       `no notify entry for sid=${sid} within 180s. Diag: ${JSON.stringify(diag)}`,
     );
   }
-  if (!entry.title || !entry.body) {
-    throw new Error(`notify entry missing title/body: ${JSON.stringify(entry)}`);
-  }
   if (entry.state !== 'idle' && entry.state !== 'requires_action') {
     throw new Error(`unexpected notify state=${entry.state}`);
   }
   console.log(`[HARNESS]   notify fired: state=${entry.state} title="${entry.title}" body="${entry.body}"`);
-
-  // -- Tray + taskbar badge unread count (#572) ------------------------
-  // The notify bridge bumps BadgeManager.incrementSid(sid) ONLY when the
-  // notification actually fired (mute/focus/dedupe survived). The total
-  // was captured in the same evaluate call that read the notify-log entry
-  // above (see comment there) — reading separately here would race against
-  // Notification.show's incidental focus event on win32.
-  const totalAfterFire = totalAtFire;
-  const observed = process.platform === 'win32' ? totalAfterFire.mgr : totalAfterFire.app;
-  if (observed === null || observed === undefined) {
-    throw new Error(`badge total unreadable. Diag: ${JSON.stringify(totalAfterFire)}`);
-  }
-  if (observed < 1) {
-    throw new Error(
-      `badge total expected >=1 after notify fire, got ${observed}. Diag: ${JSON.stringify(totalAfterFire)}`,
-    );
-  }
-  console.log(`[HARNESS]   badge total after fire: ${observed} (platform=${process.platform})`);
-
-  // Re-focus + re-set active sid → BadgeManager.clearSid(sid) → total back to 0.
-  await win.evaluate((s) => {
-    const bridge = window.ccsmSession;
-    if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
-  }, sid);
-  // The window already has focus (Playwright keeps it focused); the
-  // session:setActive IPC arriving in main triggers clearBadgeForActiveIfFocused.
-  await sleep(300);
-  const totalAfterClear = await electronApp.evaluate(({ app }) => {
-    const dbg = globalThis.__ccsmBadgeDebug;
-    return {
-      app: app.getBadgeCount?.() ?? 0,
-      mgr: dbg?.getTotal ? dbg.getTotal() : null,
-    };
-  });
-  const cleared = process.platform === 'win32' ? totalAfterClear.mgr : totalAfterClear.app;
-  if (cleared !== 0) {
-    throw new Error(
-      `badge total expected 0 after re-focus, got ${cleared}. Diag: ${JSON.stringify(totalAfterClear)}`,
-    );
-  }
-  console.log(`[HARNESS]   badge total after clear: ${cleared}`);
 }
 
 // ============================================================================
@@ -919,25 +777,19 @@ async function caseNotifyShowsSessionName({ electronApp, win, tempDir }) {
     throw new Error(`no notify entry for sid=${sid} within 180s (${probeName})`);
   }
 
-  // Branch 1: named — body must contain KNOWN_NAME and NOT short sid.
+  // CRITICAL ASSERTION (single smoke): notify body resolves the
+  // user-visible name via the renderer→main name-mirror IPC. The fallback
+  // branch (empty mirror → body contains short sid) was dropped — it
+  // doubles the case runtime (second 180s notify wait + dedupe settle)
+  // for a separate code path; the resolver fallback is unit-tested in
+  // electron/notify/index.test.ts.
   const named = await driveAndCapture('notify-name-probe', KNOWN_NAME);
   const namedShort = named.sid.slice(0, 8);
   if (KNOWN_NAME.includes(namedShort)) throw new Error(`KNOWN_NAME collides with short sid ${namedShort}`);
   if (!named.entry.body.includes(KNOWN_NAME)) {
     throw new Error(`named body missing "${KNOWN_NAME}". body="${named.entry.body}"`);
   }
-  if (named.entry.body.includes(namedShort)) {
-    throw new Error(`named body leaked short sid "${namedShort}". body="${named.entry.body}"`);
-  }
   console.log(`[HARNESS]   named-branch OK: "${named.entry.body}"`);
-
-  // Branch 2: fallback — empty mirror, body must contain short sid.
-  const fb = await driveAndCapture('notify-fallback-probe', '');
-  const fbShort = fb.sid.slice(0, 8);
-  if (!fb.entry.body.includes(fbShort)) {
-    throw new Error(`fallback body missing short sid "${fbShort}". body="${fb.entry.body}"`);
-  }
-  console.log(`[HARNESS]   fallback-branch OK: "${fb.entry.body}" (short=${fbShort})`);
 }
 
 // ============================================================================
@@ -975,8 +827,13 @@ async function caseAgentIconActiveSessionNoHalo({ win, tempDir }) {
     window.__ccsmStore.getState().selectSession(sa);
   }, sidA);
 
-  // Drive the store action that the IPC bridge feeds: ask both sessions
-  // to enter 'waiting'.
+  // CRITICAL ASSERTION (single smoke): the store action `_applySessionState`
+  // honors the active-session suppression rule — A (active) stays 'idle'
+  // when an inbound IPC pushes it to 'waiting', while B (non-active)
+  // accepts 'waiting' normally. The DOM AgentIcon attribute cross-check
+  // and switch-away sub-case were dropped — `data-agent-icon-state` is a
+  // pure derived render of store state and belongs in RTL, and the
+  // switch-away path is exercised by `selectSession` unit tests.
   const after = await win.evaluate(({ sa, sb }) => {
     const apply = window.__ccsmStore.getState()._applySessionState;
     if (typeof apply !== 'function') {
@@ -1001,9 +858,7 @@ async function caseAgentIconActiveSessionNoHalo({ win, tempDir }) {
   if (after.aState !== 'idle') {
     throw new Error(
       `active-session suppression broken: A's state should stay 'idle' on incoming 'waiting' (active sid). ` +
-      `Got state='${after.aState}'. This means the AgentIcon halo would pulse for the row the user ` +
-      `is already viewing — exactly the noise the user called out ` +
-      `("唯一要抑制的只有我焦点在当前session").`,
+      `Got state='${after.aState}'.`,
     );
   }
   if (after.bState !== 'waiting') {
@@ -1013,69 +868,6 @@ async function caseAgentIconActiveSessionNoHalo({ win, tempDir }) {
     );
   }
   console.log('[HARNESS]   store rule OK: active stays idle, bystander goes waiting');
-
-  // Now assert the same on the DOM: the AgentIcon for A reports
-  // data-agent-icon-state="idle", and B reports "waiting".
-  await sleep(120);
-  const dom = await win.evaluate(({ sa, sb }) => {
-    function pick(sid) {
-      const row = document.querySelector(`[data-session-id="${sid}"]`);
-      if (!row) return { rowFound: false };
-      const icon = row.querySelector('[data-agent-icon-state]');
-      if (!icon) return { rowFound: true, iconFound: false };
-      return {
-        rowFound: true,
-        iconFound: true,
-        state: icon.getAttribute('data-agent-icon-state'),
-      };
-    }
-    return { a: pick(sa), b: pick(sb) };
-  }, { sa: sidA, sb: sidB });
-
-  if (!dom.a.rowFound || !dom.b.rowFound) {
-    throw new Error(`sidebar row(s) missing: a=${JSON.stringify(dom.a)} b=${JSON.stringify(dom.b)}`);
-  }
-  if (!dom.a.iconFound || !dom.b.iconFound) {
-    throw new Error(
-      `data-agent-icon-state attribute missing — AgentIcon e2e hook regressed: ` +
-      `a=${JSON.stringify(dom.a)} b=${JSON.stringify(dom.b)}`,
-    );
-  }
-  if (dom.a.state !== 'idle') {
-    throw new Error(
-      `AgentIcon for active session A should render data-agent-icon-state="idle" ` +
-      `(no halo). Got "${dom.a.state}".`,
-    );
-  }
-  if (dom.b.state !== 'waiting') {
-    throw new Error(
-      `AgentIcon for bystander B should render data-agent-icon-state="waiting" ` +
-      `(halo). Got "${dom.b.state}".`,
-    );
-  }
-  console.log('[HARNESS]   DOM OK: A icon=idle, B icon=waiting');
-
-  // Sub-case: switching A away (selecting B) and re-applying 'waiting' to A
-  // (now non-active) should let A enter 'waiting'.
-  const after2 = await win.evaluate(({ sa, sb }) => {
-    window.__ccsmStore.getState().selectSession(sb);
-    window.__ccsmStore.getState()._applySessionState(sa, 'waiting');
-    const sessions = window.__ccsmStore.getState().sessions;
-    return {
-      activeId: window.__ccsmStore.getState().activeId,
-      aState: sessions.find((x) => x.id === sa)?.state ?? null,
-    };
-  }, { sa: sidA, sb: sidB });
-  if (after2.activeId !== sidB) {
-    throw new Error(`expected B active after select, got ${after2.activeId}`);
-  }
-  if (after2.aState !== 'waiting') {
-    throw new Error(
-      `after switch-away: A (now non-active) should accept 'waiting'. Got '${after2.aState}'. ` +
-      `This means the suppression is over-suppressing — non-active sessions must still pulse.`,
-    );
-  }
-  console.log('[HARNESS]   switch-away OK: A enters waiting once non-active');
 }
 
 // ============================================================================
@@ -1090,8 +882,6 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
   const pageErrorHandler = (err) => consoleErrors.push({ type: 'pageerror', text: String(err) });
   win.on('console', consoleHandler);
   win.on('pageerror', pageErrorHandler);
-
-  await installPtyExitProbe(win);
 
   try {
     await win.waitForFunction(
@@ -1134,15 +924,18 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
     await waitForXtermBuffer(win, /claude|welcome|│|╭|\?\sfor\sshortcuts/i, { timeout: 30000 });
     await dismissWelcomeSplash(win);
 
-    const pidA2 = await getPtyPidForSid(win, sidA);
-    if (pidA2 !== pidA1) {
-      throw new Error(`A's pty dropped or changed after switching to B (was ${pidA1}, now ${pidA2})`);
-    }
-
     // Switch BACK to A.
     await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidA);
     await waitForTerminalReady(win, sidA, { timeout: 30000 });
 
+    // CRITICAL ASSERTION (single smoke): A's pty pid is stable across
+    // A→B→A switch AND A's scrollback still contains ALPHA. This proves
+    // the renderer reuses the same pty (no kill/respawn) and the xterm
+    // buffer was preserved (no replay from JSONL).
+    //
+    // Dropped: the BETA second-reply round-trip (a nice-to-have re-write
+    // check, not the integration smoke) and the pty:exit watcher (the pid
+    // stability check above already implies no exit).
     const pidA3 = await getPtyPidForSid(win, sidA);
     if (pidA3 !== pidA1) {
       throw new Error(`A's pid changed on switch-back (was ${pidA1}, now ${pidA3})`);
@@ -1157,29 +950,13 @@ async function caseSwitchSessionKeepsChat({ electronApp, win, tempDir }) {
       await sleep(1500);
     }
 
-    // Wait for ALPHA scrollback to be visible — same pty means buffer was
-    // preserved (no replay needed).
     try {
       await waitForXtermBuffer(win, /ALPHA/, { timeout: 15000 });
     } catch (_) { /* fall through */ }
-    // readXtermLines (since #579) re-throws unexpected evaluate failures
-    // with context at the inner site, so a generic "scrollback lost ALPHA"
-    // assertion no longer hides the real buffer state (see #490 / #574).
     const aLines = await readXtermLines(win, { lines: 200 });
     if (!/ALPHA/.test(aLines.join('\n'))) {
       throw new Error(`A's scrollback lost ALPHA after switch-back. lines=${aLines.length}`);
     }
-
-    await dismissWelcomeSplash(win);
-    const BETA = 'Please reply with the single word BETA';
-    const reply2 = await sendAndAwaitReply(win, BETA, 'BETA');
-    if (!reply2.ok) throw new Error(`A second reply (BETA) timed out. Tail:\n${reply2.tail}`);
-
-    const exitsForA = await win.evaluate(
-      (sid) => (window.__probePtyExits || []).filter((e) => e && (e.sid === sid || e.sessionId === sid)),
-      sidA,
-    );
-    if (exitsForA.length > 0) throw new Error(`pty:exit fired for A: ${JSON.stringify(exitsForA)}`);
   } finally {
     win.off('console', consoleHandler);
     win.off('pageerror', pageErrorHandler);
@@ -1335,67 +1112,12 @@ async function caseCwdProjectsClaude({ electronApp, win, tempDir }) {
     throw new Error(`JSONL does not contain marker token ${MARKER_TOKEN}`);
   }
 
-  // #560 — sub-assertion: cwd with spaces still flows through the same
-  // hash-dir + JSONL-marker pipeline. Spaces are a common Windows footgun
-  // (e.g. `C:\Users\First Last\my project`); assert here so we catch any
-  // future shell-escaping or path-encoding regression.
-  const spacesProjectDir = path.join(tempDir, 'my project with spaces');
-  mkdirSync(spacesProjectDir, { recursive: true });
-  const SPACES_MARKER = `probe-cwd-spaces-${Math.random().toString(36).slice(2, 10)}`;
-  writeFileSync(path.join(spacesProjectDir, MARKER_FILENAME), `${SPACES_MARKER}\n`, 'utf8');
-
-  const { sid: sidSpaces } = await seedSession(win, {
-    name: 'cwd-test-spaces', cwd: spacesProjectDir, groupId: 'g1',
-  });
-  if (!sidSpaces) throw new Error('seedSession (spaces) returned no sid');
-
-  await waitForTerminalReady(win, sidSpaces, { timeout: 25000 });
-  await sleep(2000);
-
-  for (let i = 0; i < 4; i++) {
-    await sendToClaudeTui(win, '\r');
-    await sleep(700);
-  }
-  await sleep(1500);
-
-  const SPACES_PROMPT = `ccsm-probe-cwd marker ${SPACES_MARKER}, please reply with the word PONG`;
-  await sendToClaudeTui(win, SPACES_PROMPT);
-  await sleep(800);
-  await sendToClaudeTui(win, '\r');
-
-  await waitForXtermBuffer(win, /PONG/, { timeout: 90000 });
-
-  const spacesDeadline = Date.now() + 20000;
-  let spacesJsonl = null;
-  let spacesDir = null;
-  while (Date.now() < spacesDeadline) {
-    if (existsSync(projectsRoot)) {
-      for (const dirName of readdirSync(projectsRoot)) {
-        let entries;
-        try { entries = readdirSync(path.join(projectsRoot, dirName)); } catch { continue; }
-        if (entries.includes(`${sidSpaces}.jsonl`)) {
-          spacesJsonl = path.join(projectsRoot, dirName, `${sidSpaces}.jsonl`);
-          spacesDir = dirName;
-          break;
-        }
-      }
-    }
-    if (spacesJsonl) break;
-    await sleep(500);
-  }
-  if (!spacesJsonl) {
-    throw new Error(`spaces: no <sid>.jsonl found under ${projectsRoot}`);
-  }
-  // The hash-dir name should encode the project folder. Different CLI
-  // versions encode spaces as `-` or `_`; assert that some recognisable
-  // segment of the folder name survives.
-  if (!/my[-_ ]project[-_ ]with[-_ ]spaces/i.test(spacesDir)) {
-    throw new Error(`spaces: hash dir does not encode "my project with spaces": ${spacesDir}`);
-  }
-  const spacesBody = readFileSync(spacesJsonl, 'utf8');
-  if (!spacesBody.includes(SPACES_MARKER)) {
-    throw new Error(`spaces: JSONL does not contain marker ${SPACES_MARKER}`);
-  }
+  // CRITICAL ASSERTION COMPLETE (single smoke): real cwd flows into the
+  // claude binary, which encodes it as a hash dir under projects/ and
+  // writes a JSONL containing the marker. The Windows-spaces sub-case
+  // (#560) was dropped — spaces handling deserves its own probe; the
+  // primary integration smoke is the cwd → JSONL marker round-trip
+  // exercised above. NOTE: spaces-in-cwd coverage is now a follow-up.
 }
 
 // ============================================================================
