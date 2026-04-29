@@ -238,6 +238,12 @@ app.whenReady().then(() => {
     getTray: () => getTray(),
     getBaseTrayImage: getTrayBaseImage,
     getWindows: () => BrowserWindow.getAllWindows(),
+    // OS-visible taskbar overlay + tray composite suppressed at MVP because
+    // the count was incorrect (#667 / chore #534). The internal store keeps
+    // running so e2e probes can still verify the notify bridge fires. Flip
+    // to true once the count derivation is fixed; no other call sites need
+    // to change.
+    enabled: false,
   });
 
   const pipelineInstance = installNotifyPipelineWithProducers({

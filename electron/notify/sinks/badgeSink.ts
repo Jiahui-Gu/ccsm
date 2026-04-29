@@ -32,17 +32,6 @@ import {
   type BgraBitmap,
 } from '../badgePixels';
 
-// MVP: OS-visible badge display is disabled (#667). User reported the count
-// shown on the taskbar overlay + tray icon was incorrect; rather than
-// re-derive the count logic before MVP we suppress every OS-facing call so
-// neither chrome surface shows a number. The internal `unread` map keeps
-// running because the e2e probe (caseNotifyFiresOnIdle) reads it via
-// `BadgeManager.getTotal()` to verify the notify bridge fired — that signal
-// is decoupled from the visual badge. Flip this flag back to false to
-// restore the previous tray composite + setOverlayIcon + setBadgeCount
-// behaviour without touching anything else.
-const BADGE_DISABLED = true;
-
 const TRAY_SIZE = 16;
 const OVERLAY_SIZE = 16;
 
@@ -50,6 +39,20 @@ export interface BadgeSinkDeps {
   getTray: () => Tray | null;
   getBaseTrayImage: () => NativeImage;
   getWindows: () => BrowserWindow[];
+  /**
+   * When false (default), every OS-facing call is suppressed and this sink
+   * is effectively a no-op. The internal `unread` map on the store keeps
+   * running because the e2e probe (caseNotifyFiresOnIdle) reads it via
+   * `BadgeManager.getTotal()` to verify the notify bridge fired — that
+   * signal is decoupled from the visual badge.
+   *
+   * Defaults to false because of #667: the count shown on the taskbar
+   * overlay + tray icon was incorrect at MVP time and re-deriving the
+   * count logic was deferred. Flip to true (from the caller — see
+   * `electron/main.ts` BadgeManager construction) once the count logic
+   * is fixed to restore tray composite + setOverlayIcon + setBadgeCount.
+   */
+  enabled?: boolean;
 }
 
 export interface BadgeSink {
@@ -95,10 +98,11 @@ export function createBadgeSink(
   }
 
   function apply(total: number): void {
-    if (BADGE_DISABLED) {
+    if (!deps.enabled) {
       // OS-visible badge suppressed (#667). Internal `unread` map still
       // tracks per-sid counters for any consumer that cares (e.g., the
-      // notify-fires e2e probe reads `getTotal()`).
+      // notify-fires e2e probe reads `getTotal()`). Flip the `enabled`
+      // option at the construction site to restore the OS-facing calls.
       return;
     }
 
