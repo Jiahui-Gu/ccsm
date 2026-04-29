@@ -32,6 +32,21 @@ import { initSentry } from './sentry/init';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 
+// safety net — escaped main-proc rejections kill app on Node 20+ default
+// (audit tech-debt-03-errors.md risk #2). Registered BEFORE app.whenReady so
+// any throw during bootstrap (initSentry, IPC registration, db open) lands
+// in the logger instead of silently terminating the process. We deliberately
+// do NOT call app.exit() — preserves current default-throw behavior in tests
+// and mirrors the renderer's "log + degrade" stance. TODO: forward to Sentry
+// once main-process Sentry transport is wired (currently renderer-only per
+// audit).
+process.on('unhandledRejection', (reason, _promise) => {
+  console.error('[main] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err);
+});
+
 // Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
 // init is idempotent and a no-op when no DSN is set.
 initSentry();

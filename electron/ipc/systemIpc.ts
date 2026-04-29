@@ -77,6 +77,26 @@ export function readConnectionView(
   return { baseUrl, model, hasAuthToken };
 }
 
+/** Pure handler for `models:list`. Exported for unit testing. Returns `[]`
+ *  on any error (settings.json missing/malformed, fs error) so the renderer
+ *  Settings pane shows an empty model list instead of receiving an opaque
+ *  IPC rejection (Electron surfaces those as "An object could not be
+ *  cloned"). Audit risk #10. The renderer caller already catches and shows
+ *  an empty list on rejection, so the user-visible behavior is the same;
+ *  the win is a logged diagnostic in main + no bridge error in renderer
+ *  console. */
+export async function handleModelsList(): Promise<
+  Awaited<ReturnType<typeof listModelsFromSettings>>['models']
+> {
+  try {
+    const res = await listModelsFromSettings();
+    return res.models;
+  } catch (err) {
+    console.error('[main] models:list failed:', err);
+    return [];
+  }
+}
+
 export function registerSystemIpc(deps: SystemIpcDeps): void {
   const { ipcMain, app, applyAppMenuLocale, applyTrayLocale } = deps;
 
@@ -129,10 +149,7 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
     const result = await shell.openPath(file);
     return result === '' ? { ok: true } : { ok: false, error: result };
   });
-  ipcMain.handle('models:list', async () => {
-    const res = await listModelsFromSettings();
-    return res.models;
-  });
+  ipcMain.handle('models:list', handleModelsList);
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
   // The new-session default model comes straight from the user's CLI
