@@ -19,47 +19,44 @@
 // because we own the pty lifecycle directly: each `spawnPtySession` call re-
 // scans the JSONL roots before invoking pty.spawn.
 //
-// Module is parallel to electron/cliBridge/* during the transition; both
-// surfaces coexist until PR-5 wires this into main.ts and PR-8 deletes
-// cliBridge. We re-implement (not import) toClaudeSid + the JSONL probe so
-// this module can be deleted/moved independently of cliBridge's removal.
-//
-// Wire-up happens in PR-5 (main.ts calls registerPtyHostIpc). Preload bridge
-// is PR-3. This file ships standalone and only typechecks once PR-1 has added
-// the node-pty / @xterm/headless / @xterm/addon-serialize deps.
+// SRP layout (Task #729 Phase A): this file owns the per-session lifecycle
+// (Entry creation + spawn / attach / detach / kill). Helpers split into:
+//   - jsonlResolver.ts  pure deciders for the CLI's transcript paths
+//   - cwdResolver.ts    pure decider for the spawn cwd fallback
+//   - processKiller.ts  single sink (taskkill / kill -SIGTERM/SIGKILL)
+//   - dataFanout.ts     module-level pty:data subscriber registry
+//   - ipcRegistrar.ts   the eight `pty:*` IPC handlers + watcher bridge
 
-import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join as pathJoin } from 'node:path';
 import type { BrowserWindow, IpcMain, WebContents } from 'electron';
 import * as pty from 'node-pty';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
-import { cwdToProjectKey } from '../sessionWatcher/projectKey';
+import {
+  ensureResumeJsonlAtSpawnCwd,
+  findJsonlForSid,
+  resolveJsonlPath,
+  toClaudeSid,
+} from './jsonlResolver';
+import { resolveSpawnCwd } from './cwdResolver';
+import { killProcessSubtree } from './processKiller';
+import { emitPtyData } from './dataFanout';
+import { registerPtyIpc } from './ipcRegistrar';
 
-// --- Module-level data fan-out -----------------------------------------------
-//
-// Subscribers (currently only the notify pipeline's OSC sniffer in
-// electron/notify/sinks/pipeline.ts) register here to receive every PTY
-// chunk for every session. We fan out inside the per-session `p.onData`
-// callback below. Errors in subscribers are caught so a misbehaving sink
-// cannot wedge the PTY.
-type PtyDataListener = (sid: string, chunk: string) => void;
-const dataListeners = new Set<PtyDataListener>();
-
-/** Register a listener for every PTY chunk across all sessions. Returns an
- *  unsubscribe function. Idempotent — adding the same callback twice is
- *  silently deduped by Set semantics. */
-export function onPtyData(cb: PtyDataListener): () => void {
-  dataListeners.add(cb);
-  return () => {
-    dataListeners.delete(cb);
-  };
-}
+// Re-export the helpers callers historically imported from `ptyHost/index`.
+// The unit tests under `__tests__/` import `resolveSpawnCwd` and
+// `ensureResumeJsonlAtSpawnCwd` from this module; the notify pipeline
+// imports `onPtyData`. Keep that surface stable post-extraction.
+export { onPtyData } from './dataFanout';
+export type { PtyDataListener } from './dataFanout';
+export {
+  ensureResumeJsonlAtSpawnCwd,
+  findJsonlForSid,
+  resolveJsonlPath,
+  toClaudeSid,
+} from './jsonlResolver';
+export type { EnsureResumeJsonlResult } from './jsonlResolver';
+export { resolveSpawnCwd } from './cwdResolver';
 
 // --- Public types ------------------------------------------------------------
 
@@ -102,199 +99,11 @@ interface Entry {
 
 const sessions = new Map<string, Entry>();
 
-// Module-singleton guard: registerPtyHostIpc may be called more than once
-// in dev/HMR; we only want one sessionWatcher → IPC bridge.
-let stateBridgeInstalled = false;
-
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 30;
 const SCROLLBACK = 5000;
 
-// --- Helpers -----------------------------------------------------------------
-
-// Project an arbitrary ccsm sid onto a deterministic UUID v4 string so claude
-// (which requires a valid UUID for --session-id / --resume) accepts it.
-// Re-implemented here rather than imported from cliBridge so this module is
-// self-contained for the cliBridge removal in PR-8.
-const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function toClaudeSid(ccsmSessionId: string): string {
-  if (UUID_V4_RE.test(ccsmSessionId)) return ccsmSessionId.toLowerCase();
-  const hex = createHash('sha256').update(ccsmSessionId).digest('hex');
-  const yNibble = (parseInt(hex[16], 16) & 0x3) | 0x8;
-  return (
-    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-` +
-    `${yNibble.toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`
-  );
-}
-
-// Scan both possible JSONL roots (CLAUDE_CONFIG_DIR override + USERPROFILE
-// default) for `<sid>.jsonl` with non-zero size. Mirrors the .cmd wrapper in
-// cliBridge/processManager.ts, just expressed in Node. Non-zero size guards
-// against the empty-file race where claude has created but not yet written
-// the transcript. Returns the absolute path to the first matching file
-// found (so callers can locate the SOURCE for the import-resume copy-into-
-// place fix in `makeEntry`), or null when no transcript exists.
-export function findJsonlForSid(sid: string): string | null {
-  const filename = `${sid}.jsonl`;
-  const roots: string[] = [];
-  const cfg = process.env.CLAUDE_CONFIG_DIR;
-  if (cfg) roots.push(pathJoin(cfg, 'projects'));
-  const home = process.env.USERPROFILE || process.env.HOME;
-  if (home) roots.push(pathJoin(home, '.claude', 'projects'));
-
-  for (const root of roots) {
-    if (!existsSync(root)) continue;
-    let entries: string[];
-    try {
-      entries = readdirSync(root);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      const candidate = pathJoin(root, name, filename);
-      try {
-        const st = statSync(candidate);
-        if (st.isFile() && st.size > 0) return candidate;
-      } catch {
-        /* not present in this project dir */
-      }
-    }
-  }
-  return null;
-}
-
-// Back-compat boolean wrapper. Internal callers prefer `findJsonlForSid`
-// (which surfaces the matched path so we can copy the JSONL into the
-// projectKey matching the spawn cwd — see `ensureResumeJsonlAtSpawnCwd`
-// for the import-resume fix #603).
-function jsonlExistsForSid(sid: string): boolean {
-  return findJsonlForSid(sid) !== null;
-}
-
-// Resolve the absolute path the CLI will write the session JSONL to:
-//   <root>/projects/<projectKey>/<claudeSid>.jsonl
-// where `<root>` is `$CLAUDE_CONFIG_DIR` (if set) else `~/.claude`, and
-// `<projectKey>` is `cwdToProjectKey(cwd)`. Returns null when we can't
-// determine a usable root (no env, no $HOME / $USERPROFILE) — the watcher
-// then never starts and the renderer just sees no state events for this
-// session, which is the correct degraded behaviour.
-//
-// We don't require the file to exist yet — the watcher installs a parent-
-// directory watcher and reads-on-create. We also prefer the encoded path
-// over scanning every project dir (which `jsonlExistsForSid` does for the
-// resume-vs-spawn decision) because the watcher is tied to a SPECIFIC
-// session and shouldn't latch onto a same-sid file in some other project.
-function resolveJsonlPath(claudeSid: string, cwd: string): string | null {
-  const projectKey = cwdToProjectKey(cwd);
-  if (!projectKey) return null;
-  const cfg = process.env.CLAUDE_CONFIG_DIR;
-  const home = process.env.USERPROFILE || process.env.HOME;
-  const root = cfg ? cfg : home ? pathJoin(home, '.claude') : null;
-  if (!root) return null;
-  return pathJoin(root, 'projects', projectKey, `${claudeSid}.jsonl`);
-}
-
-// Resolve the cwd we'll hand to `pty.spawn`. node-pty surfaces an invalid
-// cwd as a hard spawn failure — on Windows this is `error code: 267`
-// (ERROR_DIRECTORY) which is not actionable for the user and looks like
-// ccsm crashing the CLI. Validate first; if the requested path is empty,
-// missing, or not a directory, fall back to the user's home directory
-// (always exists by definition for an interactive Electron session) and
-// log a warning so the cause is visible in the console. Exposed for
-// `electron/ptyHost/__tests__/cwd-fallback.test.ts`.
-export function resolveSpawnCwd(requested: string | null | undefined): string {
-  const fallback = homedir();
-  if (!requested || requested.length === 0) return fallback;
-  try {
-    const st = statSync(requested);
-    if (st.isDirectory()) return requested;
-    console.warn(
-      `[ptyHost] cwd ${JSON.stringify(requested)} is not a directory; falling back to ${fallback}`,
-    );
-    return fallback;
-  } catch (err) {
-    console.warn(
-      `[ptyHost] cwd ${JSON.stringify(requested)} unusable (${err instanceof Error ? err.message : String(err)}); falling back to ${fallback}`,
-    );
-    return fallback;
-  }
-}
-
-// Resolve the CLI's projects ROOT directory (parent of every projectDir).
-// Mirrors `resolveJsonlPath` (above) but for the root, not the per-session
-// file. Returns null when neither CLAUDE_CONFIG_DIR nor $HOME / $USERPROFILE
-// is set — in that case there's nowhere to write and the import-resume copy
-// helper bails.
-function resolveProjectsRoot(): string | null {
-  const cfg = process.env.CLAUDE_CONFIG_DIR;
-  if (cfg) return pathJoin(cfg, 'projects');
-  const home = process.env.USERPROFILE || process.env.HOME;
-  if (home) return pathJoin(home, '.claude', 'projects');
-  return null;
-}
-
-// Import-resume fix (#603). `claude --resume <sid>` only finds a session
-// when the JSONL lives under the projectDir matching the CURRENT cwd's
-// projectKey. Imported transcripts can come from a cwd that no longer
-// exists — `resolveSpawnCwd` then falls back to homedir, the projectKey
-// mismatches the JSONL's actual location, claude exits with "No
-// conversation found", the pty terminates immediately, and the user sees a
-// blank terminal. Empirically reproduced by
-//   `cd /tmp && claude --resume <home-cwd-sid>`
-// → "No conversation found with session ID: ...".
-//
-// Fix: when the source JSONL exists but isn't already under the spawn
-// cwd's projectDir, copy it into place so `--resume` succeeds. Idempotent —
-// once the destination exists with non-zero size we leave it alone (the
-// CLI then writes back to that file). Failures are logged and swallowed;
-// worst case we keep the prior blank-terminal symptom but with a clear
-// reason in the console. Exposed for `__tests__/import-resume-copy.test.ts`.
-export interface EnsureResumeJsonlResult {
-  /** True when a copy actually happened on this call (source path differed
-   *  from target AND target didn't already exist). False otherwise — source
-   *  was already at the canonical location, target already existed, or a
-   *  precondition failed (no projectsRoot, no projectKey, copy threw). */
-  copied: boolean;
-  /** The canonical target path under the spawn cwd's projectDir, even when
-   *  no copy happened — callers use this to verify source==target and to
-   *  report the redirect destination back to the renderer. Null when we
-   *  couldn't resolve a projectsRoot or projectKey. */
-  targetPath: string | null;
-}
-
-export function ensureResumeJsonlAtSpawnCwd(
-  claudeSid: string,
-  spawnCwd: string,
-  sourceJsonlPath: string,
-): EnsureResumeJsonlResult {
-  const projectsRoot = resolveProjectsRoot();
-  if (!projectsRoot) return { copied: false, targetPath: null };
-  const projectKey = cwdToProjectKey(spawnCwd);
-  if (!projectKey) return { copied: false, targetPath: null };
-  const targetPath = pathJoin(projectsRoot, projectKey, `${claudeSid}.jsonl`);
-  // Already in place (the source IS the canonical location for this cwd,
-  // or a previous spawn already copied it — never overwrite live transcripts).
-  if (targetPath === sourceJsonlPath) return { copied: false, targetPath };
-  try {
-    const st = statSync(targetPath);
-    if (st.isFile() && st.size > 0) return { copied: false, targetPath };
-  } catch {
-    /* not present → fall through to copy */
-  }
-  try {
-    mkdirSync(dirname(targetPath), { recursive: true });
-    copyFileSync(sourceJsonlPath, targetPath);
-    return { copied: true, targetPath };
-  } catch (err) {
-    console.warn(
-      `[ptyHost] failed to copy import JSONL ${JSON.stringify(sourceJsonlPath)} → ` +
-        `${JSON.stringify(targetPath)} (${err instanceof Error ? err.message : String(err)}); ` +
-        `claude --resume may report 'No conversation found'`,
-    );
-    return { copied: false, targetPath };
-  }
-}
+// --- Entry construction ------------------------------------------------------
 
 function makeEntry(
   sid: string,
@@ -379,13 +188,7 @@ function makeEntry(
     // is the only production consumer today). Listeners are best-effort —
     // throws don't propagate back to ptyHost so a misbehaving sink can't
     // wedge the PTY.
-    for (const cb of dataListeners) {
-      try {
-        cb(sid, chunk);
-      } catch (err) {
-        console.warn('[ptyHost] data listener threw', err);
-      }
-    }
+    emitPtyData(sid, chunk);
   });
 
   p.onExit(({ exitCode, signal }) => {
@@ -419,8 +222,6 @@ function makeEntry(
   // Start a JSONL tail-watcher for this session. The watcher emits
   // 'state-changed' on the singleton in electron/sessionWatcher; main.ts
   // bridges those events to the renderer (`session:state` IPC channel).
-  // Path resolution mirrors `jsonlExistsForSid` above: prefer
-  // CLAUDE_CONFIG_DIR/projects, fall back to ~/.claude/projects.
   try {
     const jsonlPath = resolveJsonlPath(claudeSid, spawnCwd);
     if (jsonlPath) sessionWatcher.startWatching(sid, jsonlPath, spawnCwd);
@@ -532,43 +333,7 @@ export function killPtySession(sid: string): boolean {
   // pty.kill that races with onExit can't leak the fs.watch handle.
   // sessionWatcher.stopWatching is idempotent.
   try { sessionWatcher.stopWatching(sid); } catch { /* never throws */ }
-  // headless dispose + map delete happen in the onExit handler so we don't
-  // double-clean. Belt-and-braces drop here in case onExit doesn't fire (rare:
-  // the binding has fired reliably on Windows conpty in spike testing).
   return true;
-}
-
-// Recursively terminate the entire subtree rooted at `pid`. Best-effort: any
-// already-dead pid is swallowed silently. Called from killPtySession after
-// pty.kill() so the IPC `pty:kill` path and `before-quit` both get cleanup.
-function killProcessSubtree(pid: number | undefined): void {
-  if (!pid || pid <= 0) return;
-  if (process.platform === 'win32') {
-    try {
-      // /T walks the entire tree, /F forces termination.
-      spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
-        windowsHide: true,
-        stdio: 'ignore',
-      });
-    } catch {
-      /* already dead or taskkill unavailable */
-    }
-    return;
-  }
-  // POSIX: signal the process group (negative pid). SIGTERM first; SIGKILL
-  // after a short grace period if anything refuses to exit.
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    /* group already gone */
-  }
-  setTimeout(() => {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      /* already dead */
-    }
-  }, 500).unref();
 }
 
 export function getPtySession(sid: string): PtySessionInfo | null {
@@ -587,133 +352,24 @@ export function killAllPtySessions(): void {
 
 // --- IPC registration --------------------------------------------------------
 
-// Register all `pty:*` IPC handlers. `getMainWindow` is reserved for future
-// broadcast paths that don't have a per-webContents sender (currently every
-// emit targets the attached webContents directly, but PR-5 may need to
-// fall back to the main window for unsolicited events).
+// Register all `pty:*` IPC handlers. Thin wrapper around `registerPtyIpc`
+// in ipcRegistrar.ts that wires the registrar's deps to this module's
+// lifecycle functions. Kept on this surface so main.ts wires up via a
+// single call (`registerPtyHostIpc(ipcMain, getMainWindow)`) — moving it
+// would touch main.ts which is out of scope for Task #729 Phase A.
 export function registerPtyHostIpc(
   ipcMain: IpcMain,
   getMainWindow: () => BrowserWindow | null,
 ): void {
-  // Fan out sessionWatcher's state-changed events to the renderer. We send
-  // to the main window (the only renderer that subscribes today); the
-  // preload bridges via `window.ccsmSession.onState`. Subscribed once at
-  // module init — sessionWatcher is a singleton and start/stopWatching
-  // happens in spawn/kill, so we never need to teardown this listener.
-  if (!stateBridgeInstalled) {
-    sessionWatcher.on('state-changed', (evt) => {
-      const win = getMainWindow();
-      if (!win || win.isDestroyed()) return;
-      const wc = win.webContents;
-      if (wc.isDestroyed()) return;
-      try {
-        wc.send('session:state', evt);
-      } catch {
-        /* renderer gone */
-      }
-    });
-    // Title fan-out mirrors the state-changed bridge above. The watcher
-    // emits `{sid, title}` only when the SDK-derived summary changes, so
-    // there is no extra dedupe needed on this side.
-    sessionWatcher.on('title-changed', (evt) => {
-      const win = getMainWindow();
-      if (!win || win.isDestroyed()) return;
-      const wc = win.webContents;
-      if (wc.isDestroyed()) return;
-      try {
-        wc.send('session:title', evt);
-      } catch {
-        /* renderer gone */
-      }
-    });
-    stateBridgeInstalled = true;
-  }
-
-  ipcMain.handle('pty:list', () => listPtySessions());
-
-  ipcMain.handle('pty:spawn', (_event, sid: string, cwd: string) => {
-    const claudePath = resolveClaude();
-    if (!claudePath) {
-      return { ok: false, error: 'claude_not_found' };
-    }
-    try {
-      const info = spawnPtySession(sid, cwd, claudePath, {
-        // Import-resume cwd-redirect (#603 reviewer Layer-1 fix). When the
-        // copy helper relocates the JSONL into the spawn cwd's projectDir,
-        // the renderer's `session.cwd` (still pointing at the original
-        // recorded cwd, possibly missing) is now stale relative to the
-        // live JSONL. Push the new cwd to the renderer so the
-        // sessionTitles bridge (`store.ts:renameSession` / `_backfillTitles`
-        // / etc.) reads/writes the COPY, not the frozen SOURCE.
-        onCwdRedirect: (newCwd: string) => {
-          const win = getMainWindow();
-          if (!win || win.isDestroyed()) return;
-          const wc = win.webContents;
-          if (wc.isDestroyed()) return;
-          try {
-            wc.send('session:cwdRedirected', { sid, newCwd });
-          } catch {
-            /* renderer gone */
-          }
-        },
-      });
-      return { ok: true, ...info };
-    } catch (err) {
-      return {
-        ok: false,
-        error: `spawn_failed: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-  });
-
-  ipcMain.handle('pty:attach', (event, sid: string) => {
-    const entry = sessions.get(sid);
-    if (!entry) return null;
-    const wc = event.sender;
-    entry.attached.set(wc.id, wc);
-    // Auto-detach on webContents destruction so we don't accumulate stale
-    // refs across renderer reloads / window closes.
-    wc.once('destroyed', () => {
-      const cur = sessions.get(sid);
-      if (cur) cur.attached.delete(wc.id);
-    });
-    return {
-      snapshot: entry.serialize.serialize(),
-      cols: entry.cols,
-      rows: entry.rows,
-      pid: entry.pty.pid,
-    } satisfies AttachResult;
-  });
-
-  ipcMain.handle('pty:detach', (event, sid: string) => {
-    const entry = sessions.get(sid);
-    if (!entry) return;
-    entry.attached.delete(event.sender.id);
-  });
-
-  ipcMain.handle('pty:input', (_event, sid: string, data: string) => {
-    inputPtySession(sid, data);
-  });
-
-  ipcMain.handle('pty:resize', (_event, sid: string, cols: number, rows: number) => {
-    resizePtySession(sid, cols, rows);
-  });
-
-  ipcMain.handle('pty:kill', (_event, sid: string) => killPtySession(sid));
-
-  ipcMain.handle('pty:get', (_event, sid: string) => getPtySession(sid));
-
-  // Claude CLI availability probe. Folded into ptyHost (post-PR-8) from
-  // the deleted electron/cliBridge module: ccsm has a single CLI host
-  // surface now. Renderer consumes via window.ccsmPty.checkClaudeAvailable.
-  // `force: true` bypasses the resolver's success-cache so the user can
-  // install claude in another terminal and recover in-place via the
-  // ClaudeMissingGuide "Re-check" button without restarting the app.
-  ipcMain.handle('pty:checkClaudeAvailable', (_event, opts: unknown) => {
-    const force =
-      typeof opts === 'object' && opts !== null && (opts as { force?: unknown }).force === true;
-    const p = resolveClaude({ force });
-    return p ? { available: true as const, path: p } : { available: false as const };
+  registerPtyIpc(ipcMain, {
+    getMainWindow,
+    getEntry: (sid) => sessions.get(sid),
+    listPtySessions,
+    spawnPtySession,
+    inputPtySession,
+    resizePtySession,
+    killPtySession,
+    getPtySession,
   });
 }
 
