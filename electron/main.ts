@@ -69,8 +69,6 @@ import {
 import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
 import { registerPtyHostIpc, killAllPtySessions, onPtyData } from './ptyHost';
 import { sessionWatcher, configureSessionWatcher } from './sessionWatcher';
-import { installNotifyBridge } from './notify';
-import { createTitleStateBridge } from './notify/titleStateBridge';
 import { installNotifyPipeline } from './notify/sinks/pipeline';
 import { BadgeManager } from './notify/badge';
 import {
@@ -1060,45 +1058,14 @@ app.whenReady().then(() => {
     }
   });
 
-  // Title-state stream — renderer forwards every xterm `onTitleChange` here
-  // (see TerminalPane / preload `reportTitleState`). The title-state bridge
-  // classifies the leading OSC 0 glyph and emits `state-changed` only on
-  // running→idle / unknown→idle transitions. Notify subscribes to that
-  // emitter (instead of the JSONL-driven sessionWatcher) so toasts fire
-  // exactly when the CLI itself signals "waiting for user".
-  const titleStateBridge = createTitleStateBridge();
-  ipcMain.on('session:title-state', (e, payload: unknown) => {
-    if (!fromMainFrame(e)) return;
-    if (!payload || typeof payload !== 'object') return;
-    const { sid, title } = payload as { sid?: unknown; title?: unknown };
-    if (typeof sid !== 'string' || sid.length === 0) return;
-    if (typeof title !== 'string') return;
-    titleStateBridge.feedTitle(sid, title);
-  });
-
-  // Drop the per-sid lastState entry when the session is torn down so the
-  // bridge's internal map doesn't grow unbounded. ptyHost.onExit calls
-  // sessionWatcher.stopWatching, which now emits 'unwatched'.
-  sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
-    if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
-    titleStateBridge.forgetSid(evt.sid);
-  });
-
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────────
   //
-  // The Phase A/B/C pipeline replaces the legacy `installNotifyBridge` toast
-  // emission. Architecture:
+  // Single toast producer. Architecture:
   //   producer  : ptyHost.onData → OscTitleSniffer (#688)
   //   decider   : notifyDecider.decide(event, ctx) (#687)
   //   sinks     : toastSink (Electron Notification) + flashSink (renderer push)
   //
-  // The legacy `titleStateBridge` is still kept for its `state-changed`
-  // emitter (which feeds the JSONL→state pipe used by Sidebar / `session:state`
-  // rendering), but its toast emission via `installNotifyBridge` is gated
-  // off here so the new pipeline is the single toast producer. We keep the
-  // BadgeManager wired and have the new pipeline bump it via `onNotified`,
-  // matching the legacy bridge's badge contract for the `notify-fires-on-idle`
-  // e2e case.
+  // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
   badgeManager = new BadgeManager({
     getTray: () => tray,
     getBaseTrayImage: getTrayBaseImage,
@@ -1151,7 +1118,7 @@ app.whenReady().then(() => {
 
   // Drop sniffer/ctx state when a session is unwatched (PTY exit). The
   // existing 'unwatched' emitter is reused so we don't add another teardown
-  // path. titleStateBridge.forgetSid stays wired below.
+  // path.
   sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
     if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
     pipelineInstance.forgetSid(evt.sid);
@@ -1177,21 +1144,9 @@ app.whenReady().then(() => {
     };
   }
 
-  // Legacy toast bridge — DEPRECATED in #689 but the JSONL-state classifier
-  // is still consumed by sidebar status. Install the bridge with a no-op
-  // `notifyImpl` so its EventEmitter wiring (state-changed plumbing) keeps
-  // working for any non-toast subscriber, but no toast actually fires from
-  // here. The new pipeline above is now the single toast producer.
-  //
-  // Followup: collapse `installNotifyBridge` once we confirm no other
-  // consumer needs `state-changed`. Tracked separately to keep #689 scoped.
-  installNotifyBridge({
-    sessionWatcher: titleStateBridge.emitter,
-    getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
-    isMutedFn: () => true, // hard-mute so legacy never fires a toast
-    getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
-    notifyImpl: { show: () => { /* no-op — new pipeline owns toast */ } },
-  });
+  // Legacy `installNotifyBridge` + `titleStateBridge` were removed in #718.
+  // The Phase A/B/C pipeline above is the single toast producer; sidebar
+  // status flows through the separate `sessionWatcher`-driven channel.
 
   if (process.env.CCSM_NOTIFY_TEST_HOOK) {
     (globalThis as unknown as Record<string, unknown>).__ccsmBadgeDebug = {

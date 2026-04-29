@@ -2,18 +2,11 @@
 // `notifyDecider.decide`, fires an OS notification (via Electron's
 // `Notification`) when `decision.toast === true`.
 //
-// This sink is the executor end of the new notify pipeline (Task #689):
+// This sink is the executor end of the notify pipeline (Task #689):
 //
 //   producer  : ptyHost.onData → OscTitleSniffer (#688)
 //   decider   : notifyDecider.decide(event, ctx) (#687) → Decision | null
 //   sinks     : toastSink (this file) + flashSink (renderer push)
-//
-// The earlier `installNotifyBridge` (electron/notify/index.ts) is a
-// monolithic producer+decider+sink wired off the JSONL-state-bridge. Phase
-// C migrates the toast firing to OSC + the 7-rule decider; the old bridge's
-// toast emission is gated off when the new pipeline is wired (see main.ts
-// `installNotifyPipeline` call). Naming / click-focus / badge bookkeeping
-// helpers are reused from the old module so behaviour stays identical.
 //
 // The sink does NOT decide. It only:
 //   1. Builds the user-visible toast copy (title/body) via `getNameFn`.
@@ -49,7 +42,7 @@ export interface ToastImpl {
 export interface ToastSinkOptions {
   getMainWindow: () => BrowserWindow | null;
   /** Returns the user-visible session name; falls back to short sid prefix
-   *  on null/empty/placeholder. Same contract as installNotifyBridge. */
+   *  on null/empty/placeholder. */
   getNameFn?: (sid: string) => string | null | undefined;
   /** Optional injected impl — defaults to Electron's Notification (or the
    *  test seam when CCSM_NOTIFY_TEST_HOOK is set). */
