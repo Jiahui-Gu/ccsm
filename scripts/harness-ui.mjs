@@ -1656,12 +1656,6 @@ async function caseRename({ win, log }) {
     const header = win.locator(`[data-group-header-id="${groupId}"]`).first();
     await header.click({ button: 'right' });
     await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
-    await win.waitForTimeout(500);
-    const dump = await win.evaluate((gid) => {
-      const el = document.querySelector(`[data-group-header-id="${gid}"]`);
-      return el ? el.outerHTML : 'NOT_FOUND';
-    }, groupId);
-    console.log(`[DIAG openGroupRename ${groupId}] DOM:`, dump);
     const input = win.locator(`[data-group-header-id="${groupId}"] input`).first();
     await input.waitFor({ state: 'visible', timeout: 3000 });
     await input.click();
