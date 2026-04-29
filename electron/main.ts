@@ -1162,9 +1162,19 @@ app.whenReady().then(() => {
           runStartTs: Object.fromEntries(i.ctx.runStartTs),
           mutedSids: Array.from(i.ctx.mutedSids),
           lastFiredTs: Object.fromEntries(i.ctx.lastFiredTs),
+          diag: i.diag,
         };
       },
       markUserInput: (sid: string) => pipelineInstance.markUserInput(sid),
+      // Test-only — wipe Rule-1 user-init mute by clearing lastUserInputTs.
+      // Probes need this to deterministically observe Rule-3 firing inside
+      // the 60s window (the implicit `setActive`+`markUserInput` from the
+      // probe's own session bookkeeping otherwise suppresses every event).
+      clearUserInput: (sid?: string) => {
+        const i = pipelineInstance._internals();
+        if (sid) i.ctx.lastUserInputTs.delete(sid);
+        else i.ctx.lastUserInputTs.clear();
+      },
     };
   }
 

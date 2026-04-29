@@ -2979,10 +2979,17 @@ async function caseNotifyPipelineForeground({ electronApp, win, tempDir }) {
   await sleep(300);
   await sendToClaudeTui(win, '\r');
 
-  // Poll the pipeline log for any entry on this sid (Rule 1 mute may
-  // suppress this one — in that case the legacy fires-on-idle case still
-  // exercises the toastSink; the Phase-C asssertion here is "the new
-  // pipeline reached at least its sink layer for this sid"). Up to 180s.
+  // Clear Rule-1 user-init mute via the test seam so the next idle title
+  // event lands on Rule 3 (foreground+active+long) instead of being
+  // suppressed by the 60s post-user-input window. The CLI is mid-run at
+  // this point; clearing now is safe — the decider only consults
+  // lastUserInputTs at decision time (when the idle title arrives).
+  await sleep(800);
+  await electronApp.evaluate(() => {
+    globalThis.__ccsmNotifyPipeline?.clearUserInput?.();
+  });
+
+  // Poll the pipeline log for any entry on this sid. Up to 180s.
   const start = Date.now();
   let entry = null;
   let flashing = false;
@@ -3077,6 +3084,14 @@ async function caseNotifyPipelineBackground({ electronApp, win, tempDir }) {
     if (bridge && typeof bridge.setActive === 'function') bridge.setActive(s);
   }, sidA);
   await sleep(500);
+
+  // Clear Rule-1 user-init mute via the test seam so B's idle title fires
+  // Rule 4 (foreground+other-sid) instead of being suppressed by the 60s
+  // post-user-input window. Both A and B accumulate lastUserInputTs from
+  // the seedSession setActive plumbing.
+  await electronApp.evaluate(() => {
+    globalThis.__ccsmNotifyPipeline?.clearUserInput?.();
+  });
 
   // Poll up to 180s for a B-sid toast OR flash.
   const start = Date.now();
