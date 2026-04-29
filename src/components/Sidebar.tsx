@@ -467,9 +467,10 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
         {(() => {
           // Exclude the session's current group from the destination list so
-          // users can only move TO another group (#612).
+          // users can only move TO another group (#612). The submenu is
+          // ALWAYS rendered so users can still create a new group via the
+          // "New group..." escape hatch even when no other group exists (#629).
           const otherGroups = groups.filter((g) => g.id !== session.groupId);
-          if (otherGroups.length === 0) return null;
           return (
             <ContextMenuSub>
               <ContextMenuSubTrigger data-testid="move-to-group-trigger">{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
@@ -484,7 +485,7 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
                     {g.name}
                   </ContextMenuItem>
                 ))}
-                <ContextMenuSeparator />
+                {otherGroups.length > 0 && <ContextMenuSeparator />}
                 <ContextMenuItem
                   onSelect={() => {
                     const id = createGroup();

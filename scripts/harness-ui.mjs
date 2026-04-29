@@ -2302,9 +2302,10 @@ async function caseTerminalPaneMounted({ win, log }) {
 
 // ---------- move-to-group-excludes-own-group ----------
 // PR #517 / commit a882478. Right-click → "Move to group" submenu must NOT
-// list the session's current group. When no other group exists, the entire
-// "Move to group" submenu trigger must be hidden (otherwise users see a
-// dead-end submenu with no destinations).
+// list the session's current group. PR #629 reverses the original "hide the
+// whole submenu when empty" behavior: the submenu is ALWAYS visible — when
+// no other group exists it shows only the "New group…" escape hatch so users
+// can still create a destination from the same place.
 async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
   // ---- Subcase 1: multi-group → submenu lists OTHER groups only.
   await seedStore(win, {
@@ -2342,8 +2343,9 @@ async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
   await win.keyboard.press('Escape');
   await win.waitForTimeout(150);
 
-  // ---- Subcase 2: single-group → entire "Move to group" submenu trigger
-  // must be hidden (no destinations, no dead-end submenu).
+  // ---- Subcase 2: single-group → submenu trigger is STILL visible (#629),
+  // and the submenu contains only the "New group…" escape hatch — no
+  // destination groups, including the session's own group.
   await seedStore(win, {
     groups: [
       { id: 'gOnly', name: 'Only Group', collapsed: false, kind: 'normal' }
@@ -2357,14 +2359,29 @@ async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
   await win.locator('li[data-session-id="s-solo"]').first().click({ button: 'right' });
   // The Rename item still anchors the menu — wait for it as a sentinel.
   await win.getByRole('menuitem', { name: /^Rename$/ }).first().waitFor({ state: 'visible', timeout: 3000 });
-  const triggerCount = await win.locator('[data-testid="move-to-group-trigger"]').count();
-  if (triggerCount !== 0) {
-    throw new Error(`move-to-group submenu trigger must be hidden when no other groups exist; got ${triggerCount} trigger(s)`);
+  const soloTrigger = win.locator('[data-testid="move-to-group-trigger"]').first();
+  await soloTrigger.waitFor({ state: 'visible', timeout: 3000 });
+  await soloTrigger.hover();
+  const soloContent = win.locator('[data-testid="move-to-group-content"]').first();
+  await soloContent.waitFor({ state: 'visible', timeout: 3000 });
+
+  const soloGroupIds = await win.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-move-to-group-item]'))
+      .map((el) => el.getAttribute('data-group-id'))
+  );
+  if (soloGroupIds.length !== 0) {
+    throw new Error(`single-group submenu must not list any destination groups; got ${JSON.stringify(soloGroupIds)}`);
   }
+  const newGroupItem = soloContent.getByRole('menuitem', { name: /New group/ });
+  const newGroupCount = await newGroupItem.count();
+  if (newGroupCount !== 1) {
+    throw new Error(`single-group submenu must contain exactly one "New group…" item; got ${newGroupCount}`);
+  }
+  await win.keyboard.press('Escape');
   await win.keyboard.press('Escape');
   await win.waitForTimeout(100);
 
-  log('multi-group: own group excluded from submenu; single-group: trigger hidden entirely');
+  log('multi-group: own group excluded from submenu; single-group: submenu visible with only "New group…" entry');
 }
 
 // ---------- harness spec ----------
