@@ -1,4 +1,3 @@
-import * as Sentry from '@sentry/electron/main';
 import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, ipcMain, shell, type MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -11,56 +10,15 @@ import {
 } from './db';
 import { validateSaveStateInput } from './db-validate';
 import { buildAppIcon, buildTrayIcon } from './branding/icon';
+import { initSentry } from './sentry/init';
+import {
+  CRASH_OPT_OUT_KEY,
+  invalidateCrashReportingCache,
+} from './prefs/crashReporting';
 
-// Reads the user's opt-out preference for crash reporting from app_state.
-// Returns false when the row is missing or the read errors — i.e. reporting
-// is opt-OUT, default ON. We swallow errors here because Sentry's beforeSend
-// is on the hot error path; failing closed (silently sending) is preferable
-// to dropping a crash because the DB happened to be locked.
-//
-// Sentry's beforeSend runs on the hot error path, so we cache the value in
-// a module-scope variable after the first read. The `db:save` handler below
-// invalidates the cache when the renderer writes the `crashReportingOptOut`
-// key, so the toggle in Settings still takes effect immediately.
-const CRASH_OPT_OUT_KEY = 'crashReportingOptOut';
-let _crashOptOutCached: boolean | undefined;
-function loadCrashReportingOptOut(): boolean {
-  if (_crashOptOutCached !== undefined) return _crashOptOutCached;
-  try {
-    const raw = loadState(CRASH_OPT_OUT_KEY);
-    const value = raw != null && (raw === 'true' || raw === '1');
-    _crashOptOutCached = value;
-    return value;
-  } catch {
-    return false;
-  }
-}
-
-// Crash reporting is OFF by default unless the operator plugs in a DSN
-// via `SENTRY_DSN` at launch time. We intentionally do NOT ship a hardcoded
-// project DSN in the open-source repo: self-hosters would otherwise send
-// crashes to the maintainer's Sentry project with no opt-in. If you are
-// building a fork, pass `SENTRY_DSN=https://...@your-project` to the app.
-const SENTRY_DSN = process.env.SENTRY_DSN?.trim() || undefined;
-if (SENTRY_DSN) {
-  Sentry.init({
-    dsn: SENTRY_DSN,
-    release: app.getVersion(),
-    environment: app.isPackaged ? 'prod' : 'dev',
-    sendDefaultPii: false,
-    beforeSend(event) {
-      try {
-        const optOut = loadCrashReportingOptOut();
-        if (optOut) return null;
-      } catch {
-        /* fall through, send anyway */
-      }
-      return event;
-    },
-  });
-} else {
-  console.info('[sentry] SENTRY_DSN not set — crash reporting disabled.');
-}
+// Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
+// init is idempotent and a no-op when no DSN is set.
+initSentry();
 import { installUpdaterIpc } from './updater';
 import {
   scanImportableSessions,
@@ -78,49 +36,19 @@ import {
   enqueuePendingRename,
   flushPendingRename,
 } from './sessionTitles';
-import { normalizeCwd, pushLRU, withHomeFallback } from './userCwds';
+import { getUserCwds, pushUserCwd } from './prefs/userCwds';
+import {
+  type CloseAction,
+  getCloseAction,
+  setCloseAction,
+} from './prefs/closeAction';
+import {
+  NOTIFY_ENABLED_KEY,
+  loadNotifyEnabled,
+  invalidateNotifyEnabledCache,
+} from './prefs/notifyEnabled';
+import { isSafePath, resolveCwd, fromMainFrame } from './security/ipcGuards';
 import { BadgeController } from './badgeController';
-
-// ─────────────────────── IPC security helpers ────────────────────────────
-//
-// Filter renderer-supplied filesystem paths before any `fs.*` call. UNC paths
-// (`\\server\share\...` or `//server/share/...`) MUST be rejected on Windows:
-// node's fs will dutifully reach out over SMB to fetch the file, and on
-// Windows that handshake leaks the user's NTLM hash to whatever host the
-// renderer named. (CRITICAL — even a single innocuous-looking `existsSync`
-// call against a chosen UNC target is a credential-leak primitive.)
-//
-// We also require absolute paths because every renderer caller already
-// passes absolute paths (cwds, persisted disk locations, etc.); a relative
-// path here is always a sign of a confused or malicious caller.
-function isSafePath(p: unknown): p is string {
-  return (
-    typeof p === 'string' &&
-    path.isAbsolute(p) &&
-    !p.startsWith('\\\\') &&
-    !p.startsWith('//')
-  );
-}
-
-// Expand a leading `~` / `~/` / `~\` to the user's home directory. Used by
-// `paths:exist` to normalize persisted cwds before the safety check. Inlined
-// here after the `electron/agent/sessions.ts` deletion (W3.5c) — it was the
-// only non-deleted consumer of the old `resolveCwd` helper.
-function resolveCwd(cwd: string): string {
-  if (cwd === '~') return os.homedir();
-  if (cwd.startsWith('~/') || cwd.startsWith('~\\')) return path.join(os.homedir(), cwd.slice(2));
-  return cwd;
-}
-
-// Defense-in-depth: every IPC handler that takes a privileged action should
-// first confirm the message originated from our top-level renderer frame. A
-// compromised iframe (e.g. via a future webview, or a misconfigured CSP)
-// can otherwise call into ipcMain with the same `e.sender`. Pairs with the
-// `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
-// installed in createWindow().
-function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
-  return e.senderFrame === e.sender.mainFrame;
-}
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `CCSM_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -156,61 +84,14 @@ if (!skipSingleInstanceLock) {
   });
 }
 
-// Close-button preference: 'ask' shows a one-time dialog the first time the
-// user clicks the X (defaulting on Windows/Linux), 'tray' silently minimizes
-// to the tray (mac default — matches OS red-light convention), 'quit' really
-// quits. Persisted in app_state under key `closeAction` so the choice
-// survives restart. Read synchronously inside win.on('close') because the
-// close event itself is sync; the SQLite read is a single point lookup
-// (sub-millisecond) so the cost is negligible vs. the visible click latency.
-type CloseAction = 'ask' | 'tray' | 'quit';
-const CLOSE_ACTION_KEY = 'closeAction';
+// Close-button preference is owned by `./prefs/closeAction` (parser, getter,
+// setter). The choice is read inside win.on('close') below; the IPC db:save
+// handler above does not need a cache invalidation hook because closeAction
+// goes through setCloseAction directly.
 
-// Pure parser for the persisted close-action value. Decider only — no I/O.
-// Invalid / missing values fall back to the platform default ('tray' on
-// macOS to match the OS red-light convention, 'ask' elsewhere).
-function parseCloseAction(raw: unknown, platform: NodeJS.Platform): CloseAction {
-  if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
-  return platform === 'darwin' ? 'tray' : 'ask';
-}
-
-function getCloseAction(): CloseAction {
-  let raw: string | null = null;
-  try {
-    raw = loadState(CLOSE_ACTION_KEY);
-  } catch {
-    /* fall through to default */
-  }
-  return parseCloseAction(raw, process.platform);
-}
-function setCloseAction(value: CloseAction): void {
-  try {
-    saveState(CLOSE_ACTION_KEY, value);
-  } catch (err) {
-    console.warn('[main] setCloseAction failed', err);
-  }
-}
-
-// Notification mute preference. Persisted in app_state under
-// `notifyEnabled` (default true → notifications on). Cached in main-process
-// memory so the per-event check in the notify bridge stays cheap; the
-// `db:save` handler invalidates the cache when the renderer writes the key
-// so the Settings toggle takes effect without a restart. Mirrors the
-// `closeAction` / `crashReportingOptOut` patterns above.
-const NOTIFY_ENABLED_KEY = 'notifyEnabled';
-let _notifyEnabledCached: boolean | undefined;
-function loadNotifyEnabled(): boolean {
-  if (_notifyEnabledCached !== undefined) return _notifyEnabledCached;
-  try {
-    const raw = loadState(NOTIFY_ENABLED_KEY);
-    // Default ON: missing row OR any non-explicit-off value → notifications fire.
-    const value = raw == null ? true : !(raw === 'false' || raw === '0');
-    _notifyEnabledCached = value;
-    return value;
-  } catch {
-    return true;
-  }
-}
+// Notification mute preference is owned by `./prefs/notifyEnabled`. The
+// db:save handler invalidates the cache when the renderer writes the key so
+// the Settings toggle takes effect without a restart.
 
 // Renderer pushes its current `activeId` here over IPC whenever it changes
 // (selectSession etc.). Main mirrors it so the notify bridge can suppress
@@ -278,57 +159,10 @@ async function getImportableSessions(): Promise<ScannableSession[]> {
   return refreshImportableCache();
 }
 
-// ───────────── user-owned cwd list (ccsm's own LRU) ─────────────
-//
-// The new-session default cwd is the LRU head (the user's most-recently
-// picked cwd) when present, falling back to `os.homedir()` when the LRU
-// is empty (fresh install). The recent list shown in the StatusBar cwd
-// popover is a user-owned LRU that only the user can extend (by
-// explicitly picking a non-default cwd). Persisted in the
-// `app_state` SQLite table under key `userCwds` as a JSON string list.
-//
-// Reads return `[homedir()]` when the list is empty so the popover always has
-// at least the home entry. Writes are LRU (newest first) with case-insensitive
-// path-normalised dedupe and a hard cap of 20 entries.
-
-const USER_CWDS_KEY = 'userCwds';
-const USER_CWDS_MAX = 20;
-
-// I/O wrappers around the pure helpers in `./userCwds`. The decider logic
-// (LRU dedupe, normalize, cap, home-fallback) lives in that module; this
-// file only does the SQLite read/write side-effects.
-
-function readUserCwds(): string[] {
-  try {
-    const raw = loadState(USER_CWDS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p): p is string => typeof p === 'string' && !!p);
-  } catch {
-    return [];
-  }
-}
-
-function writeUserCwds(list: string[]): void {
-  try {
-    saveState(USER_CWDS_KEY, JSON.stringify(list.slice(0, USER_CWDS_MAX)));
-  } catch (err) {
-    console.warn('[main] writeUserCwds failed', err);
-  }
-}
-
-function getUserCwds(): string[] {
-  return withHomeFallback(readUserCwds(), os.homedir());
-}
-
-function pushUserCwd(p: string): string[] {
-  const norm = normalizeCwd(p);
-  if (!norm) return readUserCwds();
-  const next = pushLRU(readUserCwds(), norm, USER_CWDS_MAX);
-  writeUserCwds(next);
-  return next;
-}
+// User-owned cwd LRU is owned by `./prefs/userCwds`. The IPC handlers
+// `app:userCwds:get` / `app:userCwds:push` / `import:recentCwds` below call
+// `getUserCwds()` / `pushUserCwd()` directly — see that module for the
+// LRU/dedupe/cap rules and the home-fallback contract.
 
 // We don't want a visible File/Edit/View menu bar — CCSM is a single-
 // window tool and those menus add noise. But on Windows/Linux, setting the
@@ -727,12 +561,12 @@ app.whenReady().then(() => {
       // Invalidate Sentry's cached opt-out so the toggle in Settings takes
       // effect on the next error without an app restart.
       if (key === CRASH_OPT_OUT_KEY) {
-        _crashOptOutCached = undefined;
+        invalidateCrashReportingCache();
       }
       // Same idea for the notification mute toggle — invalidate so the next
       // sessionWatcher event reads the fresh value.
       if (key === NOTIFY_ENABLED_KEY) {
-        _notifyEnabledCached = undefined;
+        invalidateNotifyEnabledCache();
       }
       return { ok: true };
     }
