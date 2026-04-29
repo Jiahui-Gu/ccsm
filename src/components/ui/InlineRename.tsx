@@ -36,8 +36,21 @@ export function InlineRename({
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // Focus + select existing text so the user can immediately overwrite.
+    // We focus once synchronously AND once on the next animation frame.
+    // The deferred call is the load-bearing one when InlineRename is mounted
+    // from a Radix ContextMenuItem.onSelect — Radix restores focus to the
+    // context-menu trigger after the menu closes, which races with our mount
+    // effect and would otherwise steal focus from this input.
     el.focus();
     el.select();
+    const raf = requestAnimationFrame(() => {
+      const cur = ref.current;
+      if (!cur) return;
+      cur.focus();
+      cur.select();
+    });
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   function commit() {
