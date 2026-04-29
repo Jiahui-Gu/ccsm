@@ -1,0 +1,170 @@
+import { describe, it, expect } from 'vitest';
+import { createRunStateTracker } from '../runStateTracker';
+import { decide, DEDUPE_MS, SHORT_TASK_MS } from '../notifyDecider';
+
+const NOW = 1_700_000_000_000;
+
+describe('runStateTracker — pure decider', () => {
+  it('running → idle: fires a decision (Rule 5 unfocused branch)', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false); // Rule 5: not focused → toast + flash
+    expect(t.onTitle('s1', 'running', NOW)).toBeNull();
+    expect(t._internals().runStartTs.get('s1')).toBe(NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).not.toBeNull();
+    expect(dec?.sid).toBe('s1');
+    expect(dec?.toast).toBe(true);
+    expect(dec?.flash).toBe(true);
+    // runStartTs cleared after non-running title
+    expect(t._internals().runStartTs.has('s1')).toBe(false);
+    // lastFiredTs recorded
+    expect(t._internals().lastFiredTs.get('s1')).toBe(NOW + 1_000);
+  });
+
+  it('dedupes back-to-back idle titles within DEDUPE_MS', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.onTitle('s1', 'running', NOW);
+    const first = t.onTitle('s1', 'idle', NOW + 100);
+    expect(first).not.toBeNull();
+    // Second idle within dedupe window — even with a fresh run in between
+    t.onTitle('s1', 'running', NOW + 200);
+    const second = t.onTitle('s1', 'idle', NOW + 100 + DEDUPE_MS - 1);
+    expect(second).toBeNull();
+  });
+
+  it('mute window prevents toast (Rule 7) but flash still fires', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.setMuted('s1', NOW + 60_000); // muted for the next minute
+    t.onTitle('s1', 'running', NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).not.toBeNull();
+    expect(dec?.toast).toBe(false);
+    expect(dec?.flash).toBe(true);
+  });
+
+  it('expired mute (untilTs in the past) no longer suppresses toast', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.setMuted('s1', NOW - 1); // already expired
+    t.onTitle('s1', 'running', NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec?.toast).toBe(true);
+  });
+
+  it('setMuted(null) clears the mute', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.setMuted('s1', Number.POSITIVE_INFINITY); // sticky mute
+    t.setMuted('s1', null);
+    t.onTitle('s1', 'running', NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec?.toast).toBe(true);
+  });
+
+  it('forgetSid clears all per-sid state', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    // Populate user-input but with timestamp far in the past so Rule 1
+    // doesn't suppress the fire (we still need lastFiredTs populated).
+    t.markUserInput('s1', NOW - 10 * 60 * 1000);
+    t.setMuted('s1', NOW + 100_000);
+    t.onTitle('s1', 'running', NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).not.toBeNull(); // ensures lastFiredTs got recorded
+
+    const before = t._internals();
+    expect(before.lastUserInputTs.has('s1')).toBe(true);
+    expect(before.mutedSids.has('s1')).toBe(true);
+    expect(before.lastFiredTs.has('s1')).toBe(true);
+
+    t.forgetSid('s1');
+    const after = t._internals();
+    expect(after.runStartTs.has('s1')).toBe(false);
+    expect(after.mutedSids.has('s1')).toBe(false);
+    expect(after.lastFiredTs.has('s1')).toBe(false);
+    expect(after.lastUserInputTs.has('s1')).toBe(false);
+  });
+
+  it('multiple sids tracked independently', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.onTitle('s1', 'running', NOW);
+    t.onTitle('s2', 'running', NOW + 500);
+    expect(t._internals().runStartTs.get('s1')).toBe(NOW);
+    expect(t._internals().runStartTs.get('s2')).toBe(NOW + 500);
+
+    const d1 = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(d1?.sid).toBe('s1');
+    // s2 should still be running and unaffected
+    expect(t._internals().runStartTs.get('s2')).toBe(NOW + 500);
+
+    const d2 = t.onTitle('s2', 'idle', NOW + 2_000);
+    expect(d2?.sid).toBe('s2');
+
+    // Forgetting s1 doesn't touch s2
+    t.forgetSid('s1');
+    expect(t._internals().lastFiredTs.has('s2')).toBe(true);
+  });
+
+  it('classification "unknown" is a no-op', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    expect(t.onTitle('s1', 'unknown', NOW)).toBeNull();
+    expect(t._internals().runStartTs.has('s1')).toBe(false);
+    expect(t._internals().lastFiredTs.has('s1')).toBe(false);
+  });
+
+  it('Rule 1: user-input within 60s suppresses fire', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.markUserInput('s1', NOW);
+    t.onTitle('s1', 'running', NOW + 100);
+    // Idle 1s later — Rule 1 mute window still active
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).toBeNull();
+  });
+
+  it('Rule 2 vs Rule 3: foreground active sid splits on SHORT_TASK_MS', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(true);
+    t.setActiveSid('s1');
+
+    // Short task — Rule 2: flash only, no toast → still a non-null Decision
+    t.onTitle('s1', 'running', NOW);
+    const shortDec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(shortDec).not.toBeNull();
+    expect(shortDec?.toast).toBe(false);
+    expect(shortDec?.flash).toBe(true);
+
+    // Wait past dedupe, then long task — Rule 3: toast + flash
+    const t2 = NOW + DEDUPE_MS + 10_000;
+    t.onTitle('s1', 'running', t2);
+    const longDec = t.onTitle('s1', 'idle', t2 + SHORT_TASK_MS + 1_000);
+    expect(longDec).not.toBeNull();
+    expect(longDec?.toast).toBe(true);
+    expect(longDec?.flash).toBe(true);
+  });
+
+  it('Rule 4: foreground but viewing a different sid → toast + flash', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(true);
+    t.setActiveSid('s2'); // viewing s2
+    t.onTitle('s1', 'running', NOW);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec?.toast).toBe(true);
+    expect(dec?.flash).toBe(true);
+  });
+
+  it('runStartTs is cleared after every non-running title (even when no decision fires)', () => {
+    const t = createRunStateTracker(decide);
+    t.setFocused(false);
+    t.markUserInput('s1', NOW); // forces Rule 1 → null decision
+    t.onTitle('s1', 'running', NOW);
+    expect(t._internals().runStartTs.has('s1')).toBe(true);
+    const dec = t.onTitle('s1', 'idle', NOW + 1_000);
+    expect(dec).toBeNull();
+    expect(t._internals().runStartTs.has('s1')).toBe(false);
+  });
+});
