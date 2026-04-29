@@ -15,8 +15,12 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
-export type SessionState = 'idle' | 'running' | 'requires_action';
-type SessionStatePayload = { sid: string; state: SessionState };
+// Canonical 3-state vocabulary lives in `src/shared/sessionState.ts` so
+// the renderer (`src/session.d.ts`), the watcher (`electron/sessionWatcher/
+// inference.ts` `WatcherState`), and this preload bridge all share one
+// definition. Tech-debt audit #10 item #2.
+export type { SessionState } from '../../../src/shared/sessionState';
+import type { SessionStatePayload } from '../../../src/shared/sessionState';
 type SessionActivatePayload = { sid: string };
 type SessionTitlePayload = { sid: string; title: string };
 type SessionCwdRedirectedPayload = { sid: string; newCwd: string };
