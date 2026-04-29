@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Group, Session } from '../types';
 import { loadPersisted, schedulePersist, PERSISTED_KEYS, type PersistedState, type PersistedKey } from './persist';
 import { hydrateDrafts, deleteDrafts, snapshotDraft, restoreDraft } from './drafts';
+import { partitionSessionsForBackfill, BACKFILL_DEFAULT_NAMES } from './lib/sessionPartition';
 import { i18next } from '../i18n';
 import type { ConnectionInfo } from '../shared/ipc-types';
 import { classifyPtyExit } from '../lib/ptyExitClassifier';
@@ -746,30 +747,7 @@ export const useStore = create<State & Actions>((set, get) => ({
         : undefined;
     if (!bridge || typeof bridge.listForProject !== 'function') return;
 
-    // Default-name placeholders to overwrite. The store always writes the
-    // English literal at create time (see `createSession`); '新会话' is
-    // included because older persisted snapshots from a Chinese-locale build
-    // (when `createSession` briefly localized the name) may still carry it.
-    // Anything else (user rename, prior backfill) is treated as authoritative
-    // and never touched.
-    const defaults = new Set<string>(['New session', '新会话']);
-
-    // Group sessions whose name is still default by their projectKey, so we
-    // make ONE IPC call per project (not per session). projectKey encoding
-    // mirrors the CLI's `~/.claude/projects/<key>/<sid>.jsonl` convention:
-    // every `\` `/` `:` becomes `-`. The canonical encoder lives in
-    // `electron/sessionWatcher/projectKey.ts`; we duplicate the trivial
-    // replace here rather than ship that module to the renderer bundle.
-    const byProject = new Map<string, string[]>();
-    const sessions = get().sessions;
-    for (const s of sessions) {
-      if (!defaults.has(s.name)) continue;
-      if (typeof s.cwd !== 'string' || s.cwd.length === 0) continue;
-      const key = s.cwd.replace(/[\\/:]/g, '-');
-      const list = byProject.get(key);
-      if (list) list.push(s.id);
-      else byProject.set(key, [s.id]);
-    }
+    const byProject = partitionSessionsForBackfill(get().sessions);
     if (byProject.size === 0) return;
 
     // Issue per-project lookups in parallel. Per-project errors are swallowed
@@ -799,7 +777,7 @@ export const useStore = create<State & Actions>((set, get) => ({
           // by the time we get here, in which case we leave it alone.
           if (typeof sum === 'string' && sum.length > 0) {
             const current = get().sessions.find((s) => s.id === sid);
-            if (current && defaults.has(current.name)) {
+            if (current && BACKFILL_DEFAULT_NAMES.has(current.name)) {
               apply(sid, sum);
             }
           }
