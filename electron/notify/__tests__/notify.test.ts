@@ -33,6 +33,7 @@ function makeHarness(opts?: {
   isMuted?: boolean;
   activeSid?: string | null;
   windowFocused?: boolean;
+  names?: Record<string, string>;
 }): Harness {
   const emitter = new EventEmitter();
   const log: NotifyPayload[] = [];
@@ -52,6 +53,7 @@ function makeHarness(opts?: {
     windowFocused: opts?.windowFocused ?? false,
     dispose: () => { /* replaced below */ },
   };
+  const names = opts?.names ?? {};
   harness.dispose = installNotifyBridge({
     sessionWatcher: emitter,
     getMainWindow: () => null,
@@ -59,6 +61,7 @@ function makeHarness(opts?: {
     getActiveSidFn: () => harness.activeSid,
     isWindowFocusedFn: () => harness.windowFocused,
     notifyImpl: harness.notifyImpl,
+    getNameFn: (sid) => names[sid] ?? null,
   });
   return harness;
 }
@@ -184,5 +187,69 @@ describe('installNotifyBridge', () => {
     h.emitter.emit('state-changed', null);
     expect(h.log).toHaveLength(0);
     h.dispose();
+  });
+
+  describe('name resolution in body', () => {
+    // The bug we're fixing: pre-fix, the body always interpolated the short
+    // sid prefix, so users saw "1a2b3c4d completed its task" instead of the
+    // friendly name they renamed the session to.
+
+    it('uses the friendly name from getNameFn when present', () => {
+      const sid = '11112222-aaaa-bbbb-cccc-deadbeefcafe';
+      const h = makeHarness({ names: { [sid]: 'my-feature' } });
+      emit(h.emitter, { sid, state: 'idle' });
+      expect(h.log).toHaveLength(1);
+      // Body must contain the friendly name, NOT the sid prefix.
+      expect(h.log[0].body).toContain('my-feature');
+      expect(h.log[0].body).not.toContain('11112222');
+      h.dispose();
+    });
+
+    it('falls back to short sid when name missing', () => {
+      const sid = 'deadbeef-1111-2222-3333-444455556666';
+      const h = makeHarness();
+      emit(h.emitter, { sid, state: 'idle' });
+      expect(h.log).toHaveLength(1);
+      expect(h.log[0].body).toContain('deadbeef');
+      h.dispose();
+    });
+
+    it('falls back to short sid when name is the "New session" placeholder', () => {
+      const sid = 'cafebabe-1111-2222-3333-444455556666';
+      const h = makeHarness({ names: { [sid]: 'New session' } });
+      emit(h.emitter, { sid, state: 'idle' });
+      expect(h.log).toHaveLength(1);
+      expect(h.log[0].body).toContain('cafebabe');
+      expect(h.log[0].body).not.toContain('New session');
+      h.dispose();
+    });
+
+    it('falls back to short sid when name is the Chinese placeholder', () => {
+      const sid = 'feedface-1111-2222-3333-444455556666';
+      const h = makeHarness({ names: { [sid]: '新会话' } });
+      emit(h.emitter, { sid, state: 'idle' });
+      expect(h.log).toHaveLength(1);
+      expect(h.log[0].body).toContain('feedface');
+      h.dispose();
+    });
+
+    it('falls back to short sid when name is empty/whitespace', () => {
+      const sid = '0badc0de-1111-2222-3333-444455556666';
+      const h = makeHarness({ names: { [sid]: '   ' } });
+      emit(h.emitter, { sid, state: 'idle' });
+      expect(h.log).toHaveLength(1);
+      expect(h.log[0].body).toContain('0badc0de');
+      h.dispose();
+    });
+
+    it('uses friendly name for requires_action body too', () => {
+      const sid = '99998888-aaaa-bbbb-cccc-eeee11112222';
+      const h = makeHarness({ names: { [sid]: 'fix-bug-602' } });
+      emit(h.emitter, { sid, state: 'requires_action' });
+      expect(h.log).toHaveLength(1);
+      expect(h.log[0].body).toContain('fix-bug-602');
+      expect(h.log[0].body).not.toContain('99998888');
+      h.dispose();
+    });
   });
 });

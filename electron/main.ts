@@ -206,6 +206,14 @@ function loadNotifyEnabled(): boolean {
 // synchronous round-trip to read renderer state.
 let activeSidFromRenderer: string | null = null;
 
+// Same pattern as activeSidFromRenderer: the renderer pushes its session-name
+// map here so the notify bridge can label toasts with the user-visible name
+// (custom rename or SDK auto-summary) instead of the bare sid UUID. Keeping
+// this in main avoids a synchronous IPC round-trip from the notify event
+// path; the renderer keeps it warm by sending 'session:setName' on every
+// rename / external-title update / new-session creation.
+const sessionNamesFromRenderer = new Map<string, string>();
+
 
 //
 // The CLI transcripts under ~/.claude/projects can run into hundreds of
@@ -981,6 +989,22 @@ app.whenReady().then(() => {
     clearBadgeForActiveIfFocused();
   });
 
+  // Renderer pushes the user-visible name for a sid so notify toasts can
+  // show "my-feature-branch" instead of the UUID. Empty/missing name clears
+  // the entry (renderer signals "no longer have a name"). Same security
+  // posture as session:setActive — main-frame only.
+  ipcMain.on('session:setName', (e, payload: unknown) => {
+    if (!fromMainFrame(e)) return;
+    if (!payload || typeof payload !== 'object') return;
+    const { sid, name } = payload as { sid?: unknown; name?: unknown };
+    if (typeof sid !== 'string' || sid.length === 0) return;
+    if (typeof name === 'string' && name.length > 0) {
+      sessionNamesFromRenderer.set(sid, name);
+    } else {
+      sessionNamesFromRenderer.delete(sid);
+    }
+  });
+
   // Desktop notification bridge — fires OS toasts on session 'idle' /
   // 'requires_action' transitions, with global-mute + active-window +
   // active-sid suppression and per-sid 5s dedupe. See electron/notify.
@@ -994,6 +1018,7 @@ app.whenReady().then(() => {
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
     isMutedFn: () => !loadNotifyEnabled(),
     getActiveSidFn: () => activeSidFromRenderer,
+    getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
     isWindowFocusedFn: () => {
       const w = BrowserWindow.getAllWindows()[0];
       return !!(w && !w.isDestroyed() && w.isFocused());

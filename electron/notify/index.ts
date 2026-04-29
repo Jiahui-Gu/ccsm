@@ -68,6 +68,14 @@ export interface InstallNotifyBridgeOptions {
    *  bumps unread for that sid. The badge sink owns its own clearing
    *  via focus / active-sid listeners installed in main. */
   onNotified?: (sid: string) => void;
+  /** Returns the user-visible session name for a sid (custom rename or
+   *  SDK-derived auto-summary, whichever the renderer is showing). When
+   *  the lookup returns null/undefined/empty, or the placeholder
+   *  'New session' / '新会话', we fall back to the short sid prefix so the
+   *  toast still carries something correlatable. The renderer is the source
+   *  of truth for names; main keeps a mirror updated via 'session:setName'
+   *  IPC, exactly like activeSid. */
+  getNameFn?: (sid: string) => string | null | undefined;
 }
 
 const DEDUPE_WINDOW_MS = 5_000;
@@ -127,10 +135,13 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
   const lastNotifiedAt = new Map<string, number>();
 
   function buildCopy(sid: string, state: WatcherState): { title: string; body: string } | null {
-    // Best-effort name lookup: the renderer owns session names but we don't
-    // want a synchronous IPC round-trip here. Fall back to the short sid
-    // (first 8 chars) so the user can at least correlate.
-    const name = shortSid(sid);
+    // Resolve the user-visible name. Renderer pushes its name map to main
+    // via 'session:setName' (see electron/main.ts), mirroring the activeSid
+    // pattern; we read that mirror via the injected getNameFn. Falls back
+    // to the short sid prefix when the mirror has nothing meaningful — e.g.
+    // a brand-new 'New session' that hasn't been renamed and hasn't yet
+    // produced an SDK summary, or test environments without a renderer.
+    const name = resolveName(opts.getNameFn?.(sid), sid);
     if (state === 'idle') {
       return {
         title: tNotification('sessionDoneTitle'),
@@ -195,6 +206,20 @@ export function installNotifyBridge(opts: InstallNotifyBridgeOptions): () => voi
 
 function shortSid(sid: string): string {
   return sid.length > 8 ? sid.slice(0, 8) : sid;
+}
+
+// Names considered "no real name" — should fall back to short sid. The
+// renderer initialises new rows with these placeholders (en/zh) until either
+// the user renames or the SDK summary lands. Lowercased + trimmed for the
+// compare so casing/spacing drift doesn't slip past.
+const PLACEHOLDER_NAMES = new Set(['new session', '新会话']);
+
+function resolveName(name: string | null | undefined, sid: string): string {
+  if (typeof name !== 'string') return shortSid(sid);
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return shortSid(sid);
+  if (PLACEHOLDER_NAMES.has(trimmed.toLowerCase())) return shortSid(sid);
+  return trimmed;
 }
 
 function focusAndActivate(win: BrowserWindow | null, sid: string): void {
