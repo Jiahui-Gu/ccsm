@@ -2172,6 +2172,73 @@ async function caseTerminalPaneMounted({ win, log }) {
   log(`claudeAvailable=true branch: terminal host mounted with .xterm, pty list reports ${ptyList.count} entry/entries`);
 }
 
+// ---------- move-to-group-excludes-own-group ----------
+// PR #517 / commit a882478. Right-click → "Move to group" submenu must NOT
+// list the session's current group. When no other group exists, the entire
+// "Move to group" submenu trigger must be hidden (otherwise users see a
+// dead-end submenu with no destinations).
+async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
+  // ---- Subcase 1: multi-group → submenu lists OTHER groups only.
+  await seedStore(win, {
+    groups: [
+      { id: 'gA', name: 'Group A', collapsed: false, kind: 'normal' },
+      { id: 'gB', name: 'Group B', collapsed: false, kind: 'normal' }
+    ],
+    sessions: [
+      { id: 's-in-A', name: 'session-in-A', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'gA', agentType: 'claude-code' }
+    ],
+    activeId: 's-in-A'
+  });
+
+  await win.locator('li[data-session-id="s-in-A"]').first().click({ button: 'right' });
+  const trigger = win.locator('[data-testid="move-to-group-trigger"]').first();
+  await trigger.waitFor({ state: 'visible', timeout: 3000 });
+  // Hover to expand the submenu (Radix opens sub on hover).
+  await trigger.hover();
+  const content = win.locator('[data-testid="move-to-group-content"]').first();
+  await content.waitFor({ state: 'visible', timeout: 3000 });
+
+  const groupIds = await win.evaluate(() =>
+    Array.from(document.querySelectorAll('[data-move-to-group-item]'))
+      .map((el) => el.getAttribute('data-group-id'))
+  );
+  if (groupIds.includes('gA')) {
+    throw new Error(`move-to-group submenu must NOT list session's own group "gA"; got ${JSON.stringify(groupIds)}`);
+  }
+  if (!groupIds.includes('gB')) {
+    throw new Error(`move-to-group submenu must list other group "gB"; got ${JSON.stringify(groupIds)}`);
+  }
+
+  // Dismiss menu before subcase 2.
+  await win.keyboard.press('Escape');
+  await win.keyboard.press('Escape');
+  await win.waitForTimeout(150);
+
+  // ---- Subcase 2: single-group → entire "Move to group" submenu trigger
+  // must be hidden (no destinations, no dead-end submenu).
+  await seedStore(win, {
+    groups: [
+      { id: 'gOnly', name: 'Only Group', collapsed: false, kind: 'normal' }
+    ],
+    sessions: [
+      { id: 's-solo', name: 'session-solo', state: 'idle', cwd: '~', model: 'claude-opus-4', groupId: 'gOnly', agentType: 'claude-code' }
+    ],
+    activeId: 's-solo'
+  });
+
+  await win.locator('li[data-session-id="s-solo"]').first().click({ button: 'right' });
+  // The Rename item still anchors the menu — wait for it as a sentinel.
+  await win.getByRole('menuitem', { name: /^Rename$/ }).first().waitFor({ state: 'visible', timeout: 3000 });
+  const triggerCount = await win.locator('[data-testid="move-to-group-trigger"]').count();
+  if (triggerCount !== 0) {
+    throw new Error(`move-to-group submenu trigger must be hidden when no other groups exist; got ${triggerCount} trigger(s)`);
+  }
+  await win.keyboard.press('Escape');
+  await win.waitForTimeout(100);
+
+  log('multi-group: own group excluded from submenu; single-group: trigger hidden entirely');
+}
+
 // ---------- harness spec ----------
 await runHarness({
   name: 'ui',
@@ -2218,6 +2285,10 @@ await runHarness({
     { id: 'group-add', run: caseGroupAdd },
     { id: 'import-empty-groups', run: caseImportEmptyGroups },
     { id: 'rename', run: caseRename },
+    // move-to-group-excludes-own-group: PR #517 / commit a882478. Right-click
+    // session row → "Move to group" submenu must omit the session's current
+    // group; hide trigger entirely when no other group exists.
+    { id: 'move-to-group-excludes-own-group', run: caseMoveToGroupExcludesOwnGroup },
     // sidebar-long-name-truncates: regression for fp13-A. An 80-char session
     // name must visually truncate to a single line with ellipsis AND expose
     // the full name through a `title` attr so users can hover-recover it.
