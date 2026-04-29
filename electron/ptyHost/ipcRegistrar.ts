@@ -9,7 +9,7 @@
 import type { BrowserWindow, IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
-import type { AttachResult, PtySessionInfo } from './index';
+import type { AttachResult, PtySessionInfo } from './lifecycle';
 
 interface SessionEntryHandle {
   pty: { pid: number };
