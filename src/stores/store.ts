@@ -10,54 +10,10 @@ import {
   legacyFontSizeToPx,
   sanitizeFontSizePx,
   resolvePersistedSidebarWidth,
-  SIDEBAR_WIDTH_DEFAULT,
-  SIDEBAR_WIDTH_MIN,
-  SIDEBAR_WIDTH_MAX,
-  sanitizeSidebarWidth,
-  resolveEffectiveTheme,
-  pxToLegacyFontSize,
 } from './slices/appearanceSlice';
 import { createModelPickerSlice } from './slices/modelPickerSlice';
 import { createPopoverSlice } from './slices/popoverSlice';
-import type { State, Actions, RootStore } from './slices/types';
-
-// Re-export the slice-owned types and helpers for back-compat with the
-// existing call sites that still import them from `./store` (Sidebar,
-// SidebarResizer, CommandPalette, settings panes, persist.ts, etc.).
-// The slice modules are the authoritative source — these are pass-through
-// re-exports so a caller swapping import paths is the only follow-up
-// needed if/when we ever flatten further.
-export type {
-  ModelId,
-  PermissionMode,
-  Theme,
-  FontSize,
-  FontSizePx,
-  EndpointKind,
-  ModelSource,
-  DiscoveredModel,
-  ConnectionInfo,
-  CreateSessionOptions,
-  SessionSnapshot,
-  GroupSnapshot,
-} from './slices/types';
-
-export {
-  legacyFontSizeToPx,
-  pxToLegacyFontSize,
-  sanitizeFontSizePx,
-  resolvePersistedSidebarWidth,
-  SIDEBAR_WIDTH_DEFAULT,
-  SIDEBAR_WIDTH_MIN,
-  SIDEBAR_WIDTH_MAX,
-  sanitizeSidebarWidth,
-  resolveEffectiveTheme,
-};
-
-// `migratePermission` and `migrateNotificationSettings` were removed in PR-D
-// alongside the `permission` and `notificationSettings` store fields. Older
-// persisted snapshots may still carry those keys; they're silently ignored
-// when `hydrateStore` builds its `setState` payload.
+import type { State, RootStore } from './slices/types';
 
 export const useStore = create<RootStore>((set, get) => ({
   ...createSessionCrudSlice(set, get),
@@ -267,6 +223,3 @@ export async function hydrateStore(): Promise<void> {
     schedulePersist(snapshot);
   });
 }
-
-// Re-export composite types for callers that imported them from store.ts.
-export type { State, Actions };

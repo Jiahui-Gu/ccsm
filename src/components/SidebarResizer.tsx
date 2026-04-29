@@ -1,11 +1,11 @@
 import React, { useCallback, useRef } from 'react';
+import { useStore } from '../stores/store';
 import {
-  useStore,
   sanitizeSidebarWidth,
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MIN,
-  SIDEBAR_WIDTH_MAX
-} from '../stores/store';
+  SIDEBAR_WIDTH_MAX,
+} from '../stores/slices/appearanceSlice';
 import { useTranslation } from '../i18n/useTranslation';
 
 /**

@@ -3,7 +3,7 @@ import type {
   Theme,
   FontSize,
   FontSizePx,
-} from './store';
+} from './slices/types';
 
 export const STATE_KEY = 'main';
 

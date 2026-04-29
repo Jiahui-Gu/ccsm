@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { resolveEffectiveTheme } from '../stores/store';
+import { resolveEffectiveTheme } from '../stores/slices/appearanceSlice';
 
 /**
  * Sync the user's theme preference (and, when set to `system`, the OS
