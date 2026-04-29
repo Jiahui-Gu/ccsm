@@ -757,15 +757,37 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
   await sendToClaudeTui(win, '\r');
 
   // Wait up to 180s for a notification entry whose sid matches.
+  // Capture the badge total in the SAME evaluate call as the entry read so we
+  // observe `incrementSid` before any async focus race
+  // (Notification.show on win32 can briefly steal then return focus, which
+  // triggers `clearBadgeForActiveIfFocused` → unread cleared) gets a chance
+  // to run on the main loop.
   const start = Date.now();
   let entry = null;
+  let totalAtFire = null;
   while (Date.now() - start < 180_000) {
     await sleep(2000);
-    const nextEntries = await electronApp.evaluate(
-      (_electron, [s, base]) => (globalThis.__ccsmNotifyLog || []).slice(base).filter((e) => e.sid === s),
+    const snap = await electronApp.evaluate(
+      ({ app }, [s, base]) => {
+        const dbg = globalThis.__ccsmBadgeDebug;
+        const found = (globalThis.__ccsmNotifyLog || [])
+          .slice(base)
+          .filter((e) => e.sid === s);
+        return {
+          entries: found,
+          total: {
+            app: app.getBadgeCount?.() ?? 0,
+            mgr: dbg?.getTotal ? dbg.getTotal() : null,
+          },
+        };
+      },
       [sid, baseline],
     );
-    if (nextEntries.length > 0) { entry = nextEntries[0]; break; }
+    if (snap.entries.length > 0) {
+      entry = snap.entries[0];
+      totalAtFire = snap.total;
+      break;
+    }
   }
   if (!entry) {
     const diag = await electronApp.evaluate((electron, s) => {
@@ -797,18 +819,11 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
 
   // -- Tray + taskbar badge unread count (#572) ------------------------
   // The notify bridge bumps BadgeManager.incrementSid(sid) ONLY when the
-  // notification actually fired (mute/focus/dedupe survived). We just
-  // observed the fire above, so total must be >= 1 and include our sid.
-  // On mac/linux app.getBadgeCount() is the source of truth; on win32 we
-  // assert via the BadgeManager debug seam since setOverlayIcon state
-  // can't be probed back out.
-  const totalAfterFire = await electronApp.evaluate(({ app }) => {
-    const dbg = globalThis.__ccsmBadgeDebug;
-    return {
-      app: app.getBadgeCount?.() ?? 0,
-      mgr: dbg?.getTotal ? dbg.getTotal() : null,
-    };
-  });
+  // notification actually fired (mute/focus/dedupe survived). The total
+  // was captured in the same evaluate call that read the notify-log entry
+  // above (see comment there) — reading separately here would race against
+  // Notification.show's incidental focus event on win32.
+  const totalAfterFire = totalAtFire;
   const observed = process.platform === 'win32' ? totalAfterFire.mgr : totalAfterFire.app;
   if (observed === null || observed === undefined) {
     throw new Error(`badge total unreadable. Diag: ${JSON.stringify(totalAfterFire)}`);

@@ -70,6 +70,7 @@ import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/li
 import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 import { sessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
+import { createTitleStateBridge } from './notify/titleStateBridge';
 import { BadgeManager } from './notify/badge';
 import {
   getSessionTitle,
@@ -1035,6 +1036,22 @@ app.whenReady().then(() => {
     }
   });
 
+  // Title-state stream — renderer forwards every xterm `onTitleChange` here
+  // (see TerminalPane / preload `reportTitleState`). The title-state bridge
+  // classifies the leading OSC 0 glyph and emits `state-changed` only on
+  // running→idle / unknown→idle transitions. Notify subscribes to that
+  // emitter (instead of the JSONL-driven sessionWatcher) so toasts fire
+  // exactly when the CLI itself signals "waiting for user".
+  const titleStateBridge = createTitleStateBridge();
+  ipcMain.on('session:title-state', (e, payload: unknown) => {
+    if (!fromMainFrame(e)) return;
+    if (!payload || typeof payload !== 'object') return;
+    const { sid, title } = payload as { sid?: unknown; title?: unknown };
+    if (typeof sid !== 'string' || sid.length === 0) return;
+    if (typeof title !== 'string') return;
+    titleStateBridge.feedTitle(sid, title);
+  });
+
   // Desktop notification bridge — fires OS toasts on session 'idle' /
   // 'requires_action' transitions unconditionally (only the user's global
   // mute toggle and per-sid 5s dedupe gate the fire). The user wants the
@@ -1047,7 +1064,12 @@ app.whenReady().then(() => {
     getWindows: () => BrowserWindow.getAllWindows(),
   });
   installNotifyBridge({
-    sessionWatcher,
+    // Notify consumes the title-state bridge instead of the JSONL-driven
+    // sessionWatcher. The watcher still emits `state-changed` for sidebar
+    // status indicators — only notify is repointed. See PR #649 / eval #644
+    // for why OSC 0 is the right signal (it is what the CLI itself uses to
+    // tell the host "I am waiting", and matches the spinner the user sees).
+    sessionWatcher: titleStateBridge.emitter,
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
     isMutedFn: () => !loadNotifyEnabled(),
     getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
