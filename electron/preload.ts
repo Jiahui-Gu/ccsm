@@ -304,3 +304,46 @@ const ccsmSession = {
 contextBridge.exposeInMainWorld('ccsmSession', ccsmSession);
 
 export type CCSMSessionAPI = typeof ccsmSession;
+
+// ─────────────────────────── ccsmSessionTitles ───────────────────────────
+//
+// Thin renderer-side bridge to the main-process `electron/sessionTitles`
+// module, which wraps `@anthropic-ai/claude-agent-sdk`'s
+// `getSessionInfo` / `renameSession` / `listSessions`. The substrate
+// concerns (per-sid serialization, 2s TTL cache, ENOENT classification,
+// pending-rename queue) live entirely on the main side; the renderer only
+// sees a flat get/rename/listForProject surface. Wired in PR2 by the
+// `renameSession` store action; consumed in PR3 by the watcher and PR4 by
+// launch-time backfill.
+
+type SessionTitleSummary = {
+  summary: string | null;
+  mtime: number | null;
+};
+
+type SessionTitleRenameResult =
+  | { ok: true }
+  | { ok: false; reason: 'no_jsonl' | 'sdk_threw'; message?: string };
+
+type SessionTitleProjectEntry = {
+  sid: string;
+  summary: string | null;
+  mtime: number;
+};
+
+const ccsmSessionTitles = {
+  get: (sid: string, dir?: string): Promise<SessionTitleSummary> =>
+    ipcRenderer.invoke('sessionTitles:get', sid, dir),
+  rename: (
+    sid: string,
+    title: string,
+    dir?: string
+  ): Promise<SessionTitleRenameResult> =>
+    ipcRenderer.invoke('sessionTitles:rename', sid, title, dir),
+  listForProject: (projectKey: string): Promise<SessionTitleProjectEntry[]> =>
+    ipcRenderer.invoke('sessionTitles:listForProject', projectKey),
+};
+
+contextBridge.exposeInMainWorld('ccsmSessionTitles', ccsmSessionTitles);
+
+export type CCSMSessionTitlesAPI = typeof ccsmSessionTitles;

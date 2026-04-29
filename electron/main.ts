@@ -70,6 +70,11 @@ import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
 import { sessionWatcher } from './sessionWatcher';
 import { installNotifyBridge } from './notify';
 import { BadgeManager } from './notify/badge';
+import {
+  getSessionTitle,
+  renameSessionTitle,
+  listProjectSummaries,
+} from './sessionTitles';
 
 // ─────────────────────── IPC security helpers ────────────────────────────
 //
@@ -821,6 +826,23 @@ app.whenReady().then(() => {
     return res.models;
   });
   ipcMain.handle('app:getVersion', () => app.getVersion());
+
+  // ─────────────────────── sessionTitles bridge ──────────────────────────
+  // Thin wrapper around the SDK's getSessionInfo / renameSession /
+  // listSessions, with per-sid serialization, 2s TTL cache, and error
+  // normalization living in `./sessionTitles`. Renderer accesses via
+  // `window.ccsmSessionTitles.{get,rename,listForProject}`.
+  ipcMain.handle('sessionTitles:get', (_e, sid: string, dir?: string) =>
+    getSessionTitle(sid, dir)
+  );
+  ipcMain.handle(
+    'sessionTitles:rename',
+    (_e, sid: string, title: string, dir?: string) =>
+      renameSessionTitle(sid, title, dir)
+  );
+  ipcMain.handle('sessionTitles:listForProject', (_e, projectKey: string) =>
+    listProjectSummaries(projectKey)
+  );
 
   ipcMain.handle('window:minimize', (e) => {
     BrowserWindow.fromWebContents(e.sender)?.minimize();
