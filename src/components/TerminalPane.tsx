@@ -154,7 +154,9 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
       if (sel) {
         try {
           window.ccsmPty?.clipboard?.writeText(sel);
-        } catch {}
+        } catch {
+          // ignore clipboard failures — selection still highlights.
+        }
         return false;
       }
       return true;
@@ -163,7 +165,9 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
       try {
         const text = window.ccsmPty?.clipboard?.readText();
         if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {}
+      } catch {
+        // ignore clipboard failures — paste is best-effort.
+      }
       return false;
     }
     if (ev.ctrlKey && ev.shiftKey && isC) {
@@ -171,7 +175,9 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
       if (sel) {
         try {
           window.ccsmPty?.clipboard?.writeText(sel);
-        } catch {}
+        } catch {
+          // ignore clipboard failures — selection still highlights.
+        }
       }
       return false;
     }
@@ -179,7 +185,9 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
       try {
         const text = window.ccsmPty?.clipboard?.readText();
         if (text && activeSid) window.ccsmPty.input(activeSid, text);
-      } catch {}
+      } catch {
+        // ignore clipboard failures — paste is best-effort.
+      }
       return false;
     }
     return true;
@@ -267,13 +275,17 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         if (unsubscribeData) {
           try {
             unsubscribeData();
-          } catch {}
+          } catch {
+            // already torn down — safe to ignore.
+          }
           unsubscribeData = null;
         }
         if (inputDisposable) {
           try {
             inputDisposable.dispose();
-          } catch {}
+          } catch {
+            // already disposed — safe to ignore.
+          }
           inputDisposable = null;
         }
         try {
@@ -287,13 +299,17 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         if (unsubscribeData) {
           try {
             unsubscribeData();
-          } catch {}
+          } catch {
+            // already torn down — safe to ignore.
+          }
           unsubscribeData = null;
         }
         if (inputDisposable) {
           try {
             inputDisposable.dispose();
-          } catch {}
+          } catch {
+            // already disposed — safe to ignore.
+          }
           inputDisposable = null;
         }
       }
@@ -332,7 +348,9 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
         if (term) {
           try {
             term.resize(cols, rows);
-          } catch {}
+          } catch {
+            // resize is best-effort — proceed with snapshot write.
+          }
           if (snapshot) term.write(snapshot);
         }
 
@@ -423,7 +441,9 @@ export function TerminalPane({ sessionId, cwd: _cwd }: Props) {
     return () => {
       try {
         unsubscribe?.();
-      } catch {}
+      } catch {
+        // already torn down — safe to ignore.
+      }
     };
   }, []);
 
