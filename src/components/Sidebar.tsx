@@ -465,29 +465,36 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
       </ContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            {groups.map((g) => (
-              <ContextMenuItem
-                key={g.id}
-                disabled={g.id === session.groupId}
-                onSelect={() => moveSession(session.id, g.id, null)}
-              >
-                {g.name}
-              </ContextMenuItem>
-            ))}
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              onSelect={() => {
-                const id = createGroup();
-                moveSession(session.id, id, null);
-              }}
-            >
-              {t('sidebar.newGroupEllipsis')}
-            </ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+        {(() => {
+          // Exclude the session's current group from the destination list so
+          // users can only move TO another group (#612).
+          const otherGroups = groups.filter((g) => g.id !== session.groupId);
+          if (otherGroups.length === 0) return null;
+          return (
+            <ContextMenuSub>
+              <ContextMenuSubTrigger>{t('sidebar.moveToGroup')}</ContextMenuSubTrigger>
+              <ContextMenuSubContent>
+                {otherGroups.map((g) => (
+                  <ContextMenuItem
+                    key={g.id}
+                    onSelect={() => moveSession(session.id, g.id, null)}
+                  >
+                    {g.name}
+                  </ContextMenuItem>
+                ))}
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  onSelect={() => {
+                    const id = createGroup();
+                    moveSession(session.id, id, null);
+                  }}
+                >
+                  {t('sidebar.newGroupEllipsis')}
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          );
+        })()}
         <ContextMenuSeparator />
         <ContextMenuItem danger onSelect={performDelete}>
           {t('common.delete')}
