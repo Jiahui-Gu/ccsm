@@ -124,26 +124,6 @@ function ensureTerminal(host: HTMLDivElement): Terminal {
 
   term.open(host);
 
-  // OSC 0 title-stream → notify bridge. The Claude CLI emits
-  // `\x1b]0;<glyph> Claude Code\x07` per state transition, encoding state
-  // in the leading glyph (Sparkle ✳ = idle/waiting for user, Braille
-  // ⠂⠐⠁... = running). Forward each title to main so the title-state
-  // bridge can drive desktop notifications off the same signal Windows
-  // Terminal already trusts (see microsoft/terminal Tab.cpp's
-  // `_GetActiveTitle`). We pull `activeSid` at fire time — one xterm
-  // singleton serves all sessions, so the title we just received belongs
-  // to whichever sid is currently attached.
-  term.onTitleChange((title) => {
-    if (!activeSid) return;
-    try {
-      (window as unknown as {
-        ccsmSession?: { reportTitleState?: (sid: string, title: string) => void };
-      }).ccsmSession?.reportTitleState?.(activeSid, title);
-    } catch {
-      // Defensive: never let a notify-pipe error break the terminal.
-    }
-  });
-
   // ttyd-style: auto-copy on selection change. Works in alt-screen apps
   // (claude/Ink) when user holds Shift to bypass mouse tracking and
   // drags. Use Electron's clipboard via preload because navigator.clipboard

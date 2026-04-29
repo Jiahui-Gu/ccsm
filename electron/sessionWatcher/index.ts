@@ -104,7 +104,7 @@ class SessionWatcher extends EventEmitter {
     this.titleSink.forget(sid);
     this.flusherSink.forget(sid);
     // Signal session teardown so other main-process state keyed by sid
-    // can drop its entry. titleStateBridge subscribes to this.
+    // can drop its entry (e.g. notify pipeline).
     this.emit('unwatched', { sid } as UnwatchedEvent);
   }
 

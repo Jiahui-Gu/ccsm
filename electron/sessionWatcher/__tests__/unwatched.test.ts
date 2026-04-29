@@ -1,9 +1,7 @@
 // Unit test for sessionWatcher's `unwatched` teardown event.
 //
-// This is the producer side of the wiring that lets main.ts drop per-sid
-// state in titleStateBridge when a CLI session ends. The consumer side is
-// covered in electron/notify/__tests__/titleStateBridge.test.ts (the
-// "integrates with an emitter-driven teardown signal" case).
+// The notify pipeline subscribes to this event in main.ts to drop per-sid
+// state when a CLI session ends.
 
 import { describe, it, expect } from 'vitest';
 import { __createForTest, type UnwatchedEvent } from '../index';
