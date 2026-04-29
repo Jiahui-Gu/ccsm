@@ -234,6 +234,18 @@ type Actions = {
   /** Internal: drop the disconnect entry for `sid`. Called from TerminalPane
    *  when an attach/spawn succeeds so the red dot clears on respawn. */
   _clearPtyExit: (sid: string) => void;
+  /**
+   * Launch-time backfill of session titles. After hydrate, group persisted
+   * sessions by their cwd's projectKey, batch one `listForProject` IPC per
+   * unique projectKey against the SDK bridge, and patch any session whose
+   * `name` is still a default placeholder ('New session' / '新会话') with
+   * the SDK-derived summary if available. User-renamed sessions and rows
+   * already carrying an auto-derived title are never touched. Silent +
+   * fire-and-forget — never throws, never toasts. Underscore prefix marks
+   * this as internal; only `hydrateStore()` calls it. Reuses the existing
+   * `_applyExternalTitle` action for the patch so the precedence rules
+   * stay in one place. */
+  _backfillTitles: () => Promise<void>;
   deleteSession: (id: string) => SessionSnapshot | null;
   /** Re-insert a session previously removed by `deleteSession`. Restores the
    *  row at its original index, plus messages, draft, and runtime flags. */
@@ -662,6 +674,84 @@ export const useStore = create<State & Actions>((set, get) => ({
       delete next[sid];
       return { disconnectedSessions: next };
     });
+  },
+
+  _backfillTitles: async () => {
+    // Renderer-side IPC bridge installed by `electron/preload.ts`. Absent in
+    // jsdom / non-Electron envs (tests without the bridge mock) — no-op.
+    type Bridge = {
+      listForProject: (projectKey: string) => Promise<Array<{
+        sid: string;
+        summary: string | null;
+        mtime: number;
+      }>>;
+    };
+    const bridge =
+      typeof window !== 'undefined'
+        ? (window as unknown as { ccsmSessionTitles?: Bridge }).ccsmSessionTitles
+        : undefined;
+    if (!bridge || typeof bridge.listForProject !== 'function') return;
+
+    // Default-name placeholders to overwrite. The store always writes the
+    // English literal at create time (see `createSession`); '新会话' is
+    // included because older persisted snapshots from a Chinese-locale build
+    // (when `createSession` briefly localized the name) may still carry it.
+    // Anything else (user rename, prior backfill) is treated as authoritative
+    // and never touched.
+    const defaults = new Set<string>(['New session', '新会话']);
+
+    // Group sessions whose name is still default by their projectKey, so we
+    // make ONE IPC call per project (not per session). projectKey encoding
+    // mirrors the CLI's `~/.claude/projects/<key>/<sid>.jsonl` convention:
+    // every `\` `/` `:` becomes `-`. The canonical encoder lives in
+    // `electron/sessionWatcher/projectKey.ts`; we duplicate the trivial
+    // replace here rather than ship that module to the renderer bundle.
+    const byProject = new Map<string, string[]>();
+    const sessions = get().sessions;
+    for (const s of sessions) {
+      if (!defaults.has(s.name)) continue;
+      if (typeof s.cwd !== 'string' || s.cwd.length === 0) continue;
+      const key = s.cwd.replace(/[\\/:]/g, '-');
+      const list = byProject.get(key);
+      if (list) list.push(s.id);
+      else byProject.set(key, [s.id]);
+    }
+    if (byProject.size === 0) return;
+
+    // Issue per-project lookups in parallel. Per-project errors are swallowed
+    // so one bad project (missing dir, SDK glitch) doesn't stall every other
+    // project's backfill.
+    await Promise.all(
+      Array.from(byProject.entries()).map(async ([projectKey, sids]) => {
+        let summaries: Array<{ sid: string; summary: string | null; mtime: number }>;
+        try {
+          summaries = await bridge.listForProject(projectKey);
+        } catch (err) {
+          console.warn('[store._backfillTitles] listForProject failed for', projectKey, err);
+          return;
+        }
+        if (!Array.isArray(summaries)) return;
+        const summaryMap = new Map<string, string | null>();
+        for (const entry of summaries) {
+          if (entry && typeof entry.sid === 'string') {
+            summaryMap.set(entry.sid, entry.summary);
+          }
+        }
+        const apply = get()._applyExternalTitle;
+        for (const sid of sids) {
+          const sum = summaryMap.get(sid);
+          // Re-check the current name on every apply — a concurrent live
+          // `session:title` IPC may have already overwritten the placeholder
+          // by the time we get here, in which case we leave it alone.
+          if (typeof sum === 'string' && sum.length > 0) {
+            const current = get().sessions.find((s) => s.id === sid);
+            if (current && defaults.has(current.name)) {
+              apply(sid, sum);
+            }
+          }
+        }
+      })
+    );
   },
 
   importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {
@@ -1191,6 +1281,12 @@ export async function hydrateStore(): Promise<void> {
   // until `models` populates and re-fire these themselves on mount.
   void useStore.getState().loadConnection();
   void useStore.getState().loadModels();
+
+  // PR4: backfill any default-named persisted sessions from the SDK's
+  // `listSessions` per-project view. Fire-and-forget — must not block
+  // hydrate completion or first paint. Sidebar names update in-place as
+  // `_applyExternalTitle` patches arrive (typically within ~1s of hydrate).
+  void useStore.getState()._backfillTitles();
 
   // After (potential) hydration, subscribe to write-through.
   // Perf: the subscriber fires on EVERY store mutation (including hot paths

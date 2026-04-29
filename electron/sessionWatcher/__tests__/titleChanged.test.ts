@@ -1,7 +1,11 @@
 // Unit tests for the SessionWatcher's `title-changed` event path.
 //
 // Strategy:
-//   * Mock the SDK so we control what `getSessionInfo` returns per call.
+//   * Inject SDK fakes via `__setSdkForTests` on the title bridge — the
+//     production loader uses a `new Function('return import(spec)')` shim
+//     to dodge tsc's CommonJS rewrite of dynamic imports, which also
+//     dodges `vi.mock`. The bridge exposes `__setSdkForTests` exactly so
+//     unit tests can wire fakes.
 //   * Drive synthetic JSONL writes via a tmp dir + `__createForTest()` so
 //     we get a fresh watcher instance per test (no shared module state).
 //   * Assert the event fires once per change, not on no-op identical-title
@@ -12,27 +16,22 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-// Mock the SDK module that `electron/sessionTitles/index.ts` imports.
-// `getSessionInfo` is the only call exercised by the title path. We control
-// the returned `summary` per call via the `summaryReturns` array, popping
-// the next value on each invocation.
+// We control what `getSessionInfo` returns per call via the
+// `summaryReturns` array, popping the next value on each invocation.
 const summaryReturns: Array<{ summary: string | null; lastModified?: number }> = [];
-vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
-  getSessionInfo: vi.fn(async () => {
-    if (summaryReturns.length === 0) return null;
-    return summaryReturns.shift() ?? null;
-  }),
-  // Unused by these tests, stubbed so the import resolves.
-  renameSession: vi.fn(),
-  listSessions: vi.fn(),
-}));
+const renameSessionMock = vi.fn();
+const listSessionsMock = vi.fn();
+const getSessionInfoMock = vi.fn(async () => {
+  if (summaryReturns.length === 0) return null;
+  return summaryReturns.shift() ?? null;
+});
 
 import { __createForTest, type TitleChangedEvent } from '../index';
 import {
   __resetForTests as __resetTitleBridge,
+  __setSdkForTests as __setTitleBridgeSdk,
   enqueuePendingRename,
 } from '../../sessionTitles';
-import { renameSession as renameSessionMock } from '@anthropic-ai/claude-agent-sdk';
 
 let tmpRoot: string;
 
@@ -63,18 +62,38 @@ async function waitForCondition(
 }
 
 describe('SessionWatcher title-changed', () => {
+  // `__resetTitleBridge` clears `sdkPromise`, which would otherwise let the
+  // real loader take over on the next call. Re-install the fakes after every
+  // reset (initial setup + any in-test reset).
+  function installSdkFakes(): void {
+    __setTitleBridgeSdk({
+      getSessionInfo: getSessionInfoMock,
+      renameSession: renameSessionMock,
+      listSessions: listSessionsMock,
+    } as Parameters<typeof __setTitleBridgeSdk>[0]);
+  }
+
+  // Wrap reset+re-install for in-test cache flushes.
+  function flushBridgeCache(): void {
+    __resetTitleBridge();
+    installSdkFakes();
+  }
+
   beforeEach(() => {
     summaryReturns.length = 0;
     // Bridge has its own 2s TTL cache + per-sid op chain; reset between
     // tests so cached `null` summaries from one test don't shadow the next.
     __resetTitleBridge();
-    (renameSessionMock as unknown as ReturnType<typeof vi.fn>).mockClear();
+    installSdkFakes();
+    renameSessionMock.mockClear();
+    listSessionsMock.mockClear();
   });
 
   afterEach(() => {
     if (tmpRoot && fs.existsSync(tmpRoot)) {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+    __setTitleBridgeSdk(null);
   });
 
   it('emits title-changed once when SDK reports a new summary', async () => {
@@ -113,7 +132,7 @@ describe('SessionWatcher title-changed', () => {
     await waitForCondition(() => events.length >= 1);
 
     // Second tick with the same SDK-reported summary — must NOT fire.
-    __resetTitleBridge();
+    flushBridgeCache();
     summaryReturns.push({ summary: 'same title' });
     appendFrame(jsonlPath, 'second');
 
@@ -138,7 +157,7 @@ describe('SessionWatcher title-changed', () => {
     appendFrame(jsonlPath, 'first');
     await waitForCondition(() => events.length >= 1);
 
-    __resetTitleBridge();
+    flushBridgeCache();
     summaryReturns.push({ summary: 'title v2' });
     appendFrame(jsonlPath, 'second');
     await waitForCondition(() => events.length >= 2);
@@ -161,7 +180,7 @@ describe('SessionWatcher title-changed', () => {
     fs.writeFileSync(jsonlPath, '');
     watcher.startWatching('sid-D', jsonlPath);
     appendFrame(jsonlPath, 'first');
-    __resetTitleBridge();
+    flushBridgeCache();
     appendFrame(jsonlPath, 'second');
 
     await new Promise((r) => setTimeout(r, 300));
@@ -173,7 +192,7 @@ describe('SessionWatcher title-changed', () => {
   it('flushes pending rename exactly once on first JSONL appearance', async () => {
     const { jsonlPath } = freshTmp();
     const projectDir = path.dirname(jsonlPath);
-    const renameMock = renameSessionMock as unknown as ReturnType<typeof vi.fn>;
+    const renameMock = renameSessionMock;
 
     // PR2 path: a user-set title was queued before the JSONL existed
     // (renameSession would have thrown ENOENT).
