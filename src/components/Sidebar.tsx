@@ -947,7 +947,13 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               bg-bg-sidebar/80 + backdrop-blur, so the buttons read as
               "frosted glass on frosted glass" without ever transparent-ing
               to the desktop. */}
-          <div data-testid="sidebar-newsession-row" className="px-3 pt-1 pb-3 flex items-center gap-2">
+          {/* #606: bumped pt-1 → pt-4 to give the New Session + Search row
+              more breathing room from the window-top drag strip. The previous
+              pt-1 was tuned for symmetry with the Settings block at the
+              bottom; that symmetry is intentionally broken here per user
+              feedback (top edge felt cramped). Total top gap is now
+              8px (DragRegion) + 16px (pt-4) = 24px. */}
+          <div data-testid="sidebar-newsession-row" className="px-3 pt-4 pb-3 flex items-center gap-2">
             <NewSessionButton
               onCreateSession={onCreateSession}
               cwdPopoverOpen={topCwdPickerOpen}
