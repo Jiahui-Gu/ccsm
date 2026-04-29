@@ -169,6 +169,18 @@ function GroupRow({
                 onFocus();
                 if (!renaming) setGroupCollapsed(group.id, !collapsed);
               }}
+              onKeyDown={(e) => {
+                // F2 enters rename mode — matches the SessionRow F2 handler
+                // and Finder / VS Code explorer convention. Special groups
+                // (archive) have no rename action in their menu, so don't
+                // permit F2 either to keep behavior consistent with the
+                // visible affordances. (`isSpecial` is checked via the same
+                // `kind !== 'normal'` rule used for the menu disable gate.)
+                if (e.key === 'F2' && !renaming && !isSpecial) {
+                  e.preventDefault();
+                  setRenaming(true);
+                }
+              }}
               className="flex flex-1 min-w-0 items-center gap-1.5 text-left text-fg-secondary outline-none rounded-sm focus-ring"
               aria-expanded={!collapsed}
             >
@@ -192,7 +204,19 @@ function GroupRow({
                 />
               ) : (
                 <>
-                  <span className="truncate text-chrome font-semibold text-fg-secondary">{group.nameKey ? t(group.nameKey) : group.name}</span>
+                  <span
+                    className="truncate text-chrome font-semibold text-fg-secondary"
+                    onDoubleClick={(e) => {
+                      // Double-click the label to enter rename mode — matches
+                      // the SessionRow handler. Stop propagation so the
+                      // wrapping <button>'s onClick doesn't toggle collapsed
+                      // on the same gesture. Skip for special (archive)
+                      // groups since they have no rename action.
+                      if (isSpecial) return;
+                      e.stopPropagation();
+                      setRenaming(true);
+                    }}
+                  >{group.nameKey ? t(group.nameKey) : group.name}</span>
                   {hasWaiting && (
                     <span
                       aria-label={t('sidebar.waitingForResponse')}
@@ -207,7 +231,16 @@ function GroupRow({
             </button>
           </div>
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent
+          // Prevent Radix from restoring focus to the trigger after the
+          // menu closes. When `Rename` is selected, Radix would otherwise
+          // .focus() the trigger element AFTER our InlineRename mount
+          // effect, racing the input's focus. Group rows happen to win
+          // that race today (no dnd-kit listeners on the trigger), but
+          // belt-and-suspenders here keeps parity with SessionRow and
+          // hardens against future regressions.
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
           <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
@@ -230,6 +263,12 @@ function GroupRow({
             role="listbox"
           aria-label={group.name}
           onKeyDown={(e) => {
+            // Don't hijack arrows while the inline-rename input is focused —
+            // the user is editing text and expects ←/→ to move the caret,
+            // ↑/↓ to be no-ops (browsers don't move caret vertically in a
+            // single-line input but also don't navigate the listbox). Same
+            // guard pattern lives on the SessionRow's own onKeyDown.
+            if ((e.target as HTMLElement).tagName === 'INPUT') return;
             const key = e.key;
             if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return;
             const list = e.currentTarget;
@@ -356,10 +395,19 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
           ref={composedRef}
           style={style}
           {...attributes}
-          {...listeners}
+          // Skip dnd-kit pointer listeners and remove tabIndex while the
+          // inline-rename input is mounted. Two reasons:
+          //   1. Drag-during-rename has no useful semantics.
+          //   2. The listeners `preventDefault()` on mousedown, which
+          //      combined with `tabIndex=0` lets the LI win the focus
+          //      race against the just-mounted input — defeats Fix A1's
+          //      onCloseAutoFocus guard if Radix dispatches a synthetic
+          //      mouse event during close. Belt-and-suspenders for the
+          //      session focus race the user reported.
+          {...(renaming ? {} : listeners)}
           role="option"
           aria-selected={selected}
-          tabIndex={selected ? 0 : -1}
+          tabIndex={renaming ? -1 : selected ? 0 : -1}
           data-session-id={session.id}
           onClick={onSelect}
           onContextMenu={() => {
@@ -375,6 +423,13 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
             // disappear from the new name. Same risk for Enter, which we want
             // the input to commit on.
             if (e.target !== e.currentTarget) return;
+            // F2 enters rename mode on the focused row — matches Finder /
+            // VS Code explorer / Windows Explorer convention.
+            if (e.key === 'F2' && !renaming) {
+              e.preventDefault();
+              setRenaming(true);
+              return;
+            }
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
               onSelect();
@@ -432,7 +487,17 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
               />
             ) : (
               <>
-                <span className="truncate block" title={session.name}>{session.name}</span>
+                <span
+                  className="truncate block"
+                  title={session.name}
+                  onDoubleClick={(e) => {
+                    // Double-click the label to enter rename mode — matches
+                    // Finder / VS Code explorer convention. Stop propagation
+                    // so the row's onClick doesn't fire a redundant select.
+                    e.stopPropagation();
+                    setRenaming(true);
+                  }}
+                >{session.name}</span>
               </>
             )}
           </span>
@@ -463,7 +528,18 @@ function SessionRow({ session, active, selected, onSelect, normalGroups }: { ses
           )}
         </li>
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent
+        // Prevent Radix from restoring focus to the LI trigger after the
+        // menu closes. Without this, Radix's `onCloseAutoFocus` calls
+        // .focus() on the LI AFTER our InlineRename mount effect, and
+        // because the LI carries dnd-kit `{...listeners}` plus
+        // `tabIndex={selected ? 0 : -1}` it wins the focus race against
+        // the just-mounted input. The user then types and nothing happens
+        // because keys land on the (focused) LI, not the input. PR #527
+        // fixed the auto-cancel side of this race; this preventDefault
+        // closes the focus-stealing side.
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
         <ContextMenuItem onSelect={() => setRenaming(true)}>{t('common.rename')}</ContextMenuItem>
         {(() => {
           // Exclude the session's current group from the destination list so
