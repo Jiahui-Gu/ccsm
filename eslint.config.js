@@ -15,6 +15,7 @@ export default [
       'release/**',
       'scripts/**',
       'tests/**',
+      'docs/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
@@ -74,6 +75,7 @@ export default [
         getComputedStyle: 'readonly',
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly',
+        ResizeObserver: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.
