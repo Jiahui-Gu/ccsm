@@ -254,10 +254,12 @@ export type SessionState = 'idle' | 'running' | 'requires_action';
 type SessionStatePayload = { sid: string; state: SessionState };
 type SessionActivatePayload = { sid: string };
 type SessionTitlePayload = { sid: string; title: string };
+type SessionCwdRedirectedPayload = { sid: string; newCwd: string };
 
 const sessionStateListeners = new Set<(e: SessionStatePayload) => void>();
 const sessionActivateListeners = new Set<(e: SessionActivatePayload) => void>();
 const sessionTitleListeners = new Set<(e: SessionTitlePayload) => void>();
+const sessionCwdRedirectedListeners = new Set<(e: SessionCwdRedirectedPayload) => void>();
 
 ipcRenderer.on('session:state', (_e: IpcRendererEvent, payload: SessionStatePayload) => {
   for (const cb of sessionStateListeners) {
@@ -282,6 +284,23 @@ ipcRenderer.on('session:title', (_e: IpcRendererEvent, payload: SessionTitlePayl
     }
   }
 });
+
+// Main pushes `session:cwdRedirected` after the import-resume copy helper
+// (#603) relocates a JSONL into the spawn cwd's projectDir. The renderer
+// patches `session.cwd` so the sessionTitles bridge (rename / list /
+// backfill) reads/writes the COPY rather than the now-frozen SOURCE.
+ipcRenderer.on(
+  'session:cwdRedirected',
+  (_e: IpcRendererEvent, payload: SessionCwdRedirectedPayload) => {
+    for (const cb of sessionCwdRedirectedListeners) {
+      try {
+        cb(payload);
+      } catch (err) {
+        console.error('[ccsmSession] onCwdRedirected listener threw', err);
+      }
+    }
+  },
+);
 
 // Main pushes `session:activate` when the user clicks a desktop notification.
 // Renderer subscribes via `window.ccsmSession.onActivate` and calls its
@@ -313,6 +332,12 @@ const ccsmSession = {
     sessionTitleListeners.add(cb);
     return () => {
       sessionTitleListeners.delete(cb);
+    };
+  },
+  onCwdRedirected: (cb: (e: SessionCwdRedirectedPayload) => void): (() => void) => {
+    sessionCwdRedirectedListeners.add(cb);
+    return () => {
+      sessionCwdRedirectedListeners.delete(cb);
     };
   },
   // Renderer pushes its active session id to main so the notify bridge can

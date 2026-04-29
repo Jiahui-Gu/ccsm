@@ -227,6 +227,16 @@ type Actions = {
    *  src/App.tsx. SDK customTitle precedence guarantees user renames win
    *  over SDK auto-summaries, so no userRenamed flag is needed here. */
   _applyExternalTitle: (sid: string, title: string) => void;
+  /** Internal: patch `session.cwd` after the main-process import-resume copy
+   *  helper relocates the JSONL into the spawn cwd's projectDir (#603). The
+   *  sessionTitles SDK bridge keys off `session.cwd` to compute the
+   *  projectKey it passes to `getSessionInfo` / `renameSession` /
+   *  `listForProject` — without this patch the bridge would keep targeting
+   *  the original (now-frozen) SOURCE JSONL after every spawn while the
+   *  CLI appends to the COPY. No-op when the row is missing or `cwd` is
+   *  already current. Underscore prefix: only the `session:cwdRedirected`
+   *  IPC subscriber in src/App.tsx calls this. */
+  _applyCwdRedirect: (sid: string, newCwd: string) => void;
   /** Internal: classify and record a pty:exit event for `sid`. Decides
    *  clean vs crashed using `signal == null && code === 0`. Idempotent —
    *  calling twice with the same payload just overwrites the entry. */
@@ -649,6 +659,18 @@ export const useStore = create<State & Actions>((set, get) => ({
       if (s.sessions[idx].name === title) return s;
       const next = s.sessions.slice();
       next[idx] = { ...next[idx], name: title };
+      return { ...s, sessions: next };
+    });
+  },
+
+  _applyCwdRedirect: (sid, newCwd) => {
+    if (typeof newCwd !== 'string' || newCwd.length === 0) return;
+    set((s) => {
+      const idx = s.sessions.findIndex((x) => x.id === sid);
+      if (idx === -1) return s;
+      if (s.sessions[idx].cwd === newCwd) return s;
+      const next = s.sessions.slice();
+      next[idx] = { ...next[idx], cwd: newCwd };
       return { ...s, sessions: next };
     });
   },

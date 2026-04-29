@@ -78,6 +78,7 @@ export default function App() {
   const selectSession = useStore((s) => s.selectSession);
   const focusGroup = useStore((s) => s.focusGroup);
   const applyExternalTitle = useStore((s) => s._applyExternalTitle);
+  const applyCwdRedirect = useStore((s) => s._applyCwdRedirect);
   const applyPtyExit = useStore((s) => s._applyPtyExit);
   const moveSession = useStore((s) => s.moveSession);
   const createSession = useStore((s) => s.createSession);
@@ -205,6 +206,25 @@ export default function App() {
       applyExternalTitle(evt.sid, evt.title);
     });
   }, [applyExternalTitle]);
+
+  // Pipe `session:cwdRedirected` IPC events from main into the store. Fired
+  // by the ptyHost spawn handler when the import-resume copy helper (#603)
+  // relocates a JSONL into the spawn cwd's projectDir. Patching
+  // `session.cwd` is what keeps the sessionTitles SDK bridge pointing at
+  // the live COPY rather than the now-frozen SOURCE on subsequent
+  // `renameSession` / `getSessionInfo` / `listForProject` calls.
+  useEffect(() => {
+    type Bridge = {
+      onCwdRedirected?: (cb: (e: { sid: string; newCwd: string }) => void) => () => void;
+    };
+    const bridge = (window as unknown as { ccsmSession?: Bridge }).ccsmSession;
+    if (!bridge || typeof bridge.onCwdRedirected !== 'function') return;
+    return bridge.onCwdRedirected((evt) => {
+      if (!evt || typeof evt.sid !== 'string' || typeof evt.newCwd !== 'string') return;
+      if (evt.sid.length === 0 || evt.newCwd.length === 0) return;
+      applyCwdRedirect(evt.sid, evt.newCwd);
+    });
+  }, [applyCwdRedirect]);
 
   // Locale: ask main for the OS locale, feed it into the preferences store
   // so a "system" preference resolves correctly. Falls back to navigator.

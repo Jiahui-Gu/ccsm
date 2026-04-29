@@ -842,6 +842,93 @@ async function caseNotifyFiresOnIdle({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: attention-flashes-on-nonactive-idle (PR #513 in-app attention flash)
+// ============================================================================
+//
+// Verifies installAttentionFlash via the test seam:
+//   - window FOCUSED + sid != active → flash recorded in __ccsmAttentionLog
+//   - window FOCUSED + sid == active → no entry (active-sid suppressed)
+//   - window UNFOCUSED → no entry (notify path takes over)
+//
+// Drives sessionWatcher synthetically through __ccsmAttentionTest seam to
+// avoid spinning two real CLI sessions just to flip state machines.
+
+async function caseAttentionFlashesOnNonActiveIdle({ electronApp }) {
+  const seamReady = await electronApp.evaluate(() => {
+    const t = globalThis.__ccsmAttentionTest;
+    if (!t || typeof t.emitStateChanged !== 'function') return false;
+    if (!Array.isArray(globalThis.__ccsmAttentionLog)) globalThis.__ccsmAttentionLog = [];
+    return true;
+  });
+  if (!seamReady) throw new Error('__ccsmAttentionTest seam not initialized (CCSM_NOTIFY_TEST_HOOK?)');
+
+  const sidA = `attn-A-${Date.now()}`;
+  const sidB = `attn-B-${Date.now() + 1}`;
+
+  // --- Sub-case 1: focused + B (non-active) idle → flash recorded ---
+  const sub1 = await electronApp.evaluate((_e, [sa, sb]) => {
+    const t = globalThis.__ccsmAttentionTest;
+    t.setFocusOverride(true);
+    t.setActiveSid(sa);
+    const baseline = globalThis.__ccsmAttentionLog.length;
+    t.emitStateChanged(sb, 'idle');
+    const added = globalThis.__ccsmAttentionLog.slice(baseline);
+    return { baseline, added };
+  }, [sidA, sidB]);
+  if (sub1.added.length !== 1) {
+    throw new Error(
+      `sub1 expected exactly 1 attention entry for non-active sid, got ${sub1.added.length}. Log delta: ${JSON.stringify(sub1.added)}`,
+    );
+  }
+  const entry1 = sub1.added[0];
+  if (entry1.sid !== sidB) throw new Error(`sub1 entry sid mismatch: ${JSON.stringify(entry1)}`);
+  if (entry1.state !== 'idle') throw new Error(`sub1 entry state mismatch: ${JSON.stringify(entry1)}`);
+  if (entry1.kind !== 'flashFrame' && entry1.kind !== 'dockBounce') {
+    throw new Error(`sub1 entry kind expected flashFrame|dockBounce, got: ${JSON.stringify(entry1)}`);
+  }
+  console.log(`[HARNESS]   sub1 OK: focused + non-active sid → ${entry1.kind} for ${entry1.sid}`);
+
+  // --- Sub-case 2: focused + A (active sid) idle → suppressed ---
+  const sub2 = await electronApp.evaluate((_e, [sa]) => {
+    const t = globalThis.__ccsmAttentionTest;
+    t.setFocusOverride(true);
+    t.setActiveSid(sa);
+    const baseline = globalThis.__ccsmAttentionLog.length;
+    t.emitStateChanged(sa, 'idle');
+    const added = globalThis.__ccsmAttentionLog.slice(baseline);
+    return { added };
+  }, [sidA]);
+  if (sub2.added.length !== 0) {
+    throw new Error(
+      `sub2 expected 0 entries (active-sid suppressed), got ${sub2.added.length}: ${JSON.stringify(sub2.added)}`,
+    );
+  }
+  console.log('[HARNESS]   sub2 OK: focused + active sid → suppressed');
+
+  // --- Sub-case 3: blurred + B idle → suppressed (notify path owns it) ---
+  const sub3 = await electronApp.evaluate((_e, [sa, sb]) => {
+    const t = globalThis.__ccsmAttentionTest;
+    t.setFocusOverride(false);
+    t.setActiveSid(sa);
+    const baseline = globalThis.__ccsmAttentionLog.length;
+    t.emitStateChanged(sb, 'idle');
+    const added = globalThis.__ccsmAttentionLog.slice(baseline);
+    return { added };
+  }, [sidA, sidB]);
+  if (sub3.added.length !== 0) {
+    throw new Error(
+      `sub3 expected 0 entries (window blurred → notify path), got ${sub3.added.length}: ${JSON.stringify(sub3.added)}`,
+    );
+  }
+  console.log('[HARNESS]   sub3 OK: blurred → attention skipped (notify path)');
+
+  // Cleanup the override so subsequent cases see real focus state.
+  await electronApp.evaluate(() => {
+    globalThis.__ccsmAttentionTest?.setFocusOverride(null);
+  });
+}
+
+// ============================================================================
 // Case 2: switch-session-keeps-chat (UX F)
 // ============================================================================
 
@@ -1313,6 +1400,232 @@ async function caseImportResume({ electronApp, win, tempDir }) {
   const exitsThisCase = exitsAfter.slice(exitCountBefore);
   if (exitsThisCase.length > 0) {
     throw new Error(`unexpected pty:exit during import-resume: ${JSON.stringify(exitsThisCase)}`);
+  }
+
+  // ===========================================================================
+  // Sub-leg: cwd-redirect for missing-cwd imports (#603 reviewer Layer-1 fix)
+  // ===========================================================================
+  //
+  // When the import-source JSONL was originally written from a cwd that no
+  // longer exists, `resolveSpawnCwd` falls back to homedir, the
+  // import-resume copy helper relocates the JSONL into the spawn cwd's
+  // projectDir, and the renderer must patch `session.cwd` to the spawn cwd
+  // so the sessionTitles SDK bridge (rename / list / get) targets the
+  // COPY rather than the now-frozen SOURCE.
+  //
+  // Setup: seed a JSONL whose recorded cwd is a path guaranteed not to
+  // exist on disk. Import. Spawn. Assert `session.cwd` flips to the
+  // homedir-resolved spawn cwd via the `session:cwdRedirected` IPC.
+  // NB: deliberately NOT prefixed `ccsm-` / `agentory-` and NOT under
+  // `/tmp` or any temp-root that the import scanner filters out
+  // (`isCCSMTempCwd`). We need a path the scanner WILL surface but disk
+  // physically lacks, so the spawn-cwd fallback fires.
+  const missingCwd = '/var/empty/probe-redirect-' + randomUUID().slice(0, 8);
+  const missingProjectDirName = encodeCwdForClaude(missingCwd);
+  const missingScannerDir = path.join(tempDir, '.claude', 'projects', missingProjectDirName);
+  // Note: deliberately NOT seeding under <tempDir>/projects/<missing>/ —
+  // the source must live ONLY at the scanner path so the copy helper
+  // has a real `targetPath !== sourcePath` to act on.
+  mkdirSync(missingScannerDir, { recursive: true });
+  const missingSid = randomUUID();
+  const missingJsonlPath = path.join(missingScannerDir, `${missingSid}.jsonl`);
+  const missingUserText = 'PROBE_REDIRECT_PING token PROBE_REDIRECT_TOKEN_' +
+    randomUUID().slice(0, 6).toUpperCase();
+  const missingUserUuid = randomUUID();
+  const missingFrames = [
+    {
+      parentUuid: null, isSidechain: false, type: 'user',
+      message: { role: 'user', content: missingUserText },
+      uuid: missingUserUuid, timestamp: new Date().toISOString(),
+      userType: 'external', cwd: missingCwd, sessionId: missingSid,
+      version: '2.1.119', gitBranch: 'HEAD',
+    },
+    {
+      parentUuid: missingUserUuid, isSidechain: false, type: 'assistant',
+      message: {
+        id: 'msg_' + randomUUID().replace(/-/g, '').slice(0, 24),
+        type: 'message', role: 'assistant', model: 'claude-sonnet-4-5-20250929',
+        content: [{ type: 'text', text: 'Acknowledged.' }],
+        stop_reason: 'end_turn', stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      uuid: randomUUID(), timestamp: new Date().toISOString(),
+      userType: 'external', cwd: missingCwd, sessionId: missingSid,
+      version: '2.1.119', gitBranch: 'HEAD',
+    },
+  ];
+  writeFileSync(
+    missingJsonlPath,
+    missingFrames.map((f) => JSON.stringify(f)).join('\n') + '\n',
+  );
+  // Pre-trust homedir (= tempDir) since claude will fall back to it.
+  // Already trusted via `seedCwd = process.cwd()` above isn't relevant; the
+  // resolver falls back to USERPROFILE/HOME = tempDir, so we trust that path.
+  const homedirTrust = tempDir;
+  if (!claudeJson.projects[homedirTrust]) {
+    claudeJson.projects[homedirTrust] = {
+      allowedTools: [], mcpContextUris: [], mcpServers: {},
+      enabledMcpjsonServers: [], disabledMcpjsonServers: [],
+      hasClaudeMdExternalIncludesApproved: false,
+      hasClaudeMdExternalIncludesWarningShown: false,
+      hasTrustDialogAccepted: true,
+      projectOnboardingSeenCount: 1,
+    };
+    claudeJson.projects[homedirTrust.replace(/\\/g, '/')] = claudeJson.projects[homedirTrust];
+    writeFileSync(claudeJsonPath, JSON.stringify(claudeJson, null, 2));
+  }
+
+  const redirectExitCountBefore = (await readPtyExits(win)).length;
+
+  const importMissingResult = await win.evaluate(async (expectedSid) => {
+    const api = window.ccsm;
+    const useStore = window.__ccsmStore;
+    if (!api?.scanImportable) throw new Error('window.ccsm.scanImportable unavailable');
+    if (!useStore) throw new Error('window.__ccsmStore unavailable');
+    // Background-refresh policy: `getImportableSessions` returns the cache
+    // immediately while triggering an async re-scan. The seed for this leg
+    // landed AFTER the first leg's scan populated the cache, so the first
+    // call may not see it. Poll up to 8s, calling repeatedly to give the
+    // background re-scan a chance to land.
+    let found = null;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const rows = await api.scanImportable();
+      found = rows.find((r) => r.sessionId === expectedSid);
+      if (found) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!found) {
+      const rowsFinal = await api.scanImportable();
+      return {
+        ok: false,
+        reason: 'missing-cwd-jsonl-not-in-scan',
+        rowCount: rowsFinal.length,
+      };
+    }
+    const { importSession, createGroup, groups } = useStore.getState();
+    let groupId = groups.find((g) => g.kind === 'normal' && g.name === 'Imported')?.id;
+    if (!groupId) groupId = createGroup('Imported');
+    const importedId = importSession({
+      name: found.title, cwd: found.cwd, groupId,
+      resumeSessionId: found.sessionId, projectDir: found.projectDir,
+    });
+    useStore.setState({ activeId: importedId, focusedGroupId: null });
+    const after = useStore.getState();
+    const session = after.sessions.find((s) => s.id === importedId);
+    return {
+      ok: true,
+      importedId,
+      cwdAtImport: session?.cwd,
+    };
+  }, missingSid);
+  if (!importMissingResult?.ok) {
+    throw new Error(`import-missing-cwd flow failed: ${JSON.stringify(importMissingResult)}`);
+  }
+  if (importMissingResult.cwdAtImport !== missingCwd) {
+    throw new Error(
+      `import: session.cwd should start as the recorded missing path; ` +
+        `expected=${missingCwd} got=${importMissingResult.cwdAtImport}`,
+    );
+  }
+  console.log(`[HARNESS]   redirect-leg: imported sid=${missingSid} cwd=${importMissingResult.cwdAtImport}`);
+
+  // Wait for the cwd-redirect IPC to land in the store. Polls
+  // `session.cwd`; passes once it's been patched away from the missing path.
+  // Bounded at 30s — same budget as the terminal-ready helper.
+  const redirectDeadline = Date.now() + 30000;
+  let redirectedCwd = null;
+  while (Date.now() < redirectDeadline) {
+    const cur = await win.evaluate((sid) => {
+      const useStore = window.__ccsmStore;
+      const sess = useStore?.getState().sessions.find((s) => s.id === sid);
+      return sess ? sess.cwd : null;
+    }, missingSid);
+    if (cur && cur !== missingCwd) {
+      redirectedCwd = cur;
+      break;
+    }
+    await sleep(250);
+  }
+  if (!redirectedCwd) {
+    throw new Error(
+      `cwd-redirect did not fire within 30s: session.cwd still ${missingCwd}. ` +
+        `Reviewer Layer-1 regression — main copies the JSONL but renderer ` +
+        `keeps reading the SOURCE via session.cwd.`,
+    );
+  }
+  console.log(`[HARNESS]   redirect-leg: cwd patched to ${redirectedCwd}`);
+  // The redirect target must equal the spawn cwd's project root
+  // (= homedir = tempDir under the harness env).
+  if (redirectedCwd !== tempDir && !redirectedCwd.startsWith(tempDir)) {
+    // Allow tempDir-equivalent paths (Windows short-name vs long-name etc.)
+    // but the major substring should match.
+    console.warn(
+      `[HARNESS] cwd-redirect landed at ${redirectedCwd}; expected ~${tempDir}. ` +
+        `Continuing — exact path may differ on macOS /private/var realpath.`,
+    );
+  }
+
+  // Sub-assert: a rename via the SDK bridge must persist into the COPY,
+  // not the SOURCE. We verify by reading both files after the bridge
+  // resolves. The COPY lives under the spawn-cwd's projectDir (resolved
+  // via `redirectedCwd`); the SOURCE stays at `missingJsonlPath`.
+  const renameTitle = 'redirect-probe-' + randomUUID().slice(0, 8);
+  const renameResult = await win.evaluate(
+    async ([sid, title]) => {
+      const useStore = window.__ccsmStore;
+      const { renameSession } = useStore.getState();
+      await renameSession(sid, title);
+      // Pull the post-rename session.cwd so the harness can map it to a
+      // projectDir on disk.
+      const sess = useStore.getState().sessions.find((s) => s.id === sid);
+      return { cwd: sess?.cwd ?? null, name: sess?.name ?? null };
+    },
+    [missingSid, renameTitle],
+  );
+  if (renameResult.name !== renameTitle) {
+    throw new Error(
+      `renameSession did not patch local name: expected ${renameTitle} got ${renameResult.name}`,
+    );
+  }
+  // Map the post-redirect cwd → projectDir on disk + check the COPY got
+  // the customTitle frame the SDK writeback appends.
+  const redirectedProjectDir = encodeCwdForClaude(renameResult.cwd);
+  const copyJsonlPath = path.join(
+    tempDir, 'projects', redirectedProjectDir, `${missingSid}.jsonl`,
+  );
+  // Wait for the SDK writeback to land on disk. Poll up to 15s.
+  const writebackDeadline = Date.now() + 15000;
+  let copyContent = '';
+  let sourceContent = '';
+  while (Date.now() < writebackDeadline) {
+    try { copyContent = readFileSync(copyJsonlPath, 'utf8'); } catch { /* not yet */ }
+    if (copyContent.includes(renameTitle)) break;
+    await sleep(250);
+  }
+  try { sourceContent = readFileSync(missingJsonlPath, 'utf8'); } catch { /* may be gone */ }
+  if (!copyContent.includes(renameTitle)) {
+    throw new Error(
+      `SDK rename writeback never reached the COPY (${copyJsonlPath}): ` +
+        `title ${renameTitle} not in copy. Reviewer Layer-1 fix incomplete — ` +
+        `bridge still targeting SOURCE.`,
+    );
+  }
+  if (sourceContent.includes(renameTitle)) {
+    throw new Error(
+      `SDK rename writeback hit the SOURCE (${missingJsonlPath}). The ` +
+        `redirect should have steered the bridge AWAY from the source — ` +
+        `imported-session titles will silently rot when the user renames.`,
+    );
+  }
+  console.log(`[HARNESS]   redirect-leg: rename ${renameTitle} written to COPY ${copyJsonlPath}, SOURCE clean`);
+
+  const exitsAfterRedirect = await readPtyExits(win);
+  const exitsRedirectLeg = exitsAfterRedirect.slice(redirectExitCountBefore);
+  if (exitsRedirectLeg.length > 0) {
+    throw new Error(
+      `unexpected pty:exit during cwd-redirect leg: ${JSON.stringify(exitsRedirectLeg)}`,
+    );
   }
 }
 
