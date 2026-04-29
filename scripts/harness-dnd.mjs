@@ -128,8 +128,48 @@ async function caseDnd({ win, log }) {
       );
     }
     log('  macOS fallback: auto-expand isOver flag stuck false under Playwright synthetic events, opening g3 manually');
-    await win.evaluate(() => window.__ccsmStore.getState().setGroupCollapsed('g3', false));
-    await win.waitForTimeout(100);
+    // Defensive cleanup before the second drag attempt:
+    //   1. Re-pin s2 to g1 via the store. If the failed first drag left
+    //      dnd-kit in a transient "dropped to nowhere" state (DragOverlay
+    //      drop animation, transient transform/opacity on the row), driving
+    //      a fresh moveSession resets the row's identity and forces a
+    //      remount-shaped re-render that clears any sticky useSortable
+    //      transform.
+    //   2. Expand g3 so it has a real <ul> drop target.
+    //   3. Wait for both s2 to be back in g1's <ul> AND g3's <ul> to have
+    //      a non-zero bounding box (empty group <ul> can be 0-height which
+    //      Playwright's `state: 'visible'` rejects, surfacing as a
+    //      misleading source-side timeout when dndDrag's target waitFor
+    //      throws).
+    //   4. Wait an extra animation frame so dnd-kit's drop animation +
+    //      framer-motion exit transitions on the previous attempt have
+    //      fully unwound before we start a new pointerdown sequence.
+    await win.evaluate(() => {
+      const st = window.__ccsmStore.getState();
+      st.moveSession('s2', 'g1');
+      st.setGroupCollapsed('g3', false);
+    });
+    await win.waitForFunction(
+      () => {
+        const s2InG1 = !!document
+          .querySelector('ul[data-group-id="g1"]')
+          ?.querySelector('li[data-session-id="s2"]');
+        const g3Ul = document.querySelector('ul[data-group-id="g3"]');
+        const g3Box = g3Ul?.getBoundingClientRect();
+        const g3Visible = !!g3Ul && !!g3Box && g3Box.width > 0 && g3Box.height > 0;
+        return s2InG1 && g3Visible;
+      },
+      null,
+      { timeout: 5000 }
+    );
+    // Wait for any leftover DragOverlay drop animation (150ms per Sidebar
+    // DragOverlay dropAnimation) plus a settle frame. Doing this via rAFs
+    // rather than a fixed sleep keeps it tight on fast runners.
+    await win.evaluate(
+      () =>
+        new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+    );
+    await win.waitForTimeout(250);
     await dndDrag(
       win,
       'li[data-session-id="s2"]',
