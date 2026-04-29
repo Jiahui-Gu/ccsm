@@ -39,6 +39,23 @@ export function SettingsDialog({
     if (open && initialTab) setTab(initialTab);
   }, [open, initialTab]);
 
+  // Defensive Escape handler. On Electron 41 macOS the Radix DismissableLayer
+  // Esc handler intermittently misses the keydown when the focused element at
+  // open time is `<body>` (e.g. dialog opened via the Cmd+, global shortcut
+  // rather than a Radix Trigger). The window-level capture-phase listener
+  // below mirrors what Radix does internally so close is deterministic across
+  // all entry points / platforms after the Electron 33→41 bump (PR #582).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) {
+        onOpenChange(false);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [open, onOpenChange]);
+
   // a11y: restore focus to the element that opened this dialog on close.
   // Settings is opened via Ctrl+, / context menu / palette — none of which
   // use Radix's <Dialog.Trigger>, so its built-in restore doesn't fire.
