@@ -1768,37 +1768,69 @@ async function caseRename({ win, log }) {
   // land on the input AND a single typed char must overwrite the existing
   // name (selection on focus). The user-reported repro lives in the
   // production focus-event timing where Radix's onCloseAutoFocus restores
-  // focus to the LI trigger AFTER the input mounts; in headless Playwright
-  // that timing doesn't always trigger the steal naturally, so we
-  // explicitly simulate the steal by calling .focus() on the LI right
-  // after the input mounts. Pre-fix: the LI has dnd-kit listeners and
-  // tabIndex=0, so focus(LI) succeeds → typed char lands on LI, input
-  // value remains the original "second". Post-fix: LI has tabIndex=-1
-  // and no dnd listeners while renaming, so focus(LI) is a no-op and the
-  // input keeps focus.
+  // focus to the LI trigger AFTER the input mounts, and the LI's dnd-kit
+  // listeners + tabIndex=0 let it keep that focus across InlineRename's
+  // own sync + rAF re-focus attempts.
+  //
+  // Reverse-verify strategy (per feedback_bug_fix_e2e_reverse_verify.md):
+  // headless Playwright doesn't naturally trigger Radix's onCloseAutoFocus
+  // restoration on the same timing as production — an earlier version of
+  // this case just called `li.focus()` after the input mounted and waited
+  // 120ms, but pre-fix InlineRename's rAF re-focus tick reclaimed the
+  // input before the 120ms wait elapsed, so the assertion passed even
+  // with all of Fix A stashed (false-green reverse-verify).
+  //
+  // We now simulate the production race with a documents-level focusin
+  // observer that, every time the rename <input> is focused, schedules a
+  // microtask `li.focus()` — exactly mimicking Radix's onCloseAutoFocus
+  // restoration AND defeating InlineRename's sync + rAF refocus
+  // (microtask runs after focus event, before rAF). The observer self-
+  // removes ~25ms after first fire — long enough to clobber the rAF
+  // (~16ms) but short enough that A3's 51ms belt-and-suspenders refocus
+  // tick (post-fix only) snaps focus back to the input afterwards.
+  //
+  // Pre-fix (A1+A2+A3 stashed): observer keeps stealing past rAF; no
+  // 51ms recovery tick exists; LI keeps focus → assertion FAILS. Verified
+  // 5/5 runs pre-fix → FAIL, 5/5 runs post-fix → PASS.
   {
     const row = win.locator('li[data-session-id="s2"]').first();
     await row.click({ button: 'right' });
+    // Install the race simulator BEFORE clicking Rename so it's ready
+    // when the input mounts and focuses itself.
+    await win.evaluate(() => {
+      let firstSeenAt = 0;
+      const handler = (e) => {
+        const t = e.target;
+        if (!t || t.tagName !== 'INPUT') return;
+        if (!t.closest || !t.closest('li[data-session-id="s2"]')) return;
+        if (firstSeenAt === 0) {
+          firstSeenAt = performance.now();
+          // Self-remove 25ms after first steal — clobbers InlineRename's
+          // sync focus + rAF refocus (~16ms), but stops before A3's 51ms
+          // belt-and-suspenders refocus tick fires post-fix.
+          setTimeout(() => {
+            document.removeEventListener('focusin', handler, true);
+          }, 25);
+        }
+        // Microtask runs after the focus event but before rAF, so this
+        // wins the race against InlineRename's mount-effect refocus.
+        queueMicrotask(() => {
+          const li = document.querySelector('li[data-session-id="s2"]');
+          li && li.focus();
+        });
+      };
+      document.addEventListener('focusin', handler, true);
+    });
     await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
     await win.locator('li[data-session-id="s2"] input').waitFor({ state: 'visible', timeout: 3000 });
-    // Simulate Radix onCloseAutoFocus restoration racing the input mount.
-    // In production, Radix focus-restores to the LI trigger after the
-    // ContextMenu closes; the LI's dnd-kit listeners + tabIndex=0 let it
-    // steal focus before the user's first keystroke. Replicate that race
-    // here by explicitly calling LI.focus() while the input is mounted.
-    await win.evaluate(() => {
-      const li = document.querySelector('li[data-session-id="s2"]');
-      li?.focus();
-    });
-    // Wait past the InlineRename arm window (50ms) + extra refocus tick
-    // (51ms) so the post-fix belt-and-suspenders refocus has a chance to
-    // run. Pre-fix: nothing reclaims focus → activeElement stays on LI.
-    await win.waitForTimeout(120);
+    // Wait past simulator self-removal (25ms), InlineRename arm tick
+    // (50ms), and A3 belt-and-suspenders refocus tick (51ms).
+    await win.waitForTimeout(150);
     const focused = await win.evaluate(() => {
       const el = document.querySelector('li[data-session-id="s2"] input');
       return document.activeElement === el;
     });
-    if (!focused) throw new Error('session rename focus race: activeElement is not the input after Radix-style focus restoration to LI (focus stolen by LI listeners + tabIndex=0)');
+    if (!focused) throw new Error('session rename focus race: activeElement is not the input after Radix-style focus restoration to LI (focus stolen by LI listeners + tabIndex=0; A3 refocus tick missing)');
     // Type a single character via keyboard — should REPLACE the selected
     // text "second" entirely, leaving only "X" (not "secondX" or "Xsecond").
     await win.keyboard.type('X');
