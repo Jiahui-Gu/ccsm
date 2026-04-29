@@ -166,4 +166,36 @@ describe('<CommandPalette /> keyboard navigation', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSelect).toHaveBeenCalledWith('s-nav-B');
   });
+
+  // Audit gap (PR #568, palette-empty a7): probe asserted Esc closes the
+  // dialog. CommandPalette is a Radix Dialog, so Esc routes through the
+  // DismissableLayer document keydown listener and flips open=false via
+  // onOpenChange. We re-query the dialog role to confirm unmount.
+  it('Escape closes the dialog (palette-empty a7)', () => {
+    seedSessions([{ id: 's-esc', name: 'esc target' }]);
+    render(<Harness initialOpen />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  // Audit gap (PR #568, palette-nav a6): probe asserted the dialog unmounts
+  // after Enter selection. Existing nav test only checks the onSelectSession
+  // spy; this complements it by re-querying the dialog after Enter to confirm
+  // the parent flips open=false.
+  it('Enter on a result row closes the dialog (palette-nav a6)', () => {
+    seedSessions([{ id: 's-enter', name: 'enter target' }]);
+    const onSelect = vi.fn();
+    render(<Harness initialOpen onSelectSession={onSelect} />);
+    const dialog = screen.getByRole('dialog');
+    const input = within(dialog).getByPlaceholderText(/Search/i) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'enter' } });
+    const options = within(dialog).getAllByRole('option');
+    expect(options.length).toBeGreaterThanOrEqual(1);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith('s-enter');
+    // Dialog should have unmounted as a side effect of the selection.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
 });

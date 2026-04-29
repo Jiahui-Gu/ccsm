@@ -111,4 +111,26 @@ describe('first-run empty state', () => {
     expect(useStore.getState().sessions).toHaveLength(0);
     expect(useStore.getState().activeId).toBe('');
   });
+
+  // Audit gap (PR #568, no-sessions a3): the original e2e probe asserted the
+  // two empty-state buttons share width/height (+/-0.5px). jsdom can't measure
+  // real layout, so we instead pin the className tokens that drive sizing —
+  // both buttons use `size="md"` (h-8 via Button variants) AND both carry the
+  // `w-44 justify-center` shape class. If either button drifts off these
+  // tokens, the visual width/height parity in real Chromium will break.
+  it('empty-state CTAs share size/shape className tokens (jsdom layout proxy)', () => {
+    render(<App />);
+    const newBtn = screen.getByRole('button', { name: /^New session$/ });
+    const importBtn = screen.getByRole('button', { name: /^Import a CLI session$/ });
+    // Same width + center justification — visual width parity in real layout.
+    expect(newBtn.className).toMatch(/\bw-44\b/);
+    expect(newBtn.className).toMatch(/\bjustify-center\b/);
+    expect(importBtn.className).toMatch(/\bw-44\b/);
+    expect(importBtn.className).toMatch(/\bjustify-center\b/);
+    // Both buttons must share their parent's flex row (data-testid anchor) so
+    // their height is driven by the same `size="md"` Button preset.
+    const parent = screen.getByTestId('first-run-empty');
+    expect(parent).toContainElement(newBtn);
+    expect(parent).toContainElement(importBtn);
+  });
 });

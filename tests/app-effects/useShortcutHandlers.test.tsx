@@ -67,6 +67,22 @@ describe('useShortcutHandlers', () => {
     document.body.removeChild(input);
   });
 
+  // Audit gap (PR #568, search-shortcut-f a3): negative assertion guarding the
+  // palette binding. Ctrl+K is a common rebind candidate (matches Slack /
+  // VSCode quick-switcher), so explicitly assert it does NOT route through
+  // any of our handlers. If somebody rebinds Ctrl+K → palette without
+  // updating the rest of the shortcut surface, this catches it.
+  it('Ctrl+K is NOT bound to any handler (search-shortcut-f a3)', () => {
+    mount();
+    dispatchKey({ key: 'k', ctrlKey: true });
+    dispatchKey({ key: 'K', ctrlKey: true });
+    dispatchKey({ key: 'k', metaKey: true });
+    expect(togglePalette).not.toHaveBeenCalled();
+    expect(toggleShortcuts).not.toHaveBeenCalled();
+    expect(toggleSidebar).not.toHaveBeenCalled();
+    expect(openSettings).not.toHaveBeenCalled();
+  });
+
   it('removes the keydown listener on unmount', () => {
     const { unmount } = mount();
     unmount();
