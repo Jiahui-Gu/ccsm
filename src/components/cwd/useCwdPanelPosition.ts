@@ -1,3 +1,4 @@
+import type React from 'react';
 import { useLayoutEffect, useState } from 'react';
 
 // Minimum panel width — must match the `min-w-[320px]` Tailwind class on the
