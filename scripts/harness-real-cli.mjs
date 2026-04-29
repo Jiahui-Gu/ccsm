@@ -1303,6 +1303,120 @@ async function caseImportResume({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: import-lands-in-focused-group (PR #510)
+//
+// ImportDialog.doImport must land imported sessions in the user's
+// focusedGroupId (when one is set), not the catch-all "Imported" bucket.
+// Without focus, behaviour is unchanged: imports flow into "Imported".
+// Critical batch-mode invariant: focusedGroupId is captured ONCE at the
+// start of doImport, so importSession's side-effect of clearing the focus
+// on the first imported row does not kick subsequent rows back to the
+// fallback bucket.
+//
+// Drives the real ImportDialog UI (sidebar Import button -> checkboxes ->
+// Import N footer) so the production code path (`src/components/
+// ImportDialog.tsx`) is exercised, not a renderer-side reimplementation.
+// ============================================================================
+async function caseImportLandsInFocusedGroup({ win, tempDir }) {
+  function seedImportable(sid) {
+    const cwd = process.cwd();
+    const projectDirName = encodeCwdForClaude(cwd);
+    const dir = path.join(tempDir, '.claude', 'projects', projectDirName);
+    mkdirSync(dir, { recursive: true });
+    const frame = {
+      parentUuid: null, isSidechain: false, type: 'user',
+      message: { role: 'user', content: `PROBE_FOCUSGRP_${sid.slice(0, 8)}` },
+      uuid: randomUUID(), timestamp: new Date().toISOString(),
+      userType: 'external', cwd, sessionId: sid,
+      version: '2.1.119', gitBranch: 'HEAD',
+    };
+    writeFileSync(path.join(dir, `${sid}.jsonl`), JSON.stringify(frame) + '\n');
+  }
+  async function runImportFlow(seedSids, focusGroupId) {
+    // Reset state so the dialog only shows freshly-seeded rows.
+    await win.evaluate((focusId) => {
+      const s = window.__ccsmStore;
+      if (!s) throw new Error('window.__ccsmStore unavailable');
+      // Detach any active session pty so the previous case's session
+      // doesn't dangle as activeId during this case.
+      s.setState({ activeId: null, focusedGroupId: focusId });
+    }, focusGroupId);
+    // Prime the main-process scanImportable cache so the dialog's scan
+    // sees our freshly-seeded JSONLs (cache is hot from the earlier
+    // import-resume case + serves stale-then-refresh).
+    await win.evaluate(async (sids) => {
+      const api = window.ccsm;
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const rows = await api.scanImportable();
+        const ids = new Set(rows.map((r) => r.sessionId));
+        if (sids.every((sid) => ids.has(sid))) return;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      throw new Error('scanImportable cache never reflected seeded JSONLs');
+    }, seedSids);
+    // Open dialog via the sidebar Import button (sidebar may render two
+    // copies - expanded + collapsed - so target the visible one).
+    const importBtn = win.locator('[aria-label="Import session"]:visible').first();
+    await importBtn.waitFor({ state: 'visible', timeout: 5000 });
+    await importBtn.click();
+    // Wait for our seeded rows to appear in the dialog list.
+    for (const sid of seedSids) {
+      await win.locator(`#import-row-${sid}`).waitFor({ state: 'visible', timeout: 10000 });
+    }
+    // Tick each row's checkbox.
+    for (const sid of seedSids) await win.locator(`#import-row-${sid}`).click();
+    // Click the Import N footer button.
+    await win.locator(`button:has-text("Import ${seedSids.length}")`).last().click();
+    // Dialog closes on success; wait for it to disappear and rows to land.
+    await win.locator(`#import-row-${seedSids[0]}`).waitFor({ state: 'detached', timeout: 10000 });
+    return await win.evaluate((sids) => {
+      const st = window.__ccsmStore.getState();
+      const groupNameById = Object.fromEntries(st.groups.map((g) => [g.id, g.name]));
+      return sids.map((sid) => {
+        const s = st.sessions.find((x) => x.id === sid);
+        return { sid, groupId: s?.groupId ?? null, groupName: s ? (groupNameById[s.groupId] ?? null) : null };
+      });
+    }, seedSids);
+  }
+  // Set up two normal groups; capture ids.
+  const { aId, bId } = await win.evaluate(() => {
+    const s = window.__ccsmStore.getState();
+    return { aId: s.createGroup('FocusProbeA'), bId: s.createGroup('FocusProbeB') };
+  });
+  // Subcase 1: focused group B -> single import lands in B.
+  const sid1 = randomUUID();
+  seedImportable(sid1);
+  let res = await runImportFlow([sid1], bId);
+  if (res[0].groupId !== bId) {
+    throw new Error(`subcase 1 (focused single): expected groupId=${bId} (FocusProbeB), got ${JSON.stringify(res[0])}`);
+  }
+  // Subcase 2: focused group B -> batch of 2 imports ALL land in B.
+  // Closure-capture invariant: importSession clears focusedGroupId after
+  // the first row; without the closure capture, row 2 falls back to
+  // "Imported".
+  const sid2a = randomUUID();
+  const sid2b = randomUUID();
+  seedImportable(sid2a);
+  seedImportable(sid2b);
+  res = await runImportFlow([sid2a, sid2b], bId);
+  for (const row of res) {
+    if (row.groupId !== bId) {
+      throw new Error(`subcase 2 (focused batch): row ${row.sid} expected groupId=${bId} (FocusProbeB), got ${JSON.stringify(row)} - closure-capture regression?`);
+    }
+  }
+  // Subcase 3: no focus -> falls back to "Imported" group (creates if missing).
+  const sid3 = randomUUID();
+  seedImportable(sid3);
+  res = await runImportFlow([sid3], null);
+  if (res[0].groupName !== 'Imported') {
+    throw new Error(`subcase 3 (no focus): expected groupName="Imported", got ${JSON.stringify(res[0])} (aId=${aId}, bId=${bId})`);
+  }
+  // Cleanup: detach active session so the next case starts clean.
+  await win.evaluate(() => window.__ccsmStore.setState({ activeId: null, focusedGroupId: null }));
+}
+
+// ============================================================================
 // Case: default-cwd-from-userCwds-lru (task #551)
 //
 // New session creation must default the cwd to the user's most-recently
@@ -2225,6 +2339,7 @@ const CASE_REGISTRY = [
   { name: 'switch-session-keeps-chat',   group: 'shared', run: caseSwitchSessionKeepsChat },
   { name: 'cwd-projects-claude',         group: 'shared', run: caseCwdProjectsClaude },
   { name: 'import-resume',               group: 'shared', run: caseImportResume },
+  { name: 'import-lands-in-focused-group', group: 'shared', run: caseImportLandsInFocusedGroup },
   { name: 'default-cwd-from-userCwds-lru', group: 'shared', run: caseDefaultCwdFromUserCwdsLru },
   { name: 'new-session-focus-cli',       group: 'shared', run: caseNewSessionFocusCli },
   { name: 'pty-pid-stable-across-switch',group: 'shared', run: casePtyPidStableAcrossSwitch },
