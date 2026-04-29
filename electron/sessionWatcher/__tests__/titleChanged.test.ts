@@ -28,7 +28,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 import { __createForTest, type TitleChangedEvent } from '../index';
-import { __resetForTests as __resetTitleBridge } from '../../sessionTitles';
+import {
+  __resetForTests as __resetTitleBridge,
+  enqueuePendingRename,
+} from '../../sessionTitles';
+import { renameSession as renameSessionMock } from '@anthropic-ai/claude-agent-sdk';
 
 let tmpRoot: string;
 
@@ -64,6 +68,7 @@ describe('SessionWatcher title-changed', () => {
     // Bridge has its own 2s TTL cache + per-sid op chain; reset between
     // tests so cached `null` summaries from one test don't shadow the next.
     __resetTitleBridge();
+    (renameSessionMock as unknown as ReturnType<typeof vi.fn>).mockClear();
   });
 
   afterEach(() => {
@@ -161,6 +166,42 @@ describe('SessionWatcher title-changed', () => {
 
     await new Promise((r) => setTimeout(r, 300));
     expect(events).toHaveLength(0);
+
+    watcher.closeAll();
+  });
+
+  it('flushes pending rename exactly once on first JSONL appearance', async () => {
+    const { jsonlPath } = freshTmp();
+    const projectDir = path.dirname(jsonlPath);
+    const renameMock = renameSessionMock as unknown as ReturnType<typeof vi.fn>;
+
+    // PR2 path: a user-set title was queued before the JSONL existed
+    // (renameSession would have thrown ENOENT).
+    enqueuePendingRename('sid-E', 'pending-title', projectDir);
+
+    const watcher = __createForTest();
+    watcher.startWatching('sid-E', jsonlPath, projectDir);
+
+    // Initial tick fires immediate=true; file does NOT exist yet, so the
+    // flush guard (`fileExists && !entry.jsonlSeen`) must NOT fire.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(renameMock).not.toHaveBeenCalled();
+
+    // Create the JSONL — dirWatcher should pick this up and schedule a
+    // read. After DEBOUNCE_MS the read sees the file, sets jsonlSeen, and
+    // calls flushPendingRename which in turn calls SDK renameSession.
+    fs.writeFileSync(jsonlPath, '');
+    appendFrame(jsonlPath, 'first');
+
+    await waitForCondition(() => renameMock.mock.calls.length >= 1);
+    expect(renameMock).toHaveBeenCalledTimes(1);
+    expect(renameMock).toHaveBeenCalledWith('sid-E', 'pending-title', { dir: projectDir });
+
+    // Subsequent appends must NOT re-flush — `jsonlSeen` is now true.
+    appendFrame(jsonlPath, 'second');
+    appendFrame(jsonlPath, 'third');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(renameMock).toHaveBeenCalledTimes(1);
 
     watcher.closeAll();
   });
