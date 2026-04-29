@@ -78,12 +78,16 @@ describe('ensureResumeJsonlAtSpawnCwd (#603)', () => {
     const expectedProjectDir = 'C--Users-jiahuigu';
     const expectedTarget = pathJoin(tmp, 'projects', expectedProjectDir, `${sid}.jsonl`);
 
-    ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
+    const result = ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
 
     const st = statSync(expectedTarget);
     expect(st.isFile()).toBe(true);
     expect(st.size).toBeGreaterThan(0);
     expect(readFileSync(expectedTarget, 'utf8')).toBe('{"type":"user"}\n');
+    // #603 reviewer Layer-1 fix — caller relies on `copied` to decide
+    // whether to fire the cwd-redirect IPC.
+    expect(result.copied).toBe(true);
+    expect(result.targetPath).toBe(expectedTarget);
   });
 
   it('is a no-op when source is already at the target path', () => {
@@ -93,11 +97,14 @@ describe('ensureResumeJsonlAtSpawnCwd (#603)', () => {
     const projectDir = 'C--Users-jiahuigu';
     const source = seedSourceJsonl(projectDir, sid, '{"type":"user"}\n');
 
-    ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
+    const result = ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
 
     // File untouched, only the one we seeded.
     const st = statSync(source);
     expect(st.isFile()).toBe(true);
+    // No copy → renderer must not see a redirect for the common case.
+    expect(result.copied).toBe(false);
+    expect(result.targetPath).toBe(source);
   });
 
   it('does not overwrite an existing destination JSONL', () => {
@@ -110,9 +117,13 @@ describe('ensureResumeJsonlAtSpawnCwd (#603)', () => {
     // Pretend the CLI already wrote a continuation here — we must not clobber it.
     writeFileSync(target, '{"existing":"do-not-touch"}\n', 'utf8');
 
-    ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
+    const result = ensureResumeJsonlAtSpawnCwd(sid, spawnCwd, source);
 
     expect(readFileSync(target, 'utf8')).toBe('{"existing":"do-not-touch"}\n');
+    // Destination already existed → no fresh copy this spawn, but we still
+    // surface the canonical target so callers can compare.
+    expect(result.copied).toBe(false);
+    expect(result.targetPath).toBe(target);
   });
 
   it('bails silently when projectsRoot is unresolvable', () => {
@@ -124,8 +135,10 @@ describe('ensureResumeJsonlAtSpawnCwd (#603)', () => {
     writeFileSync(source, 'x', 'utf8');
 
     // No throw — just a quiet no-op (caller logs at warn-level instead).
-    expect(() =>
-      ensureResumeJsonlAtSpawnCwd(sid, 'C:\\Users\\jiahuigu', source),
-    ).not.toThrow();
+    let result;
+    expect(() => {
+      result = ensureResumeJsonlAtSpawnCwd(sid, 'C:\\Users\\jiahuigu', source);
+    }).not.toThrow();
+    expect(result).toEqual({ copied: false, targetPath: null });
   });
 });

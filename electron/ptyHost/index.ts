@@ -221,34 +221,49 @@ function resolveProjectsRoot(): string | null {
 // CLI then writes back to that file). Failures are logged and swallowed;
 // worst case we keep the prior blank-terminal symptom but with a clear
 // reason in the console. Exposed for `__tests__/import-resume-copy.test.ts`.
+export interface EnsureResumeJsonlResult {
+  /** True when a copy actually happened on this call (source path differed
+   *  from target AND target didn't already exist). False otherwise — source
+   *  was already at the canonical location, target already existed, or a
+   *  precondition failed (no projectsRoot, no projectKey, copy threw). */
+  copied: boolean;
+  /** The canonical target path under the spawn cwd's projectDir, even when
+   *  no copy happened — callers use this to verify source==target and to
+   *  report the redirect destination back to the renderer. Null when we
+   *  couldn't resolve a projectsRoot or projectKey. */
+  targetPath: string | null;
+}
+
 export function ensureResumeJsonlAtSpawnCwd(
   claudeSid: string,
   spawnCwd: string,
   sourceJsonlPath: string,
-): void {
+): EnsureResumeJsonlResult {
   const projectsRoot = resolveProjectsRoot();
-  if (!projectsRoot) return;
+  if (!projectsRoot) return { copied: false, targetPath: null };
   const projectKey = cwdToProjectKey(spawnCwd);
-  if (!projectKey) return;
+  if (!projectKey) return { copied: false, targetPath: null };
   const targetPath = pathJoin(projectsRoot, projectKey, `${claudeSid}.jsonl`);
   // Already in place (the source IS the canonical location for this cwd,
   // or a previous spawn already copied it — never overwrite live transcripts).
-  if (targetPath === sourceJsonlPath) return;
+  if (targetPath === sourceJsonlPath) return { copied: false, targetPath };
   try {
     const st = statSync(targetPath);
-    if (st.isFile() && st.size > 0) return;
+    if (st.isFile() && st.size > 0) return { copied: false, targetPath };
   } catch {
     /* not present → fall through to copy */
   }
   try {
     mkdirSync(dirname(targetPath), { recursive: true });
     copyFileSync(sourceJsonlPath, targetPath);
+    return { copied: true, targetPath };
   } catch (err) {
     console.warn(
       `[ptyHost] failed to copy import JSONL ${JSON.stringify(sourceJsonlPath)} → ` +
         `${JSON.stringify(targetPath)} (${err instanceof Error ? err.message : String(err)}); ` +
         `claude --resume may report 'No conversation found'`,
     );
+    return { copied: false, targetPath };
   }
 }
 
@@ -258,6 +273,7 @@ function makeEntry(
   claudePath: string,
   cols: number,
   rows: number,
+  onCwdRedirect?: (newCwd: string) => void,
 ): Entry {
   const claudeSid = toClaudeSid(sid);
   const sourceJsonl = findJsonlForSid(claudeSid);
@@ -271,8 +287,25 @@ function makeEntry(
   // `claude --resume <sid>` can find it. No-op when source already lives
   // under the right projectKey (the common case for sessions originally
   // run from a still-existing cwd).
+  //
+  // When a copy actually happens, the live JSONL the CLI now appends to
+  // lives under `projectKey(spawnCwd)`, NOT under `projectKey(session.cwd)`.
+  // The renderer's sessionTitles bridge passes `session.cwd` to the SDK
+  // (`renameSession` / `getSessionInfo` / `listForProject`), so without a
+  // redirect the bridge would keep reading/writing the now-frozen SOURCE
+  // file (#603 reviewer Layer-1 finding). Notify the caller so it can
+  // patch `session.cwd` to `spawnCwd` in the renderer store.
   if (sourceJsonl) {
-    ensureResumeJsonlAtSpawnCwd(claudeSid, spawnCwd, sourceJsonl);
+    const result = ensureResumeJsonlAtSpawnCwd(claudeSid, spawnCwd, sourceJsonl);
+    if (result.copied && onCwdRedirect) {
+      try {
+        onCwdRedirect(spawnCwd);
+      } catch (err) {
+        console.warn(
+          `[ptyHost] cwd-redirect notify for ${sid} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   const p = pty.spawn(claudePath, args, {
@@ -363,7 +396,7 @@ export function spawnPtySession(
   sid: string,
   cwd: string,
   claudePath: string,
-  opts?: { cols?: number; rows?: number },
+  opts?: { cols?: number; rows?: number; onCwdRedirect?: (newCwd: string) => void },
 ): PtySessionInfo {
   const existing = sessions.get(sid);
   if (existing) {
@@ -376,7 +409,7 @@ export function spawnPtySession(
   }
   const cols = opts?.cols ?? DEFAULT_COLS;
   const rows = opts?.rows ?? DEFAULT_ROWS;
-  const entry = makeEntry(sid, cwd, claudePath, cols, rows);
+  const entry = makeEntry(sid, cwd, claudePath, cols, rows, opts?.onCwdRedirect);
   sessions.set(sid, entry);
   return { sid, pid: entry.pty.pid, cols, rows };
 }
@@ -561,7 +594,26 @@ export function registerPtyHostIpc(
       return { ok: false, error: 'claude_not_found' };
     }
     try {
-      const info = spawnPtySession(sid, cwd, claudePath);
+      const info = spawnPtySession(sid, cwd, claudePath, {
+        // Import-resume cwd-redirect (#603 reviewer Layer-1 fix). When the
+        // copy helper relocates the JSONL into the spawn cwd's projectDir,
+        // the renderer's `session.cwd` (still pointing at the original
+        // recorded cwd, possibly missing) is now stale relative to the
+        // live JSONL. Push the new cwd to the renderer so the
+        // sessionTitles bridge (`store.ts:renameSession` / `_backfillTitles`
+        // / etc.) reads/writes the COPY, not the frozen SOURCE.
+        onCwdRedirect: (newCwd: string) => {
+          const win = getMainWindow();
+          if (!win || win.isDestroyed()) return;
+          const wc = win.webContents;
+          if (wc.isDestroyed()) return;
+          try {
+            wc.send('session:cwdRedirected', { sid, newCwd });
+          } catch {
+            /* renderer gone */
+          }
+        },
+      });
       return { ok: true, ...info };
     } catch (err) {
       return {
