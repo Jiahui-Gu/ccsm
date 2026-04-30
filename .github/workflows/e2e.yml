@@ -57,6 +57,18 @@ jobs:
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
         run: npm ci --legacy-peer-deps
+      # Ensure the Electron binary (`node_modules/electron/dist/`) is present.
+      # The node_modules cache is shared with ci.yml, which runs `npm ci` with
+      # ELECTRON_SKIP_BINARY_DOWNLOAD=1 — when ci.yml wins the race to write
+      # the cache, the restored node_modules has the electron JS shim but no
+      # `dist/electron(.exe)` and no `path.txt`/`dist/version`, causing
+      # `electron.launch` to error with "Electron failed to install correctly".
+      # `electron/install.js` short-circuits via `isInstalled()` when the
+      # binary is already present, so this is a fast no-op on healthy caches
+      # and self-heals poisoned caches. Must NOT inherit the env var above.
+      # (Task #913)
+      - name: Ensure Electron binary
+        run: node node_modules/electron/install.js
       - name: Build
         run: npm run build
       - name: Run e2e (Linux with xvfb)
