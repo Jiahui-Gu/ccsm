@@ -18,6 +18,11 @@ name: pr-no-silent-drops
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
