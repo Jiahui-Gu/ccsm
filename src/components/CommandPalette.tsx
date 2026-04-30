@@ -120,7 +120,6 @@ export function CommandPalette({
         id: 'cmd:new-session',
         kind: 'command',
         label: t('commandPalette.cmdNewSession'),
-        hint: `${MOD}N`,
         icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
