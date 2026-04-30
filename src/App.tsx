@@ -275,113 +275,83 @@ export default function App() {
     [sessions, activeId]
   );
 
-  if (!active) {
-    // Pre-hydrate: render a content-shaped skeleton (sidebar placeholder
-    // rows + main "Loading…" affordance) so the app does not paint as a
-    // blank white window during sqlite hydration. See AppSkeleton (#584).
-    // The first-run/empty CTA branch below is reserved for when we're
-    // CERTAIN there are no persisted sessions (i.e. hydrated === true).
-    if (!hydrated) {
-      return (
-        <TooltipProvider delayDuration={400} skipDelayDuration={100}>
-          <ToastProvider>
-            <AppEffectsBridge />
-            <AppSkeleton />
-          </ToastProvider>
-        </TooltipProvider>
-      );
-    }
+  // Pre-hydrate: render a content-shaped skeleton (sidebar placeholder
+  // rows + main "Loading…" affordance) so the app does not paint as a
+  // blank white window during sqlite hydration. See AppSkeleton (#584).
+  // The first-run/empty CTA branch below is reserved for when we're
+  // CERTAIN there are no persisted sessions (i.e. hydrated === true).
+  if (!active && !hydrated) {
     return (
       <TooltipProvider delayDuration={400} skipDelayDuration={100}>
         <ToastProvider>
-        <AppEffectsBridge />
-        <AppShell
-          sidebar={
-            <Sidebar
-              onCreateSession={newSession}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onOpenPalette={() => setPaletteOpen(true)}
-              onOpenImport={() => setImportOpen(true)}
-              activeSessionId={activeId}
-              focusedGroupId={focusedGroupId}
-              onSelectSession={selectSession}
-              onFocusGroup={focusGroup}
-              sessions={sessions}
-              onMoveSession={moveSession}
-            />
-          }
-          main={
-            <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
-              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
-                <WindowControls />
-              </DragRegion>
-              <InstallerCorruptBanner />
-              <div className="flex-1 flex items-center justify-center min-h-0">
-                  {!tutorial.show ? (
-                    // First-run / no-active-session empty state. Task #329 — we
-                    // explicitly do NOT auto-create a session at boot; instead
-                    // the user lands on this clean palette of CTAs. The wording
-                    // is sentence case and i18n-driven (firstRun.* keys).
-                    // Trimmed in #353 to just the two primary CTAs — the
-                    // welcome heading, "Create a new group" link, and tip line
-                    // were noise on first launch (group creation is reachable
-                    // from the sidebar; the tip didn't unlock any action).
-                    <div
-                      className="flex items-center gap-3"
-                      data-testid="first-run-empty"
-                    >
-                      <Button
-                        variant="primary"
-                        size="md"
-                        onClick={newSession}
-                        className="w-44 justify-center"
-                      >
-                        <Plus size={14} className="stroke-[2]" />
-                        <span>{t('firstRun.newSession')}</span>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="md"
-                        onClick={() => setImportOpen(true)}
-                        className="w-44 justify-center"
-                      >
-                        <Download size={14} className="stroke-[2]" />
-                        <span>{t('firstRun.importSession')}</span>
-                      </Button>
-                    </div>
-                  ) : (
-                    <Tutorial
-                      onNewSession={() => {
-                        tutorial.dismiss();
-                        newSession();
-                      }}
-                      onImport={() => {
-                        tutorial.dismiss();
-                        setImportOpen(true);
-                      }}
-                      onSkip={tutorial.dismiss}
-                    />
-                  )}
-                </div>
-              </main>
-            }
-          />
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-          <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
-          <CommandPalette
-            open={paletteOpen}
-            onOpenChange={setPaletteOpen}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onNewSession={newSession}
-            onOpenImport={() => setImportOpen(true)}
-            onSelectSession={selectSession}
-            onFocusGroup={focusGroup}
-          />
-          <ShortcutOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+          <AppEffectsBridge />
+          <AppSkeleton />
         </ToastProvider>
       </TooltipProvider>
     );
   }
+
+  // Body that fills the right pane below the drag region + corrupt-installer
+  // banner. Two cases:
+  //   - no active session (post-hydrate) → first-run CTA / tutorial overlay
+  //   - active session → ClaudeMissingGuide / TerminalPane / probing spacer
+  const mainBody = !active ? (
+    <div className="flex-1 flex items-center justify-center min-h-0">
+      {!tutorial.show ? (
+        // First-run / no-active-session empty state. Task #329 — we
+        // explicitly do NOT auto-create a session at boot; instead
+        // the user lands on this clean palette of CTAs. The wording
+        // is sentence case and i18n-driven (firstRun.* keys).
+        // Trimmed in #353 to just the two primary CTAs — the
+        // welcome heading, "Create a new group" link, and tip line
+        // were noise on first launch (group creation is reachable
+        // from the sidebar; the tip didn't unlock any action).
+        <div
+          className="flex items-center gap-3"
+          data-testid="first-run-empty"
+        >
+          <Button
+            variant="primary"
+            size="md"
+            onClick={newSession}
+            className="w-44 justify-center"
+          >
+            <Plus size={14} className="stroke-[2]" />
+            <span>{t('firstRun.newSession')}</span>
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            onClick={() => setImportOpen(true)}
+            className="w-44 justify-center"
+          >
+            <Download size={14} className="stroke-[2]" />
+            <span>{t('firstRun.importSession')}</span>
+          </Button>
+        </div>
+      ) : (
+        <Tutorial
+          onNewSession={() => {
+            tutorial.dismiss();
+            newSession();
+          }}
+          onImport={() => {
+            tutorial.dismiss();
+            setImportOpen(true);
+          }}
+          onSkip={tutorial.dismiss}
+        />
+      )}
+    </div>
+  ) : claudeAvailable === false ? (
+    <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
+  ) : claudeAvailable === true ? (
+    <TerminalPane sessionId={active.id} cwd={active.cwd ?? ''} />
+  ) : (
+    // Probing claude availability — render an empty flex spacer
+    // so the layout doesn't jump once the boot check resolves.
+    <div className="flex-1 min-h-0" data-testid="claude-availability-probing" />
+  );
 
   return (
     <TooltipProvider delayDuration={400} skipDelayDuration={100}>
@@ -408,15 +378,7 @@ export default function App() {
                 <WindowControls />
               </DragRegion>
               <InstallerCorruptBanner />
-              {claudeAvailable === false ? (
-                <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
-              ) : claudeAvailable === true ? (
-                <TerminalPane sessionId={active.id} cwd={active.cwd ?? ''} />
-              ) : (
-                // Probing claude availability — render an empty flex spacer
-                // so the layout doesn't jump once the boot check resolves.
-                <div className="flex-1 min-h-0" data-testid="claude-availability-probing" />
-              )}
+              {mainBody}
             </main>
           }
         />
