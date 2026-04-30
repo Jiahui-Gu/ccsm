@@ -180,7 +180,7 @@ export function SessionRow({
               className="absolute left-0 top-0 bottom-0 w-[3px] bg-accent rounded-r-sm"
             />
           )}
-          <AgentIcon agentType={session.agentType} state={session.state} flashing={flashing} size="sm" />
+          <AgentIcon agentType={session.agentType} state={session.state} flashing={flashing} crashed={crashed} size="sm" />
           <span className="flex-1 min-w-0 leading-tight block">
             {renaming ? (
               <InlineRename
