@@ -35,8 +35,8 @@ function makeRealHeadless(): { term: HeadlessTerminal; serialize: SerializeAddon
 
 // Build a fake Entry that just exposes a `serialize.serialize()` returning
 // the supplied string. Other Entry fields are stubbed because
-// getBufferSnapshot only reads `entry.serialize`.
-function fakeEntry(snapshot: string): Entry {
+// getBufferSnapshot only reads `entry.serialize` and `entry.seq`.
+function fakeEntry(snapshot: string, seq: number = 0): Entry {
   return {
     pty: { pid: 0 } as Entry['pty'],
     headless: {} as Entry['headless'],
@@ -45,6 +45,7 @@ function fakeEntry(snapshot: string): Entry {
     cols: 80,
     rows: 24,
     cwd: '/tmp',
+    seq,
   };
 }
 
@@ -100,28 +101,29 @@ describe('headless authoritative buffer (PR-A real wiring)', () => {
   });
 });
 
-describe('lifecycle.getBufferSnapshot (PR-A async chunking)', () => {
-  it('returns "" when the sid is not registered', async () => {
+describe('lifecycle.getBufferSnapshot (PR-A async chunking + PR-B seq capture)', () => {
+  it('returns empty snapshot + seq 0 when the sid is not registered', async () => {
     const sessions = new Map<string, Entry>();
-    expect(await getBufferSnapshot(sessions, 'missing')).toBe('');
+    expect(await getBufferSnapshot(sessions, 'missing')).toEqual({ snapshot: '', seq: 0 });
   });
 
-  it('returns the full snapshot when the buffer fits in one chunk (no yield needed)', async () => {
+  it('returns the full snapshot + entry.seq when the buffer fits in one chunk (no yield needed)', async () => {
     const sessions = new Map<string, Entry>();
     const small = Array.from({ length: 50 }, (_, i) => `row-${i}`).join('\n');
-    sessions.set('s1', fakeEntry(small));
-    const snap = await getBufferSnapshot(sessions, 's1');
-    expect(snap).toBe(small);
+    sessions.set('s1', fakeEntry(small, 42));
+    const result = await getBufferSnapshot(sessions, 's1');
+    expect(result).toEqual({ snapshot: small, seq: 42 });
   });
 
-  it('chunked path preserves the full string verbatim across yields', async () => {
+  it('chunked path preserves the full string verbatim across yields and returns entry.seq', async () => {
     const sessions = new Map<string, Entry>();
     const N = SNAPSHOT_CHUNK_LINES * 3 + 17; // forces at least 4 chunks
     const big = Array.from({ length: N }, (_, i) => `row-${i}`).join('\n');
-    sessions.set('s2', fakeEntry(big));
-    const snap = await getBufferSnapshot(sessions, 's2');
-    expect(snap).toBe(big);
-    expect(snap.split('\n')).toHaveLength(N);
+    sessions.set('s2', fakeEntry(big, 99));
+    const result = await getBufferSnapshot(sessions, 's2');
+    expect(result.snapshot).toBe(big);
+    expect(result.snapshot.split('\n')).toHaveLength(N);
+    expect(result.seq).toBe(99);
   });
 
   it('chunked path yields a macrotask between chunks (does not block the event loop)', async () => {
@@ -129,7 +131,7 @@ describe('lifecycle.getBufferSnapshot (PR-A async chunking)', () => {
     // Force exactly 5 chunks => 4 inter-chunk yields.
     const N = SNAPSHOT_CHUNK_LINES * 5;
     const big = Array.from({ length: N }, (_, i) => `r${i}`).join('\n');
-    sessions.set('s3', fakeEntry(big));
+    sessions.set('s3', fakeEntry(big, 1));
 
     // A setImmediate scheduled BEFORE awaiting getBufferSnapshot must have
     // a chance to fire WHILE the chunked loop is still running, proving the

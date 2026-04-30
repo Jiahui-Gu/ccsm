@@ -143,7 +143,8 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
   return infoFromEntry(sid, entry);
 }
 
-// L4 PR-A (#861): async, chunked snapshot of the headless authoritative buffer.
+// L4 PR-A (#861) + PR-B (#865): async, chunked snapshot of the headless
+// authoritative buffer, paired with the per-entry monotonic chunk seq.
 //
 // SerializeAddon.serialize() itself is synchronous and walks the entire
 // scrollback (cap 10000 lines). With the bumped cap the serialized string can
@@ -152,27 +153,44 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
 // every CHUNK_LINES (~1000) lines via setImmediate so other I/O (IPC, JSONL
 // tail, OSC sniffer fanout) keeps making progress while a large snapshot is
 // being assembled. The returned value is still the FULL serialized string —
-// chunking is purely a yield strategy, not a streaming protocol. PR-B will
-// layer the streaming wire format on top; PR-A only owns "don't block".
+// chunking is purely a yield strategy, not a streaming protocol.
 //
-// Returns '' when the sid isn't registered (callers treat empty as "no
-// snapshot available", same as `attach` returning null).
+// PR-B adds the `seq` field: captured ATOMICALLY with `serialize.serialize()`
+// (both happen synchronously, no chunk can arrive between them under Node's
+// single-threaded event loop). The renderer compares each live `pty:data`
+// chunk's seq against this value to drop chunks already baked into the
+// snapshot, eliminating the race between attach-fanout and snapshot read.
+//
+// Returns `{snapshot:'', seq:0}` when the sid isn't registered (callers
+// treat empty as "no snapshot available", same as `attach` returning null).
 export const SNAPSHOT_CHUNK_LINES = 1000;
+
+export interface BufferSnapshot {
+  snapshot: string;
+  /** Value of `entry.seq` at the moment `serialize.serialize()` ran. Live
+   *  chunks delivered with `seq <= snapshot.seq` are already represented
+   *  in `snapshot` and must be dropped by the renderer; chunks with
+   *  `seq > snapshot.seq` are the post-snapshot live tail and must be
+   *  written after the snapshot. */
+  seq: number;
+}
 
 export async function getBufferSnapshot(
   sessions: Map<string, Entry>,
   sid: string,
-): Promise<string> {
+): Promise<BufferSnapshot> {
   const entry = sessions.get(sid);
-  if (!entry) return '';
+  if (!entry) return { snapshot: '', seq: 0 };
+  // Capture seq + serialized string atomically (both sync, no awaits).
+  const seq = entry.seq;
   const full = entry.serialize.serialize();
-  if (!full) return '';
+  if (!full) return { snapshot: '', seq };
   // Split on '\n' so we yield on a line boundary; preserves the original
   // separator on rejoin. setImmediate is available in Electron main (Node
   // event loop). We deliberately avoid Promise.resolve()-style microtask
   // yields — those don't drain macrotask I/O.
   const lines = full.split('\n');
-  if (lines.length <= SNAPSHOT_CHUNK_LINES) return full;
+  if (lines.length <= SNAPSHOT_CHUNK_LINES) return { snapshot: full, seq };
   const out: string[] = [];
   for (let i = 0; i < lines.length; i += SNAPSHOT_CHUNK_LINES) {
     out.push(lines.slice(i, i + SNAPSHOT_CHUNK_LINES).join('\n'));
@@ -181,7 +199,7 @@ export async function getBufferSnapshot(
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
-  return out.join('\n');
+  return { snapshot: out.join('\n'), seq };
 }
 
 // Kill every running pty. Call from app `before-quit` so renderer-side

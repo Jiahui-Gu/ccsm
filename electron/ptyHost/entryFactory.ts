@@ -55,6 +55,18 @@ export interface Entry {
   /** Resolved spawn cwd (after `resolveSpawnCwd` fallback). Captured here
    *  so `listPtySessions` / `getPtySession` can return it without re-deriving. */
   cwd: string;
+  /** L4 PR-B (#865): monotonic per-entry chunk counter, incremented on
+   *  every `p.onData` BEFORE the chunk is written to the headless / fanned
+   *  out. The renderer attach flow uses it together with
+   *  `getBufferSnapshot` to dedupe live chunks against the snapshot:
+   *  `getBufferSnapshot` returns `{snapshot, seq}` capturing the value of
+   *  this counter at snapshot time, and any live chunk with `chunk.seq <=
+   *  snap.seq` is already baked into the snapshot. Because Node's event
+   *  loop is single-threaded, increment + write + broadcast + snapshot
+   *  read all happen atomically relative to one another — there is no
+   *  window where `headless.write` runs but the broadcast carries a stale
+   *  seq. */
+  seq: number;
 }
 
 export interface MakeEntryDeps {
@@ -132,14 +144,20 @@ export function makeEntry(
     cols,
     rows,
     cwd: spawnCwd,
+    seq: 0,
   };
 
   p.onData((chunk) => {
+    // L4 PR-B (#865): bump seq BEFORE write/broadcast so the broadcast
+    // payload carries the same seq the renderer will use to dedupe
+    // against `getBufferSnapshot`.
+    entry.seq += 1;
+    const seq = entry.seq;
     headless.write(chunk);
     for (const wc of entry.attached.values()) {
       if (!wc.isDestroyed()) {
         try {
-          wc.send('pty:data', { sid, chunk });
+          wc.send('pty:data', { sid, chunk, seq });
         } catch {
           /* renderer gone — best effort */
         }

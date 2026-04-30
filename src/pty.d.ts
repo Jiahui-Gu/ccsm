@@ -38,6 +38,21 @@ export interface PtyExitEvent {
 export interface PtyDataEvent {
   sid: string;
   chunk: string;
+  /** L4 PR-B (#865): per-entry monotonic chunk counter. Renderer uses
+   *  this together with `getBufferSnapshot().seq` to drop chunks already
+   *  baked into the replayed snapshot. */
+  seq: number;
+}
+
+export interface BufferSnapshotResult {
+  /** SerializeAddon output of the headless authoritative buffer. May be
+   *  empty if the sid is not registered or the buffer is empty. */
+  snapshot: string;
+  /** Value of the per-entry chunk seq captured atomically with the
+   *  serialize call. Live `pty:data` chunks with `seq <= this` are
+   *  already represented in `snapshot` and must be dropped by the
+   *  renderer. */
+  seq: number;
 }
 
 export type CheckClaudeAvailableResult =
@@ -53,6 +68,8 @@ export interface CcsmPtyApi {
   resize(sid: string, cols: number, rows: number): Promise<void>;
   kill(sid: string): Promise<{ ok: boolean; killed?: boolean }>;
   get(sid: string): Promise<PtySessionInfo | null>;
+  /** L4 PR-B (#865): visible xterm attach replay channel. */
+  getBufferSnapshot(sid: string): Promise<BufferSnapshotResult>;
   onData(cb: (e: PtyDataEvent) => void): () => void;
   onExit(cb: (e: PtyExitEvent) => void): () => void;
   clipboard: {

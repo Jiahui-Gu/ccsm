@@ -65,12 +65,18 @@ import {
 
 type AttachResp = { snapshot: string; cols: number; rows: number; pid: number } | null;
 
-function makePtyBridge(opts: { attach?: AttachResp } = {}) {
+function makePtyBridge(opts: { attach?: AttachResp; snapshot?: { snapshot: string; seq: number } } = {}) {
   const attachResp: AttachResp =
     opts.attach === undefined
       ? { snapshot: 'snap', cols: 80, rows: 24, pid: 1234 }
       : opts.attach;
-  let onDataHandler: ((p: { sid: string; chunk: string }) => void) | null = null;
+  // L4 PR-B (#865): the snapshot the visible terminal actually paints
+  // comes from `getBufferSnapshot`, NOT from `attach.snapshot` (which is
+  // now only kept for cols/rows/pid). Default to the same string so
+  // existing assertions (`writeSpy was called with 'snap'`) still pass.
+  const snapshotResp: { snapshot: string; seq: number } =
+    opts.snapshot ?? { snapshot: 'snap', seq: 0 };
+  let onDataHandler: ((p: { sid: string; chunk: string; seq: number }) => void) | null = null;
   let onExitHandler:
     | ((evt: { sessionId: string; code?: number | null; signal?: string | number | null }) => void)
     | null = null;
@@ -86,7 +92,7 @@ function makePtyBridge(opts: { attach?: AttachResp } = {}) {
   const input = vi.fn();
   const resize = vi.fn();
   const onDataUnsub = vi.fn();
-  const onData = vi.fn((cb: (p: { sid: string; chunk: string }) => void) => {
+  const onData = vi.fn((cb: (p: { sid: string; chunk: string; seq: number }) => void) => {
     onDataHandler = cb;
     return onDataUnsub;
   });
@@ -95,11 +101,12 @@ function makePtyBridge(opts: { attach?: AttachResp } = {}) {
     onExitHandler = cb;
     return onExitUnsub;
   });
+  const getBufferSnapshot = vi.fn(async (_sid: string) => snapshotResp);
   return {
-    bridge: { attach, detach, spawn, input, resize, onData, onExit },
-    spies: { attach, detach, spawn, onData, onDataUnsub, onExit, onExitUnsub, input, resize },
+    bridge: { attach, detach, spawn, input, resize, onData, onExit, getBufferSnapshot },
+    spies: { attach, detach, spawn, onData, onDataUnsub, onExit, onExitUnsub, input, resize, getBufferSnapshot },
     fire: {
-      data: (p: { sid: string; chunk: string }) => onDataHandler?.(p),
+      data: (p: { sid: string; chunk: string; seq: number }) => onDataHandler?.(p),
       exit: (e: Parameters<NonNullable<typeof onExitHandler>>[0]) => onExitHandler?.(e),
     },
   };
@@ -180,11 +187,11 @@ describe('usePtyAttach', () => {
 
   it('falls back to spawn when attach returns null', async () => {
     let calls = 0;
-    const { bridge, spies } = makePtyBridge();
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'after-spawn', seq: 0 } });
     spies.attach.mockImplementation(async (_sid: string) => {
       calls += 1;
       if (calls === 1) return null;
-      return { snapshot: 'after-spawn', cols: 80, rows: 24, pid: 1 };
+      return { snapshot: 'ignored-now', cols: 80, rows: 24, pid: 1 };
     });
     (window as any).ccsmPty = bridge;
 
@@ -193,6 +200,8 @@ describe('usePtyAttach', () => {
 
     expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd', expect.objectContaining({}));
     expect(spies.attach).toHaveBeenCalledTimes(2);
+    // L4 PR-B (#865): the visible terminal paints the getBufferSnapshot
+    // string, NOT the legacy attach.snapshot.
     expect(writeSpy).toHaveBeenCalledWith('after-spawn');
   });
 
@@ -203,11 +212,11 @@ describe('usePtyAttach', () => {
   // visible 134x51 xterm stays a black void until the user types.
   it('forwards viewport-measured cols/rows to spawn (fixes #852 alt-screen divergence)', async () => {
     let calls = 0;
-    const { bridge, spies } = makePtyBridge();
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'after-spawn', seq: 0 } });
     spies.attach.mockImplementation(async (_sid: string) => {
       calls += 1;
       if (calls === 1) return null;
-      return { snapshot: 'after-spawn', cols: 134, rows: 51, pid: 1 };
+      return { snapshot: 'ignored-now', cols: 134, rows: 51, pid: 1 };
     });
     proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
     (window as any).ccsmPty = bridge;
@@ -229,11 +238,11 @@ describe('usePtyAttach', () => {
 
   it('omits cols/rows when FitAddon proposeDimensions returns undefined', async () => {
     let calls = 0;
-    const { bridge, spies } = makePtyBridge();
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'after-spawn', seq: 0 } });
     spies.attach.mockImplementation(async (_sid: string) => {
       calls += 1;
       if (calls === 1) return null;
-      return { snapshot: 'after-spawn', cols: 80, rows: 24, pid: 1 };
+      return { snapshot: 'ignored-now', cols: 80, rows: 24, pid: 1 };
     });
     proposeDimensionsSpy.mockReturnValue(undefined as unknown as { cols: number; rows: number });
     (window as any).ccsmPty = bridge;

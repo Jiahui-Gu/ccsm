@@ -192,7 +192,34 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
             | null;
           if (!res) throw new Error('attach_failed_after_spawn');
         }
-        const { snapshot, cols, rows } = res;
+        // L4 PR-B (#865): we no longer use `res.snapshot`. The legacy
+        // attach-time snapshot is a sync race with the live `pty:data`
+        // fanout: by the time the IPC return value reaches the renderer,
+        // additional chunks may have been broadcast that are NOT yet in
+        // the snapshot, leading to either lost data or duplicated bytes
+        // depending on which we wrote first. The new flow is:
+        //   1. attach     → registers our webContents in the entry's
+        //                   `attached` map (server now broadcasts to us).
+        //   2. subscribe  → install a `pty.onData` listener that BUFFERS
+        //                   chunks for this sid (seq tagged) instead of
+        //                   writing them to the visible terminal.
+        //   3. snapshot   → call `pty.getBufferSnapshot(sid)`, which
+        //                   captures `(serialize(), entry.seq)` ATOMICALLY
+        //                   under the main process's single-threaded loop.
+        //   4. write snap → flush the snapshot to the visible terminal.
+        //   5. drain      → write any buffered chunks with `seq > snapSeq`
+        //                   in arrival order; these are the live tail
+        //                   that arrived between steps 2 and 3.
+        //   6. flip       → switch the listener into "write directly"
+        //                   mode for all subsequent chunks (still seq
+        //                   filtered, defensively, since seq monotonic
+        //                   from this point).
+        // This eliminates the dependency on claude voluntarily repainting
+        // its alt-screen after attach (#852 root cause: alt-screen
+        // applications like claude's TUI don't repaint on terminal size
+        // change unless input arrives, so the visible xterm sat half-
+        // empty until the user typed something).
+        const { cols, rows } = res;
         if (cancelled || requestedSidRef.current !== sessionId) return;
 
         setActiveSid(sessionId);
@@ -208,15 +235,53 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           } catch {
             // resize is best-effort — proceed with snapshot write.
           }
-          if (snapshot) t2.write(snapshot);
         }
 
+        // Step 2: install the listener BEFORE requesting the snapshot.
+        // `snapSeq` starts as null ("snapshot not yet landed, buffer
+        // everything") and flips to a number once snapshot resolves
+        // ("write directly, but defensively filter by seq").
+        let snapSeq: number | null = null;
+        const buffered: Array<{ seq: number; chunk: string }> = [];
         setUnsubscribeData(
-          pty.onData((payload: { sid: string; chunk: string }) => {
+          pty.onData((payload: { sid: string; chunk: string; seq: number }) => {
             if (payload.sid !== getActiveSid()) return;
-            getTerm()?.write(payload.chunk);
+            if (snapSeq === null) {
+              buffered.push({ seq: payload.seq, chunk: payload.chunk });
+              return;
+            }
+            // Post-snapshot: drop anything seq <= snapSeq (already in
+            // the snapshot we wrote) and write the rest live.
+            if (payload.seq > snapSeq) {
+              getTerm()?.write(payload.chunk);
+            }
           }),
         );
+
+        // Step 3: request the snapshot. Async so a multi-MB serialize
+        // doesn't block; chunks may continue to arrive on `pty.onData`
+        // during this await and are caught by the buffering listener.
+        const snap = (await pty.getBufferSnapshot(sessionId)) as {
+          snapshot: string;
+          seq: number;
+        };
+        if (cancelled || requestedSidRef.current !== sessionId) return;
+
+        // Step 4: write snapshot to the visible terminal.
+        const tSnap = getTerm();
+        if (tSnap && snap.snapshot) tSnap.write(snap.snapshot);
+
+        // Step 5: drain buffered chunks with seq > snapSeq, in order.
+        // Anything with seq <= snapSeq is already represented in the
+        // snapshot and would duplicate.
+        snapSeq = snap.seq;
+        const tDrain = getTerm();
+        if (tDrain) {
+          for (const b of buffered) {
+            if (b.seq > snapSeq) tDrain.write(b.chunk);
+          }
+        }
+        buffered.length = 0;
 
         const t3 = getTerm();
         if (t3) {

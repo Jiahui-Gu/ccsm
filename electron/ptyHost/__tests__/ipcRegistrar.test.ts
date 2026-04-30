@@ -89,6 +89,7 @@ function makeDeps(over: Partial<PtyIpcDeps> = {}): PtyIpcDeps {
     resizePtySession: vi.fn(),
     killPtySession: vi.fn(() => true),
     getPtySession: vi.fn(() => null),
+    getBufferSnapshot: vi.fn(async () => ({ snapshot: '', seq: 0 })),
     ...over,
   };
 }
@@ -110,7 +111,7 @@ afterEach(() => {
 // ─── handler registration shape ───────────────────────────────────────────
 
 describe('registerPtyIpc handler registration', () => {
-  it('registers all eight pty:* channels', () => {
+  it('registers all nine pty:* channels (8 legacy + getBufferSnapshot)', () => {
     const ipc = makeFakeIpc();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, makeDeps());
@@ -120,6 +121,7 @@ describe('registerPtyIpc handler registration', () => {
         'pty:checkClaudeAvailable',
         'pty:detach',
         'pty:get',
+        'pty:getBufferSnapshot',
         'pty:input',
         'pty:kill',
         'pty:list',
@@ -127,6 +129,22 @@ describe('registerPtyIpc handler registration', () => {
         'pty:spawn',
       ].sort(),
     );
+  });
+
+  // L4 PR-B (#865) — wire-format probe for the new channel.
+  it('pty:getBufferSnapshot delegates to deps.getBufferSnapshot and passes the sid', async () => {
+    const ipc = makeFakeIpc();
+    const deps = makeDeps({
+      getBufferSnapshot: vi.fn(async (sid: string) => ({
+        snapshot: `snap-for-${sid}`,
+        seq: 7,
+      })),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerPtyIpc(ipc as any, deps);
+    const out = await ipc.handlers.get('pty:getBufferSnapshot')!({}, 'sid-Z');
+    expect(out).toEqual({ snapshot: 'snap-for-sid-Z', seq: 7 });
+    expect(deps.getBufferSnapshot).toHaveBeenCalledWith('sid-Z');
   });
 });
 
