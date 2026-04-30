@@ -143,6 +143,47 @@ export function get(sessions: Map<string, Entry>, sid: string): PtySessionInfo |
   return infoFromEntry(sid, entry);
 }
 
+// L4 PR-A (#861): async, chunked snapshot of the headless authoritative buffer.
+//
+// SerializeAddon.serialize() itself is synchronous and walks the entire
+// scrollback (cap 10000 lines). With the bumped cap the serialized string can
+// reach ~MBs for long sessions; concatenating + handing back the full string
+// in one tick would briefly block the main thread. We yield to the event loop
+// every CHUNK_LINES (~1000) lines via setImmediate so other I/O (IPC, JSONL
+// tail, OSC sniffer fanout) keeps making progress while a large snapshot is
+// being assembled. The returned value is still the FULL serialized string —
+// chunking is purely a yield strategy, not a streaming protocol. PR-B will
+// layer the streaming wire format on top; PR-A only owns "don't block".
+//
+// Returns '' when the sid isn't registered (callers treat empty as "no
+// snapshot available", same as `attach` returning null).
+export const SNAPSHOT_CHUNK_LINES = 1000;
+
+export async function getBufferSnapshot(
+  sessions: Map<string, Entry>,
+  sid: string,
+): Promise<string> {
+  const entry = sessions.get(sid);
+  if (!entry) return '';
+  const full = entry.serialize.serialize();
+  if (!full) return '';
+  // Split on '\n' so we yield on a line boundary; preserves the original
+  // separator on rejoin. setImmediate is available in Electron main (Node
+  // event loop). We deliberately avoid Promise.resolve()-style microtask
+  // yields — those don't drain macrotask I/O.
+  const lines = full.split('\n');
+  if (lines.length <= SNAPSHOT_CHUNK_LINES) return full;
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += SNAPSHOT_CHUNK_LINES) {
+    out.push(lines.slice(i, i + SNAPSHOT_CHUNK_LINES).join('\n'));
+    if (i + SNAPSHOT_CHUNK_LINES < lines.length) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  }
+  return out.join('\n');
+}
+
 // Kill every running pty. Call from app `before-quit` so renderer-side
 // claude processes don't leak past Electron exit.
 export function killAll(sessions: Map<string, Entry>): void {
