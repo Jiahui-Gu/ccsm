@@ -90,12 +90,11 @@ const en = {
   },
   settings: {
     title: 'Settings',
-    description: 'Configure appearance, notifications, connection, and updates.',
+    description: 'Configure appearance, notifications, and updates.',
     tabs: {
       general: 'General',
       appearance: 'Appearance',
       notifications: 'Notifications',
-      connection: 'Connection',
       updates: 'Updates'
     },
     theme: 'Theme',
@@ -140,31 +139,6 @@ const en = {
       enable: 'Show desktop notifications when sessions need input',
       sound: 'Sound',
       soundHint: 'Play the OS default notification sound.'
-    },
-    connection: {
-      intro:
-        'CCSM reads connection settings from <code>~/.claude/settings.json</code> plus your <code>ANTHROPIC_*</code> environment variables. To change them, run <code>claude /config</code> or edit the file directly. Restart CCSM to pick up changes.',
-      baseUrl: 'Base URL',
-      baseUrlDefault: 'https://api.anthropic.com (default)',
-      defaultModel: 'Default model',
-      modelUnset: '(unset — the CLI will pick its own default)',
-      authToken: 'Auth token',
-      authConfigured: 'Configured',
-      authNotConfigured: 'Not configured — run `claude /config` to sign in.',
-      discoveredModels: 'Discovered models ({{count}})',
-      discoveredModelsLoadingCount: 'Discovered models (…)',
-      discoveredModelsHint:
-        'Merged from settings.json, env vars, and the CLI’s built-in picker list.',
-      modelsLoading: 'Loading…',
-      modelsEmpty: 'No models discovered. Run <code>claude /config</code> to set one up.',
-      openSettingsFile: 'Open settings.json',
-      opening: 'Opening…',
-      copyBaseUrl: 'Copy URL',
-      copyModel: 'Copy model',
-      copied: 'Copied',
-      modelSourceSettings: 'Settings',
-      modelSourceCliPicker: 'CLI picker',
-      modelSourceFallback: 'Fallback'
     },
     updates: {
       version: 'Version',

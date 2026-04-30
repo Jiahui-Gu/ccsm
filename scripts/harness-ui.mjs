@@ -124,7 +124,7 @@ async function caseSettingsOpen({ win, log }) {
   // Use the Settings tablist as the unique tell — there are other role=dialog
   // surfaces (Tutorial, CommandPalette) that may linger across cases; we only
   // care that the Settings dialog specifically opens / closes.
-  const settingsTab = win.getByRole('tab', { name: /^connection$/i });
+  const settingsTab = win.getByRole('tab', { name: /^appearance$/i });
 
   async function expectSettingsClosed(label) {
     // Win32 dialog unmount under heavy harness load can lag past the prior
@@ -1117,9 +1117,7 @@ async function caseSidebarLongNameTruncates({ win, log }) {
 //
 // perf/startup-render-gate regression. Pins the contract that the renderer
 // calls `root.render()` BEFORE `hydrateStore()` resolves — i.e. first paint
-// is no longer gated on the awaited persisted-state load (which itself
-// chained `loadConnection()` + `loadModels()`, the latter shells out to the
-// claude binary and can take 100-500ms).
+// is no longer gated on the awaited persisted-state load.
 //
 // Mechanism: index.tsx + hydrateStore() write timestamps onto
 // `window.__ccsmHydrationTrace`:
@@ -1131,18 +1129,13 @@ async function caseSidebarLongNameTruncates({ win, log }) {
 // exist (the field is new) AND if it did, it would be > hydrateDoneAt.
 // On the fixed branch, `renderedAt` exists and is <= hydrateDoneAt.
 //
-// We additionally inject a slow `window.ccsm.models.list` (500ms delay) via
-// addInitScript before reload to prove that even when models load takes
-// half a second, the skeleton main+sidebar are present in the DOM well
-// before that — `data-testid="main-skeleton"` flips to the populated
-// `<main>` once the empty-sessions OR active-session branch renders, so
-// observing the skeleton at all proves the renderer mounted before
-// hydration finished.
+// We additionally inject a slow `window.ccsm.loadState` (800ms delay) via
+// addInitScript before reload to extend the hydrated=false window long
+// enough for the MutationObserver below to capture the sidebar skeleton.
 async function caseStartupPaintsBeforeHydrate({ win, log }) {
-  // Inject a 500ms delay around models.list BEFORE the renderer bundle
-  // re-evaluates. The init script runs on every navigation including
-  // win.reload(). Wrap in a guard so prior cases that may have already
-  // wrapped don't double-wrap.
+  // Inject a delay around loadState BEFORE the renderer bundle re-evaluates.
+  // The init script runs on every navigation including win.reload(). Wrap in
+  // a guard so prior cases that may have already wrapped don't double-wrap.
   //
   // We ALSO install a MutationObserver that captures the first
   // [data-testid="sidebar-skeleton"] element it sees and snapshots its
@@ -1164,19 +1157,11 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
           if (Date.now() < deadline) setTimeout(tryWrap, 5);
           return;
         }
-        const original = ccsm.models?.list;
-        if (original && !ccsm.models.__delayedForStartupCase) {
-          ccsm.models.list = async (...args) => {
-            await new Promise((r) => setTimeout(r, 500));
-            return original.apply(ccsm.models, args);
-          };
-          ccsm.models.__delayedForStartupCase = true;
-        }
-        // #584: also delay loadState. Hydration sequence is fast (~30ms)
-        // because sqlite reads are local; the skeleton would otherwise
-        // paint for one frame and be gone before any test thread can
-        // observe it. Wrapping loadState extends the hydrated=false
-        // window long enough for the MutationObserver above to fire.
+        // #584: delay loadState. Hydration sequence is fast (~30ms) because
+        // sqlite reads are local; the skeleton would otherwise paint for one
+        // frame and be gone before any test thread can observe it. Wrapping
+        // loadState extends the hydrated=false window long enough for the
+        // MutationObserver above to fire.
         const originalLoad = ccsm.loadState;
         if (originalLoad && !ccsm.__delayedLoadStateForStartupCase) {
           ccsm.loadState = async (...args) => {
@@ -1383,14 +1368,6 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // we're not asserting against a stuck-skeleton state.
   await win.waitForFunction(
     () => !!window.__ccsmStore?.getState?.().hydrated,
-    null,
-    { timeout: 5_000 }
-  );
-
-  // And that the slow models.list eventually resolves — proves the
-  // fire-and-forget didn't get dropped on the floor.
-  await win.waitForFunction(
-    () => !!window.__ccsmStore?.getState?.().modelsLoaded,
     null,
     { timeout: 5_000 }
   );
@@ -1664,9 +1641,9 @@ await runHarness({
     // case definition site (now deleted) for context.
     // startup-paints-before-hydrate (perf/startup-render-gate): pins
     // render-before-hydrate ordering via window.__ccsmHydrationTrace.
-    // Placed last because it calls win.reload() with a 500ms init-script
-    // delay on models.list, and the reload + delay perturb the page state
-    // for any case that follows.
+    // Placed last because it calls win.reload() with init-script delays on
+    // loadState, and the reload + delay perturb the page state for any
+    // case that follows.
     { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate },
     // terminal-pane-mounted: direct-xterm refactor (post-PR-1..PR-6).
     // Pins the App→TerminalPane wiring contract — when claude is

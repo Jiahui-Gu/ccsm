@@ -11,12 +11,6 @@ import type { Session, Group } from '../../../src/types';
 // between the two slices.
 function harness(initial?: Partial<RootStore>) {
   let state: Partial<RootStore> = {
-    // Seed model-picker fields the CRUD slice reads via `get()`
-    // (`importSession` consults `models` + `connection`). The real
-    // `useStore` gets these from `createModelPickerSlice`; we mirror them
-    // here so each slice test stays self-contained.
-    models: [],
-    connection: null,
     ...initial,
   };
   const set = (

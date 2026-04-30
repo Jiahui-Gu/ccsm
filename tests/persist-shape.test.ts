@@ -59,8 +59,6 @@ describe('persist: curated snapshot payload', () => {
         'statsBySession',
         'focusInputNonce',
         'installerCorrupt',
-        'models',
-        'connection',
         // Removed in PR-D — orphan persisted keys with no live subscribers.
         'model',
         'permission',
