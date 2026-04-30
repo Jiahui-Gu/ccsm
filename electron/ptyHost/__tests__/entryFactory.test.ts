@@ -26,6 +26,7 @@ interface PtyFakeBus {
   emitData: ReturnType<typeof vi.fn>;
   sourceJsonl: string | null;
   ensureCopied: boolean;
+  deferHeadlessWrite: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,7 +51,16 @@ vi.mock('node-pty', () => ({
 
 vi.mock('@xterm/headless', () => ({
   Terminal: class {
-    write = (...a: unknown[]) => bus().headlessWrite(...a);
+    // Mirror @xterm/headless's `write(data, callback?)` signature so tests
+    // can exercise PR-C backpressure (we count pending writes by deferring
+    // the callback until the test fires it).
+    write = (data: unknown, callback?: () => void) => {
+      bus().headlessWrite(data, callback);
+      // By default invoke synchronously (legacy behavior). Tests that need
+      // to model "pending" writes flip `bus().deferHeadlessWrite = true` and
+      // capture callbacks via the spy.
+      if (callback && !bus().deferHeadlessWrite) callback();
+    };
     dispose = () => bus().headlessDispose();
     loadAddon = vi.fn();
     resize = vi.fn();
@@ -107,6 +117,7 @@ describe('entryFactory.makeEntry', () => {
       emitData: vi.fn(),
       sourceJsonl: null,
       ensureCopied: false,
+      deferHeadlessWrite: false,
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (globalThis as any).__pf = b;
@@ -177,7 +188,8 @@ describe('entryFactory.makeEntry', () => {
     const b = bus();
     expect(b.onData).toBeTypeOf('function');
     b.onData!('hello');
-    expect(b.headlessWrite).toHaveBeenCalledWith('hello');
+    // PR-C (#863): headless.write is now invoked with a backpressure callback.
+    expect(b.headlessWrite).toHaveBeenCalledWith('hello', expect.any(Function));
     expect(b.emitData).toHaveBeenCalledWith('sid-G', 'hello');
   });
 
@@ -188,5 +200,128 @@ describe('entryFactory.makeEntry', () => {
     expect(e.rows).toBe(40);
     expect(e.cwd).toBe('/work');
     expect(e.attached.size).toBe(0);
+  });
+});
+
+// L4 PR-C (#863): the onData handler is now an extracted, named
+// `dispatchPtyChunk(entry, chunk)` so the headless-write + broadcast
+// double-write is explicit (and a hook point for PR-D/E). These tests
+// pin its contract directly without going through node-pty.
+describe('entryFactory.dispatchPtyChunk', () => {
+  beforeEach(() => {
+    const b: PtyFakeBus = {
+      onData: null,
+      onExit: null,
+      ptySpawn: vi.fn(),
+      headlessDispose: vi.fn(),
+      headlessWrite: vi.fn(),
+      watcherStart: vi.fn(),
+      watcherStop: vi.fn(),
+      ensureJsonl: vi.fn(),
+      emitData: vi.fn(),
+      sourceJsonl: null,
+      ensureCopied: false,
+      deferHeadlessWrite: false,
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).__pf = b;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (globalThis as any).__pf;
+  });
+
+  it('double-writes each chunk to headless AND broadcasts pty:data with monotonic seq', async () => {
+    const mod = await import('../entryFactory');
+    const entry = mod.makeEntry('sid-DW', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    const sent: Array<{ chunk: string; seq: number }> = [];
+    const wc = {
+      isDestroyed: () => false,
+      send: (_ch: string, payload: { sid: string; chunk: string; seq: number }) => {
+        sent.push({ chunk: payload.chunk, seq: payload.seq });
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(1, wc as any);
+
+    mod.dispatchPtyChunk('sid-DW', entry, 'a');
+    mod.dispatchPtyChunk('sid-DW', entry, 'b');
+    mod.dispatchPtyChunk('sid-DW', entry, 'c');
+
+    const b = bus();
+    expect(b.headlessWrite).toHaveBeenCalledTimes(3);
+    expect(b.headlessWrite.mock.calls.map((c) => c[0])).toEqual(['a', 'b', 'c']);
+    expect(sent).toEqual([
+      { chunk: 'a', seq: 1 },
+      { chunk: 'b', seq: 2 },
+      { chunk: 'c', seq: 3 },
+    ]);
+    expect(entry.seq).toBe(3);
+    // dataFanout must also receive every chunk (notify pipeline depends on it).
+    expect(b.emitData).toHaveBeenCalledTimes(3);
+  });
+
+  it('warns once when pending headless writes cross BACKPRESSURE_WARN_THRESHOLD, no data dropped', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mod = await import('../entryFactory');
+    const entry = mod.makeEntry('sid-BP', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+
+    // Defer write callbacks so writes stay "pending" until we manually drain.
+    bus().deferHeadlessWrite = true;
+    const threshold = mod.BACKPRESSURE_WARN_THRESHOLD;
+
+    // Fire `threshold + 1` chunks: the (threshold+1)-th increments the
+    // pending counter past the threshold and must trigger the warn.
+    for (let i = 0; i < threshold + 1; i++) {
+      mod.dispatchPtyChunk('sid-BP', entry, `c${i}`);
+    }
+
+    // All chunks must have been forwarded to headless.write — backpressure
+    // is observe-only, never drops.
+    expect(bus().headlessWrite).toHaveBeenCalledTimes(threshold + 1);
+    // Warn fired (at least once) for the over-threshold condition.
+    const bpWarns = warnSpy.mock.calls.filter((c) =>
+      typeof c[0] === 'string' && (c[0] as string).includes('backpressure'),
+    );
+    expect(bpWarns.length).toBeGreaterThanOrEqual(1);
+
+    // Drain: invoke each captured callback to clear pending, and verify a
+    // subsequent over-threshold burst can warn again (re-arm semantics).
+    const captured = bus().headlessWrite.mock.calls
+      .map((c) => c[1] as (() => void) | undefined)
+      .filter((cb): cb is () => void => typeof cb === 'function');
+    for (const cb of captured) cb();
+    warnSpy.mockClear();
+    for (let i = 0; i < threshold + 1; i++) {
+      mod.dispatchPtyChunk('sid-BP', entry, `d${i}`);
+    }
+    const bpWarns2 = warnSpy.mock.calls.filter((c) =>
+      typeof c[0] === 'string' && (c[0] as string).includes('backpressure'),
+    );
+    expect(bpWarns2.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('skips destroyed webContents but still writes to headless and bumps seq', async () => {
+    const mod = await import('../entryFactory');
+    const entry = mod.makeEntry('sid-DEAD', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    const aliveSent: Array<number> = [];
+    const dead = { isDestroyed: () => true, send: vi.fn() };
+    const alive = {
+      isDestroyed: () => false,
+      send: (_ch: string, payload: { seq: number }) => aliveSent.push(payload.seq),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(1, dead as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(2, alive as any);
+
+    mod.dispatchPtyChunk('sid-DEAD', entry, 'x');
+    expect(dead.send).not.toHaveBeenCalled();
+    expect(aliveSent).toEqual([1]);
+    expect(bus().headlessWrite).toHaveBeenCalledWith('x', expect.any(Function));
+    expect(entry.seq).toBe(1);
   });
 });

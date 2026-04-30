@@ -42,6 +42,16 @@ export const DEFAULT_ROWS = 30;
 // owner; bump only here and in any future replay-budget calculation.
 export const SCROLLBACK = 10000;
 
+// L4 PR-C (#863): when the visible xterm cannot keep up with PTY output the
+// headless mirror's `write(data, cb)` callback is invoked asynchronously.
+// We track the number of in-flight (pending-callback) headless writes per
+// entry and `console.warn` once each time the count crosses this threshold,
+// so production lag is observable without dropping any data. Threshold of
+// 100 chunks is a coarse "something is wrong" signal — typical busy PTY
+// bursts settle in <10 pending writes. Re-arms after the count drains back
+// below the threshold.
+export const BACKPRESSURE_WARN_THRESHOLD = 100;
+
 export interface Entry {
   pty: pty.IPty;
   headless: HeadlessTerminal;
@@ -67,6 +77,16 @@ export interface Entry {
    *  window where `headless.write` runs but the broadcast carries a stale
    *  seq. */
   seq: number;
+  /** L4 PR-C (#863): count of headless `write(data, cb)` calls whose
+   *  callback has not yet fired. Bumped on every dispatch, decremented in
+   *  the write callback. Crossing `BACKPRESSURE_WARN_THRESHOLD` triggers a
+   *  one-shot console.warn (re-arms when the counter drains back below the
+   *  threshold). Observe-only — no chunk is ever dropped. */
+  pendingHeadlessWrites: number;
+  /** L4 PR-C (#863): edge-trigger guard for the backpressure warn so a
+   *  long stall doesn't spam the log. Reset to false when the counter
+   *  drops back below the threshold. */
+  backpressureWarned: boolean;
 }
 
 export interface MakeEntryDeps {
@@ -76,6 +96,87 @@ export interface MakeEntryDeps {
   /** Forwarded to `ensureResumeJsonlAtSpawnCwd` — fired only when the helper
    *  actually copied the JSONL into a new projectDir (#603). */
   onCwdRedirect?: (newCwd: string) => void;
+}
+
+/**
+ * L4 PR-C (#863): explicit per-chunk dispatch.
+ *
+ * One PTY chunk fans out to TWO sinks atomically (single-threaded JS event
+ * loop guarantee — no other code can interleave between these statements):
+ *
+ *   1. `entry.headless.write(chunk, cb)` — the headless terminal is the
+ *      session-level source-of-truth scrollback (PR-A #861). Visible xterm
+ *      attaches replay from a snapshot of this buffer (PR-B #865), and any
+ *      future feature that needs durable per-session output (search,
+ *      export, AI summary) reads from here.
+ *
+ *   2. `wc.send('pty:data', { sid, chunk, seq })` for every attached
+ *      webContents — the live wire to whichever visible xterm is currently
+ *      mirroring this session. `seq` is the same monotonic counter that
+ *      `getBufferSnapshot` captures, so the renderer can dedupe live
+ *      chunks against the snapshot replay (PR-B contract).
+ *
+ * `seq` is bumped BEFORE either sink runs so both observe the same value.
+ *
+ * Backpressure (observe-only): the headless write callback decrements
+ * `entry.pendingHeadlessWrites`. If a sustained burst pushes the counter
+ * past `BACKPRESSURE_WARN_THRESHOLD`, we `console.warn` once (re-arms
+ * after the counter drains). No chunk is ever dropped — this is purely a
+ * production diagnostic for slow-mirror conditions.
+ *
+ * This function is exported so PR-D (resize/SIGWINCH) and PR-E
+ * (detach/reattach) have a stable hook point: anything that needs to
+ * observe or wrap the per-chunk fan-out goes here, not in `p.onData`.
+ *
+ * Exported for unit tests; production code calls it via `p.onData` only.
+ */
+export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void {
+  // Bump seq BEFORE write/broadcast so the broadcast payload carries the
+  // same seq the renderer will use to dedupe against `getBufferSnapshot`
+  // (PR-B contract). Single-threaded: no interleave possible.
+  entry.seq += 1;
+  const seq = entry.seq;
+
+  // Sink 1: headless source-of-truth buffer. Pass a callback so we can
+  // observe write completion for backpressure diagnostics.
+  entry.pendingHeadlessWrites += 1;
+  if (
+    entry.pendingHeadlessWrites > BACKPRESSURE_WARN_THRESHOLD &&
+    !entry.backpressureWarned
+  ) {
+    entry.backpressureWarned = true;
+    console.warn(
+      `[ptyHost] backpressure: sid=${sid} pendingHeadlessWrites=${entry.pendingHeadlessWrites} ` +
+        `(>${BACKPRESSURE_WARN_THRESHOLD}); visible xterm or headless mirror is lagging. ` +
+        `No data dropped — this is observe-only.`,
+    );
+  }
+  entry.headless.write(chunk, () => {
+    entry.pendingHeadlessWrites -= 1;
+    if (entry.pendingHeadlessWrites <= BACKPRESSURE_WARN_THRESHOLD) {
+      // Re-arm so the next over-threshold burst warns again.
+      entry.backpressureWarned = false;
+    }
+  });
+
+  // Sink 2: visible-xterm IPC fanout. Best-effort per attached webContents
+  // — a destroyed sender or an IPC throw must not wedge the PTY pump.
+  for (const wc of entry.attached.values()) {
+    if (!wc.isDestroyed()) {
+      try {
+        wc.send('pty:data', { sid, chunk, seq });
+      } catch {
+        /* renderer gone — best effort */
+      }
+    }
+  }
+
+  // Sink 3 (module-level listeners): notify pipeline OSC sniffer is the
+  // only production consumer today. Listeners are best-effort — throws
+  // don't propagate back to ptyHost so a misbehaving sink can't wedge
+  // the PTY. Kept inside dispatchPtyChunk (not a separate hook) so the
+  // single fan-out point is the only place chunk-handling lives.
+  emitPtyData(sid, chunk);
 }
 
 export function makeEntry(
@@ -145,30 +246,11 @@ export function makeEntry(
     rows,
     cwd: spawnCwd,
     seq: 0,
+    pendingHeadlessWrites: 0,
+    backpressureWarned: false,
   };
 
-  p.onData((chunk) => {
-    // L4 PR-B (#865): bump seq BEFORE write/broadcast so the broadcast
-    // payload carries the same seq the renderer will use to dedupe
-    // against `getBufferSnapshot`.
-    entry.seq += 1;
-    const seq = entry.seq;
-    headless.write(chunk);
-    for (const wc of entry.attached.values()) {
-      if (!wc.isDestroyed()) {
-        try {
-          wc.send('pty:data', { sid, chunk, seq });
-        } catch {
-          /* renderer gone — best effort */
-        }
-      }
-    }
-    // Fan out to module-level data listeners (notify pipeline OSC sniffer
-    // is the only production consumer today). Listeners are best-effort —
-    // throws don't propagate back to ptyHost so a misbehaving sink can't
-    // wedge the PTY.
-    emitPtyData(sid, chunk);
-  });
+  p.onData((chunk) => dispatchPtyChunk(sid, entry, chunk));
 
   p.onExit(({ exitCode, signal }) => {
     // Broadcast exit to anyone still listening, then drop the entry. Using
