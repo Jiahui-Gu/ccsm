@@ -14,13 +14,17 @@
     "url": "https://github.com/Jiahui-Gu/ccsm.git"
   },
   "main": "dist/electron/main.js",
+  "workspaces": [
+    "daemon"
+  ],
   "scripts": {
     "dev": "concurrently -k -n web,app -c blue,magenta \"npm:dev:web\" \"npm:dev:app\"",
     "dev:web": "webpack serve --config webpack.config.js --mode development",
     "dev:app": "wait-on http://localhost:4100 && tsc -p tsconfig.electron.json && node scripts/dev-electron.cjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.electron.json && webpack --mode production && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json",
+    "build:daemon": "node -e \"require('fs').rmSync('daemon/dist-daemon',{recursive:true,force:true})\" && tsc -p daemon/tsconfig.json && node -e \"require('fs').writeFileSync('daemon/dist-daemon/package.json',JSON.stringify({type:'module'}))\"",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json && tsc --noEmit -p daemon/tsconfig.json",
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
