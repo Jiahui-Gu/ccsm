@@ -11,7 +11,7 @@ import {
   sanitizeFontSizePx,
   resolvePersistedSidebarWidth,
 } from './slices/appearanceSlice';
-import { createModelPickerSlice } from './slices/modelPickerSlice';
+import { createInstallerSlice } from './slices/installerSlice';
 import { createPopoverSlice } from './slices/popoverSlice';
 import type { State, RootStore } from './slices/types';
 
@@ -21,7 +21,7 @@ export const useStore = create<RootStore>((set, get) => ({
   ...createSessionTitleBackfillSlice(set, get),
   ...createGroupsSlice(set, get),
   ...createAppearanceSlice(set, get),
-  ...createModelPickerSlice(set, get),
+  ...createInstallerSlice(set, get),
   ...createPopoverSlice(set, get),
   // Boot-only state owned by `hydrateStore()` below — neither a slice
   // (no actions) nor persisted (lifecycle only).
@@ -95,8 +95,9 @@ export async function hydrateStore(): Promise<void> {
   }
   // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components
   // that gate their first paint on this can stop showing skeleton state the
-  // moment the persisted snapshot lands, even though connection/models may
-  // still be in flight for another 100-500ms.
+  // moment the persisted snapshot lands, even though deferred boot signals
+  // (userHome / defaultModel / userCwds) may still be in flight for another
+  // 100-500ms.
   useStore.setState({ hydrated: true });
   hydrated = true;
   trace.hydrateDoneAt = Date.now();
@@ -171,15 +172,6 @@ export async function hydrateStore(): Promise<void> {
       /* IPC unavailable — boot continues with empty defaults */
     }
   })();
-
-  // Connection info + discovered models from settings.json. Demoted to
-  // fire-and-forget post-hydrate (perf/startup-render-gate): `loadModels`
-  // shells out to the claude binary and can take 100-500ms; awaiting it
-  // here would gate first paint by that much. Consumers
-  // (SettingsDialog, StatusBar) already render an empty/loading state
-  // until `models` populates and re-fire these themselves on mount.
-  void useStore.getState().loadConnection();
-  void useStore.getState().loadModels();
 
   // PR4: backfill any default-named persisted sessions from the SDK's
   // `listSessions` per-project view. Fire-and-forget — must not block

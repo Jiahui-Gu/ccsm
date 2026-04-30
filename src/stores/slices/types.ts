@@ -5,7 +5,6 @@
 // call sites continue to import from `../store`.
 
 import type { Group, Session, SessionState } from '../../types';
-import type { ConnectionInfo } from '../../shared/ipc-types';
 
 export type ModelId = string;
 export type PermissionMode =
@@ -25,18 +24,6 @@ export type EndpointKind =
   | 'bedrock'
   | 'vertex'
   | 'unknown';
-export type ModelSource =
-  | 'settings'
-  | 'env'
-  | 'manual'
-  | 'cli-picker'
-  | 'env-override'
-  | 'fallback';
-
-export interface DiscoveredModel {
-  id: string;
-  source: ModelSource;
-}
 
 export interface CreateSessionOptions {
   cwd?: string | null;
@@ -77,9 +64,6 @@ export type State = {
   fontSizePx: FontSizePx;
   tutorialSeen: boolean;
   flashStates: Record<string, boolean>;
-  models: DiscoveredModel[];
-  modelsLoaded: boolean;
-  connection: ConnectionInfo | null;
   hydrated: boolean;
   installerCorrupt: boolean;
   openPopoverId: string | null;
@@ -143,8 +127,6 @@ export type Actions = {
   setGroupCollapsed: (id: string, collapsed: boolean) => void;
 
   // model picker
-  loadModels: () => Promise<void>;
-  loadConnection: () => Promise<void>;
   setInstallerCorrupt: (corrupt: boolean) => void;
 
   // popover
@@ -157,6 +139,3 @@ export type SetFn = {
   (partial: Partial<RootStore> | ((s: RootStore) => Partial<RootStore> | RootStore)): void;
 };
 export type GetFn = () => RootStore;
-
-// Re-export so slice code can `import type { ConnectionInfo }`.
-export type { ConnectionInfo };

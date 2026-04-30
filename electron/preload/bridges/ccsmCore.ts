@@ -1,15 +1,10 @@
 // `window.ccsm` — the catch-all "core" bridge: app-state persistence
 // (db:load/save), i18n, version, importable-session scan, recent/user
-// cwds, path existence, updater, window controls, connection settings,
-// and model discovery. Originally lived inline in `electron/preload.ts`;
-// extracted in #769 (SRP wave-2 PR-A) without behavioral change.
+// cwds, path existence, updater, and window controls. Originally lived
+// inline in `electron/preload.ts`; extracted in #769 (SRP wave-2 PR-A)
+// without behavioral change.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type {
-  ConnectionInfo,
-  OpenSettingsResult,
-  DiscoveredModel,
-} from '../../../src/shared/ipc-types';
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -155,16 +150,6 @@ const api = {
       return () => ipcRenderer.removeListener('window:afterShow', wrap);
     },
     platform: process.platform
-  },
-
-  connection: {
-    read: (): Promise<ConnectionInfo> => ipcRenderer.invoke('connection:read'),
-    openSettingsFile: (): Promise<OpenSettingsResult> =>
-      ipcRenderer.invoke('connection:openSettingsFile'),
-  },
-
-  models: {
-    list: (): Promise<DiscoveredModel[]> => ipcRenderer.invoke('models:list'),
   },
 };
 
