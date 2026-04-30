@@ -1,8 +1,11 @@
 # v0.3+ — Daemon split + Web remote-control
 
-**Status:** locked (4-spike round, 2026-04-30)
+**Status:** locked (4-spike round + 10-angle review, 2026-04-30 v2)
 **Author:** ccsm
-**Tracks:** #922
+**Tracks:** #922, #930
+
+## Changelog
+- **v2 (2026-04-30)**: post-10-angle review. Added explicit security/reliability/observability/UX requirements. Lock local socket ACL + sender validation + envelope cap. Drop TCP listener from v0.3 scope (v0.5 only). Lock SQLite migration story for v0.2 → v0.3 upgrade. See section 12 for the 10-angle MUST-FIX list traceability.
 
 ## 1. Goal
 
@@ -63,9 +66,19 @@ User wants remote work: leave Windows box running at home, open a browser on any
   - Mac: `launchd` user agent.
   - Linux: `systemd` user unit.
 - **Listeners**:
-  - Local IPC: named pipe `\\.\pipe\ccsm-daemon` (Win) or `~/.ccsm/daemon.sock` (Mac/Linux). No authentication — assumes local user trust boundary.
-  - Remote: TCP `127.0.0.1:7878`, exposed only via Cloudflare Tunnel. Connect server validates Cloudflare Access JWT on every request.
-- **Auto-update**: poll `Jiahui-Gu/ccsm-daemon` GitHub releases (separate repo or tag prefix, TBD in implementation plan); on new version, download → verify SHA256 → kill old → swap binary → restart. No `electron-updater` (Electron-only).
+  - **v0.3 (local-only)**: named pipe `\\.\pipe\ccsm-daemon` (Win) or `~/.ccsm/daemon.sock` (Mac/Linux). Hardened ACL — see §3.1.1 + §7. Same-machine same-user trust boundary; sender verified per connection.
+  - **v0.5 (remote)**: ALSO TCP `127.0.0.1:7878`, exposed via Cloudflare Tunnel only. Connect server validates Cloudflare Access JWT on every remote request. Middleware seam exists from v0.3 so v0.5 only adds the validator.
+- **Auto-update**: poll GitHub releases (tag prefix `daemon-v*` on the same `Jiahui-Gu/ccsm` repo); on new version, download → SHA256 verify against published checksum → `.bak` rollback path → swap binary → restart. **Default OFF in v0.3**, opt-in via setting; flip default ON when sigstore signing lands. No `electron-updater` (Electron-only).
+
+### 3.1.1 Local socket hardening (v0.3)
+
+The "no authentication, local trust boundary" claim from spec v1 was factually wrong on Windows. v0.3 hardens:
+
+- **Win named pipe ACL**: explicit DACL via N-API helper grants R+W to `process.token` user-SID only; deny `BUILTIN\Users`, `ANONYMOUS LOGON`. Set `PIPE_REJECT_REMOTE_CLIENTS`.
+- **Unix socket mode**: `chmod 0700` on `~/.ccsm/daemon.sock`, in `~/.ccsm/` dir (also `0700`).
+- **Sender peer-cred verification**: on each accepted connection, daemon validates peer is same user. Win: `GetNamedPipeClientProcessId` → `OpenProcessToken` → match user SID. Unix: `SO_PEERCRED` (Linux) / `getpeereid` (Mac).
+- **Envelope hard cap**: 16 MiB per frame. Reject longer; close socket. (DoS protection from Connect adapter §3.4.1 below.)
+- **Schema validation at adapter boundary**: every incoming envelope payload validated against TypeBox contract before dispatch. Reject malformed; close socket.
 
 ### 3.2 Electron client
 - Reduced to: tray icon + window manager + renderer host. All session/PTY/SQLite logic moves to daemon.
