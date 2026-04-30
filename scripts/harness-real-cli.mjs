@@ -3090,11 +3090,179 @@ async function caseNotifyPipelineBackground({ electronApp, win, tempDir }) {
 }
 
 // ============================================================================
+// Case: attach-replay-from-headless-buffer (L4 PR-B, #865 / fixes #852)
+// ============================================================================
+//
+// Pins the snapshot-then-live attach contract:
+//
+//   1. window.ccsmPty.getBufferSnapshot(sid) IPC channel exists and returns
+//      `{ snapshot: string, seq: number }` — the new PR-B wire format.
+//   2. After spawning a fresh session, the visible xterm buffer ALREADY
+//      contains real output (claude's trust prompt or the welcome panel)
+//      WITHOUT the probe sending any keystroke. Pre-PR-B this was the #852
+//      bug: claude's alt-screen TUI doesn't repaint on terminal size change,
+//      so the visible xterm sat half-empty until the user typed.
+//   3. The visible xterm content matches the headless authoritative buffer
+//      content as reported by `getBufferSnapshot` — proving the snapshot
+//      replay path actually feeds the visible terminal (not just claude's
+//      live-paint via pty:data).
+//   4. Switching A→B→A re-runs the snapshot replay for A and the visible
+//      xterm restores its prior content WITHOUT typing — same path, exercised
+//      under the re-attach scenario.
+//
+// This case is the e2e probe for PR-B's IPC + replay; PR #602's spawn-time
+// size hack (#852 L1 fix) is still in place, so the trust prompt is also
+// visible at the right size — what we additionally pin here is the IPC
+// surface and the snapshot-feeds-view linkage. PR-F will revert #602's hack;
+// when it does, this probe must STILL pass on the strength of replay alone.
+
+async function caseAttachReplayFromHeadlessBuffer({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Probe 1: IPC surface — pty:getBufferSnapshot exists and returns the
+  // PR-B shape even for an unknown sid (`{snapshot:'', seq:0}`).
+  const surface = await win.evaluate(async () => {
+    if (!window.ccsmPty) return { ok: false, reason: 'no ccsmPty' };
+    if (typeof window.ccsmPty.getBufferSnapshot !== 'function') {
+      return { ok: false, reason: 'getBufferSnapshot is not a function' };
+    }
+    try {
+      const result = await window.ccsmPty.getBufferSnapshot('nonexistent-sid-probe');
+      return { ok: true, result };
+    } catch (e) {
+      return { ok: false, reason: `threw: ${String(e)}` };
+    }
+  });
+  if (!surface.ok) {
+    throw new Error(`[attach-replay] IPC surface check failed: ${surface.reason}`);
+  }
+  if (
+    !surface.result ||
+    typeof surface.result.snapshot !== 'string' ||
+    typeof surface.result.seq !== 'number'
+  ) {
+    throw new Error(
+      `[attach-replay] getBufferSnapshot returned wrong shape: ${JSON.stringify(surface.result)}`,
+    );
+  }
+  console.log(
+    `[HARNESS]   PR-B IPC ok: getBufferSnapshot('nonexistent') => snapshot=${JSON.stringify(surface.result.snapshot)} seq=${surface.result.seq}`,
+  );
+
+  // Probe 2: spawn a session, wait for terminal ready + first paint, then
+  // assert the visible xterm has substantial content WITHOUT typing
+  // anything. Pre-PR-B + pre-#602 the trust prompt was half-rendered; with
+  // either fix in place the trust panel is fully visible.
+  const { sid } = await seedSession(win, { name: 'pr-b-attach-replay', cwd: tempDir });
+  if (!sid) throw new Error('seedSession returned empty sid');
+  await sleep(4000);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+
+  // Probe 3: read the headless buffer via the new IPC and confirm the
+  // visible xterm shows the same content (trust prompt / welcome). This
+  // is the snapshot-feeds-view linkage: if PR-B's replay path is broken,
+  // the visible xterm relies entirely on live `pty:data` for new attaches
+  // — which on the L4 PR-A baseline would still work because the same
+  // chunks fan out, but on switch-back (probe 4) it would NOT.
+  const snap = await win.evaluate(async (s) => {
+    return await window.ccsmPty.getBufferSnapshot(s);
+  }, sid);
+  if (typeof snap.snapshot !== 'string' || typeof snap.seq !== 'number') {
+    throw new Error(`[attach-replay] post-spawn snapshot wrong shape: ${JSON.stringify(snap)}`);
+  }
+  if (snap.snapshot.length < 50) {
+    throw new Error(
+      `[attach-replay] headless snapshot suspiciously short (${snap.snapshot.length} bytes) — claude may not have written its first frame yet`,
+    );
+  }
+  if (snap.seq < 1) {
+    throw new Error(`[attach-replay] expected snap.seq >= 1 after first frame, got ${snap.seq}`);
+  }
+  console.log(
+    `[HARNESS]   PR-B headless snapshot for ${sid}: ${snap.snapshot.length} bytes, seq=${snap.seq}`,
+  );
+
+  // Probe 4: switch-away-and-back path — this is where PR-B is load-bearing.
+  // On switch-back, usePtyAttach calls getBufferSnapshot and writes it to
+  // the (reset-then-resized) visible xterm. If the IPC / replay protocol
+  // is broken, the visible xterm goes blank because claude (in alt-screen
+  // mode) does not voluntarily repaint on the resize that follows attach.
+  await dismissFirstRunModals(win);
+  const beforeSwitchLines = await readXtermLines(win, { lines: 60 });
+  const beforeSwitchText = beforeSwitchLines.join('\n');
+
+  // Spawn a second session to switch to.
+  const { sid: sidB } = await seedSession(win, { name: 'pr-b-bystander', cwd: tempDir });
+  if (!sidB || sidB === sid) throw new Error(`bad sidB=${sidB}`);
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sidB);
+  await waitForTerminalReady(win, sidB, { timeout: 30000 });
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>/i, { timeout: 30000 });
+
+  // Switch back to A. After waitForTerminalReady resolves, usePtyAttach has
+  // run snapshot+drain and the visible xterm should already contain content
+  // — without us sending any keystroke. Allow a short settle for the
+  // snapshot write + post-attach fit() to land in the canvas before
+  // reading the buffer.
+  await win.evaluate((id) => window.__ccsmStore.getState().selectSession(id), sid);
+  await waitForTerminalReady(win, sid, { timeout: 30000 });
+  // Poll for content: snapshot replay should land within a couple of
+  // seconds of attach. This is intentionally a content check, not a
+  // wall-clock assertion — the failure mode we are guarding against is
+  // "blank forever until user types", not "took 500ms instead of 100ms".
+  await waitForXtermBuffer(win, /trust|claude|welcome|│|╭|>|\?\sfor\sshortcuts/i, { timeout: 20000 });
+
+  const afterRebindLines = await readXtermLines(win, { lines: 60 });
+  const afterRebindText = afterRebindLines.join('\n');
+  // The rebind buffer should not be empty. Pre-PR-B (in a hypothetical
+  // world without the legacy attach.snapshot path) the alt-screen would
+  // be blank until the user typed; with PR-B we replay from headless and
+  // see content immediately.
+  const nonBlankLines = afterRebindLines.filter((l) => /\S/.test(l));
+  if (nonBlankLines.length < 3) {
+    throw new Error(
+      `[attach-replay] visible xterm blank after switch-back (only ${nonBlankLines.length} non-blank lines). beforeSwitch had ${beforeSwitchLines.filter((l) => /\S/.test(l)).length}. tail:\n${afterRebindLines.slice(-10).join('\n')}`,
+    );
+  }
+
+  // Stronger check: the snapshot we just got from the headless buffer is
+  // present (in non-trivial part) in the visible xterm. We compare on a
+  // tail substring to avoid ANSI / wrap noise.
+  const liveSnap = await win.evaluate(async (s) => window.ccsmPty.getBufferSnapshot(s), sid);
+  // Strip ANSI to compare plain text.
+  const stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+  const headlessPlain = stripAnsi(liveSnap.snapshot);
+  const visiblePlain = stripAnsi(afterRebindText);
+  // Find any substantive line (>= 8 chars, contains a letter) from the
+  // headless that survives in the visible.
+  const headlessLines = headlessPlain.split('\n').map((l) => l.trim()).filter(
+    (l) => l.length >= 8 && /[A-Za-z]/.test(l),
+  );
+  let matched = 0;
+  for (const hl of headlessLines.slice(-30)) {
+    if (visiblePlain.includes(hl)) matched += 1;
+  }
+  if (matched === 0) {
+    throw new Error(
+      `[attach-replay] headless snapshot and visible xterm have no overlapping substantive line — replay path appears broken. headless tail:\n${headlessLines.slice(-10).join('\n')}\n\nvisible tail:\n${afterRebindLines.slice(-10).join('\n')}`,
+    );
+  }
+  console.log(
+    `[HARNESS]   PR-B replay verified: ${matched} headless lines visible after switch-back to ${sid}`,
+  );
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
 const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
+  { name: 'attach-replay-from-headless-buffer', group: 'shared', run: caseAttachReplayFromHeadlessBuffer },
   { name: 'session-rename-writes-jsonl', group: 'shared', run: caseSessionRenameWritesJsonl },
   { name: 'session-title-syncs-from-jsonl', group: 'shared', run: caseSessionTitleSyncsFromJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },

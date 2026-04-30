@@ -13,12 +13,13 @@
 
 import { contextBridge, ipcRenderer, clipboard, type IpcRendererEvent } from 'electron';
 
-type PtyDataPayload = { sid: string; chunk: string };
+type PtyDataPayload = { sid: string; chunk: string; seq: number };
 type PtyExitPayload = {
   sessionId: string;
   code: number | null;
   signal: number | null;
 };
+type BufferSnapshotPayload = { snapshot: string; seq: number };
 
 type CheckClaudeAvailableResult =
   | { available: true; path: string }
@@ -42,6 +43,12 @@ const ccsmPty = {
     ipcRenderer.invoke('pty:resize', sid, cols, rows),
   kill: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:kill', sid),
   get: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:get', sid),
+  // L4 PR-B (#865): visible xterm attach replay. Returns the serialized
+  // headless buffer plus the per-entry chunk seq captured atomically with
+  // the serialize call. Renderer uses the seq to dedupe live `pty:data`
+  // chunks already represented in the snapshot.
+  getBufferSnapshot: (sid: string): Promise<BufferSnapshotPayload> =>
+    ipcRenderer.invoke('pty:getBufferSnapshot', sid),
   onData: (cb: (e: PtyDataPayload) => void): (() => void) => {
     ptyDataListeners.add(cb);
     return () => {

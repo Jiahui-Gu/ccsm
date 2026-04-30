@@ -51,7 +51,7 @@ export {
 } from './jsonlResolver';
 export type { EnsureResumeJsonlResult } from './jsonlResolver';
 export { resolveSpawnCwd } from './cwdResolver';
-export type { PtySessionInfo, AttachResult } from './lifecycle';
+export type { PtySessionInfo, AttachResult, BufferSnapshot } from './lifecycle';
 
 // --- Singleton registry ------------------------------------------------------
 
@@ -88,11 +88,11 @@ export const getPtySession = (sid: string): L.PtySessionInfo | null =>
 
 export const killAllPtySessions = (): void => L.killAll(sessions);
 
-// L4 PR-A (#861): async chunked snapshot of the per-session authoritative
-// headless buffer. Returns '' when the sid isn't registered. Wire-format /
-// IPC channel comes in PR-B; this surface is the bare main-process API the
-// tests and PR-B's IPC handler will both consume.
-export const getBufferSnapshot = (sid: string): Promise<string> =>
+// L4 PR-A (#861) + PR-B (#865): async chunked snapshot of the per-session
+// authoritative headless buffer paired with the per-entry chunk seq.
+// Returns `{snapshot:'', seq:0}` when the sid isn't registered. Renderer
+// uses the seq to dedupe live `pty:data` chunks against the snapshot.
+export const getBufferSnapshot = (sid: string): Promise<L.BufferSnapshot> =>
   L.getBufferSnapshot(sessions, sid);
 
 // --- IPC registration --------------------------------------------------------
@@ -114,6 +114,7 @@ export function registerPtyHostIpc(
     resizePtySession,
     killPtySession,
     getPtySession,
+    getBufferSnapshot,
   });
 }
 

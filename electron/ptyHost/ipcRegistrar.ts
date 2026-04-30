@@ -9,7 +9,7 @@
 import type { BrowserWindow, IpcMain } from 'electron';
 import { resolveClaude } from './claudeResolver';
 import { sessionWatcher } from '../sessionWatcher';
-import type { AttachResult, PtySessionInfo } from './lifecycle';
+import type { AttachResult, BufferSnapshot, PtySessionInfo } from './lifecycle';
 
 interface SessionEntryHandle {
   pty: { pid: number };
@@ -37,6 +37,11 @@ export interface PtyIpcDeps {
   resizePtySession: (sid: string, cols: number, rows: number) => void;
   killPtySession: (sid: string) => boolean;
   getPtySession: (sid: string) => PtySessionInfo | null;
+  /** L4 PR-B (#865): async chunked snapshot + capture seq. Routed through
+   *  the deps surface (rather than direct module import) so the registrar
+   *  stays decoupled from the lifecycle singleton — same pattern as the
+   *  other lifecycle ops above. */
+  getBufferSnapshot: (sid: string) => Promise<BufferSnapshot>;
 }
 
 // Module-singleton guard: registerPtyIpc may be called more than once
@@ -170,6 +175,15 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
   ipcMain.handle('pty:kill', (_event, sid: string) => deps.killPtySession(sid));
 
   ipcMain.handle('pty:get', (_event, sid: string) => deps.getPtySession(sid));
+
+  // L4 PR-B (#865) — visible xterm attach replay channel. Returns the
+  // serialized headless buffer plus the captured chunk seq so the
+  // renderer can drop live `pty:data` chunks already baked into the
+  // snapshot. Async so a multi-MB serialize doesn't block the main
+  // thread — `lifecycle.getBufferSnapshot` chunks the join.
+  ipcMain.handle('pty:getBufferSnapshot', (_event, sid: string) =>
+    deps.getBufferSnapshot(sid),
+  );
 
   // Claude CLI availability probe. Folded into ptyHost (post-PR-8) from
   // the deleted electron/cliBridge module: ccsm has a single CLI host
