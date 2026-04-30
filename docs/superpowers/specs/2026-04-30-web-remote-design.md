@@ -169,6 +169,9 @@ Each version independently shippable, independently dogfoodable, no half-finishe
 - Daemon repo: same `Jiahui-Gu/ccsm` monorepo or separate `ccsm-daemon`? Recommend monorepo with workspace for tighter version coupling.
 - Cloudflare Tunnel hostname strategy: `<random>.cfargotunnel.com` vs custom domain. Custom domain requires user to own a domain — make it optional in v0.5.
 - Web client offline UI when daemon unreachable: skeleton vs banner. Cosmetic, decide during v0.5.
+- Version-skew handling between old Electron client and newer daemon (or vice versa): protocol field-level back-compat via Protobuf reserved tags is the long-term answer; near-term v0.3 ships them in lockstep via single installer.
+- Daemon auto-start at OS boot (Win startup folder shortcut, launchd `RunAtLoad`, systemd `WantedBy=default.target`): pick mechanism per OS during v0.3. Today the spec assumes Electron launch spawns daemon — that's enough for v0.3 dogfood but remote-only access (v0.5) needs boot-time autostart.
+- APNs relay (per F3 spike option A: tiny Cloudflare Worker translating daemon push → APNs token) is the v0.6+ iOS dependency. Stub the Worker repo at v0.5 if convenient.
 
 ## 10. Risks (locked-in awareness)
 
