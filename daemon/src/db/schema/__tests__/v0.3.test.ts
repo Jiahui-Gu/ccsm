@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // T28 smoke: load the canonical v0.3 schema into an in-memory db and
 // assert the contracts T29 (migration runner) and T36 (fresh-install)
 // will rely on. Pure structural checks — no row-shape assertions, those
 // belong with the consumers.
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCHEMA_PATH = join(__dirname, '..', 'v0.3.sql');
 
 interface MasterRow {
