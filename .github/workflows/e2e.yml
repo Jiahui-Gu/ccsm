@@ -36,6 +36,17 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+      # Cache node_modules directly — same rationale as ci.yml: `npm ci`
+      # is the dominant Windows CI cost. Cache hit skips install entirely
+      # and inherits the postinstall-rebuilt native bindings (better-sqlite3,
+      # node-pty) from the cached tree, which is what the Electron e2e
+      # actually loads.
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
       - name: Cache Electron binary
         uses: actions/cache@v4
         with:
@@ -44,6 +55,7 @@ jobs:
             ~/.cache/electron-builder
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
         run: npm ci --legacy-peer-deps
       - name: Build
         run: npm run build
