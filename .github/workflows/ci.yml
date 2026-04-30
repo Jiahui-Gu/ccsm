@@ -45,7 +45,22 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Cache node_modules directly (not ~/.npm) — `npm ci --legacy-peer-deps`
+      # on Windows is the dominant CI cost (~178s = 49% of total wall-clock,
+      # eval #877). Restoring node_modules verbatim skips install + native
+      # rebuilds (better-sqlite3, node-pty) baked into the cached tree.
+      # Key includes os/arch/node major + lockfile hash so any dep change
+      # busts the cache. Native ABI for Node-side tests is re-aligned by the
+      # `npm rebuild better-sqlite3` step below, which always runs.
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+
       - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
         run: npm ci --legacy-peer-deps
         env:
           # electron-builder's postinstall needs this env to not fail on
