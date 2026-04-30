@@ -10,23 +10,27 @@ const { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandler
     const loadAddonSpy = vi.fn();
     const onSelectionChangeSpy = vi.fn();
     const attachCustomKeyEventHandlerSpy = vi.fn();
-    const terminalCtor = vi.fn(() => ({
-      open: openSpy,
-      loadAddon: loadAddonSpy,
-      onSelectionChange: onSelectionChangeSpy,
-      attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
-      unicode: { activeVersion: '6' },
-      _core: { _parent: null },
-    }));
+    // vitest v3+ requires `function`/`class` (not arrow) for mocks invoked
+    // with `new` — otherwise tinyspy throws "is not a constructor".
+    const terminalCtor = vi.fn(function () {
+      return {
+        open: openSpy,
+        loadAddon: loadAddonSpy,
+        onSelectionChange: onSelectionChangeSpy,
+        attachCustomKeyEventHandler: attachCustomKeyEventHandlerSpy,
+        unicode: { activeVersion: '6' },
+        _core: { _parent: null },
+      };
+    });
     return { openSpy, loadAddonSpy, onSelectionChangeSpy, attachCustomKeyEventHandlerSpy, terminalCtor };
   });
 
 vi.mock('@xterm/xterm', () => ({ Terminal: terminalCtor }));
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(() => ({ fit: vi.fn() })) }));
-vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: vi.fn() }));
-vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn() }));
-vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn() }));
-vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn() }));
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() }; }) }));
+vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: vi.fn(function () { return {}; }) }));
+vi.mock('@xterm/addon-clipboard', () => ({ ClipboardAddon: vi.fn(function () { return {}; }) }));
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: vi.fn(function () { return {}; }) }));
+vi.mock('@xterm/addon-canvas', () => ({ CanvasAddon: vi.fn(function () { return {}; }) }));
 
 import { useXtermSingleton } from '../../src/terminal/useXtermSingleton';
 import {
