@@ -35,9 +35,7 @@ function buildGroups(): Group[] {
     {
       titleKey: 'shortcuts.groupSidebar',
       rows: [
-        // App.tsx:169 — Ctrl+B toggles the sidebar.
-        { keys: `${MOD} + B`, actionKey: 'shortcuts.actionToggleSidebar' },
-        // App.tsx:175 — Ctrl+Shift+N creates a new group.
+        // App.tsx — Ctrl+Shift+N creates a new group.
         { keys: `${MOD} + ${SHIFT} + N`, actionKey: 'shortcuts.actionNewGroup' }
       ]
     },

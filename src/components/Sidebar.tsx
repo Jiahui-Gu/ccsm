@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronRight, Download, Plus, Search, Settings } from 'lucide-react';
+import { Download, Plus, Search, Settings } from 'lucide-react';
 import { DndContext, DragOverlay, closestCenter } from '@dnd-kit/core';
 import { useStore } from '../stores/store';
 import { cn } from '../lib/cn';
@@ -14,7 +14,6 @@ import { DURATION_RAW, EASING } from '../lib/motion';
 import type { Session } from '../types';
 import { GroupRow } from './sidebar/GroupRow';
 import { NewSessionButton } from './sidebar/NewSessionButton';
-import { CollapsedRail } from './sidebar/CollapsedRail';
 import { ArchivedSection } from './sidebar/ArchivedSection';
 import { useSidebarDnd } from './sidebar/useSidebarDnd';
 
@@ -43,9 +42,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
   const { t } = useTranslation();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
-  const collapsed = useStore((s) => s.sidebarCollapsed);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
-  const toggleSidebar = useStore((s) => s.toggleSidebar);
   // Perf: hoist the normal/archive partition to the parent so SessionRow
   // (which needs `normalGroups` for its move-to-group menu) doesn't recompute
   // it per row per render. `useMemo` keeps the array reference stable across
@@ -105,10 +102,10 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
     >
     <motion.aside
       initial={false}
-      // Collapsed → 48px rail. Expanded → user-resizable px width persisted in
-      // the store (see SidebarResizer + store.sidebarWidth). framer-motion
-      // tweens the change so collapse/expand stays smooth.
-      animate={{ width: collapsed ? 48 : sidebarWidth }}
+      // User-resizable px width persisted in the store (see SidebarResizer +
+      // store.sidebarWidth). framer-motion tweens width changes for smooth
+      // resizer interaction.
+      animate={{ width: sidebarWidth }}
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
@@ -119,15 +116,6 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
           is intentional: dogfood flagged the 32px gap above "new session"
           as visually empty. */}
       <DragRegion className="shrink-0 w-full" style={{ height: window.ccsm?.window.platform === 'darwin' ? 40 : 8 }} />
-      {collapsed ? (
-        <CollapsedRail
-          onToggleSidebar={toggleSidebar}
-          onCreateSession={onCreateSession}
-          onOpenPalette={onOpenPalette}
-          onOpenImport={onOpenImport}
-          onOpenSettings={onOpenSettings}
-        />
-      ) : (
       <div className="flex flex-col w-full h-full">
           {/* Top: action zone — Search + New Session in one row.
               CodePilot-spec: h-8, bg-white/[0.06] semi-transparent on the
@@ -271,7 +259,6 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             </IconButton>
           </div>
         </div>
-      )}
     </motion.aside>
     <DragOverlay dropAnimation={{ duration: 150, easing: 'cubic-bezier(0.32,0.72,0,1)' }}>
       {draggingSession ? (

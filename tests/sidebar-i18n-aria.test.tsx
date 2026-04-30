@@ -49,7 +49,6 @@ beforeEach(() => {
       groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
       activeId: '',
       focusedGroupId: null,
-      sidebarCollapsed: false,
       hydrated: true,
     } as ReturnType<typeof useStore.getState>,
     true

@@ -1,12 +1,10 @@
 // UT for src/components/AppShell.tsx — the two-pane shell. Verifies:
 //   * sidebar + main slots both render
-//   * SidebarResizer is rendered when sidebar is NOT collapsed
-//   * SidebarResizer is hidden when sidebarCollapsed is true
+//   * SidebarResizer is always rendered (sidebar collapse feature removed in #894)
 import React from 'react';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { render, cleanup, act } from '@testing-library/react';
+import { render, cleanup } from '@testing-library/react';
 import { AppShell } from '../../src/components/AppShell';
-import { useStore } from '../../src/stores/store';
 import { resetStore } from '../util/resetStore';
 
 afterEach(() => cleanup());
@@ -24,21 +22,12 @@ describe('<AppShell />', () => {
     expect(getByTestId('mn')).toBeInTheDocument();
   });
 
-  it('renders the resizer divider when sidebar is not collapsed', () => {
-    act(() => useStore.setState({ sidebarCollapsed: false }));
+  it('always renders the resizer divider (collapse feature removed)', () => {
     const { container } = render(
       <AppShell sidebar={<div />} main={<div />} />
     );
     // SidebarResizer renders a separator role with aria-orientation=vertical
     const sep = container.querySelector('[role="separator"]');
     expect(sep).not.toBeNull();
-  });
-
-  it('hides the resizer when sidebarCollapsed is true', () => {
-    act(() => useStore.setState({ sidebarCollapsed: true }));
-    const { container } = render(
-      <AppShell sidebar={<div />} main={<div />} />
-    );
-    expect(container.querySelector('[role="separator"]')).toBeNull();
   });
 });

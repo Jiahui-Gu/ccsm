@@ -57,12 +57,10 @@ export type State = {
   claudeSettingsDefaultModel: string | null;
   activeId: string;
   focusedGroupId: string | null;
-  sidebarCollapsed: boolean;
   sidebarWidth: number;
   theme: Theme;
   fontSize: FontSize;
   fontSizePx: FontSizePx;
-  tutorialSeen: boolean;
   flashStates: Record<string, boolean>;
   hydrated: boolean;
   installerCorrupt: boolean;
@@ -108,14 +106,11 @@ export type Actions = {
   setSessionModel: (sessionId: string, model: ModelId) => void;
 
   // appearance
-  setSidebarCollapsed: (collapsed: boolean) => void;
-  toggleSidebar: () => void;
   setTheme: (theme: Theme) => void;
   setFontSize: (size: FontSize) => void;
   setFontSizePx: (px: FontSizePx) => void;
   setSidebarWidth: (px: number) => void;
   resetSidebarWidth: () => void;
-  markTutorialSeen: () => void;
 
   // groups
   createGroup: (name?: string) => string;
