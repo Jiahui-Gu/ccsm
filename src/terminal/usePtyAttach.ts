@@ -11,6 +11,7 @@ import {
   getInputDisposable,
   setInputDisposable,
   setSnapshotReplay,
+  getSnapshotReplay,
 } from './xtermSingleton';
 
 export type PtyAttachState =
@@ -133,45 +134,17 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       const term = getTerm();
       if (term) term.reset();
 
-      // Task #852 — measure the visible viewport BEFORE spawn / write so
-      // the PTY launches at the size it will actually be displayed at.
-      // Otherwise the default 120x30 PTY emits its first frame (e.g.
-      // claude's alt-screen trust prompt) at the wrong size, the renderer
-      // writes that snapshot, then a follow-up `fit.fit()` resizes the
-      // visible xterm — extending the buffer downward with blank rows
-      // (the "top-painted, bottom-black-void" bug). claude has no reason
-      // to repaint until input arrives, so the user sees a half-rendered
-      // dialog they can't see the answer to. Push the real size first.
-      const fitForSpawn = getFit();
-      const termForSpawn = getTerm();
-      let viewportCols: number | undefined;
-      let viewportRows: number | undefined;
-      if (fitForSpawn && termForSpawn) {
-        try {
-          const proposed = fitForSpawn.proposeDimensions();
-          if (
-            proposed &&
-            Number.isFinite(proposed.cols) &&
-            Number.isFinite(proposed.rows) &&
-            proposed.cols >= 2 &&
-            proposed.rows >= 2
-          ) {
-            viewportCols = proposed.cols;
-            viewportRows = proposed.rows;
-            // Pre-size the visible terminal so the snapshot we're about to
-            // write lands in a buffer of matching dimensions. The post-attach
-            // `fit.fit()` below is then a no-op for sizing and only needs to
-            // push the (already-correct) cols/rows to the PTY.
-            try {
-              termForSpawn.resize(viewportCols, viewportRows);
-            } catch {
-              // resize is best-effort.
-            }
-          }
-        } catch (e) {
-          console.warn('[TerminalPane] proposeDimensions failed', e);
-        }
-      }
+      // L4 PR-F (#867): the spawn-time cols/rows hack added for #852 is gone.
+      // The PTY launches at the lifecycle defaults (120x30); the post-attach
+      // resize+replay below (PR-D #866) reflows the headless source-of-truth
+      // buffer to the real viewport size and rewrites the visible xterm from
+      // it, so there is no longer a "spawn at wrong size → claude's alt-screen
+      // never repaints → bottom-black-void" divergence even when the visible
+      // viewport differs from the spawn size. The pre-spawn FitAddon
+      // proposeDimensions() call + pre-write `term.resize` are likewise no
+      // longer needed: the post-attach fit reads the live container, the
+      // backend resize reflows the headless buffer, and the snapshot replay
+      // paints the reflowed grid.
 
       try {
         // Spawn-on-attach-null fallback. The renderer drives session
@@ -183,10 +156,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           | { snapshot: string; cols: number; rows: number; pid: number }
           | null;
         if (!res) {
-          const spawnResult = (await pty.spawn(sessionId, cwd ?? '', {
-            cols: viewportCols,
-            rows: viewportRows,
-          })) as
+          const spawnResult = (await pty.spawn(sessionId, cwd ?? '')) as
             | { ok: true; sid: string; pid: number; cols: number; rows: number }
             | { ok: false; error: string };
           if (!spawnResult || spawnResult.ok === false) {
@@ -233,10 +203,13 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         const t2 = getTerm();
         if (t2) {
           // Resize visible xterm to PTY's actual size BEFORE writing the
-          // snapshot. For fresh spawns this matches viewportCols/Rows
-          // (because we passed them to spawn). For attach-to-existing the
-          // snapshot is at the PTY's current size; matching that before
-          // write avoids alt-screen reflow blanks.
+          // snapshot so the cell grid matches the snapshot's dimensions
+          // (avoids the alt-screen reflow blanks when the pre-existing
+          // visible xterm was at a different size). The post-attach fit
+          // below then resizes everything to the real container, with the
+          // snapshot replay (PR-D #866) reflowing the visible buffer to
+          // match — so the only invariant we need here is "visible matches
+          // snapshot at write time".
           try {
             t2.resize(cols, rows);
           } catch {
@@ -358,15 +331,45 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           );
         }
 
-        // Push the current container size to the backend so claude
-        // re-wraps to the visible viewport rather than the spawn-time cols/rows.
+        // L4 PR-F (#867): post-attach, push the container size to the
+        // backend so the PTY + headless source-of-truth buffer reflow to
+        // the visible viewport (rather than staying at the spawn-time
+        // 120x30). After the backend resize settles, run the snapshot
+        // replay (PR-D #866) so the visible xterm rewrites from the
+        // freshly-reflowed headless buffer — this replaces the old
+        // pre-spawn measurement hack: the divergence between PTY size
+        // and visible size is now resolved AFTER the fact by the
+        // headless mirror, so claude doesn't need to voluntarily
+        // repaint its alt-screen for the user to see correct content.
         const fit = getFit();
         const t4 = getTerm();
         const sid4 = getActiveSid();
         if (fit && t4 && sid4) {
           try {
+            // Gate the post-attach resize+replay on a real size delta (#888).
+            // PR-D contract: initial attach paints the snapshot ONCE from
+            // getBufferSnapshot — no second write. Only when the visible
+            // viewport differs from the spawn-time PTY dimensions (the real
+            // #852 case: headless 120x30 vs visible NxM) do we push the new
+            // size to the backend and replay the reflowed snapshot. Stable
+            // container = no-op; size delta = fire once.
+            const oldCols = t4.cols;
+            const oldRows = t4.rows;
             fit.fit();
-            window.ccsmPty.resize(sid4, t4.cols, t4.rows);
+            const newCols = t4.cols;
+            const newRows = t4.rows;
+            if (newCols !== oldCols || newRows !== oldRows) {
+              const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
+              const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
+                ? (resizePromise as Promise<void>)
+                : Promise.resolve();
+              void p
+                .then(() => {
+                  const replay = getSnapshotReplay();
+                  return replay ? replay() : undefined;
+                })
+                .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
+            }
           } catch (e) {
             console.warn('[TerminalPane] post-attach fit failed', e);
           }

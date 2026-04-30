@@ -204,59 +204,83 @@ describe('usePtyAttach', () => {
     renderHook(() => usePtyAttach('sid-C', '/cwd'));
     await flushAll();
 
-    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd', expect.objectContaining({}));
+    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd');
     expect(spies.attach).toHaveBeenCalledTimes(2);
     // L4 PR-B (#865): the visible terminal paints the getBufferSnapshot
     // string, NOT the legacy attach.snapshot.
     expect(writeSpy).toHaveBeenCalledWith('after-spawn');
   });
 
-  // Task #852 — when pty.attach returns null and we fall back to spawn, the
-  // viewport-measured cols/rows from FitAddon.proposeDimensions() must be
-  // forwarded to spawn so the PTY launches at the visible size. Otherwise
-  // claude renders its alt-screen prompt at 120x30 and the bottom of the
-  // visible 134x51 xterm stays a black void until the user types.
-  it('forwards viewport-measured cols/rows to spawn (fixes #852 alt-screen divergence)', async () => {
+  // L4 PR-F (#867) — the spawn-time cols/rows hack added for #852 has been
+  // removed. The renderer no longer measures the viewport via FitAddon
+  // before spawn nor forwards cols/rows to `pty.spawn`; the PTY launches at
+  // the lifecycle defaults and the post-attach `pty.resize` + snapshot
+  // replay (PR-D #866) reflows both the headless source-of-truth buffer
+  // and the visible xterm to the real container size, so claude doesn't
+  // need to voluntarily repaint its alt-screen for the user to see correct
+  // content.
+  it('does not forward cols/rows to spawn (#867 — PR-D resize+replay covers #852)', async () => {
     let calls = 0;
     const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'after-spawn', seq: 0 } });
     spies.attach.mockImplementation(async (_sid: string) => {
       calls += 1;
       if (calls === 1) return null;
-      return { snapshot: 'ignored-now', cols: 134, rows: 51, pid: 1 };
+      return { snapshot: 'ignored-now', cols: 120, rows: 30, pid: 1 };
     });
-    proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
     (window as any).ccsmPty = bridge;
 
-    renderHook(() => usePtyAttach('sid-852', '/cwd'));
+    renderHook(() => usePtyAttach('sid-867', '/cwd'));
     await flushAll();
 
-    expect(proposeDimensionsSpy).toHaveBeenCalled();
-    expect(spies.spawn).toHaveBeenCalledWith('sid-852', '/cwd', { cols: 134, rows: 51 });
-    // Visible terminal pre-sized BEFORE snapshot write so alt-screen
-    // contents land in a buffer of matching dimensions (no buffer-extension
-    // black void at the bottom).
-    expect(resizeSpy).toHaveBeenCalledWith(134, 51);
-    // The pre-write resize precedes the snapshot write.
-    const resizeOrder = resizeSpy.mock.invocationCallOrder[0];
-    const writeOrder = writeSpy.mock.invocationCallOrder[0];
-    expect(resizeOrder).toBeLessThan(writeOrder);
+    // Spawn is called with sid + cwd ONLY — no opts argument.
+    expect(spies.spawn).toHaveBeenCalledWith('sid-867', '/cwd');
+    // FitAddon.proposeDimensions is no longer called pre-spawn.
+    expect(proposeDimensionsSpy).not.toHaveBeenCalled();
   });
 
-  it('omits cols/rows when FitAddon proposeDimensions returns undefined', async () => {
-    let calls = 0;
-    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'after-spawn', seq: 0 } });
-    spies.attach.mockImplementation(async (_sid: string) => {
-      calls += 1;
-      if (calls === 1) return null;
-      return { snapshot: 'ignored-now', cols: 80, rows: 24, pid: 1 };
-    });
-    proposeDimensionsSpy.mockReturnValue(undefined as unknown as { cols: number; rows: number });
+  it('post-attach fit is a no-op when container size is stable: no replay, snapshot fetched once (#888)', async () => {
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
     (window as any).ccsmPty = bridge;
 
-    renderHook(() => usePtyAttach('sid-852b', '/cwd'));
+    // fitFitSpy default = does NOT mutate cols/rows → no size delta.
+    renderHook(() => usePtyAttach('sid-867s', '/cwd'));
     await flushAll();
 
-    expect(spies.spawn).toHaveBeenCalledWith('sid-852b', '/cwd', { cols: undefined, rows: undefined });
+    // fit.fit() still runs (we need to measure), but because cols/rows are
+    // unchanged the backend resize and snapshot replay must be skipped.
+    expect(fitFitSpy).toHaveBeenCalled();
+    expect(spies.resize).not.toHaveBeenCalled();
+    // PR-D contract: only the initial attach snapshot was fetched / written.
+    expect(spies.getBufferSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('post-attach fit triggers backend resize + snapshot replay when container size differs (#867 / #852)', async () => {
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
+    (window as any).ccsmPty = bridge;
+
+    // Simulate the real #852 case: visible viewport differs from spawn-time
+    // 80x24 — fit.fit() reflows the term to a new size.
+    fitFitSpy.mockImplementation(() => {
+      fakeTerm.cols = 134;
+      fakeTerm.rows = 51;
+    });
+
+    try {
+      renderHook(() => usePtyAttach('sid-867r', '/cwd'));
+      await flushAll();
+
+      expect(fitFitSpy).toHaveBeenCalled();
+      // Backend resize is pushed with the NEW dimensions (post-fit).
+      expect(spies.resize).toHaveBeenCalledWith('sid-867r', 134, 51);
+      // Replay handler ran → second getBufferSnapshot fetch (initial paint
+      // + replay re-fetch).
+      expect(spies.getBufferSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      // Restore fakeTerm dimensions for subsequent tests.
+      fakeTerm.cols = 80;
+      fakeTerm.rows = 24;
+      fitFitSpy.mockReset();
+    }
   });
 
   it('flips to error state when ccsmPty bridge is missing', async () => {
