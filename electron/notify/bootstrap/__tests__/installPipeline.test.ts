@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events';
 
 interface AppEmitter {
   on: (evt: string, cb: () => void) => void;
+  off: (evt: string, cb: () => void) => void;
   _trigger: (evt: string) => void;
 }
 
@@ -51,6 +52,12 @@ vi.mock('electron', () => {
     on(evt, cb) {
       const arr = h.appHandlers.get(evt) ?? [];
       arr.push(cb);
+      h.appHandlers.set(evt, arr);
+    },
+    off(evt, cb) {
+      const arr = h.appHandlers.get(evt) ?? [];
+      const i = arr.indexOf(cb);
+      if (i >= 0) arr.splice(i, 1);
       h.appHandlers.set(evt, arr);
     },
     _trigger(evt) {
@@ -278,6 +285,58 @@ describe('installNotifyPipelineWithProducers', () => {
       isGlobalMutedFn: () => false,
       onNotified: () => {},
     });
-    expect(ret).toBe(h.lastPipeline.current);
+    expect(ret.pipeline).toBe(h.lastPipeline.current);
+    expect(typeof ret.dispose).toBe('function');
+  });
+
+  // Audit #876 cluster 3.8 / Task #884 — every listener registered here must
+  // be detached on dispose. Reverse-verify: comment out a single `app.off`
+  // or `sessionWatcher.off` call in installPipeline.ts and the matching
+  // assertion below fails.
+  it('dispose detaches the focus, blur, and unwatched listeners', () => {
+    const ret = installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+    });
+    // Pre-dispose: handlers exist.
+    expect((h.appHandlers.get('browser-window-focus') ?? []).length).toBe(1);
+    expect((h.appHandlers.get('browser-window-blur') ?? []).length).toBe(1);
+    expect(h.watcherEmitter!.listenerCount('unwatched')).toBe(1);
+
+    ret.dispose();
+
+    // Post-dispose: every subscription gone.
+    expect((h.appHandlers.get('browser-window-focus') ?? []).length).toBe(0);
+    expect((h.appHandlers.get('browser-window-blur') ?? []).length).toBe(0);
+    expect(h.watcherEmitter!.listenerCount('unwatched')).toBe(0);
+    // Pipeline.dispose was forwarded so flash timers/sniffer get cleaned up.
+    expect(h.lastPipeline.current!.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('dispose is idempotent — second call is a no-op', () => {
+    const ret = installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+    });
+    ret.dispose();
+    ret.dispose();
+    expect(h.lastPipeline.current!.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('post-dispose, focus/blur events no longer reach the pipeline', () => {
+    const ret = installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+    });
+    ret.dispose();
+    // Triggering removed listeners is a no-op (the trigger walks the
+    // current array, which is now empty).
+    (h.appHandlers.get('browser-window-focus') ?? []).forEach((cb) => cb());
+    h.watcherEmitter!.emit('unwatched', { sid: 's-after-dispose' });
+    expect(h.lastPipeline.current!.setFocused).not.toHaveBeenCalled();
+    expect(h.lastPipeline.current!.forgetSid).not.toHaveBeenCalled();
   });
 });

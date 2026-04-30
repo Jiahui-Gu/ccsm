@@ -213,4 +213,45 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
     pipeline.feedChunk('s1', osc(IDLE_TITLE));
     expect(onNotified).not.toHaveBeenCalled();
   });
+
+  // Audit #876 cluster 1.14 / Task #884 — pipeline.dispose() must clear
+  // any active flash timers (delegated to flash.dispose()), otherwise
+  // every still-flashing sid leaks its setTimeout closure past disposal.
+  // Reverse-verify: drop the `flash.dispose()` call in pipeline.ts and
+  // the `_peek()` empty assertion below fails.
+  it('dispose clears flash sink state (no leaked timers)', () => {
+    vi.useFakeTimers();
+    try {
+      const { win, sends } = makeStubWin();
+      const pipeline = installNotifyPipeline({
+        getMainWindow: () => win as never,
+        isGlobalMutedFn: () => false,
+      });
+      pipeline.setFocused(false);
+      pipeline.feedChunk('s1', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s1', osc(IDLE_TITLE));
+      pipeline.feedChunk('s2', osc(RUNNING_TITLE));
+      pipeline.feedChunk('s2', osc(IDLE_TITLE));
+      const flash = pipeline._internals().flash;
+      expect(Object.keys(flash._peek()).sort()).toEqual(['s1', 's2']);
+
+      pipeline.dispose();
+
+      // Flash map cleared; on=false IPC sent for both sids.
+      expect(flash._peek()).toEqual({});
+      const offSends = sends.filter(
+        (s) =>
+          s.channel === 'notify:flash' &&
+          (s.payload as { on: boolean }).on === false,
+      );
+      expect(offSends.length).toBe(2);
+
+      // Advance well past FLASH_DURATION_MS — no late timer fires.
+      const sendsAfterDispose = sends.length;
+      vi.advanceTimersByTime(10_000);
+      expect(sends.length).toBe(sendsAfterDispose);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

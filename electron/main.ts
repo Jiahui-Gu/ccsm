@@ -121,6 +121,7 @@ let trayController: TrayController | null = null;
 let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
 let notifyPipeline: NotifyPipeline | null = null;
+let notifyPipelineDispose: (() => void) | null = null;
 const badgeController = new BadgeController(() => badgeManager);
 
 function getTrayBaseImage() {
@@ -258,7 +259,7 @@ app.whenReady().then(() => {
     enabled: false,
   });
 
-  const pipelineInstance = installNotifyPipelineWithProducers({
+  const installed = installNotifyPipelineWithProducers({
     isGlobalMutedFn: () => !loadNotifyEnabled(),
     getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
     onNotified: (sid) => {
@@ -276,12 +277,18 @@ app.whenReady().then(() => {
       sessionNamesFromRenderer.delete(sid);
     },
   });
+  const pipelineInstance = installed.pipeline;
   // Hoist into the module-level holder so the IPC handlers above (registered
   // earlier in app.whenReady) can reach the pipeline. The handlers run later
   // (on actual IPC dispatch), so the forward reference is safe — they use
   // the optional-chained `notifyPipeline?.` form because the holder is null
   // until this assignment lands.
   notifyPipeline = pipelineInstance;
+  // Tear down the pipeline + its app-level listeners on real quit. Without
+  // this, the focus/blur + sessionWatcher 'unwatched' subscriptions plus
+  // any still-active flash timers leak past the pipeline lifetime — visible
+  // in long-running tests / HMR (audit #876 cluster 1.14 + 3.8 / Task #884).
+  notifyPipelineDispose = installed.dispose;
 
   installLateTestHooks({
     getBadgeManager: () => badgeManager,
@@ -309,4 +316,5 @@ registerLifecycleHandlers({
     createWindow();
   },
   getWindowCount: () => BrowserWindow.getAllWindows().length,
+  disposeNotifyPipeline: () => notifyPipelineDispose?.(),
 });
