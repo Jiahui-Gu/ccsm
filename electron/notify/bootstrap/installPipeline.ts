@@ -28,6 +28,11 @@ export interface NotifyPipelineDeps {
   isGlobalMutedFn: () => boolean;
   /** Side-effect when a notification fires (badge bump). */
   onNotified: (sid: string) => void;
+  /** Side-effect when a session is unwatched (PTY exit / kill).
+   *  Used to drain badge unread counts so deleted/torn-down sessions
+   *  don't leave stale entries that inflate the aggregate badge total
+   *  forever (audit #876 H2). Optional for tests that don't care. */
+  onUnwatchedSid?: (sid: string) => void;
 }
 
 /** Construct the pipeline and wire the producer subscriptions. Returns the
@@ -69,10 +74,14 @@ export function installNotifyPipelineWithProducers(
   // path. Also release the per-sid Maps held by sessionTitles (titleCache /
   // opChains / pendingRenames) — without this, every sid ever queried for a
   // title sticks in memory for the lifetime of the app (audit #876, H1).
+  // Finally, fan out to `onUnwatchedSid` so callers (main.ts) can drain
+  // their own per-sid stores — e.g. badgeManager.unread, which would
+  // otherwise inflate the aggregate badge total forever (audit #876 H2).
   sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
     if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
     pipelineInstance.forgetSid(evt.sid);
     forgetSessionTitleSid(evt.sid);
+    deps.onUnwatchedSid?.(evt.sid);
   });
 
   return pipelineInstance;

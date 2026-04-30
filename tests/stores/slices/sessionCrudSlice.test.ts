@@ -248,4 +248,70 @@ describe('sessionCrudSlice', () => {
     expect(h.state().sessions[0].id).toBe('uuid-y');
     expect(h.state().sessions[0].name).toBe('imported');
   });
+
+  // audit #876 H2: deleteSession fan-out must drain every per-sid renderer
+  // store, not just `sessions`. Without this fix flashStates[sid] and
+  // disconnectedSessions[sid] survived the delete and could re-attach to a
+  // re-imported session with the same sid (stale crashed badge / phantom
+  // halo). The cleanup is unconditional — even if the maps are empty, the
+  // delete path is the right place to express "forget everything about
+  // this sid".
+  describe('deleteSession fan-out (audit #876 H2)', () => {
+    it('clears flashStates[sid] for the deleted session', () => {
+      const h = harness({
+        sessions: [mkSession('a', 'g1'), mkSession('b', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        activeId: 'a',
+        flashStates: { a: true, b: true },
+      });
+      h.sessions.deleteSession('a');
+      expect(h.state().flashStates).toEqual({ b: true });
+    });
+
+    it('clears disconnectedSessions[sid] for the deleted session', () => {
+      const h = harness({
+        sessions: [mkSession('a', 'g1'), mkSession('b', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        activeId: 'a',
+        disconnectedSessions: {
+          a: { kind: 'crashed', code: 1, signal: null, at: 1 },
+          b: { kind: 'clean', code: 0, signal: null, at: 2 },
+        },
+      });
+      h.sessions.deleteSession('a');
+      expect(h.state().disconnectedSessions).toEqual({
+        b: { kind: 'clean', code: 0, signal: null, at: 2 },
+      });
+    });
+
+    it('preserves identity when the sid was not present in either map', () => {
+      const h = harness({
+        sessions: [mkSession('a', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        activeId: 'a',
+        flashStates: { other: true },
+        disconnectedSessions: {
+          other: { kind: 'clean', code: 0, signal: null, at: 1 },
+        },
+      });
+      h.sessions.deleteSession('a');
+      // Untouched contents (and same map identity is preserved internally
+      // so React selectors don't needlessly re-render).
+      expect(h.state().flashStates).toEqual({ other: true });
+      expect(h.state().disconnectedSessions).toEqual({
+        other: { kind: 'clean', code: 0, signal: null, at: 1 },
+      });
+    });
+
+    it('tolerates missing maps (slice composed without sessionRuntimeSlice)', () => {
+      const h = harness({
+        sessions: [mkSession('a', 'g1')],
+        groups: [{ id: 'g1', name: 'g1', collapsed: false, kind: 'normal' }],
+        activeId: 'a',
+      });
+      // Both maps are undefined on this harness; delete must not throw.
+      expect(() => h.sessions.deleteSession('a')).not.toThrow();
+      expect(h.state().sessions).toEqual([]);
+    });
+  });
 });

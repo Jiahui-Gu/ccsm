@@ -264,6 +264,13 @@ app.whenReady().then(() => {
     onNotified: (sid) => {
       badgeManager?.incrementSid(sid);
     },
+    // audit #876 H2: drop the sid's unread counter when the session is
+    // unwatched (PTY exit / kill). Without this the badgeStore.unread map
+    // accumulated entries forever — every notified sid stayed counted for
+    // the app lifetime even after the session was deleted.
+    onUnwatchedSid: (sid) => {
+      badgeManager?.clearSid(sid);
+    },
   });
   // Hoist into the module-level holder so the IPC handlers above (registered
   // earlier in app.whenReady) can reach the pipeline. The handlers run later
