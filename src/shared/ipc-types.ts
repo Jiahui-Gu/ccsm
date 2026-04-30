@@ -11,27 +11,6 @@
 //   - Keep IPC channel return shapes here; keep IPC channel *names* in the
 //     modules that use them (channel names aren't types).
 
-export type ModelSource =
-  | 'settings'
-  | 'env'
-  | 'manual'
-  | 'cli-picker'
-  | 'env-override'
-  | 'fallback';
-
-export interface DiscoveredModel {
-  id: string;
-  source: ModelSource;
-}
-
-export interface ConnectionInfo {
-  baseUrl: string | null;
-  model: string | null;
-  hasAuthToken: boolean;
-}
-
-export type OpenSettingsResult = { ok: true } | { ok: false; error: string };
-
 export type CommandSource = 'user' | 'project' | 'plugin' | 'skill' | 'agent';
 
 export interface LoadedCommand {

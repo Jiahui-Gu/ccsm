@@ -1,9 +1,3 @@
-import type {
-  ConnectionInfo,
-  OpenSettingsResult,
-  DiscoveredModel,
-} from './shared/ipc-types';
-
 // Updater status — exported so the renderer's `UpdatesPane` (and any
 // future banners/toasts) can import a single source of truth instead of
 // redeclaring the union locally. Mirrors the shape broadcast by
@@ -101,15 +95,6 @@ declare global {
         onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
         onAfterShow: (handler: () => void) => () => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
-      };
-
-      connection: {
-        read: () => Promise<ConnectionInfo>;
-        openSettingsFile: () => Promise<OpenSettingsResult>;
-      };
-
-      models: {
-        list: () => Promise<DiscoveredModel[]>;
       };
     };
   }
