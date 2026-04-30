@@ -270,6 +270,10 @@ app.whenReady().then(() => {
     // the app lifetime even after the session was deleted.
     onUnwatchedSid: (sid) => {
       badgeManager?.clearSid(sid);
+      // audit #876 Item 5: drop the renderer-pushed name mirror too. Without
+      // this, every renamed session leaks its entry forever — the map only
+      // grew, never shrank, since the IPC handler is the only producer.
+      sessionNamesFromRenderer.delete(sid);
     },
   });
   // Hoist into the module-level holder so the IPC handlers above (registered

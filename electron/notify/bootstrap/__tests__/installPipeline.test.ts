@@ -225,6 +225,27 @@ describe('installNotifyPipelineWithProducers', () => {
     expect(h.lastPipeline.current!.forgetSid).toHaveBeenCalledWith('s1');
   });
 
+  // audit #876 Item 5 (Task #897): main.ts holds a sessionNamesFromRenderer
+  // Map that the renderer pushes into via session:setName IPC. Without a
+  // drain in onUnwatchedSid, every renamed session leaks its entry forever.
+  // This test mirrors the main.ts wiring (a real Map + a delete in the
+  // onUnwatchedSid callback) to lock the contract end-to-end.
+  it("sessionWatcher 'unwatched' lets caller drain a per-sid Map (sessionNamesFromRenderer)", () => {
+    const sessionNamesFromRenderer = new Map<string, string>();
+    sessionNamesFromRenderer.set('sid-x', 'name-x');
+    installNotifyPipelineWithProducers({
+      getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+      onUnwatchedSid: (sid) => {
+        sessionNamesFromRenderer.delete(sid);
+      },
+    });
+    expect(sessionNamesFromRenderer.has('sid-x')).toBe(true);
+    h.watcherEmitter.emit('unwatched', { sid: 'sid-x' });
+    expect(sessionNamesFromRenderer.has('sid-x')).toBe(false);
+  });
+
   it("sessionWatcher 'unwatched' does not invoke onUnwatchedSid for malformed payloads", () => {
     const onUnwatchedSid = vi.fn();
     installNotifyPipelineWithProducers({
