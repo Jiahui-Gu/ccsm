@@ -201,6 +201,12 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
     dispose() {
       sniffer.off('osc-title', onOsc);
       sniffer.removeAllListeners();
+      // Tear down per-sid flash timers (audit #876 cluster 1.14 / Task #884).
+      // Without this, every still-flashing sid leaks its `setTimeout` handle
+      // (unref'd, but the closure still pins flashSink internals) past
+      // pipeline disposal — visible as a slow-growing handle count in
+      // long-running tests / HMR reloads.
+      flash.dispose();
     },
     _internals() {
       return { ctx: projectCtx(), sniffer, tracker, toast, flash, diag };

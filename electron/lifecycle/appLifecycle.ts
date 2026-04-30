@@ -67,6 +67,12 @@ export interface LifecycleDeps {
    *  ptyHost. Idempotent; critical on Windows where conpty can otherwise
    *  leak the claude child past Electron quit. */
   killAllPtySessions: () => void;
+  /** Tear down the notify pipeline + its app-level listeners (focus/blur,
+   *  sessionWatcher 'unwatched') and any pending flash timers. Optional
+   *  because `before-quit` may fire before the pipeline is constructed
+   *  (e.g. early failure in app.whenReady). Idempotent on its own.
+   *  Audit #876 cluster 1.14 + 3.8 / Task #884. */
+  disposeNotifyPipeline?: () => void;
   /** Close the SQLite handle on a real quit. */
   closeDb: () => void;
   /** Spawn a fresh main window from the macOS dock-click `activate` path
@@ -85,6 +91,7 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     closeDb,
     createWindow,
     getWindowCount,
+    disposeNotifyPipeline,
   } = deps;
 
   app.on('before-quit', () => {
@@ -93,6 +100,13 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
       killAllPtySessions();
     } catch {
       /* ignore — best-effort cleanup on quit */
+    }
+    if (disposeNotifyPipeline) {
+      try {
+        disposeNotifyPipeline();
+      } catch {
+        /* ignore — best-effort cleanup on quit */
+      }
     }
   });
 

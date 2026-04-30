@@ -42,6 +42,13 @@ export interface FlashSink {
   apply(decision: Decision): void;
   /** Clear the timer for `sid` (used on session teardown). */
   forget(sid: string): void;
+  /** Tear down ALL pending timers and clear the flash map. Used on pipeline
+   *  dispose / app shutdown so we don't leak `setTimeout` handles or hold
+   *  closures over the sink internals past its useful lifetime. Safe to call
+   *  multiple times. After dispose, `apply` still works on the in-memory map
+   *  but no IPC sends will fire because the BrowserWindow is being torn down
+   *  alongside this sink — we rely on the existing `isDestroyed()` guards. */
+  dispose(): void;
   /** Test-only: returns the current in-memory flash map. */
   _peek(): Record<string, boolean>;
 }
@@ -98,6 +105,20 @@ export function createFlashSink(opts: FlashSinkOptions): FlashSink {
     },
     forget(sid) {
       clear(sid);
+    },
+    dispose() {
+      // Snapshot first — `clear()` mutates `timers` and `flashStates`.
+      const sids = Array.from(timers.keys());
+      for (const sid of sids) clear(sid);
+      // Belt-and-braces: clear any flashStates entries that somehow have no
+      // timer (shouldn't happen, but cheap to guarantee). Send on=false so
+      // the renderer mirror clears too.
+      for (const sid of Object.keys(flashStates)) {
+        if (flashStates[sid]) {
+          delete flashStates[sid];
+          send(sid, false);
+        }
+      }
     },
     _peek() {
       return { ...flashStates };

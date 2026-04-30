@@ -163,4 +163,53 @@ describe('createFlashSink', () => {
     // 2 on=true + 1 forget(s1)on=false + 1 auto(s2)on=false = 4 sends.
     expect(sends.length).toBe(4);
   });
+
+  // Audit #876 cluster 1.14 / Task #884 — dispose() must clear ALL pending
+  // timers and the flash map. Reverse-verify: comment out the `clear(sid)`
+  // loop in dispose() and the timer-leak assertion below fails (the auto-
+  // fire would still happen + sends.length grows past expectation).
+  describe('dispose()', () => {
+    it('clears all pending timers + flash state and sends on=false for each active sid', () => {
+      const { win, sends } = makeStubWin();
+      const sink = createFlashSink({
+        getMainWindow: () => win as never,
+        durationMs: 1000,
+      });
+      sink.apply(dec('s1', true));
+      sink.apply(dec('s2', true));
+      sink.apply(dec('s3', true));
+      expect(sink._peek()).toEqual({ s1: true, s2: true, s3: true });
+      expect(sends.length).toBe(3); // 3 on=true
+
+      sink.dispose();
+
+      // All three flash entries cleared + on=false sent for each.
+      expect(sink._peek()).toEqual({});
+      expect(sends.length).toBe(6); // + 3 on=false
+      const offSids = sends.slice(3).map((s) => s.payload.sid).sort();
+      expect(offSids).toEqual(['s1', 's2', 's3']);
+
+      // Timer leak check — advancing past the original duration must NOT
+      // fire any additional sends (timers were cleared).
+      vi.advanceTimersByTime(2000);
+      expect(sends.length).toBe(6);
+    });
+
+    it('is idempotent — second dispose is a no-op', () => {
+      const { win, sends } = makeStubWin();
+      const sink = createFlashSink({ getMainWindow: () => win as never });
+      sink.apply(dec('s1', true));
+      sink.dispose();
+      const sendsBefore = sends.length;
+      sink.dispose();
+      expect(sends.length).toBe(sendsBefore);
+    });
+
+    it('dispose with no active flashes is safe', () => {
+      const { win, sends } = makeStubWin();
+      const sink = createFlashSink({ getMainWindow: () => win as never });
+      expect(() => sink.dispose()).not.toThrow();
+      expect(sends).toEqual([]);
+    });
+  });
 });

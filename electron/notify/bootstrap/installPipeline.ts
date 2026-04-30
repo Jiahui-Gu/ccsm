@@ -20,6 +20,18 @@ import { forgetSid as forgetSessionTitleSid } from '../../sessionTitles';
 
 export type NotifyPipeline = ReturnType<typeof installNotifyPipeline>;
 
+/** Bundle returned by `installNotifyPipelineWithProducers`. The `pipeline`
+ *  is the live pipeline (passed through to fan-out modules). The `dispose`
+ *  hook detaches every producer subscription this module registered (app
+ *  focus/blur listeners + sessionWatcher 'unwatched' listener) AND tears
+ *  down the pipeline itself (sniffer + flash timers). Call from
+ *  `app.before-quit` to avoid HMR / test leaks (audit #876 cluster 3.8 /
+ *  Task #884). */
+export interface InstalledNotifyPipeline {
+  pipeline: NotifyPipeline;
+  dispose: () => void;
+}
+
 export interface NotifyPipelineDeps {
   /** Look up the user-visible name for a sid so toasts can label with the
    *  rename / SDK auto-summary instead of the bare UUID. */
@@ -37,10 +49,11 @@ export interface NotifyPipelineDeps {
 
 /** Construct the pipeline and wire the producer subscriptions. Returns the
  *  live pipeline so main.ts can fan its `setActiveSid` / `markUserInput`
- *  signals from the renderer-IPC layer. */
+ *  signals from the renderer-IPC layer, plus a `dispose` to detach every
+ *  listener registered here. */
 export function installNotifyPipelineWithProducers(
   deps: NotifyPipelineDeps,
-): NotifyPipeline {
+): InstalledNotifyPipeline {
   const pipelineInstance = installNotifyPipeline({
     getMainWindow: () => BrowserWindow.getAllWindows()[0] ?? null,
     isGlobalMutedFn: deps.isGlobalMutedFn,
@@ -56,10 +69,10 @@ export function installNotifyPipelineWithProducers(
   // Focus/blur producer: the decider needs `ctx.focused` to differentiate
   // foreground (Rules 2/3/4) from background (Rule 5). Subscribe at the app
   // level so we cover both windows being created later and existing ones.
-  app.on('browser-window-focus', () => {
+  const onFocus = (): void => {
     pipelineInstance.setFocused(true);
-  });
-  app.on('browser-window-blur', () => {
+  };
+  const onBlur = (): void => {
     // browser-window-blur fires per-window. With only one BrowserWindow this
     // is equivalent to "ccsm is no longer focused"; if multi-window lands
     // we'd need to count instead. Until then, treat blur as defocus.
@@ -67,7 +80,9 @@ export function installNotifyPipelineWithProducers(
       (w) => !w.isDestroyed() && w.isFocused(),
     );
     pipelineInstance.setFocused(anyFocused);
-  });
+  };
+  app.on('browser-window-focus', onFocus);
+  app.on('browser-window-blur', onBlur);
 
   // Drop sniffer/ctx state when a session is unwatched (PTY exit). The
   // existing 'unwatched' emitter is reused so we don't add another teardown
@@ -77,12 +92,41 @@ export function installNotifyPipelineWithProducers(
   // Finally, fan out to `onUnwatchedSid` so callers (main.ts) can drain
   // their own per-sid stores — e.g. badgeManager.unread, which would
   // otherwise inflate the aggregate badge total forever (audit #876 H2).
-  sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
+  const onUnwatched = (evt: { sid?: unknown }): void => {
     if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
     pipelineInstance.forgetSid(evt.sid);
     forgetSessionTitleSid(evt.sid);
     deps.onUnwatchedSid?.(evt.sid);
-  });
+  };
+  sessionWatcher.on('unwatched', onUnwatched);
 
-  return pipelineInstance;
+  let disposed = false;
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // Detach producer listeners so app shutdown / HMR re-install doesn't
+    // leak listener references back into the lifecycle (audit #876 cluster
+    // 3.8 / Task #884). `app.off` and `EventEmitter.off` are idempotent on
+    // unknown handlers, but we tracked the exact references so we don't
+    // accidentally remove someone else's subscription either.
+    try {
+      app.off('browser-window-focus', onFocus);
+      app.off('browser-window-blur', onBlur);
+    } catch {
+      /* ignore — best-effort on shutdown */
+    }
+    try {
+      sessionWatcher.off('unwatched', onUnwatched);
+    } catch {
+      /* ignore — best-effort on shutdown */
+    }
+    // Tear down sniffer subscriptions + flash timers.
+    try {
+      pipelineInstance.dispose();
+    } catch {
+      /* ignore — best-effort on shutdown */
+    }
+  }
+
+  return { pipeline: pipelineInstance, dispose };
 }
