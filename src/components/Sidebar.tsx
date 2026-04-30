@@ -27,6 +27,12 @@ export type SidebarProps = {
    *  repicks via the StatusBar cwd chip. No modal involved — see
    *  App.tsx::newSession. */
   onCreateSession?: () => void;
+  /** Create a new session in a user-picked working directory. Routed
+   *  through App.tsx so the same `claudeAvailableRef !== true` gate that
+   *  protects the `+` button (#900 / #852) also covers the cwd-chevron
+   *  path — otherwise clicking the chevron during the boot probe still
+   *  stranded the user on a blank pane (#910 / #911). */
+  onCreateSessionWithCwd?: (cwd: string) => void;
   onOpenSettings?: () => void;
   onOpenPalette?: () => void;
   onOpenImport?: () => void;
@@ -38,7 +44,7 @@ export type SidebarProps = {
   onMoveSession: (sessionId: string, targetGroupId: string, beforeSessionId: string | null) => void;
 };
 
-export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpenImport, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
+export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSettings, onOpenPalette, onOpenImport, activeSessionId, focusedGroupId, onSelectSession, onFocusGroup, sessions, onMoveSession }: SidebarProps) {
   const { t } = useTranslation();
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
@@ -73,8 +79,22 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
 
   // Wire the top picker through createSession({ cwd }). The renderer's
   // `onCreateSession` prop only knows the LRU-default flow; for the chevron
-  // path we go straight to the store so we can pass an explicit cwd.
+  // path we go through App.tsx's `onCreateSessionWithCwd` wrapper so it
+  // honors the same `claudeAvailableRef` boot-probe gate as the `+` button
+  // (PR #623 only protected `+`; #910 / #911 extend the gate here). Falls
+  // back to a direct store call if the prop isn't wired (e.g. legacy
+  // tests) so behavior stays unchanged when the gate isn't relevant.
   const createSession = useStore((s) => s.createSession);
+  const pickCwd = React.useCallback(
+    (picked: string) => {
+      if (onCreateSessionWithCwd) {
+        onCreateSessionWithCwd(picked);
+      } else {
+        createSession({ cwd: picked });
+      }
+    },
+    [onCreateSessionWithCwd, createSession]
+  );
 
   function handleNewGroup() {
     const id = createGroup();
@@ -152,7 +172,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
             onOpenChange={setTopCwdPickerOpen}
             anchorRef={topChevronRef}
             onPick={(picked) => {
-              createSession({ cwd: picked });
+              pickCwd(picked);
               setTopCwdPickerOpen(false);
             }}
             onBrowse={async () => {
@@ -163,7 +183,7 @@ export function Sidebar({ onCreateSession, onOpenSettings, onOpenPalette, onOpen
               setTopCwdPickerOpen(false);
               const picked = await window.ccsm?.pickCwd?.();
               if (typeof picked === 'string' && picked.length > 0) {
-                createSession({ cwd: picked });
+                pickCwd(picked);
               }
             }}
           />
