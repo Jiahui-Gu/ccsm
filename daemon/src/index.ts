@@ -1,19 +1,14 @@
 import { ulid } from 'ulid';
 import pino from 'pino';
 import { createRequire } from 'node:module';
+import { SUPERVISOR_RPCS } from './envelope/supervisor-rpcs.js';
 
 const require = createRequire(import.meta.url);
 const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
 
-// TODO(T16): replace placeholder with the canonical SUPERVISOR_RPCS dispatcher
-// declared in spec §3.4.1.h. Listed literals only — control-plane carve-out.
-const SUPERVISOR_RPCS = [
-  '/healthz',
-  '/stats',
-  'daemon.hello',
-  'daemon.shutdown',
-  'daemon.shutdownForUpgrade',
-] as const;
+// T11 landed the canonical export; T16 owns the control-socket dispatcher
+// that actually routes on this allowlist. Keep a `void` reference here so
+// the import stays live until T16 wires it.
 void SUPERVISOR_RPCS;
 
 const bootNonce = ulid();
