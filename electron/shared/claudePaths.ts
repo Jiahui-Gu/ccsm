@@ -56,9 +56,9 @@ export function getClaudeProjectsDir(): string {
 
 /**
  * Absolute path to the CLI's user settings file:
- * `<claudeConfigDir>/settings.json`. Read by the connection-view IPC and
- * the model-list discovery; the user edits it via `claude /config` or by
- * hand. ccsm never writes it.
+ * `<claudeConfigDir>/settings.json`. Read by the new-session default-model
+ * lookup; the user edits it via `claude /config` or by hand. ccsm never
+ * writes it.
  */
 export function getClaudeSettingsPath(): string {
   return path.join(getClaudeConfigDir(), 'settings.json');

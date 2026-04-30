@@ -8,17 +8,15 @@ import { useFocusRestore } from '../lib/useFocusRestore';
 import { DURATION_RAW, EASING } from '../lib/motion';
 import { AppearancePane } from './settings/AppearancePane';
 import { NotificationsPane } from './settings/NotificationsPane';
-import { ConnectionPane } from './settings/ConnectionPane';
 import { UpdatesPane } from './settings/UpdatesPane';
 
-type Tab = 'appearance' | 'notifications' | 'connection' | 'updates';
+type Tab = 'appearance' | 'notifications' | 'updates';
 
 // Tab catalog. Labels are i18n keys under `settings:tabs.*` rather than
 // literal strings, so the nav re-renders when the user flips language.
 const TABS: { id: Tab; tabKey: string }[] = [
   { id: 'appearance', tabKey: 'appearance' },
   { id: 'notifications', tabKey: 'notifications' },
-  { id: 'connection', tabKey: 'connection' },
   { id: 'updates', tabKey: 'updates' }
 ];
 
@@ -33,8 +31,7 @@ export function SettingsDialog({
 }) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'appearance');
 
-  // Sync the tab when the dialog is reopened with a fresh initialTab (e.g.,
-  // `/config` vs `/model` — the latter wants the connection tab).
+  // Sync the tab when the dialog is reopened with a fresh initialTab.
   useEffect(() => {
     if (open && initialTab) setTab(initialTab);
   }, [open, initialTab]);
@@ -69,23 +66,20 @@ export function SettingsDialog({
   // Roving-focus tablist: only the active tab is in the Tab order; arrow
   // keys move between tabs. We render real `role="tab"` / `role="tabpanel"`
   // with `aria-controls` / `aria-labelledby` wiring so screen readers
-  // announce "Tab 2 of 4: Notifications, selected".
+  // announce the current tab and total count.
   const tabRefs = useRef<Record<Tab, HTMLButtonElement | null>>({
     appearance: null,
     notifications: null,
-    connection: null,
     updates: null
   });
   const tabIds: Record<Tab, string> = {
     appearance: 'settings-tab-appearance',
     notifications: 'settings-tab-notifications',
-    connection: 'settings-tab-connection',
     updates: 'settings-tab-updates'
   };
   const panelIds: Record<Tab, string> = {
     appearance: 'settings-panel-appearance',
     notifications: 'settings-panel-notifications',
-    connection: 'settings-panel-connection',
     updates: 'settings-panel-updates'
   };
 
@@ -175,7 +169,6 @@ export function SettingsDialog({
           >
             {tab === 'appearance' && <AppearancePane />}
             {tab === 'notifications' && <NotificationsPane />}
-            {tab === 'connection' && <ConnectionPane />}
             {tab === 'updates' && <UpdatesPane />}
           </div>
         </div>

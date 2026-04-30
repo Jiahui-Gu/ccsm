@@ -237,15 +237,14 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
     },
 
     importSession: ({ name, cwd, groupId, resumeSessionId, projectDir: _projectDir }) => {
-      const { sessions, groups, models, connection } = get();
+      const { sessions, groups, claudeSettingsDefaultModel } = get();
       const existing = sessions.find((s) => s.id === resumeSessionId);
       if (existing) {
         set({ activeId: existing.id, focusedGroupId: null });
         return existing.id;
       }
       const id = resumeSessionId;
-      let initialModel = connection?.model ?? '';
-      if (!initialModel) initialModel = models[0]?.id ?? '';
+      const initialModel = claudeSettingsDefaultModel ?? '';
       const ensured = ensureUsableGroup(groups, groupId);
       const imported: Session = {
         id,

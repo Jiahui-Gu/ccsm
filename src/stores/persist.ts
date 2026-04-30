@@ -22,7 +22,7 @@ export const STATE_KEY = 'main';
  * field consumed by `resolvePersistedSidebarWidth` during hydration. New
  * writes always populate `sidebarWidth` (px) instead.
  *
- * Runtime-only fields (models, connection, installerCorrupt, etc.) are
+ * Runtime-only fields (installerCorrupt, etc.) are
  * intentionally NOT persisted — they're tied to the current process and
  * restoring them would block recovery on next launch. See PR #156.
  */

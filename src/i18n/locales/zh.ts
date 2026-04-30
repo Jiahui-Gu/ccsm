@@ -85,12 +85,11 @@ const zh: EnCatalog = {
   },
   settings: {
     title: '设置',
-    description: '配置外观、通知、连接与更新。',
+    description: '配置外观、通知与更新。',
     tabs: {
       general: '通用',
       appearance: '外观',
       notifications: '通知',
-      connection: '连接',
       updates: '更新'
     },
     theme: '主题',
@@ -135,31 +134,6 @@ const zh: EnCatalog = {
       enable: '当会话需要输入时显示桌面通知',
       sound: '声音',
       soundHint: '播放系统默认通知声。'
-    },
-    connection: {
-      intro:
-        'CCSM 从 <code>~/.claude/settings.json</code> 以及 <code>ANTHROPIC_*</code> 环境变量读取连接配置。要修改请运行 <code>claude /config</code> 或直接编辑文件，然后重启 CCSM 生效。',
-      baseUrl: 'Base URL',
-      baseUrlDefault: 'https://api.anthropic.com（默认）',
-      defaultModel: '默认模型',
-      modelUnset: '（未设置 — CLI 会用自身默认值）',
-      authToken: 'Auth Token',
-      authConfigured: '已配置',
-      authNotConfigured: '未配置 — 运行 `claude /config` 完成登录。',
-      discoveredModels: '可用模型（{{count}}）',
-      discoveredModelsLoadingCount: '可用模型（…）',
-      discoveredModelsHint:
-        '合并自 settings.json、环境变量和 CLI 内置选择列表。',
-      modelsLoading: '加载中…',
-      modelsEmpty: '没有发现可用模型。运行 <code>claude /config</code> 配置一个。',
-      openSettingsFile: '打开 settings.json',
-      opening: '打开中…',
-      copyBaseUrl: '复制 URL',
-      copyModel: '复制模型',
-      copied: '已复制',
-      modelSourceSettings: '设置',
-      modelSourceCliPicker: 'CLI 选择列表',
-      modelSourceFallback: '兜底'
     },
     updates: {
       version: '版本',

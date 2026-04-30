@@ -38,12 +38,11 @@ const root = createRoot(document.getElementById('root')!);
 
 // perf/startup-render-gate: render IMMEDIATELY, then kick hydration in the
 // background. Previously the renderer awaited `hydrateStore()` (which
-// includes a `loadModels()` shell-out to the claude binary, 100-500ms)
+// included a `loadModels()` shell-out to the claude binary, 100-500ms)
 // before calling root.render(), so first paint was gated on the slowest
 // IPC of the boot sequence. Components that read persisted state subscribe
 // to `useStore(s => s.hydrated)` and show skeleton/empty UI for the
-// sub-frame window before hydration lands. Connection + models loaders are
-// now fire-and-forget inside `hydrateStore()` itself.
+// sub-frame window before hydration lands.
 const trace = ((window as unknown as {
   __ccsmHydrationTrace?: HydrationTrace;
 }).__ccsmHydrationTrace ??= {} as HydrationTrace);

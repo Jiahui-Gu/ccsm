@@ -1,25 +1,11 @@
 // System / app-shell IPC handlers. Extracted from electron/main.ts (Task #742
 // Phase B).
 //
-// Covers: i18n locale read/write (with menu+tray rebuild), connection probe
-// (~/.claude/settings.json + ANTHROPIC_* env), models list, app version, and
+// Covers: i18n locale read/write (with menu+tray rebuild), app version, and
 // the default-model lookup used by the new-session flow.
-//
-// The connection surface is read-only by design — users edit
-// ~/.claude/settings.json via `claude /config` or by hand. This module just
-// surfaces it to the renderer so the StatusBar / Settings dialog can show
-// the active connection without a CLI round-trip.
 
 import type { IpcMain, App } from 'electron';
-import { shell } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import { fromMainFrame } from '../security/ipcGuards';
-import { getClaudeSettingsPath } from '../shared/claudePaths';
-import {
-  listModelsFromSettings,
-  readDefaultModelFromSettings,
-} from '../agent/list-models-from-settings';
+import { readDefaultModelFromSettings } from '../agent/read-default-model';
 
 export interface SystemIpcDeps {
   ipcMain: IpcMain;
@@ -29,73 +15,6 @@ export interface SystemIpcDeps {
   applyAppMenuLocale: () => void;
   /** Rebuild the tray menu/tooltip with the current locale. Same trigger. */
   applyTrayLocale: () => void;
-}
-
-/** Pure helper: read ~/.claude/settings.json + env, return the connection
- *  view shown in the StatusBar / Settings dialog. Exported for unit tests.
- *  `settingsFile` is overridable so tests don't have to touch the real
- *  homedir file. Default honors `CLAUDE_CONFIG_DIR` (#812 bug fix — used
- *  to hardcode `os.homedir()` and silently ignore the env override). */
-export function readConnectionView(
-  env: NodeJS.ProcessEnv,
-  settingsFile: string = getClaudeSettingsPath(),
-): {
-  baseUrl: string | null;
-  model: string | null;
-  hasAuthToken: boolean;
-} {
-  let settingsModel: string | null = null;
-  let settingsBaseUrl: string | null = null;
-  let settingsAuthToken = false;
-  try {
-    const raw = fs.readFileSync(settingsFile, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      model?: unknown;
-      env?: Record<string, unknown>;
-    };
-    if (typeof parsed.model === 'string') settingsModel = parsed.model;
-    const sEnv =
-      parsed.env && typeof parsed.env === 'object' ? parsed.env : null;
-    if (sEnv) {
-      if (typeof sEnv.ANTHROPIC_BASE_URL === 'string')
-        settingsBaseUrl = sEnv.ANTHROPIC_BASE_URL;
-      if (
-        typeof sEnv.ANTHROPIC_AUTH_TOKEN === 'string' ||
-        typeof sEnv.ANTHROPIC_API_KEY === 'string'
-      ) {
-        settingsAuthToken = true;
-      }
-    }
-  } catch {
-    // Missing / malformed — fall through to env-only view.
-  }
-  const baseUrl = settingsBaseUrl ?? env.ANTHROPIC_BASE_URL ?? null;
-  const model = settingsModel ?? env.ANTHROPIC_MODEL ?? null;
-  const hasAuthToken =
-    settingsAuthToken ||
-    !!env.ANTHROPIC_AUTH_TOKEN?.trim() ||
-    !!env.ANTHROPIC_API_KEY?.trim();
-  return { baseUrl, model, hasAuthToken };
-}
-
-/** Pure handler for `models:list`. Exported for unit testing. Returns `[]`
- *  on any error (settings.json missing/malformed, fs error) so the renderer
- *  Settings pane shows an empty model list instead of receiving an opaque
- *  IPC rejection (Electron surfaces those as "An object could not be
- *  cloned"). Audit risk #10. The renderer caller already catches and shows
- *  an empty list on rejection, so the user-visible behavior is the same;
- *  the win is a logged diagnostic in main + no bridge error in renderer
- *  console. */
-export async function handleModelsList(): Promise<
-  Awaited<ReturnType<typeof listModelsFromSettings>>['models']
-> {
-  try {
-    const res = await listModelsFromSettings();
-    return res.models;
-  } catch (err) {
-    console.error('[main] models:list failed:', err);
-    return [];
-  }
 }
 
 export function registerSystemIpc(deps: SystemIpcDeps): void {
@@ -127,35 +46,6 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
     }
   });
 
-  // Connection + models IPC. Single source of truth = ~/.claude/settings.json
-  // (+ ANTHROPIC_* env vars). Users edit via `claude /config` or by hand;
-  // CCSM does not let them edit the connection here.
-  ipcMain.handle('connection:read', () => readConnectionView(process.env));
-  ipcMain.handle('connection:openSettingsFile', async (e) => {
-    if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-    // #812 bug fix: was `path.join(os.homedir(), '.claude', 'settings.json')`
-    // which silently ignored CLAUDE_CONFIG_DIR. With ccsm setting that env
-    // var so the bundled CLI uses a per-instance config tree, the "open
-    // settings file" action used to open a stale file in the real homedir
-    // instead of the active config tree.
-    const file = getClaudeSettingsPath();
-    // shell.openPath returns '' on success, error string on failure. If the
-    // file does not exist, create an empty stub so the editor opens cleanly.
-    if (!fs.existsSync(file)) {
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, '{}\n', 'utf8');
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
-    const result = await shell.openPath(file);
-    return result === '' ? { ok: true } : { ok: false, error: result };
-  });
-  ipcMain.handle('models:list', handleModelsList);
   ipcMain.handle('app:getVersion', () => app.getVersion());
 
   // The new-session default model comes straight from the user's CLI
@@ -183,5 +73,3 @@ export function registerSystemIpc(deps: SystemIpcDeps): void {
     /* ignore — falls through to the default 'en' */
   }
 }
-
-// Module exports above are the surface; no trailing helpers.
