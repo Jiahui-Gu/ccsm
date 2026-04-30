@@ -1,5 +1,8 @@
 {
   "name": "@ccsm/daemon",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  }
 }
