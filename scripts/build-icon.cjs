@@ -15,7 +15,10 @@
 //
 // Output:
 //   build/icon.ico  — multi-res Windows icon (16/24/32/48/64/128/256), Vista+ PNG entries
-//   build/icon.png  — 256x256 PNG, used by electron-builder for Linux targets
+//   build/icon.png  — 1024x1024 PNG, used by electron-builder for Linux + macOS
+//                     targets. macOS dmg packaging requires the source image to
+//                     be at least 512x512; we ship 1024 so iconset generation
+//                     has plenty of headroom.
 //
 // The render function is intentionally duplicated from electron/main.ts
 // buildTrayIcon (and from scripts/screenshot-512-tray.cjs). Three callers, one
@@ -28,7 +31,15 @@ const { mkdirSync, writeFileSync } = require('node:fs');
 const { app, nativeImage } = require('electron');
 
 const OUT_DIR = path.resolve(__dirname, '..', 'build');
+// Sizes packed into the multi-res Windows .ico. 256 is the max the legacy ICO
+// header can address (it encodes 256 as 0 in the 1-byte width field). The
+// standalone build/icon.png is generated separately at PNG_SIZE below for
+// Linux + macOS targets, where electron-builder needs a higher-resolution
+// source than 256x256.
 const SIZES = [16, 24, 32, 48, 64, 128, 256];
+// Source resolution for the standalone build/icon.png. macOS dmg packaging
+// rejects anything below 512x512; 1024 gives the iconset generator headroom.
+const PNG_SIZE = 1024;
 
 // Render the "C" mark at an arbitrary square size. Constants are scaled from
 // the original 16x16 design (rInner = rOuter - 3, arcGapHalf = 2.2) so the
@@ -121,11 +132,14 @@ app.whenReady().then(() => {
   writeFileSync(icoPath, ico);
   console.log(`wrote ${icoPath} (${ico.length} bytes, ${entries.length} resolutions: ${SIZES.join('/')})`);
 
-  // 256x256 PNG for Linux (and as a generic fallback). electron-builder will
-  // synthesize per-target sizes from this one source on Linux.
+  // High-res PNG for Linux + macOS (and as a generic fallback). electron-builder
+  // synthesizes per-target sizes from this one source; macOS dmg packaging
+  // requires >= 512x512 so we render fresh at PNG_SIZE rather than reusing the
+  // 256x256 entry from the .ico.
+  const pngImage = renderCMark(PNG_SIZE).toPNG();
   const pngPath = path.join(OUT_DIR, 'icon.png');
-  writeFileSync(pngPath, entries[entries.length - 1].png);
-  console.log(`wrote ${pngPath} (${entries[entries.length - 1].png.length} bytes, 256x256)`);
+  writeFileSync(pngPath, pngImage);
+  console.log(`wrote ${pngPath} (${pngImage.length} bytes, ${PNG_SIZE}x${PNG_SIZE})`);
 
   app.quit();
 });
