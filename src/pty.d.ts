@@ -46,7 +46,7 @@ export type CheckClaudeAvailableResult =
 
 export interface CcsmPtyApi {
   list(): Promise<PtySessionInfo[]>;
-  spawn(sid: string, cwd: string): Promise<SpawnResult>;
+  spawn(sid: string, cwd: string, opts?: { cols?: number; rows?: number }): Promise<SpawnResult>;
   attach(sid: string): Promise<AttachResult | null>;
   detach(sid: string): Promise<void>;
   input(sid: string, data: string): Promise<void>;

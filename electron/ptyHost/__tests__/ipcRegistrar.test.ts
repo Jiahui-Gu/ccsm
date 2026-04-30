@@ -212,6 +212,67 @@ describe('pty:spawn', () => {
     expect(call[2]).toBe('/bin/claude');
   });
 
+  // Task #852 — renderer measures the visible viewport via FitAddon and
+  // passes cols/rows so the PTY launches at the size it will be displayed
+  // at (eliminating the "top-painted, bottom-black-void" alt-screen
+  // divergence). Without this forwarding the trust-prompt rendered by
+  // claude at the default 120x30 stays stuck at that size while the
+  // visible xterm gets resized post-write to 134x51, leaving the bottom
+  // 21 rows of the prompt invisible until the user types.
+  it('forwards renderer-supplied cols/rows from opts to spawnPtySession (#852)', () => {
+    const ipc = makeFakeIpc();
+    bus().resolveClaude.mockReturnValue('/bin/claude');
+    const deps = makeDeps({
+      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 134, rows: 51, cwd: '/picked' })),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerPtyIpc(ipc as any, deps);
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
+    const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
+    const opts = call[3] as { cols?: number; rows?: number };
+    expect(opts.cols).toBe(134);
+    expect(opts.rows).toBe(51);
+  });
+
+  it('omits cols/rows when opts is missing or non-numeric (lifecycle uses defaults)', () => {
+    const ipc = makeFakeIpc();
+    bus().resolveClaude.mockReturnValue('/bin/claude');
+    const deps = makeDeps({
+      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerPtyIpc(ipc as any, deps);
+    // No opts argument at all.
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
+    let call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
+    let opts = call[3] as { cols?: number; rows?: number };
+    expect(opts.cols).toBeUndefined();
+    expect(opts.rows).toBeUndefined();
+
+    // Garbage opts (non-numeric) — defensive parsing still falls back.
+    (deps.spawnPtySession as ReturnType<typeof vi.fn>).mockClear();
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 'wide', rows: null });
+    call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
+    opts = call[3] as { cols?: number; rows?: number };
+    expect(opts.cols).toBeUndefined();
+    expect(opts.rows).toBeUndefined();
+  });
+
+  it('floors fractional cols/rows and clamps to a >=2 minimum', () => {
+    const ipc = makeFakeIpc();
+    bus().resolveClaude.mockReturnValue('/bin/claude');
+    const deps = makeDeps({
+      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' })),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerPtyIpc(ipc as any, deps);
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134.7, rows: 1 });
+    const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
+    const opts = call[3] as { cols?: number; rows?: number };
+    expect(opts.cols).toBe(134);
+    expect(opts.rows).toBe(2);
+  });
+
   it('returns {ok:false, error:spawn_failed:...} when spawnPtySession throws', () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');

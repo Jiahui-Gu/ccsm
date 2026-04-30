@@ -29,8 +29,11 @@ const ptyExitListeners = new Set<(e: PtyExitPayload) => void>();
 
 const ccsmPty = {
   list: (): Promise<unknown> => ipcRenderer.invoke('pty:list'),
-  spawn: (sid: string, cwd: string): Promise<unknown> =>
-    ipcRenderer.invoke('pty:spawn', sid, cwd),
+  spawn: (
+    sid: string,
+    cwd: string,
+    opts?: { cols?: number; rows?: number },
+  ): Promise<unknown> => ipcRenderer.invoke('pty:spawn', sid, cwd, opts),
   attach: (sid: string): Promise<unknown> => ipcRenderer.invoke('pty:attach', sid),
   detach: (sid: string): Promise<void> => ipcRenderer.invoke('pty:detach', sid),
   input: (sid: string, data: string): Promise<void> =>

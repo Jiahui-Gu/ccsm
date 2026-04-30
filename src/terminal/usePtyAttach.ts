@@ -126,6 +126,46 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       const term = getTerm();
       if (term) term.reset();
 
+      // Task #852 — measure the visible viewport BEFORE spawn / write so
+      // the PTY launches at the size it will actually be displayed at.
+      // Otherwise the default 120x30 PTY emits its first frame (e.g.
+      // claude's alt-screen trust prompt) at the wrong size, the renderer
+      // writes that snapshot, then a follow-up `fit.fit()` resizes the
+      // visible xterm — extending the buffer downward with blank rows
+      // (the "top-painted, bottom-black-void" bug). claude has no reason
+      // to repaint until input arrives, so the user sees a half-rendered
+      // dialog they can't see the answer to. Push the real size first.
+      const fitForSpawn = getFit();
+      const termForSpawn = getTerm();
+      let viewportCols: number | undefined;
+      let viewportRows: number | undefined;
+      if (fitForSpawn && termForSpawn) {
+        try {
+          const proposed = fitForSpawn.proposeDimensions();
+          if (
+            proposed &&
+            Number.isFinite(proposed.cols) &&
+            Number.isFinite(proposed.rows) &&
+            proposed.cols >= 2 &&
+            proposed.rows >= 2
+          ) {
+            viewportCols = proposed.cols;
+            viewportRows = proposed.rows;
+            // Pre-size the visible terminal so the snapshot we're about to
+            // write lands in a buffer of matching dimensions. The post-attach
+            // `fit.fit()` below is then a no-op for sizing and only needs to
+            // push the (already-correct) cols/rows to the PTY.
+            try {
+              termForSpawn.resize(viewportCols, viewportRows);
+            } catch {
+              // resize is best-effort.
+            }
+          }
+        } catch (e) {
+          console.warn('[TerminalPane] proposeDimensions failed', e);
+        }
+      }
+
       try {
         // Spawn-on-attach-null fallback. The renderer drives session
         // lifecycle, so an attach against a sid main has not seen yet
@@ -136,7 +176,10 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           | { snapshot: string; cols: number; rows: number; pid: number }
           | null;
         if (!res) {
-          const spawnResult = (await pty.spawn(sessionId, cwd ?? '')) as
+          const spawnResult = (await pty.spawn(sessionId, cwd ?? '', {
+            cols: viewportCols,
+            rows: viewportRows,
+          })) as
             | { ok: true; sid: string; pid: number; cols: number; rows: number }
             | { ok: false; error: string };
           if (!spawnResult || spawnResult.ok === false) {
@@ -155,6 +198,11 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         setActiveSid(sessionId);
         const t2 = getTerm();
         if (t2) {
+          // Resize visible xterm to PTY's actual size BEFORE writing the
+          // snapshot. For fresh spawns this matches viewportCols/Rows
+          // (because we passed them to spawn). For attach-to-existing the
+          // snapshot is at the PTY's current size; matching that before
+          // write avoids alt-screen reflow blanks.
           try {
             t2.resize(cols, rows);
           } catch {

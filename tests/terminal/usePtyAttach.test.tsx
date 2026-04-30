@@ -19,7 +19,8 @@ const fakeTerm = {
   rows: 24,
 };
 const fitFitSpy = vi.fn();
-const fakeFit = { fit: fitFitSpy };
+const proposeDimensionsSpy = vi.fn(() => ({ cols: 134, rows: 51 }));
+const fakeFit = { fit: fitFitSpy, proposeDimensions: proposeDimensionsSpy };
 
 // We bypass ensureTerminal by mocking the singleton module directly.
 vi.mock('../../src/terminal/xtermSingleton', async () => {
@@ -123,6 +124,8 @@ describe('usePtyAttach', () => {
     onDataSpy.mockClear();
     inputDisposableDispose.mockClear();
     fitFitSpy.mockClear();
+    proposeDimensionsSpy.mockClear();
+    proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
     clearPtyExitSpy.mockClear();
   });
 
@@ -188,9 +191,57 @@ describe('usePtyAttach', () => {
     renderHook(() => usePtyAttach('sid-C', '/cwd'));
     await flushAll();
 
-    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd');
+    expect(spies.spawn).toHaveBeenCalledWith('sid-C', '/cwd', expect.objectContaining({}));
     expect(spies.attach).toHaveBeenCalledTimes(2);
     expect(writeSpy).toHaveBeenCalledWith('after-spawn');
+  });
+
+  // Task #852 — when pty.attach returns null and we fall back to spawn, the
+  // viewport-measured cols/rows from FitAddon.proposeDimensions() must be
+  // forwarded to spawn so the PTY launches at the visible size. Otherwise
+  // claude renders its alt-screen prompt at 120x30 and the bottom of the
+  // visible 134x51 xterm stays a black void until the user types.
+  it('forwards viewport-measured cols/rows to spawn (fixes #852 alt-screen divergence)', async () => {
+    let calls = 0;
+    const { bridge, spies } = makePtyBridge();
+    spies.attach.mockImplementation(async (_sid: string) => {
+      calls += 1;
+      if (calls === 1) return null;
+      return { snapshot: 'after-spawn', cols: 134, rows: 51, pid: 1 };
+    });
+    proposeDimensionsSpy.mockReturnValue({ cols: 134, rows: 51 });
+    (window as any).ccsmPty = bridge;
+
+    renderHook(() => usePtyAttach('sid-852', '/cwd'));
+    await flushAll();
+
+    expect(proposeDimensionsSpy).toHaveBeenCalled();
+    expect(spies.spawn).toHaveBeenCalledWith('sid-852', '/cwd', { cols: 134, rows: 51 });
+    // Visible terminal pre-sized BEFORE snapshot write so alt-screen
+    // contents land in a buffer of matching dimensions (no buffer-extension
+    // black void at the bottom).
+    expect(resizeSpy).toHaveBeenCalledWith(134, 51);
+    // The pre-write resize precedes the snapshot write.
+    const resizeOrder = resizeSpy.mock.invocationCallOrder[0];
+    const writeOrder = writeSpy.mock.invocationCallOrder[0];
+    expect(resizeOrder).toBeLessThan(writeOrder);
+  });
+
+  it('omits cols/rows when FitAddon proposeDimensions returns undefined', async () => {
+    let calls = 0;
+    const { bridge, spies } = makePtyBridge();
+    spies.attach.mockImplementation(async (_sid: string) => {
+      calls += 1;
+      if (calls === 1) return null;
+      return { snapshot: 'after-spawn', cols: 80, rows: 24, pid: 1 };
+    });
+    proposeDimensionsSpy.mockReturnValue(undefined as unknown as { cols: number; rows: number });
+    (window as any).ccsmPty = bridge;
+
+    renderHook(() => usePtyAttach('sid-852b', '/cwd'));
+    await flushAll();
+
+    expect(spies.spawn).toHaveBeenCalledWith('sid-852b', '/cwd', { cols: undefined, rows: undefined });
   });
 
   it('flips to error state when ccsmPty bridge is missing', async () => {
