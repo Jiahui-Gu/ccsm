@@ -29,6 +29,18 @@ let fit: FitAddon | null = null;
 let activeSid: string | null = null;
 let unsubscribeData: (() => void) | null = null;
 let inputDisposable: { dispose: () => void } | null = null;
+// L4 PR-D (#866): callback installed by `usePtyAttach` once it has wired the
+// snapshot/dedupe-by-seq flow. Invoked by `useTerminalResize` AFTER pushing
+// a new size to the headless mirror so the visible xterm can re-render
+// from the reflowed buffer's cell content rather than waiting on claude
+// to repaint (claude's TUI is alt-screen and does not repaint on
+// SIGWINCH unless input arrives — same root cause as #852). The handler
+// is responsible for: (1) requesting a fresh `getBufferSnapshot`,
+// (2) re-installing the buffering listener so live chunks during the
+// replay window aren't lost, (3) writing the snapshot, (4) bumping
+// the per-attach `snapSeq` to the snapshot's seq so subsequent live
+// chunks dedupe correctly.
+let snapshotReplay: (() => Promise<void>) | null = null;
 
 export function getTerm(): Terminal | null {
   return term;
@@ -60,6 +72,20 @@ export function getInputDisposable(): { dispose: () => void } | null {
 
 export function setInputDisposable(d: { dispose: () => void } | null): void {
   inputDisposable = d;
+}
+
+/**
+ * L4 PR-D (#866): get the snapshot-replay handler installed by `usePtyAttach`.
+ * Returns null when no session is attached. Callers (currently only
+ * `useTerminalResize`) await the returned promise so they can sequence
+ * subsequent work after the replay completes.
+ */
+export function getSnapshotReplay(): (() => Promise<void>) | null {
+  return snapshotReplay;
+}
+
+export function setSnapshotReplay(fn: (() => Promise<void>) | null): void {
+  snapshotReplay = fn;
 }
 
 /**
@@ -209,6 +235,7 @@ export function __resetSingletonForTests(): void {
   activeSid = null;
   unsubscribeData = null;
   inputDisposable = null;
+  snapshotReplay = null;
   if (typeof window !== 'undefined') {
     delete window.__ccsmTerm;
   }
