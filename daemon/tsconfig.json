@@ -13,7 +13,7 @@
     "isolatedModules": true,
     "declaration": true,
     "sourceMap": true,
-    "outDir": "../dist/daemon",
+    "outDir": "./dist-daemon",
     "rootDir": "src",
     "lib": ["ES2022"]
   },

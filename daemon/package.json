@@ -1,5 +1,5 @@
 {
-  "name": "ccsm-daemon",
+  "name": "@ccsm/daemon",
   "private": true,
   "type": "module"
 }
