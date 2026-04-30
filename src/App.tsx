@@ -14,6 +14,7 @@ import { DragRegion, WindowControls } from './components/WindowControls';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { useStore } from './stores/store';
 import { initI18n } from './i18n';
+import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { useThemeEffect } from './app-effects/useThemeEffect';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
@@ -64,6 +65,7 @@ function AppEffectsBridge(): null {
 }
 
 export default function App() {
+  const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
   const flashStates = useStore((s) => s.flashStates);
   const activeId = useStore((s) => s.activeId);
@@ -246,7 +248,27 @@ export default function App() {
   // We still blur the trigger element synchronously so repeated Enter
   // presses on the "New session" button do not spawn extra sessions
   // before xterm has had a chance to take focus.
+  // `claudeAvailableRef` mirrors the boot probe state for the gate below.
+  // We read it inside `newSession` instead of closing over the React state
+  // because the callback is also passed down to long-lived consumers
+  // (Sidebar, CommandPalette) and we want the latest probe value without
+  // re-rendering them when it flips.
+  const claudeAvailableRef = React.useRef(claudeAvailable);
+  React.useEffect(() => {
+    claudeAvailableRef.current = claudeAvailable;
+  }, [claudeAvailable]);
+
   const newSession = React.useCallback(() => {
+    // Bug #852 / Task #900: clicking "new session" while the boot probe
+    // (`claudeAvailable === undefined`) is still pending would swap the
+    // right pane to the blank `[data-testid="claude-availability-probing"]`
+    // spacer (no PTY spawn). Short-circuit until the probe resolves so the
+    // user can't strand themselves on a blank pane. The probing spacer
+    // below now also shows a visible "Checking Claude CLI…" affordance
+    // for any pre-existing active session caught in the same window.
+    if (claudeAvailableRef.current !== true) {
+      return;
+    }
     if (typeof document !== 'undefined') {
       const active = document.activeElement;
       if (active instanceof HTMLElement && active !== document.body) {
@@ -289,9 +311,19 @@ export default function App() {
   ) : claudeAvailable === true ? (
     <TerminalPane sessionId={active.id} cwd={active.cwd ?? ''} />
   ) : (
-    // Probing claude availability — render an empty flex spacer
-    // so the layout doesn't jump once the boot check resolves.
-    <div className="flex-1 min-h-0" data-testid="claude-availability-probing" />
+    // Probing claude availability — the right pane would otherwise be a
+    // blank flex spacer for the duration of the boot probe, which made the
+    // pane look broken when a user clicked "new session" before the probe
+    // resolved (Task #900 / bug #852). Render a low-key "Checking…" line
+    // instead so the user understands the pane is intentional. The
+    // outer testid is preserved so existing harness probes that wait for
+    // it to disappear still work.
+    <div
+      className="flex-1 min-h-0 flex items-center justify-center text-xs text-[var(--muted-fg)]"
+      data-testid="claude-availability-probing"
+    >
+      <span>{t('claudeAvailability.probing')}</span>
+    </div>
   );
 
   return (
