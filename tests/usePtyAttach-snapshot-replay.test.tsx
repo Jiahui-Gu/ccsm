@@ -139,6 +139,7 @@ describe('usePtyAttach — snapshot-then-live replay (L4 PR-B)', () => {
     singleton.setActiveSid(null);
     singleton.setUnsubscribeData(null);
     singleton.setInputDisposable(null);
+    singleton.setSnapshotReplay(null);
   });
 
   afterEach(() => {
@@ -251,6 +252,74 @@ describe('usePtyAttach — snapshot-then-live replay (L4 PR-B)', () => {
       // sid-X snapshot first (round 1), then sid-Y snapshot, then the
       // interleaved chunk (seq 2 > captured seq 1).
       expect(M.writes).toEqual(['SNAP_X', 'SNAP_Y', 'NEW_Y_2']);
+    });
+  });
+
+  // L4 PR-D (#866): after attach, the hook must install a snapshot-replay
+  // handler on the singleton so `useTerminalResize` can re-render the
+  // visible xterm from the reflowed headless buffer post-SIGWINCH. The
+  // handler re-runs steps 2-5 (buffer / snapshot / reset+write / drain)
+  // against the SAME data subscription so live chunks during the replay
+  // window aren't duplicated or lost.
+  it('PR-D: installs a snapshot-replay handler on the singleton after attach', async () => {
+    M.pendingSnapshot = newPendingSnapshot();
+    renderHook(() => usePtyAttach('sid-D', '/tmp'));
+    await waitFor(() => expect(M.snapshotCalls).toContain('sid-D'));
+    await act(async () => {
+      M.pendingSnapshot!.resolve({ snapshot: 'SNAP_D', seq: 5 });
+    });
+    await waitFor(() => expect(M.writes).toEqual(['SNAP_D']));
+
+    // Replay handler must be installed.
+    const replay = singleton.getSnapshotReplay();
+    expect(typeof replay).toBe('function');
+
+    // Invoking the replay should request a fresh snapshot and write it.
+    const replaySnap = newPendingSnapshot();
+    M.pendingSnapshot = replaySnap;
+    const replayPromise = replay!();
+    await waitFor(() => expect(M.snapshotCalls.filter((s) => s === 'sid-D').length).toBe(2));
+
+    // Live chunks DURING the replay snapshot await must be buffered, not written.
+    emitData('sid-D', 'OLD_REPLAY_4', 4);
+    emitData('sid-D', 'NEW_REPLAY_8', 8);
+    expect(M.writes).toEqual(['SNAP_D']);
+
+    await act(async () => {
+      replaySnap.resolve({ snapshot: 'REFLOWED_SNAP', seq: 6 });
+      await replayPromise;
+    });
+
+    await waitFor(() => {
+      // After replay: original snapshot, reflowed snapshot, then only the
+      // chunk with seq > 6 (drain dedupe).
+      expect(M.writes).toEqual(['SNAP_D', 'REFLOWED_SNAP', 'NEW_REPLAY_8']);
+    });
+  });
+
+  it('PR-D: replay handler is replaced (not stacked) on session switch', async () => {
+    M.pendingSnapshot = newPendingSnapshot();
+    const { rerender } = renderHook(({ sid }) => usePtyAttach(sid, '/tmp'), {
+      initialProps: { sid: 'sid-E' },
+    });
+    await waitFor(() => expect(M.snapshotCalls).toContain('sid-E'));
+    await act(async () => {
+      M.pendingSnapshot!.resolve({ snapshot: 'SNAP_E', seq: 0 });
+    });
+    await waitFor(() => expect(singleton.getSnapshotReplay()).not.toBeNull());
+    const firstReplay = singleton.getSnapshotReplay();
+
+    // Switch.
+    M.pendingSnapshot = newPendingSnapshot();
+    rerender({ sid: 'sid-F' });
+    await waitFor(() => expect(M.detachCalls).toContain('sid-E'));
+    await act(async () => {
+      M.pendingSnapshot!.resolve({ snapshot: 'SNAP_F', seq: 0 });
+    });
+    await waitFor(() => {
+      const replay = singleton.getSnapshotReplay();
+      expect(replay).not.toBeNull();
+      expect(replay).not.toBe(firstReplay);
     });
   });
 });

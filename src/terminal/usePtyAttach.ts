@@ -10,6 +10,7 @@ import {
   setUnsubscribeData,
   getInputDisposable,
   setInputDisposable,
+  setSnapshotReplay,
 } from './xtermSingleton';
 
 export type PtyAttachState =
@@ -75,6 +76,9 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
 
       const prevSid = getActiveSid();
       if (prevSid && prevSid !== sessionId) {
+        // L4 PR-D (#866): the previous attach's snapshot-replay closure is
+        // bound to the prev sid — drop it before installing the new one.
+        setSnapshotReplay(null);
         const unsub = getUnsubscribeData();
         if (unsub) {
           try {
@@ -101,6 +105,9 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       } else if (prevSid === sessionId) {
         // Same sid (Retry path): tear down stale subscriptions before re-attaching
         // so we don't double-write incoming chunks.
+        // L4 PR-D (#866): also drop the prior attach's replay handler so a
+        // resize during re-attach doesn't fire against the stale closure.
+        setSnapshotReplay(null);
         const unsub = getUnsubscribeData();
         if (unsub) {
           try {
@@ -282,6 +289,64 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
           }
         }
         buffered.length = 0;
+
+        // L4 PR-D (#866): install the snapshot-replay handler used by
+        // `useTerminalResize` after a SIGWINCH. The handler re-runs
+        // steps 2-5 against the now-reflowed headless buffer:
+        //   1. flip back into "buffer everything" mode (snapSeq = null)
+        //      so live chunks arriving DURING the replay are captured,
+        //      not double-written
+        //   2. fetch a fresh `(snapshot, seq)` from the headless mirror
+        //      (which xterm's `Terminal.resize` has already reflowed)
+        //   3. clear the visible xterm and write the snapshot — this
+        //      replaces the now-stale pre-resize content with the
+        //      reflowed cell grid, so the user sees correct wrapping
+        //      WITHOUT depending on claude voluntarily repainting
+        //      (claude is alt-screen and won't repaint on SIGWINCH)
+        //   4. flip back into "write directly" mode and drain any
+        //      chunks buffered during steps 2-3 with seq > snapSeq
+        //
+        // Closures over `snapSeq` and `buffered` keep the dedupe state
+        // consistent with the listener installed at attach time — the
+        // listener always reads `snapSeq` lazily so flipping it back
+        // to null re-engages buffering.
+        setSnapshotReplay(async () => {
+          if (cancelled || requestedSidRef.current !== sessionId) return;
+          // Re-engage buffering — listener checks `snapSeq === null`.
+          snapSeq = null;
+          let snap2: { snapshot: string; seq: number };
+          try {
+            snap2 = (await pty.getBufferSnapshot(sessionId)) as {
+              snapshot: string;
+              seq: number;
+            };
+          } catch (e) {
+            console.warn('[TerminalPane] resize snapshot failed', e);
+            // Re-arm so the listener resumes writing live chunks even
+            // if the snapshot fetch failed — better stale grid than
+            // permanent buffer-stall.
+            snapSeq = 0;
+            return;
+          }
+          if (cancelled || requestedSidRef.current !== sessionId) return;
+          const tReplay = getTerm();
+          if (tReplay) {
+            try {
+              tReplay.reset();
+            } catch (e) {
+              console.warn('[TerminalPane] resize reset failed', e);
+            }
+            if (snap2.snapshot) tReplay.write(snap2.snapshot);
+          }
+          snapSeq = snap2.seq;
+          const tDrain2 = getTerm();
+          if (tDrain2) {
+            for (const b of buffered) {
+              if (b.seq > snapSeq) tDrain2.write(b.chunk);
+            }
+          }
+          buffered.length = 0;
+        });
 
         const t3 = getTerm();
         if (t3) {

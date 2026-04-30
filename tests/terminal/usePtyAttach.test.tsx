@@ -27,6 +27,7 @@ vi.mock('../../src/terminal/xtermSingleton', async () => {
   let activeSid: string | null = null;
   let unsub: (() => void) | null = null;
   let inDisp: { dispose: () => void } | null = null;
+  let snapReplay: (() => Promise<void>) | null = null;
   return {
     ensureTerminal: vi.fn(),
     getTerm: vi.fn(() => fakeTerm),
@@ -43,10 +44,15 @@ vi.mock('../../src/terminal/xtermSingleton', async () => {
     setInputDisposable: vi.fn((d: { dispose: () => void } | null) => {
       inDisp = d;
     }),
+    getSnapshotReplay: vi.fn(() => snapReplay),
+    setSnapshotReplay: vi.fn((fn: (() => Promise<void>) | null) => {
+      snapReplay = fn;
+    }),
     __resetSingletonForTests: vi.fn(() => {
       activeSid = null;
       unsub = null;
       inDisp = null;
+      snapReplay = null;
     }),
   };
 });
