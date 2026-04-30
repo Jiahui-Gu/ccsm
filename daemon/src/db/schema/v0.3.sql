@@ -20,7 +20,16 @@ CREATE TABLE IF NOT EXISTS sessions (
   id            TEXT PRIMARY KEY,
   repo          TEXT,
   title         TEXT,
-  state         TEXT NOT NULL,
+  -- Closed enum derived from spec: v0.3-design.md §3.5.1.2 / §6.6.1
+  -- ('shutting_down', 'paused', 'exited') and frag-6-7 §6.3 ('paused',
+  -- 'running'), plus 'crashed' for unclean exits. 'abandoned' was
+  -- explicitly renamed to 'paused' (r3-rel P0-R3, design.md line 556).
+  state         TEXT NOT NULL CHECK (state IN ('running', 'paused', 'exited', 'shutting_down', 'crashed')),
+  -- Deviation: spec §6.6.1 step 4 / R3-rel P1-R1 SQL string mirror lock
+  -- writes `pid_pgid=NULL` as a single column. Schema splits into pid +
+  -- pgid for normalization; T29 migration runner translates legacy
+  -- single-column writes; spec SQL string should be updated to
+  -- `pid=NULL, pgid=NULL` in a follow-up.
   pid           INTEGER,
   pgid          INTEGER,
   -- ULID allocated per pty.spawn() so daemon-originated PTY events
@@ -28,25 +37,32 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- the spawn line without an upstream RPC traceId. v0.3-design.md
   -- §3.5.1.2 (line 477) + §6.6.1.
   spawn_trace_id TEXT,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  -- ms-epoch; daemon writes Date.now() but DEFAULT lets ad-hoc inserts work too.
+  created_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+  updated_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
   id          TEXT PRIMARY KEY,
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  role        TEXT NOT NULL,
+  -- Conventional chat-message roles. No explicit spec lock yet; align
+  -- with Anthropic SDK message roles. Add new values via migration if
+  -- a future role is required.
+  role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool')),
   content     TEXT NOT NULL,
   trace_id    TEXT,
-  created_at  INTEGER NOT NULL
+  -- ms-epoch; daemon writes Date.now() but DEFAULT lets ad-hoc inserts work too.
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS agents (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
+  -- no CHECK: kind is open vocabulary set by registration.
   kind        TEXT NOT NULL,
   config      TEXT NOT NULL,           -- JSON blob, daemon-opaque
-  created_at  INTEGER NOT NULL
+  -- ms-epoch; daemon writes Date.now() but DEFAULT lets ad-hoc inserts work too.
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -54,7 +70,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   session_id    TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   type          TEXT NOT NULL,
   payload       TEXT NOT NULL,         -- JSON blob, daemon-opaque
-  status        TEXT NOT NULL,
+  -- Conventional job lifecycle states. No explicit spec lock yet; the
+  -- jobs runner consumes 'pending' rows and transitions through these.
+  status        TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
   scheduled_at  INTEGER NOT NULL,
   run_at        INTEGER,
   completed_at  INTEGER
@@ -66,6 +84,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 -- T29 migration runner converts the KV rows. close_to_tray_shown_at
 -- is the timestamp lock from frag-6-7 §6.8 (R3-T12) — supersedes the
 -- earlier boolean close_to_tray_hint_shown that frag-3.7 had proposed.
+-- All typed columns nullable: NULL = unset/default. Readers MUST handle
+-- NULL (e.g., close_action defaults to 'minimize-to-tray' if NULL).
 CREATE TABLE IF NOT EXISTS app_state (
   id                       INTEGER PRIMARY KEY CHECK (id = 1),
   close_to_tray_shown_at   INTEGER,
@@ -73,7 +93,7 @@ CREATE TABLE IF NOT EXISTS app_state (
   notify_enabled           INTEGER,
   crash_reporting_opt_out  INTEGER,
   user_cwds                TEXT,        -- JSON array
-  updated_at               INTEGER NOT NULL
+  updated_at               INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
 );
 
 INSERT OR IGNORE INTO app_state (id, updated_at) VALUES (1, 0);
