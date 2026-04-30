@@ -37,6 +37,7 @@
     "make:mac": "npm run build && electron-builder --mac --publish never",
     "make:linux": "npm run build && electron-builder --linux --publish never",
     "build:icon": "electron scripts/build-icon.cjs",
+    "rebuild:natives": "node scripts/electron-rebuild-natives.cjs",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
