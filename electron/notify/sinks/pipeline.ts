@@ -175,6 +175,13 @@ export function installNotifyPipeline(opts: NotifyPipelineOptions): NotifyPipeli
       // session is torn down (forgetSid clears the mute) or an explicit
       // un-mute lands. This supersedes the decider's Rule 1 60s window
       // for the create/import/resume IPC paths that go through here.
+      //
+      // audit #876 cluster 2.2: this is a HIDDEN SIDE EFFECT — the method
+      // name reads as "remember a user input event" but the actual
+      // operation is `setMuted(sid, +Infinity)`, i.e. PERMANENT mute on
+      // that sid. Cleared only by forgetSid (session teardown) or explicit
+      // setMuted(sid, false). If you rename or refactor this, surface the
+      // mute semantics in the new name (e.g. `markUserInitAndMute`).
       tracker.setMuted(sid, Number.POSITIVE_INFINITY);
     },
     setActiveSid(sid) {

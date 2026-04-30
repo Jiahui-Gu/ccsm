@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   decide,
+  assertNotifyContext,
   USER_INIT_MUTE_MS,
   SHORT_TASK_MS,
   DEDUPE_MS,
@@ -234,5 +235,70 @@ describe('notifyDecider — purity', () => {
     expect(runStartTs.size).toBe(1);
     expect(mutedSids.size).toBe(1);
     expect(lastFiredTs.size).toBe(1);
+  });
+});
+
+describe('assertNotifyContext — DEV-only invariants (audit #876)', () => {
+  it('passes a fully-valid ctx without throwing', () => {
+    expect(() => assertNotifyContext(makeCtx())).not.toThrow();
+  });
+
+  it('passes when activeSid is a real string', () => {
+    expect(() => assertNotifyContext(makeCtx({ activeSid: 's1' }))).not.toThrow();
+  });
+
+  it('throws when ctx itself is null', () => {
+    expect(() => assertNotifyContext(null as unknown as Ctx)).toThrow(
+      /ctx must be an object/,
+    );
+  });
+
+  it('throws when focused is not a boolean', () => {
+    const bad = { ...makeCtx(), focused: 'yes' as unknown as boolean };
+    expect(() => assertNotifyContext(bad)).toThrow(/focused must be boolean/);
+  });
+
+  it('throws when activeSid is a number', () => {
+    const bad = { ...makeCtx(), activeSid: 42 as unknown as string };
+    expect(() => assertNotifyContext(bad)).toThrow(
+      /activeSid must be string\|null/,
+    );
+  });
+
+  it('throws when now is not a finite number', () => {
+    const bad = { ...makeCtx(), now: 'never' as unknown as number };
+    expect(() => assertNotifyContext(bad)).toThrow(/now must be a finite number/);
+  });
+
+  it('throws when lastUserInputTs is not a Map', () => {
+    const bad = {
+      ...makeCtx(),
+      lastUserInputTs: {} as unknown as Map<string, number>,
+    };
+    expect(() => assertNotifyContext(bad)).toThrow(
+      /lastUserInputTs must be a Map/,
+    );
+  });
+
+  it('throws when mutedSids is not a Set', () => {
+    const bad = {
+      ...makeCtx(),
+      mutedSids: [] as unknown as Set<string>,
+    };
+    expect(() => assertNotifyContext(bad)).toThrow(/mutedSids must be a Set/);
+  });
+
+  it('decide() invokes the invariant: passing a number activeSid throws via decide', () => {
+    const prev = process.env.NODE_ENV;
+    // Force non-production so the gate inside decide runs.
+    process.env.NODE_ENV = 'test';
+    try {
+      const bad = { ...makeCtx(), activeSid: 7 as unknown as string };
+      expect(() => decide(waiting('s1'), bad)).toThrow(
+        /activeSid must be string\|null/,
+      );
+    } finally {
+      process.env.NODE_ENV = prev;
+    }
   });
 });
