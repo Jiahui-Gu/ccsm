@@ -3110,11 +3110,13 @@ async function caseNotifyPipelineBackground({ electronApp, win, tempDir }) {
 //      xterm restores its prior content WITHOUT typing — same path, exercised
 //      under the re-attach scenario.
 //
-// This case is the e2e probe for PR-B's IPC + replay; PR #602's spawn-time
-// size hack (#852 L1 fix) is still in place, so the trust prompt is also
-// visible at the right size — what we additionally pin here is the IPC
-// surface and the snapshot-feeds-view linkage. PR-F will revert #602's hack;
-// when it does, this probe must STILL pass on the strength of replay alone.
+// This case is the e2e probe for PR-B's IPC + replay. PR-F (#867) has now
+// reverted PR #602's spawn-time cols/rows hack, so the trust prompt's
+// visibility-at-the-right-size relies entirely on PR-D's resize+replay
+// path — i.e. exactly what this probe pins. After PR-F this case still
+// passes because (a) the snapshot replay paints the visible xterm from
+// the reflowed headless buffer, and (b) the post-attach fit pushes the
+// real container size to the PTY before the user types.
 
 async function caseAttachReplayFromHeadlessBuffer({ electronApp, win, tempDir }) {
   await win.waitForFunction(

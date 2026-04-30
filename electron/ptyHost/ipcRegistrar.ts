@@ -87,30 +87,22 @@ export function registerPtyIpc(ipcMain: IpcMain, deps: PtyIpcDeps): void {
 
   ipcMain.handle('pty:list', () => deps.listPtySessions());
 
-  ipcMain.handle('pty:spawn', (_event, sid: string, cwd: string, opts?: unknown) => {
+  ipcMain.handle('pty:spawn', (_event, sid: string, cwd: string) => {
     const claudePath = resolveClaude();
     if (!claudePath) {
       return { ok: false, error: 'claude_not_found' };
     }
-    // Renderer-supplied initial size (Task #852). Spawning the PTY at the
-    // visible viewport's dimensions (rather than the 120x30 default) means
-    // claude's TUI renders its first frame — including alt-screen prompts
-    // like the trust dialog — at exactly the size the visible xterm will
-    // display, eliminating the "top-painted, bottom-black-void" divergence
-    // caused by post-write resize. If renderer omits opts, fall back to
-    // the lifecycle default.
-    const cols =
-      typeof opts === 'object' && opts !== null && typeof (opts as { cols?: unknown }).cols === 'number'
-        ? Math.max(2, Math.floor((opts as { cols: number }).cols))
-        : undefined;
-    const rows =
-      typeof opts === 'object' && opts !== null && typeof (opts as { rows?: unknown }).rows === 'number'
-        ? Math.max(2, Math.floor((opts as { rows: number }).rows))
-        : undefined;
+    // L4 PR-F (#867): the renderer no longer forwards initial cols/rows.
+    // The PTY launches at the lifecycle defaults (DEFAULT_COLS/ROWS) and
+    // the renderer's post-attach `pty:resize` (with snapshot replay,
+    // PR-D #866) reflows both the PTY and the headless source-of-truth
+    // buffer to the real viewport, then repaints the visible xterm from
+    // the reflowed snapshot. This makes the spawn-time #852 hack
+    // (renderer measures viewport via FitAddon, forwards to spawn,
+    // main floor+clamps to >=2 and threads through spawnPtySession)
+    // redundant; it has been removed.
     try {
       const info = deps.spawnPtySession(sid, cwd, claudePath, {
-        cols,
-        rows,
         // Import-resume cwd-redirect (#603 reviewer Layer-1 fix). When the
         // copy helper relocates the JSONL into the spawn cwd's projectDir,
         // the renderer's `session.cwd` (still pointing at the original

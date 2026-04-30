@@ -230,29 +230,14 @@ describe('pty:spawn', () => {
     expect(call[2]).toBe('/bin/claude');
   });
 
-  // Task #852 — renderer measures the visible viewport via FitAddon and
-  // passes cols/rows so the PTY launches at the size it will be displayed
-  // at (eliminating the "top-painted, bottom-black-void" alt-screen
-  // divergence). Without this forwarding the trust-prompt rendered by
-  // claude at the default 120x30 stays stuck at that size while the
-  // visible xterm gets resized post-write to 134x51, leaving the bottom
-  // 21 rows of the prompt invisible until the user types.
-  it('forwards renderer-supplied cols/rows from opts to spawnPtySession (#852)', () => {
-    const ipc = makeFakeIpc();
-    bus().resolveClaude.mockReturnValue('/bin/claude');
-    const deps = makeDeps({
-      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 134, rows: 51, cwd: '/picked' })),
-    });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
-    const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
-    const opts = call[3] as { cols?: number; rows?: number };
-    expect(opts.cols).toBe(134);
-    expect(opts.rows).toBe(51);
-  });
-
-  it('omits cols/rows when opts is missing or non-numeric (lifecycle uses defaults)', () => {
+  // L4 PR-F (#867) — the spawn-time cols/rows hack added for #852 has been
+  // removed. The renderer no longer forwards initial dimensions through
+  // `pty:spawn`; the PTY launches at the lifecycle defaults (DEFAULT_COLS/
+  // ROWS = 120x30) and the post-attach `pty:resize` + snapshot replay
+  // (PR-D #866) reflows both the headless source-of-truth buffer and the
+  // visible xterm to the real container. The IPC handler therefore no
+  // longer parses or threads cols/rows into spawnPtySession opts.
+  it('does not forward cols/rows to spawnPtySession (#867 — PR-D resize+replay covers #852)', () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
@@ -260,35 +245,31 @@ describe('pty:spawn', () => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    // No opts argument at all.
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
-    let call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
-    let opts = call[3] as { cols?: number; rows?: number };
+    // Even if a (legacy) renderer were to send the third opts argument,
+    // the IPC handler ignores it — the only opt threaded into the
+    // lifecycle is onCwdRedirect (#603).
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134, rows: 51 });
+    const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
+    const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
     expect(opts.cols).toBeUndefined();
     expect(opts.rows).toBeUndefined();
-
-    // Garbage opts (non-numeric) — defensive parsing still falls back.
-    (deps.spawnPtySession as ReturnType<typeof vi.fn>).mockClear();
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 'wide', rows: null });
-    call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
-    opts = call[3] as { cols?: number; rows?: number };
-    expect(opts.cols).toBeUndefined();
-    expect(opts.rows).toBeUndefined();
+    expect(typeof opts.onCwdRedirect).toBe('function');
   });
 
-  it('floors fractional cols/rows and clamps to a >=2 minimum', () => {
+  it('omits opts argument entirely from `pty:spawn` (post-#867)', () => {
     const ipc = makeFakeIpc();
     bus().resolveClaude.mockReturnValue('/bin/claude');
     const deps = makeDeps({
-      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 80, rows: 24, cwd: '/' })),
+      spawnPtySession: vi.fn(() => ({ sid: 'sid', pid: 1, cols: 120, rows: 30, cwd: '/picked' })),
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerPtyIpc(ipc as any, deps);
-    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work', { cols: 134.7, rows: 1 });
+    ipc.handlers.get('pty:spawn')!({}, 'sid', '/work');
     const call = (deps.spawnPtySession as ReturnType<typeof vi.fn>).mock.calls[0];
-    const opts = call[3] as { cols?: number; rows?: number };
-    expect(opts.cols).toBe(134);
-    expect(opts.rows).toBe(2);
+    const opts = call[3] as { cols?: number; rows?: number; onCwdRedirect?: unknown };
+    expect(opts.cols).toBeUndefined();
+    expect(opts.rows).toBeUndefined();
+    expect(typeof opts.onCwdRedirect).toBe('function');
   });
 
   it('returns {ok:false, error:spawn_failed:...} when spawnPtySession throws', () => {
