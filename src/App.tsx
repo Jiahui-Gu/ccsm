@@ -278,6 +278,26 @@ export default function App() {
     createSession(null);
   }, [createSession]);
 
+  // Sibling of `newSession` for the sidebar cwd-chevron path. PR #623 only
+  // gated the `+` button; the chevron in <NewSessionButton> bypassed the
+  // gate by calling `createSession({ cwd })` directly from <Sidebar>, so
+  // clicking the chevron during the boot probe still stranded the user on
+  // a blank pane (#910 / #911). Apply the same `claudeAvailableRef` short-
+  // circuit here. Kept as a separate callback (vs. broadening `newSession`'s
+  // signature) so the LRU-default flow stays identical to PR #623's shape.
+  const newSessionWithCwd = React.useCallback((cwd: string) => {
+    if (claudeAvailableRef.current !== true) {
+      return;
+    }
+    if (typeof document !== 'undefined') {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active !== document.body) {
+        try { active.blur(); } catch { /* noop */ }
+      }
+    }
+    createSession({ cwd });
+  }, [createSession]);
+
   const active = useMemo(
     () => sessions.find((s) => s.id === activeId) ?? sessions[0],
     [sessions, activeId]
@@ -334,6 +354,7 @@ export default function App() {
           sidebar={
             <Sidebar
               onCreateSession={newSession}
+              onCreateSessionWithCwd={newSessionWithCwd}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenPalette={() => setPaletteOpen(true)}
               onOpenImport={() => setImportOpen(true)}

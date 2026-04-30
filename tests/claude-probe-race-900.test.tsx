@@ -134,7 +134,7 @@ describe('claude-probe race gate (#900 / #852)', () => {
     // The empty-state branch is what shows when no session exists, so
     // we look at the right-pane CTA path: clicking it must NOT spawn a
     // session while the probe is unresolved.
-    const newBtn = screen.getByRole('button', { name: /^New Session$/ });
+    const newBtn = screen.getByRole('button', { name: /^New session$/ });
     expect(useStore.getState().sessions).toHaveLength(0);
 
     await act(async () => {
@@ -148,7 +148,7 @@ describe('claude-probe race gate (#900 / #852)', () => {
 
   it('newSession works once the boot probe resolves true', async () => {
     render(<App />);
-    const newBtn = screen.getByRole('button', { name: /^New Session$/ });
+    const newBtn = screen.getByRole('button', { name: /^New session$/ });
 
     await act(async () => {
       probe.resolve({ available: true, binaryPath: '/usr/bin/claude' });
@@ -200,5 +200,71 @@ describe('claude-probe race gate (#900 / #852)', () => {
     // contain the visible affordance, not be an empty div.
     const spacer = await screen.findByTestId('claude-availability-probing');
     expect(spacer.textContent ?? '').toMatch(/Checking Claude CLI/i);
+  });
+
+  // #910 / #911: PR #623 only gated the `+` button via App.tsx::newSession.
+  // The cwd-chevron path in <Sidebar> called `createSession({ cwd })`
+  // directly from a store hook, bypassing the gate. The reviewer flagged
+  // this as a same-class blank-pane regression. Fix routes the chevron
+  // through a sibling App.tsx wrapper (`newSessionWithCwd`) that re-checks
+  // `claudeAvailableRef`. These two tests pin both halves: gate suppresses
+  // the chevron path while pending; once probe resolves true, it works.
+  it('cwd-chevron path is a no-op while the boot probe is pending (#911)', async () => {
+    const pickCwd = vi.fn().mockResolvedValue('/picked/path');
+    (window.ccsm as unknown as { pickCwd: () => Promise<string> }).pickCwd = pickCwd;
+
+    render(<App />);
+
+    const chevron = screen.getByTestId('sidebar-newsession-cwd-chevron');
+    await act(async () => {
+      fireEvent.click(chevron);
+    });
+
+    // Open the OS folder picker (Browse folder…). The handler resolves to
+    // '/picked/path' and Sidebar would normally call createSession({cwd:…})
+    // through the prop. With the gate in place, the wrapper short-circuits.
+    const browseBtn = await screen.findByRole('button', { name: /Browse folder/i });
+    await act(async () => {
+      fireEvent.mouseDown(browseBtn);
+      // Yield twice so the awaited pickCwd promise resolves AND the
+      // subsequent gate check runs in the same microtask flush.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(pickCwd).toHaveBeenCalledTimes(1);
+    // Gate must have suppressed createSession — store unchanged.
+    expect(useStore.getState().sessions).toHaveLength(0);
+    expect(useStore.getState().activeId).toBe('');
+  });
+
+  it('cwd-chevron path works once the boot probe resolves true (#911)', async () => {
+    const pickCwd = vi.fn().mockResolvedValue('/picked/path');
+    (window.ccsm as unknown as { pickCwd: () => Promise<string> }).pickCwd = pickCwd;
+
+    render(<App />);
+
+    await act(async () => {
+      probe.resolve({ available: true, binaryPath: '/usr/bin/claude' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const chevron = screen.getByTestId('sidebar-newsession-cwd-chevron');
+    await act(async () => {
+      fireEvent.click(chevron);
+    });
+
+    const browseBtn = await screen.findByRole('button', { name: /Browse folder/i });
+    await act(async () => {
+      fireEvent.mouseDown(browseBtn);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(pickCwd).toHaveBeenCalledTimes(1);
+    const sessions = useStore.getState().sessions;
+    expect(sessions.length).toBeGreaterThan(0);
+    expect(sessions[0].cwd).toBe('/picked/path');
   });
 });
