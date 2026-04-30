@@ -8,7 +8,8 @@ import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { SidebarResizer, SIDEBAR_RESIZER_STEP, SIDEBAR_RESIZER_STEP_LARGE } from '../src/components/SidebarResizer';
-import { useStore, SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '../src/stores/store';
+import { useStore } from '../src/stores/store';
+import { SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX } from '../src/stores/slices/appearanceSlice';
 
 describe('SidebarResizer keyboard a11y', () => {
   beforeEach(() => {

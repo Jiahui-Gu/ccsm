@@ -1,5 +1,6 @@
 node_modules/
 dist/
+coverage/
 .DS_Store
 *.log
 .env
@@ -9,9 +10,15 @@ ccsm-data.db-journal
 scripts/spike-*
 scripts/e2e-artifacts/
 release/
+.dogfood-userdata/
+.dogfood-userdata-happy/
+.dogfood-userdata-ttyd-debug/
+docs/screenshots/dogfood-current-ui/
+docs/screenshots/dogfood-happy-path/
 *.exe
 *.dmg
 *.AppImage
 *.deb
 *.rpm
 *.blockmap
+.pool-synced-at-*

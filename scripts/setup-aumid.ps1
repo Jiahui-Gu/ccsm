@@ -12,12 +12,19 @@
 
   Idempotent: re-running overwrites the shortcut in place.
 
+.PARAMETER Variant
+  Either `prod` (default) or `dev`. Picks the matching AUMID + shortcut
+  name pair for dual-install (#891). Explicit -AppId / -ShortcutName
+  override this default.
+
 .PARAMETER AppId
   The AUMID string to register. Must match the `appId` passed to
-  `Notifier.create` from `electron/main.ts` (currently `com.ccsm.app`).
+  `Notifier.create` from `electron/main.ts` (`com.ccsm.app` for prod,
+  `com.ccsm.app.dev` for dev). Defaults from -Variant if omitted.
 
 .PARAMETER ShortcutName
-  Display name of the Start Menu shortcut. Defaults to "CCSM Dev".
+  Display name of the Start Menu shortcut. Defaults from -Variant
+  (`CCSM` for prod, `CCSM Dev` for dev).
 
 .PARAMETER TargetExe
   Absolute path to the .exe Windows should launch when the toast body is
@@ -38,13 +45,25 @@
 
 [CmdletBinding()]
 param(
-  [string]$AppId = 'com.ccsm.app',
-  [string]$ShortcutName = 'CCSM Dev',
+  [ValidateSet('prod', 'dev')]
+  [string]$Variant = 'prod',
+  [string]$AppId = $null,
+  [string]$ShortcutName = $null,
   [string]$TargetExe = $null,
   [string]$Arguments = $null
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Dual-install (#891): -Variant picks the AUMID + shortcut name pair so the
+# dev build's toasts route to its own Start Menu entry instead of colliding
+# with the prod install. Explicit -AppId / -ShortcutName still win.
+if (-not $AppId) {
+  $AppId = if ($Variant -eq 'dev') { 'com.ccsm.app.dev' } else { 'com.ccsm.app' }
+}
+if (-not $ShortcutName) {
+  $ShortcutName = if ($Variant -eq 'dev') { 'CCSM Dev' } else { 'CCSM' }
+}
 
 # Resolve the repo root (parent of /scripts).
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path

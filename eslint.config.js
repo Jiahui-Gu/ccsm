@@ -15,6 +15,7 @@ export default [
       'release/**',
       'scripts/**',
       'tests/**',
+      'docs/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
@@ -60,7 +61,9 @@ export default [
         NodeList: 'readonly',
         Node: 'readonly',
         Event: 'readonly',
+        EventTarget: 'readonly',
         MouseEvent: 'readonly',
+        PointerEvent: 'readonly',
         FocusEvent: 'readonly',
         DragEvent: 'readonly',
         File: 'readonly',
@@ -71,7 +74,12 @@ export default [
         atob: 'readonly',
         getComputedStyle: 'readonly',
         requestAnimationFrame: 'readonly',
-        cancelAnimationFrame: 'readonly'
+        cancelAnimationFrame: 'readonly',
+        ResizeObserver: 'readonly',
+        // `NodeJS` namespace is also referenced from renderer-side .d.ts
+        // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
+        // available alongside browser globals.
+        NodeJS: 'readonly'
       }
     },
     plugins: {
@@ -122,6 +130,7 @@ export default [
         // Node.js types namespace (e.g. NodeJS.Timeout) and Web APIs
         // available in modern Node runtimes used by Electron main process.
         NodeJS: 'readonly',
+        Electron: 'readonly',
         AbortSignal: 'readonly',
         AbortController: 'readonly',
         URL: 'readonly',

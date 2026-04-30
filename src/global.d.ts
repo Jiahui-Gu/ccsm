@@ -1,62 +1,8 @@
-import type { CliPermissionMode } from './agent/permission';
-import type { ClaudeStreamEvent } from '../electron/agent/stream-json-types';
-import type {
-  ConnectionInfo,
-  OpenSettingsResult,
-  DiscoveredModel,
-  LoadedCommand,
-  WorkspaceFile,
-} from './shared/ipc-types';
-
-type PermissionMode = CliPermissionMode;
-type AgentMessage = ClaudeStreamEvent;
-
-type StartOpts = {
-  cwd: string;
-  model?: string;
-  permissionMode?: PermissionMode;
-  resumeSessionId?: string;
-  /**
-   * Pre-allocated session UUID. When set, the SDK uses this as the
-   * conversation's `session_id` instead of auto-generating one — so the
-   * `~/.claude/projects/<key>/<sid>.jsonl` file the CLI writes is named
-   * with the same id ccsm uses internally. Must be a valid UUID; ignored
-   * by the legacy (non-SDK) runner. Cannot be combined with
-   * `resumeSessionId` per SDK constraints.
-   */
-  sessionId?: string;
-  /** Resolved 6-tier effort chip level applied at launch. */
-  effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-};
-
-// Mirror of `StartResult` from `electron/agent/start-result-types.ts` —
-// this `.d.ts` is consumed by the Vite renderer build which can't import
-// from the electron tree directly. Keep the union in sync.
-type StartResult =
-  | { ok: true }
-  | {
-      ok: false;
-      error: string;
-      errorCode?: 'CLAUDE_NOT_FOUND' | 'CWD_MISSING' | 'CLI_SPAWN_FAILED';
-      searchedPaths?: string[];
-      detail?: string;
-    };
-type AgentEvent = { sessionId: string; message: AgentMessage };
-type AgentExit = { sessionId: string; error?: string };
-type AgentDiagnostic = {
-  sessionId: string;
-  level: 'warn' | 'error';
-  code: string;
-  message: string;
-};
-type AgentPermissionRequest = {
-  sessionId: string;
-  requestId: string;
-  toolName: string;
-  input: Record<string, unknown>;
-};
-
-type UpdateStatus =
+// Updater status — exported so the renderer's `UpdatesPane` (and any
+// future banners/toasts) can import a single source of truth instead of
+// redeclaring the union locally. Mirrors the shape broadcast by
+// `electron/updater.ts` over the `updates:status` IPC channel.
+export type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'available'; version: string; releaseDate?: string }
@@ -73,92 +19,13 @@ declare global {
       // i18n bridge mirrors the API surface exposed in electron/preload.ts.
       // `getSystemLocale` returns the OS locale so the renderer's
       // preferences store can resolve a "system" preference; `setLanguage`
-      // pushes the resolved UI language back to main so OS notifications
-      // come out in the matching language.
+      // pushes the resolved UI language back to main for any future
+      // OS-level surfaces (tray menu, future notifications) to consume.
       i18n: {
         getSystemLocale: () => Promise<string | undefined>;
         setLanguage: (l: 'en' | 'zh') => void;
       };
-      /**
-       * Load a session's message history from the CLI's JSONL transcript at
-       * `~/.claude/projects/<projectKey(cwd)>/<sessionId>.jsonl`. The
-       * renderer projects the returned frames through `framesToBlocks`. PR-H
-       * removed the previous SQLite-backed `loadMessages`/`saveMessages`
-       * pair — ccsm no longer maintains a redundant secondary copy.
-       */
-      loadHistory: (
-        cwd: string,
-        sessionId: string
-      ) => Promise<
-        | { ok: true; frames: unknown[] }
-        | { ok: false; error: string; detail?: string }
-      >;
-      /**
-       * Truncation marker persistence — see preload.ts for full rationale.
-       * The user-message hover-menu's "Truncate from here" stores the chosen
-       * user-block id so a ccsm restart re-applies the truncation after
-       * re-hydrating from the CLI's JSONL.
-       */
-      truncationGet: (
-        sessionId: string
-      ) => Promise<{ blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null>;
-      truncationSet: (
-        sessionId: string,
-        marker: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } | null
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
       getVersion: () => Promise<string>;
-      pickDirectory: () => Promise<string | null>;
-      saveFile: (args: {
-        defaultName?: string;
-        content: string;
-      }) => Promise<
-        { ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }
-      >;
-      // (#51) Open long tool output in the user's default text editor.
-      toolOpenInEditor: (args: {
-        content: string;
-      }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
-
-      agentStart: (sessionId: string, opts: StartOpts) => Promise<StartResult>;
-      agentSend: (sessionId: string, text: string) => Promise<boolean>;
-      agentSendContent: (sessionId: string, content: unknown[]) => Promise<boolean>;
-      agentInterrupt: (sessionId: string) => Promise<boolean>;
-      /**
-       * (#239) Per-tool-use cancel. Today routes through a turn-level
-       * interrupt fallback inside SessionRunner; the {sessionId, toolUseId}
-       * payload is forward-compatible with a future scoped-cancel SDK API.
-       */
-      agentCancelToolUse: (args: { sessionId: string; toolUseId: string }) => Promise<
-        { ok: true } | { ok: false; error: string }
-      >;
-      agentSetPermissionMode: (
-        sessionId: string,
-        mode: PermissionMode
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentSetModel: (sessionId: string, model?: string) => Promise<boolean>;
-      agentSetMaxThinkingTokens: (
-        sessionId: string,
-        tokens: number
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentSetEffort: (
-        sessionId: string,
-        level: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-      ) => Promise<{ ok: true } | { ok: false; error: string }>;
-      agentClose: (sessionId: string) => Promise<boolean>;
-      agentResolvePermission: (
-        sessionId: string,
-        requestId: string,
-        decision: 'allow' | 'deny'
-      ) => Promise<boolean>;
-      agentResolvePermissionPartial: (
-        sessionId: string,
-        requestId: string,
-        acceptedHunks: number[]
-      ) => Promise<boolean>;
-      onAgentEvent: (handler: (e: AgentEvent) => void) => () => void;
-      onAgentExit: (handler: (e: AgentExit) => void) => () => void;
-      onAgentDiagnostic: (handler: (e: AgentDiagnostic) => void) => () => void;
-      onAgentPermissionRequest: (handler: (e: AgentPermissionRequest) => void) => () => void;
 
       scanImportable: () => Promise<
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
@@ -189,19 +56,18 @@ declare global {
       };
 
       /**
+       * Open the OS folder picker for the cwd popover's "Browse..." button.
+       * Returns the picked absolute path on success, or `null` when the
+       * user cancelled. Backs the popover Browse action (#628).
+       */
+      pickCwd: (defaultPath?: string) => Promise<string | null>;
+
+      /**
        * Default model from `~/.claude/settings.json`'s `model` field — the
        * same value the CLI consults for `--model` defaulting. Seeds the
        * new-session picker. Null when unset, missing, or unparseable.
        */
       defaultModel: () => Promise<string | null>;
-
-      /**
-       * Read the raw frames of an importable `.jsonl` so the renderer can
-       * project them through `streamEventToTranslation` and hydrate
-       * `messagesBySession` immediately at import time. Returns [] on any
-       * read error so the caller can fall back to the empty-chat behavior.
-       */
-      loadImportHistory: (projectDir: string, sessionId: string) => Promise<unknown[]>;
 
       /**
        * Best-effort batched existence check. Returns a map keyed by the
@@ -211,69 +77,6 @@ declare global {
        */
       pathsExist: (paths: string[]) => Promise<Record<string, boolean>>;
 
-      memory: {
-        read: (p: string) => Promise<
-          | { ok: true; content: string; exists: boolean }
-          | { ok: false; error: string }
-        >;
-        write: (p: string, content: string) => Promise<
-          { ok: true } | { ok: false; error: string }
-        >;
-        exists: (p: string) => Promise<boolean>;
-        userPath: () => Promise<string>;
-        projectPath: (cwd: string) => Promise<string | null>;
-      };
-
-      commands: {
-        list: (cwd: string | null | undefined) => Promise<LoadedCommand[]>;
-      };
-
-      files: {
-        /**
-         * List workspace files relative to the session cwd for the
-         * InputBar's @file mention picker. Returns POSIX-style relative
-         * paths so the literal we splice into the composer is portable.
-         */
-        list: (cwd: string | null | undefined) => Promise<WorkspaceFile[]>;
-      };
-
-      openExternal: (url: string) => Promise<boolean>;
-
-      notify: (payload: {
-        sessionId: string;
-        title: string;
-        body?: string;
-        eventType?: 'permission' | 'question' | 'turn_done' | 'test';
-        silent?: boolean;
-        extras?: {
-          toastId?: string;
-          sessionName?: string;
-          groupName?: string;
-          toolName?: string;
-          toolBrief?: string;
-          question?: string;
-          selectionKind?: 'single' | 'multi';
-          optionCount?: number;
-          lastUserMsg?: string;
-          lastAssistantMsg?: string;
-          elapsedMs?: number;
-          toolCount?: number;
-          cwd?: string;
-        };
-      }) => Promise<boolean>;
-      notifyAvailability: () => Promise<{ available: boolean; error: string | null }>;
-      notifySetRuntimeState: (
-        patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
-      ) => Promise<{ ok: true } | { ok: false }>;
-      onNotificationFocus: (handler: (sessionId: string) => void) => () => void;
-      onNotifyToastAction?: (
-        handler: (e: {
-          sessionId: string;
-          requestId: string;
-          action: 'allow' | 'allow-always' | 'reject' | 'focus';
-        }) => void,
-      ) => () => void;
-
       updatesStatus: () => Promise<UpdateStatus>;
       updatesCheck: () => Promise<UpdateStatus>;
       updatesDownload: () => Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -281,11 +84,7 @@ declare global {
       updatesGetAutoCheck: () => Promise<boolean>;
       updatesSetAutoCheck: (enabled: boolean) => Promise<boolean>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
-      onUpdateAvailable: (
-        handler: (info: { version: string; releaseDate?: string }) => void
-      ) => () => void;
       onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
-      onUpdateError: (handler: (info: { message: string }) => void) => () => void;
 
       window: {
         minimize: () => Promise<void>;
@@ -296,15 +95,6 @@ declare global {
         onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
         onAfterShow: (handler: () => void) => () => void;
         platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
-      };
-
-      connection: {
-        read: () => Promise<ConnectionInfo>;
-        openSettingsFile: () => Promise<OpenSettingsResult>;
-      };
-
-      models: {
-        list: () => Promise<DiscoveredModel[]>;
       };
     };
   }

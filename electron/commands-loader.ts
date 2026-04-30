@@ -10,6 +10,10 @@
 //   2. <cwd>/.claude/commands/*.md                      (source: 'project')
 //   3. ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md
 //      (source: 'plugin', name namespaced as `<plugin>:<basename>`)
+//      Plus skills bundled in the same plugin version dir at either
+//      `skills/<name>/SKILL.md` or `.claude/skills/<name>/SKILL.md`
+//      (source: 'skill', name namespaced as `<plugin>:<name>`).
+//      `temp_git_*` cache subdirs are skipped — they're scratch checkouts.
 //   4. ~/.claude/skills/*.md                            (source: 'skill', tolerated if absent)
 //   5. ~/.claude/agents/*.md, <cwd>/.claude/agents/*.md (source: 'agent', tolerated if absent)
 //
@@ -18,7 +22,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
+import { getClaudeConfigDir } from './shared/claudePaths';
 
 // Six logical sources surfaced by the slash-command palette. `skill` and
 // `agent` were previously folded into `user`; splitting them lets the picker
@@ -68,7 +72,7 @@ export function parseFrontmatter(raw: string): {
 } {
   const m = FRONTMATTER_RE.exec(raw);
   if (!m) return { data: {}, body: raw };
-  const yamlBlock = m[1];
+  const yamlBlock = m[1]!;
   const body = raw.slice(m[0].length);
   const data: Record<string, string> = {};
   for (const line of yamlBlock.split(/\r?\n/)) {
@@ -176,6 +180,64 @@ function pickHighestVersionDir(pluginDir: string): string | null {
   return last ? path.join(pluginDir, last) : null;
 }
 
+// Collect SKILL.md entries from a plugin version dir. Plugin authors put
+// skills in either `<versionDir>/skills/<name>/SKILL.md` (e.g. document-skills,
+// superpowers) or `<versionDir>/.claude/skills/<name>/SKILL.md` (e.g.
+// ui-ux-pro-max). Both layouts are scanned. Each skill is namespaced as
+// `<pluginId>:<subdirName>` to match the `<plugin>:<skill>` form the SDK
+// surfaces in agent system reminders (e.g. `superpowers:brainstorming`,
+// `document-skills:docx`). The frontmatter `name` field is intentionally
+// ignored for the namespace — the directory name is the canonical id.
+function collectSkillEntries(
+  versionDir: string,
+  pluginId: string,
+  basePriority: number
+): RawEntry[] {
+  const out: RawEntry[] = [];
+  const skillRoots = [
+    path.join(versionDir, 'skills'),
+    path.join(versionDir, '.claude', 'skills'),
+  ];
+  for (const skillsDir of skillRoots) {
+    if (!isReadableDir(skillsDir)) continue;
+    let subdirs: string[];
+    try {
+      subdirs = fs.readdirSync(skillsDir);
+    } catch {
+      continue;
+    }
+    for (const subdirName of subdirs) {
+      const subdir = path.join(skillsDir, subdirName);
+      if (!isReadableDir(subdir)) continue;
+      const skillFile = path.join(subdir, 'SKILL.md');
+      let raw: string;
+      try {
+        raw = fs.readFileSync(skillFile, 'utf8');
+      } catch {
+        continue; // no SKILL.md — not a skill dir
+      }
+      if (!/^[a-zA-Z0-9._-]+$/.test(subdirName)) {
+        console.warn(
+          `[commands-loader] skipping plugin skill ${skillFile}: subdir name has invalid chars`
+        );
+        continue;
+      }
+      const { data } = parseFrontmatter(raw);
+      const fullName = `${pluginId}:${subdirName}`;
+      out.push({
+        name: fullName,
+        description: data['description'] || undefined,
+        argumentHint: data['argument-hint'] || undefined,
+        source: 'skill',
+        pluginId,
+        file: skillFile,
+        priority: basePriority,
+      });
+    }
+  }
+  return out;
+}
+
 function collectPluginEntries(pluginsRoot: string, basePriority: number): RawEntry[] {
   const cacheRoot = path.join(pluginsRoot, 'cache');
   if (!isReadableDir(cacheRoot)) return [];
@@ -187,6 +249,11 @@ function collectPluginEntries(pluginsRoot: string, basePriority: number): RawEnt
     return [];
   }
   for (const market of marketplaces) {
+    // `temp_git_*` dirs are scratch checkouts the plugin manager uses while
+    // resolving git-sourced marketplaces. They are not real marketplace dirs
+    // and treating them as such surfaces noise entries (and can shadow the
+    // real namespaced names).
+    if (market.startsWith('temp_git_')) continue;
     const marketDir = path.join(cacheRoot, market);
     if (!isReadableDir(marketDir)) continue;
     let plugins: string[];
@@ -204,6 +271,8 @@ function collectPluginEntries(pluginsRoot: string, basePriority: number): RawEnt
         const entry = readEntry(file, 'plugin', basePriority, pluginId);
         if (entry) out.push(entry);
       }
+      // Skills live alongside commands in the same plugin version dir.
+      out.push(...collectSkillEntries(versionDir, pluginId, basePriority + 1));
     }
   }
   return out;
@@ -226,9 +295,10 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
   //      the binary and the GUI loader read the same tree; ignoring it would
   //      desync the picker from what claude.exe actually executes)
   //   3. `<os.homedir()>/.claude` (last-resort default)
+  // Steps 2-3 live in `getClaudeConfigDir()` (electron/shared/claudePaths.ts).
   const claudeRoot = opts.homeDir
     ? path.join(opts.homeDir, '.claude')
-    : (process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'));
+    : getClaudeConfigDir();
   const all: RawEntry[] = [];
 
   // 1. user
@@ -309,38 +379,8 @@ export function loadCommands(opts: LoadOpts = {}): LoadedCommand[] {
 
 // ────────────────────── picker-visible filter ──────────────────────────────
 //
-// Subset of `loadCommands` surfaced to the slash-command picker. All five
-// disk-discovered sources are visible.
-//
-// Why every source is included (reversal of PR #346, see #290):
-//
-//   - PLUGIN commands (`/<plugin>:<name>` from ~/.claude/plugins/cache/...)
-//     are loaded automatically by the bundled CLI from the user's
-//     `enabledPlugins` setting in ~/.claude/settings.json. The SDK
-//     `query()` defaults to `settingSources: ['user','project','local']`
-//     when the option is omitted (which ccsm intentionally does), so the
-//     CLI subprocess discovers and registers every enabled plugin command.
-//     Empirically verified: spawning the SDK-bundled claude.exe with
-//     stream-json and sending `/superpowers:brainstorming <q>` runs the
-//     plugin and produces real output. The "deprecated, use the skill"
-//     reply that PR #346 attributed to a transport gap is in fact the
-//     CONTENT of the deprecated `/superpowers:brainstorm` plugin command
-//     itself — the plugin authors deprecated that name in favour of the
-//     `superpowers:brainstorming` skill. PR #346 misdiagnosed user-visible
-//     plugin output as a missing feature.
-//
-//   - SKILL entries (from ~/.claude/skills/) are also loaded by the
-//     bundled CLI; invoking `/<skill-name>` in the composer triggers the
-//     skill (the CLI's own command resolution recognises these).
-//
-//   - AGENT entries (subagent definitions) are invocable as
-//     `/<agent-name>` — the CLI exposes them as commands too.
-//
-// All disk-discovered commands are forwarded to claude.exe via the existing
-// pass-through path (`passThrough: true` in registry.ts loadDynamicCommands).
-// The unknown-namespaced toast (PR #359, src/components/InputBar.tsx) still
-// catches genuinely-missing namespaced commands because it only fires when
-// the name is NOT found in the merged command list.
+// All disk-discovered sources are surfaced; the CLI subprocess actually
+// executes them via the standard pass-through path.
 export const PICKER_VISIBLE_SOURCES: ReadonlySet<CommandSource> = new Set([
   'user',
   'project',

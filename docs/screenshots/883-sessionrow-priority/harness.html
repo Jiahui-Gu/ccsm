@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  Visual harness for audit #876 cluster 2.3 — SessionRow attention priority.
+  Renders 4 cells (idle / waiting / crashed / crashed+waiting) so before/after
+  screenshots show whether the "crashed+waiting" cell collapses to a single
+  signal (crashed, no halo) or competes with halo+dot.
+
+  Open in playwright with PRIORITY_ENABLED=0 for "before" and =1 for "after".
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<title>AgentIcon attention priority — #883</title>
+<style>
+  :root {
+    --bg-base: #0e0e0f;
+    --bg-elevated: #1a1a1c;
+    --border-default: #2c2c30;
+    --fg-primary: #f0f0f2;
+    --fg-secondary: #a0a0a8;
+    --bg-hover: #1f1f22;
+    --accent: #d97757;
+    --state-error: #e5484d;
+  }
+  body {
+    margin: 0;
+    background: var(--bg-base);
+    color: var(--fg-primary);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 14px; font-weight: 600; margin: 0 0 16px; color: var(--fg-secondary); }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 12px; max-width: 520px; }
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 12px; height: 36px; border-radius: 4px;
+    background: var(--bg-hover);
+  }
+  .row .label { flex: 1; min-width: 0; }
+  .row .name { display: block; }
+  .row .caption { display: block; font-size: 11px; color: var(--fg-secondary); }
+  .icon {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border-default);
+    flex-shrink: 0;
+  }
+  .icon svg { width: 11px; height: 11px; display: block; }
+  .crash-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--state-error);
+    flex-shrink: 0; margin-left: auto;
+  }
+  /* halo animation — same oklch values as AgentIcon.tsx */
+  @keyframes halo {
+    0%, 100% { box-shadow: 0 0 0 0 oklch(0.78 0.10 75 / 0); }
+    50%      { box-shadow: 0 0 10px 3px oklch(0.78 0.10 75 / 0.7); }
+  }
+  .halo { animation: halo 1.6s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<h1>SessionRow attention signals — #883 (audit #876 cluster 2.3)</h1>
+<div class="grid">
+  <div class="row">
+    <span class="icon" data-attention="idle"><svg viewBox="0 0 24 24" fill="#D97757"><path fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg></span>
+    <span class="label"><span class="name">Quiet session</span><span class="caption">state=idle</span></span>
+  </div>
+  <div class="row">
+    <span class="icon halo" data-attention="waiting-or-flashing"><svg viewBox="0 0 24 24" fill="#D97757"><path fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg></span>
+    <span class="label"><span class="name">Waiting on input</span><span class="caption">state=waiting → halo</span></span>
+  </div>
+  <div class="row">
+    <span class="icon" data-attention="crashed"><svg viewBox="0 0 24 24" fill="#D97757"><path fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg></span>
+    <span class="label"><span class="name">Dead session</span><span class="caption">crashed → red dot only</span></span>
+    <span class="crash-dot"></span>
+  </div>
+  <div class="row" id="conflict">
+    <!-- The cell that the audit fix is about: crashed AND waiting/flashing.
+         BEFORE: halo class is present → halo + red dot compete for focus.
+         AFTER:  halo class removed via the new priority resolver. -->
+    <span class="icon halo" data-attention="conflict"><svg viewBox="0 0 24 24" fill="#D97757"><path fill-rule="evenodd" clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></svg></span>
+    <span class="label"><span class="name">Crashed + waiting</span><span class="caption" id="caption">RACE: halo + red dot</span></span>
+    <span class="crash-dot"></span>
+  </div>
+</div>
+<script>
+  // Toggle priority via hash: #after applies the audit fix (halo suppressed).
+  if (location.hash === '#after') {
+    const icon = document.querySelector('#conflict .icon');
+    icon.classList.remove('halo');
+    icon.setAttribute('data-attention', 'crashed');
+    document.querySelector('#caption').textContent = 'crashed wins → no halo';
+  }
+</script>
+</body>
+</html>

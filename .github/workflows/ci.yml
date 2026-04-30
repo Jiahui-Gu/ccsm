@@ -1,13 +1,21 @@
 name: CI
 
 on:
-  workflow_dispatch:
   pull_request:
-    branches: [main]
+    branches: [main, working]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   lint-typecheck-test:
@@ -30,11 +38,29 @@ jobs:
       # GitHub-hosted ubuntu image already has them, but setup-python makes
       # it explicit and pins the version so upstream image changes don't
       # surprise us.
+      # Pinned to 3.11 because 3.12+ removed the distutils stdlib (PEP 632)
+      # which the older node-gyp invoked by better-sqlite3's postinstall
+      # still imports. Bump back when better-sqlite3 ships node-gyp >= 10.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
+
+      # Cache node_modules directly (not ~/.npm) — `npm ci --legacy-peer-deps`
+      # on Windows is the dominant CI cost (~178s = 49% of total wall-clock,
+      # eval #877). Restoring node_modules verbatim skips install + native
+      # rebuilds (better-sqlite3, node-pty) baked into the cached tree.
+      # Key includes os/arch/node major + lockfile hash so any dep change
+      # busts the cache. Native ABI for Node-side tests is re-aligned by the
+      # `npm rebuild better-sqlite3` step below, which always runs.
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
 
       - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
         run: npm ci --legacy-peer-deps
         env:
           # electron-builder's postinstall needs this env to not fail on
@@ -53,5 +79,32 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Build is required before `npm test` because the load-smoke harness
+      # (tests/electron-load-smoke.test.ts) require()s dist/electron/*.js
+      # to verify CJS load cleanliness. Without dist present, those tests
+      # fail loud — see Task #764.
+      - name: Build
+        run: npm run build
+
       - name: Test
         run: npm test
+
+      # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
+      # keep the matrix lean (coverage instrumentation roughly doubles
+      # wall-clock; one OS is enough for the lcov artifact). Threshold
+      # misses do NOT fail CI yet — this is the initial roll-out; we wrap
+      # with `continue-on-error: true` to keep CI green during the bake-in
+      # period. Bump and enforce in a follow-up once we've watched a few
+      # PRs.
+      - name: Coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run coverage
+        continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: warn

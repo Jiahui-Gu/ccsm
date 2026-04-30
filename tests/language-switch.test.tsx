@@ -14,21 +14,21 @@ describe('language switch', () => {
   it('changing the store preference flips t() output', async () => {
     // Start in English.
     act(() => usePreferences.getState().setLanguage('en'));
-    const { result, rerender } = renderHook(() => useTranslation('chat'));
-    expect(result.current.t('sendButton')).toBe('Send');
+    const { result, rerender } = renderHook(() => useTranslation('common'));
+    expect(result.current.t('save')).toBe('Save');
 
     // Switch to Chinese; rerender to pick up the new language event.
     await act(async () => {
       usePreferences.getState().setLanguage('zh');
     });
     rerender();
-    expect(result.current.t('sendButton')).toBe('发送');
+    expect(result.current.t('save')).toBe('保存');
 
     // And back, to verify it isn't a one-way door.
     await act(async () => {
       usePreferences.getState().setLanguage('en');
     });
     rerender();
-    expect(result.current.t('sendButton')).toBe('Send');
+    expect(result.current.t('save')).toBe('Save');
   });
 });

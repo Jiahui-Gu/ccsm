@@ -185,7 +185,6 @@ Tailwind v4 default (4px base step). Do not override. Used values: `1` (4), `1.5
 | Surface                  | Value                | Notes                                                         |
 | ------------------------ | -------------------- | ------------------------------------------------------------- |
 | Sidebar expanded width   | `256px`              | Fits 30+ chars of session name at `text-sm`                   |
-| Sidebar collapsed width  | `48px`               | Just status dot + group initial                               |
 | Sidebar item height      | `28px`               | Things 3 / Linear density. Hit-target is fine on desktop.     |
 | Group header height      | `32px`               | Slightly taller than items so it reads as a header            |
 | Sidebar item left padding| `12px` (group), `28px` (session) | Children indented 16px from group header             |
@@ -271,7 +270,7 @@ In light mode, halve the alpha values for all shadow tokens.
 | `--dur-micro`    | `80ms` | Hover bg, button press, icon color flip                        |
 | `--dur-small`    | `160ms`| State change (focus ring, input enable/disable)                |
 | `--dur-medium`   | `200ms`| Sidebar row reorder (locked elsewhere), toast slide-in         |
-| `--dur-large`    | `240ms`| Modal/command palette open, sidebar collapse/expand            |
+| `--dur-large`    | `240ms`| Modal/command palette open                                      |
 
 ### 6.3 What animates
 

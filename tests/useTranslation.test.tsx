@@ -19,7 +19,7 @@ describe('useTranslation wrapper', () => {
   });
 
   it('translates a known key from the requested namespace', () => {
-    const { result } = renderHook(() => useTranslation('chat'));
-    expect(result.current.t('sendButton')).toBe('Send');
+    const { result } = renderHook(() => useTranslation('common'));
+    expect(result.current.t('save')).toBe('Save');
   });
 });

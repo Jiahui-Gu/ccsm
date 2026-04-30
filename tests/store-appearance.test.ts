@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { useStore } from '../src/stores/store';
 import {
-  useStore,
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MIN,
-  SIDEBAR_WIDTH_MAX
-} from '../src/stores/store';
+  SIDEBAR_WIDTH_MAX,
+} from '../src/stores/slices/appearanceSlice';
 
 describe('appearance setters', () => {
   it('setFontSizePx updates both px and legacy enum', () => {

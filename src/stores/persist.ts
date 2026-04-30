@@ -1,13 +1,9 @@
 import type { Group, Session } from '../types';
 import type {
-  PermissionMode,
   Theme,
   FontSize,
   FontSizePx,
-  NotificationSettings,
-  EffortLevel
-} from './store';
-import type { RecentProject } from '../mock/data';
+} from './slices/types';
 
 export const STATE_KEY = 'main';
 
@@ -26,28 +22,18 @@ export const STATE_KEY = 'main';
  * field consumed by `resolvePersistedSidebarWidth` during hydration. New
  * writes always populate `sidebarWidth` (px) instead.
  *
- * runningSessions, interruptedSessions, messageQueues, messagesBySession,
- * statsBySession, focusInputNonce, models, connection, installerCorrupt etc.
- * are intentionally NOT persisted — they're runtime state tied to the current
- * agent process / IPC layer. Restoring them would block recovery on next
- * launch. See PR #156.
+ * Runtime-only fields (installerCorrupt, etc.) are
+ * intentionally NOT persisted — they're tied to the current process and
+ * restoring them would block recovery on next launch. See PR #156.
  */
 export const PERSISTED_KEYS = [
   'sessions',
   'groups',
   'activeId',
-  'model',
-  'permission',
-  'sidebarCollapsed',
   'sidebarWidth',
   'theme',
   'fontSize',
   'fontSizePx',
-  'recentProjects',
-  'tutorialSeen',
-  'notificationSettings',
-  'globalEffortLevel',
-  'effortLevelBySession'
 ] as const;
 
 export type PersistedKey = typeof PERSISTED_KEYS[number];
@@ -57,12 +43,6 @@ export interface PersistedState {
   sessions: Session[];
   groups: Group[];
   activeId: string;
-  model: string;
-  // Loose type: older builds persisted legacy literals like `standard` /
-  // `ask` / `auto` / `yolo`. `migratePermission` in store.ts normalises on
-  // read. Writes always use the current `PermissionMode`.
-  permission: PermissionMode | string;
-  sidebarCollapsed: boolean;
   /** Sidebar width in pixels. See State.sidebarWidth. */
   sidebarWidth?: number;
   /**
@@ -75,13 +55,6 @@ export interface PersistedState {
   fontSize?: FontSize;
   /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
   fontSizePx?: FontSizePx;
-  recentProjects?: RecentProject[];
-  tutorialSeen?: boolean;
-  notificationSettings?: NotificationSettings;
-  /** Global default effort level applied to fresh sessions (6-tier chip). */
-  globalEffortLevel?: EffortLevel;
-  /** Per-session effort level overrides; absent => inherit global default. */
-  effortLevelBySession?: Record<string, EffortLevel>;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

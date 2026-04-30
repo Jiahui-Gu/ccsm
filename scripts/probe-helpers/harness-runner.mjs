@@ -38,6 +38,86 @@ import { fileURLToPath } from 'node:url';
 import { appWindow } from '../probe-utils.mjs';
 import { resetBetweenCases } from './reset-between-cases.mjs';
 
+/**
+ * Buffer stdout/stderr from the underlying electron child process so that
+ * if `appWindow()` times out we have something to print besides "no
+ * renderer window appeared in time". Without this the only signal on
+ * Windows CI is the timeout itself — every main-process throw, native-
+ * module load failure, or `app.quit()` between launch and window-create
+ * is silently lost. (Task #919)
+ *
+ * Returns a cleanup() that detaches the listeners + a snapshot() that
+ * returns the captured text (capped to MAX bytes per stream so a chatty
+ * boot doesn't blow the runner heap).
+ *
+ * @param {import('playwright').ElectronApplication} app
+ */
+function captureChildIo(app) {
+  const MAX = 16 * 1024;
+  let out = '';
+  let err = '';
+  let proc = null;
+  const onStdout = (chunk) => {
+    if (out.length < MAX) out += chunk.toString('utf8');
+  };
+  const onStderr = (chunk) => {
+    if (err.length < MAX) err += chunk.toString('utf8');
+  };
+  try {
+    proc = app.process();
+    proc?.stdout?.on('data', onStdout);
+    proc?.stderr?.on('data', onStderr);
+  } catch {
+    /* best-effort */
+  }
+  return {
+    snapshot() {
+      return { stdout: out, stderr: err };
+    },
+    cleanup() {
+      try {
+        proc?.stdout?.off('data', onStdout);
+        proc?.stderr?.off('data', onStderr);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
+
+/**
+ * Wrap `appWindow()` so its timeout error includes whatever the electron
+ * child printed to stdout/stderr before the window-create deadline. This
+ * is the only way to get visibility on Windows CI when the main process
+ * crashes silently between launch and window-create. (Task #919)
+ *
+ * @param {import('playwright').ElectronApplication} app
+ */
+async function appWindowWithDiag(app) {
+  const cap = captureChildIo(app);
+  try {
+    return await appWindow(app);
+  } catch (err) {
+    const { stdout, stderr } = cap.snapshot();
+    const trimmedOut = stdout.trim();
+    const trimmedErr = stderr.trim();
+    const extra = [
+      trimmedOut ? `--- electron stdout (truncated to 16KB) ---\n${trimmedOut}` : '',
+      trimmedErr ? `--- electron stderr (truncated to 16KB) ---\n${trimmedErr}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (extra) {
+      const wrapped = new Error(`${err.message}\n${extra}`);
+      wrapped.stack = `${err.stack}\n${extra}`;
+      throw wrapped;
+    }
+    throw err;
+  } finally {
+    cap.cleanup();
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const ARTIFACTS_ROOT = path.join(REPO_ROOT, 'scripts/e2e-artifacts');
@@ -233,14 +313,25 @@ function freshUserDataDir(tag) {
  *   the summary as `[--]` and do NOT count toward the failure exit code.
  *   Override via `CCSM_CLAUDE_BIN` env or by symlinking onto PATH.
  *
+ * @property {boolean} [windowsOnly]
+ *   Skip this case when `process.platform !== 'win32'`.
+ *   Use for tests that exercise Windows-only features (e.g. Windows
+ *   notification modules).
+ *
+ * @property {boolean} [darwinOnly]
+ *   Skip this case when `process.platform !== 'darwin'`.
+ *   Use for tests that exercise macOS-only features (e.g. native macOS
+ *   notification modules).
+ *
  *   Example (probe-e2e-permission-allow-bash style — needs real subprocess
  *   to verify the IPC frame round-trips through claude.exe):
  *     { id: 'permission-allow-bash', requiresClaudeBin: true, run: ... }
  *
  * @property {(app: import('playwright').ElectronApplication, ctx: HarnessCaseCtx) => Promise<void>} [preMain]
  *   Run BEFORE the case body, in the electron MAIN process via `app.evaluate`.
- *   Use for monkey-patching main-process modules (e.g. `notify.ts`'s
- *   `__setNotifyImporter` test seam, dialog stubs, fake transports).
+ *   Use for monkey-patching main-process modules (e.g. patching
+ *   `Notification.prototype.show` to capture toast emissions, dialog stubs,
+ *   fake transports).
  *
  *   Caller is responsible for restoring via `registerDispose` if the patch
  *   must not leak into subsequent cases. For `userDataDir: 'fresh'` cases
@@ -248,12 +339,14 @@ function freshUserDataDir(tag) {
  *
  *   Example (probe-e2e-notify-integration style):
  *     {
- *       id: 'notify-importer-swap',
+ *       id: 'notify-capture',
  *       preMain: async (app) => {
- *         await app.evaluate(async () => {
- *           const mod = await import('./electron/notify.js');
+ *         await app.evaluate(async ({ Notification }) => {
  *           globalThis.__notifyCalls = [];
- *           mod.__setNotifyImporter(async () => ({ default: class { constructor(o) { globalThis.__notifyCalls.push(o); } show() {} } }));
+ *           const proto = Notification.prototype;
+ *           const origShow = proto.show;
+ *           proto.show = function () { globalThis.__notifyCalls.push({ title: this.title, body: this.body }); };
+ *           void origShow;
  *         });
  *       },
  *       run: async ({ app, win }) => { ... assert globalThis.__notifyCalls ... }
@@ -316,7 +409,7 @@ function freshUserDataDir(tag) {
  * @param {string | null} userDataDirOverride
  */
 function buildLaunchOpts(spec, userDataDirOverride) {
-  const args = ['.', ...(spec.launch?.args ?? [])];
+  const args = ['.', '--lang=en', ...(spec.launch?.args ?? [])];
   if (userDataDirOverride) {
     // Electron honors `--user-data-dir=<path>` as a CLI flag; this is the
     // same mechanism CCSM_USER_DATA_DIR-style overrides ultimately land on.
@@ -334,6 +427,8 @@ function buildLaunchOpts(spec, userDataDirOverride) {
   const env = {
     CCSM_E2E_HIDDEN: '1',
     ...process.env,
+    LANG: 'en_US.UTF-8',
+    LC_ALL: 'en_US.UTF-8',
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
     ...(spec.launch?.env ?? {})
@@ -346,6 +441,9 @@ function buildLaunchOpts(spec, userDataDirOverride) {
  *
  * @param {HarnessSpec} spec
  */
+/** Platform-aware modifier key: 'Meta' on macOS (Cmd), 'Control' elsewhere. */
+export const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
 export async function runHarness(spec) {
   // Fail-fast BEFORE launching electron: a stale dist/renderer/bundle.js
   // would silently run the harness against old src code (see PR #322 post-mortem).
@@ -378,7 +476,7 @@ export async function runHarness(spec) {
   if (needsAnyLaunch && filtered.some((c) => !c.skipLaunch && c.userDataDir !== 'fresh' && !c.relaunch)) {
     const opts = buildLaunchOpts(spec, null);
     app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-    win = await appWindow(app);
+    win = await appWindowWithDiag(app);
     await win.waitForLoadState('domcontentloaded');
     await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
     if (spec.setup) {
@@ -404,6 +502,22 @@ export async function runHarness(spec) {
       // ---- Capability: requiresClaudeBin ----
       if (c.requiresClaudeBin && !resolveClaudeBin()) {
         const reason = 'no `claude` binary on PATH (set CCSM_CLAUDE_BIN or install the upstream CLI)';
+        console.log(`[case=${c.id}] SKIPPED: ${reason}`);
+        results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
+        continue;
+      }
+
+      // ---- Capability: windowsOnly ----
+      if (c.windowsOnly && process.platform !== 'win32') {
+        const reason = `skipped: windowsOnly (current platform is ${process.platform})`;
+        console.log(`[case=${c.id}] SKIPPED: ${reason}`);
+        results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
+        continue;
+      }
+
+      // ---- Capability: darwinOnly ----
+      if (c.darwinOnly && process.platform !== 'darwin') {
+        const reason = `skipped: darwinOnly (current platform is ${process.platform})`;
         console.log(`[case=${c.id}] SKIPPED: ${reason}`);
         results.push({ id: c.id, status: 'skipped', ms: Date.now() - caseStart, reason });
         continue;
@@ -455,7 +569,7 @@ export async function runHarness(spec) {
         }
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindow(app);
+        win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
         if (spec.setup) {
@@ -469,7 +583,7 @@ export async function runHarness(spec) {
       if (!app || !win) {
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindow(app);
+        win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
         if (spec.setup) {

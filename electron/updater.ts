@@ -98,6 +98,14 @@ export function installUpdaterIpc(): void {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = null;
 
+  // Dual-install (#891): the dev variant pulls GitHub pre-releases so we can
+  // ship release candidates / dogfood builds without affecting prod users
+  // (prod's autoUpdater leaves allowPrerelease=false, so it skips them).
+  // No early return — dev MUST exercise the full updater flow to validate it.
+  if (app.getName().includes('Dev')) {
+    autoUpdater.allowPrerelease = true;
+  }
+
   autoUpdater.on('checking-for-update', () => broadcast({ kind: 'checking' }));
   autoUpdater.on('update-available', (info) =>
     broadcast({
@@ -155,6 +163,17 @@ export function installUpdaterIpc(): void {
 
   ipcMain.handle('updates:install', () => {
     if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
+    // Defense-in-depth: refuse to call quitAndInstall unless we've
+    // actually broadcast a `downloaded` event. Without this guard a
+    // misbehaving renderer (e.g. the user clicking the persistent toast
+    // after a stale state, or a future bug that wires the install button
+    // to a non-downloaded state) can trigger autoUpdater.quitAndInstall()
+    // mid-download — electron-updater handles that by force-killing the
+    // app, which the user reads as a crash. Returning `not-ready` lets
+    // the renderer surface a sane "still downloading" message instead.
+    if (lastStatus.kind !== 'downloaded') {
+      return { ok: false as const, reason: 'not-ready' as const };
+    }
     // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
     // on Windows (isSilent=false) and to relaunch after install on all OSes.
     setImmediate(() => autoUpdater.quitAndInstall(false, true));

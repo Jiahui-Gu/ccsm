@@ -50,13 +50,13 @@ export function parseLsResult(text: string): string[] {
     if (raw.startsWith('NOTE:')) continue;
     const m = raw.match(/^(\s*)-\s+(.+?)\/?\s*$/);
     if (!m) continue;
-    const indent = m[1].length;
-    const namePart = m[2];
+    const indent = m[1]!.length;
+    const namePart = m[2]!;
     const isDir = /\/\s*$/.test(raw) || (!rootSet && namePart.includes('/'));
     const depth = Math.floor(indent / LS_INDENT);
 
-    while (stack.length && stack[stack.length - 1].depth >= depth) stack.pop();
-    const parent = stack.length ? stack[stack.length - 1].path : '';
+    while (stack.length && stack[stack.length - 1]!.depth >= depth) stack.pop();
+    const parent = stack.length ? stack[stack.length - 1]!.path : '';
     let full: string;
     if (!rootSet) {
       // The very first entry is the absolute root directory.
@@ -113,7 +113,7 @@ export function buildFileTree(paths: string[]): FileTreeNode[] {
     let cursor = root;
     let pathSoFar = isAbs && raw.startsWith('/') ? '' : '';
     for (let i = 0; i < segments.length; i++) {
-      const seg = segments[i];
+      const seg = segments[i]!;
       pathSoFar = pathSoFar ? `${pathSoFar}/${seg}` : (isAbs && raw.startsWith('/') ? `/${seg}` : seg);
       const isLast = i === segments.length - 1;
       const expectDir = !isLast || knownDirs.has(p);

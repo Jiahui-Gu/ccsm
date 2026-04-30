@@ -2,8 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   diffFromEditInput,
   diffFromWriteInput,
-  diffFromMultiEditInput,
-  diffFromToolInput
+  diffFromMultiEditInput
 } from '../src/utils/diff';
 
 describe('diff parsers', () => {
@@ -54,12 +53,5 @@ describe('diff parsers', () => {
 
   it('MultiEdit: returns null when edits array is empty', () => {
     expect(diffFromMultiEditInput({ file_path: '/a', edits: [] })).toBeNull();
-  });
-
-  it('diffFromToolInput dispatches by tool name', () => {
-    expect(diffFromToolInput('Edit', { file_path: '/x', old_string: 'a', new_string: 'b' })).not.toBeNull();
-    expect(diffFromToolInput('Write', { file_path: '/x', content: 'a' })).not.toBeNull();
-    expect(diffFromToolInput('MultiEdit', { file_path: '/x', edits: [{ old_string: 'a', new_string: 'b' }] })).not.toBeNull();
-    expect(diffFromToolInput('Bash', { command: 'ls' })).toBeNull();
   });
 });

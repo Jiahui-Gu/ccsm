@@ -36,27 +36,47 @@ type DialogCatalog = {
   chooseCwd: string;
 };
 
+type CloseDialogCatalog = {
+  message: string;
+  detail: string;
+  tray: string;
+  quit: string;
+  dontAskAgain: string;
+};
+
+type BadgeCatalog = {
+  unreadOverlay: string;
+};
+
 type NotificationKey = keyof NotificationCatalog;
 type TrayKey = keyof TrayCatalog;
 type MenuKey = keyof MenuCatalog;
 type DialogKey = keyof DialogCatalog;
+type CloseDialogKey = keyof CloseDialogCatalog;
+type BadgeKey = keyof BadgeCatalog;
 
 // IMPORTANT: keep these strings byte-identical to the renderer catalog
 // `notifications` namespace. The renderer catalog is the source of truth.
 const catalogs: Record<SupportedLanguage, NotificationCatalog> = {
   en: {
-    sessionWaitingTitle: 'Session waiting',
+    // State-neutral copy: the OSC 0 ✳ glyph fires on CLI idle which covers
+    // both "turn done" and "permission prompt waiting". The user-attention
+    // semantic is identical (= "your turn") so both code paths in
+    // electron/notify/index.ts use the same wording. Keep `sessionDone*`
+    // and `sessionWaiting*` byte-identical until we have a real way to
+    // distinguish the two states.
+    sessionWaitingTitle: 'Waiting for you',
     sessionWaitingBody: '{{name}} needs your input',
-    sessionDoneTitle: 'Session finished',
-    sessionDoneBody: '{{name}} completed its task',
+    sessionDoneTitle: 'Waiting for you',
+    sessionDoneBody: '{{name}} needs your input',
     permissionRequestTitle: 'Permission requested',
     permissionRequestBody: '{{name}} is asking to {{action}}'
   },
   zh: {
-    sessionWaitingTitle: '会话等待中',
-    sessionWaitingBody: '{{name}} 需要你的输入',
-    sessionDoneTitle: '会话已完成',
-    sessionDoneBody: '{{name}} 完成了任务',
+    sessionWaitingTitle: '需要你的输入',
+    sessionWaitingBody: '{{name}} 在等你',
+    sessionDoneTitle: '需要你的输入',
+    sessionDoneBody: '{{name}} 在等你',
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}'
   }
@@ -102,6 +122,41 @@ const dialogCatalogs: Record<SupportedLanguage, DialogCatalog> = {
   }
 };
 
+// Native "close to tray or quit?" prompt shown the first time the user
+// clicks the window X (when their preference is still 'ask'). Keep parity
+// with the renderer catalog `closeDialog` namespace — the same strings are
+// surfaced in the Settings explainer hint so wording stays consistent.
+const closeDialogCatalogs: Record<SupportedLanguage, CloseDialogCatalog> = {
+  en: {
+    message: 'Close ccsm?',
+    detail:
+      'Minimize to tray keeps ccsm running so notifications and background sessions stay active.',
+    tray: 'Minimize to tray',
+    quit: 'Quit',
+    dontAskAgain: "Don't ask again"
+  },
+  zh: {
+    message: '关闭 ccsm？',
+    detail:
+      '最小化到托盘会让 ccsm 继续运行，通知和后台会话保持活跃。',
+    tray: '最小化到托盘',
+    quit: '退出',
+    dontAskAgain: '不再询问'
+  }
+};
+
+// Accessibility alt text for the Windows taskbar overlay icon. The visible
+// badge is just a digit ("1" / "9+"); screen readers announce this string.
+// Not surfaced in the renderer so no parity concern.
+const badgeCatalogs: Record<SupportedLanguage, BadgeCatalog> = {
+  en: {
+    unreadOverlay: '{{n}} unread'
+  },
+  zh: {
+    unreadOverlay: '{{n}} 条未读'
+  }
+};
+
 let activeLanguage: SupportedLanguage = 'en';
 
 export function setMainLanguage(lang: SupportedLanguage): void {
@@ -143,6 +198,20 @@ export function tMenu(key: MenuKey): string {
 export function tDialog(key: DialogKey): string {
   const catalog = dialogCatalogs[activeLanguage] ?? dialogCatalogs.en;
   return catalog[key] ?? dialogCatalogs.en[key] ?? key;
+}
+
+export function tCloseDialog(key: CloseDialogKey): string {
+  const catalog = closeDialogCatalogs[activeLanguage] ?? closeDialogCatalogs.en;
+  return catalog[key] ?? closeDialogCatalogs.en[key] ?? key;
+}
+
+export function tBadge(
+  key: BadgeKey,
+  vars: Record<string, string | number> = {}
+): string {
+  const catalog = badgeCatalogs[activeLanguage] ?? badgeCatalogs.en;
+  const template = catalog[key] ?? badgeCatalogs.en[key] ?? key;
+  return interpolate(template, vars);
 }
 
 // Resolve a system locale tag into one of the two supported languages.

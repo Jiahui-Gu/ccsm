@@ -40,116 +40,8 @@ const zh: EnCatalog = {
     dismiss: '关闭',
     undo: '撤销'
   },
-  chat: {
-    permissionRequested: '请求权限',
-    allow: '允许',
-    deny: '拒绝',
-    expandTool: '展开工具输出',
-    collapseTool: '折叠工具输出',
-    noOutput: '（暂无输出）',
-    errorLabel: '错误',
-    sendMessage: '发送消息',
-    sendButton: '发送',
-    inputPlaceholder: '回复…',
-    tokenUsage: '{{used}}k / {{total}}k tokens · 已用 {{percent}}%',
-    emptyTitle: '暂无消息',
-    emptySubtitle: '开始输入即可发起对话。',
-    jumpToLatest: '跳到最新',
-    planTitle: '计划已生成，等待审阅',
-    planApprove: '通过计划',
-    planReject: '驳回',
-    todoLabel: '待办',
-    infoLabel: '信息',
-    warnLabel: '警告',
-    toolFailedAria: '工具执行失败',
-    toolFailedTag: '失败',
-    runningEllipsis: '（执行中…）',
-    toolNoResult: '（无结果）',
-    toolInputRejectedRetried: '入参不合法，已自动重试',
-    toolTakingLonger: '（耗时较长…）',
-    toolStallEscalated: '工具已运行 90 秒以上，仍无结果。',
-    toolStallCancel: '取消',
-    toolStallCancelAria: '取消工具',
-    toolStallCancelling: '取消中…',
-    runningPlaceholder: '执行中…（Esc 中断，Enter 排队）',
-    askPlaceholder: '问点什么…',
-    attachImage: '附加图片',
-    attachImageTitle: '附加图片（也支持拖拽和粘贴）',
-    attachCapReached: '附件已达上限（{{max}}）',
-    removeAttachment: '移除 {{name}}',
-    dropImageHint: '拖入图片以附加',
-    attachmentFormatsHint: 'PNG · JPEG · GIF · WebP · 最多 {{size}}',
-    stopBtn: '停止',
-    stopAria: '停止',
-    queueChip: '+{{count}} 排队中',
-    queueButton: '排队',
-    queueAria: '排队消息',
-    sendFailedToDeliver: '消息投递到 agent 失败。',
-    cwdMissing: '工作目录已不存在: {{cwd}}。请用下方状态栏的 cwd 按钮重新选择目录后再发送。',
-    diffAccept: '接受',
-    diffReject: '拒绝',
-    diffAccepted: '已接受',
-    diffRejected: '已拒绝',
-    diffFileToggleAria: '展开/收起文件: {{path}}',
-    diffCountsAria: '新增 {{added}} 行，删除 {{removed}} 行',
-    permResolvedAllowed: '已允许',
-    permResolvedDenied: '已拒绝',
-    inputBytes: '输入',
-    expandStringChars: '+{{count}} 字符',
-    collapseString: '收起',
-    longOutputCopy: '复制全部',
-    longOutputCopied: '已复制',
-    codeBlockCopy: '复制代码',
-    codeBlockCopied: '已复制',
-    userMsgCopy: '复制消息',
-    userMsgCopied: '已复制',
-    userMsgEdit: '编辑并重发',
-    userMsgEditDraftStashed: '草稿已保存到历史',
-    userMsgRetry: '重试',
-    userMsgRetryQueued: '已排队',
-    userMsgRewind: '从此处截断对话',
-    longOutputSave: '另存为 .log',
-    longOutputSaved: '已保存',
-    longOutputSaveFailed: '保存失败',
-    longOutputExpand: '展开',
-    longOutputCollapse: '折叠',
-    longOutputHidden: '── 已隐藏 {{count}} 行 · 点击展开 ──',
-    longOutputTooLargeExpand: '内容过大，无法内联展开 · 请使用「另存为 .log」',
-    longOutputTooLargeBadge: '{{size}} · {{lines}} 行',
-    longOutputOpenInEditor: '在编辑器中打开',
-    longOutputOpenedInEditor: '已打开',
-    longOutputOpenInEditorFailed: '打开失败',
-    prOpening: '正在创建…',
-    prOpen: '已打开',
-    prPolling: 'CI 运行中…',
-    prDone: 'CI 完成',
-    prFailed: '失败',
-    prCheckRunning: '运行中',
-    prCheckPassed: '通过',
-    prCheckFailed: '失败',
-    prOpenDetailsAria: '打开 {{name}} 的详情',
-    loadHistoryFailed: '加载历史记录失败',
-    retry: '重试',
-    // task #320 — 权限模式感知的运行中占位文案
-    runningPlaceholderDefault: '执行中… 工具调用前会询问权限（Esc 中断，Enter 排队）',
-    runningPlaceholderAcceptEdits: '执行中… 自动接受编辑（Esc 中断，Enter 排队）',
-    runningPlaceholderBypass: '执行中… 跳过所有权限询问（Esc 中断，Enter 排队）',
-    runningPlaceholderPlan: '执行中… 仅规划，不进行编辑（Esc 中断，Enter 排队）',
-    // task322: continue-after-interrupt
-    continueAfterInterruptHint: '按 Enter 继续，或输入新消息',
-    // task328: 当前会话没有工作目录时（无最近 CLI 记录可作默认、所在分组无历史 cwd）
-    // 在 cwd 标签处显示。此时弹层不会自动展开，仍可点击。
-    cwdChipNoneLabel: '（无）'
-  },
-  chatStream: {
-    emptyHint: '输入消息后按'
-  },
-  assistantBlock: {
-    viaSkill: '通过 skill: {{name}}'
-  },
   sidebar: {
     newSession: '新会话',
-    newSessionInThisGroup: '在此 Group 新建 Session',
     newGroup: '新建分组',
     newGroupEllipsis: '新建分组…',
     groups: '分组',
@@ -173,11 +65,10 @@ const zh: EnCatalog = {
     moveToGroup: '移动到分组',
     waitingForResponse: '等待响应',
     openInChat: '在聊天中打开',
+    sessionCrashed: '本 session 的 claude 进程崩溃了',
     searchAria: '搜索',
-    expandSidebarTooltip: '展开侧边栏  Ctrl+B',
-    expandSidebarAria: '展开侧边栏',
-    newSessionTooltip: '新会话',
-    newSessionAria: '新会话',
+    pickCwdTooltip: '在其他目录新建会话',
+    pickCwdAria: '为新会话选择工作目录',
     searchTooltip: '搜索  Ctrl+F',
     searchAriaShort: '搜索',
     importTooltip: '导入会话',
@@ -190,12 +81,11 @@ const zh: EnCatalog = {
   },
   settings: {
     title: '设置',
-    description: '配置外观、通知、连接与更新。',
+    description: '配置外观、通知与更新。',
     tabs: {
       general: '通用',
       appearance: '外观',
       notifications: '通知',
-      connection: '连接',
       updates: '更新'
     },
     theme: '主题',
@@ -220,6 +110,14 @@ const zh: EnCatalog = {
       en: 'English',
       zh: '中文'
     },
+    closeBehavior: '关闭按钮行为',
+    closeBehaviorHint:
+      '点击窗口右上角 X（或按 Ctrl+W）时执行的操作。最小化到托盘可让通知和后台会话保持运行。',
+    closeBehaviorOptions: {
+      ask: '每次询问',
+      tray: '最小化到托盘',
+      quit: '退出'
+    },
     version: '版本',
     checkForUpdates: '检查更新',
     crashReporting: {
@@ -228,35 +126,10 @@ const zh: EnCatalog = {
     },
     notifications: {
       intro:
-        '当某个会话需要你处理时弹出系统通知 —— 权限请求、agent 提问和回合完成都会立即触发。通知标题显示分组与会话名，正文显示事件类型。',
-      enable: '启用通知',
+        '当会话完成回合或需要你处理时弹出系统通知。如果 CCSM 窗口已经聚焦在该会话上，则不再重复提醒。',
+      enable: '当会话需要输入时显示桌面通知',
       sound: '声音',
       soundHint: '播放系统默认通知声。'
-    },
-    connection: {
-      intro:
-        'CCSM 从 <code>~/.claude/settings.json</code> 以及 <code>ANTHROPIC_*</code> 环境变量读取连接配置。要修改请运行 <code>claude /config</code> 或直接编辑文件，然后重启 CCSM 生效。',
-      baseUrl: 'Base URL',
-      baseUrlDefault: 'https://api.anthropic.com（默认）',
-      defaultModel: '默认模型',
-      modelUnset: '（未设置 — CLI 会用自身默认值）',
-      authToken: 'Auth Token',
-      authConfigured: '已配置',
-      authNotConfigured: '未配置 — 运行 `claude /config` 完成登录。',
-      discoveredModels: '可用模型（{{count}}）',
-      discoveredModelsLoadingCount: '可用模型（…）',
-      discoveredModelsHint:
-        '合并自 settings.json、环境变量和 CLI 内置选择列表。',
-      modelsLoading: '加载中…',
-      modelsEmpty: '没有发现可用模型。运行 <code>claude /config</code> 配置一个。',
-      openSettingsFile: '打开 settings.json',
-      opening: '打开中…',
-      copyBaseUrl: '复制 URL',
-      copyModel: '复制模型',
-      copied: '已复制',
-      modelSourceSettings: '设置',
-      modelSourceCliPicker: 'CLI 选择列表',
-      modelSourceFallback: '兜底'
     },
     updates: {
       version: '版本',
@@ -274,95 +147,17 @@ const zh: EnCatalog = {
       statusNotAvailable: '已经是最新版本。',
       statusDownloading: '下载中… {{percent}}%（{{transferred}} / {{total}}）',
       statusDownloaded: '更新 {{version}} 已就绪 — 重启即可安装。',
-      statusError: '检查更新失败：{{message}}'
+      statusError: '检查更新失败：{{message}}',
+      downloadedToastTitle: '更新已下载 — 重启以应用',
+      downloadedToastBody: '版本 {{version}} 已就绪。',
+      downloadedToastAction: '重启'
     }
   },
-  permissions: {
-    promptTitle: '请求权限',
-    allow: '允许',
-    deny: '拒绝',
-    modeLabel: '权限模式',
-    modes: {
-      default: '默认',
-      acceptEdits: '自动接受编辑',
-      plan: '规划',
-      bypassPermissions: '跳过校验',
-      auto: '自动'
-    },
-    autoUnsupportedTitle: '自动模式不可用',
-    autoUnsupportedBody: '当前账号或模型暂不支持自动模式，已回退到默认。'
-  },
-  permissionPrompt: {
-    title: '需要授权',
-    titleByTool: {
-      bash: '允许执行此 bash 命令?',
-      webFetch: '允许获取此 URL?',
-      webSearch: '允许搜索此查询?',
-      edit: '允许编辑此文件?',
-      skill: '允许运行此技能?',
-      fallback: '需要授权'
-    },
-    allowBtn: '允许 (Y)',
-    // 显式标注作用域：只针对该工具名（不是单条命令），且仅本次会话内有效。
-    allowAlwaysBtn: '本会话始终允许 {{tool}}',
-    allowAlwaysBtnFallback: '本会话始终允许此工具',
-    allowAlwaysHint: '本次会话内的所有 {{tool}} 调用都将自动通过，应用退出后失效。',
-    allowAlwaysHintFallback: '本次会话内对此工具的所有调用都将自动通过，应用退出后失效。',
-    rejectBtn: '拒绝 (N)',
-    selectAll: '全选',
-    selectNone: '全不选',
-    hunkLabel: '片段 {{n}}',
-    allowSelected: '允许所选 ({{selected}}/{{total}})',
-    rejectAll: '全部拒绝',
-    applying: '正在应用…'
-  },
-  questionBlock: {
-    title: '等待你的回答',
-    submit: '提交回答',
-    submitted: '已提交',
-    cancel: '关闭',
-    other: '其他',
-    otherPlaceholder: '输入你的回答…',
-    pageHint: '第 {{current}} / {{total}} 题',
-    singleHint: '↑/↓ 切选项 · Enter 选中 · Esc 关闭',
-    tabFallback: '第 {{n}} 题',
-    timelineLabel: '已询问',
-    timelineAnswered: '你已回答',
-    timelineRejected: '未回答即关闭'
-  },
-  slashCommands: {
-    pickerTitle: '斜杠命令',
-    pickerHint: '输入以筛选，回车执行',
-    none: '没有匹配的命令',
-    noneHint: '没有匹配的命令 — 按 Enter 作为普通消息发送。',
-    navigate: '上下移动',
-    select: '选择',
-    section: '切换分组',
-    close: '关闭',
-    runsLocally: '本地运行 — 不会转发给 claude.exe',
-    clientTag: '本地',
-    groupBuiltIn: '内置',
-    groupUser: '用户 Commands',
-    groupProject: '项目 Commands',
-    groupPlugin: 'Plugin Commands',
-    groupSkill: 'Skills',
-    groupAgent: 'Agents',
-    unknownToast: '未知命令：/{{name}}'
-  },
-  mentions: {
-    pickerTitle: '文件引用',
-    empty: '当前工作区暂无文件',
-    noMatch: '没有匹配 “{{query}}” 的文件',
-    navigate: '上下移动',
-    select: '选择',
-    close: '关闭',
-    activeAnnouncement: '第 {{index}} / {{total}} 项：{{name}}'
-  },
   notifications: {
-    sessionWaitingTitle: '会话等待中',
-    sessionWaitingBody: '{{name}} 需要你的输入',
-    sessionDoneTitle: '会话已完成',
-    sessionDoneBody: '{{name}} 完成了任务',
+    sessionWaitingTitle: '需要你的输入',
+    sessionWaitingBody: '{{name}} 在等你',
+    sessionDoneTitle: '需要你的输入',
+    sessionDoneBody: '{{name}} 在等你',
     permissionRequestTitle: '请求权限',
     permissionRequestBody: '{{name}} 想要 {{action}}',
     turnDoneTitle: '{{name}} 已完成',
@@ -376,45 +171,9 @@ const zh: EnCatalog = {
     backgroundSessionFallback: '后台会话',
     backgroundWaitingToastTitle: '{{name}} 需要你的输入'
   },
-  tray: {
-    show: '显示 CCSM',
-    quit: '退出',
-    tooltip: 'CCSM'
-  },
-  menu: {
-    edit: '编辑(&E)'
-  },
-  dialog: {
-    chooseCwd: '选择工作目录'
-  },
-  errors: {
-    generic: '出错了。',
-    network: '网络错误。请检查连接。',
-    sessionSpawnFailed: '会话启动失败。',
-    apiKeyMissing: '缺少 Anthropic API Key。',
-    cliMissing: '未安装 Claude Code CLI。'
-  },
   installerCorrupt: {
     title: '安装包内的 Claude 程序缺失',
     body: 'CCSM 在安装包里附带了 Claude 程序，但在硬盘上找不到它。请重新安装 CCSM 以修复 — 修复之前会话无法启动。'
-  },
-  tutorial: {
-    skip: '跳过',
-    back: '上一步',
-    next: '下一步',
-    done: '完成',
-    stepXofY: '第 {{current}} / {{total}} 步',
-    goToStepAria: '跳到第 {{n}} 步',
-    welcomeTitle: '一个 AI 会话的工作台',
-    welcomeBody: 'CCSM 把 Claude Code 的对话整理成易于浏览的形式。把它当作同一个 agent 的桌面客户端 — 同样强大，少些终端。',
-    sessionsTitle: '并行运行多个会话',
-    sessionsBody: '每个会话都是独立的 agent 线程，拥有自己的工作目录。像切标签一样切换 — agent 在后台继续工作。',
-    groupsTitle: '按任务组织，而非按仓库',
-    groupsBody: '把跨仓库的会话放到一个分组。一个真实的任务通常涉及多个项目 — CCSM 让它们待在一起。',
-    startTitle: '随时可以开始',
-    startBody: '新建一个会话，或者从 Claude Code CLI 导入已有的会话。',
-    newSessionBtn: '新建会话',
-    importSessionBtn: '导入会话'
   },
   importDialog: {
     title: '从 Claude Code 导入会话',
@@ -440,27 +199,13 @@ const zh: EnCatalog = {
     noResultsFor: '未找到"{{query}}"的匹配结果',
     emptyHint: '输入以搜索会话、分组、命令…',
     groupHint: '分组',
-    cmdNewSession: '新会话',
     cmdNewGroup: '新建分组',
-    cmdToggleSidebar: '切换侧边栏',
     cmdImport: '从 Claude Code 导入…',
     cmdOpenSettings: '打开设置',
     cmdSwitchTheme: '切换主题 \u2192 {{next}}',
     hintNavigate: '导航',
     hintSelect: '选择',
     hintClose: '关闭'
-  },
-  prDialog: {
-    title: '创建 Pull Request',
-    descriptionPushing: '推送 {{branch}} \u2192 {{base}} 并在 GitHub 创建 PR。',
-    descriptionPreflight: '正在执行预检…',
-    fieldTitle: '标题',
-    fieldBaseBranch: '基础分支',
-    fieldBody: '正文',
-    openAsDraft: '作为草稿打开',
-    cancel: '取消',
-    opening: '创建中…',
-    openPR: '创建 PR'
   },
   toast: {
     dismiss: '关闭'
@@ -471,7 +216,16 @@ const zh: EnCatalog = {
   },
   terminal: {
     waitingOutput: '等待输出…',
-    noOutput: '（无输出）'
+    noOutput: '（无输出）',
+    starting: '启动中…',
+    spawnFailed: '终端启动失败',
+    retryButton: '重试',
+    exitedClean: 'claude 已退出（你输入了 /exit 或 claude 主动结束）。点 Retry 在本 session 开新对话。',
+    exitedCrash: 'claude 异常退出（{{detail}}）。这不是 ccsm 的问题，是底层 claude CLI 自己挂了。对话已保存到磁盘，点 Retry 恢复。',
+    exitedRetry: '重试'
+  },
+  chat: {
+    cwdChipNoneLabel: '（无）',
   },
   statusBar: {
     workingDirectory: '工作目录',
@@ -492,10 +246,10 @@ const zh: EnCatalog = {
     modeAcceptEditsDesc: '自动批准读取与编辑。shell 需先询问。',
     modeBypassDesc: '所有操作自动批准。请谨慎使用。',
     modeAutoDesc: '由分类器决定批准。研究预览，需 Sonnet 4.6+。',
-    modePlanTooltip: '规划模式 \u2014 只读分析；不编辑文件、不执行 shell，除非你批准。',
-    modeDefaultTooltip: '默认 \u2014 自动批准读取；编辑和 shell 先询问。',
-    modeAcceptEditsTooltip: '接受编辑 \u2014 自动批准读取与文件编辑；shell 先询问。',
-    modeBypassTooltip: '跳过校验 \u2014 所有工具调用直接放行。请谨慎使用。',
+    modePlanTooltip: '规划模式 — 只读分析；不编辑文件、不执行 shell，除非你批准。',
+    modeDefaultTooltip: '默认 — 自动批准读取；编辑和 shell 先询问。',
+    modeAcceptEditsTooltip: '接受编辑 — 自动批准读取与文件编辑；shell 先询问。',
+    modeBypassTooltip: '跳过校验 — 所有工具调用直接放行。请谨慎使用。',
     modeAutoTooltip: '自动 — 研究预览，需 Sonnet 4.6+。当前账号或模型不支持时会回退到默认。',
     contextLabel: '上下文',
     contextTooltip: '已用 {{percent}}%（{{used}} / {{limit}} 个 token）。点击执行 /compact。',
@@ -539,8 +293,6 @@ const zh: EnCatalog = {
     actionNewline: '插入换行',
     actionStop: '中断当前回合',
     actionDismissPicker: '关闭斜杠命令选择器',
-    actionToggleSidebar: '切换侧边栏',
-    actionNewSession: '新建会话',
     actionNewGroup: '新建分组',
     actionSearch: '打开搜索 / 命令面板',
     actionSettings: '打开设置',
@@ -548,33 +300,18 @@ const zh: EnCatalog = {
     colShortcut: '快捷键',
     colAction: '动作'
   },
-  banner: {
-    agentInitFailed: {
-      title: '无法启动 Claude',
-      retry: '重试',
-      retrying: '重试中\u2026',
-      reconfigure: '重新配置'
-    },
-    agentDiagnostic: {
-      titleError: 'Agent 错误',
-      titleWarning: 'Agent 警告',
-      dismiss: '关闭诊断信息'
-    }
+  // 右侧 pane 在 boot probe (`ccsmPty.checkClaudeAvailable()`) 期间显示，
+  // 之前是空白 flex spacer，导致用户在 probe 解析前点"新建会话"就看到一片空白
+  // (bug #852 / task #900)。
+  claudeAvailability: {
+    probing: '正在检测 Claude CLI…'
   },
-  // task #303
-  task303: {
-    diffAddCommentAria: '在这一行给 agent 添加备注',
-    diffEditCommentAria: '编辑备注',
-    diffDeleteCommentAria: '删除备注',
-    diffCommentPlaceholder: '给 agent 留一条备注\u2026',
-    diffCommentSave: '保存',
-    diffCommentsPendingChip: '将随下条消息发送 {{count}} 条 diff 备注'
-  },
-  // task #329 — first-run empty-state CTA shown when no active session.
-  // 在 #353 精简为两个 CTA。
-  firstRun: {
-    newSession: '新建会话',
-    importSession: '从 CLI 导入会话'
+  // Boot-time full-screen page shown when `claude` CLI not on PATH.
+  claudeMissing: {
+    title: 'Claude CLI 未找到',
+    body: 'ccsm 需要单独安装 Claude CLI。请通过 npm 安装后重新检查。',
+    installCommandLabel: '安装命令',
+    recheckButton: '重新检查'
   }
 };
 

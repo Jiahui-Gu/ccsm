@@ -1,28 +1,23 @@
-// Task #329 — first-run empty state.
+// Task #894 — no-active-session empty pane.
 //
 // Contract: on a fresh app boot (no persisted sessions) the renderer must
-// NOT auto-create a session. Instead it shows a sentence-case CTA palette
-// (new session + import) anchored on data-testid="first-run-empty". The
-// welcome heading, "Create a new group" link, and tip line were removed
-// in #353 — they were visual noise that didn't unlock any action. This
-// test guards against the regression where some startup hook silently
-// calls createSession() and bypasses the empty state.
+// NOT auto-create a session and must NOT show any central CTA / Tutorial
+// (those entries were removed in #894 — sidebar `+` button is the only
+// entry point now). The right pane renders an empty `data-testid=
+// "no-active-session-empty"` placeholder.
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, within } from '@testing-library/react';
 import App from '../src/App';
 import { useStore } from '../src/stores/store';
-
-const initial = useStore.getState();
+import { resetStore } from './util/resetStore';
 
 function stubCCSM() {
   const api = {
-    pickDirectory: vi.fn().mockResolvedValue(null),
     pathsExist: vi.fn().mockResolvedValue({}),
     recentCwds: vi.fn().mockResolvedValue([]),
     defaultModel: vi.fn().mockResolvedValue(null),
     onUpdateDownloaded: vi.fn().mockReturnValue(() => {}),
-    onNotificationFocus: vi.fn().mockReturnValue(() => {}),
     cliCheck: vi.fn().mockResolvedValue({ state: 'found', binaryPath: '/usr/bin/claude' }),
     settingsLoad: vi.fn().mockResolvedValue({}),
     modelsList: vi.fn().mockResolvedValue([]),
@@ -66,44 +61,37 @@ function stubMatchMedia() {
 
 beforeEach(() => {
   cleanup();
-  // Fresh boot: no sessions, no active id, but tutorialSeen=true so the
-  // empty-state CTA renders (Tutorial path is exercised separately).
-  useStore.setState(
-    {
-      ...initial,
-      sessions: [],
-      groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
-      activeId: '',
-      focusedGroupId: null,
-      tutorialSeen: true,
-      messagesBySession: {},
-      startedSessions: {},
-      runningSessions: {},
-      messageQueues: {},
-      focusInputNonce: 0
-    },
-    true
-  );
+  resetStore({
+    sessions: [],
+    groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
+    activeId: '',
+    focusedGroupId: null,
+    hydrated: true,
+    messagesBySession: {},
+    startedSessions: {},
+    runningSessions: {},
+    messageQueues: {},
+    focusInputNonce: 0
+  });
   stubCCSM();
   stubMatchMedia();
 });
 
-describe('first-run empty state', () => {
-  it('renders no sessions and the first-run CTA palette on fresh boot', () => {
+describe('no-active-session empty pane (#894)', () => {
+  it('renders no sessions, no central CTA, and the empty placeholder on fresh boot', () => {
     expect(useStore.getState().sessions).toHaveLength(0);
     render(<App />);
-    // The data-testid anchor proves we hit the empty-state branch (not the
-    // ChatStream branch) AND that no session was silently created during
-    // render.
-    expect(screen.getByTestId('first-run-empty')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^New session$/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Import a CLI session$/ })).toBeInTheDocument();
-    // Removed in #353 — must not be present.
-    expect(screen.queryByText(/Welcome to ccsm\./i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Create a new group$/ })).not.toBeInTheDocument();
-    expect(
-      screen.queryByText(/groups organize sessions by task, not by repo/i)
-    ).not.toBeInTheDocument();
+    // The empty placeholder anchor proves we hit the no-active-session
+    // branch and nothing was silently created.
+    expect(screen.getByTestId('no-active-session-empty')).toBeInTheDocument();
+    // No central CTA buttons (removed in #894). Scope to the empty-state
+    // container — the sidebar's `+ New session` button is always rendered
+    // and is not part of this contract.
+    const emptyState = screen.getByTestId('no-active-session-empty');
+    expect(within(emptyState).queryByRole('button', { name: /^New session$/ })).not.toBeInTheDocument();
+    expect(within(emptyState).queryByRole('button', { name: /^Import a CLI session$/ })).not.toBeInTheDocument();
+    // Old first-run anchor must be gone.
+    expect(screen.queryByTestId('first-run-empty')).not.toBeInTheDocument();
     // Critical: render() must not have created a session as a side effect.
     expect(useStore.getState().sessions).toHaveLength(0);
     expect(useStore.getState().activeId).toBe('');

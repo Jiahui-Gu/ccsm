@@ -21,13 +21,13 @@ describe('main process i18n', () => {
 
   it('defaults to English', () => {
     expect(getMainLanguage()).toBe('en');
-    expect(tNotification('sessionWaitingTitle')).toBe('Session waiting');
+    expect(tNotification('sessionWaitingTitle')).toBe('Waiting for you');
   });
 
   it('switches to Chinese when setMainLanguage(zh) is called', () => {
     setMainLanguage('zh');
     expect(getMainLanguage()).toBe('zh');
-    expect(tNotification('sessionWaitingTitle')).toBe('会话等待中');
+    expect(tNotification('sessionWaitingTitle')).toBe('需要你的输入');
   });
 
   it('interpolates {{vars}} the same way i18next does', () => {
@@ -37,7 +37,25 @@ describe('main process i18n', () => {
     );
     setMainLanguage('zh');
     expect(tNotification('sessionWaitingBody', { name: 'webhook-worker' })).toBe(
-      'webhook-worker 需要你的输入'
+      'webhook-worker 在等你'
+    );
+  });
+
+  // The OSC 0 ✳ glyph fires on CLI idle, which covers both "turn done" and
+  // "permission prompt waiting". Until the CLI distinguishes the two, both
+  // notify code paths must resolve to the same neutral copy so we never lie
+  // to the user (e.g. "completed its task" while the CLI is actually
+  // blocked on a permission prompt).
+  it('sessionDone* and sessionWaiting* are state-neutral and identical', () => {
+    setMainLanguage('en');
+    expect(tNotification('sessionDoneTitle')).toBe(tNotification('sessionWaitingTitle'));
+    expect(tNotification('sessionDoneBody', { name: 'x' })).toBe(
+      tNotification('sessionWaitingBody', { name: 'x' })
+    );
+    setMainLanguage('zh');
+    expect(tNotification('sessionDoneTitle')).toBe(tNotification('sessionWaitingTitle'));
+    expect(tNotification('sessionDoneBody', { name: 'x' })).toBe(
+      tNotification('sessionWaitingBody', { name: 'x' })
     );
   });
 

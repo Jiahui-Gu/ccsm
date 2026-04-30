@@ -88,7 +88,11 @@ function TitleButton({
 }
 
 export function WindowControls({ className }: { className?: string }) {
+  // Hooks must run unconditionally on every render (rules-of-hooks). Capture
+  // the bridge handle and platform before the early-return so the hook order
+  // is stable even on macOS where this component renders nothing.
   const api = window.ccsm;
+  const platform = api?.window.platform;
   const [isMax, setIsMax] = useState(false);
   const { t } = useTranslation('window');
 
@@ -97,6 +101,8 @@ export function WindowControls({ className }: { className?: string }) {
     api.window.isMaximized().then(setIsMax);
     return api.window.onMaximizedChanged(setIsMax);
   }, [api]);
+
+  if (platform === 'darwin') return null;
 
   return (
     <NoDragRegion className={cn('flex h-full items-stretch shrink-0', className)}>

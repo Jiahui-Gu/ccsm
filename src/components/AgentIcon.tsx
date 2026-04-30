@@ -31,21 +31,56 @@ function ClaudeAsterisk({ size }: { size: number }) {
 // an amber halo to call the user; everything else is `idle` (neutral). The
 // halo is the *only* attention signal — no corner badge — because at sidebar
 // scale a single, large pulsing element is more perceivable than a 9px dot.
+//
+// `flashing` (#689) is the transient flash signal from the new notify
+// pipeline's flash sink. ORed with `state === 'waiting'` so Rule 2
+// (foreground active short task → flash, no toast) still pulses the halo
+// even though the row's persistent state stays at `idle`. Sourced from the
+// renderer store's `flashStates: Record<sid, boolean>` (see App.tsx).
+//
+// audit #876 cluster 2.3: crashed wins over waiting/flashing for visual
+// focus. When `crashed` is true the SessionRow already paints a red dot in
+// its rail; pulsing the halo at the same time creates two competing
+// attention signals racing for the user's eye. We collapse to a single
+// signal (red dot only) by suppressing the halo. The crashed visual is
+// owned by SessionRow, not AgentIcon — this prop only gates the halo.
+//
+// Priority order (highest → lowest):
+//   1. crashed       → no halo (red dot in SessionRow is the signal)
+//   2. waiting/flash → amber breathing halo
+//   3. idle          → neutral
+const ATTENTION_PRIORITY = ['crashed', 'waiting-or-flashing', 'idle'] as const;
+
 export function AgentIcon({
   agentType,
   state,
+  flashing = false,
+  crashed = false,
   size = 'sm'
 }: {
   agentType: AgentType;
   state: SessionState;
+  flashing?: boolean;
+  crashed?: boolean;
   size?: Size;
 }) {
   const px = SIZE_PX[size];
   const glyph = GLYPH_PX[size];
-  const isWaiting = state === 'waiting';
+  // Explicit priority resolution — see ATTENTION_PRIORITY above. crashed
+  // short-circuits the halo even if state==='waiting' or flashing===true.
+  const isWaiting = !crashed && (state === 'waiting' || flashing);
+  // Resolved attention bucket — exposed as `data-attention` so visual /
+  // unit tests can pin the priority contract without measuring animation.
+  const attention: (typeof ATTENTION_PRIORITY)[number] = crashed
+    ? 'crashed'
+    : state === 'waiting' || flashing
+      ? 'waiting-or-flashing'
+      : 'idle';
   const inner = agentType === 'claude-code' ? <ClaudeAsterisk size={glyph} /> : null;
   return (
     <motion.span
+      data-agent-icon-state={state}
+      data-attention={attention}
       className={cn(
         'relative inline-flex shrink-0 items-center justify-center rounded-md',
         'bg-bg-elevated border border-border-default text-fg-primary'

@@ -77,9 +77,18 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   // because production builds dead-strip NODE_ENV-gated branches.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    (window as unknown as { __ccsmToast?: ToastCtx }).__ccsmToast = value;
+    const w = window as unknown as {
+      __ccsmToast?: ToastCtx;
+      __ccsmToastPush?: ToastCtx['push'];
+      __ccsmToastDismiss?: ToastCtx['dismiss'];
+    };
+    w.__ccsmToast = value;
+    w.__ccsmToastPush = value.push;
+    w.__ccsmToastDismiss = value.dismiss;
     return () => {
-      delete (window as unknown as { __ccsmToast?: ToastCtx }).__ccsmToast;
+      delete w.__ccsmToast;
+      delete w.__ccsmToastPush;
+      delete w.__ccsmToastDismiss;
     };
   }, [value]);
 

@@ -65,16 +65,3 @@ export function diffFromMultiEditInput(input: unknown): DiffSpec | null {
   }
   return { filePath, hunks };
 }
-
-export function diffFromToolInput(name: string, input: unknown): DiffSpec | null {
-  switch (name) {
-    case 'Edit':
-      return diffFromEditInput(input);
-    case 'Write':
-      return diffFromWriteInput(input);
-    case 'MultiEdit':
-      return diffFromMultiEditInput(input);
-    default:
-      return null;
-  }
-}

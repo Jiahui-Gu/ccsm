@@ -1,3 +1,15 @@
+// Renderer-side UI display state for `Session.state` — a 2-state model
+// derived from the 3-state IPC vocabulary. The mapping CLI/IPC →
+// renderer lives in `src/agent/lifecycle.ts:mapState`:
+//   IPC 'idle' / 'requires_action'  → 'waiting'  (sidebar halo on)
+//   IPC 'running'                   → 'idle'     (no halo)
+//
+// This is NOT the IPC `SessionState` (3-state union); for that see
+// `src/shared/sessionState.ts`. Tech-debt audit #10 #2 — kept as a
+// distinct type because it represents a different abstraction (the
+// sidebar's two-state attention model), not a stale copy of the IPC
+// vocabulary. Don't fold these together without changing the renderer
+// halo logic.
 export type SessionState = 'idle' | 'waiting';
 
 // MVP scope is single-agent. Keeping this as a discriminated string lets us

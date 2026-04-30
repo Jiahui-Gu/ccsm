@@ -1,118 +1,85 @@
-import * as Sentry from '@sentry/electron/main';
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, dialog, shell, type MenuItemConstructorOptions } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
-import * as os from 'os';
-import {
-  initDb,
-  loadState,
-  saveState,
-  closeDb,
-} from './db';
-import { loadHistoryFromJsonl } from './jsonl-loader';
-import { validateSaveStateInput } from './db-validate';
-
-// Reads the user's opt-out preference for crash reporting from app_state.
-// Returns false when the row is missing or the read errors — i.e. reporting
-// is opt-OUT, default ON. We swallow errors here because Sentry's beforeSend
-// is on the hot error path; failing closed (silently sending) is preferable
-// to dropping a crash because the DB happened to be locked.
+// Main process entry point. Thin orchestrator: imports + register*Ipc()
+// + lifecycle hookups + the cross-cutting glue (notify pipeline, ptyHost,
+// sessionWatcher) that doesn't fit any single SRP module.
 //
-// Sentry's beforeSend runs on the hot error path, so we cache the value in
-// a module-scope variable after the first read. The `db:save` handler below
-// invalidates the cache when the renderer writes the `crashReportingOptOut`
-// key, so the toggle in Settings still takes effect immediately.
-const CRASH_OPT_OUT_KEY = 'crashReportingOptOut';
-let _crashOptOutCached: boolean | undefined;
-function loadCrashReportingOptOut(): boolean {
-  if (_crashOptOutCached !== undefined) return _crashOptOutCached;
-  try {
-    const raw = loadState(CRASH_OPT_OUT_KEY);
-    const value = raw != null && (raw === 'true' || raw === '1');
-    _crashOptOutCached = value;
-    return value;
-  } catch {
-    return false;
-  }
-}
+// SRP map (Task #731 / #742 refactor):
+//   * electron/prefs/*           — closeAction / crashReporting / notifyEnabled
+//                                  / userCwds preference modules.
+//   * electron/security/*        — IPC sender + path safety guards.
+//   * electron/sentry/*          — crash reporting init + opt-out.
+//   * electron/window/*          — BrowserWindow factory + close choreography.
+//   * electron/tray/*            — Tray icon + locale-aware menu.
+//   * electron/ipc/*             — register*Ipc handlers, one per domain.
+//   * electron/lifecycle/*       — applyAppMenuLocale + app.on(...) glue
+//                                  + single-instance lock.
+//   * electron/notify/bootstrap/ — notify pipeline construction + producer
+//                                  subscriptions (PTY, focus/blur, unwatched).
+//   * electron/testHooks         — CCSM_NOTIFY_TEST_HOOK-gated probe seams.
+//
+// What still lives here:
+//   * Cross-module shared state (isQuitting, badgeManager, notifyPipeline,
+//     activeSidFromRenderer, sessionNamesFromRenderer).
+//   * The createWindow / ensureTray thin wrappers that close over that
+//     state for the dependency bags.
+//   * The `app.whenReady()` body that wires every subsystem together
+//     (db init, register*Ipc calls, notify pipeline construction, ptyHost,
+//     sessionWatcher, eager scans).
 
-// Crash reporting is OFF by default unless the operator plugs in a DSN
-// via `SENTRY_DSN` at launch time. We intentionally do NOT ship a hardcoded
-// project DSN in the open-source repo: self-hosters would otherwise send
-// crashes to the maintainer's Sentry project with no opt-in. If you are
-// building a fork, pass `SENTRY_DSN=https://...@your-project` to the app.
-const SENTRY_DSN = process.env.SENTRY_DSN?.trim() || undefined;
-if (SENTRY_DSN) {
-  Sentry.init({
-    dsn: SENTRY_DSN,
-    release: app.getVersion(),
-    environment: app.isPackaged ? 'prod' : 'dev',
-    sendDefaultPii: false,
-    beforeSend(event) {
-      try {
-        const optOut = loadCrashReportingOptOut();
-        if (optOut) return null;
-      } catch {
-        /* fall through, send anyway */
-      }
-      return event;
-    },
-  });
-} else {
-  // eslint-disable-next-line no-console
-  console.info('[sentry] SENTRY_DSN not set — crash reporting disabled.');
-}
-import { sessions } from './agent/manager';
-import { resolveCwd } from './agent/sessions';
+import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
+import { initDb, closeDb } from './db';
+import { buildTrayIcon } from './branding/icon';
+import { initSentry } from './sentry/init';
+import { createWindow as createMainWindowFactory } from './window/createWindow';
+import { createTray, type TrayController } from './tray/createTray';
+
+// safety net — escaped main-proc rejections kill app on Node 20+ default
+// (audit tech-debt-03-errors.md risk #2). Registered BEFORE app.whenReady so
+// any throw during bootstrap (initSentry, IPC registration, db open) lands
+// in the logger instead of silently terminating the process. We deliberately
+// do NOT call app.exit() — preserves current default-throw behavior in tests
+// and mirrors the renderer's "log + degrade" stance. TODO: forward to Sentry
+// once main-process Sentry transport is wired (currently renderer-only per
+// audit).
+process.on('unhandledRejection', (reason, _promise) => {
+  console.error('[main] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[main] uncaughtException:', err);
+});
+
+// Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
+// init is idempotent and a no-op when no DSN is set.
+initSentry();
+
 import { installUpdaterIpc } from './updater';
+import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
+import { configureSessionWatcher } from './sessionWatcher';
+import { BadgeManager } from './notify/badge';
 import {
-  scanImportableSessions,
-  type ScannableSession,
-} from './import-scanner';
-import { loadImportableHistory } from './import-history';
-import { showNotification, type ShowNotificationPayload } from './notifications';
-import { probeNotifyAvailability, notifyLastError } from './notify';
+  installNotifyPipelineWithProducers,
+  type NotifyPipeline,
+} from './notify/bootstrap/installPipeline';
 import {
-  bootstrapNotify,
-  setNotifyRuntimeState,
-  createDefaultToastActionRouter,
-  autoSetupAumid,
-} from './notify-bootstrap';
-import type { PermissionMode } from './agent/sessions';
-import { listModelsFromSettings, readDefaultModelFromSettings } from './agent/list-models-from-settings';
-import { readMemoryFile, writeMemoryFile, memoryFileExists } from './memory';
-import { loadPickerCommands } from './commands-loader';
-
-// ─────────────────────── IPC security helpers ────────────────────────────
-//
-// Filter renderer-supplied filesystem paths before any `fs.*` call. UNC paths
-// (`\\server\share\...` or `//server/share/...`) MUST be rejected on Windows:
-// node's fs will dutifully reach out over SMB to fetch the file, and on
-// Windows that handshake leaks the user's NTLM hash to whatever host the
-// renderer named. (CRITICAL — even a single innocuous-looking `existsSync`
-// call against a chosen UNC target is a credential-leak primitive.)
-//
-// We also require absolute paths because every renderer caller already
-// passes absolute paths (cwds, persisted disk locations, etc.); a relative
-// path here is always a sign of a confused or malicious caller.
-function isSafePath(p: unknown): p is string {
-  return (
-    typeof p === 'string' &&
-    path.isAbsolute(p) &&
-    !p.startsWith('\\\\') &&
-    !p.startsWith('//')
-  );
-}
-
-// Defense-in-depth: every IPC handler that takes a privileged action should
-// first confirm the message originated from our top-level renderer frame. A
-// compromised iframe (e.g. via a future webview, or a misconfigured CSP)
-// can otherwise call into ipcMain with the same `e.sender`. Pairs with the
-// `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
-// installed in createWindow().
-function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
-  return e.senderFrame === e.sender.mainFrame;
-}
+  getSessionTitle,
+  flushPendingRename,
+} from './sessionTitles';
+import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/notifyEnabled';
+import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
+import { BadgeController } from './badgeController';
+import { registerDbIpc } from './ipc/dbIpc';
+import { registerSystemIpc } from './ipc/systemIpc';
+import { registerSessionIpc } from './ipc/sessionIpc';
+import { registerWindowIpc } from './ipc/windowIpc';
+import {
+  registerUtilityIpc,
+  primeImportableCache,
+} from './ipc/utilityIpc';
+import {
+  applyAppMenuLocale,
+  registerLifecycleHandlers,
+} from './lifecycle/appLifecycle';
+import { acquireSingleInstanceLock } from './lifecycle/singleInstance';
+import { installEarlyTestHooks, installLateTestHooks } from './testHooks';
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `CCSM_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -120,1360 +87,234 @@ function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
 // `electron .`, so they don't require a running webpack-dev-server.
 const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 
-// ───────────────────── importable-sessions cache ─────────────────────────
-//
-// The CLI transcripts under ~/.claude/projects can run into hundreds of
-// files; the head-parse is fast per file but the cumulative latency makes
-// the ImportDialog's "Scanning…" state visible for several seconds on cold
-// open. We kick off the scan eagerly at app `ready` and serve cached
-// results to renderers, refreshing in the background on each request so
-// newly-recorded sessions show up without a manual reload.
-//
-// `recentCwds` is now derived from the ccsm-owned user-cwds list (see
-// `app:userCwds:get`/`app:userCwds:push` below), NOT from CLI JSONL scans —
-// the user's CLI history is *not* their ccsm working-set. Default cwd is
-// always `os.homedir()`; the recent list grows only when the user explicitly
-// picks a non-default cwd inside ccsm.
-let importableCache: ScannableSession[] = [];
-let importablePending: Promise<ScannableSession[]> | null = null;
+// Acquire the single-instance lock + register the second-instance focus
+// handler. See electron/lifecycle/singleInstance for the rationale.
+acquireSingleInstanceLock();
 
-function refreshImportableCache(): Promise<ScannableSession[]> {
-  if (importablePending) return importablePending;
-  importablePending = scanImportableSessions()
-    .then((rows) => {
-      importableCache = rows;
-      return rows;
-    })
-    .catch((err) => {
-      console.warn('[main] scanImportableSessions failed', err);
-      return importableCache;
-    })
-    .finally(() => {
-      importablePending = null;
-    }) as Promise<ScannableSession[]>;
-  return importablePending;
-}
+// Renderer pushes its current `activeId` here over IPC whenever it changes
+// (selectSession etc.). Main mirrors it so the notify bridge can suppress
+// toasts for the session the user is already looking at without a
+// synchronous round-trip to read renderer state.
+let activeSidFromRenderer: string | null = null;
 
-async function getImportableSessions(): Promise<ScannableSession[]> {
-  // If we have a hot cache, serve it instantly and refresh in the background
-  // so the next call sees fresher data. On cold cache (eager-load not done
-  // yet) await the in-flight (or new) scan so the renderer never gets [].
-  if (importableCache.length > 0) {
-    void refreshImportableCache();
-    return importableCache;
-  }
-  return refreshImportableCache();
-}
+// Same pattern as activeSidFromRenderer: the renderer pushes its session-name
+// map here so the notify bridge can label toasts with the user-visible name
+// (custom rename or SDK auto-summary) instead of the bare sid UUID.
+const sessionNamesFromRenderer = new Map<string, string>();
 
-// ───────────── user-owned cwd list (ccsm's own LRU) ─────────────
-//
-// The new-session default cwd is always `os.homedir()`. The recent list shown
-// in the StatusBar cwd popover is a user-owned LRU that only the user can
-// extend (by explicitly picking a non-default cwd). Persisted in the
-// `app_state` SQLite table under key `userCwds` as a JSON string list.
-//
-// Reads return `[homedir()]` when the list is empty so the popover always has
-// at least the home entry. Writes are LRU (newest first) with case-insensitive
-// path-normalised dedupe and a hard cap of 20 entries.
+// Test seam: when CCSM_NOTIFY_TEST_HOOK is set, expose the names map +
+// pipeline diag flag on globalThis so harness e2e probes can inspect them
+// without an extra IPC surface. Off by default; production never reads
+// CCSM_NOTIFY_TEST_HOOK. Late-binding seams that depend on the notify
+// pipeline are installed inside app.whenReady via installLateTestHooks.
+installEarlyTestHooks(sessionNamesFromRenderer);
 
-const USER_CWDS_KEY = 'userCwds';
-const USER_CWDS_MAX = 20;
-
-function normalizeCwd(p: string): string {
-  // Trim trailing slashes/backslashes; leave the rest of the path raw so we
-  // don't accidentally break Windows drive-letter semantics. Comparison below
-  // also lower-cases for dedupe on case-insensitive filesystems.
-  return p.replace(/[\\/]+$/, '');
-}
-
-function readUserCwds(): string[] {
-  try {
-    const raw = loadState(USER_CWDS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p): p is string => typeof p === 'string' && !!p);
-  } catch {
-    return [];
-  }
-}
-
-function writeUserCwds(list: string[]): void {
-  try {
-    saveState(USER_CWDS_KEY, JSON.stringify(list.slice(0, USER_CWDS_MAX)));
-  } catch (err) {
-    console.warn('[main] writeUserCwds failed', err);
-  }
-}
-
-function getUserCwds(): string[] {
-  const list = readUserCwds();
-  const home = os.homedir();
-  // Spec: "永远至少有 home" — home must always be present in the recent list,
-  // even after the user has explicitly picked other cwds. We append home at
-  // the tail if it isn't already in the user list, so the home entry stays
-  // available as a fallback target without bumping it back to the head.
-  if (list.length === 0) return [home];
-  const lower = home.toLowerCase();
-  if (list.some((p) => p.toLowerCase() === lower)) return list;
-  return [...list, home];
-}
-
-function pushUserCwd(p: string): string[] {
-  const norm = normalizeCwd(p);
-  if (!norm) return readUserCwds();
-  const cur = readUserCwds();
-  // Case-insensitive dedupe (Windows + macOS default fs).
-  const lower = norm.toLowerCase();
-  const without = cur.filter((x) => x.toLowerCase() !== lower);
-  const next = [norm, ...without].slice(0, USER_CWDS_MAX);
-  writeUserCwds(next);
-  return next;
-}
-
-// We don't want a visible File/Edit/View menu bar — CCSM is a single-
-// window tool and those menus add noise. But on Windows/Linux, setting the
-// app menu to null also removes the built-in Edit-role accelerators
-// (Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A / Ctrl+Z), which makes chat content
-// feel "not copyable". Install a minimal, hidden app menu whose only job
-// is to carry those accelerators, and hide the menu bar so it's not
-// visible. On macOS, the default app menu already handles this.
-//
-// Wrapped in a function so language switches via `ccsm:set-language` can
-// rebuild the menu with the localized "Edit" label (mirrors the
-// `applyTrayLocale()` pattern below). The submenu items use Electron
-// `role`s and are localized by the OS automatically.
-function applyAppMenuLocale() {
-  // Local require keeps the import graph linear (see the longer comment
-  // near the `ccsm:set-language` handler below).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const i18n = require('./i18n') as typeof import('./i18n');
-  const accelMenu = Menu.buildFromTemplate([
-    {
-      label: i18n.tMenu('edit'),
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' }
-      ]
-    }
-  ]);
-  Menu.setApplicationMenu(accelMenu);
-}
+// Install the hidden Edit-role accelerator menu at module load so
+// copy/paste etc. work before app.whenReady. Re-run on locale change.
 applyAppMenuLocale();
 
-// Right-click context menu for the renderer — Copy/Cut/Paste/Select All,
-// contextually enabled based on selection + editable state. Attached per
-// window in createMainWindow().
-function installContextMenu(win: BrowserWindow) {
-  win.webContents.on('context-menu', (_e, params) => {
-    const { selectionText, editFlags, isEditable } = params;
-    const hasSelection = !!selectionText && selectionText.trim().length > 0;
-    const items: MenuItemConstructorOptions[] = [];
-    if (isEditable) {
-      items.push({ role: 'cut', enabled: !!editFlags.canCut });
-    }
-    items.push({ role: 'copy', enabled: hasSelection && !!editFlags.canCopy });
-    if (isEditable) {
-      items.push({ role: 'paste', enabled: !!editFlags.canPaste });
-    }
-    items.push({ type: 'separator' }, { role: 'selectAll', enabled: !!editFlags.canSelectAll });
-    const menu = Menu.buildFromTemplate(items);
-    menu.popup({ window: win });
-  });
-}
-
-function createWindow() {
-  // E2E hidden mode: when CCSM_E2E_HIDDEN=1 the window is created
-  // at position (-32000, -32000) — far outside any monitor's visible
-  // area on every common multi-monitor layout. The window IS shown
-  // (show:true) so Chromium runs at full speed: rAF at 60Hz (no
-  // background throttling), full layout/paint, focus delivery, and
-  // CSS transitions all behave identically to a normal visible
-  // window. Probes that exercise hover / drag / autoFocus / drop
-  // animations all pass without per-probe opt-outs.
-  //
-  // Why not show:false: Chromium aggressively throttles offscreen
-  // renderers down to ~1Hz rAF even with paintWhenInitiallyHidden
-  // and webContents.setBackgroundThrottling(false). dnd-kit's
-  // 150ms dropAnimation never completes; the DragOverlay sticks
-  // in the DOM after pointerup; subsequent drags hit the orphaned
-  // overlay instead of their real target. Off-screen-positioned
-  // windows ARE Chromium-visible and therefore fully active.
-  //
-  // Devs running a single probe by hand without the env still get
-  // a normal centered visible window for debugging.
-  const hiddenForE2E = process.env.CCSM_E2E_HIDDEN === '1';
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    x: hiddenForE2E ? -32000 : undefined,
-    y: hiddenForE2E ? -32000 : undefined,
-    show: true,
-    // Hide from Windows taskbar / Alt-Tab when running e2e so the
-    // user can't see a "ccsm" entry while a probe batch is in
-    // flight. Doesn't affect Chromium's "is the window active"
-    // signal, so rAF / focus / animations stay un-throttled.
-    skipTaskbar: hiddenForE2E,
-    // Solid app background — we deliver depth via layered surfaces in CSS,
-    // not via Mica/transparency. The user explicitly does not want to see
-    // the desktop through the window.
-    backgroundColor: '#0B0B0C',
-    // Windows: fully frameless — we self-draw the three controls inside
-    //   the right pane (see WindowControls).
-    titleBarStyle: 'hidden',
-    frame: false,
-    // Windows 11: ask DWM to round the outer corners so the window edge
-    //   matches the radii of our internal panels. Without this the window
-    //   is a sharp rectangle and rounded interior surfaces look clipped
-    //   where they meet it. Ignored on <Win11.
-    roundedCorners: true,
-    autoHideMenuBar: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      // Hidden-mode animation correctness: Chromium throttles rAF
-      // for offscreen / hidden windows down to ~1Hz. dnd-kit's
-      // dropAnimation (150ms) and other CSS transitions then never
-      // complete, the DragOverlay element stays in the DOM after
-      // pointerup, and subsequent drags hit the leftover overlay
-      // instead of their real target. backgroundThrottling:false
-      // forces Chromium to run rAF at full speed even when the
-      // BrowserWindow is hidden.
-      backgroundThrottling: false,
-      // CCSM_E2E_HIDDEN=1 also strips the DevTools surface entirely so
-      // probes cannot accidentally pop a DevTools window (any explicit
-      // openDevTools() call below is a no-op once this is false).
-      devTools: !hiddenForE2E,
-      // sandbox:true is the recommended Electron baseline (forces the
-      // preload into a Chromium sandbox where Node built-ins are
-      // unavailable), but our preload's `require('@sentry/electron/preload')`
-      // can't be resolved by the sandboxed preload's restricted require —
-      // it only follows relative paths and a small whitelist. Enabling it
-      // results in: "Error: module not found: @sentry/electron/preload"
-      // and `window.ccsm` is never installed.
-      //
-      // Followup: bundle preload through webpack (or vendor the sentry
-      // preload into electron/) so the require resolves at build time, then
-      // flip this back to true. Tracked separately to keep this PR scoped
-      // to the IPC hardening fixes that don't require a build-pipeline
-      // change.
-      sandbox: false,
-      preload: path.join(__dirname, 'preload.js')
-    }
-  });
-
-  win.setMenuBarVisibility(false);
-
-  // Block the renderer from spawning new BrowserWindows. We have no use
-  // case for window.open(); a successful call would create a popup with
-  // our preload attached.
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-
-  // Block in-window navigation away from our renderer origin. The renderer
-  // should never navigate; all external links go through `shell:openExternal`
-  // (which itself filters to http(s) only).
-  win.webContents.on('will-navigate', (event, url) => {
-    try {
-      const u = new URL(url);
-      const devPort = process.env.CCSM_DEV_PORT || '4100';
-      const allowed =
-        u.origin === `http://localhost:${devPort}` ||
-        u.origin === 'http://localhost:4100' ||
-        u.protocol === 'file:';
-      if (!allowed) event.preventDefault();
-    } catch {
-      event.preventDefault();
-    }
-  });
-
-  if (isDev) {
-    const port = process.env.CCSM_DEV_PORT || '4100';
-    win.loadURL(`http://localhost:${port}`);
-    if (!hiddenForE2E) win.webContents.openDevTools({ mode: 'detach' });
-  } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'));
-  }
-
-  // Hidden-mode focus priming: a window with show:false never receives
-  // OS focus, so document.hasFocus() in the renderer would stay false
-  // and autoFocus on freshly-mounted alertdialog buttons would no-op.
-  // Calling webContents.focus() sets Chromium-level focus on the
-  // renderer regardless of the OS surface state — the renderer then
-  // observes focused === true and autoFocus / focus-trap behaviors
-  // match a normal visible window. We also disable background
-  // throttling at the webContents level (belt-and-suspenders alongside
-  // webPreferences.backgroundThrottling:false above) so rAF runs at
-  // full speed and CSS transitions / dnd-kit drop animations complete.
-  if (hiddenForE2E) {
-    try { win.webContents.focus(); } catch { /* ignore */ }
-    try { win.webContents.setBackgroundThrottling(false); } catch { /* ignore */ }
-  }
-  installContextMenu(win);
-  sessions.bindSender(win.webContents);
-
-  // If a prior window was hidden then had its WebContents destroyed (can
-  // happen under aggressive GC on minimize-to-tray), subsequent `wc.send`
-  // calls from the sessions manager no-op silently. Rebinding on `show` and
-  // on the fresh window's `did-finish-load` picks up any still-live sessions
-  // and routes their events at the live renderer.
-  win.on('show', () => {
-    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
-    // Reset the renderer's fade-opacity in case the window was just
-    // restored after a fade-to-hide (see `window:beforeHide` below).
-    if (!win.webContents.isDestroyed()) {
-      win.webContents.send('window:afterShow');
-    }
-  });
-  win.webContents.on('did-finish-load', () => {
-    if (!win.webContents.isDestroyed()) sessions.rebindSender(win.webContents);
-  });
-
-  const emitMax = () => win.webContents.send('window:maximizedChanged', win.isMaximized());
-  win.on('maximize', emitMax);
-  win.on('unmaximize', emitMax);
-
-  // Minimize-to-tray: clicking close (or the OS X red dot, our own custom
-  // close button via window:close IPC) hides the window instead of quitting.
-  // The user can still really quit via the tray menu's Quit item, the
-  // app menu's Quit, or Ctrl-Q.
-  //
-  // Fade-to-hide: before actually calling `win.hide()` we send a
-  // `window:beforeHide` event so the renderer can run a short opacity
-  // fade-out. `HIDE_FADE_MS` matches `DURATION.standard` (180ms) from the
-  // shared motion tokens — kept short so closing still feels responsive.
-  // Guarded by `fadePending` so repeated Ctrl+W presses don't stack
-  // timers. On real quit (`isQuitting === true`) we skip the fade entirely
-  // so shutdown stays fast.
-  const HIDE_FADE_MS = 180;
-  let fadePending = false;
-  win.on('close', (e) => {
-    if (isQuitting) return;
-    e.preventDefault();
-    if (fadePending) return;
-    fadePending = true;
-    try {
-      if (!win.webContents.isDestroyed()) {
-        win.webContents.send('window:beforeHide', { durationMs: HIDE_FADE_MS });
-      }
-    } catch {
-      /* renderer unreachable — fall through to immediate hide */
-    }
-    setTimeout(() => {
-      fadePending = false;
-      if (win.isDestroyed()) return;
-      win.hide();
-    }, HIDE_FADE_MS);
-  });
-
-  // After the window is shown again (tray click, dock click on macOS) the
-  // renderer's opacity may still be 0 from the previous fade-out. The
-  // existing `win.on('show')` handler above dispatches `window:afterShow`
-  // to reset it.
-}
-
-let tray: Tray | null = null;
+// Window + tray construction live in dedicated SRP modules
+// (electron/window/createWindow, electron/tray/createTray). Both take a
+// small dependency bag so main.ts retains ownership of the cross-module
+// shared state (isQuitting, the active-sid mirror, the badgeController).
+let trayController: TrayController | null = null;
 let isQuitting = false;
+let badgeManager: BadgeManager | null = null;
+let notifyPipeline: NotifyPipeline | null = null;
+let notifyPipelineDispose: (() => void) | null = null;
+const badgeController = new BadgeController(() => badgeManager);
 
-function buildTrayIcon() {
-  // Tiny 16×16 placeholder (white square on transparent). Windows
-  // uses this directly. Replace with a real branded asset once we have one.
-  const size = 16;
-  const buffer = Buffer.alloc(size * size * 4);
-  for (let i = 0; i < size * size; i++) {
-    buffer[i * 4 + 0] = 255;
-    buffer[i * 4 + 1] = 255;
-    buffer[i * 4 + 2] = 255;
-    buffer[i * 4 + 3] = 220;
-  }
-  const img = nativeImage.createFromBuffer(buffer, { width: size, height: size });
-  return img;
+function getTrayBaseImage() {
+  return buildTrayIcon();
 }
 
-function applyTrayLocale() {
-  if (!tray) return;
-  // Local require keeps the import graph linear (see the longer comment
-  // near the `ccsm:set-language` handler below).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const i18n = require('./i18n') as typeof import('./i18n');
-  tray.setToolTip(i18n.tTray('tooltip'));
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: i18n.tTray('show'), click: showTrayWindow },
-      { type: 'separator' },
-      {
-        label: i18n.tTray('quit'),
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        }
-      }
-    ])
-  );
+function isMainWindowFocused(): boolean {
+  const w = BrowserWindow.getAllWindows()[0];
+  return !!(w && !w.isDestroyed() && w.isFocused());
 }
 
-function showTrayWindow() {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (!win) {
-    createWindow();
-    return;
-  }
-  if (win.isMinimized()) win.restore();
-  win.show();
-  win.focus();
+function createWindow(): BrowserWindow {
+  return createMainWindowFactory({
+    isDev,
+    getActiveSid: () => activeSidFromRenderer,
+    onFocusChange: (info) => badgeController.onFocusChange(info),
+    getIsQuitting: () => isQuitting,
+    setIsQuitting: (v) => {
+      isQuitting = v;
+    },
+  });
 }
 
-function ensureTray() {
-  if (tray) return tray;
-  tray = new Tray(buildTrayIcon());
-  tray.on('click', showTrayWindow);
-  tray.on('double-click', showTrayWindow);
-  applyTrayLocale();
-  return tray;
+function ensureTray(): TrayController {
+  if (trayController) return trayController;
+  trayController = createTray({
+    createMainWindow: () => {
+      createWindow();
+    },
+    setIsQuitting: (v) => {
+      isQuitting = v;
+    },
+  });
+  return trayController;
+}
+
+function applyTrayLocale(): void {
+  trayController?.applyLocale();
+}
+
+function getTray(): Tray | null {
+  return trayController?.tray ?? null;
 }
 
 app.whenReady().then(() => {
-  // On Windows, notifications need a stable AppUserModelID so the OS knows
-  // which app the toast belongs to (otherwise it shows "electron.exe").
+  // On Windows, set a stable AppUserModelID so the OS attributes the app to
+  // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.ccsm.app');
-    // In dev, ensure the Start Menu .lnk that anchors the AUMID exists so
-    // toasts route correctly without manual `setup-aumid.ps1` invocation.
-    // Fire-and-forget; never blocks startup.
-    autoSetupAumid();
+    // Dual-install (#891): the dev variant ships as productName "CCSM Dev"
+    // and must use a distinct AUMID so its taskbar / toast attribution
+    // doesn't collide with a co-installed prod build.
+    const isDevVariant = app.getName().includes('Dev');
+    const aumid = isDevVariant ? 'com.ccsm.app.dev' : 'com.ccsm.app';
+    app.setAppUserModelId(aumid);
   }
+
   initDb();
 
-  // Wave 1D: bootstrap the optional the inlined notify module Adaptive Toast pipeline.
-  // Wrapped in try/catch by the bootstrap helper itself; failure (missing
-  // native deps, unregistered AUMID, non-win32) leaves the app running with
-  // the legacy Electron Notification path. The router below routes toast
-  // button clicks (Allow / Allow always / Reject / Focus) back into the same
-  // code paths the in-app prompts use.
-  try {
-    bootstrapNotify(
-      createDefaultToastActionRouter({
-        resolvePermission: (sessionId, requestId, decision) =>
-          sessions.resolvePermission(sessionId, requestId, decision),
-        getMainWindow: () =>
-          BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null,
-      }),
-    );
-  } catch (err) {
-    // bootstrapNotify already swallows internally; this is belt-and-suspenders
-    // so an unexpected throw still can't take down app startup.
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[main] notify bootstrap threw: ${err instanceof Error ? err.message : err}`,
-    );
-  }
-
-  ipcMain.handle('db:load', (_e, key: string) => loadState(key));
-  // Cap renderer-supplied state values. Mirrors the per-block cap in
-  // db:saveMessages but tighter (1 MB vs 1 MB-per-block × N blocks): a
-  // single app_state row holds drafts/persist snapshots that should never
-  // approach this size — if one does, it's a bug in the persister and we
-  // refuse to commit it rather than silently growing the WAL. Validation
-  // logic lives in `./db-validate` so it's unit-testable without IPC.
-  ipcMain.handle(
-    'db:save',
-    (
-      e,
-      key: string,
-      value: string
-    ): { ok: true } | { ok: false; error: string } => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      const v = validateSaveStateInput(key, value);
-      if (!v.ok) {
-        if (v.error === 'value_too_large') {
-          console.warn(
-            `[main] db:save rejecting oversized value (${(value as string).length} bytes) for key=${key}`
-          );
-        }
-        return v;
-      }
-      saveState(key, value);
-      // Invalidate Sentry's cached opt-out so the toggle in Settings takes
-      // effect on the next error without an app restart.
-      if (key === CRASH_OPT_OUT_KEY) {
-        _crashOptOutCached = undefined;
-      }
-      return { ok: true };
-    }
-  );
-  // Session message history is no longer persisted by ccsm — the CLI/Agent
-  // SDK already writes every frame to `~/.claude/projects/<key>/<sid>.jsonl`,
-  // and ccsm now reads from there via `agent:load-history`. The previous
-  // `db:loadMessages` / `db:saveMessages` IPC + SQLite `messages` table were
-  // a redundant secondary copy.
-  ipcMain.handle(
-    'agent:load-history',
-    async (e, cwd: unknown, sessionId: unknown) => {
-      if (!fromMainFrame(e)) {
-        return { ok: false, error: 'rejected' as const };
-      }
-      if (typeof cwd !== 'string' || typeof sessionId !== 'string') {
-        return { ok: false, error: 'invalid_args' as const };
-      }
-      try {
-        return await loadHistoryFromJsonl(cwd, sessionId);
-      } catch (err) {
-        console.warn('[main] agent:load-history failed', err);
-        return {
-          ok: false as const,
-          error: 'read_error' as const,
-          detail: err instanceof Error ? err.message : String(err)
-        };
-      }
-    }
-  );
-
-  // Truncation marker (PR `feat/user-block-hover-menu`). Stored in app_state
-  // under key `truncation:<sessionId>` as JSON `{ blockId, truncatedAt }`.
-  // The renderer reads it after re-hydrating from JSONL and slices the
-  // projected MessageBlock[] at the recorded user-block id. Survives ccsm
-  // restart so the user-visible truncation isn't lost the moment we go to
-  // re-hydrate from disk.
-  function truncationKey(sessionId: string): string {
-    return `truncation:${sessionId}`;
-  }
-  ipcMain.handle('truncation:get', (e, sessionId: unknown) => {
-    if (!fromMainFrame(e)) return null;
-    if (typeof sessionId !== 'string' || !sessionId) return null;
-    try {
-      const raw = loadState(truncationKey(sessionId));
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as unknown;
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        typeof (parsed as { blockId?: unknown }).blockId === 'string' &&
-        typeof (parsed as { truncatedAt?: unknown }).truncatedAt === 'number'
-      ) {
-        // userTurnIndex / textPrefix are optional anchor fields added in the
-        // fp9-F fix; pass them through if present, otherwise legacy markers
-        // (blockId-only) keep working through the loadMessages id-match path.
-        const p = parsed as {
-          blockId: string;
-          truncatedAt: number;
-          userTurnIndex?: unknown;
-          textPrefix?: unknown;
-        };
-        const out: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
-          blockId: p.blockId,
-          truncatedAt: p.truncatedAt
-        };
-        if (typeof p.userTurnIndex === 'number' && Number.isFinite(p.userTurnIndex) && p.userTurnIndex >= 0) {
-          out.userTurnIndex = p.userTurnIndex;
-        }
-        if (typeof p.textPrefix === 'string') {
-          out.textPrefix = p.textPrefix;
-        }
-        return out;
-      }
-      return null;
-    } catch (err) {
-      console.warn('[main] truncation:get failed', err);
-      return null;
-    }
+  // ─────────────────────────── IPC registration ──────────────────────────
+  // Wire prefs cache invalidation to the stateSavedBus BEFORE registering
+  // the db:save handler so the very first renderer-driven save (e.g. an
+  // auto-persisted setting on first paint) reaches the cache subscribers.
+  // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
+  subscribeCrashReportingInvalidation();
+  subscribeNotifyEnabledInvalidation();
+  // Order is significant for systemIpc: it seeds the active i18n language
+  // from the OS locale, so any subsequent producer that calls i18n.t()
+  // sees the correct active language.
+  registerDbIpc({ ipcMain });
+  registerSystemIpc({
+    ipcMain,
+    app,
+    applyAppMenuLocale,
+    applyTrayLocale,
   });
-  ipcMain.handle('truncation:set', (e, sessionId: unknown, marker: unknown) => {
-    if (!fromMainFrame(e)) return { ok: false as const, error: 'rejected' };
-    if (typeof sessionId !== 'string' || !sessionId) {
-      return { ok: false as const, error: 'invalid_args' };
-    }
-    try {
-      if (marker == null) {
-        // Clear by writing empty string — saveState upserts; reading back
-        // returns '' which the loader will treat as no-marker after the
-        // JSON.parse path below. Simpler: just store empty JSON object.
-        saveState(truncationKey(sessionId), '');
-        return { ok: true as const };
-      }
-      if (
-        typeof marker !== 'object' ||
-        typeof (marker as { blockId?: unknown }).blockId !== 'string' ||
-        typeof (marker as { truncatedAt?: unknown }).truncatedAt !== 'number'
-      ) {
-        return { ok: false as const, error: 'invalid_args' };
-      }
-      // Sanitize optional anchor fields — silently drop bad shapes rather
-      // than rejecting the whole marker (the blockId-only path still works).
-      const m = marker as {
-        blockId: string;
-        truncatedAt: number;
-        userTurnIndex?: unknown;
-        textPrefix?: unknown;
-      };
-      const sanitized: { blockId: string; truncatedAt: number; userTurnIndex?: number; textPrefix?: string } = {
-        blockId: m.blockId,
-        truncatedAt: m.truncatedAt
-      };
-      if (typeof m.userTurnIndex === 'number' && Number.isFinite(m.userTurnIndex) && m.userTurnIndex >= 0) {
-        sanitized.userTurnIndex = m.userTurnIndex;
-      }
-      if (typeof m.textPrefix === 'string') {
-        sanitized.textPrefix = m.textPrefix;
-      }
-      saveState(truncationKey(sessionId), JSON.stringify(sanitized));
-      return { ok: true as const };
-    } catch (err) {
-      console.warn('[main] truncation:set failed', err);
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) };
-    }
-  });
-
-  // i18n: renderer mirrors the resolved UI language to main so OS
-  // notifications use it. Renderer also asks main for the OS locale at
-  // boot to seed the "system" preference. Imports at the top of the file
-  // would create a circular ts-tree edge with electron/i18n.ts; doing the
-  // require here keeps the import graph linear.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const i18n = require('./i18n') as typeof import('./i18n');
-  ipcMain.handle('ccsm:get-system-locale', () => {
-    try {
-      return app.getLocale();
-    } catch {
-      return undefined;
-    }
-  });
-  ipcMain.on('ccsm:set-language', (_e, lang: unknown) => {
-    if (lang === 'en' || lang === 'zh') {
-      i18n.setMainLanguage(lang);
-      // Tray menu / tooltip + app accelerator menu are built once on app
-      // ready; rebuild both so a language switch from Settings is reflected
-      // immediately (Edit label, tray show/quit, tooltip).
-      applyTrayLocale();
-      applyAppMenuLocale();
-    }
-  });
-  // Seed the active language from the OS at boot, before any window is
-  // created — first notification fires with the right copy even if the
-  // renderer hasn't dispatched yet.
-  try {
-    i18n.setMainLanguage(i18n.resolveSystemLanguage(app.getLocale()));
-    // Rebuild the app menu now that the seed has flipped the active
-    // language; otherwise the top-level `applyAppMenuLocale()` call left
-    // it stuck on English.
-    applyAppMenuLocale();
-  } catch {
-    /* ignore — falls through to the default 'en' */
-  }
-
-  // Connection + models IPC. Single source of truth = ~/.claude/settings.json
-  // (+ ANTHROPIC_* env vars). Users edit via `claude /config` or by hand;
-  // CCSM does not let them edit the connection here.
-  ipcMain.handle('connection:read', () => {
-    const env = process.env;
-    let settingsModel: string | null = null;
-    let settingsBaseUrl: string | null = null;
-    let settingsAuthToken = false;
-    try {
-      const file = path.join(os.homedir(), '.claude', 'settings.json');
-      const raw = fs.readFileSync(file, 'utf8');
-      const parsed = JSON.parse(raw) as { model?: unknown; env?: Record<string, unknown> };
-      if (typeof parsed.model === 'string') settingsModel = parsed.model;
-      const sEnv = parsed.env && typeof parsed.env === 'object' ? parsed.env : null;
-      if (sEnv) {
-        if (typeof sEnv.ANTHROPIC_BASE_URL === 'string') settingsBaseUrl = sEnv.ANTHROPIC_BASE_URL;
-        if (typeof sEnv.ANTHROPIC_AUTH_TOKEN === 'string' || typeof sEnv.ANTHROPIC_API_KEY === 'string') {
-          settingsAuthToken = true;
-        }
-      }
-    } catch {
-      // Missing / malformed — fall through to env-only view.
-    }
-    const baseUrl = settingsBaseUrl ?? env.ANTHROPIC_BASE_URL ?? null;
-    const model = settingsModel ?? env.ANTHROPIC_MODEL ?? null;
-    const hasAuthToken =
-      settingsAuthToken ||
-      !!env.ANTHROPIC_AUTH_TOKEN?.trim() ||
-      !!env.ANTHROPIC_API_KEY?.trim();
-    return { baseUrl, model, hasAuthToken };
-  });
-  ipcMain.handle('connection:openSettingsFile', async (e) => {
-    if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-    const file = path.join(os.homedir(), '.claude', 'settings.json');
-    // shell.openPath returns '' on success, error string on failure. If the
-    // file does not exist, create an empty stub so the editor opens cleanly.
-    if (!fs.existsSync(file)) {
-      try {
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, '{}\n', 'utf8');
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-    const result = await shell.openPath(file);
-    return result === '' ? { ok: true } : { ok: false, error: result };
-  });
-  ipcMain.handle('models:list', async () => {
-    const res = await listModelsFromSettings();
-    return res.models;
-  });
-  ipcMain.handle('app:getVersion', () => app.getVersion());
-
-  ipcMain.handle('dialog:pickDirectory', async (e) => {
-    if (!fromMainFrame(e)) return null;
-    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-    const res = await dialog.showOpenDialog(win, {
-      properties: ['openDirectory'],
-      title: i18n.tDialog('chooseCwd')
-    });
-    if (res.canceled || res.filePaths.length === 0) return null;
-    return res.filePaths[0];
-  });
-
-  // Save tool output to a file the user picks. Used by the long-output
-  // viewer's `Save as .log` action — for >10MB outputs this is the ONLY
-  // way the user can see the full content. Capped at 50 MB per file:
-  // legitimate "save big tool dump" use cases live well under that, and
-  // anything bigger is almost certainly a runaway loop or accidental
-  // serialization of a giant in-memory buffer.
-  const MAX_SAVE_FILE_BYTES = 50 * 1024 * 1024;
-  ipcMain.handle(
-    'dialog:saveFile',
-    async (
-      e,
-      args: { defaultName?: string; content: string }
-    ): Promise<{ ok: true; path: string } | { ok: false; canceled?: boolean; error?: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      const content = typeof args?.content === 'string' ? args.content : '';
-      // String length is a fine proxy here — UTF-8 bytes can be at most 4×
-      // chars but realistic content (ASCII/UTF-8 text dumps) is ~1×, so we
-      // gate on raw length to avoid a wasted Buffer.byteLength roundtrip.
-      // The dialog filters offer .log/.txt only.
-      if (content.length > MAX_SAVE_FILE_BYTES) {
-        return { ok: false, error: 'content_too_large' };
-      }
-      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-      try {
-        const res = await dialog.showSaveDialog(win, {
-          defaultPath: args.defaultName ?? 'tool-output.log',
-          filters: [
-            { name: 'Log', extensions: ['log', 'txt'] },
-            { name: 'All Files', extensions: ['*'] }
-          ]
-        });
-        if (res.canceled || !res.filePath) return { ok: false, canceled: true };
-        await fs.promises.writeFile(res.filePath, content, 'utf8');
-        return { ok: true, path: res.filePath };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
-  // (#51 / P1-16) Open long tool output in the user's default text editor.
-  // Renderer pipes the full stdout text up; we drop it into a uniquely-named
-  // file under os.tmpdir() and ask the OS to open it via shell.openPath.
-  // The file lives until the OS cleans tmpdir — we do NOT auto-delete: a
-  // user may keep the editor window open for hours, and yanking the file
-  // out from under them would be a worse bug than a few stray temp files.
-  // Capped at the same 50 MB ceiling as saveFile so a runaway tool can't
-  // wedge the disk; legitimate "open this dump" cases live well under it.
-  const MAX_OPEN_IN_EDITOR_BYTES = 50 * 1024 * 1024;
-  ipcMain.handle(
-    'tool:open-in-editor',
-    async (
-      e,
-      args: { content: string }
-    ): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      const content = typeof args?.content === 'string' ? args.content : '';
-      if (content.length > MAX_OPEN_IN_EDITOR_BYTES) {
-        return { ok: false, error: 'content_too_large' };
-      }
-      // High-resolution-ish unique name: ms timestamp + 6 random hex chars.
-      // ms alone is enough on a single click, but two parallel "Open in
-      // editor" clicks fired in the same tick would otherwise collide on
-      // the filename and one editor would silently re-open the other's
-      // file. Random suffix keeps them distinct without pulling in uuid.
-      const ts = Date.now();
-      const rand = Math.floor(Math.random() * 0xffffff)
-        .toString(16)
-        .padStart(6, '0');
-      const filePath = path.join(
-        os.tmpdir(),
-        `claude-tool-output-${ts}-${rand}.txt`
-      );
-      try {
-        await fs.promises.writeFile(filePath, content, 'utf8');
-        // Test/probe escape hatch: when CCSM_OPEN_IN_EDITOR_NOOP is set we
-        // write the file but don't actually launch the editor. Lets E2E
-        // probes verify the round-trip without spawning notepad/vim/etc.
-        // on the CI host. The renderer still sees `{ ok: true, path }`
-        // exactly as in production.
-        if (process.env.CCSM_OPEN_IN_EDITOR_NOOP) {
-          return { ok: true, path: filePath };
-        }
-        // shell.openPath returns an empty string on success, an error
-        // message string on failure. Treat empty as ok.
-        const openErr = await shell.openPath(filePath);
-        if (openErr) {
-          return { ok: false, error: openErr };
-        }
-        return { ok: true, path: filePath };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
-  ipcMain.handle('window:minimize', (e) => {
-    BrowserWindow.fromWebContents(e.sender)?.minimize();
-  });
-  ipcMain.handle('window:toggleMaximize', (e) => {
-    const win = BrowserWindow.fromWebContents(e.sender);
-    if (!win) return false;
-    if (win.isMaximized()) win.unmaximize();
-    else win.maximize();
-    return win.isMaximized();
-  });
-  ipcMain.handle('window:close', (e) => {
-    BrowserWindow.fromWebContents(e.sender)?.close();
-  });
-  ipcMain.handle('window:isMaximized', (e) => {
-    return BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false;
-  });
-
-  ipcMain.handle(
-    'agent:start',
-    async (
-      e,
-      sessionId: string,
-      opts: {
-        cwd: string;
-        model?: string;
-        permissionMode?: PermissionMode;
-        resumeSessionId?: string;
-        // Pre-allocated CLI session UUID. Forwarded to the SDK runner via
-        // StartOptions; the legacy hand-written runner ignores it. See
-        // `src/stores/store.ts` newSessionId() for the unification rationale.
-        sessionId?: string;
-        // Resolved 6-tier effort chip level. Forwarded to the SDK runner so
-        // launch query() carries `thinking` + `effort`.
-        effortLevel?: 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      }
-    ) => {
-      if (!fromMainFrame(e)) {
-        return { ok: false, error: 'rejected', errorCode: 'CWD_MISSING' as const };
-      }
-      // Guard against stale `cwd` paths that no longer exist on disk. Common
-      // failure mode: a session was created inside a now-deleted worktree
-      // (the Sept worktree feature was reverted in #104), so its persisted
-      // `cwd` points at `.claude/worktrees/agent-xxx`. Spawning would crash
-      // with ENOENT inside SessionRunner; catching here gives the renderer a
-      // clean error code it can surface as "repick your folder".
-      const resolvedCwd = resolveCwd(opts.cwd);
-      // UNC + non-absolute paths are rejected up front. resolveCwd expands
-      // `~` to the home dir, so by this point a safe cwd is always absolute
-      // and never a UNC share. See isSafePath() at top-of-file.
-      if (!isSafePath(resolvedCwd) || !fs.existsSync(resolvedCwd)) {
-        return {
-          ok: false,
-          error: `Working directory no longer exists: ${opts.cwd}`,
-          errorCode: 'CWD_MISSING' as const,
-        };
-      }
-
-      // Binary resolution lives in `electron/agent-sdk/sessions.ts`
-      // (`resolveClaudeInvocation`). CCSM ships the binary inside the
-      // installer (PR-B) so we no longer let the renderer pick / persist
-      // a path — `agent:start` just trusts the SDK runner to find it.
-
-      const result = await sessions.start(sessionId, opts);
-
-      return result;
-    }
-  );
-  ipcMain.handle('agent:send', (e, sessionId: string, text: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.send(sessionId, text);
-  });
-  ipcMain.handle(
-    'agent:sendContent',
-    (e, sessionId: string, content: unknown[]) => {
-      if (!fromMainFrame(e)) return false;
-      return sessions.sendContent(sessionId, Array.isArray(content) ? content : []);
-    }
-  );
-  ipcMain.handle('agent:interrupt', (_e, sessionId: string) => sessions.interrupt(sessionId));
-  /**
-   * (#239) Per-tool-use cancel IPC. Validates payload shape so a malformed
-   * call from a compromised renderer can't tickle the manager with bogus
-   * args. Returns the same `{ok:true} | {ok:false, error}` shape the
-   * renderer already handles for setPermissionMode.
-   */
-  ipcMain.handle(
-    'agent:cancelToolUse',
-    async (
-      e,
-      args: { sessionId: string; toolUseId: string }
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        !args ||
-        typeof args !== 'object' ||
-        typeof args.sessionId !== 'string' ||
-        typeof args.toolUseId !== 'string' ||
-        !args.sessionId ||
-        !args.toolUseId
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.cancelToolUse(args.sessionId, args.toolUseId);
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-  ipcMain.handle(
-    'agent:setPermissionMode',
-    async (
-      e,
-      sessionId: string,
-      mode: PermissionMode
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      // Validate the mode up front so an unknown value gets rejected even
-      // when the session no longer exists (manager.setPermissionMode would
-      // otherwise short-circuit to `false` and we'd never hit the throw in
-      // toCliPermissionMode). The list here mirrors the union in
-      // electron/agent/sessions.ts:PermissionMode — keep them in sync.
-      const KNOWN_MODES = new Set<string>([
-        'default', 'acceptEdits', 'plan', 'bypassPermissions',
-        'ask', 'standard', 'dontAsk', 'auto', 'yolo'
-      ]);
-      if (typeof mode !== 'string' || !KNOWN_MODES.has(mode)) {
-        return { ok: false, error: 'unknown_mode' };
-      }
-      try {
-        await sessions.setPermissionMode(sessionId, mode);
-        return { ok: true };
-      } catch (err) {
-        if (err instanceof Error && /Unknown permission mode/i.test(err.message)) {
-          return { ok: false, error: 'unknown_mode' };
-        }
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-  ipcMain.handle('agent:setModel', (e, sessionId: string, model?: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.setModel(sessionId, model);
-  });
-  /**
-   * Legacy: apply a `max_thinking_tokens` cap to a live session. Kept for
-   * the harness probe path (which spies on this IPC); the unified 6-tier
-   * effort+thinking chip uses `agent:setEffort` instead. Validates payload
-   * defensively — a non-finite or negative `tokens` would otherwise reach
-   * the SDK and throw mid-session.
-   */
-  ipcMain.handle(
-    'agent:setMaxThinkingTokens',
-    async (
-      e,
-      sessionId: string,
-      tokens: number,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        typeof sessionId !== 'string' ||
-        !sessionId ||
-        typeof tokens !== 'number' ||
-        !Number.isFinite(tokens) ||
-        tokens < 0
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.setMaxThinkingTokens(sessionId, Math.floor(tokens));
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
+  registerSessionIpc({
+    ipcMain,
+    setActiveSid: (sid) => {
+      activeSidFromRenderer = sid;
     },
-  );
-  // 6-tier effort+thinking chip change. Validates the level union strictly;
-  // the runner fans out to two concurrent SDK control RPCs (see
-  // electron/agent-sdk/sessions.ts:setEffort) so the renderer never sees
-  // the two-dimension wire shape.
-  ipcMain.handle(
-    'agent:setEffort',
-    async (
-      e,
-      sessionId: string,
-      level: unknown,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      if (!fromMainFrame(e)) return { ok: false, error: 'rejected' };
-      if (
-        typeof sessionId !== 'string' ||
-        !sessionId ||
-        (level !== 'off' &&
-          level !== 'low' &&
-          level !== 'medium' &&
-          level !== 'high' &&
-          level !== 'xhigh' &&
-          level !== 'max')
-      ) {
-        return { ok: false, error: 'bad_payload' };
-      }
-      try {
-        const ok = await sessions.setEffort(sessionId, level);
-        return ok ? { ok: true } : { ok: false, error: 'no_session' };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
+    onActiveSidChanged: (sid) => {
+      badgeController.onFocusChange({
+        focused: isMainWindowFocused(),
+        activeSid: sid,
+      });
+      // Notify pipeline (Phase C, #689) — keep ctx.activeSid in sync.
+      notifyPipeline?.setActiveSid(sid);
     },
-  );
-  ipcMain.handle('agent:close', (e, sessionId: string) => {
-    if (!fromMainFrame(e)) return false;
-    return sessions.close(sessionId);
-  });
-
-  ipcMain.handle(
-    'agent:resolvePermission',
-    (e, sessionId: string, requestId: string, decision: 'allow' | 'deny') => {
-      if (!fromMainFrame(e)) return false;
-      return sessions.resolvePermission(sessionId, requestId, decision);
-    }
-  );
-
-  // Per-hunk partial accept for Edit / Write / MultiEdit (#251). Additive —
-  // the legacy `agent:resolvePermission` channel above stays as the whole-tool
-  // allow/deny path. Renderer should validate `acceptedHunks` is a non-empty
-  // subset of available hunk indices before invoking.
-  ipcMain.handle(
-    'agent:resolvePermissionPartial',
-    (e, sessionId: string, requestId: string, acceptedHunks: unknown) => {
-      if (!fromMainFrame(e)) return false;
-      if (!Array.isArray(acceptedHunks)) return false;
-      const indices = acceptedHunks.filter((n): n is number => Number.isInteger(n) && n >= 0);
-      return sessions.resolvePermissionPartial(sessionId, requestId, indices);
-    }
-  );
-
-  ipcMain.handle('import:scan', () => getImportableSessions());
-  // Recent cwd list shown in the StatusBar cwd popover. Sourced from the
-  // ccsm-owned LRU (NOT from CLI JSONL scans). Always includes home as a
-  // fallback so the list is never empty.
-  ipcMain.handle('import:recentCwds', () => getUserCwds());
-  ipcMain.handle('app:userCwds:get', () => getUserCwds());
-  ipcMain.handle('app:userCwds:push', (e, p: unknown) => {
-    if (!fromMainFrame(e)) return getUserCwds();
-    if (typeof p !== 'string') return getUserCwds();
-    return pushUserCwd(p);
-  });
-  ipcMain.handle('app:userHome', () => os.homedir());
-  // The new-session default model comes straight from the user's CLI
-  // settings.json — same source the CLI itself reads for `--model`. Replaces
-  // the old `import:topModel` frequency-vote IPC (PR #369), which produced
-  // model ids that weren't always in the picker list.
-  ipcMain.handle('settings:defaultModel', async () => {
-    try {
-      return await readDefaultModelFromSettings();
-    } catch {
-      return null;
-    }
-  });
-  ipcMain.handle(
-    'import:loadHistory',
-    async (e, projectDir: unknown, sessionId: unknown) => {
-      if (!fromMainFrame(e)) return [];
-      if (typeof projectDir !== 'string' || typeof sessionId !== 'string') return [];
-      try {
-        return await loadImportableHistory(projectDir, sessionId);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn('[main] import:loadHistory failed', err);
-        return [];
-      }
-    }
-  );
-
-  // Batched best-effort existence probe for arbitrary filesystem paths.
-  // The renderer uses this on hydration to flag sessions whose persisted
-  // `cwd` was deleted between runs (typical worktree-cleanup victim — see
-  // PR #104). Returned map is keyed by the input path; missing paths and
-  // permission errors both map to `false` (we don't surface the distinction
-  // — for the migration's purpose they're equivalent: don't auto-spawn).
-  ipcMain.handle('paths:exist', (_e, inputPaths: unknown) => {
-    const list = Array.isArray(inputPaths)
-      ? inputPaths.filter((p): p is string => typeof p === 'string')
-      : [];
-    const out: Record<string, boolean> = {};
-    for (const p of list) {
-      // Reject UNC + non-absolute paths BEFORE touching fs. On Windows,
-      // `fs.existsSync('\\\\server\\share\\probe')` triggers an SMB lookup
-      // and leaks the user's NTLM hash to the named host. We map any unsafe
-      // path to `false` so the renderer's hydration migration treats it as
-      // "missing cwd" — exactly the desired behaviour. resolveCwd is still
-      // applied so `~`-prefixed cwds are expanded before the safety check.
-      try {
-        const resolved = resolveCwd(p);
-        if (!isSafePath(resolved)) {
-          out[p] = false;
-          continue;
-        }
-        out[p] = fs.existsSync(resolved);
-      } catch {
-        out[p] = false;
-      }
-    }
-    return out;
-  });
-
-  // ─────────────────────── disk-based slash commands ──────────────────────
-  //
-  // Picker discovery for user / project command markdown files. Renderer
-  // calls this on focus / cwd change. Execution stays pass-through:
-  // selecting one inserts `/<name>` into the textarea, which the existing
-  // send path forwards to claude.exe. We never parse the body.
-  //
-  // `loadPickerCommands` returns every disk-discovered source (user /
-  // project / plugin / skill / agent). Plugin and skill commands are
-  // executed by the bundled CLI itself — see commands-loader.ts
-  // PICKER_VISIBLE_SOURCES for the empirical rationale.
-  ipcMain.handle('commands:list', (_e, cwd: string | null | undefined) => {
-    // commands-loader does its own fs reads against the supplied cwd; UNC or
-    // relative inputs get filtered out here so we don't leak NTLM (Windows)
-    // or descend into wherever a confused renderer points us. Empty list is
-    // the safe fallback for any unsafe input.
-    if (cwd != null && !isSafePath(cwd)) return [];
-    return loadPickerCommands({ cwd: cwd ?? null });
-  });
-
-  // ─────────────────────── @mention file listing ──────────────────────────
-  //
-  // Powers the InputBar's @file picker. Walks the session cwd recursively,
-  // skipping the usual heavy directories (node_modules, .git, dist, build,
-  // .next, .venv, target). Returns POSIX-style relative paths so the mention
-  // literal we splice into the composer (`@src/foo.ts`) stays portable
-  // across platforms — claude.exe on Windows happily accepts forward
-  // slashes too.
-  //
-  // Caps:
-  //   - max 5000 files (after which we bail; the picker fuzzy-search is
-  //     plenty accurate at that size, and walking >5k entries on every focus
-  //     is wasteful)
-  //   - max 12 directory depth (defense against symlink loops)
-  //
-  // Per-call, not cached: cwd swaps + on-disk edits should reflect quickly,
-  // and the renderer only invokes this on focus / @ trigger.
-  const FILE_LIST_MAX = 5000;
-  const FILE_LIST_MAX_DEPTH = 12;
-  const FILE_LIST_SKIP_DIRS = new Set([
-    'node_modules',
-    '.git',
-    '.svn',
-    '.hg',
-    'dist',
-    'build',
-    'out',
-    '.next',
-    '.nuxt',
-    '.turbo',
-    '.cache',
-    '.venv',
-    'venv',
-    '__pycache__',
-    'target',
-    '.idea',
-    '.vscode',
-  ]);
-
-  ipcMain.handle('files:list', async (e, cwd: string | null | undefined) => {
-    if (!fromMainFrame(e)) return [];
-    if (cwd == null || !isSafePath(cwd)) return [];
-    let rootStat: fs.Stats;
-    try {
-      rootStat = await fs.promises.stat(cwd);
-    } catch {
-      return [];
-    }
-    if (!rootStat.isDirectory()) return [];
-
-    const out: { path: string; name: string }[] = [];
-    async function walk(dir: string, rel: string, depth: number): Promise<void> {
-      if (out.length >= FILE_LIST_MAX) return;
-      if (depth > FILE_LIST_MAX_DEPTH) return;
-      let entries: fs.Dirent[];
-      try {
-        entries = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const ent of entries) {
-        if (out.length >= FILE_LIST_MAX) return;
-        // Skip hidden + heavy build dirs to keep the picker snappy.
-        if (ent.name.startsWith('.') && ent.name !== '.env' && ent.name !== '.env.local') {
-          if (ent.isDirectory()) continue;
-          // hidden file: skip too — usually noise (.DS_Store, .gitignore)
-          continue;
-        }
-        if (ent.isDirectory() && FILE_LIST_SKIP_DIRS.has(ent.name)) continue;
-        const childAbs = path.join(dir, ent.name);
-        const childRel = rel ? `${rel}/${ent.name}` : ent.name;
-        if (ent.isDirectory()) {
-          await walk(childAbs, childRel, depth + 1);
-        } else if (ent.isFile()) {
-          out.push({ path: childRel, name: ent.name });
-        }
-      }
-    }
-    await walk(cwd, '', 0);
-    return out;
-  });
-
-  ipcMain.handle('shell:openExternal', async (e, url: string) => {
-    if (!fromMainFrame(e)) return false;
-    // Only http(s). Everything else is a potential shell hijack.
-    if (!/^https?:\/\//i.test(url)) return false;
-    try {
-      await shell.openExternal(url);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-  // ──────────────────────── end commands + shell ───────────────────────────
-
-  // ─────────── CLI wizard IPC removed (PR-I) ───────────
-  // The first-run "find your claude binary" UI was deleted because CCSM
-  // now ships the Claude binary inside the installer (PR-B). All
-  // `cli:getInstallHints` / `cli:browseBinary` / `cli:setBinaryPath` /
-  // `cli:openDocs` / `cli:retryDetect` handlers were removed — when the
-  // SDK throws `ClaudeNotFoundError` the renderer surfaces the
-  // installer-corrupt banner via the `CLAUDE_NOT_FOUND` errorCode that
-  // `electron/agent/manager.ts` still emits.
-
-  // Memory (CLAUDE.md) editor IPC. Paths are validated inside the memory
-  // module — see isAllowedMemoryPath(). Only files named CLAUDE.md are
-  // accepted; anything else returns an error so a compromised renderer can't
-  // use us as an arbitrary-file-read primitive.
-  ipcMain.handle('memory:read', (_e, p: string) => readMemoryFile(p));
-  ipcMain.handle('memory:write', (_e, p: string, content: string) =>
-    writeMemoryFile(p, content)
-  );
-  ipcMain.handle('memory:exists', (_e, p: string) => memoryFileExists(p));
-  ipcMain.handle('memory:userPath', () => {
-    // ~/.claude/CLAUDE.md. Resolved here so the renderer never has to know
-    // about homedir semantics (different on Windows vs Unix).
-    return path.join(os.homedir(), '.claude', 'CLAUDE.md');
-  });
-  ipcMain.handle('memory:projectPath', (_e, cwd: string) => {
-    // We still force CLAUDE.md basename in the *write* path, but we compose
-    // the full path here so the renderer doesn't have to remember the
-    // filename. If cwd is empty or not absolute, return null so the UI can
-    // show the "open a session" hint.
-    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return null;
-    return path.join(cwd, 'CLAUDE.md');
-  });
-
-  ipcMain.handle(
-    'notification:show',
-    (e, payload: ShowNotificationPayload) => {
-      const win = BrowserWindow.fromWebContents(e.sender);
-      return showNotification(payload, win);
-    }
-  );
-
-  ipcMain.handle('notify:availability', async () => {
-    const available = await probeNotifyAvailability();
-    return { available, error: notifyLastError() };
-  });
-
-  // Renderer → main mirror of notification runtime state (#307). The
-  // ask-question retry timer fires in main ~30s after the original toast;
-  // by then the user may have toggled notifications off or focused the
-  // question's session. The renderer's store is the source of truth, so
-  // it pushes the two fields the retry gate needs (`notificationsEnabled`,
-  // `activeSessionId`) whenever they change. Partial payload — both fields
-  // are independently optional.
-  ipcMain.handle(
-    'notify:setRuntimeState',
-    (
-      e,
-      patch: { notificationsEnabled?: boolean; activeSessionId?: string | null },
-    ): { ok: true } | { ok: false } => {
-      if (!fromMainFrame(e)) return { ok: false };
-      setNotifyRuntimeState(patch);
-      return { ok: true };
+    setSessionName: (sid, name) => {
+      if (name) sessionNamesFromRenderer.set(sid, name);
+      else sessionNamesFromRenderer.delete(sid);
     },
-  );
+    markUserInput: (sid) => {
+      notifyPipeline?.markUserInput(sid);
+    },
+  });
+  registerWindowIpc({ ipcMain });
+  registerUtilityIpc({ ipcMain });
 
   installUpdaterIpc();
 
-  // Dev-only debug backdoor for E2E probes. Probes call this via
-  // `app.evaluate(() => globalThis.__ccsmDebug.activeSessionPids())` on
-  // the Electron main process (NOT the renderer — we intentionally don't
-  // widen preload.ts's surface for a test-only affordance). Guarded behind
-  // `!app.isPackaged` so prod bundles never expose it.
-  if (!app.isPackaged) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const notifyMod = require('./notify') as typeof import('./notify');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const bootstrapMod = require('./notify-bootstrap') as typeof import('./notify-bootstrap');
-    (globalThis as unknown as Record<string, unknown>).__ccsmDebug = {
-      activeSessionPids: () => sessions.activeRunnerPids(),
-      activeSessionCount: () => sessions.activeSessionCount(),
-      // Lifecycle discriminator for the close-window / delete-session probes:
-      // distinguishes count-dropped-to-0-via-handler from
-      // count-dropped-to-0-because-CLI-self-crashed.
-      selfExitCount: () => sessions.selfExitsSinceStart(),
-      // Wave 1D: probe seam — exposed so `scripts/probe-e2e-notify-integration.mjs`
-      // can swap the inlined notify module importer for a fake without resorting to
-      // `require` from inside `app.evaluate` (where it's not in scope).
-      notify: notifyMod,
-      notifyBootstrap: bootstrapMod,
-      sessions,
-    };
-  }
+  // Wire the sessionWatcher singleton's production callbacks. The watcher
+  // module-graph stays free of any reverse import to sessionTitles (#690
+  // follow-up to #536) — it boots with noop defaults and main.ts injects
+  // the real getSessionTitle / flushPendingRename here, before ptyHost
+  // (the only production caller of startWatching) is registered.
+  configureSessionWatcher({
+    fetchTitle: getSessionTitle,
+    flushRename: flushPendingRename,
+  });
+
+  // Register ptyHost IPC (in-process node-pty path that replaced ttyd).
+  // Owns per-session pty lifecycle, attach/detach, snapshot serialization,
+  // and the `claude` CLI availability probe (folded in from the deleted
+  // cliBridge module — see ptyHost/index.ts pty:checkClaudeAvailable).
+  registerPtyHostIpc(
+    ipcMain,
+    () => BrowserWindow.getAllWindows()[0] ?? null,
+  );
+
+  // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
+  // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
+  // The pipeline + its producer subscriptions (PTY, focus/blur, unwatched)
+  // live in electron/notify/bootstrap/installPipeline so main.ts only owns
+  // the cross-module fan-out (badge, IPC signal forwarding).
+  badgeManager = new BadgeManager({
+    getTray: () => getTray(),
+    getBaseTrayImage: getTrayBaseImage,
+    getWindows: () => BrowserWindow.getAllWindows(),
+    // OS-visible taskbar overlay + tray composite suppressed at MVP because
+    // the count was incorrect (#667 / chore #534). The internal store keeps
+    // running so e2e probes can still verify the notify bridge fires. Flip
+    // to true once the count derivation is fixed; no other call sites need
+    // to change.
+    enabled: false,
+  });
+
+  const installed = installNotifyPipelineWithProducers({
+    isGlobalMutedFn: () => !loadNotifyEnabled(),
+    getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
+    onNotified: (sid) => {
+      badgeManager?.incrementSid(sid);
+    },
+    // audit #876 H2: drop the sid's unread counter when the session is
+    // unwatched (PTY exit / kill). Without this the badgeStore.unread map
+    // accumulated entries forever — every notified sid stayed counted for
+    // the app lifetime even after the session was deleted.
+    onUnwatchedSid: (sid) => {
+      badgeManager?.clearSid(sid);
+      // audit #876 Item 5: drop the renderer-pushed name mirror too. Without
+      // this, every renamed session leaks its entry forever — the map only
+      // grew, never shrank, since the IPC handler is the only producer.
+      sessionNamesFromRenderer.delete(sid);
+    },
+  });
+  const pipelineInstance = installed.pipeline;
+  // Hoist into the module-level holder so the IPC handlers above (registered
+  // earlier in app.whenReady) can reach the pipeline. The handlers run later
+  // (on actual IPC dispatch), so the forward reference is safe — they use
+  // the optional-chained `notifyPipeline?.` form because the holder is null
+  // until this assignment lands.
+  notifyPipeline = pipelineInstance;
+  // Tear down the pipeline + its app-level listeners on real quit. Without
+  // this, the focus/blur + sessionWatcher 'unwatched' subscriptions plus
+  // any still-active flash timers leak past the pipeline lifetime — visible
+  // in long-running tests / HMR (audit #876 cluster 1.14 + 3.8 / Task #884).
+  notifyPipelineDispose = installed.dispose;
+
+  installLateTestHooks({
+    getBadgeManager: () => badgeManager,
+    pipelineInstance,
+  });
 
   createWindow();
   ensureTray();
 
   // Eager-load CLI transcripts so ImportDialog has data the moment the user
-  // opens it. Fire-and-forget; refreshImportableCache logs its own errors and
+  // opens it. Fire-and-forget; primeImportableCache logs its own errors and
   // stores [] on failure so the dialog gracefully degrades.
-  void refreshImportableCache();
+  primeImportableCache();
 });
 
-app.on('before-quit', () => {
-  isQuitting = true;
-  // Kill any live claude.exe children before the event loop is torn down.
-  // `window-all-closed` already runs closeAll() on Windows/Linux, but on
-  // macOS (and on the tray→Quit path that invokes app.quit() directly while
-  // windows are hidden-not-closed) before-quit is our only guaranteed hook.
-  // closeAll() is idempotent and synchronous (abort signals fire SIGTERM via
-  // the spawner); a duplicate call from window-all-closed is a no-op.
-  try {
-    sessions.closeAll();
-  } catch {
-    /* ignore — best-effort cleanup on quit */
-  }
-});
-
-app.on('window-all-closed', () => {
-  // Tray-resident: do NOT quit on Windows when the window closes; the user
-  // explicitly chose minimize-to-tray. Real quit goes through tray Quit /
-  // Ctrl-Q.
-  if (isQuitting) {
-    sessions.closeAll();
-    closeDb();
-    app.quit();
-  }
-});
-
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+registerLifecycleHandlers({
+  app,
+  getIsQuitting: () => isQuitting,
+  setIsQuitting: (v) => {
+    isQuitting = v;
+  },
+  killAllPtySessions,
+  closeDb,
+  createWindow: () => {
+    createWindow();
+  },
+  getWindowCount: () => BrowserWindow.getAllWindows().length,
+  disposeNotifyPipeline: () => notifyPipelineDispose?.(),
 });

@@ -1,9 +1,13 @@
 name: Release
 
-# CI minutes are scarce — release artifacts are produced locally and
-# uploaded via `gh release create`. Re-enable the tag trigger once we
-# have CI budget back; until then, manual workflow_dispatch only.
+# Triggered by version tag pushes (vX.Y.Z) or manual dispatch for dry-runs.
+# Artifacts are published to a draft GitHub Release on real tag pushes only;
+# workflow_dispatch runs stop after the artifact upload so dry-runs don't
+# pollute the Releases tab.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
@@ -30,7 +34,7 @@ jobs:
           cache: 'npm'
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Install deps
         run: npm ci --legacy-peer-deps
         env:
@@ -48,6 +52,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: mac
           - os: windows-latest
             platform: win
     runs-on: ${{ matrix.os }}
@@ -76,7 +84,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
+
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
       - name: Install deps
         run: npm ci --legacy-peer-deps

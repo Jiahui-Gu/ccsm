@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
-import { Search, SearchX, Hash, Settings, Plus, FolderPlus, PanelLeft, SunMoon, DownloadCloud } from 'lucide-react';
+import { Search, SearchX, Hash, Settings, FolderPlus, SunMoon, DownloadCloud } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { Dialog, DialogPortal, DialogOverlay } from './ui/Dialog';
 import * as RD from '@radix-ui/react-dialog';
 import { AgentIcon } from './AgentIcon';
-import { useStore, resolveEffectiveTheme } from '../stores/store';
+import { useStore } from '../stores/store';
+import { resolveEffectiveTheme } from '../stores/slices/appearanceSlice';
 import { useTranslation } from '../i18n/useTranslation';
 import { useFocusRestore } from '../lib/useFocusRestore';
+
+const MOD = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+';
 
 type ResultKind = 'session' | 'group' | 'command';
 
@@ -24,7 +27,6 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onOpenSettings?: () => void;
-  onNewSession?: () => void;
   onOpenImport?: () => void;
   onSelectSession?: (id: string) => void;
   onFocusGroup?: (id: string) => void;
@@ -34,7 +36,6 @@ export function CommandPalette({
   open,
   onOpenChange,
   onOpenSettings,
-  onNewSession,
   onOpenImport,
   onSelectSession,
   onFocusGroup
@@ -46,7 +47,6 @@ export function CommandPalette({
   const sessions = useStore((s) => s.sessions);
   const groups = useStore((s) => s.groups);
   const createGroup = useStore((s) => s.createGroup);
-  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
   const prefersReducedMotion = useReducedMotion();
@@ -114,36 +114,14 @@ export function CommandPalette({
           }
         })),
       {
-        id: 'cmd:new-session',
-        kind: 'command',
-        label: t('commandPalette.cmdNewSession'),
-        hint: 'Ctrl+N',
-        icon: <Plus size={13} className="stroke-[1.75] text-fg-tertiary" />,
-        onPick: () => {
-          onOpenChange(false);
-          onNewSession?.();
-        }
-      },
-      {
         id: 'cmd:new-group',
         kind: 'command',
         label: t('commandPalette.cmdNewGroup'),
-        hint: 'Ctrl+Shift+N',
+        hint: `${MOD}Shift+N`,
         icon: <FolderPlus size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
           createGroup();
-        }
-      },
-      {
-        id: 'cmd:toggle-sidebar',
-        kind: 'command',
-        label: t('commandPalette.cmdToggleSidebar'),
-        hint: 'Ctrl+B',
-        icon: <PanelLeft size={13} className="stroke-[1.75] text-fg-tertiary" />,
-        onPick: () => {
-          onOpenChange(false);
-          toggleSidebar();
         }
       },
       {
@@ -160,7 +138,7 @@ export function CommandPalette({
         id: 'cmd:open-settings',
         kind: 'command',
         label: t('commandPalette.cmdOpenSettings'),
-        hint: 'Ctrl+,',
+        hint: `${MOD},`,
         icon: <Settings size={13} className="stroke-[1.75] text-fg-tertiary" />,
         onPick: () => {
           onOpenChange(false);
@@ -183,7 +161,7 @@ export function CommandPalette({
     return all.filter(
       (r) => r.label.toLowerCase().includes(needle) || r.hint?.toLowerCase().includes(needle)
     );
-  }, [q, sessions, groups, theme, osPrefersDark, onOpenChange, onNewSession, onOpenSettings, onSelectSession, onFocusGroup, createGroup, toggleSidebar, setTheme, onOpenImport, t]);
+  }, [q, sessions, groups, theme, osPrefersDark, onOpenChange, onOpenSettings, onSelectSession, onFocusGroup, createGroup, setTheme, onOpenImport, t]);
 
   const hasQuery = q.trim().length > 0;
 

@@ -1,0 +1,128 @@
+name: e2e
+
+on:
+  pull_request:
+    branches: [main, working]
+    paths:
+      - 'electron/**'
+      - 'src/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      # Cache node_modules directly — same rationale as ci.yml: `npm ci`
+      # is the dominant Windows CI cost. Cache hit skips install entirely
+      # and inherits the postinstall-rebuilt native bindings (better-sqlite3,
+      # node-pty) from the cached tree, which is what the Electron e2e
+      # actually loads.
+      #
+      # CRITICAL: this cache key MUST be distinct from ci.yml's key. ci.yml
+      # runs `npm ci` with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` (no electron
+      # binary) AND compiles native modules against Node 20's ABI
+      # (NODE_MODULE_VERSION 115). e2e needs the electron binary AND
+      # native modules built against Electron's ABI (NMV 145). Sharing a
+      # key meant whichever workflow won the race poisoned the other:
+      #   - ci.yml winning → e2e gets no electron binary + Node-20-ABI
+      #     `.node` files → main process throws ERR_DLOPEN_FAILED on
+      #     better-sqlite3 require during initDb() → BrowserWindow never
+      #     created → harness times out with the bare "no renderer window
+      #     appeared in time" error.
+      # The `e2e-` prefix isolates this workflow's cache entirely.
+      # (Task #913 healed the electron-binary half; Task #919 the
+      # native-module half.)
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-e2e-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+      - name: Cache Electron binary
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
+        run: npm ci --legacy-peer-deps
+      # Ensure the Electron binary (`node_modules/electron/dist/`) is present.
+      # The node_modules cache is shared with ci.yml, which runs `npm ci` with
+      # ELECTRON_SKIP_BINARY_DOWNLOAD=1 — when ci.yml wins the race to write
+      # the cache, the restored node_modules has the electron JS shim but no
+      # `dist/electron(.exe)` and no `path.txt`/`dist/version`, causing
+      # `electron.launch` to error with "Electron failed to install correctly".
+      # `electron/install.js` short-circuits via `isInstalled()` when the
+      # binary is already present, so this is a fast no-op on healthy caches
+      # and self-heals poisoned caches. Must NOT inherit the env var above.
+      # (Task #913)
+      - name: Ensure Electron binary
+        run: node node_modules/electron/install.js
+      # Rebuild native modules against Electron's ABI on every run. The
+      # node_modules cache is shared with ci.yml, which compiles
+      # better-sqlite3 / node-pty against Node 20's ABI (NODE_MODULE_VERSION
+      # 115). When the e2e job restores that cache and launches Electron
+      # (NODE_MODULE_VERSION 145), the main process throws
+      # "The module ... was compiled against a different Node.js version"
+      # during `initDb()` — the BrowserWindow is never created and the
+      # harness times out with the bare "no renderer window appeared in
+      # time" error. Running `@electron/rebuild` is a fast no-op when the
+      # `.node` files already match Electron's ABI and self-heals when
+      # ci.yml won the cache race. Diagnosed via Task #919.
+      - name: Ensure native modules built for Electron ABI
+        run: npx electron-rebuild
+      - name: Build
+        run: npm run build
+      - name: Run e2e (Linux with xvfb)
+        if: runner.os == 'Linux'
+        # E2E_SKIP=harness-real-cli — public CI runners have no `claude`
+        # CLI installed AND no Anthropic auth tokens, so every case in
+        # harness-real-cli that calls waitForTerminalReady deterministically
+        # times out (the renderer falls through to ClaudeMissingGuide and
+        # never mounts <TerminalPane>). The harness stays runnable locally
+        # via `node scripts/harness-real-cli.mjs` (or `npm run probe:e2e`
+        # without the env var) for the dev / dogfood loop, where the user's
+        # ~/.claude is real. (#726)
+        run: xvfb-run -a npm run probe:e2e
+        env:
+          E2E_SKIP: harness-real-cli
+      - name: Run e2e (mac/win)
+        if: runner.os != 'Linux'
+        run: npm run probe:e2e
+        env:
+          E2E_SKIP: harness-real-cli
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.os }}
+          path: |
+            dogfood-logs/
+            docs/screenshots/
+          retention-days: 7
