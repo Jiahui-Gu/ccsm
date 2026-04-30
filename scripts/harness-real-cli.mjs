@@ -3259,12 +3259,180 @@ async function caseAttachReplayFromHeadlessBuffer({ electronApp, win, tempDir })
 }
 
 // ============================================================================
+// Case: alt-screen-fits-visible-viewport (#899 — guards #602 / #852 regression)
+// ============================================================================
+//
+// Background:
+//   PR #602 (commit 9a56ebc) shipped a workaround that measured the host
+//   container BEFORE pty spawn so claude's full-screen alt-screen panels
+//   ("Do you trust the files in this folder?", "Welcome back!") were
+//   rendered at the user's actual viewport dimensions — otherwise the
+//   panel content was authored for the spawn-time 120x30 PTY and the
+//   visible xterm at NxM (e.g. 134x51) showed a clipped/mis-laid-out
+//   panel: bottom rows blank, side borders mid-screen.
+//
+//   PR #611 (L4 PR-F, commit ac2017d) deleted that hack. The replacement
+//   contract is:
+//     a. PTY spawns at DEFAULT_COLS/DEFAULT_ROWS = 120x30
+//        (electron/ptyHost/entryFactory.ts:37-38).
+//     b. After attach, src/terminal/usePtyAttach.ts:344-376 fits the
+//        visible xterm to the container, calls
+//        window.ccsmPty.resize(sid, cols, rows), and replays the headless
+//        snapshot. Because the headless mirror is the source-of-truth
+//        buffer, the replay reflows alt-screen content to the new size
+//        without depending on claude voluntarily repainting.
+//
+//   This case pins the visible outcome of that contract: after a fresh
+//   spawn into the welcome panel, the rendered alt-screen content fills
+//   the post-fit visible viewport — specifically, the panel's outer
+//   border spans close to `term.cols`, not the spawn-time 120 cols. If
+//   the replay path is broken, the panel borders sit at the spawn
+//   dimensions, with blank columns on the right and/or content extending
+//   off-screen below the panel.
+//
+//   We test against the welcome panel rather than the trust prompt
+//   because claude v2.1.119 with a fresh isolated .claude config does
+//   NOT show the trust prompt for arbitrary cwds (verified empirically
+//   2026-04-30 against this harness's isolated tempdir setup); both
+//   panels exercise the same alt-screen-after-resize code path on the
+//   ccsm side, and the welcome panel is what users actually hit on
+//   first launch.
+//
+//   Reverse-verify: comment out the post-attach resize+replay block at
+//   src/terminal/usePtyAttach.ts:344-376 → this case FAILS (panel
+//   borders stay at the 120-col spawn width while the visible xterm is
+//   wider, leaving blank columns on the right; or panel rows >30 are
+//   missing).
+
+async function caseAltScreenFitsVisibleViewport({ electronApp, win, tempDir }) {
+  await win.waitForFunction(
+    () => !document.querySelector('[data-testid="claude-availability-probing"]'),
+    null,
+    { timeout: 30000 },
+  );
+
+  // Fresh cwd outside HOME so claude's resolver doesn't re-use any
+  // previously-trusted parent. Also ensures this case is independent of
+  // earlier cases in the shared launch.
+  const probeCwd = mkdtempSync(path.join(tmpdir(), 'ccsm-altscreen-probe-'));
+
+  const { sid } = await seedSession(win, {
+    name: 'alt-screen-probe',
+    cwd: probeCwd,
+  });
+  if (!sid) throw new Error('seedSession returned empty sid');
+  await sleep(2500);
+  await waitForTerminalReady(win, sid, { timeout: 60000 });
+
+  // Wait for any alt-screen panel that claude renders on cold start —
+  // either the trust prompt OR the welcome card. Both have a top
+  // box-drawing border, so the regex catches whichever lands.
+  await waitForXtermBuffer(win, /Welcome|Do you trust|trust the files|Claude Code v/i, {
+    timeout: 30000,
+  });
+  // Allow post-attach fit + replay to settle so the visible buffer
+  // reflects the post-resize state, not the spawn-time 120x30.
+  await sleep(2000);
+
+  // Read the FULL visible buffer (rows 0..rows-1, no scrollback) plus
+  // the live term dimensions. The #602 / #852 failure mode is content
+  // laid out for the spawn-time PTY size sitting in a wider visible
+  // xterm — so we need the geometry to make the assertion.
+  const view = await win.evaluate(() => {
+    const term = window.__ccsmTerm;
+    if (!term || !term.buffer || !term.buffer.active) {
+      return { ok: false, reason: 'no __ccsmTerm', cols: 0, rows: 0, lines: [] };
+    }
+    const buf = term.buffer.active;
+    const rows = term.rows;
+    const cols = term.cols;
+    const viewportY = buf.viewportY || 0;
+    const lines = [];
+    for (let r = 0; r < rows; r++) {
+      const line = buf.getLine(viewportY + r);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return { ok: true, cols, rows, viewportY, lines };
+  });
+  if (!view.ok) {
+    throw new Error(`[alt-screen-fit] could not read visible buffer: ${view.reason}`);
+  }
+
+  // The post-attach fit at usePtyAttach.ts:344-376 should have grown the
+  // visible xterm beyond the spawn-time defaults. If it's still stuck at
+  // exactly 120x30, the fit() never ran — the same regression mode #602
+  // / #852 was guarding against (xterm Terminal sits at the singleton's
+  // initial 120x30, claude content is rendered for that, the user's
+  // wider container shows a tiny terminal).
+  if (view.cols === 120 && view.rows === 30) {
+    throw new Error(
+      `[alt-screen-fit] visible xterm stuck at spawn-time 120x30 — post-attach fit at usePtyAttach.ts:344-376 did NOT run.\n` +
+      `  visible viewport:\n` +
+      view.lines.map((l, i) => `    ${String(i).padStart(2, '0')}: ${l}`).join('\n'),
+    );
+  }
+
+  // Find every line that looks like an outer panel border (line with
+  // many consecutive box-drawing horizontal chars `─`). The Claude Code
+  // welcome panel and trust prompt both render with these borders; the
+  // longest run on screen tells us the panel's rendered width.
+  const borderRunWidth = (line) => {
+    let max = 0;
+    let cur = 0;
+    for (const ch of line) {
+      if (ch === '─') {
+        cur += 1;
+        if (cur > max) max = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    return max;
+  };
+  const borderWidths = view.lines.map(borderRunWidth);
+  const longestBorder = Math.max(0, ...borderWidths);
+
+  if (longestBorder < 20) {
+    throw new Error(
+      `[alt-screen-fit] no panel border found in visible ${view.cols}x${view.rows} viewport — claude may not have rendered any alt-screen panel.\n` +
+      `  visible viewport:\n` +
+      view.lines.map((l, i) => `    ${String(i).padStart(2, '0')}: ${l}`).join('\n'),
+    );
+  }
+
+  // The actual contract: post-attach resize+replay reflowed the alt-screen
+  // content to the visible viewport width. The panel's longest border run
+  // should be much closer to `view.cols` than to the spawn-time 120 cols.
+  //
+  // Tolerance: claude renders with some inner padding, so we don't expect
+  // border == cols exactly. We require longestBorder >= max(view.cols - 30,
+  // 120 + 5) — i.e. the border is within ~30 cols of the viewport width AND
+  // at least 5 cols WIDER than the spawn width (the latter is what
+  // distinguishes "reflowed" from "stuck at spawn size").
+  const reflowFloor = Math.max(view.cols - 30, 120 + 5);
+  if (longestBorder < reflowFloor) {
+    throw new Error(
+      `[alt-screen-fit] alt-screen panel did NOT reflow to viewport width — #602/#852 regression suspected.\n` +
+      `  viewport=${view.cols}x${view.rows}, longestBorder=${longestBorder}, reflowFloor=${reflowFloor}\n` +
+      `  (spawn-time PTY width is 120; if longestBorder is ~120 with viewport much wider, the post-attach resize+replay at usePtyAttach.ts:344-376 is broken)\n` +
+      `  visible viewport:\n` +
+      view.lines.map((l, i) => `    ${String(i).padStart(2, '0')}: ${l}`).join('\n'),
+    );
+  }
+
+  console.log(
+    `[HARNESS]   alt-screen-fit OK: viewport=${view.cols}x${view.rows}, panel border=${longestBorder} cols (>=${reflowFloor}), reflow confirmed`,
+  );
+}
+
+// ============================================================================
 // Registry
 // ============================================================================
 
 const CASE_REGISTRY = [
   { name: 'new-session-chat',            group: 'shared', run: caseNewSessionChat },
   { name: 'attach-replay-from-headless-buffer', group: 'shared', run: caseAttachReplayFromHeadlessBuffer },
+  { name: 'alt-screen-fits-visible-viewport', group: 'shared', run: caseAltScreenFitsVisibleViewport },
   { name: 'session-rename-writes-jsonl', group: 'shared', run: caseSessionRenameWritesJsonl },
   { name: 'session-title-syncs-from-jsonl', group: 'shared', run: caseSessionTitleSyncsFromJsonl },
   { name: 'session-state-becomes-idle',  group: 'shared', run: caseSessionStateBecomesIdle },
