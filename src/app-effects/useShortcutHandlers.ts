@@ -33,8 +33,6 @@ export interface ShortcutHandlersDeps {
   toggleShortcuts: () => void;
   /** Toggle the command palette. Bound to Ctrl+F. */
   togglePalette: () => void;
-  /** Toggle the sidebar. Bound to Ctrl+B. */
-  toggleSidebar: () => void;
   /** Open the settings dialog. Bound to Ctrl+,. */
   openSettings: () => void;
 }
@@ -42,12 +40,12 @@ export interface ShortcutHandlersDeps {
 /**
  * Composite hook that installs all global keyboard shortcuts handled at
  * the App level. Combines what was previously a single inline `keydown`
- * listener in App.tsx covering: Ctrl+/, "?", Ctrl+F, Ctrl+B, Ctrl+,.
+ * listener in App.tsx covering: Ctrl+/, "?", Ctrl+F, Ctrl+,.
  *
  * Extracted for SRP under Task #724.
  */
 export function useShortcutHandlers(deps: ShortcutHandlersDeps): void {
-  const { toggleShortcuts, togglePalette, toggleSidebar, openSettings } = deps;
+  const { toggleShortcuts, togglePalette, openSettings } = deps;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -67,9 +65,6 @@ export function useShortcutHandlers(deps: ShortcutHandlersDeps): void {
       if (k === 'f' && !e.shiftKey) {
         e.preventDefault();
         togglePalette();
-      } else if (k === 'b' && !e.shiftKey) {
-        e.preventDefault();
-        toggleSidebar();
       } else if (e.key === ',') {
         e.preventDefault();
         openSettings();
@@ -77,5 +72,5 @@ export function useShortcutHandlers(deps: ShortcutHandlersDeps): void {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleShortcuts, togglePalette, toggleSidebar, openSettings]);
+  }, [toggleShortcuts, togglePalette, openSettings]);
 }

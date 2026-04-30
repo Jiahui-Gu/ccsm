@@ -33,8 +33,7 @@ In:
 6. Import: scan `~/.claude/projects/` for historical sessions
 7. Global search / Command Palette (Cmd/Ctrl+F)
 8. Settings (API key, data dir, theme, font, shortcuts, auto-update)
-9. Sidebar collapse
-10. Session right-click menu (rename + move-to-group + delete) — operate inline in the sidebar; no standalone Session header
+9. Session right-click menu (rename + move-to-group + delete) — operate inline in the sidebar; no standalone Session header
 11. Toast notifications (state changes, errors)
 12. Status bar (cwd + model + permission)
 13. Auto-update check (inside Settings)
@@ -105,16 +104,11 @@ CCSM                    [«]
 - **First launch**: only "Create your first session" / "Import session" entry points.
 - **No group → create session**: auto-create a default group.
 
-### 5.1 Sidebar collapse (implementation locked)
+### 5.1 Sidebar (implementation locked)
 
-- Expanded width `256px` / collapsed width `48px`.
-- Transition: `framer-motion` width animation, 220ms, `cubic-bezier(0.32, 0.72, 0, 1)`.
-- Three equivalent collapse triggers:
-  1. Top `[«]` / `[»]` IconButton
-  2. `⌘B` / `Ctrl+B` global shortcut
-  3. Right-edge 1.5px clickable rail (1px accent hairline shows on hover)
+- User-resizable width via SidebarResizer, clamped to [200, 480] px, persisted (SQLite). Double-click resets to 260 px default.
+- Sidebar collapse was removed in #894 — there is no collapse state, no Ctrl+B shortcut, no CollapsedRail.
 - **Do not migrate to shadcn Sidebar**: the wrapper is ~30 lines; shadcn's value (Dialog/Command/Form etc.) is low-ROI here and adds token-mapping cognitive load (`--sidebar-*` ↔ `bg-bg-sidebar`). Internal `GroupRow` / `SessionRow` are CCSM-specific UI (rollup, state glyphs, cwdTail) — no library helps; keep hand-rolled.
-- Collapsed state persisted locally (SQLite).
 
 ### 5.2 Archive behavior
 
@@ -129,7 +123,7 @@ CCSM                    [«]
 - Single popover, mixed results:
   - Sessions (fuzzy match on name, group, cwd)
   - Groups
-  - Commands (New session / New group / Toggle sidebar / Open settings / Switch theme)
+  - Commands (New group / Open settings / Switch theme)
 - Enter to navigate / execute; Esc to close.
 - No full-text search inside conversation content (out of MVP — jsonl volume unknown, avoid the perf rabbit hole).
 
@@ -187,7 +181,7 @@ bottom-right, auto-dismiss in 3s, max 3 stacked. Triggered by:
 
 ## 10. Data / persistence
 
-- SQLite stores: group / session metadata / user-defined order / custom names / sidebar collapsed state / theme.
+- SQLite stores: group / session metadata / user-defined order / custom names / sidebar width / theme.
 - Conversation history: relies on SDK's jsonl in `~/.claude/projects/` — not duplicated locally.
 - On startup: reconcile `~/.claude/projects/` against SQLite; sessions present in jsonl but not attached to any group → land in a default "Imported" group.
 - API key: OS keychain (Electron `safeStorage`); not stored in SQLite.
@@ -198,7 +192,6 @@ bottom-right, auto-dismiss in 3s, max 3 stacked. Triggered by:
 - Cmd/Ctrl+,: Settings
 - Cmd/Ctrl+N: New session (in current group, or auto-create default group)
 - Cmd/Ctrl+Shift+N: New group
-- Cmd/Ctrl+B: Toggle sidebar
 - Enter: send
 - Shift+Enter: newline
 - Esc: close popover / cancel inline edit

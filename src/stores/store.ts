@@ -83,14 +83,12 @@ export async function hydrateStore(): Promise<void> {
       sessions: persisted.sessions,
       groups: persisted.groups,
       activeId: stillActive ? persisted.activeId : persisted.sessions[0]?.id ?? '',
-      sidebarCollapsed: persisted.sidebarCollapsed ?? false,
       sidebarWidth: resolvePersistedSidebarWidth(persisted),
       theme: persisted.theme ?? 'system',
       fontSize: persisted.fontSize ?? 'md',
       fontSizePx: persisted.fontSizePx !== undefined
         ? sanitizeFontSizePx(persisted.fontSizePx)
         : legacyFontSizeToPx(persisted.fontSize ?? 'md'),
-      tutorialSeen: persisted.tutorialSeen ?? false,
     });
   }
   // Flip `hydrated` BEFORE kicking off the deferred IPCs below — components

@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
-import { Plus, Download } from 'lucide-react';
 import { TooltipProvider } from './components/ui/Tooltip';
 import { ToastProvider, useToast } from './components/ui/Toast';
-import { Button } from './components/ui/Button';
 import { Sidebar } from './components/Sidebar';
 import { AppShell } from './components/AppShell';
 import { AppSkeleton } from './components/AppSkeleton';
@@ -13,11 +11,9 @@ import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
-import { Tutorial } from './components/Tutorial';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { useStore } from './stores/store';
 import { initI18n } from './i18n';
-import { useTranslation } from './i18n/useTranslation';
 import { usePreferences } from './store/preferences';
 import { useThemeEffect } from './app-effects/useThemeEffect';
 import { useLanguageEffect } from './app-effects/useLanguageEffect';
@@ -27,7 +23,6 @@ import { useSessionActivateBridge } from './app-effects/useSessionActivateBridge
 import { useFocusBridge } from './app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
 import { usePersistErrorBridge } from './app-effects/usePersistErrorBridge';
-import { useTutorialOverlay } from './app-effects/useTutorialOverlay';
 import { useSessionActiveBridge } from './app-effects/useSessionActiveBridge';
 import { useSessionNameBridge } from './app-effects/useSessionNameBridge';
 import { usePtyExitBridge } from './app-effects/usePtyExitBridge';
@@ -69,7 +64,6 @@ function AppEffectsBridge(): null {
 }
 
 export default function App() {
-  const { t } = useTranslation();
   const sessions = useStore((s) => s.sessions);
   const flashStates = useStore((s) => s.flashStates);
   const activeId = useStore((s) => s.activeId);
@@ -91,11 +85,8 @@ export default function App() {
   const applyPtyExit = useStore((s) => s._applyPtyExit);
   const moveSession = useStore((s) => s.moveSession);
   const createSession = useStore((s) => s.createSession);
-  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const theme = useStore((s) => s.theme);
   const fontSizePx = useStore((s) => s.fontSizePx);
-  const tutorialSeen = useStore((s) => s.tutorialSeen);
-  const markTutorialSeen = useStore((s) => s.markTutorialSeen);
 
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -129,15 +120,10 @@ export default function App() {
     }));
   }, []));
 
-  // Tutorial overlay show/hide derivation. `dismiss()` flips the persisted
-  // store flag so it does not return on the next launch.
-  const tutorial = useTutorialOverlay({ tutorialSeen, markTutorialSeen });
-
-  // Global keyboard shortcuts (Ctrl+/, "?", Ctrl+F, Ctrl+B, Ctrl+,).
+  // Global keyboard shortcuts (Ctrl+/, "?", Ctrl+F, Ctrl+,).
   useShortcutHandlers({
     toggleShortcuts: React.useCallback(() => setShortcutsOpen((p) => !p), []),
     togglePalette: React.useCallback(() => setPaletteOpen((p) => !p), []),
-    toggleSidebar,
     openSettings: React.useCallback(() => setSettingsOpen(true), []),
   });
 
@@ -293,56 +279,11 @@ export default function App() {
 
   // Body that fills the right pane below the drag region + corrupt-installer
   // banner. Two cases:
-  //   - no active session (post-hydrate) → first-run CTA / tutorial overlay
+  //   - no active session (post-hydrate) → empty pane (sidebar `+` is the only
+  //     entry; the central CTA / Tutorial path was removed in #894).
   //   - active session → ClaudeMissingGuide / TerminalPane / probing spacer
   const mainBody = !active ? (
-    <div className="flex-1 flex items-center justify-center min-h-0">
-      {!tutorial.show ? (
-        // First-run / no-active-session empty state. Task #329 — we
-        // explicitly do NOT auto-create a session at boot; instead
-        // the user lands on this clean palette of CTAs. The wording
-        // is sentence case and i18n-driven (firstRun.* keys).
-        // Trimmed in #353 to just the two primary CTAs — the
-        // welcome heading, "Create a new group" link, and tip line
-        // were noise on first launch (group creation is reachable
-        // from the sidebar; the tip didn't unlock any action).
-        <div
-          className="flex items-center gap-3"
-          data-testid="first-run-empty"
-        >
-          <Button
-            variant="primary"
-            size="md"
-            onClick={newSession}
-            className="w-44 justify-center"
-          >
-            <Plus size={14} className="stroke-[2]" />
-            <span>{t('firstRun.newSession')}</span>
-          </Button>
-          <Button
-            variant="secondary"
-            size="md"
-            onClick={() => setImportOpen(true)}
-            className="w-44 justify-center"
-          >
-            <Download size={14} className="stroke-[2]" />
-            <span>{t('firstRun.importSession')}</span>
-          </Button>
-        </div>
-      ) : (
-        <Tutorial
-          onNewSession={() => {
-            tutorial.dismiss();
-            newSession();
-          }}
-          onImport={() => {
-            tutorial.dismiss();
-            setImportOpen(true);
-          }}
-          onSkip={tutorial.dismiss}
-        />
-      )}
-    </div>
+    <div className="flex-1 min-h-0" data-testid="no-active-session-empty" />
   ) : claudeAvailable === false ? (
     <ClaudeMissingGuide onResolved={() => setClaudeAvailable(true)} />
   ) : claudeAvailable === true ? (
@@ -388,7 +329,6 @@ export default function App() {
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           onOpenSettings={() => setSettingsOpen(true)}
-          onNewSession={newSession}
           onOpenImport={() => setImportOpen(true)}
           onSelectSession={selectSession}
           onFocusGroup={focusGroup}

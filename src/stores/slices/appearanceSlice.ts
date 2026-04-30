@@ -1,4 +1,4 @@
-// Appearance slice: theme, font size, sidebar layout, tutorial flag.
+// Appearance slice: theme, font size, sidebar width.
 // Owns the persistence helpers (`sanitize*`, `resolvePersistedSidebarWidth`,
 // `legacyFontSizeToPx`, `pxToLegacyFontSize`, `resolveEffectiveTheme`)
 // because both the slice's setters and `hydrateStore()` in `store.ts`
@@ -79,35 +79,26 @@ export function resolveEffectiveTheme(
 
 export type AppearanceSlice = Pick<
   RootStore,
-  | 'sidebarCollapsed'
   | 'sidebarWidth'
   | 'theme'
   | 'fontSize'
   | 'fontSizePx'
-  | 'tutorialSeen'
-  | 'setSidebarCollapsed'
-  | 'toggleSidebar'
   | 'setTheme'
   | 'setFontSize'
   | 'setFontSizePx'
   | 'setSidebarWidth'
   | 'resetSidebarWidth'
-  | 'markTutorialSeen'
 >;
 
 export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice {
   return {
     // initial state
-    sidebarCollapsed: false,
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
     theme: 'system',
     fontSize: 'md',
     fontSizePx: 14,
-    tutorialSeen: false,
 
     // actions
-    setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
-    toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
     setTheme: (theme) => set({ theme }),
     setFontSize: (fontSize) =>
       set({ fontSize, fontSizePx: legacyFontSizeToPx(fontSize) }),
@@ -115,6 +106,5 @@ export function createAppearanceSlice(set: SetFn, _get: GetFn): AppearanceSlice 
       set({ fontSizePx, fontSize: pxToLegacyFontSize(fontSizePx) }),
     setSidebarWidth: (px) => set({ sidebarWidth: sanitizeSidebarWidth(px) }),
     resetSidebarWidth: () => set({ sidebarWidth: SIDEBAR_WIDTH_DEFAULT }),
-    markTutorialSeen: () => set({ tutorialSeen: true }),
   };
 }

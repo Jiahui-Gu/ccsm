@@ -39,8 +39,6 @@ describe('appearanceSlice', () => {
     expect(s.fontSize).toBe('md');
     expect(s.fontSizePx).toBe(14);
     expect(s.sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);
-    expect(s.sidebarCollapsed).toBe(false);
-    expect(s.tutorialSeen).toBe(false);
   });
 
   it('setTheme writes', () => {
@@ -86,27 +84,6 @@ describe('appearanceSlice', () => {
     h.slice.setSidebarWidth(400);
     h.slice.resetSidebarWidth();
     expect(h.state().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);
-  });
-
-  it('toggleSidebar flips the flag', () => {
-    const h = harness();
-    expect(h.state().sidebarCollapsed).toBe(false);
-    h.slice.toggleSidebar();
-    expect(h.state().sidebarCollapsed).toBe(true);
-    h.slice.toggleSidebar();
-    expect(h.state().sidebarCollapsed).toBe(false);
-  });
-
-  it('setSidebarCollapsed writes', () => {
-    const h = harness();
-    h.slice.setSidebarCollapsed(true);
-    expect(h.state().sidebarCollapsed).toBe(true);
-  });
-
-  it('markTutorialSeen latches true', () => {
-    const h = harness();
-    h.slice.markTutorialSeen();
-    expect(h.state().tutorialSeen).toBe(true);
   });
 });
 

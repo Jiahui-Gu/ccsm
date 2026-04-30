@@ -30,12 +30,10 @@ export const PERSISTED_KEYS = [
   'sessions',
   'groups',
   'activeId',
-  'sidebarCollapsed',
   'sidebarWidth',
   'theme',
   'fontSize',
   'fontSizePx',
-  'tutorialSeen',
 ] as const;
 
 export type PersistedKey = typeof PERSISTED_KEYS[number];
@@ -45,7 +43,6 @@ export interface PersistedState {
   sessions: Session[];
   groups: Group[];
   activeId: string;
-  sidebarCollapsed: boolean;
   /** Sidebar width in pixels. See State.sidebarWidth. */
   sidebarWidth?: number;
   /**
@@ -58,7 +55,6 @@ export interface PersistedState {
   fontSize?: FontSize;
   /** Preferred over legacy `fontSize` when present. 12–16 px scale. */
   fontSizePx?: FontSizePx;
-  tutorialSeen?: boolean;
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {

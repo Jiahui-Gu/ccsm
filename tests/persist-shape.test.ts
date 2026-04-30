@@ -22,12 +22,10 @@ describe('persist: curated snapshot payload', () => {
         sessions: [],
         groups: [],
         activeId: '',
-        sidebarCollapsed: false,
         sidebarWidth: 260,
         theme: 'system',
         fontSize: 'md',
         fontSizePx: 14,
-        tutorialSeen: false,
       };
       schedulePersist(snap);
       vi.advanceTimersByTime(500);
@@ -42,13 +40,11 @@ describe('persist: curated snapshot payload', () => {
         'sessions',
         'groups',
         'activeId',
-        'sidebarCollapsed',
         'sidebarWidth',
         'sidebarWidthPct',
         'theme',
         'fontSize',
-        'fontSizePx',
-        'tutorialSeen'
+        'fontSizePx'
       ]);
       const FORBIDDEN = [
         'messagesBySession',
@@ -63,7 +59,10 @@ describe('persist: curated snapshot payload', () => {
         'model',
         'permission',
         'notificationSettings',
-        'recentProjects'
+        'recentProjects',
+        // Removed in #894 (sidebar collapse + tutorial features deleted).
+        'sidebarCollapsed',
+        'tutorialSeen'
       ];
       for (const k of Object.keys(parsed)) {
         expect(ALLOWED.has(k), `unexpected persisted key: ${k}`).toBe(true);

@@ -14,13 +14,11 @@ function dispatchKey(init: KeyboardEventInit & { target?: EventTarget }): Keyboa
 describe('useShortcutHandlers', () => {
   let toggleShortcuts: ReturnType<typeof vi.fn>;
   let togglePalette: ReturnType<typeof vi.fn>;
-  let toggleSidebar: ReturnType<typeof vi.fn>;
   let openSettings: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     toggleShortcuts = vi.fn();
     togglePalette = vi.fn();
-    toggleSidebar = vi.fn();
     openSettings = vi.fn();
   });
 
@@ -29,7 +27,6 @@ describe('useShortcutHandlers', () => {
       useShortcutHandlers({
         toggleShortcuts,
         togglePalette,
-        toggleSidebar,
         openSettings,
       })
     );
@@ -41,12 +38,18 @@ describe('useShortcutHandlers', () => {
     expect(toggleShortcuts).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+F toggles the palette and Ctrl+B toggles the sidebar', () => {
+  it('Ctrl+F toggles the palette', () => {
     mount();
     dispatchKey({ key: 'f', ctrlKey: true });
-    dispatchKey({ key: 'b', ctrlKey: true });
     expect(togglePalette).toHaveBeenCalledTimes(1);
-    expect(toggleSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+B is NOT bound (sidebar collapse removed in #894)', () => {
+    mount();
+    dispatchKey({ key: 'b', ctrlKey: true });
+    expect(togglePalette).not.toHaveBeenCalled();
+    expect(toggleShortcuts).not.toHaveBeenCalled();
+    expect(openSettings).not.toHaveBeenCalled();
   });
 
   it('Ctrl+, opens settings', () => {
@@ -79,7 +82,6 @@ describe('useShortcutHandlers', () => {
     dispatchKey({ key: 'k', metaKey: true });
     expect(togglePalette).not.toHaveBeenCalled();
     expect(toggleShortcuts).not.toHaveBeenCalled();
-    expect(toggleSidebar).not.toHaveBeenCalled();
     expect(openSettings).not.toHaveBeenCalled();
   });
 
