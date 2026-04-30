@@ -38,6 +38,86 @@ import { fileURLToPath } from 'node:url';
 import { appWindow } from '../probe-utils.mjs';
 import { resetBetweenCases } from './reset-between-cases.mjs';
 
+/**
+ * Buffer stdout/stderr from the underlying electron child process so that
+ * if `appWindow()` times out we have something to print besides "no
+ * renderer window appeared in time". Without this the only signal on
+ * Windows CI is the timeout itself — every main-process throw, native-
+ * module load failure, or `app.quit()` between launch and window-create
+ * is silently lost. (Task #919)
+ *
+ * Returns a cleanup() that detaches the listeners + a snapshot() that
+ * returns the captured text (capped to MAX bytes per stream so a chatty
+ * boot doesn't blow the runner heap).
+ *
+ * @param {import('playwright').ElectronApplication} app
+ */
+function captureChildIo(app) {
+  const MAX = 16 * 1024;
+  let out = '';
+  let err = '';
+  let proc = null;
+  const onStdout = (chunk) => {
+    if (out.length < MAX) out += chunk.toString('utf8');
+  };
+  const onStderr = (chunk) => {
+    if (err.length < MAX) err += chunk.toString('utf8');
+  };
+  try {
+    proc = app.process();
+    proc?.stdout?.on('data', onStdout);
+    proc?.stderr?.on('data', onStderr);
+  } catch {
+    /* best-effort */
+  }
+  return {
+    snapshot() {
+      return { stdout: out, stderr: err };
+    },
+    cleanup() {
+      try {
+        proc?.stdout?.off('data', onStdout);
+        proc?.stderr?.off('data', onStderr);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
+
+/**
+ * Wrap `appWindow()` so its timeout error includes whatever the electron
+ * child printed to stdout/stderr before the window-create deadline. This
+ * is the only way to get visibility on Windows CI when the main process
+ * crashes silently between launch and window-create. (Task #919)
+ *
+ * @param {import('playwright').ElectronApplication} app
+ */
+async function appWindowWithDiag(app) {
+  const cap = captureChildIo(app);
+  try {
+    return await appWindow(app);
+  } catch (err) {
+    const { stdout, stderr } = cap.snapshot();
+    const trimmedOut = stdout.trim();
+    const trimmedErr = stderr.trim();
+    const extra = [
+      trimmedOut ? `--- electron stdout (truncated to 16KB) ---\n${trimmedOut}` : '',
+      trimmedErr ? `--- electron stderr (truncated to 16KB) ---\n${trimmedErr}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (extra) {
+      const wrapped = new Error(`${err.message}\n${extra}`);
+      wrapped.stack = `${err.stack}\n${extra}`;
+      throw wrapped;
+    }
+    throw err;
+  } finally {
+    cap.cleanup();
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const ARTIFACTS_ROOT = path.join(REPO_ROOT, 'scripts/e2e-artifacts');
@@ -396,7 +476,7 @@ export async function runHarness(spec) {
   if (needsAnyLaunch && filtered.some((c) => !c.skipLaunch && c.userDataDir !== 'fresh' && !c.relaunch)) {
     const opts = buildLaunchOpts(spec, null);
     app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-    win = await appWindow(app);
+    win = await appWindowWithDiag(app);
     await win.waitForLoadState('domcontentloaded');
     await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
     if (spec.setup) {
@@ -489,7 +569,7 @@ export async function runHarness(spec) {
         }
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindow(app);
+        win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
         if (spec.setup) {
@@ -503,7 +583,7 @@ export async function runHarness(spec) {
       if (!app || !win) {
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindow(app);
+        win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
         if (spec.setup) {
