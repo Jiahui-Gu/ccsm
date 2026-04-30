@@ -36,7 +36,11 @@ import { emitPtyData } from './dataFanout';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
-export const SCROLLBACK = 5000;
+// L4 PR-A (#861): scrollback bumped from 5000 -> 10000 lines so the headless
+// terminal becomes a session-level authoritative buffer suitable for serving
+// re-attach replays, not just the live screen. 10000 was 80/20-decided by the
+// owner; bump only here and in any future replay-budget calculation.
+export const SCROLLBACK = 10000;
 
 export interface Entry {
   pty: pty.IPty;
