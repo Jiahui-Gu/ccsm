@@ -16,6 +16,7 @@ import { app, BrowserWindow } from 'electron';
 import { installNotifyPipeline } from '../sinks/pipeline';
 import { onPtyData } from '../../ptyHost';
 import { sessionWatcher } from '../../sessionWatcher';
+import { forgetSid as forgetSessionTitleSid } from '../../sessionTitles';
 
 export type NotifyPipeline = ReturnType<typeof installNotifyPipeline>;
 
@@ -65,10 +66,13 @@ export function installNotifyPipelineWithProducers(
 
   // Drop sniffer/ctx state when a session is unwatched (PTY exit). The
   // existing 'unwatched' emitter is reused so we don't add another teardown
-  // path.
+  // path. Also release the per-sid Maps held by sessionTitles (titleCache /
+  // opChains / pendingRenames) — without this, every sid ever queried for a
+  // title sticks in memory for the lifetime of the app (audit #876, H1).
   sessionWatcher.on('unwatched', (evt: { sid?: unknown }) => {
     if (!evt || typeof evt.sid !== 'string' || evt.sid.length === 0) return;
     pipelineInstance.forgetSid(evt.sid);
+    forgetSessionTitleSid(evt.sid);
   });
 
   return pipelineInstance;
