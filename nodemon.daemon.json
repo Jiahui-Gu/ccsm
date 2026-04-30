@@ -1,0 +1,11 @@
+{
+  "watch": ["daemon/src"],
+  "ext": "ts,json",
+  "ignore": ["daemon/src/**/__tests__/**", "daemon/dist-daemon/**"],
+  "exec": "tsx daemon/src/index.ts",
+  "signal": "SIGTERM",
+  "delay": 150,
+  "stdout": true,
+  "stderr": true,
+  "env": { "CCSM_DAEMON_LOG_LEVEL": "debug", "CCSM_DAEMON_DEV": "1" }
+}
