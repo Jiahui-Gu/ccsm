@@ -83,4 +83,99 @@ describe('<SessionRow /> (extracted)', () => {
     const { container } = renderRow(session);
     expect(container.querySelector('[data-session-crashed]')).toBeTruthy();
   });
+
+  // audit #876 cluster 2.3: SessionRow forwards `crashed` to AgentIcon so
+  // the icon's halo is suppressed when the row also paints the red dot.
+  // We assert the resolved priority via AgentIcon's `data-attention`.
+  describe('attention priority (audit #876 cluster 2.3)', () => {
+    it('crashed + state=waiting → AgentIcon data-attention="crashed"', () => {
+      useStore.setState({
+        disconnectedSessions: { s1: { kind: 'crashed', detail: 'exit 1' } as never },
+      });
+      const session: Session = {
+        id: 's1',
+        name: 'Boom',
+        state: 'waiting',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { container } = renderRow(session);
+      const icon = container.querySelector('[data-attention]')!;
+      expect(icon.getAttribute('data-attention')).toBe('crashed');
+      // Red dot is still rendered — crashed wins, halo is gone but the
+      // crash signal itself remains.
+      expect(container.querySelector('[data-session-crashed]')).toBeTruthy();
+    });
+
+    it('crashed + flashing (via flashStates) → AgentIcon data-attention="crashed"', () => {
+      useStore.setState({
+        flashStates: { s1: true },
+        disconnectedSessions: { s1: { kind: 'crashed', detail: 'exit 1' } as never },
+      });
+      const session: Session = {
+        id: 's1',
+        name: 'Boom',
+        state: 'idle',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { container } = renderRow(session);
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('crashed');
+    });
+
+    it('not crashed + state=waiting → data-attention="waiting-or-flashing"', () => {
+      const session: Session = {
+        id: 's1',
+        name: 'Live',
+        state: 'waiting',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { container } = renderRow(session);
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('waiting-or-flashing');
+    });
+
+    it('not crashed + flashStates[id]=true → data-attention="waiting-or-flashing"', () => {
+      useStore.setState({ flashStates: { s1: true } });
+      const session: Session = {
+        id: 's1',
+        name: 'Pulse',
+        state: 'idle',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { container } = renderRow(session);
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('waiting-or-flashing');
+    });
+
+    it('idle, not crashed, not flashing → data-attention="idle"', () => {
+      const session: Session = {
+        id: 's1',
+        name: 'Quiet',
+        state: 'idle',
+        cwd: '/tmp',
+        model: 'claude-sonnet-4',
+        groupId: 'g1',
+        agentType: 'claude-code',
+      };
+      const { container } = renderRow(session);
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('idle');
+    });
+  });
 });

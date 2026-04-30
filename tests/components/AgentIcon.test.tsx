@@ -87,4 +87,61 @@ describe('<AgentIcon /> visual contract', () => {
       ).toBe(state);
     }
   );
+
+  // audit #876 cluster 2.3: explicit attention priority — crashed wins
+  // over waiting/flashing. The `data-attention` attribute pins the
+  // resolved bucket so we don't need to measure framer-motion output.
+  describe('attention priority (audit #876 cluster 2.3)', () => {
+    it('crashed=true + state=waiting → attention=crashed (halo suppressed)', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="waiting" crashed />
+      );
+      const wrapper = container.querySelector('[data-attention]')!;
+      expect(wrapper.getAttribute('data-attention')).toBe('crashed');
+    });
+
+    it('crashed=true + flashing=true → attention=crashed (halo suppressed)', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="idle" crashed flashing />
+      );
+      const wrapper = container.querySelector('[data-attention]')!;
+      expect(wrapper.getAttribute('data-attention')).toBe('crashed');
+    });
+
+    it('crashed=true + state=waiting + flashing=true → attention=crashed', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="waiting" crashed flashing />
+      );
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('crashed');
+    });
+
+    it('state=waiting alone → attention=waiting-or-flashing', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="waiting" />
+      );
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('waiting-or-flashing');
+    });
+
+    it('flashing=true alone (idle state) → attention=waiting-or-flashing', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="idle" flashing />
+      );
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('waiting-or-flashing');
+    });
+
+    it('idle, no crashed, no flashing → attention=idle', () => {
+      const { container } = render(
+        <AgentIcon agentType="claude-code" state="idle" />
+      );
+      expect(
+        container.querySelector('[data-attention]')!.getAttribute('data-attention')
+      ).toBe('idle');
+    });
+  });
 });
