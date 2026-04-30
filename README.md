@@ -46,11 +46,10 @@ CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes 
 - `Cmd/Ctrl+,` — Settings
 - `Cmd/Ctrl+N` — New session
 - `Cmd/Ctrl+Shift+N` — New group
-- `Cmd/Ctrl+B` — Toggle sidebar
 
 ## Data location
 
-Local SQLite database (groups, sessions, user-defined order, sidebar state, theme):
+Local SQLite database (groups, sessions, user-defined order, sidebar width, theme):
 
 - **Windows**: `%APPDATA%\CCSM\`
 - **macOS**: `~/Library/Application Support/CCSM/`

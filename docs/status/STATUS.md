@@ -45,7 +45,6 @@ This file is the reconciliation table for what's actually implemented in CCSM. E
 | Group right-click Delete | ✅ | ConfirmDialog → `deleteGroup` (cascades to its sessions). |
 | "+ New Group" button | ✅ | onClick → `createGroup()`. |
 | Archived Groups bottom collapsible block | ✅ | UI in place, real data. |
-| Sidebar collapse (256↔48) | ✅ | Cmd/Ctrl+B toggles, framer-motion 220ms width animation; collapsed mode shows expand/new/search/settings IconButtons; persisted to SQLite. |
 
 ## 3. ChatStream (`src/components/ChatStream.tsx`)
 
