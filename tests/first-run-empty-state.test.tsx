@@ -7,7 +7,7 @@
 // "no-active-session-empty"` placeholder.
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, within } from '@testing-library/react';
 import App from '../src/App';
 import { useStore } from '../src/stores/store';
 import { resetStore } from './util/resetStore';
@@ -84,9 +84,12 @@ describe('no-active-session empty pane (#894)', () => {
     // The empty placeholder anchor proves we hit the no-active-session
     // branch and nothing was silently created.
     expect(screen.getByTestId('no-active-session-empty')).toBeInTheDocument();
-    // No central CTA buttons (removed in #894).
-    expect(screen.queryByRole('button', { name: /^New session$/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Import a CLI session$/ })).not.toBeInTheDocument();
+    // No central CTA buttons (removed in #894). Scope to the empty-state
+    // container — the sidebar's `+ New session` button is always rendered
+    // and is not part of this contract.
+    const emptyState = screen.getByTestId('no-active-session-empty');
+    expect(within(emptyState).queryByRole('button', { name: /^New session$/ })).not.toBeInTheDocument();
+    expect(within(emptyState).queryByRole('button', { name: /^Import a CLI session$/ })).not.toBeInTheDocument();
     // Old first-run anchor must be gone.
     expect(screen.queryByTestId('first-run-empty')).not.toBeInTheDocument();
     // Critical: render() must not have created a session as a side effect.
