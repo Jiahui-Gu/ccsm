@@ -169,7 +169,12 @@ app.whenReady().then(() => {
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
   if (process.platform === 'win32') {
-    app.setAppUserModelId('com.ccsm.app');
+    // Dual-install (#891): the dev variant ships as productName "CCSM Dev"
+    // and must use a distinct AUMID so its taskbar / toast attribution
+    // doesn't collide with a co-installed prod build.
+    const isDevVariant = app.getName().includes('Dev');
+    const aumid = isDevVariant ? 'com.ccsm.app.dev' : 'com.ccsm.app';
+    app.setAppUserModelId(aumid);
   }
 
   initDb();

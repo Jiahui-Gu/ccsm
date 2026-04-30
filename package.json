@@ -28,6 +28,7 @@
     "probe:e2e": "npm run build && node scripts/run-all-e2e.mjs",
     "make": "npm run build && electron-builder --publish never",
     "make:win": "npm run build && electron-builder --win --publish never",
+    "make:win:dev": "npm run build && electron-builder --win --publish never --config.productName=\"CCSM Dev\" --config.extraMetadata.productName=\"CCSM Dev\" --config.appId=com.ccsm.app.dev --config.nsis.shortcutName=\"CCSM Dev\"",
     "make:mac": "npm run build && electron-builder --mac --publish never",
     "make:linux": "npm run build && electron-builder --linux --publish never",
     "build:icon": "electron scripts/build-icon.cjs",

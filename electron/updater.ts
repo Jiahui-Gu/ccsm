@@ -98,6 +98,14 @@ export function installUpdaterIpc(): void {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = null;
 
+  // Dual-install (#891): the dev variant pulls GitHub pre-releases so we can
+  // ship release candidates / dogfood builds without affecting prod users
+  // (prod's autoUpdater leaves allowPrerelease=false, so it skips them).
+  // No early return — dev MUST exercise the full updater flow to validate it.
+  if (app.getName().includes('Dev')) {
+    autoUpdater.allowPrerelease = true;
+  }
+
   autoUpdater.on('checking-for-update', () => broadcast({ kind: 'checking' }));
   autoUpdater.on('update-available', (info) =>
     broadcast({
