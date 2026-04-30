@@ -38,9 +38,6 @@ vi.mock('../src/app-effects/useUpdateDownloadedBridge', () => ({
 vi.mock('../src/app-effects/usePersistErrorBridge', () => ({
   usePersistErrorBridge: vi.fn(),
 }));
-vi.mock('../src/app-effects/useTutorialOverlay', () => ({
-  useTutorialOverlay: vi.fn(() => ({ show: false, dismiss: vi.fn() })),
-}));
 // Phase C hooks (Task #758).
 vi.mock('../src/app-effects/useSessionActiveBridge', () => ({
   useSessionActiveBridge: vi.fn(),
@@ -78,7 +75,6 @@ import { useSessionActivateBridge } from '../src/app-effects/useSessionActivateB
 import { useFocusBridge } from '../src/app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from '../src/app-effects/useUpdateDownloadedBridge';
 import { usePersistErrorBridge } from '../src/app-effects/usePersistErrorBridge';
-import { useTutorialOverlay } from '../src/app-effects/useTutorialOverlay';
 import { useSessionActiveBridge } from '../src/app-effects/useSessionActiveBridge';
 import { useSessionNameBridge } from '../src/app-effects/useSessionNameBridge';
 import { usePtyExitBridge } from '../src/app-effects/usePtyExitBridge';
@@ -143,7 +139,6 @@ beforeEach(() => {
     groups: [{ id: 'g-default', name: 'Sessions', collapsed: false, kind: 'normal' }],
     activeId: '',
     focusedGroupId: null,
-    tutorialSeen: true,
     hydrated: true,
     messagesBySession: {},
     startedSessions: {},
@@ -156,7 +151,7 @@ beforeEach(() => {
 });
 
 describe('App composition root wires extracted effect hooks (Task #732)', () => {
-  it('calls each of the 9 Phase A/B app-effects hooks during render', () => {
+  it('calls each of the 8 Phase A/B app-effects hooks during render', () => {
     render(<App />);
     expect(useThemeEffect).toHaveBeenCalled();
     expect(useLanguageEffect).toHaveBeenCalled();
@@ -166,7 +161,6 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
     expect(useFocusBridge).toHaveBeenCalled();
     expect(useUpdateDownloadedBridge).toHaveBeenCalled();
     expect(usePersistErrorBridge).toHaveBeenCalled();
-    expect(useTutorialOverlay).toHaveBeenCalled();
   });
 
   it('passes the resolved language to useLanguageEffect', () => {
@@ -200,14 +194,6 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
     const calls = (useThemeEffect as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     expect(['light', 'dark', 'system']).toContain(calls[0][0]);
-  });
-
-  it('passes tutorialSeen + markTutorialSeen to useTutorialOverlay', () => {
-    render(<App />);
-    const calls = (useTutorialOverlay as unknown as { mock: { calls: Array<Array<{ tutorialSeen: unknown; markTutorialSeen: unknown }>> } }).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    expect(typeof calls[0][0].tutorialSeen).toBe('boolean');
-    expect(typeof calls[0][0].markTutorialSeen).toBe('function');
   });
 });
 

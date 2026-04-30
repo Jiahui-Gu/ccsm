@@ -67,10 +67,6 @@ const zh: EnCatalog = {
     openInChat: '在聊天中打开',
     sessionCrashed: '本 session 的 claude 进程崩溃了',
     searchAria: '搜索',
-    expandSidebarTooltip: '展开侧边栏  Ctrl+B',
-    expandSidebarAria: '展开侧边栏',
-    newSessionTooltip: '新会话',
-    newSessionAria: '新会话',
     pickCwdTooltip: '在其他目录新建会话',
     pickCwdAria: '为新会话选择工作目录',
     searchTooltip: '搜索  Ctrl+F',
@@ -179,24 +175,6 @@ const zh: EnCatalog = {
     title: '安装包内的 Claude 程序缺失',
     body: 'CCSM 在安装包里附带了 Claude 程序，但在硬盘上找不到它。请重新安装 CCSM 以修复 — 修复之前会话无法启动。'
   },
-  tutorial: {
-    skip: '跳过',
-    back: '上一步',
-    next: '下一步',
-    done: '完成',
-    stepXofY: '第 {{current}} / {{total}} 步',
-    goToStepAria: '跳到第 {{n}} 步',
-    welcomeTitle: '一个 AI 会话的工作台',
-    welcomeBody: 'CCSM 把 Claude Code 的对话整理成易于浏览的形式。把它当作同一个 agent 的桌面客户端 — 同样强大，少些终端。',
-    sessionsTitle: '并行运行多个会话',
-    sessionsBody: '每个会话都是独立的 agent 线程，拥有自己的工作目录。像切标签一样切换 — agent 在后台继续工作。',
-    groupsTitle: '按任务组织，而非按仓库',
-    groupsBody: '把跨仓库的会话放到一个分组。一个真实的任务通常涉及多个项目 — CCSM 让它们待在一起。',
-    startTitle: '随时可以开始',
-    startBody: '新建一个会话，或者从 Claude Code CLI 导入已有的会话。',
-    newSessionBtn: '新建会话',
-    importSessionBtn: '导入会话'
-  },
   importDialog: {
     title: '从 Claude Code 导入会话',
     description: '挑选已有的 CLI 对话在 CCSM 中显示。打开时会自动 resume。',
@@ -221,9 +199,7 @@ const zh: EnCatalog = {
     noResultsFor: '未找到"{{query}}"的匹配结果',
     emptyHint: '输入以搜索会话、分组、命令…',
     groupHint: '分组',
-    cmdNewSession: '新会话',
     cmdNewGroup: '新建分组',
-    cmdToggleSidebar: '切换侧边栏',
     cmdImport: '从 Claude Code 导入…',
     cmdOpenSettings: '打开设置',
     cmdSwitchTheme: '切换主题 \u2192 {{next}}',
@@ -317,20 +293,12 @@ const zh: EnCatalog = {
     actionNewline: '插入换行',
     actionStop: '中断当前回合',
     actionDismissPicker: '关闭斜杠命令选择器',
-    actionToggleSidebar: '切换侧边栏',
-    actionNewSession: '新建会话',
     actionNewGroup: '新建分组',
     actionSearch: '打开搜索 / 命令面板',
     actionSettings: '打开设置',
     actionShortcuts: '显示快捷键面板',
     colShortcut: '快捷键',
     colAction: '动作'
-  },
-  // task #329 — first-run empty-state CTA shown when no active session.
-  // 在 #353 精简为两个 CTA。
-  firstRun: {
-    newSession: '新建会话',
-    importSession: '从 CLI 导入会话'
   },
   // Boot-time full-screen page shown when `claude` CLI not on PATH.
   claudeMissing: {

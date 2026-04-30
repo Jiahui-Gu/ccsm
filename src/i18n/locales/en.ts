@@ -71,10 +71,6 @@ const en = {
     openInChat: 'Open in chat',
     sessionCrashed: 'claude process crashed in this session',
     searchAria: 'Search',
-    expandSidebarTooltip: 'Expand sidebar  Ctrl+B',
-    expandSidebarAria: 'Expand sidebar',
-    newSessionTooltip: 'New session',
-    newSessionAria: 'New session',
     pickCwdTooltip: 'New session in a different folder',
     pickCwdAria: 'Pick working directory for new session',
     searchTooltip: 'Search  Ctrl+F',
@@ -190,24 +186,6 @@ const en = {
     title: 'Claude binary missing from this install',
     body: 'CCSM ships the Claude binary inside the installer, but we couldn’t find it on disk. Please reinstall CCSM to repair the install — sessions can’t start until then.'
   },
-  tutorial: {
-    skip: 'Skip',
-    back: 'Back',
-    next: 'Next',
-    done: 'Done',
-    stepXofY: 'Step {{current}} of {{total}}',
-    goToStepAria: 'Go to step {{n}}',
-    welcomeTitle: 'A workbench for AI sessions',
-    welcomeBody: 'CCSM turns Claude Code transcripts into something you can navigate. Think of it as a desktop client for the same agent — same power, less terminal.',
-    sessionsTitle: 'Run many sessions in parallel',
-    sessionsBody: 'Each session is its own agent thread with its own working directory. Switch between them like tabs — the agents keep working in the background.',
-    groupsTitle: 'Organize work by task, not by repo',
-    groupsBody: 'Group sessions across repositories. A real task usually spans more than one project — CCSM lets you keep them together.',
-    startTitle: 'Ready when you are',
-    startBody: 'Create a fresh session, or import what you already have from the Claude Code CLI.',
-    newSessionBtn: 'New Session',
-    importSessionBtn: 'Import Session'
-  },
   importDialog: {
     title: 'Import sessions from Claude Code',
     description: 'Pick existing CLI transcripts to surface in CCSM. They resume on open.',
@@ -232,9 +210,7 @@ const en = {
     noResultsFor: 'No results for "{{query}}"',
     emptyHint: 'Type to search sessions, groups, commands…',
     groupHint: 'Group',
-    cmdNewSession: 'New session',
     cmdNewGroup: 'New group',
-    cmdToggleSidebar: 'Toggle sidebar',
     cmdImport: 'Import from Claude Code…',
     cmdOpenSettings: 'Open settings',
     cmdSwitchTheme: 'Switch theme \u2192 {{next}}',
@@ -334,22 +310,12 @@ const en = {
     actionNewline: 'Insert newline',
     actionStop: 'Interrupt running turn',
     actionDismissPicker: 'Dismiss slash-command picker',
-    actionToggleSidebar: 'Toggle sidebar',
-    actionNewSession: 'New session',
     actionNewGroup: 'New group',
     actionSearch: 'Open search / command palette',
     actionSettings: 'Open settings',
     actionShortcuts: 'Show this shortcuts overlay',
     colShortcut: 'Shortcut',
     colAction: 'Action'
-  },
-  // task #329 — first-run empty-state CTA shown when there is no active
-  // session (fresh install, or all sessions deleted). Sentence case per
-  // repo rule. Trimmed to two CTAs in #353; welcome / newGroup / tip were
-  // removed as visual noise (group creation is reachable from sidebar).
-  firstRun: {
-    newSession: 'New session',
-    importSession: 'Import a CLI session'
   },
   // Shown full-screen at boot when the `claude` CLI is not on PATH.
   // ccsm requires the user to install the Claude CLI separately; this
