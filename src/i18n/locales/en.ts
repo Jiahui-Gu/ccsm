@@ -317,6 +317,12 @@ const en = {
     colShortcut: 'Shortcut',
     colAction: 'Action'
   },
+  // Right-pane affordance shown for the brief boot window between app
+  // mount and `ccsmPty.checkClaudeAvailable()` resolving. Without this
+  // line the pane would be entirely blank (bug #852 / task #900).
+  claudeAvailability: {
+    probing: 'Checking Claude CLI…'
+  },
   // Shown full-screen at boot when the `claude` CLI is not on PATH.
   // ccsm requires the user to install the Claude CLI separately; this
   // page links them to the install command and lets them re-check

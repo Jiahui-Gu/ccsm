@@ -300,6 +300,12 @@ const zh: EnCatalog = {
     colShortcut: '快捷键',
     colAction: '动作'
   },
+  // 右侧 pane 在 boot probe (`ccsmPty.checkClaudeAvailable()`) 期间显示，
+  // 之前是空白 flex spacer，导致用户在 probe 解析前点"新建会话"就看到一片空白
+  // (bug #852 / task #900)。
+  claudeAvailability: {
+    probing: '正在检测 Claude CLI…'
+  },
   // Boot-time full-screen page shown when `claude` CLI not on PATH.
   claudeMissing: {
     title: 'Claude CLI 未找到',
