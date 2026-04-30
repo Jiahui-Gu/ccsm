@@ -69,6 +69,19 @@ jobs:
       # (Task #913)
       - name: Ensure Electron binary
         run: node node_modules/electron/install.js
+      # Rebuild native modules against Electron's ABI on every run. The
+      # node_modules cache is shared with ci.yml, which compiles
+      # better-sqlite3 / node-pty against Node 20's ABI (NODE_MODULE_VERSION
+      # 115). When the e2e job restores that cache and launches Electron
+      # (NODE_MODULE_VERSION 145), the main process throws
+      # "The module ... was compiled against a different Node.js version"
+      # during `initDb()` — the BrowserWindow is never created and the
+      # harness times out with the bare "no renderer window appeared in
+      # time" error. Running `@electron/rebuild` is a fast no-op when the
+      # `.node` files already match Electron's ABI and self-heals when
+      # ci.yml won the cache race. Diagnosed via Task #919.
+      - name: Ensure native modules built for Electron ABI
+        run: npx electron-rebuild
       - name: Build
         run: npm run build
       - name: Run e2e (Linux with xvfb)
