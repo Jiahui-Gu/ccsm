@@ -340,6 +340,32 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
 
     return () => {
       cancelled = true;
+      // L4 PR-E (#864): explicit detach on unmount / sid change.
+      // Symmetric with the `pty.attach` we issued above; without this
+      // the entry's `attached` Map keeps a stale wc reference until
+      // the renderer is destroyed (only the `wc.once('destroyed')`
+      // handler in ipcRegistrar fires on full teardown). Stale entries
+      // are tolerated by `dispatchPtyChunk` (it isDestroyed-checks
+      // every send), but explicitly detaching here:
+      //   1. keeps `entry.attached.size` honest so the PR-E
+      //      backpressure-warn suppression activates as intended,
+      //   2. makes the detach/reattach lifecycle visible in tests,
+      //   3. lets a future "background sessions" UI accurately
+      //      report which sessions have a live viewer.
+      // No PTY data is lost: dispatchPtyChunk still writes to the
+      // headless mirror unconditionally, and a subsequent re-attach
+      // (initial mount, sid switch back, or Retry) replays via
+      // `getBufferSnapshot` + drain (PR-B contract).
+      const ptyApi = window.ccsmPty;
+      if (ptyApi) {
+        try {
+          // Fire-and-forget: detach is idempotent on main; we don't
+          // await because the React cleanup runs synchronously.
+          void ptyApi.detach(sessionId);
+        } catch {
+          // best-effort — main may be tearing down.
+        }
+      }
     };
     // attachNonce is intentional: bumping it re-runs the attach for Retry.
   }, [sessionId, attachNonce, cwd]);

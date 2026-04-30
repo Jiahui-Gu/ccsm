@@ -269,6 +269,17 @@ describe('entryFactory.dispatchPtyChunk', () => {
     const mod = await import('../entryFactory');
     const entry = mod.makeEntry('sid-BP', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
 
+    // L4 PR-E (#864): backpressure warn is gated on `entry.attached.size > 0`
+    // (no visible xterm = no human consumer = log spam suppressed for
+    // background sessions). Attach a fake wc so we exercise the original
+    // PR-C contract here.
+    const wc = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entry.attached.set(1, wc as any);
+
     // Defer write callbacks so writes stay "pending" until we manually drain.
     bus().deferHeadlessWrite = true;
     const threshold = mod.BACKPRESSURE_WARN_THRESHOLD;

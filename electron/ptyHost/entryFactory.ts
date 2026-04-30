@@ -128,6 +128,14 @@ export interface MakeEntryDeps {
  * (detach/reattach) have a stable hook point: anything that needs to
  * observe or wrap the per-chunk fan-out goes here, not in `p.onData`.
  *
+ * L4 PR-E (#864): the headless write here is what makes detach/reattach
+ * "free" — when `entry.attached` is empty (no visible xterm) the headless
+ * still receives every chunk, so a later reattach can replay the entire
+ * missed window via `getBufferSnapshot` + drain (PR-B contract). PR-E
+ * adds NO new code path here; it's the existing sink behavior + the
+ * tests under `__tests__/detachReattach.test.ts` that pin the contract
+ * across multiple detach/reattach cycles.
+ *
  * Exported for unit tests; production code calls it via `p.onData` only.
  */
 export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void {
@@ -140,7 +148,16 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
   // Sink 1: headless source-of-truth buffer. Pass a callback so we can
   // observe write completion for backpressure diagnostics.
   entry.pendingHeadlessWrites += 1;
+  // L4 PR-E (#864): suppress the backpressure warn when no visible
+  // xterm is attached. While detached the headless mirror is the only
+  // consumer; pending writes there are self-paced (no slow IPC), and
+  // a long-running background session can still legitimately accumulate
+  // chunks before the user reattaches. Spamming `console.warn` for a
+  // session no human is currently watching is noise. When a renderer
+  // re-attaches, normal threshold semantics resume — and any stalled
+  // counter still re-arms via the write-callback re-arm branch below.
   if (
+    entry.attached.size > 0 &&
     entry.pendingHeadlessWrites > BACKPRESSURE_WARN_THRESHOLD &&
     !entry.backpressureWarned
   ) {
