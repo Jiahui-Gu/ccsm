@@ -1,5 +1,9 @@
 import { ulid } from 'ulid';
 import pino from 'pino';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
 
 // TODO(T16): replace placeholder with the canonical SUPERVISOR_RPCS dispatcher
 // declared in spec §3.4.1.h. Listed literals only — control-plane carve-out.
@@ -16,10 +20,10 @@ const bootNonce = ulid();
 
 const logger = pino({
   base: {
-    v: process.versions.node,
-    pid: process.pid,
-    bootNonce,
     side: 'daemon',
+    v: DAEMON_VERSION,
+    pid: process.pid,
+    boot: bootNonce,
   },
 });
 
