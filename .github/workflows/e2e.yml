@@ -41,12 +41,27 @@ jobs:
       # and inherits the postinstall-rebuilt native bindings (better-sqlite3,
       # node-pty) from the cached tree, which is what the Electron e2e
       # actually loads.
+      #
+      # CRITICAL: this cache key MUST be distinct from ci.yml's key. ci.yml
+      # runs `npm ci` with `ELECTRON_SKIP_BINARY_DOWNLOAD=1` (no electron
+      # binary) AND compiles native modules against Node 20's ABI
+      # (NODE_MODULE_VERSION 115). e2e needs the electron binary AND
+      # native modules built against Electron's ABI (NMV 145). Sharing a
+      # key meant whichever workflow won the race poisoned the other:
+      #   - ci.yml winning → e2e gets no electron binary + Node-20-ABI
+      #     `.node` files → main process throws ERR_DLOPEN_FAILED on
+      #     better-sqlite3 require during initDb() → BrowserWindow never
+      #     created → harness times out with the bare "no renderer window
+      #     appeared in time" error.
+      # The `e2e-` prefix isolates this workflow's cache entirely.
+      # (Task #913 healed the electron-binary half; Task #919 the
+      # native-module half.)
       - name: Cache node_modules
         id: nm_cache
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+          key: nm-e2e-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
       - name: Cache Electron binary
         uses: actions/cache@v4
         with:
