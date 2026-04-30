@@ -346,17 +346,30 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
         const sid4 = getActiveSid();
         if (fit && t4 && sid4) {
           try {
+            // Gate the post-attach resize+replay on a real size delta (#888).
+            // PR-D contract: initial attach paints the snapshot ONCE from
+            // getBufferSnapshot — no second write. Only when the visible
+            // viewport differs from the spawn-time PTY dimensions (the real
+            // #852 case: headless 120x30 vs visible NxM) do we push the new
+            // size to the backend and replay the reflowed snapshot. Stable
+            // container = no-op; size delta = fire once.
+            const oldCols = t4.cols;
+            const oldRows = t4.rows;
             fit.fit();
-            const resizePromise = window.ccsmPty.resize(sid4, t4.cols, t4.rows);
-            const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
-              ? (resizePromise as Promise<void>)
-              : Promise.resolve();
-            void p
-              .then(() => {
-                const replay = getSnapshotReplay();
-                return replay ? replay() : undefined;
-              })
-              .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
+            const newCols = t4.cols;
+            const newRows = t4.rows;
+            if (newCols !== oldCols || newRows !== oldRows) {
+              const resizePromise = window.ccsmPty.resize(sid4, newCols, newRows);
+              const p = resizePromise && typeof (resizePromise as Promise<void>).then === 'function'
+                ? (resizePromise as Promise<void>)
+                : Promise.resolve();
+              void p
+                .then(() => {
+                  const replay = getSnapshotReplay();
+                  return replay ? replay() : undefined;
+                })
+                .catch((e) => console.warn('[TerminalPane] post-attach replay failed', e));
+            }
           } catch (e) {
             console.warn('[TerminalPane] post-attach fit failed', e);
           }

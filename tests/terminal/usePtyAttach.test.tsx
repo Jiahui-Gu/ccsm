@@ -238,22 +238,49 @@ describe('usePtyAttach', () => {
     expect(proposeDimensionsSpy).not.toHaveBeenCalled();
   });
 
-  it('post-attach fit triggers snapshot replay so the visible xterm reflows to the real viewport (#867)', async () => {
+  it('post-attach fit is a no-op when container size is stable: no replay, snapshot fetched once (#888)', async () => {
     const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
     (window as any).ccsmPty = bridge;
 
-    renderHook(() => usePtyAttach('sid-867r', '/cwd'));
+    // fitFitSpy default = does NOT mutate cols/rows → no size delta.
+    renderHook(() => usePtyAttach('sid-867s', '/cwd'));
     await flushAll();
 
-    // Post-attach: fit.fit() ran, backend resize was pushed, and the
-    // installed snapshot replay (PR-D #866) was invoked after the
-    // resize promise resolved.
+    // fit.fit() still runs (we need to measure), but because cols/rows are
+    // unchanged the backend resize and snapshot replay must be skipped.
     expect(fitFitSpy).toHaveBeenCalled();
-    expect(spies.resize).toHaveBeenCalledWith('sid-867r', 80, 24);
-    // The snapshot-replay handler is installed by usePtyAttach at attach
-    // time; verify it was invoked by checking that getBufferSnapshot was
-    // called twice (once for the initial paint, once for the replay).
-    expect(spies.getBufferSnapshot).toHaveBeenCalledTimes(2);
+    expect(spies.resize).not.toHaveBeenCalled();
+    // PR-D contract: only the initial attach snapshot was fetched / written.
+    expect(spies.getBufferSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('post-attach fit triggers backend resize + snapshot replay when container size differs (#867 / #852)', async () => {
+    const { bridge, spies } = makePtyBridge({ snapshot: { snapshot: 'snap', seq: 0 } });
+    (window as any).ccsmPty = bridge;
+
+    // Simulate the real #852 case: visible viewport differs from spawn-time
+    // 80x24 — fit.fit() reflows the term to a new size.
+    fitFitSpy.mockImplementation(() => {
+      fakeTerm.cols = 134;
+      fakeTerm.rows = 51;
+    });
+
+    try {
+      renderHook(() => usePtyAttach('sid-867r', '/cwd'));
+      await flushAll();
+
+      expect(fitFitSpy).toHaveBeenCalled();
+      // Backend resize is pushed with the NEW dimensions (post-fit).
+      expect(spies.resize).toHaveBeenCalledWith('sid-867r', 134, 51);
+      // Replay handler ran → second getBufferSnapshot fetch (initial paint
+      // + replay re-fetch).
+      expect(spies.getBufferSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      // Restore fakeTerm dimensions for subsequent tests.
+      fakeTerm.cols = 80;
+      fakeTerm.rows = 24;
+      fitFitSpy.mockReset();
+    }
   });
 
   it('flips to error state when ccsmPty bridge is missing', async () => {
