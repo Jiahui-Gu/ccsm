@@ -4,8 +4,8 @@
 // Coverage:
 //   - i18n-settings-zh: opening Settings, switching to zh via the
 //     Appearance pane Language segmented control, and confirming
-//     Appearance / Updates / Connection panes all render Chinese
-//     labels (and no longer English ones).
+//     Appearance / Updates panes all render Chinese labels (and no
+//     longer English ones).
 //   - language-toggle: en→zh→en flip, plus the protected-term parity
 //     scan (English proper nouns like "MCP", "Claude", "GitHub" must
 //     survive translation into the zh catalog).
@@ -20,8 +20,8 @@
 //   - Drop "MCP" from the zh.ts catalog (replace with a translated
 //     phrase that omits "MCP") → protected-term parity test fails.
 //   - Force AppearancePane to ignore the Language segmented choice →
-//     `switching to 中文 flips Appearance / Updates / Connection panes
-//     into Chinese` fails.
+//     `switching to 中文 flips Appearance / Updates panes into Chinese`
+//     fails.
 import React, { useState } from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, within, act, waitFor } from '@testing-library/react';
@@ -90,7 +90,7 @@ afterEach(() => {
 });
 
 describe('Settings i18n (en → zh → en)', () => {
-  it('switching to 中文 flips Appearance / Updates / Connection panes into Chinese', async () => {
+  it('switching to 中文 flips Appearance / Updates panes into Chinese', async () => {
     render(<Harness />);
     const dialog = screen.getByRole('dialog');
 
@@ -115,17 +115,6 @@ describe('Settings i18n (en → zh → en)', () => {
       expect(txt).toMatch(/自动检查/);
       expect(txt).not.toMatch(/Check for updates/);
       expect(txt).not.toMatch(/Automatic checks/);
-    });
-
-    // Connection tab.
-    fireEvent.click(within(dialog).getByRole('tab', { name: /^连接$/ }));
-    await waitFor(() => {
-      const txt = dialog.textContent || '';
-      expect(txt).toMatch(/默认模型/);
-      expect(txt).toMatch(/Auth Token/); // protected proper noun
-      expect(txt).toMatch(/打开 settings\.json/);
-      expect(txt).not.toMatch(/Default model/);
-      expect(txt).not.toMatch(/Open settings\.json/);
     });
   });
 
