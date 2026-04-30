@@ -126,9 +126,18 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "node_modules/@anthropic-ai/claude-agent-sdk/**/*",
+      "**/*.node"
     ],
+    "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack.cjs",
+    "extraResources": [
+      { "from": "daemon/native-staged", "to": "daemon/native" },
+      { "from": "daemon/sdk-staged", "to": "daemon/node_modules/@anthropic-ai/claude-agent-sdk" },
+      { "from": "daemon/deps-staged", "to": "daemon/node_modules" },
+      { "from": "node_modules/@anthropic-ai/claude-agent-sdk", "to": "sdk/claude-agent-sdk" }
+    ],
     "files": [
       "dist/**/*",
       "package.json",
@@ -158,7 +167,10 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "extraResources": [
+        { "from": "daemon/dist/ccsm-daemon-staged.exe", "to": "daemon/ccsm-daemon.exe" }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -190,7 +202,10 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        { "from": "daemon/dist/ccsm-daemon-staged", "to": "daemon/ccsm-daemon" }
+      ]
     },
     "dmg": {
       "writeUpdateInfo": false
@@ -220,7 +235,10 @@
       "maintainer": "Jiahui Gu <noreply@ccsm.dev>",
       "synopsis": "CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions",
       "icon": "build/icon.png",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extraResources": [
+        { "from": "daemon/dist/ccsm-daemon-staged", "to": "daemon/ccsm-daemon" }
+      ]
     }
   }
 }
