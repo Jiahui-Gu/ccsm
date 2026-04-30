@@ -20,17 +20,16 @@ interface AppEmitter {
 }
 
 // Hoisted refs so vi.mock factories (which run before imports) can see them.
-// EventEmitter is required inside the factory because vi.hoisted runs before
-// top-level imports.
+// watcherEmitter starts null and is constructed in beforeEach using the
+// top-level EventEmitter import (vi.hoisted runs before top-level imports).
 const h = vi.hoisted(() => {
-  const { EventEmitter: EE } = require('node:events') as typeof import('node:events');
   return {
     appHandlers: new Map<string, Array<() => void>>(),
     allWindowsRef: {
       current: [] as Array<{ isDestroyed: () => boolean; isFocused: () => boolean }>,
     },
     ptyDataCb: { current: null as null | ((sid: string, chunk: string | Buffer) => void) },
-    watcherEmitter: new EE(),
+    watcherEmitter: null as null | EventEmitter,
     lastPipeline: { current: null as null | RecordingPipelineLike },
   };
 });
@@ -89,7 +88,9 @@ vi.mock('../../../ptyHost', () => ({
 }));
 
 vi.mock('../../../sessionWatcher', () => ({
-  sessionWatcher: h.watcherEmitter,
+  get sessionWatcher() {
+    return h.watcherEmitter;
+  },
 }));
 
 import { installNotifyPipelineWithProducers } from '../installPipeline';
@@ -98,7 +99,7 @@ beforeEach(() => {
   h.appHandlers.clear();
   h.allWindowsRef.current = [];
   h.ptyDataCb.current = null;
-  h.watcherEmitter.removeAllListeners();
+  h.watcherEmitter = new EventEmitter();
   h.lastPipeline.current = null;
 });
 
