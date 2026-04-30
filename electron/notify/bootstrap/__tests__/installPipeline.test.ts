@@ -208,6 +208,49 @@ describe('installNotifyPipelineWithProducers', () => {
     expect(h.lastPipeline.current!.forgetSid).not.toHaveBeenCalled();
   });
 
+  // audit #876 H2: when a session is unwatched, the badge unread counter
+  // for that sid must be drained too. Without this fan-out the badge
+  // store accumulated entries forever — every notified sid stayed counted
+  // for the app lifetime even after the session was deleted.
+  it("sessionWatcher 'unwatched' forwards onUnwatchedSid for badge drain", () => {
+    const onUnwatchedSid = vi.fn();
+    installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+      onUnwatchedSid,
+    });
+    h.watcherEmitter.emit('unwatched', { sid: 's1' });
+    expect(onUnwatchedSid).toHaveBeenCalledWith('s1');
+    expect(h.lastPipeline.current!.forgetSid).toHaveBeenCalledWith('s1');
+  });
+
+  it("sessionWatcher 'unwatched' does not invoke onUnwatchedSid for malformed payloads", () => {
+    const onUnwatchedSid = vi.fn();
+    installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+      onUnwatchedSid,
+    });
+    h.watcherEmitter.emit('unwatched', undefined);
+    h.watcherEmitter.emit('unwatched', null);
+    h.watcherEmitter.emit('unwatched', {});
+    h.watcherEmitter.emit('unwatched', { sid: 123 });
+    h.watcherEmitter.emit('unwatched', { sid: '' });
+    expect(onUnwatchedSid).not.toHaveBeenCalled();
+  });
+
+  it('omitting onUnwatchedSid is allowed (optional dep)', () => {
+    installNotifyPipelineWithProducers({
+      getNameFn: () => null,
+      isGlobalMutedFn: () => false,
+      onNotified: () => {},
+    });
+    expect(() => h.watcherEmitter.emit('unwatched', { sid: 's1' })).not.toThrow();
+    expect(h.lastPipeline.current!.forgetSid).toHaveBeenCalledWith('s1');
+  });
+
   it('returns the live pipeline instance', () => {
     const ret = installNotifyPipelineWithProducers({
       getNameFn: () => null,

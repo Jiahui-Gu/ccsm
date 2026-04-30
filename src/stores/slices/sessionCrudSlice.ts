@@ -313,10 +313,27 @@ export function createSessionCrudSlice(set: SetFn, get: GetFn): SessionCrudSlice
             nextActive = remaining[0]?.id ?? '';
           }
         }
-        return {
+        // audit #876 H2: deleteSession fan-out must drain every per-sid
+        // store, not just the sessions array. Without this, flashStates
+        // and disconnectedSessions accumulate entries for deleted sids
+        // (the only other clear paths are PTY-exit IPC, which doesn't
+        // fire for sessions that never spawned a PTY, and a re-spawn that
+        // overwrites the entry — both are best-effort, not delete-time).
+        const patch: Partial<RootStore> = {
           sessions: remaining,
           activeId: nextActive,
         };
+        if (s.flashStates && s.flashStates[id]) {
+          const next = { ...s.flashStates };
+          delete next[id];
+          patch.flashStates = next;
+        }
+        if (s.disconnectedSessions && s.disconnectedSessions[id]) {
+          const next = { ...s.disconnectedSessions };
+          delete next[id];
+          patch.disconnectedSessions = next;
+        }
+        return patch;
       });
       deleteDrafts([id]);
       try {
