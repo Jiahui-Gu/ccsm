@@ -248,6 +248,35 @@ export async function flushPendingRename(sid: string): Promise<void> {
   }
 }
 
+// ─────────────────────────── Per-sid cleanup ─────────────────────────────
+
+/**
+ * Release every per-sid Map entry held by this module. Called from the
+ * `sessionWatcher.on('unwatched', …)` listener in
+ * `electron/notify/bootstrap/installPipeline.ts` so a long-running ccsm
+ * process doesn't accumulate one entry per sid ever queried for the lifetime
+ * of the app (audit #876, tech-debt H1).
+ *
+ * Safety:
+ *   - Idempotent. `Map.delete` of an absent key is a no-op; calling
+ *     `forgetSid` twice for the same sid is fine.
+ *   - Doesn't throw, so the unwatched-event chain never breaks even if the
+ *     sid was never seen by this module.
+ *   - Doesn't cancel an in-flight rename. The serialization chain is held by
+ *     the local `next` variable inside `chain()`; deleting the Map entry only
+ *     drops the *next* op's predecessor link. A pending SDK call already
+ *     awaiting `loadSdk()` / `renameSession()` runs to completion and resolves
+ *     its caller's promise normally. The dropped chain pointer just means a
+ *     fresh sid-reuse won't serialize against the old in-flight op — which is
+ *     correct (the sid is "gone" from this module's POV).
+ */
+export function forgetSid(sid: string): void {
+  if (typeof sid !== 'string' || sid.length === 0) return;
+  titleCache.delete(sid);
+  opChains.delete(sid);
+  pendingRenames.delete(sid);
+}
+
 // ─────────────────────────── Test-only helpers ───────────────────────────
 
 /**
@@ -260,6 +289,17 @@ export function __resetForTests(): void {
   opChains.clear();
   pendingRenames.clear();
   sdkPromise = null;
+}
+
+/**
+ * Inspect internal Map state for tests. Returns `true` when ANY of the three
+ * per-sid Maps still holds an entry for `sid`. Used by `forgetSid` tests to
+ * assert full cleanup without exporting the Maps themselves.
+ */
+export function __hasSidStateForTests(sid: string): boolean {
+  return (
+    titleCache.has(sid) || opChains.has(sid) || pendingRenames.has(sid)
+  );
 }
 
 /**
