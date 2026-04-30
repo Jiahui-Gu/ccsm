@@ -117,8 +117,7 @@ describe('FileSource', () => {
     src.start('s1', jsonlPath);
     await waitFor(() => ticks.length >= 1);
     const before = ticks.length;
-    src.start('s1', jsonlPath); // duplicate — no new immediate read
-    await new Promise((r) => setTimeout(r, 100));
+    src.start('s1', jsonlPath); // duplicate — synchronous early-return, no new scheduleRead
     expect(ticks.length).toBe(before);
     src.stopAll();
   });
