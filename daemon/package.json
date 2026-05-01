@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@sentry/node": "^10.51.0",
     "@sinclair/typebox": "^0.34.49"
   }
 }

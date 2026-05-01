@@ -12,6 +12,7 @@ import {
 } from './handlers/daemon-shutdown.js';
 import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
 import { installCrashHandlers } from './crash/handlers.js';
+import { initDaemonSentry } from './sentry/init.js';
 
 const require = createRequire(import.meta.url);
 const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
@@ -25,6 +26,17 @@ const logger = pino({
     pid: process.pid,
     boot: bootNonce,
   },
+});
+
+// Phase 2 crash observability (spec §5.2 / §6, plan Task 8): initialize
+// Sentry as the very first thing after logger / bootNonce are available so
+// any throw in subsequent boot wiring is routed. DSN is forwarded by the
+// supervisor at spawn time (electron/daemon/supervisor.ts); empty when no
+// release secret is plugged in (dev / OSS forks) → init is a no-op.
+initDaemonSentry({
+  dsn: process.env.CCSM_DAEMON_SENTRY_DSN ?? '',
+  release: DAEMON_VERSION,
+  bootNonce,
 });
 
 // Phase 1 crash observability (spec §5.2, plan Task 3):
