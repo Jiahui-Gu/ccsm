@@ -30,6 +30,7 @@
     "lint:fixtures": "tsx scripts/lint-fixtures.ts",
     "lint:schema-additive": "tsx scripts/lint-schema-additive.ts",
     "test": "vitest run",
+    "test:parity": "vitest run tests/parity",
     "check:electron-pin": "node scripts/check-electron-pin.cjs",
     "pretest": "node scripts/check-electron-pin.cjs",
     "test:watch": "vitest",

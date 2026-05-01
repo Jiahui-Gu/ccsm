@@ -1,0 +1,16 @@
+{
+  "rpc": "Ping",
+  "description": "Placeholder parity fixture exercised by tests/parity/ping.parity.test.ts. Replaced by a real recorded fixture in T06 once Ping is registered on Connect (per spec ch09 §2 T06). Until then the test uses manual stubs for both transports to prove the framework plumbing end-to-end.",
+  "cases": [
+    {
+      "name": "ping echoes the requested timestamp",
+      "request": { "clientNowMs": 1700000000 },
+      "expectedV03Response": { "ok": true, "echoNowMs": 1700000000 },
+      "expectedV04Response": { "ok": true, "echoNowMs": 1700000000 },
+      "parityOpts": {
+        "ignoreFields": ["serverNowMs", "traceId"],
+        "normalizationStrategy": "structural"
+      }
+    }
+  ]
+}

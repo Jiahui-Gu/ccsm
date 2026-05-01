@@ -1,0 +1,92 @@
+name: parity
+# T07 — parity-test framework workflow.
+#
+# Spec: docs/superpowers/specs/2026-05-01-v0.4-web-design.md
+#   - ch03 §7.1 (parity tests are the load-bearing safety net during M1's 12 PRs)
+#   - ch08 §3   (L2 testing layer)
+#   - ch08 §9.1 (CI matrix; this is the parity-specific job)
+#   - ch09 §2 T07 deliverable
+#
+# What this runs: `npm run test:parity` (= `vitest run tests/parity`).
+# In M1 the suite contains the framework's own unit tests + one placeholder
+# fixture exercise. T06 + Batch A (T09) bridge swaps add real cases.
+#
+# Why a dedicated workflow rather than folding into ci.yml: ci.yml is gated
+# `if: false` for the v0.3 → v0.4 migration window (Task #1048). Parity tests
+# are the safety net during exactly that window — they MUST run on every PR
+# even while ci.yml is dark. Folding into ci.yml would require either un-
+# gating ci.yml early (Task #1048 territory) or hand-tracking which PRs
+# touched the migration path. Dedicated workflow keeps the safety net always
+# on with zero scheduling logic.
+#
+# `continue-on-error: false` (the default) is intentional: per the brief,
+# the placeholder ensures the step doesn't no-op, and once T06 lands real
+# cases any divergence must block the PR.
+
+on:
+  pull_request:
+    branches: [main, working]
+    paths:
+      - 'tests/parity/**'
+      - 'daemon/src/connect/**'
+      - 'daemon/src/envelope/**'
+      - 'electron/preload/bridges/**'
+      - 'proto/**'
+      - 'gen/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/parity.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: parity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both daemon + Electron run on Linux (CI default) and Windows
+        # (primary developer platform per CLAUDE.md). macOS coverage rides
+        # on the post-migration ci.yml when restored.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Same python pin as ci.yml — better-sqlite3 postinstall imports
+      # distutils via the older node-gyp.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+
+      - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Rebuild better-sqlite3 against Node ABI (vitest runs under Node).
+      - name: Rebuild better-sqlite3 for Node
+        run: npm rebuild better-sqlite3
+
+      - name: Run parity tests
+        run: npm run test:parity
