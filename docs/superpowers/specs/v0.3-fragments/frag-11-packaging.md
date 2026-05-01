@@ -169,10 +169,10 @@ const daemonPath = app.isPackaged
     })();
 ```
 
-`process.resourcesPath` resolves to (per round-3 P0-1, install root is per-user):
-- Windows: `%LOCALAPPDATA%\ccsm\resources\daemon\ccsm-daemon.exe`
-- macOS: `CCSM.app/Contents/Resources/daemon/ccsm-daemon` (`.app` itself lives under `~/Library/Application Support/ccsm/` per per-user install; user may also drag to `/Applications` — both supported by Gatekeeper)
-- Linux: `~/.local/share/ccsm/resources/daemon/ccsm-daemon` (AppImage extracts here; `.deb` / `.rpm` install to the same per-user root via electron-builder's `category=Utility` + post-install symlink in `~/.local/bin`)
+`process.resourcesPath` resolves to (per `[manager r12 lock 2026-05-01]` — install root is per-machine, superseding the original r3 P0-1 per-user lock; PR #682 flipped `perMachine: true` for the daemon-at-boot story; see §11.6 r12 lock):
+- Windows: `%ProgramFiles%\ccsm\resources\daemon\ccsm-daemon.exe` (or user-redirected install dir via the assisted-mode picker)
+- macOS: `CCSM.app/Contents/Resources/daemon/ccsm-daemon` (`.app` lives under `/Applications/CCSM.app` per per-machine install; user may also drag elsewhere — both supported by Gatekeeper)
+- Linux: `/opt/ccsm/resources/daemon/ccsm-daemon` (`.deb` / `.rpm` install to `/opt/ccsm/` with symlinks under `/usr/local/bin`; AppImage extracts to a per-user temp root at runtime but is not the per-machine install target)
 
 Validation: extend `scripts/after-pack.cjs` (today only checks node-pty at `:48-83`) with the explicit post-pack required-files list below — hard-fail the build if any are missing. **[manager r7 lock: r6 packaging P1-A — after-pack.cjs explicit validation list]**
 
@@ -290,7 +290,7 @@ This avoids `MODULE_NOT_FOUND` against hoisted root `node_modules` that won't ex
    const sdkEntry = sdkPkg.module ?? sdkPkg.main;
    const sdk = await import(pathToFileURL(path.join(sdkRoot, sdkEntry)).href);
    ```
-   `process.resourcesPath` is the per-user install root from §11.2 (Win: `%LOCALAPPDATA%\ccsm\resources\`, mac: `CCSM.app/Contents/Resources/`, Linux: `~/.local/share/ccsm/resources/`). Dev branch resolves from hoisted root `node_modules` (no asar in dev). Once the residual sessionTitles calls are migrated to the daemon (post-v0.3 deferred), the entire `electron/sessionTitles/` SDK code path can be deleted along with the second `extraResources` row above.
+   `process.resourcesPath` is the per-machine install root from §11.2 (Win: `%ProgramFiles%\ccsm\resources\`, mac: `CCSM.app/Contents/Resources/` under `/Applications/`, Linux: `/opt/ccsm/resources/`) per `[manager r12 lock 2026-05-01]` (see §11.6). Dev branch resolves from hoisted root `node_modules` (no asar in dev). Once the residual sessionTitles calls are migrated to the daemon (post-v0.3 deferred), the entire `electron/sessionTitles/` SDK code path can be deleted along with the second `extraResources` row above.
 
 ### 11.3 Code-signing (daemon BEFORE installer)
 
@@ -613,7 +613,7 @@ Rationale for keeping `oneClick: false` (not flipping to `oneClick: true`):
 
 | Path (Windows) | Path (macOS) | Path (Linux) | Owner | Cleanup default | Opt-in cleanup |
 |---|---|---|---|---|---|
-| `%LOCALAPPDATA%\ccsm\resources\daemon\` | `~/Library/Application Support/ccsm/resources/daemon/` | `~/.local/share/ccsm/resources/daemon/` | installer | always (uninstaller wipes install root) | n/a |
+| `%ProgramFiles%\ccsm\resources\daemon\` | `/Applications/CCSM.app/Contents/Resources/daemon/` | `/opt/ccsm/resources/daemon/` | installer | always (uninstaller wipes install root) | n/a |
 | `%LOCALAPPDATA%\ccsm\daemon.lock` | `~/Library/Application Support/ccsm/daemon.lock` | `~/.local/share/ccsm/daemon.lock` | proper-lockfile (frag-6-7 §6.4) | always (stale PID) | always |
 | `%LOCALAPPDATA%\ccsm\daemon.secret` | `~/Library/Application Support/ccsm/daemon.secret` | `~/.local/share/ccsm/daemon.secret` | Electron-main (frag-6-7 §7.2) | retained (rollback) | deleted |
 | `%LOCALAPPDATA%\ccsm\data\` | `~/Library/Application Support/ccsm/data/` | `~/.local/share/ccsm/data/` | daemon SQLite (frag-8 §8.3) | retained | deleted |
@@ -629,7 +629,11 @@ Rationale for keeping `oneClick: false` (not flipping to `oneClick: true`):
 
 ```nsis
 ; build/installer.nsh — wired via package.json build.nsis.include (round-2 P0-1)
-; All paths use $LOCALAPPDATA per round-3 P0-1/P0-2; never $PROGRAMFILES.
+; Install root = $INSTDIR under $PROGRAMFILES64\ccsm per [manager r12 lock 2026-05-01]
+; (perMachine: true; PR #682 daemon-at-boot story; supersedes the original r3
+; P0-1 $LOCALAPPDATA lock). Per-user data paths (data/, logs/, crashes/,
+; daemon.lock, daemon.secret) still live under $LOCALAPPDATA\ccsm — see §11.6
+; paths table. NEVER reference the install root via $LOCALAPPDATA.
 ; Silent uninstall macro per r9 P0-2: no MessageBox modal. The assisted-mode
 ; (oneClick: false) NSIS uninstaller has its own UI; modal dialogs from inside
 ; customUnInstall would either fight that UI or auto-default to "No" under the
@@ -645,12 +649,13 @@ Rationale for keeping `oneClick: false` (not flipping to `oneClick: true`):
   Sleep 500   ; let OS release file handles
   Delete "$LOCALAPPDATA\ccsm\daemon.lock"
 
-  ; 2. The install root ($INSTDIR under %LOCALAPPDATA%\ccsm) is wiped by the
-  ;    standard NSIS uninstall sequence. User data subdirs (data/, logs/,
-  ;    crashes/, daemon.secret) are NOT touched here — they are retained by
-  ;    default per the §11.6 paths table. Opt-in cleanup happens in-app
-  ;    (frag-6-7 §6.8) before uninstall, OR the user manually deletes
-  ;    %LOCALAPPDATA%\ccsm\ post-uninstall (release-notes documented).
+  ; 2. The install root ($INSTDIR under $PROGRAMFILES64\ccsm per r12 lock) is
+  ;    wiped by the standard NSIS uninstall sequence. User data subdirs
+  ;    (data/, logs/, crashes/, daemon.secret) under %LOCALAPPDATA%\ccsm\ are
+  ;    NOT touched here — they are retained by default per the §11.6 paths
+  ;    table. Opt-in cleanup happens in-app (frag-6-7 §6.8) before uninstall,
+  ;    OR the user manually deletes %LOCALAPPDATA%\ccsm\ post-uninstall
+  ;    (release-notes documented).
 !macroend
 ```
 
