@@ -198,3 +198,13 @@ describe('userHash', () => {
     expect(userHash()).toBe(h);
   });
 });
+
+describe('dataSocketTransportType — T05.1 transport-tag accessor', () => {
+  it('returns "local-pipe" for the data-socket listener (no remote-TCP listener until T25)', async () => {
+    const { dataSocketTransportType, DATA_SOCKET_LISTENER_TRANSPORT_TYPE } = await import(
+      '../runtime-root.js'
+    );
+    expect(DATA_SOCKET_LISTENER_TRANSPORT_TYPE).toBe('local-pipe');
+    expect(dataSocketTransportType()).toBe('local-pipe');
+  });
+});

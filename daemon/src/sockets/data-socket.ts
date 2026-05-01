@@ -27,7 +27,11 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { chmodSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { userHash } from './runtime-root.js';
+import { dataSocketTransportType, userHash } from './runtime-root.js';
+import {
+  routeDataSocketConnection,
+  type ConnectAttachable,
+} from './route-data-socket-connection.js';
 
 /** Per spec frag-3.4.1 §3.4.1.a: 50 accepts per rolling 1s window. */
 export const MAX_ACCEPT_PER_SEC = 50;
@@ -75,6 +79,23 @@ export interface CreateDataSocketServerOptions {
 
   /** Override for tests — defaults to {@link MAX_ACCEPT_PER_SEC}. */
   readonly maxAcceptPerSec?: number;
+
+  /**
+   * Optional Connect-RPC server for HTTP/2 coexistence (T05.1 wire-in per
+   * spec ch02 §6 + ch09 §2 deliverable 5). When provided, accepted
+   * connections are inspected for the HTTP/2 client preface; HTTP/2 traffic
+   * is routed to {@link ConnectAttachable.attachSocket} with the data-socket
+   * listener's transport type (`'local-pipe'` per
+   * `dataSocketTransportType()`); everything else falls through to
+   * {@link CreateDataSocketServerOptions.onConnection} (the v0.3 envelope
+   * dispatcher).
+   *
+   * Pass `undefined` (default) to keep 100% v0.3 envelope behaviour — every
+   * connection goes straight to {@link CreateDataSocketServerOptions.onConnection}.
+   * The daemon shell may pass a real Connect server instance once T06 lands
+   * the first service handler.
+   */
+  readonly connectServer?: ConnectAttachable;
 }
 
 export interface DataSocketServer {
@@ -127,7 +148,6 @@ export function createDataSocketServer(
     warn: (obj, msg) => {
       // Best-effort; daemon wires pino at startup but this module must work
       // standalone for tests + early boot.
-      // eslint-disable-next-line no-console
       console.warn(`${msg} ${JSON.stringify(obj)}`);
     },
   };
@@ -206,7 +226,19 @@ export function createDataSocketServer(
       return;
     }
     try {
-      opts.onConnection({ socket, peer });
+      // Coexistence (T05.1): if a Connect server is wired, peek the HTTP/2
+      // client preface and route HTTP/2 traffic to it; otherwise hand to the
+      // envelope dispatcher (the caller's onConnection).
+      if (opts.connectServer !== undefined) {
+        routeDataSocketConnection({
+          socket,
+          connectServer: opts.connectServer,
+          transportType: dataSocketTransportType(),
+          onEnvelopeConnection: (s) => opts.onConnection({ socket: s as Socket, peer }),
+        });
+      } else {
+        opts.onConnection({ socket, peer });
+      }
     } catch (err) {
       // The caller's onConnection threw synchronously — destroy the socket
       // to avoid leaking it, and re-throw to surface the bug.

@@ -101,6 +101,36 @@ export function resolveRuntimeRoot(opts: ResolveRuntimeRootOptions = {}): string
 }
 
 /**
+ * Transport tag for the data-socket listener. The data socket is a local
+ * named-pipe / Unix-domain-socket listener (`dataSocketPath()`); there is
+ * NO remote-TCP listener on the data socket as of T05.1 — the remote ingress
+ * (Cloudflare Tunnel-fronted TCP listener `127.0.0.1:7879`) is a separate
+ * listener that lands in T25 (spec ch09 §2 line 3039).
+ *
+ * Therefore the canonical tag for any connection accepted via this module's
+ * `dataSocketPath()`-based listener is always `'local-pipe'`. Exporting this
+ * as a constant makes downstream wiring (T05.1 `data-socket.ts` connection
+ * handler → Connect server `attachSocket(socket, tag)`) impossible to mis-tag.
+ *
+ * Spec citations:
+ *   - ch05 §4 line 1174 — transport tag is a positive enum set by the listener
+ *     at connection-accept time, never read from a header.
+ *   - ch02 §6 — data socket is HTTP/2 + Connect on the local pipe; control
+ *     socket stays envelope; remote ingress is a separate listener (ch05 §5).
+ */
+export const DATA_SOCKET_LISTENER_TRANSPORT_TYPE = 'local-pipe' as const;
+
+/**
+ * Resolve the transport tag for a socket accepted by the data-socket listener.
+ * Pure / deterministic / no I/O; centralised here so T19/T25 can extend the
+ * resolver when the remote-TCP listener lands (it will inspect the listener
+ * the socket came from rather than always returning `'local-pipe'`).
+ */
+export function dataSocketTransportType(): 'local-pipe' | 'remote-tcp' {
+  return DATA_SOCKET_LISTENER_TRANSPORT_TYPE;
+}
+
+/**
  * 8-hex-char per-user namespace tag for socket / pipe paths.
  *
  * Spec: docs/superpowers/specs/v0.3-design.md L267 + L272 and

@@ -1,227 +1,119 @@
-// daemon/src/connect/server.ts — T05 Connect-RPC server scaffold for the
-// daemon's data-socket. Dormant in this PR: no service handlers are
-// registered (T06 lands the first one); JWT verification is a placeholder
-// (T08 lands the real one).
+// daemon/src/connect/server.ts — T05.1 Connect-RPC server scaffold for the
+// daemon's data-socket. Dormant: no service handlers are registered (T06
+// lands the first one); JWT verification is a placeholder (T08 lands the
+// real one); storage-full predicate is a stub (T15 lands the real one).
 //
 // Spec citations (canonical):
 //   - docs/superpowers/specs/2026-05-01-v0.4-web-design.md ch02 §1 (wire = Connect)
 //   - …                                                    ch02 §6 (data socket = HTTP/2 + Connect; control socket stays envelope)
-//   - …                                                    ch02 §8 (interceptor inheritances from v0.3)
+//   - …                                                    ch02 §7 (Ping handshake RPC, no native wire-version negotiation)
+//   - …                                                    ch02 §8 (interceptor inheritances from v0.3; HMAC daemon.hello REPLACED)
 //   - …                                                    ch05 §4 (JWT interceptor; transport-tag positive enum; fail-closed)
-//   - …                                                    ch05 §5 (chain order lock: transport-tag → JWT → migration-gate → … → handler)
+//   - …                                                    ch05 §5 line 3144 — chain order LOCK:
+//        transport-tag → JWT → migration-gate → storage-full → deadline → trace-id → handler
 //
 // Single Responsibility (producer / decider / sink):
 //   - This module is the WIRING: it composes pure deciders (interceptors) into
 //     a Connect router and exposes a Node HTTP/2 server lifecycle. It does NOT
-//     own the migration-pending flag (caller injects `isMigrationPending`),
-//     does NOT own JWT verification (T08 will replace the placeholder), does
-//     NOT own session state.
-//
-// Coexistence with v0.3 envelope (per task brief):
-//   The v0.3 envelope handler stays on the data socket for the duration of
-//   the v0.4 cutover. This module exposes `attachSocket(socket, transportType)`
-//   which the eventual data-socket integration (T12 + T19 wave) will call after
-//   peeking the first bytes of a connection: HTTP/2 preface (`PRI * HTTP/2.0…`)
-//   → route here; otherwise → route to the envelope dispatcher. In T05 the
-//   coexistence wiring is NOT live; only this module's surface is shipped so
-//   T06+ can target a stable API.
+//     own the migration-pending flag, the storage-full flag, JWT verification,
+//     or session state — all of these are caller-injected predicates / future
+//     module replacements.
 
 import * as http2 from 'node:http2';
 import type { Duplex } from 'node:stream';
 import {
-  Code,
-  ConnectError,
   type ConnectRouter,
   type Interceptor,
-  createContextKey,
 } from '@connectrpc/connect';
 import {
   connectNodeAdapter,
   universalRequestFromNodeRequest,
 } from '@connectrpc/connect-node';
-import { ulid } from 'ulid';
+
+// Re-export context keys + helpers for downstream consumers.
+export {
+  transportTypeKey,
+  traceIdKey,
+  requestStartKey,
+  resolveTransportTag,
+  transportTagForLog,
+} from './interceptors/context-keys.js';
+
+// Re-export per-route message size config (T06 will use these when registering
+// services with `router.service(svc, impl, { readMaxBytes })`).
+export {
+  DEFAULT_READ_MAX_BYTES,
+  READ_MAX_BYTES_PER_ROUTE,
+  readMaxBytesForRoute,
+  NEAR_CAP_RATIO,
+  READ_MAX_NEAR_CAP_SLOT_NAME,
+  createReadMaxNearCapInterceptor,
+} from './interceptors/read-max.js';
+
+// Re-export rate-cap config + factory.
+export {
+  DEFAULT_MAX_REQUESTS_PER_SEC,
+  RATE_CAP_SLOT_NAME,
+  createRateCapInterceptor,
+} from './interceptors/rate-cap.js';
+
+// Re-export pino reject log helper for callers wiring a child pino.
+export {
+  logReject,
+  type RejectLogger,
+  type RejectLogFields,
+} from './interceptors/pino-reject-log.js';
+
+// Re-export individual interceptor factories so unit tests + future wiring
+// can compose alternative chains (e.g. dev-mode chains with extra taps).
+export { createTransportTagInterceptor, TRANSPORT_TAG_SLOT_NAME } from './interceptors/transport-tag.js';
+export { createJwtInterceptor, JWT_SLOT_NAME } from './interceptors/jwt.js';
+export { createMigrationGateInterceptor, MIGRATION_GATE_SLOT_NAME } from './interceptors/migration-gate.js';
+export { createStorageFullInterceptor, STORAGE_FULL_SLOT_NAME } from './interceptors/storage-full.js';
+export { createDeadlineInterceptor, DEADLINE_SLOT_NAME } from './interceptors/deadline.js';
+export { createTraceIdInterceptor, TRACE_ID_SLOT_NAME } from './interceptors/trace-id.js';
+
+import { createTransportTagInterceptor } from './interceptors/transport-tag.js';
+import { createJwtInterceptor } from './interceptors/jwt.js';
+import { createMigrationGateInterceptor } from './interceptors/migration-gate.js';
+import { createStorageFullInterceptor } from './interceptors/storage-full.js';
+import { createDeadlineInterceptor } from './interceptors/deadline.js';
+import { createTraceIdInterceptor } from './interceptors/trace-id.js';
+import { createRateCapInterceptor } from './interceptors/rate-cap.js';
+import { createReadMaxNearCapInterceptor } from './interceptors/read-max.js';
+import { transportTypeKey } from './interceptors/context-keys.js';
+import type { RejectLogger } from './interceptors/pino-reject-log.js';
+import { createContextValues } from '@connectrpc/connect';
 
 // ---------------------------------------------------------------------------
-// Context keys (positive enums per ch05 §4 lock)
+// Spec-amendment / drift note for PR #752 → T05.1
 // ---------------------------------------------------------------------------
-
-/**
- * Transport tag set by the listener at connection-accept time. NEVER read
- * from a request header — header-spoofing this value would defeat the
- * remote-vs-local JWT bypass (ch05 §4).
- *
- * Values:
- *   - `'local-pipe'`  — Unix socket / Windows named pipe (peer-cred trust)
- *   - `'remote-tcp'`  — TCP listener fronted by Cloudflare Tunnel (JWT trust)
- *
- * Untagged context (i.e. the key is absent) is treated as `'remote-tcp'` for
- * fail-closed safety by every downstream interceptor.
- */
-export const transportTypeKey = createContextKey<'local-pipe' | 'remote-tcp' | undefined>(
-  undefined,
-  { description: 'data-socket transport tag (positive enum, set by listener)' },
-);
-
-/**
- * Handshake-completed flag. Set to `true` by the eventual `daemon.hello`
- * Connect-side bootstrap RPC (T06+ will land it). Pre-handshake, this key is
- * absent and the hello-gate interceptor rejects any request not on
- * {@link PRE_HANDSHAKE_ALLOWLIST}.
- */
-export const helloAckKey = createContextKey<boolean>(false, {
-  description: 'true once the per-connection daemon.hello handshake has succeeded',
-});
-
-/**
- * Per-request trace-id (ULID). Generated by the trace-id interceptor; pino
- * log lines on the daemon side include it for end-to-end correlation
- * (matches v0.3 envelope `x-ccsm-trace-id` semantics, ch02 §8 row "Trace-id ULID").
- */
-export const traceIdKey = createContextKey<string>('', {
-  description: 'per-request ULID trace-id',
-});
-
-// ---------------------------------------------------------------------------
-// Hello-gate constants
-// ---------------------------------------------------------------------------
-
-/**
- * Connect error code returned when a non-allowlisted RPC arrives before
- * `daemon.hello` succeeded. Pinned as a constant so the handshake protocol
- * has a single source of truth (T06's hello handler will reference it; T08's
- * JWT scaffold will mirror it for the unauthenticated-token path).
- */
-export const HELLO_REQUIRED_CODE = Code.Unauthenticated;
-
-/**
- * Methods admitted before the per-connection handshake completes. Mirrors the
- * v0.3 envelope `helloInterceptor` allowlist (just `daemon.hello`) plus the
- * v0.4 `Ping` health probe per ch02 §7 ("v0.4 introduces a `Ping` RPC that
- * returns `{ daemonVersion, protoVersion }`; clients call it on connect").
- *
- * Method names are matched by the `method.name` field of the Connect request
- * (NOT the full `service/method` URL) to keep the allowlist stable across
- * any future service-name reshuffle.
- */
-export const PRE_HANDSHAKE_ALLOWLIST: readonly string[] = ['DaemonHello', 'Ping'] as const;
-
-const PRE_HANDSHAKE_ALLOWLIST_SET: ReadonlySet<string> = new Set(PRE_HANDSHAKE_ALLOWLIST);
-
-// ---------------------------------------------------------------------------
-// Interceptors
-// ---------------------------------------------------------------------------
-
-/**
- * Transport-tag interceptor (ch05 §4 / §5). In T05 this is a no-op pass-through
- * because the listener is responsible for setting `transportTypeKey` at the
- * `contextValues` factory in the Connect adapter (see `createConnectDataServer`
- * `attachSocket`). The interceptor is kept in the chain at position #0 so the
- * declared order is observable + unit-testable; T19 wave may extend it with
- * dev-mode validation that the tag is present.
- */
-function createTransportTagInterceptor(): Interceptor {
-  return (next) => async (req) => next(req);
-}
-
-/**
- * JWT interceptor — T05 PLACEHOLDER. Real verification lands in T08.
- *
- * Behavior in this PR:
- *   - `transportTypeKey === 'local-pipe'` → bypass (per ch05 §4 local-bypass rule).
- *   - Anything else (`'remote-tcp'` OR untagged) → reject `Unauthenticated`,
- *     fail-closed per ch05 §4 ("untagged requests fail closed").
- *
- * TODO(T08): replace with `jose.jwtVerify` against a pre-warmed Cloudflare
- * Access JWKS, per ch05 §4 implementation block + §4.1 policy locks.
- */
-function createJwtInterceptor(): Interceptor {
-  return (next) => async (req) => {
-    const transport = req.contextValues.get(transportTypeKey);
-    if (transport === 'local-pipe') {
-      return next(req);
-    }
-    // Fail-closed: untagged or remote-tcp without real JWT → reject.
-    throw new ConnectError(
-      'remote-ingress JWT verification not yet implemented (T08); reject fail-closed',
-      Code.Unauthenticated,
-    );
-  };
-}
-
-/**
- * Migration-gate interceptor (ch02 §8 row "Migration-gate interceptor").
- * Mirrors the v0.3 envelope `migrationGateInterceptor` decision (envelope
- * version lives at `daemon/src/envelope/migration-gate-interceptor.ts`).
- *
- * Connect-side this PR does not yet have the supervisor-RPC carve-out
- * because the supervisor stays on the envelope (ch02 §6) — the only RPCs
- * served by Connect are data-plane. If a future RPC needs to bypass the
- * gate (e.g. a maintenance-mode `Ping`), extend the predicate here.
- */
-function createMigrationGateInterceptor(opts: {
-  isMigrationPending: () => boolean;
-}): Interceptor {
-  return (next) => async (req) => {
-    if (opts.isMigrationPending()) {
-      throw new ConnectError(
-        `RPC ${req.method.name} rejected: SQLite migration in progress`,
-        Code.FailedPrecondition,
-      );
-    }
-    return next(req);
-  };
-}
-
-/**
- * Hello-gate interceptor (ch02 §8 inheritance of v0.3 §3.4.1.f slot #0).
- *
- * Pre-handshake (helloAckKey === false), only methods on
- * {@link PRE_HANDSHAKE_ALLOWLIST} are admitted. Any other RPC is rejected
- * with {@link HELLO_REQUIRED_CODE} (== `Code.Unauthenticated`).
- */
-function createHelloGateInterceptor(): Interceptor {
-  return (next) => async (req) => {
-    const handshaked = req.contextValues.get(helloAckKey) === true;
-    if (handshaked) return next(req);
-    if (PRE_HANDSHAKE_ALLOWLIST_SET.has(req.method.name)) return next(req);
-    throw new ConnectError(
-      `RPC ${req.method.name} rejected: daemon.hello handshake required first`,
-      HELLO_REQUIRED_CODE,
-    );
-  };
-}
-
-/**
- * Deadline interceptor (ch02 §8 row "Per-frame deadline").
- *
- * T05 ships the chain slot only — the v0.3 envelope already owns deadline
- * resolution (`daemon/src/envelope/deadline-interceptor.ts`); when T08+ wires
- * the real Connect-side deadline reading the `x-ccsm-deadline-ms` header, it
- * will replace this stub. Stubbed as pass-through here so the chain ordering
- * test pins the slot.
- *
- * TODO(T08+): read `x-ccsm-deadline-ms` header (default 30s, clamp at 120s
- * per ch02 §8) and compose with `req.signal` via `AbortSignal.timeout`.
- */
-function createDeadlineInterceptor(): Interceptor {
-  return (next) => async (req) => next(req);
-}
-
-/**
- * Trace-id interceptor (ch02 §8 row "Trace-id ULID per envelope").
- *
- * Generates a ULID on entry and stores it under {@link traceIdKey} for
- * downstream handlers + log lines. Mirrors the v0.3 envelope
- * `x-ccsm-trace-id` propagation.
- */
-function createTraceIdInterceptor(): Interceptor {
-  return (next) => async (req) => {
-    if (!req.contextValues.get(traceIdKey)) {
-      req.contextValues.set(traceIdKey, ulid());
-    }
-    return next(req);
-  };
-}
+//
+// PR #752 (T05) shipped a `hello-gate` interceptor between `migration-gate`
+// and `deadline`, motivated by ch02 §8's v0.3 inheritance row for
+// `helloInterceptor`. That row, on careful re-read, says "HMAC daemon.hello
+// handshake | **Replaced** by Connect TLS-or-local-trust + Cloudflare Access
+// JWT for remote." (line 386). The handshake was DROPPED, not inherited:
+// the local-pipe transport tag is the local trust boundary; the JWT
+// interceptor is the remote trust boundary. There is no v0.4 daemon-side
+// handshake message that gates RPC admission.
+//
+// T05.1 therefore REMOVES `hello-gate` from the chain and aligns to the
+// canonical ch05 §5 lock (line 3144):
+//
+//   transport-tag → JWT → migration-gate → storage-full → deadline → trace-id
+//
+// `helloAckKey` is intentionally NOT exported any more; downstream code that
+// referenced it (none in tree as of T05.1) should rely on the JWT/transport
+// boundary instead. `Ping` is unconditionally accessible (no allowlist),
+// matching ch02 §7 line 357 ("clients call it on connect") — the Connect
+// transport itself is the handshake.
+//
+// The pre-accept rate cap is re-implemented BOTH at the listener layer
+// (data-socket.ts MAX_ACCEPT_PER_SEC; per ch02 §8 row "Pre-accept rate cap")
+// AND as a Connect interceptor here (per-RPC bucket; defends against burst
+// spam on a single accepted connection). This is belt-and-suspenders; the
+// listener cap is the canonical spec implementation.
 
 // ---------------------------------------------------------------------------
 // Chain assembly
@@ -229,31 +121,100 @@ function createTraceIdInterceptor(): Interceptor {
 
 export interface InterceptorChainOptions {
   readonly isMigrationPending: () => boolean;
+  /**
+   * Storage-full marker predicate. Defaults to `() => false` until T15 lands
+   * the real SQLITE_FULL handler.
+   */
+  readonly isStorageFull?: () => boolean;
+  /**
+   * Pino logger (or compatible) for structured rejection logs. Defaults to a
+   * console.warn fallback so tests + early-boot paths still surface signal.
+   */
+  readonly logger?: RejectLogger;
+  /** Test injection. */
+  readonly now?: () => number;
+  /** Override the per-RPC rate cap. Defaults to {@link DEFAULT_MAX_REQUESTS_PER_SEC}. */
+  readonly rateCapPerSec?: number;
 }
 
 /**
- * Build the canonical interceptor stack in the spec-locked order:
+ * Build the canonical interceptor stack in the spec-locked order
+ * (ch05 §5 line 3144):
  *
- *     [0] transport-tag    (ch05 §4 — positive enum tag, no-op decider in T05)
- *     [1] jwt              (ch05 §4 — placeholder; T08 lands real verify)
- *     [2] migration-gate   (ch02 §8 — block data-plane during migration)
- *     [3] hello-gate       (ch02 §8 — pre-handshake reject)
- *     [4] deadline         (ch02 §8 — placeholder; T08+ lands real reader)
- *     [5] trace-id         (ch02 §8 — ULID per request)
+ *     [0] transport-tag     (ch05 §4 — positive enum tag; stamps requestStart)
+ *     [1] jwt               (ch05 §4 — placeholder; T08 lands real verify)
+ *     [2] migration-gate    (ch02 §8 — block data-plane during migration)
+ *     [3] storage-full      (ch07 §1 — block writes when SQLITE_FULL marker set; T15 wires real predicate)
+ *     [4] deadline          (ch02 §8 — placeholder; T08+ lands real reader)
+ *     [5] trace-id          (ch02 §8 — ULID per request)
  *
  * Connect applies SERVER interceptors outermost-first per array order
  * (i.e. element 0 wraps element 1 wraps the handler).
+ *
+ * Two non-numbered observability interceptors are appended AFTER trace-id:
+ *
+ *     [6] rate-cap          (ch02 §8 — belt-and-suspenders for listener cap)
+ *     [7] read-max-near-cap (ch02 §8 — log requests within 10% of per-route cap)
+ *
+ * These do not appear in ch05 §5's lock because the spec places the rate cap
+ * at the listener layer and the readMaxBytes hard cap inside Connect-Node
+ * native code. They are wired here so trace-id is set before they log.
  */
 export function buildInterceptorChain(opts: InterceptorChainOptions): Interceptor[] {
   return [
-    createTransportTagInterceptor(),
-    createJwtInterceptor(),
-    createMigrationGateInterceptor(opts),
-    createHelloGateInterceptor(),
+    createTransportTagInterceptor({ now: opts.now }),
+    createJwtInterceptor({ logger: opts.logger, now: opts.now }),
+    createMigrationGateInterceptor({
+      isMigrationPending: opts.isMigrationPending,
+      logger: opts.logger,
+      now: opts.now,
+    }),
+    createStorageFullInterceptor({
+      isStorageFull: opts.isStorageFull,
+      logger: opts.logger,
+      now: opts.now,
+    }),
     createDeadlineInterceptor(),
     createTraceIdInterceptor(),
+    createRateCapInterceptor({
+      maxPerSec: opts.rateCapPerSec,
+      logger: opts.logger,
+      now: opts.now,
+    }),
+    createReadMaxNearCapInterceptor({
+      logger: opts.logger,
+      now: opts.now,
+    }),
   ];
 }
+
+/**
+ * Names of the interceptor slots in declared order. Useful for tests asserting
+ * the chain composition without importing every factory.
+ *
+ * The first 6 entries match the ch05 §5 chain-order lock; entries [6]+ are
+ * the appended observability interceptors (see {@link buildInterceptorChain}).
+ */
+export const INTERCEPTOR_SLOT_NAMES: readonly string[] = [
+  'transport-tag',
+  'jwt',
+  'migration-gate',
+  'storage-full',
+  'deadline',
+  'trace-id',
+  'rate-cap',
+  'read-max-near-cap',
+] as const;
+
+/** First N entries == ch05 §5 canonical chain (transport-tag through trace-id). */
+export const SPEC_CH05_S5_CANONICAL_ORDER: readonly string[] = [
+  'transport-tag',
+  'jwt',
+  'migration-gate',
+  'storage-full',
+  'deadline',
+  'trace-id',
+] as const;
 
 // ---------------------------------------------------------------------------
 // Server lifecycle
@@ -261,14 +222,26 @@ export function buildInterceptorChain(opts: InterceptorChainOptions): Intercepto
 
 export interface CreateConnectDataServerOptions {
   /**
-   * Caller registers Connect services on the router. T05 PR ships this with
+   * Caller registers Connect services on the router. T05.1 PR ships this with
    * an empty function (no services); T06 will land `router.service(CcsmService, {…})`
-   * here.
+   * here, passing per-route `readMaxBytes` from {@link readMaxBytesForRoute}.
    */
   readonly registerRoutes: (router: ConnectRouter) => void;
 
-  /** Migration-gate predicate. See {@link createMigrationGateInterceptor}. */
+  /** Migration-gate predicate. */
   readonly isMigrationPending: () => boolean;
+
+  /** Storage-full predicate. Defaults to `() => false`. */
+  readonly isStorageFull?: () => boolean;
+
+  /** Structured-log sink for interceptor rejections. */
+  readonly logger?: RejectLogger;
+
+  /** Test injection. */
+  readonly now?: () => number;
+
+  /** Override per-RPC rate cap (default: 50/sec per spec). */
+  readonly rateCapPerSec?: number;
 }
 
 export interface ConnectDataServer {
@@ -283,13 +256,10 @@ export interface ConnectDataServer {
 
   /**
    * Hand a pre-accepted Duplex socket to the underlying HTTP/2 server. The
-   * data-socket integration (T12 / T19 wave) calls this AFTER it has peeked
-   * the HTTP/2 preface on the connection. The `transportType` argument is
-   * stamped on every request's `contextValues` via the adapter's
-   * `contextValues` factory so the JWT interceptor can apply the local bypass.
-   *
-   * NOT live in T05: callers MAY use this to build coexistence wiring in
-   * follow-up PRs. Tested here only at the surface level.
+   * data-socket integration calls this AFTER it has peeked the HTTP/2 preface
+   * on the connection. The `transportType` argument is stamped on every
+   * request's `contextValues` via the adapter's `contextValues` factory so
+   * the JWT interceptor can apply the local bypass.
    */
   attachSocket(socket: Duplex, transportType: 'local-pipe' | 'remote-tcp'): void;
 
@@ -299,14 +269,6 @@ export interface ConnectDataServer {
 
 /**
  * Create a Connect-RPC server bound to the daemon data-socket surface.
- *
- * Architecture:
- *   - One {@link ConnectRouter} with the spec-locked interceptor chain.
- *   - One Node HTTP/2 server that calls the Connect adapter. The adapter's
- *     `contextValues` factory reads a per-socket transport-tag stash (set by
- *     `attachSocket`) and stamps {@link transportTypeKey} on each request.
- *   - For pre-accepted sockets (the data-socket case) we route via
- *     `Http2Server.emit('connection', socket)` — Node's documented mechanism.
  */
 export function createConnectDataServer(
   opts: CreateConnectDataServerOptions,
@@ -318,17 +280,17 @@ export function createConnectDataServer(
 
   const interceptors = buildInterceptorChain({
     isMigrationPending: opts.isMigrationPending,
+    isStorageFull: opts.isStorageFull,
+    logger: opts.logger,
+    now: opts.now,
+    rateCapPerSec: opts.rateCapPerSec,
   });
 
   const handler = connectNodeAdapter({
     routes: opts.registerRoutes,
     interceptors,
     contextValues: (req) => {
-      // Note: we use createContextValues from @connectrpc/connect, accessed
-      // via the adapter's contract — pass an existing values object back.
-      // The adapter calls our factory once per request. We construct a fresh
-      // values map and seed the transport tag from the socket stash.
-      const values = lazyCreateContextValues();
+      const values = createContextValues();
       const sock = (req as unknown as { socket?: Duplex }).socket;
       const tag = sock ? socketTags.get(sock) : undefined;
       if (tag !== undefined) {
@@ -348,8 +310,6 @@ export function createConnectDataServer(
         throw new Error('Connect data server already listening');
       }
       httpServer = http2.createServer();
-      // Wire the Connect Node adapter as the request listener. http2 emits
-      // 'request' for HTTP/2 streams that carry a request (i.e. with method+path).
       httpServer.on('request', handler);
       await new Promise<void>((resolve, reject) => {
         const onError = (err: Error): void => {
@@ -372,17 +332,15 @@ export function createConnectDataServer(
     },
 
     attachSocket(socket: Duplex, transportType: 'local-pipe' | 'remote-tcp'): void {
-      if (!httpServer) {
-        // We tolerate attach-before-listen in T05 because the data-socket
-        // wiring may want to share a single HTTP/2 server across the local
-        // pipe + remote TCP listeners. T19 wave will lock this down.
-        socketTags.set(socket, transportType);
-        return;
-      }
       socketTags.set(socket, transportType);
-      // Hand the pre-accepted socket to the HTTP/2 server. Node will run the
-      // HTTP/2 preface check and dispatch streams to the 'request' handler.
-      httpServer.emit('connection', socket);
+      if (httpServer) {
+        // Hand the pre-accepted socket to the HTTP/2 server. Node will run
+        // the HTTP/2 preface check and dispatch streams to the 'request' handler.
+        httpServer.emit('connection', socket);
+      }
+      // attach-before-listen: tag is stashed; future listen() will not pick
+      // up the socket automatically (caller must re-attach after listen).
+      // T19 wave will lock the lifecycle ordering.
     },
 
     async close(): Promise<void> {
@@ -395,19 +353,6 @@ export function createConnectDataServer(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-// `createContextValues` lives in @connectrpc/connect/protocol but re-exported
-// at the package root. We import lazily to avoid a circular type dependency
-// when this module is consumed by the test harness.
-import { createContextValues as _createContextValues } from '@connectrpc/connect';
-
-function lazyCreateContextValues(): ReturnType<typeof _createContextValues> {
-  return _createContextValues();
-}
-
-// Suppress an unused-import warning for the universalRequestFromNodeRequest
-// re-export in case esbuild treeshaking needs it during bundling spike.
+// Suppress unused-import warning for re-exported helper used by the eventual
+// data-socket dispatch wiring.
 void universalRequestFromNodeRequest;
