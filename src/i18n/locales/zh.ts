@@ -122,7 +122,30 @@ const zh: EnCatalog = {
     checkForUpdates: '检查更新',
     crashReporting: {
       label: '发送崩溃报告给开发者',
-      description: '推荐开启。帮助修复你遇到的 bug。不发送个人数据。'
+      description: '推荐开启。帮助修复你遇到的 bug。不发送个人数据。',
+      consentLabel: '发送匿名崩溃报告',
+      consentHint:
+        '开启后，ccsm 会上传匿名崩溃诊断数据帮助我们修复 bug。无论此项是否开启，本地崩溃日志都会保存在你的电脑上。',
+      consentLocalNote: '本地崩溃日志始终保存在你的电脑上。',
+      sendLast: '发送最近一次崩溃报告',
+      sendLastNoCrash: '本机没有最近的崩溃记录。',
+      sendLastAlreadySent: '最近一次崩溃报告已发送。',
+      sendLastReady: '最近一次崩溃记录于 {{ts}}（{{surface}}）。',
+      sendLastSending: '正在发送…',
+      sendLastSuccess: '崩溃报告已发送，感谢！',
+      sendLastError: '无法发送崩溃报告：{{reason}}'
+    },
+    consentModal: {
+      title: '帮助改进 ccsm',
+      body:
+        '当 ccsm 崩溃时，我们希望发送匿名诊断数据。无论你的选择如何，本地崩溃日志始终保存在你的电脑上。',
+      whatsSent: '会发送的内容',
+      whatsSentItem1: '进程信息（版本、平台、Electron 版本）',
+      whatsSentItem2: '崩溃时的调用栈',
+      whatsSentItem3: '不发送源代码、文件内容或任何个人数据',
+      allow: '允许',
+      notNow: '暂不',
+      footer: '你可以随时在“设置”中修改。'
     },
     notifications: {
       intro:

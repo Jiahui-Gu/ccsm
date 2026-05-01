@@ -29,6 +29,13 @@ export interface DaemonSentryOpts {
   dsn: string;
   release: string;
   bootNonce: string;
+  /** Phase 4 consent gate. The supervisor forwards the user's
+   *  `crashUploadConsent` value via `CCSM_DAEMON_CRASH_CONSENT`. When this
+   *  is not `'opted-in'`, init early-returns (no SDK client created) — same
+   *  hard constraint as `electron/sentry/init.ts`. Local crash log writers
+   *  (phase 1 marker, phase 5 rolling log) are unaffected.
+   *  Defaults to `'pending'` when undefined to match the user-facing default. */
+  consent?: 'pending' | 'opted-in' | 'opted-out';
   /** Test seam — defaults to the real `@sentry/node` namespace. */
   sentry?: SentryLike;
 }
@@ -48,6 +55,11 @@ let active: SentryLike | undefined;
  * Returns `true` if init was performed, `false` if short-circuited.
  */
 export function initDaemonSentry(opts: DaemonSentryOpts): boolean {
+  // Phase 4 consent gate. Same semantics as electron/sentry/init.ts: only
+  // `'opted-in'` enables network upload; `'pending'` and `'opted-out'` are
+  // both no-ops. Default to `'pending'` so a missing env var fails closed.
+  const consent = opts.consent ?? 'pending';
+  if (consent !== 'opted-in') return false;
   const dsn = (opts.dsn ?? '').trim();
   if (!dsn || dsn === REDACTED) return false;
   const sentry: SentryLike = opts.sentry ?? (RealSentry as unknown as SentryLike);

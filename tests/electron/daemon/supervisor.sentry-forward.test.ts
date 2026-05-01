@@ -89,6 +89,25 @@ describe('spawnDaemon DSN forwarding', () => {
     expect(calls[0]!.options.env.CUSTOM_KEY).toBe('custom-value');
     expect(calls[0]!.options.env).toHaveProperty('CCSM_DAEMON_SENTRY_DSN');
   });
+
+  // Phase 4 consent forwarding.
+  it('forwards CCSM_DAEMON_CRASH_CONSENT="pending" by default', () => {
+    const { fn, calls } = fakeSpawn();
+    spawnDaemon({ binary: '/fake/ccsm-daemon', spawnFn: fn });
+    expect(calls[0]!.options.env.CCSM_DAEMON_CRASH_CONSENT).toBe('pending');
+  });
+
+  it('forwards explicit consent value (opted-in)', () => {
+    const { fn, calls } = fakeSpawn();
+    spawnDaemon({ binary: '/fake/ccsm-daemon', consent: 'opted-in', spawnFn: fn });
+    expect(calls[0]!.options.env.CCSM_DAEMON_CRASH_CONSENT).toBe('opted-in');
+  });
+
+  it('forwards explicit consent value (opted-out)', () => {
+    const { fn, calls } = fakeSpawn();
+    spawnDaemon({ binary: '/fake/ccsm-daemon', consent: 'opted-out', spawnFn: fn });
+    expect(calls[0]!.options.env.CCSM_DAEMON_CRASH_CONSENT).toBe('opted-out');
+  });
 });
 
 describe('resolveDaemonSentryDsn', () => {

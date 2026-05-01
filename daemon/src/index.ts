@@ -18,6 +18,15 @@ import { initDaemonSentry } from './sentry/init.js';
 const require = createRequire(import.meta.url);
 const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
 
+// Phase 4 consent gate parser. Mirrors the renderer-side `CrashConsent`
+// type. Anything other than the three known strings (or undefined) is
+// treated as `'pending'` — fail closed so a malformed env var never
+// silently enables upload.
+function parseDaemonConsent(raw: string | undefined): 'pending' | 'opted-in' | 'opted-out' {
+  if (raw === 'opted-in' || raw === 'opted-out' || raw === 'pending') return raw;
+  return 'pending';
+}
+
 const bootNonce = ulid();
 
 const logger = pino({
@@ -38,6 +47,7 @@ initDaemonSentry({
   dsn: process.env.CCSM_DAEMON_SENTRY_DSN ?? '',
   release: DAEMON_VERSION,
   bootNonce,
+  consent: parseDaemonConsent(process.env.CCSM_DAEMON_CRASH_CONSENT),
 });
 
 // Phase 1 crash observability (spec §5.2, plan Task 3):

@@ -127,7 +127,32 @@ const en = {
     checkForUpdates: 'Check for updates',
     crashReporting: {
       label: 'Send crash reports to developer',
-      description: 'Recommended. Helps fix bugs you hit. No personal data sent.'
+      description: 'Recommended. Helps fix bugs you hit. No personal data sent.',
+      // Phase 4: tri-state consent UI + send-last-crash button. Local crash
+      // logs always write regardless of this toggle — see consentLocalNote.
+      consentLabel: 'Send anonymous crash reports',
+      consentHint:
+        'When on, ccsm uploads anonymous crash diagnostics so we can fix bugs. Local crash logs are saved on your computer either way.',
+      consentLocalNote: 'Local crash logs are always saved on your computer.',
+      sendLast: 'Send last crash report',
+      sendLastNoCrash: 'No recent crash report on this computer.',
+      sendLastAlreadySent: 'Last crash report already sent.',
+      sendLastReady: 'Last crash recorded {{ts}} ({{surface}}).',
+      sendLastSending: 'Sending…',
+      sendLastSuccess: 'Crash report sent. Thanks!',
+      sendLastError: 'Couldn’t send crash report: {{reason}}'
+    },
+    consentModal: {
+      title: 'Help improve ccsm',
+      body:
+        'When ccsm crashes we’d like to send anonymous diagnostics. Local crash logs are always saved to your computer regardless of this choice.',
+      whatsSent: 'What’s sent',
+      whatsSentItem1: 'Process info (version, platform, electron version)',
+      whatsSentItem2: 'Stack trace from the crash',
+      whatsSentItem3: 'No source code, no file contents, no personal data',
+      allow: 'Allow',
+      notNow: 'Not now',
+      footer: 'You can change this any time in Settings.'
     },
     notifications: {
       intro:

@@ -1,11 +1,12 @@
 // tests/electron/sentry/init.test.ts
 //
-// Phase 2 crash observability (spec §6, plan Task 7) — main-process Sentry
-// init. Verifies:
+// Phase 2 + Phase 4 crash observability — main-process Sentry init.
+// Verifies:
 //   * no-op when DSN env / build-info absent (OSS-fork leak prevention)
 //   * no-op when DSN is the literal `***REDACTED***` placeholder
 //   * init called with `tags.surface = 'main'` when DSN configured
 //   * SENTRY_DSN_MAIN takes precedence over the legacy SENTRY_DSN env
+//   * Phase 4 consent gate: pending / opted-out → no init even with valid DSN
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as SentryMain from '@sentry/electron/main';
@@ -14,8 +15,12 @@ vi.mock('@sentry/electron/main', () => ({ init: vi.fn() }));
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.3.0-test', isPackaged: false },
 }));
-vi.mock('../../../electron/prefs/crashReporting', () => ({
-  loadCrashReportingOptOut: () => false,
+
+// Mutable consent stub — tests reach into this to flip the gate.
+const consentRef = { value: 'opted-in' as 'pending' | 'opted-in' | 'opted-out' };
+vi.mock('../../../electron/prefs/crashConsent', () => ({
+  loadCrashConsent: () => consentRef.value,
+  isCrashUploadAllowed: () => consentRef.value === 'opted-in',
 }));
 
 const init = SentryMain.init as unknown as ReturnType<typeof vi.fn>;
@@ -23,6 +28,7 @@ const init = SentryMain.init as unknown as ReturnType<typeof vi.fn>;
 beforeEach(() => {
   init.mockReset();
   vi.unstubAllEnvs();
+  consentRef.value = 'opted-in';
 });
 
 describe('initSentry (electron-main)', () => {
@@ -70,5 +76,33 @@ describe('initSentry (electron-main)', () => {
     const { initSentry } = await import('../../../electron/sentry/init');
     initSentry();
     expect(init.mock.calls[0]![0].dsn).toBe('https://winner@o0.ingest.sentry.io/3');
+  });
+
+  // Phase 4 consent gate.
+  it('returns early when consent is "pending", even with a valid DSN', async () => {
+    vi.stubEnv('SENTRY_DSN_MAIN', 'https://abc@o0.ingest.sentry.io/1');
+    consentRef.value = 'pending';
+    const { initSentry } = await import('../../../electron/sentry/init');
+    initSentry();
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  it('returns early when consent is "opted-out", even with a valid DSN', async () => {
+    vi.stubEnv('SENTRY_DSN_MAIN', 'https://abc@o0.ingest.sentry.io/1');
+    consentRef.value = 'opted-out';
+    const { initSentry } = await import('../../../electron/sentry/init');
+    initSentry();
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  // Reverse-verify: we drop the gate by forcing consent='opted-in' even
+  // though the real-world setting in this scenario would be 'opted-out'.
+  // The opposite assertion (init NOT called) flips and the test catches it.
+  it('reverse-verify: with the gate forced open, init runs (proves the gate is what stops it)', async () => {
+    vi.stubEnv('SENTRY_DSN_MAIN', 'https://abc@o0.ingest.sentry.io/1');
+    consentRef.value = 'opted-in';
+    const { initSentry } = await import('../../../electron/sentry/init');
+    initSentry();
+    expect(init).toHaveBeenCalledTimes(1);
   });
 });

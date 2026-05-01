@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { Check } from 'lucide-react';
-import * as Checkbox from '@radix-ui/react-checkbox';
 import { cn } from '../../lib/cn';
 import { Button } from '../ui/Button';
 import { Switch } from '../ui/Switch';
@@ -118,22 +116,38 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Persisted via the existing `db:save` / `db:load` IPC under the
-// `crashReportingOptOut` app_state key. We store the OPT-OUT flag (default
-// false → reporting ON) so a missing row means "send"; that matches the
-// reading logic in electron/main.ts so the two never disagree.
+// Phase 4 crash observability — tri-state consent (`pending` / `opted-in` /
+// `opted-out`) lives in app_state under `crashUploadConsent`. The legacy
+// `crashReportingOptOut` boolean is read by `electron/prefs/crashConsent.ts`
+// as a fallback so a previously-opted-out user stays opted-out across the
+// upgrade. The Settings switch below ONLY writes the new key.
+const CONSENT_KEY = 'crashUploadConsent';
+type Consent = 'pending' | 'opted-in' | 'opted-out';
+
 function CrashReportingField() {
   const { t } = useTranslation('settings');
-  const [optOut, setOptOut] = useState<boolean>(false);
+  const [consent, setConsent] = useState<Consent>('pending');
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const raw = await window.ccsm?.loadState('crashReportingOptOut');
+        const raw = await window.ccsm?.loadState(CONSENT_KEY);
         if (cancelled) return;
-        setOptOut(raw === 'true' || raw === '1');
+        if (raw === 'opted-in' || raw === 'opted-out' || raw === 'pending') {
+          setConsent(raw);
+        } else {
+          // Legacy fallback: respect the old boolean if present so the
+          // toggle reflects the user's previous choice on first paint
+          // after upgrade.
+          const legacy = await window.ccsm?.loadState('crashReportingOptOut');
+          if (!cancelled && (legacy === 'true' || legacy === '1')) {
+            setConsent('opted-out');
+          } else {
+            setConsent('pending');
+          }
+        }
       } finally {
         if (!cancelled) setHydrated(true);
       }
@@ -144,45 +158,131 @@ function CrashReportingField() {
   }, []);
 
   const onChange = (sendReports: boolean) => {
-    // UI is "Send crash reports" (positive). Persisted key is the inverse.
-    const nextOptOut = !sendReports;
-    setOptOut(nextOptOut);
-    void window.ccsm?.saveState('crashReportingOptOut', String(nextOptOut));
+    const next: Consent = sendReports ? 'opted-in' : 'opted-out';
+    setConsent(next);
+    void window.ccsm?.saveState(CONSENT_KEY, next);
   };
 
-  const checked = !optOut;
+  const checked = consent === 'opted-in';
 
   return (
-    <label
-      className={cn(
-        'flex items-start gap-3 cursor-pointer select-none',
-        !hydrated && 'opacity-60'
-      )}
-    >
-      <Checkbox.Root
-        checked={checked}
-        disabled={!hydrated}
-        onCheckedChange={(v) => onChange(v === true)}
+    <Field label={t('crashReporting.consentLabel')} hint={t('crashReporting.consentHint')}>
+      <label
         className={cn(
-          'mt-[3px] h-3.5 w-3.5 shrink-0 rounded-sm border border-border-strong',
-          'data-[state=checked]:bg-accent data-[state=checked]:border-accent',
-          'outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
-          'focus-visible:ring-offset-1 focus-visible:ring-offset-bg-app',
-          'transition-colors duration-150'
+          'inline-flex items-center gap-2 cursor-pointer select-none',
+          !hydrated && 'opacity-60'
         )}
       >
-        <Checkbox.Indicator className="flex items-center justify-center text-bg-app">
-          <Check size={10} strokeWidth={3} />
-        </Checkbox.Indicator>
-      </Checkbox.Root>
-      <div className="min-w-0 flex-1">
-        <div className="text-chrome font-medium text-fg-primary">
-          {t('crashReporting.label')}
-        </div>
-        <div className="text-meta text-fg-tertiary mt-0.5">
-          {t('crashReporting.description')}
-        </div>
-      </div>
-    </label>
+        <Switch
+          checked={checked}
+          disabled={!hydrated}
+          onCheckedChange={onChange}
+          aria-label={t('crashReporting.consentLabel')}
+          data-crash-consent-toggle
+        />
+        <span className="text-chrome text-fg-secondary">
+          {t('crashReporting.consentLabel')}
+        </span>
+      </label>
+      <SendLastCrashRow />
+    </Field>
+  );
+}
+
+interface IncidentSummary {
+  id: string;
+  dirName: string;
+  ts: string;
+  surface: string;
+  alreadySent: boolean;
+}
+
+type SendState =
+  | { kind: 'idle' }
+  | { kind: 'sending' }
+  | { kind: 'success' }
+  | { kind: 'error'; reason: string };
+
+function SendLastCrashRow() {
+  const { t } = useTranslation('settings');
+  const [incident, setIncident] = useState<IncidentSummary | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [send, setSend] = useState<SendState>({ kind: 'idle' });
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const got = (await window.ccsm?.crash?.getLastIncident()) ?? null;
+        if (!cancelled) setIncident(got);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onClick = async () => {
+    if (!incident || send.kind === 'sending') return;
+    setSend({ kind: 'sending' });
+    const res = await window.ccsm?.crash?.sendLastIncident();
+    if (!res) {
+      setSend({ kind: 'error', reason: 'no-bridge' });
+      return;
+    }
+    if (res.ok) {
+      setSend({ kind: 'success' });
+      // Re-fetch to flip alreadySent so the button disables itself.
+      const refreshed = (await window.ccsm?.crash?.getLastIncident()) ?? null;
+      setIncident(refreshed);
+    } else {
+      setSend({ kind: 'error', reason: res.reason });
+    }
+  };
+
+  const disabled =
+    !hydrated ||
+    !incident ||
+    incident.alreadySent ||
+    send.kind === 'sending' ||
+    send.kind === 'success';
+
+  let status: string;
+  if (!hydrated) {
+    status = '';
+  } else if (!incident) {
+    status = t('crashReporting.sendLastNoCrash');
+  } else if (send.kind === 'success') {
+    status = t('crashReporting.sendLastSuccess');
+  } else if (send.kind === 'error') {
+    status = t('crashReporting.sendLastError', { reason: send.reason });
+  } else if (send.kind === 'sending') {
+    status = t('crashReporting.sendLastSending');
+  } else if (incident.alreadySent) {
+    status = t('crashReporting.sendLastAlreadySent');
+  } else {
+    status = t('crashReporting.sendLastReady', { ts: incident.ts, surface: incident.surface });
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => void onClick()}
+        disabled={disabled}
+        data-send-last-crash-button
+      >
+        {t('crashReporting.sendLast')}
+      </Button>
+      <span className="text-meta text-fg-tertiary" data-send-last-crash-status>
+        {status}
+      </span>
+      <span className="text-meta text-fg-tertiary">
+        {t('crashReporting.consentLocalNote')}
+      </span>
+    </div>
   );
 }
