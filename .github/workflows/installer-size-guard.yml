@@ -1,0 +1,85 @@
+name: installer-size-guard
+
+# Task #1015 (T58) — Installer size CI guard.
+#
+# Builds the installer for each OS and runs scripts/check-installer-size.mjs
+# against the artifact. FAILS if size exceeds the absolute per-extension
+# ceiling from frag-11-packaging.md §11.5(6) OR if size grew >10% vs the
+# baseline in installer/size-baseline.json (>5% emits a warning).
+#
+# DISABLED for the v0.3 migration window per Task #1047 (mirrors ci.yml /
+# e2e.yml gating). Will be re-enabled by Task #1048.
+
+on:
+  pull_request:
+    branches: [main, working]
+    paths:
+      - 'electron/**'
+      - 'src/**'
+      - 'daemon/**'
+      - 'scripts/check-installer-size.mjs'
+      - 'installer/size-baseline.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'electron-builder.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: installer-size-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  size-guard:
+    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
+    name: size-guard (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: npm ci --legacy-peer-deps
+
+      - name: Build installer (${{ matrix.platform }})
+        run: npx electron-builder --${{ matrix.platform }} --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check installer size
+        run: node scripts/check-installer-size.mjs --dir release
+
+      - name: Upload installer artifacts (debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+          if-no-files-found: warn
+          retention-days: 7
