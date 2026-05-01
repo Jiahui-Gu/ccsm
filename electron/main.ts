@@ -25,27 +25,70 @@
 //     (db init, register*Ipc calls, notify pipeline construction, ptyHost,
 //     sessionWatcher, eager scans).
 
-import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, type Tray } from 'electron';
+import * as path from 'node:path';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
+import { startCrashCollector } from './crash/collector';
+import { resolveCrashRoot } from './crash/incident-dir';
+import { wireCrashHandlers } from './main-crash-wiring';
 
-// safety net — escaped main-proc rejections kill app on Node 20+ default
-// (audit tech-debt-03-errors.md risk #2). Registered BEFORE app.whenReady so
-// any throw during bootstrap (initSentry, IPC registration, db open) lands
-// in the logger instead of silently terminating the process. We deliberately
-// do NOT call app.exit() — preserves current default-throw behavior in tests
-// and mirrors the renderer's "log + degrade" stance. TODO: forward to Sentry
-// once main-process Sentry transport is wired (currently renderer-only per
-// audit).
-process.on('unhandledRejection', (reason, _promise) => {
-  console.error('[main] unhandledRejection:', reason);
+// Phase 1 crash observability (spec §5.1, plan Task 2):
+//   * crashReporter.start with empty submitURL + uploadToServer:false enables
+//     Electron's native minidump generation into the staging dir without any
+//     network upload. The collector adopts dmps from staging into the
+//     incident dir on the next recordIncident call.
+//   * resolveCrashRoot picks %LOCALAPPDATA%\CCSM\crashes (win32) /
+//     ~/Library/Application Support/CCSM/crashes (darwin) /
+//     ~/.local/share/CCSM/crashes (linux).
+//   * wireCrashHandlers installs uncaughtException + unhandledRejection that
+//     route through the collector, replacing the prior console.error-only
+//     handlers so every escaped throw leaves a recoverable artifact.
+const crashRoot = resolveCrashRoot();
+const dmpStaging = path.join(crashRoot, '_dmp-staging');
+
+crashReporter.start({ submitURL: '', uploadToServer: false, compress: true });
+app.setPath('crashDumps', dmpStaging);
+
+const crashCollector = startCrashCollector({
+  crashRoot,
+  dmpStaging,
+  appVersion: app.getVersion(),
+  electronVersion: process.versions.electron ?? 'unknown',
 });
-process.on('uncaughtException', (err) => {
-  console.error('[main] uncaughtException:', err);
+
+wireCrashHandlers({ collector: crashCollector, processRef: process });
+
+app.on('render-process-gone', (_e, _webContents, details) => {
+  crashCollector.recordIncident({
+    surface: 'renderer',
+    error: { message: `render-process-gone: ${details.reason}`, name: details.reason },
+    exitCode: details.exitCode ?? null,
+  });
 });
+
+app.on('child-process-gone', (_e, details) => {
+  crashCollector.recordIncident({
+    surface: details.type === 'GPU' ? 'gpu' : 'helper',
+    error: { message: `child-process-gone: ${details.type} ${details.reason}`, name: details.reason },
+    exitCode: details.exitCode ?? null,
+  });
+});
+
+// Best-effort retention pruning at boot.
+try { crashCollector.pruneRetention({ maxCount: 20, maxAgeDays: 30 }); } catch {}
+
+// Exposed for supervisor wiring (Task 4) and downstream IPC fan-out.
+export function emitDaemonCrash(payload: { incidentId: string; exitCode: number | null; signal: string | null; bootNonce?: string; markerPresent: boolean }): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    w.webContents.send('ccsm:daemon-crash', payload);
+  }
+}
+
+export { crashCollector };
 
 // Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
 // init is idempotent and a no-op when no DSN is set.
