@@ -257,3 +257,123 @@ describe('updater: IPC wiring', () => {
     expect(res).toEqual({ kind: 'available', version: '9.9.9', releaseDate: undefined });
   });
 });
+
+// ----------------------------------------------------------------------------
+// T62 — Upgrade-shutdown RPC (frag-11 §11.6.5)
+//
+// Before quitAndInstall, the install handler MUST send daemon.shutdownForUpgrade
+// over the control socket and wait up to 5 s for the ack. On ack OR timeout
+// (per spec step 3-4), proceed with the existing update flow. The transport is
+// injected via setUpgradeShutdownRpc; tests pass fakes.
+// ----------------------------------------------------------------------------
+
+describe('updater: T62 upgrade-shutdown RPC', () => {
+  beforeEach(async () => {
+    await freshModule();
+  });
+
+  it('default (no rpc wired) resolves immediately and proceeds with quitAndInstall', async () => {
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3' });
+    const handler = ipcHandlers.get('updates:install')!;
+    const res = await handler({});
+    expect(res).toEqual({ ok: true });
+    await new Promise((r) => setImmediate(r));
+    expect(quitAndInstallCalls).toHaveLength(1);
+  });
+
+  it('callShutdownForUpgrade returns acked when the rpc resolves', async () => {
+    const mod = await import('../updater');
+    const ack = { accepted: true as const, reason: 'upgrade' as const };
+    mod.setUpgradeShutdownRpc(async () => ack);
+    const outcome = await mod.callShutdownForUpgrade();
+    expect(outcome).toEqual({ kind: 'acked', ack });
+  });
+
+  it('callShutdownForUpgrade returns timeout when the rpc never resolves (5 s)', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import('../updater');
+      mod.setUpgradeShutdownRpc(() => new Promise(() => undefined));
+      const promise = mod.callShutdownForUpgrade();
+      await vi.advanceTimersByTimeAsync(mod.UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS);
+      const outcome = await promise;
+      expect(outcome).toEqual({ kind: 'timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('callShutdownForUpgrade returns error when the rpc rejects', async () => {
+    const mod = await import('../updater');
+    mod.setUpgradeShutdownRpc(async () => {
+      throw new Error('socket closed');
+    });
+    const outcome = await mod.callShutdownForUpgrade();
+    expect(outcome).toEqual({ kind: 'error', message: 'socket closed' });
+  });
+
+  it('updates:install awaits the shutdown RPC before scheduling quitAndInstall', async () => {
+    const mod = await import('../updater');
+    const order: string[] = [];
+    let releaseRpc: (() => void) | null = null;
+    mod.setUpgradeShutdownRpc(
+      () =>
+        new Promise((resolve) => {
+          releaseRpc = () => {
+            order.push('rpc-resolved');
+            resolve({ accepted: true, reason: 'upgrade' });
+          };
+        }),
+    );
+
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.4' });
+    const handler = ipcHandlers.get('updates:install')!;
+    const promise = handler({});
+
+    // Give the handler a microtask tick — it should be parked on the RPC,
+    // NOT yet have called quitAndInstall.
+    await new Promise((r) => setImmediate(r));
+    expect(quitAndInstallCalls).toEqual([]);
+
+    releaseRpc!();
+    const res = await promise;
+    expect(res).toEqual({ ok: true });
+    // setImmediate flush for the scheduled quitAndInstall.
+    await new Promise((r) => setImmediate(r));
+    expect(order).toEqual(['rpc-resolved']);
+    expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
+  });
+
+  it('updates:install proceeds with quitAndInstall after RPC timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const mod = await import('../updater');
+      mod.setUpgradeShutdownRpc(() => new Promise(() => undefined));
+      autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.5' });
+      const handler = ipcHandlers.get('updates:install')!;
+      const promise = handler({});
+      await vi.advanceTimersByTimeAsync(mod.UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS);
+      const res = await promise;
+      expect(res).toEqual({ ok: true });
+      // Drain the scheduled setImmediate.
+      vi.useRealTimers();
+      await new Promise((r) => setImmediate(r));
+      expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('updates:install proceeds with quitAndInstall even when RPC errors', async () => {
+    const mod = await import('../updater');
+    mod.setUpgradeShutdownRpc(async () => {
+      throw new Error('control socket EPIPE');
+    });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.6' });
+    const handler = ipcHandlers.get('updates:install')!;
+    const res = await handler({});
+    expect(res).toEqual({ ok: true });
+    await new Promise((r) => setImmediate(r));
+    expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
+  });
+});
