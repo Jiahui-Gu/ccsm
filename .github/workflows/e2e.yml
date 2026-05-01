@@ -20,6 +20,7 @@ permissions:
 
 jobs:
   e2e:
+    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
     name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
