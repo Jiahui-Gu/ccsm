@@ -29,9 +29,6 @@
 //     semaphore, T41 fan-out, T28 schema, T22 marker) lands.
 //
 // What this handler does NOT own (deferred to other tasks):
-//   - T25 force-kill fallback after the deadline elapses. The plan exposes
-//     `forceKillDeadlineMs` (5_000 ms) and the handler logs / records
-//     deadline overrun; the actual SIGKILL escalation is T25 territory.
 //   - The atomic shutdown marker write (T21 `daemon.shutdownForUpgrade`).
 //     T20 explicitly skips this — the spec distinguishes the two RPCs by
 //     marker presence so the supervisor crash-loop counter (frag-6-7 §6.1)
@@ -39,6 +36,12 @@
 //   - `pino.final` flush + `process.exit(0)`: these are sinks injected by
 //     `actions.finalizeLogger` and `actions.exitProcess`. The handler
 //     resolves its reply BEFORE invoking exit so the ack reaches the wire.
+//
+// T25 force-kill fallback (added 2026-05-01):
+//   - `actions.forceKillRemaining` is invoked in the deadline-overrun
+//     branch right after `recordDeadlineOverrun`. Per-platform kill
+//     primitive lives in `daemon/src/lifecycle/force-kill.ts`; this
+//     handler only owns the WHEN.
 
 import { isSupervisorRpc } from '../envelope/supervisor-rpcs.js';
 
@@ -199,6 +202,16 @@ export interface ShutdownActions {
    *  T25 owns the actual SIGKILL escalation; this hook lets the handler
    *  surface the timing without entangling its sink. */
   recordDeadlineOverrun?(elapsedMs: number, deadlineMs: number): void;
+  /** Optional — T25 force-kill fallback. Invoked AFTER
+   *  `recordDeadlineOverrun` when the drain deadline is blown, BEFORE
+   *  `finalize-logger` + `exit-process`. Implementation enumerates
+   *  surviving children (POSIX: SIGKILL via T38 reaper's PID set;
+   *  Win: TerminateJobObject via T39 handle) and issues the terminal
+   *  kill once. MUST be idempotent — the handler will not re-call it
+   *  on its own, but a future replay path through `recordDeadlineOverrun`
+   *  could end up here twice. Errors thrown are captured by
+   *  `recordStepError` like any other action. */
+  forceKillRemaining?(): void;
 }
 
 export interface DaemonShutdownContext {
@@ -308,8 +321,23 @@ export function createDaemonShutdownHandler(
       // user-observable drain only.
       if (!overrunReported && step === 'close-subscribers') {
         const elapsed = Date.now() - startMs;
-        if (elapsed > deadlineMs && actions.recordDeadlineOverrun) {
-          actions.recordDeadlineOverrun(elapsed, deadlineMs);
+        if (elapsed > deadlineMs) {
+          if (actions.recordDeadlineOverrun) {
+            actions.recordDeadlineOverrun(elapsed, deadlineMs);
+          }
+          // T25 escalation — fire the per-platform terminal kill BEFORE
+          // `finalize-logger` so the warn line + force-kill telemetry
+          // both make it into the flushed log buffer. Errors in the
+          // sink are routed through `recordStepError` like any other
+          // action; the sequence still proceeds to logger flush + exit
+          // (partial-drain principle, §6.6.1).
+          if (actions.forceKillRemaining) {
+            try {
+              actions.forceKillRemaining();
+            } catch (err) {
+              actions.recordStepError('close-subscribers', err);
+            }
+          }
           overrunReported = true;
         }
       }

@@ -8,6 +8,7 @@ import {
   type ShutdownActions,
   type ShutdownStep,
 } from './handlers/daemon-shutdown.js';
+import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
 
 const require = createRequire(import.meta.url);
 const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
@@ -20,6 +21,32 @@ const logger = pino({
     v: DAEMON_VERSION,
     pid: process.pid,
     boot: bootNonce,
+  },
+});
+
+// T25 — force-kill fallback wiring. The reaper-PID set (T38) and the
+// JobObject handle (T39) are owned by the per-spawn wiring that lands
+// alongside the real ptyService. Until those wires are in, the
+// getters return empty arrays so the sink is a safe no-op; the
+// shutdown handler still calls it on overrun and the warn line
+// records `targets: 0`. When the spawn wiring lands it will populate
+// these snapshots from the real reaper / job-object singletons.
+const childPidRegistry: Set<number> = new Set();
+const jobObjectRegistry: ForceKillJobHandle[] = [];
+const forceKillSink = createForceKillSink({
+  getChildPids: () => Array.from(childPidRegistry),
+  getJobObjects: () => jobObjectRegistry.slice(),
+  recordForceKill: ({ platform, targets, errors }) => {
+    logger.warn(
+      { event: 'daemon-shutdown.force-kill', platform, targets, errors },
+      'force-kill fallback issued after deadline overrun',
+    );
+  },
+  onError: (target, err) => {
+    logger.warn(
+      { event: 'daemon-shutdown.force-kill.error', target, err: String(err) },
+      'force-kill target failed',
+    );
   },
 });
 
@@ -61,8 +88,11 @@ const shutdownActions: ShutdownActions = {
   recordDeadlineOverrun: (elapsedMs, deadlineMs) => {
     logger.warn(
       { event: 'daemon-shutdown.deadline-overrun', elapsedMs, deadlineMs },
-      'shutdown drain exceeded deadline (T25 force-kill territory)',
+      'shutdown drain exceeded deadline; T25 force-kill fallback engaging',
     );
+  },
+  forceKillRemaining: () => {
+    forceKillSink.forceKillRemaining();
   },
 };
 
