@@ -355,7 +355,9 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
       await vi.advanceTimersByTimeAsync(mod.UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS);
       const res = await promise;
       expect(res).toEqual({ ok: true });
-      // Drain the scheduled setImmediate.
+      // Drain the scheduled setImmediate while still on fake timers — switching
+      // to real timers first would drop the queued callback.
+      await vi.runAllTimersAsync();
       vi.useRealTimers();
       await new Promise((r) => setImmediate(r));
       expect(quitAndInstallCalls).toEqual([{ isSilent: false, isForceRunAfter: true }]);
