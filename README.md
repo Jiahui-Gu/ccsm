@@ -20,8 +20,6 @@ Block rendering, monospace, collapsed tool calls, no fluff chrome. The right pan
 ### Permission prompts as UI
 When the agent asks to run a command or edit a file, you get a real prompt with **Allow**, **Allow always**, and **Deny** — no more squinting at terminal prompts mid-flow.
 
-![palette](docs/screenshots/v0.2-readme/02-palette.png)
-
 ### Status bar that means something
 Every session shows its working directory, model, permission mode (Plan / Default / Accept edits / Bypass / Auto), context meter, and a 6-tier effort chip. Click any of them to change it — no rerun, no restart.
 
