@@ -45,6 +45,7 @@ function makeActions(overrides: Partial<ShutdownActions> = {}): ShutdownActions 
     }),
     recordStepError: vi.fn(),
     recordDeadlineOverrun: vi.fn(),
+    forceKillRemaining: vi.fn(),
   };
   return Object.assign({ callOrder }, base, overrides);
 }
@@ -318,6 +319,74 @@ describe('daemon.shutdown handler (T20 — frag-6-7 §6.6.1)', () => {
       const h = createDaemonShutdownHandler(actions);
       await h.handle({ deadlineMs: 50 }, ctx);
       await h.whenDrained();
+      expect(actions.finalizeLogger).toHaveBeenCalled();
+      expect(actions.exitProcess).toHaveBeenCalledWith(0);
+    });
+  });
+
+  describe('T25 force-kill fallback wiring', () => {
+    it('invokes forceKillRemaining on overrun, BEFORE finalize-logger and exit', async () => {
+      const actions = makeActions({
+        windDownSessions: vi.fn(async () => {
+          await new Promise<void>((r) => setTimeout(r, 80));
+        }),
+      });
+      const h = createDaemonShutdownHandler(actions);
+      await h.handle({ deadlineMs: 50 }, ctx);
+      await h.whenDrained();
+      expect(actions.forceKillRemaining).toHaveBeenCalledTimes(1);
+      // Order check: forceKillRemaining must run before finalize-logger.
+      const fkOrder = (actions.forceKillRemaining as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0]!;
+      const flOrder = (actions.finalizeLogger as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0]!;
+      const exOrder = (actions.exitProcess as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0]!;
+      expect(fkOrder).toBeLessThan(flOrder);
+      expect(flOrder).toBeLessThan(exOrder);
+    });
+
+    it('does NOT invoke forceKillRemaining when within deadline', async () => {
+      const actions = makeActions();
+      const h = createDaemonShutdownHandler(actions);
+      await h.handle({ deadlineMs: 60_000 }, ctx);
+      await h.whenDrained();
+      expect(actions.forceKillRemaining).not.toHaveBeenCalled();
+    });
+
+    it('forceKillRemaining throw is captured by recordStepError; finalize+exit still run', async () => {
+      const actions = makeActions({
+        windDownSessions: vi.fn(async () => {
+          await new Promise<void>((r) => setTimeout(r, 80));
+        }),
+        forceKillRemaining: vi.fn(() => {
+          throw new Error('native kill EPERM');
+        }),
+      });
+      const h = createDaemonShutdownHandler(actions);
+      await h.handle({ deadlineMs: 50 }, ctx);
+      await h.whenDrained();
+      expect(actions.recordStepError).toHaveBeenCalledWith(
+        'close-subscribers',
+        expect.any(Error),
+      );
+      expect(actions.finalizeLogger).toHaveBeenCalled();
+      expect(actions.exitProcess).toHaveBeenCalledWith(0);
+    });
+
+    it('overrun without forceKillRemaining wired still records and exits cleanly', async () => {
+      const actions = makeActions({
+        windDownSessions: vi.fn(async () => {
+          await new Promise<void>((r) => setTimeout(r, 80));
+        }),
+      });
+      // Simulate older caller that never wired the optional hook.
+      const stripped: ShutdownActions = { ...actions };
+      delete (stripped as { forceKillRemaining?: unknown }).forceKillRemaining;
+      const h = createDaemonShutdownHandler(stripped);
+      await h.handle({ deadlineMs: 50 }, ctx);
+      await h.whenDrained();
+      expect(actions.recordDeadlineOverrun).toHaveBeenCalled();
       expect(actions.finalizeLogger).toHaveBeenCalled();
       expect(actions.exitProcess).toHaveBeenCalledWith(0);
     });
