@@ -32,7 +32,7 @@ This spec stands on top of v0.3's daemon-split work and the predecessor all-in-o
 | Path | What it provides | v0.4 impact |
 |---|---|---|
 | `daemon/src/index.ts` | Daemon entry point | M1: bind Connect HTTP/2 server alongside envelope on data socket |
-| `daemon/src/sockets/data-socket.ts` | Data-socket transport (T15) | M1-M2: Connect server replaces envelope handlers |
+| `daemon/src/sockets/data-socket.ts` | Data-socket transport (hosts the round-2 security pre-accept rate cap labelled "T15" in `v0.3-design.md` §3.4.1.a) | M1-M2: Connect server replaces envelope handlers; pre-accept rate cap stays on the listener boundary |
 | `daemon/src/sockets/runtime-root.ts` | Listener selection / transport tagging | M4: tag local vs. remote requests for JWT bypass |
 | `daemon/src/dispatcher.ts` | RPC method router (control socket) | Unchanged in v0.4 (control socket stays envelope) |
 | `daemon/src/handlers/healthz.ts` | `/healthz` handler | Unchanged (control socket) |
