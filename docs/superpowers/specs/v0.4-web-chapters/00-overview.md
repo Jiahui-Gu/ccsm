@@ -17,24 +17,24 @@ Per user clarification 2026-05-01, v0.4 = "do the web client". The §8 release-s
 ## What v0.4 ships
 
 1. **`proto/` schema directory** — Protobuf v3 service + message definitions covering every existing IPC bridge call. `buf` toolchain (`buf lint`, `buf breaking`, `buf generate`) wired into CI. TypeScript bindings emitted into `gen/ts/` and consumed by both Electron renderer and the new Web client.
-2. **Connect protocol on the daemon** — `@connectrpc/connect-node` server replacing the hand-rolled envelope on the data socket. The control socket (supervisor `/healthz`, `daemon.hello`, `daemon.shutdown*`, `/stats`) keeps its own narrower Connect surface but stays on a separate transport, per v0.3 §3.4.1.h. Local socket peer-cred verification, ACL, and 16 MiB frame cap all preserved (Connect HTTP/2 framing inherits the cap natively).
-3. **Bridge swap, all 22 calls** — every `ipcRenderer.invoke('foo', ...)` in `electron/preload/bridges/*.ts` is replaced with a Connect client call; bridge function signatures unchanged so renderer code is untouched. Done in 4 PR-sized batches grouped by domain (read-only, then write, then streams).
+2. **Connect protocol on the daemon** — `@connectrpc/connect-node` server replacing the hand-rolled envelope on the data socket. The control socket (supervisor `/healthz`, `daemon.hello`, `daemon.shutdown*`, `/stats`) stays on the v0.3 hand-rolled envelope on a separate transport (per chapter 02 §6 — moving the supervisor surface to Connect is a v0.5 housekeeping item). Local socket peer-cred verification, ACL, and 16 MiB frame cap all preserved (Connect HTTP/2 framing inherits the cap natively).
+3. **Bridge swap, all ~46 calls** — every `ipcRenderer.invoke('foo', ...)` in `electron/preload/bridges/*.ts` is replaced with a Connect client call; bridge function signatures unchanged so renderer code is untouched. Per chapter 03 §1 inventory: 31 unary + 4 fire-and-forget + 11 streams = 46 cross-boundary calls. Done in 4 PR-sized batches grouped by domain (read-only, then write, then streams).
 4. **Web client (`web/` package)** — Vite SPA wrapping the same `src/` renderer code as Electron. Static build deployed to Cloudflare Pages on push to `main`. In dev, runs on `vite dev` against a locally running daemon (with Tunnel optional).
 5. **Cloudflare layer** — `cloudflared` Tunnel (spawned by daemon when remote access is enabled), Cloudflare Access zero-trust application with GitHub OAuth IdP, JWT validation middleware on daemon's remote ingress.
 6. **Auto-start at OS boot** — opt-in setting (default OFF), so remote-only access works when the desktop is closed. Surfaced in tray menu and Settings.
 
 ## Who it's for
 
-Single-user remote access. The author's primary use case: Windows box at home running the daemon with sessions in flight; open `app.<author-domain>` from a work laptop or phone browser; pick up exactly where you left off. Multi-user / multi-tenant is explicitly out of scope (see chapter 01).
+Single-user remote access. The author's primary use case: Windows box at home running the daemon with sessions in flight; open `app.<your-domain>` from a work laptop or phone browser; pick up exactly where you left off. Multi-user / multi-tenant is explicitly out of scope (see chapter 01).
 
 ## Success criteria
 
 A v0.4 release succeeds when **all** of the following hold for 7 consecutive days of dogfood:
 
 1. **Electron path unchanged for end users** — no visible regression vs v0.3 in latency, throughput, reliability, or UI behavior. Local-only users notice nothing.
-2. **Web client end-to-end** — author opens `https://app.<author-domain>` from a non-author network (work, phone-tether), authenticates via GitHub OAuth, lists sessions, opens a session, sees live PTY output, types into the session, and sees the result mirrored on the desktop client. No daemon restart required.
+2. **Web client end-to-end** — author opens `https://app.<your-domain>` from a non-author network (work, phone-tether), authenticates via GitHub OAuth, lists sessions, opens a session, sees live PTY output, types into the session, and sees the result mirrored on the desktop client. No daemon restart required.
 3. **Multi-client coherence** — Electron and Web simultaneously attached to the same session both see the same PTY buffer (snapshot + live ops). Inputs from either side are honored in arrival order; neither side diverges.
-4. **Reconnect** — Web client survives a 30-minute network drop and resumes the same PTY stream via `fromSeq` replay (no full re-snapshot). Electron does the same when the daemon restarts.
+4. **Reconnect** — Web client survives a 30-minute network drop and resumes via `fromSeq` replay when within the fanout-buffer window OR via fresh snapshot when the drop exceeds the buffer (no data loss; user sees current PTY state on resume). Electron does the same when the daemon restarts. Per chapter 06 §6, the 256 KiB replay budget covers ~minutes of typical chat output but not 30 min of busy compile logs; the snapshot fallback covers the long tail. Chapter 08 §5 includes both short-drop (seq replay) and long-drop (snapshot fallback) tests.
 5. **Protocol gate** — `buf breaking` against the previous tagged release (`v0.4.0-rc1` etc.) passes on every PR touching `proto/`. Schema changes that would break wire compat are blocked at CI.
 6. **Auto-start works** — opt-in setting flipped ON, machine rebooted, daemon comes up before Electron is launched, web client is reachable within 30s of OS login.
 
