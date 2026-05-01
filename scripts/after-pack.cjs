@@ -22,6 +22,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const requiredAfterPack = require('./required-after-pack.cjs');
 
 exports.default = async function afterPack(context) {
   const { appOutDir, electronPlatformName, arch } = context;
@@ -88,4 +89,9 @@ exports.default = async function afterPack(context) {
   console.log(
     `[after-pack] OK ${platformKey}: node-pty ${flavor} binding present (${sizeKB} KB) at ${which}`,
   );
+
+  // T57 (#1012) — REQUIRED_AFTER_PACK validation: every daemon-runtime file
+  // (binary, natives, SDK, Win uninstall helper) must be present in BOTH
+  // the extraResources stage AND the asarUnpack stage. Throws on missing.
+  await requiredAfterPack.validate(context);
 };
