@@ -136,6 +136,7 @@
     ],
     "beforePack": "scripts/before-pack.cjs",
     "afterPack": "scripts/after-pack.cjs",
+    "afterSign": "scripts/sign-windows.cjs",
     "extraResources": [
       { "from": "daemon/native-staged", "to": "daemon/native" },
       { "from": "daemon/sdk-staged", "to": "daemon/node_modules/@anthropic-ai/claude-agent-sdk" },
