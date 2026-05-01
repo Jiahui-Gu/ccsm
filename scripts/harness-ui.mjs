@@ -183,18 +183,32 @@ async function caseSettingsOpen({ win, log }) {
         // textContent walks subtree, including any visually-hidden text.
         return (el.textContent ?? '').trim();
       };
+      const describeAncestor = (el) => {
+        if (!el) return null;
+        const tag = el.tagName?.toLowerCase() ?? '?';
+        const id = el.id ? `#${el.id}` : '';
+        const cls = (el.getAttribute('class') ?? '').slice(0, 80);
+        const ds = el.getAttribute('data-state');
+        const tid = el.getAttribute('data-testid');
+        return `${tag}${id}${cls ? `.${cls.replace(/\s+/g, '.')}` : ''}${ds ? `[data-state=${ds}]` : ''}${tid ? `[data-testid=${tid}]` : ''}`;
+      };
       const buttons = Array.from(document.querySelectorAll('button')).map((b) => {
         const r = b.getBoundingClientRect();
         const cs = getComputedStyle(b);
         const name = accName(b);
+        const ariaHidEl = b.closest('[aria-hidden="true"]');
+        const inertEl = b.closest('[inert]');
         return {
           text: (b.textContent ?? '').trim().slice(0, 40),
           aria: b.getAttribute('aria-label'),
           accName: name,
-          accNameJSON: JSON.stringify(name), // exposes hidden chars / NBSP
+          accNameJSON: JSON.stringify(name),
           ariaHidden: b.getAttribute('aria-hidden'),
-          inertAncestor: !!b.closest('[inert]'),
-          ariaHiddenAncestor: !!b.closest('[aria-hidden="true"]'),
+          inertAncestor: !!inertEl,
+          inertAncestorDesc: describeAncestor(inertEl),
+          ariaHiddenAncestor: !!ariaHidEl,
+          ariaHiddenAncestorDesc: describeAncestor(ariaHidEl),
+          ariaHiddenAncestorHTML: ariaHidEl ? ariaHidEl.outerHTML.slice(0, 300) : null,
           html: b.outerHTML.slice(0, 200),
           rect: { w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x), y: Math.round(r.y) },
           display: cs.display,
@@ -203,6 +217,9 @@ async function caseSettingsOpen({ win, log }) {
           pointerEvents: cs.pointerEvents,
         };
       });
+      // Also enumerate ALL aria-hidden=true elements at top-level so we can
+      // see the offender even if it wraps everything.
+      const ariaHiddenEls = Array.from(document.querySelectorAll('[aria-hidden="true"]')).slice(0, 8).map(describeAncestor);
       const htmlCs = getComputedStyle(document.documentElement);
       const bodyCs = getComputedStyle(document.body);
       return {
@@ -219,6 +236,7 @@ async function caseSettingsOpen({ win, log }) {
         bodyPointerEvents: bodyCs.pointerEvents,
         buttonCount: buttons.length,
         buttons,
+        ariaHiddenEls,
       };
     }).catch((e) => ({ diagError: String(e) }));
     throw new Error(`settings-open sidebar button waitFor timeout. pwButtonCount=${pwButtonCount} pwSettingsCount=${pwSettingsCount} diag=${JSON.stringify(diag)}`);
@@ -1659,6 +1677,38 @@ await runHarness({
       } catch {}
       window.__ccsmStore?.setState({});
     });
+    // Dismiss the first-run CrashConsentModal if it is mounted. Background
+    // (PR #765 / Task #20): CI runners boot with an empty Electron userData
+    // dir, so the persisted `crashUploadConsent` is empty. CrashConsentModal
+    // then auto-mounts a Radix Dialog at boot; the upstream `aria-hidden`
+    // package marks every sibling of the dialog portal with
+    // `aria-hidden="true"`, which removes those siblings (sidebar, titlebar,
+    // main pane) from the accessibility tree. Playwright's `getByRole`
+    // queries — including `getByRole('button', { name: /^settings$/i })`
+    // in the settings-open / theme-toggle cases — resolve against the AX
+    // tree, not the DOM, so they return zero candidates and time out even
+    // though the buttons render and are visually present. Locally on
+    // Windows native this never reproduced because the dev's persisted
+    // userData already carries `opted-in`. Persist `opted-out` first (so
+    // any later reload also keeps the modal closed) then click "Not now"
+    // to dismiss the currently-open instance. Production first-run
+    // behavior is unaffected — the modal still mounts there because real
+    // userData starts with no consent record.
+    try {
+      await win.evaluate(async () => {
+        try { await window.ccsm?.saveState?.('crashUploadConsent', 'opted-out'); } catch {}
+      });
+      const notNow = win.locator('[data-crash-consent-not-now]');
+      // Short wait — the modal opens after an async loadState IPC, so it
+      // may not be present yet. 800ms is generous; the IPC is sub-100ms in
+      // practice. Catch the timeout so harnesses that already had consent
+      // persisted (local dev) don't pay any cost.
+      await notNow.waitFor({ state: 'visible', timeout: 800 }).catch(() => {});
+      if (await notNow.count()) await notNow.click().catch(() => {});
+      // Confirm the dialog actually unmounted before any case runs; if
+      // Radix is mid-animation a stale aria-hidden tree could still leak.
+      await win.locator('[data-crash-consent-modal]').waitFor({ state: 'detached', timeout: 800 }).catch(() => {});
+    } catch {}
   },
   cases: [
     { id: 'sidebar-align', run: caseSidebarAlign },
