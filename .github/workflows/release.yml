@@ -324,6 +324,14 @@ jobs:
   # required and would be redundant). The `publish` job renames a copy to
   # `<artifact>.intoto.jsonl` for each installer so the README's
   # "verify your download" workflow stays one-pattern.
+  #
+  # `upload-assets: false` is intentional: we don't want the SLSA reusable
+  # workflow to push to a GitHub Release directly. Instead the downstream
+  # `publish` job downloads the provenance artifact, runs the sidecar-verify
+  # gate (every installer must have .sha256 + .minisig + .intoto.jsonl), and
+  # only then uploads to a draft Release via `softprops/action-gh-release`.
+  # This puts the verification step between provenance generation and
+  # release publication so a missing-sidecar bug can't ship.
   provenance:
     name: SLSA L3 provenance
     needs: attest
@@ -332,7 +340,7 @@ jobs:
       actions: read
       id-token: write
       contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.attest.outputs.hashes }}
       provenance-name: ccsm.intoto.jsonl
@@ -355,11 +363,13 @@ jobs:
       - name: Download SLSA provenance
         uses: actions/download-artifact@v4
         with:
-          # The SLSA generic generator exposes `provenance-download-name` as
-          # the workflow-run artifact name (distinct from `provenance-name`,
-          # which is the filename inside the artifact). Use the download name
-          # here so actions/download-artifact pulls the right artifact.
-          name: ${{ needs.provenance.outputs.provenance-download-name }}
+          # The SLSA generic generator's reusable workflow exposes
+          # `provenance-name` as both the artifact name uploaded to the
+          # workflow run and the filename inside it (they're set to the
+          # same string from the `provenance-name` input we pass above —
+          # `ccsm.intoto.jsonl`). Use that output here so this stays in
+          # sync if we ever rename the input.
+          name: ${{ needs.provenance.outputs.provenance-name }}
           path: dist-flat
 
       # Sidecar-verify gate: every installer must have all three sidecars
