@@ -320,6 +320,14 @@ One rolling logfile **per process**, both bundled into "Send last crash":
 
 ## §6 DSN + release + symbol pipeline
 
+**DSN topology — DECIDED 2026-05-01**
+
+> One Sentry project (`ccsm`) covers electron-main + renderer + daemon.
+> Events are dimensioned by `tags.surface` (`main` | `renderer` | `daemon`)
+> set at `Sentry.init({ initialScope: { tags: { surface } } })`. Single DSN
+> secret, single issue stream; cross-process correlation by `incidentId` /
+> `traceId` already lives in the event payload (§5.3, §10).
+
 **Build-time injection vs runtime**
 
 - Today: `process.env.SENTRY_DSN` consulted at runtime
@@ -375,7 +383,12 @@ One rolling logfile **per process**, both bundled into "Send last crash":
 - Renderer breadcrumbs strip session names from URLs / breadcrumb messages
   before forward; only the sid (ulid) survives.
 
-**Consent**
+**Consent — DECIDED 2026-05-01**
+
+> Default = network upload ON (opt-out). No first-run banner in phase 1.
+> The Settings toggle is reachable from the Help menu on first crash
+> (phase 4 modal links to it). A first-run banner is deferred to phase 4
+> so launch-day friction stays at zero.
 
 - Capture-to-disk is **always on**. It is local, scrubbed, and the user
   controls deletion via the directory.
@@ -384,8 +397,7 @@ One rolling logfile **per process**, both bundled into "Send last crash":
   Default = upload ON; toggle in Settings makes it OFF; takes effect within
   one event via the existing `stateSavedBus` invalidation
   (`electron/prefs/crashReporting.ts:48-52`).
-- First-run banner: deferred to phase 4 — not ship-blocking and adds friction
-  on first launch where the user just wants to see the app work. Settings
+- First-run banner: deferred to phase 4 per the decision above. Settings
   toggle is discoverable via Help menu on first crash.
 
 ## §8 "Send last crash" UX
@@ -439,6 +451,13 @@ This is the section that would have saved the 16:18 incident.
 >    daemon's `recordAndDie` (these are *additive* — present means the daemon
 >    saw the crash itself; absent means it died too fast or natively).
 > 7. Wall-clock elapsed since the daemon's last `/healthz` poll.
+> 8. **Daemon-boot-crash edge case** — if the rings are empty AND no marker
+>    file exists (daemon died so fast that even `recordAndDie` never ran:
+>    e.g. ELF/PE load failure, missing native dep, throw in `import` chain),
+>    the supervisor still writes `meta.json` with `surface:
+>    'daemon-boot-crash'`, `exitCode`, `signal`, `lastHealthzAgoMs: null`,
+>    and empty `stderr-tail.txt` / `stdout-tail.txt`. An empty bundle is
+>    still a bundle; absence of evidence is itself evidence.
 
 **IPC / file shape**
 
@@ -522,7 +541,26 @@ incident regardless of which side crashed.
 ```
 
 Retention: keep last 20 incidents OR 30 days, whichever is larger. Pruner
-runs at electron-main boot.
+runs at electron-main boot. Pruner is best-effort — swallow per-entry errors
+and log to the rolling logfile rather than aborting the boot path.
+
+**`_dmp-staging/` concurrency**
+
+Crashpad serializes its own minidump writes within a single `crashpad_handler`
+process (Crashpad's `Settings::ClientID` + the staging dir is single-tenant
+by design). However, two near-simultaneous crashes (e.g. renderer + GPU
+within the same flush window) can both land dumps in `_dmp-staging/` before
+the collector consumes them. The collector therefore:
+
+- enumerates `_dmp-staging/*.dmp` by mtime ascending on every incident
+  ingest, claims each file by `rename`-into-incident-dir (atomic on NTFS /
+  POSIX), and skips any that lose the rename race;
+- writes a per-PID subdir `_dmp-staging/<crashpadPid>/` if a future Electron
+  exposes the crashpad child PID, so the rename target is unambiguous;
+- otherwise relies on Crashpad's own filename uniqueness (`<uuid>.dmp`).
+
+This is a phase-1 implementation detail captured here so the collector
+author does not assume single-writer semantics.
 
 ## §11 Rollout phases
 
@@ -541,7 +579,11 @@ Each phase ships independently. Phase 1 alone closes the 16:18-style
 - electron-main supervisor stderr ring buffer + `child.on('exit')` →
   `recordIncident({ surface: 'daemon-exit' })`.
 - Smoke tests: throw from a hidden IPC, kill -9 the daemon child, confirm
-  incident dir contents.
+  incident dir contents. Note: `kill -9` (SIGKILL) deliberately exercises
+  the **supervisor-side** capture path (exit-code + stderr ring) — it does
+  *not* trigger the daemon's own `recordAndDie`, which is correct. A
+  separate smoke test (throw inside a daemon RPC handler) covers the
+  daemon-side `recordAndDie` → marker-file → `process.exit(70)` path.
 
 ### Phase 2 — Sentry routing for both processes, build-time DSN injection (2 PRs)
 
@@ -582,18 +624,16 @@ Each phase ships independently. Phase 1 alone closes the 16:18-style
 
 ## §12 Open questions for user
 
-Genuinely direction-affecting; everything else manager-locked.
+All previously-open questions resolved 2026-05-01:
 
-1. **Default-on vs first-run consent for Sentry network upload?** Today's
-   pref defaults to ON (opt-out). Are we comfortable shipping that with the
-   official build, or do we want a first-run banner in phase 1 instead of
-   phase 4?
-2. **One Sentry project for both processes, or two?** Two = clean
-   separation, easy filtering; one = simpler issue grouping when the same
-   incident produces both frontend and backend events. Affects the DSN
-   inject (one DSN secret vs two).
-3. **Bundle daemon `pino` into the frontend logfile via IPC, or keep two
-   separate files?** The spec keeps two files because the daemon may crash
-   before any IPC opens. Confirm this is fine — alternative is electron-main
-   tails the daemon stdout into its own logfile and we ship a single file
-   per incident.
+- ~~Q1. Default-on vs first-run consent for Sentry network upload?~~
+  **Locked** — default-on opt-out, no first-run banner in phase 1, banner
+  deferred to phase 4. See §7.
+- ~~Q2. One Sentry project for both processes, or two?~~
+  **Locked** — one project, dimensioned by `tags.surface`. See §6.
+- ~~Q3. Bundle daemon `pino` into the frontend logfile via IPC, or keep two
+  separate files?~~ **Manager-locked** — two files. The daemon may crash
+  before any IPC opens, so its logs must land on disk independently of the
+  frontend transport. See §5.5.
+
+No remaining direction-affecting questions for the user.
