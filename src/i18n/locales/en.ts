@@ -186,6 +186,21 @@ const en = {
     title: 'Claude binary missing from this install',
     body: 'CCSM ships the Claude binary inside the installer, but we couldn’t find it on disk. Please reinstall CCSM to repair the install — sessions can’t start until then.'
   },
+  // Migration fatal-error modal (v0.3 design §6.8 surface registry,
+  // priority 85; canonical copy + key namespace owned by frag-8 §8.6).
+  // Sentence-case per feedback_no_uppercase_ui_strings; no
+  // ERROR/FAILED/FATAL terms. Only action is "Quit ccsm" — manual
+  // delete-and-relaunch (using the {{legacyDb}} / {{dataRoot}} paths
+  // surfaced in the body) is the documented retry mechanism.
+  migration: {
+    modal: {
+      failed: {
+        title: 'ccsm couldn’t migrate your previous data',
+        body: 'ccsm tried to move your data from the previous version but couldn’t complete the migration. Your previous data file at {{legacyDb}} is preserved unchanged — quit ccsm and contact support, or manually start fresh by deleting {{dataRoot}} and relaunching.',
+        actionQuit: 'Quit ccsm'
+      }
+    }
+  },
   importDialog: {
     title: 'Import sessions from Claude Code',
     description: 'Pick existing CLI transcripts to surface in CCSM. They resume on open.',
