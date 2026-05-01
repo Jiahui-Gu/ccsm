@@ -198,6 +198,19 @@ const en = {
         title: 'ccsm couldn’t migrate your previous data',
         body: 'ccsm tried to move your data from the previous version but couldn’t complete the migration. Your previous data file at {{legacyDb}} is preserved unchanged — quit ccsm and contact support, or manually start fresh by deleting {{dataRoot}} and relaunching.',
         actionQuit: 'Quit ccsm'
+      },
+      // Migration in-progress modal (frag-8 §6.8 surface registry priority
+      // 100, mode `blocking-modal`, dismissable: false; T33 driver). Per
+      // frag-8 §8.6 manager r9 lock the spinner is indeterminate — there is
+      // no per-event progress fraction in the wire contract (T30 defines
+      // started/completed/failed only), so copy here is progress-agnostic.
+      // `cancel_blocked` is shown if the user attempts to dismiss / quit
+      // mid-migration (UX safety; modal itself is non-dismissable).
+      in_progress: {
+        title: 'Migrating your previous data',
+        body: 'ccsm is moving your data from the previous version. This usually takes a few seconds — please keep ccsm open until it finishes.',
+        steps_label: 'Copying database…',
+        cancel_blocked: 'Migration can’t be cancelled mid-way — your data could be left in an inconsistent state. Please wait for it to finish.'
       }
     }
   },

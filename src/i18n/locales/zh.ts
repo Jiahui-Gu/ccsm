@@ -181,6 +181,12 @@ const zh: EnCatalog = {
         title: 'ccsm 无法迁移您之前的数据',
         body: 'ccsm 尝试把上一版本的数据搬过来，但没能完成迁移。您之前的数据文件位于 {{legacyDb}}，保持原样未做改动 — 请退出 ccsm 并联系支持团队，或手动删除 {{dataRoot}} 后重新启动以从头开始。',
         actionQuit: '退出 ccsm'
+      },
+      in_progress: {
+        title: '正在迁移您之前的数据',
+        body: 'ccsm 正在把上一版本的数据搬过来。这通常只需几秒钟 — 请在迁移完成前不要关闭 ccsm。',
+        steps_label: '正在复制数据库…',
+        cancel_blocked: '迁移过程中无法取消 — 中断会让您的数据处于不一致状态。请耐心等待迁移完成。'
       }
     }
   },
