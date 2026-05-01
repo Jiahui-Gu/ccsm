@@ -819,19 +819,17 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   on `<html>` (no descendant accepts the event because body is locked
   to its children).
 
-  Force-release on <html> + <body> when there is NO interactive Radix
-  surface left mounted. We accept losing the body-scroll-lock-while-open
-  side-effect (modal overlays handle their own scroll contention via
-  the overlay click-to-dismiss + DismissableLayer ESC handler; losing
-  the body-scroll-lock just means a wheel scroll behind a modal goes
-  through, which is a much smaller bug than e2e clicks broken). The
-  `:not(:has(...))` match still scopes to the leak window: if a
-  data-state=open + interactive (aria-hidden=false) Radix surface IS
-  mounted (real live modal / open menu / open popover), Radix's inline
-  lock takes over via specificity. `:has()` is Electron 41 / Chromium
-  124+.
+  We previously tried scoping with `body:not(:has([data-state="open"]:not([aria-hidden="true"])))`
+  but the :has() matched non-modal `data-state="open"` surfaces (open
+  Tooltip / open ContextMenu / open Popover) which kept the lock in
+  effect during normal interaction. Modals do NOT need the body
+  pointer-events lock to function -- the overlay's own click handler
+  + DismissableLayer ESC handler are the actual close paths; the body
+  lock only suppresses scroll-wheel events behind the modal which is
+  a much smaller bug than e2e clicks broken across the board.
+  Unconditional !important on <html> + <body> defeats every leak path
+  Radix can take.
 */
-html:not(:has([data-state="open"]:not([aria-hidden="true"]))),
-body:not(:has([data-state="open"]:not([aria-hidden="true"]))) {
+html, body {
   pointer-events: auto !important;
 }
