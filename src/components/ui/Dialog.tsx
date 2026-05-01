@@ -21,17 +21,12 @@ export const DialogOverlay = forwardRef<
         'fixed inset-0 z-40 bg-black/50 backdrop-blur-[2px]',
         'data-[state=open]:animate-[overlayIn_160ms_cubic-bezier(0.32,0.72,0,1)]',
         'data-[state=closed]:opacity-0',
-        // When Radix nests dialogs (or leaves an overlay mounted with
-        // aria-hidden=true behind a higher modal), the overlay still
-        // intercepts pointer events and breaks click-through to the
-        // underlying UI -- surfaces as e2e flakes ("intercepts pointer
-        // events" on `<div data-state="open" aria-hidden="true" ...
-        // backdrop-blur ...>`). Radix mirrors aria-hidden as
-        // data-aria-hidden so we can target it via Tailwind's
-        // data-[...] variant (the [&[aria-hidden="true"]] arbitrary-
-        // selector form does not survive Tailwind v4 JIT through quoted
-        // attribute values reliably).
-        'data-[aria-hidden=true]:pointer-events-none',
+        // Note: the actual aria-hidden=true → pointer-events:none rule
+        // lives in src/styles/global.css (selector
+        // `[data-state][aria-hidden="true"]`). Tailwind v4 JIT did not
+        // compile arbitrary-selector or data-[aria-hidden=true] forms
+        // here reliably (verified by DOM dumps in CI runs 25220652854 /
+        // 25221052174 -- the class name was emitted but no CSS rule).
         className
       )}
       {...rest}

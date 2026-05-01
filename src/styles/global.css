@@ -786,3 +786,47 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
 .pane-resize-handle:focus-visible::after {
   background: var(--color-accent);
 }
+
+/*
+  Radix Dialog overlay leak guard (PR #765 e2e fix).
+
+  When Radix nests/stacks dialogs (or DismissableLayer leaves an overlay
+  mounted briefly with `aria-hidden=true` behind a higher modal), the
+  overlay still intercepts pointer events and breaks click-through to the
+  underlying UI -- surfaces as e2e flakes ("intercepts pointer events" on
+  `<div data-state="open" aria-hidden="true" ... backdrop-blur ...>`).
+
+  We tried Tailwind arbitrary-selector + data- variant forms in
+  `src/components/ui/Dialog.tsx`; both got serialized into the className
+  attribute but Tailwind v4 JIT did not emit the matching rule (verified
+  via DOM dumps in CI runs 25220652854 / 25221052174). Plain CSS is the
+  reliable lever.
+
+  aria-hidden=true is Radix's signal that the element is non-interactive;
+  honor it for hit-testing too. The selector is scoped to elements that
+  also carry `data-state` (i.e. Radix-managed) so it never affects raw
+  user-authored aria-hidden divs.
+*/
+[data-state][aria-hidden="true"] {
+  pointer-events: none;
+}
+
+/*
+  Body-lock leak guard. Radix's react-remove-scroll sets inline
+  `pointer-events: none` on <body> when a modal opens. If the modal
+  closes but its overlay leaks (the case above) without Radix releasing
+  the inline lock, Playwright reports the next click failing on
+  `<html>` because <body> is still pointer-events:none with no
+  interactive descendant to receive the event.
+
+  Match the leak case explicitly: there is NO live interactive modal
+  (i.e. no `[data-state="open"]:not([aria-hidden="true"])` overlay
+  element). When that's true, force <body> back to interactive --
+  Radix's inline style has higher specificity than this rule under
+  normal modal-open conditions, so this only takes effect when Radix
+  has either released the lock or never had reason to hold it.
+  `:has()` is supported in Electron 41 (Chromium 124+).
+*/
+body:not(:has([data-state="open"]:not([aria-hidden="true"]))) {
+  pointer-events: auto !important;
+}
