@@ -175,6 +175,15 @@ const zh: EnCatalog = {
     title: '安装包内的 Claude 程序缺失',
     body: 'CCSM 在安装包里附带了 Claude 程序，但在硬盘上找不到它。请重新安装 CCSM 以修复 — 修复之前会话无法启动。'
   },
+  migration: {
+    modal: {
+      failed: {
+        title: 'ccsm 无法迁移您之前的数据',
+        body: 'ccsm 尝试把上一版本的数据搬过来，但没能完成迁移。您之前的数据文件位于 {{legacyDb}}，保持原样未做改动 — 请退出 ccsm 并联系支持团队，或手动删除 {{dataRoot}} 后重新启动以从头开始。',
+        actionQuit: '退出 ccsm'
+      }
+    }
+  },
   importDialog: {
     title: '从 Claude Code 导入会话',
     description: '挑选已有的 CLI 对话在 CCSM 中显示。打开时会自动 resume。',
