@@ -149,7 +149,49 @@ async function caseSettingsOpen({ win, log }) {
 
   // 1. Sidebar Settings button.
   const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
-  await sidebarBtn.waitFor({ state: 'visible', timeout: 5000 });
+  try {
+    await sidebarBtn.waitFor({ state: 'visible', timeout: 5000 });
+  } catch (err) {
+    // CI-only flake diagnosis (PR #765): on ubuntu/macos lanes the button
+    // wait times out even though the same case passes locally. Dump the
+    // actual DOM state so we can see whether the Sidebar mounted, whether
+    // AppSkeleton is still up, and what role=button names ARE present.
+    const diag = await win.evaluate(() => {
+      const aside = document.querySelector('aside');
+      const skeleton = document.querySelector('[data-testid="sidebar-skeleton"]');
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) => {
+        const r = b.getBoundingClientRect();
+        const cs = getComputedStyle(b);
+        return {
+          text: (b.textContent ?? '').trim().slice(0, 40),
+          aria: b.getAttribute('aria-label'),
+          rect: { w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x), y: Math.round(r.y) },
+          display: cs.display,
+          visibility: cs.visibility,
+          opacity: cs.opacity,
+          pointerEvents: cs.pointerEvents,
+        };
+      });
+      const htmlCs = getComputedStyle(document.documentElement);
+      const bodyCs = getComputedStyle(document.body);
+      return {
+        url: location.href,
+        readyState: document.readyState,
+        asideExists: !!aside,
+        asideTestId: aside?.getAttribute('data-testid') ?? null,
+        skeletonMounted: !!skeleton,
+        hydrated: !!window.__ccsmStore?.getState?.()?.hydrated,
+        sessionsLen: window.__ccsmStore?.getState?.()?.sessions?.length ?? -1,
+        activeId: window.__ccsmStore?.getState?.()?.activeId ?? null,
+        htmlOpacity: htmlCs.opacity,
+        htmlPointerEvents: htmlCs.pointerEvents,
+        bodyPointerEvents: bodyCs.pointerEvents,
+        buttonCount: buttons.length,
+        buttons,
+      };
+    }).catch((e) => ({ diagError: String(e) }));
+    throw new Error(`settings-open sidebar button waitFor timeout. diag=${JSON.stringify(diag)}`);
+  }
   await sidebarBtn.click();
   await expectSettingsDialogOpen('sidebar button');
   await pressEscAndExpectClosed('sidebar button');
