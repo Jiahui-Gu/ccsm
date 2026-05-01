@@ -33,6 +33,7 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "probe:e2e": "npm run build && node scripts/run-all-e2e.mjs",
+    "e2e": "tsx tests/e2e/run-all.ts",
     "make": "npm run build && electron-builder --publish never",
     "make:win": "npm run build && electron-builder --win --publish never",
     "make:win:dev": "npm run build && electron-builder --win --publish never --config.productName=\"CCSM Dev\" --config.extraMetadata.productName=\"CCSM Dev\" --config.appId=com.ccsm.app.dev --config.nsis.shortcutName=\"CCSM Dev\"",
