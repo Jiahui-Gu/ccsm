@@ -34,7 +34,6 @@ permissions:
 
 jobs:
   no-silent-drops:
-    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head with full history

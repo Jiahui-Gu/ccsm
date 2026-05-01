@@ -33,7 +33,6 @@ permissions:
 
 jobs:
   size-guard:
-    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
     name: size-guard (${{ matrix.os }})
     strategy:
       fail-fast: false

@@ -19,7 +19,6 @@ permissions:
 
 jobs:
   lint-typecheck-test:
-    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
     name: lint + typecheck + test (${{ matrix.os }})
     strategy:
       fail-fast: false

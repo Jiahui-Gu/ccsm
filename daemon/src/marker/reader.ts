@@ -78,7 +78,7 @@ export async function readMarker(path: string): Promise<MarkerReadResult> {
 
   // Strip BOM / surrounding whitespace before JSON parse so a single
   // trailing newline doesn't accidentally count as "valid".
-  const trimmed = raw.replace(/^﻿/, '').trim();
+  const trimmed = raw.replace(/^\ufeff/, '').trim();
   if (trimmed.length === 0) {
     return { kind: 'present', reason: 'empty' };
   }
