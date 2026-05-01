@@ -29,12 +29,19 @@ manager picking between the equally-valid options the fragments fielded.
 They are CLOSED below as "manager r3 lock" rather than punted to the
 fragment authors.
 
-1. **Install path = per-user `%LOCALAPPDATA%\ccsm\` (Win) and OS-equivalents
-   elsewhere.** Resolves r3-packaging P0-1 (NSIS Program-Files vs spec
-   per-user contradiction). electron-builder ships
-   `nsis: { perMachine: false, oneClick: false }`. T9 / T14 security claims
-   in §7.4 stay as written. frag-11 §11.2 + §11.6 NSIS macro rewritten to
-   `$LOCALAPPDATA` rooting.
+1. **Install path = per-machine `%ProgramFiles%\ccsm\` (Win) and OS-equivalents
+   elsewhere** (`/Applications/CCSM.app` mac, `/opt/ccsm/` Linux). Per
+   `[manager r12 lock 2026-05-01]` (frag-11 §11.6) electron-builder ships
+   `nsis: { perMachine: true, oneClick: false }` — superseding the original
+   r3 P0-1 `perMachine: false` lock; PR #682 (T51) flipped to per-machine for
+   the daemon-at-boot story (HKLM Run / Task Scheduler require per-machine
+   install). Per-user *data* still lives under `%LOCALAPPDATA%\ccsm\` (item 2
+   below) so multi-user boxes get one install but separate per-user state.
+   T9 / T14 security claims in §7.4 are downgraded: install-root inherits
+   `%ProgramFiles%`'s default ACL (Authenticated-Users read+execute,
+   Administrators write); the "user-only ACL" claim applies only to the
+   per-user data paths in item 2. frag-11 §11.2 + §11.6 NSIS macro rooted
+   at `$INSTDIR` under `$PROGRAMFILES64\ccsm`.
 2. **Data root = OS-native (`%LOCALAPPDATA%\ccsm\` Win, `~/Library/Application Support/ccsm/` mac, `~/.local/share/ccsm/` Linux)** — single root for **everything daemon-owned**: daemon binary, `daemon.lock`, `daemon.secret`, `<dataRoot>/data/` (SQLite), `<dataRoot>/logs/` (pino-roll), `<dataRoot>/crashes/` (crash dumps). frag-11 §11.6 is the **single source of truth** for the paths table; `<dataRoot>` is OS-native per frag-11 §11.6 and v0.2 → v0.3 migration moves data from legacy `~/.ccsm/` to `<dataRoot>` (frag-8 §8.3 step 1). [manager r5 lock: install path locked to `%LOCALAPPDATA%` in r3 to avoid UAC; all sibling paths (data/logs/crashes/lockfile/secret) follow per frag-11 §11.6 — eliminates the three-way `<dataRoot>` permutation that r4 packaging + multiple reviewers flagged.] [manager r11 lock: r10 traceability P1 — lockfile basename swept `ccsm-daemon.lock` → `daemon.lock` to match frag-11 §11.6 paths table.] Resolves r3-packaging P0-2 (three-way secret-path contradiction) AND r4-packaging dataRoot reconciliation.
 3. **Surface registry = frag-6-7 §6.8 numeric priority table (100/90/85/70/50/30)
    is the sole authoritative registry.** frag-3.7 §3.7.8's tier 1-6 table
@@ -151,7 +158,7 @@ Status legend: ✅ CLOSED · 🟡 IN-FLUX (fix dispatched / pending r5 fixer) ·
 | r2 packaging SH2 | `MACOS_KEYCHAIN_PW` secret | frag-11 §11.3.2 |
 | r2 packaging SH3 | `signtool verify /pa /v` post-sign | frag-11 §11.3.1 |
 | r2 packaging C6 | daemon dependencies discipline | frag-11 §11.1 prose |
-| r3 packaging P0-1 | install path Program-Files vs per-user | [manager r3 lock] §12.0 (1) — pick (a) `nsis: { perMachine: false }`. r3 fixer applies to frag-11. |
+| r3 packaging P0-1 | install path Program-Files vs per-user | [manager r3 lock] §12.0 (1) — originally picked (a) `nsis: { perMachine: false }`. **Superseded by [manager r12 lock 2026-05-01]** (frag-11 §11.6): PR #682 (T51) flipped `perMachine: true` for the daemon-at-boot story; install root is now `%ProgramFiles%\ccsm\`. Per-user data remains under `%LOCALAPPDATA%\ccsm\`. |
 | r3 packaging P0-2 | secret/lock path three-way contradiction | [manager r3 lock] §12.0 (2) — daemon binary + `daemon.lock` + `daemon.secret` at OS-native root; SQLite/logs/crashes stay at `~/.ccsm/`. r3 fixer applies. |
 | r3 ux P0-UX-A | two surface registries | [manager r3 lock] §12.0 (3) — frag-6-7 §6.8 canonical; frag-3.7 §3.7.8 registers INTO §6.8 |
 | r3 perf CF-3 / lockin CF-1 / fwdcompat #1 / sec P1-3 / resource X3 / ux P0-UX-C | "frag-12 stale OPEN rows" meta-issue | this re-audit (round-3) — ALL six angles confirm packaging M4 / fwdcompat 3.1 / fwdcompat 3.3 are landed; matrix updated above |
@@ -170,7 +177,7 @@ Status legend: ✅ CLOSED · 🟡 IN-FLUX (fix dispatched / pending r5 fixer) ·
 | r3 lockin P0-A / r3 packaging P0-3 | native artifact `ccsm_native.node` 9-site rename | frag-11 §11.1/§11.2/§11.3/§11.6 + frag-3.5.1 §3.5.1.1 + frag-6-7 §7.M1 — all sites use `ccsm_native.node`; legacy `winjob.node` retired. r5 verified. |
 | r3 packaging P0-2 | `daemon.secret` OS-native path | frag-6-7 §7.2 (`%LOCALAPPDATA%\ccsm\daemon.secret` Win, `~/Library/Application Support/ccsm/daemon.secret` mac, `~/.local/share/ccsm/daemon.secret` Linux) + frag-11 §11.6 paths table. r5 verified. |
 | r3 packaging P0-4 | Linux postrm `SUDO_USER` + `getent passwd` correctness | frag-11 §11.6.3 (`SUDO_USER` gate + `getent passwd "$SUDO_USER" \| cut -d: -f6` + `~/.local/share/ccsm` cleanup; documented manual fallback). r5 verified. |
-| r3 packaging P0-1 | `%LOCALAPPDATA%\ccsm\` install root + `nsis.perMachine: false` | frag-11 §11.1 + §11.6 (`perMachine: false`, `oneClick: false`, `allowElevation: true`, `allowToChangeInstallationDirectory: true`, `$LOCALAPPDATA\ccsm`; never `Program Files`). r5 verified; `[manager r11 lock: r10 traceability P1 — row reconciled with frag-11 §11.6 r9 lock (assisted-mode installer preserved); prior `oneClick: true` was stale.]` |
+| r3 packaging P0-1 | install root + `nsis.perMachine` | frag-11 §11.1 + §11.6. **Current truth per `[manager r12 lock 2026-05-01]`**: `perMachine: true`, `oneClick: false`, `allowElevation: true`, `allowToChangeInstallationDirectory: true`, install root `%ProgramFiles%\ccsm\` (or user-redirected). Supersedes the r3 `perMachine: false` / `$LOCALAPPDATA\ccsm` lock and the r11 `oneClick`-only reconcile; PR #682 (T51) flipped per-machine for the daemon-at-boot story (HKLM Run / Task Scheduler). Per-user data paths still under `%LOCALAPPDATA%\ccsm\`. Follow-up #1058a tracks UAC-on-update story. |
 | r3 ux surface registry | numeric priority 30/50/70/85/90/100 | frag-6-7 §6.8 (CANONICAL — six priority tiers explicit) + frag-3.7 §3.7.8 cross-refs into §6.8. r5 verified. |
 | r3 perf CF-2 | `traceId` hot-path carve-out | frag-6-7 §6.6.1 (per-chunk fan-out logs at debug-level only; `streamId → spawnTraceId` cache; per-frame info-level forbidden on PTY hot path). r5 verified. |
 | r3 lockin CF-3 | `clientImposterSecret` eliminated by HMAC handshake | frag-3.4.1 §3.4.1.g (no `clientImposterSecret` field; only `clientHelloNonce` + `helloNonceHmac`) + frag-6-7 §7.2 + §6.6 redact list ("legacy `imposterSecret` / `clientImposterSecret` cleartext fields were eliminated"). r5 verified. |
