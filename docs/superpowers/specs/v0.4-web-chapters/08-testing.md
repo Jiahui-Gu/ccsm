@@ -43,7 +43,7 @@ jobs:
   buf:
     steps:
       - run: npx buf lint
-      - run: npx buf breaking --against '.git#branch=main,subdir=proto'
+      - run: npx buf breaking --against '.git#branch=working,subdir=proto'
       - run: npx buf generate
       - run: git diff --exit-code gen/
 ```
