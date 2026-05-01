@@ -12,6 +12,7 @@ import {
 } from './handlers/daemon-shutdown.js';
 import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
 import { installCrashHandlers } from './crash/handlers.js';
+import { installNativeCrashHandlers } from './crash/native-handlers.js';
 import { initDaemonSentry } from './sentry/init.js';
 
 const require = createRequire(import.meta.url);
@@ -55,6 +56,14 @@ installCrashHandlers({
   runtimeRoot,
   getLastTraceId: () => lastTraceId,
 });
+
+// Phase 3 crash observability (spec §5.2 option A, plan Task 11):
+// POSIX-only signal trap for SIGSEGV/SIGBUS/SIGFPE/SIGILL/SIGABRT. Writes
+// `<runtimeRoot>/crash/<bootNonce>-native.dmp` (a JSON marker, not a real
+// minidump). Supervisor's `attachCrashCapture` adopts it as `backend.dmp`
+// in the umbrella incident dir on next exit. No-op on Windows — see
+// `daemon/src/crash/native-handlers.ts` for the deferred-WER rationale.
+installNativeCrashHandlers({ runtimeRoot, bootNonce });
 
 // T25 — force-kill fallback wiring. The reaper-PID set (T38) and the
 // JobObject handle (T39) are owned by the per-spawn wiring that lands
