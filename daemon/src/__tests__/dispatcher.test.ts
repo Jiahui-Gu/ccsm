@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   Dispatcher,
   createSupervisorDispatcher,
+  createDataDispatcher,
   type DispatchContext,
   type Handler,
 } from '../dispatcher.js';
@@ -119,6 +120,106 @@ describe('Dispatcher (spec §3.4.1.h control-socket router)', () => {
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.error.code).toBe('NOT_ALLOWED');
+    });
+  });
+
+  describe('plane option (T23 — supervisor vs data plane)', () => {
+    it('default plane is supervisor (back-compat with T16)', () => {
+      const d = new Dispatcher();
+      expect(d.plane).toBe('supervisor');
+    });
+
+    it('explicit supervisor plane behaves identically to default', async () => {
+      const d = new Dispatcher({ plane: 'supervisor' });
+      expect(d.plane).toBe('supervisor');
+      const r = await d.dispatch('session.list', {}, ctx);
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error.code).toBe('NOT_ALLOWED');
+    });
+
+    describe('supervisor plane — allowlist enforced at boundary', () => {
+      it.each([...SUPERVISOR_RPCS])(
+        'routes allowlisted method %s to its registered handler',
+        async (method) => {
+          const d = new Dispatcher({ plane: 'supervisor' });
+          const handler = vi.fn<Handler>(async () => ({ method, ok: true }));
+          d.register(method, handler);
+          const r = await d.dispatch(method, { ping: 1 }, ctx);
+          expect(r.ok).toBe(true);
+          if (!r.ok) return;
+          expect(r.value).toEqual({ method, ok: true });
+          expect(handler).toHaveBeenCalledWith({ ping: 1 }, ctx);
+        },
+      );
+
+      it('rejects unknown (non-allowlisted) method with NOT_ALLOWED before handler lookup', async () => {
+        const d = new Dispatcher({ plane: 'supervisor' });
+        // Even if some allowlisted handler is registered, an off-list method
+        // is still rejected with NOT_ALLOWED — boundary check runs first.
+        d.register('daemon.hello', async () => 'unused');
+        const r = await d.dispatch('session.subscribe', {}, ctx);
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        expect(r.error.code).toBe('NOT_ALLOWED');
+        expect(r.error.method).toBe('session.subscribe');
+        // Defence-in-depth: message must NOT enumerate the allowlist (no
+        // method names leaked back to a probing client).
+        expect(r.error.message).not.toContain('daemon.hello');
+        expect(r.error.message).not.toContain('/healthz');
+      });
+    });
+
+    describe('data plane — allowlist NOT applied', () => {
+      it('createDataDispatcher() exposes plane="data"', () => {
+        const d = createDataDispatcher();
+        expect(d.plane).toBe('data');
+      });
+
+      it('register() accepts arbitrary (non-supervisor) method names', () => {
+        const d = createDataDispatcher();
+        const noop: Handler = async () => undefined;
+        expect(() => d.register('session.list', noop)).not.toThrow();
+        expect(() => d.register('ccsm.v1/pty.subscribe', noop)).not.toThrow();
+        expect(d.has('session.list')).toBe(true);
+      });
+
+      it('routes a registered non-supervisor method to its handler', async () => {
+        const d = createDataDispatcher();
+        const handler = vi.fn<Handler>(async () => ({ rows: [] }));
+        d.register('session.list', handler);
+        const r = await d.dispatch('session.list', { limit: 10 }, ctx);
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.value).toEqual({ rows: [] });
+        expect(handler).toHaveBeenCalledWith({ limit: 10 }, ctx);
+      });
+
+      it('returns UNKNOWN_METHOD (not NOT_ALLOWED) for an unknown method on data plane', async () => {
+        const d = createDataDispatcher();
+        const r = await d.dispatch('session.subscribe', {}, ctx);
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        // Crucial contract: data plane never emits NOT_ALLOWED — surface
+        // declaration is the data-socket transport's job, not the dispatcher.
+        expect(r.error.code).toBe('UNKNOWN_METHOD');
+        expect(r.error.method).toBe('session.subscribe');
+        expect(r.error.message).toContain('data-plane');
+      });
+
+      it('routes an allowlisted name when explicitly registered on data plane', async () => {
+        // Data plane does not reserve SUPERVISOR_RPCS names — they are just
+        // strings here. (In practice the two planes run on disjoint sockets
+        // so collisions are inert; the dispatcher only routes whatever its
+        // owner registered.)
+        const d = createDataDispatcher();
+        const handler = vi.fn<Handler>(async () => 'data-side');
+        d.register('/healthz', handler);
+        const r = await d.dispatch('/healthz', {}, ctx);
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.value).toBe('data-side');
+      });
     });
   });
 });
