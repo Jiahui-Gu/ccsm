@@ -554,9 +554,11 @@ Net diff vs current `.github/workflows/release.yml`:
 4. **Single tag (`v*`) for v0.3.0** — no separate `daemon-v*` tag yet (review §4 SHOULD-FIX #6: first ship has no install base; reserve `daemon-v*` for v0.3.1+ daemon-only patches). When v0.3.1 ships, a separate matrix that builds **only** the daemon (skips electron-builder) is required — sketched in §11.6 deferred so it isn't a panic-rewrite at v0.3.1 release time.
 5. **Cert-missing handling**: if `steps.secrets.outputs.signed != 'true'`, skip daemon-sign step with a `::warning::` (matches v0.2 line `:152-156`). PR builds + forks must continue producing unsigned artifacts; only tag pushes from `Jiahui-Gu/ccsm` get the secrets.
 6. **Installer size budget + CI guard (R7 P1-B).** **[manager r7 lock: r6 packaging P1-B — installer size ceiling + CI assertion]** Target sizes (uncompressed installer; measured at release-publish merge job, fail the build over):
-   - Windows NSIS `*.exe`: **≤ 145 MB** (Electron 41 ~95 MB + bundled Chromium fonts, daemon pkg ~50 MB incl. Node 22 base + better-sqlite3 + node-pty + ccsm_native, claude-agent-sdk ~6 MB per §11.2.1, uninstall-helper ~5 MB, headroom ~5 MB).
-   - macOS DMG: **≤ 160 MB** (Electron Mach-O is fatter; daemon ships per-arch but DMG carries one arch).
-   - Linux AppImage: **≤ 140 MB**; `.deb` / `.rpm`: **≤ 125 MB**.
+   - Windows NSIS `*.exe`: **≤ 180 MB** (Electron 41 ~95 MB + bundled Chromium fonts, daemon pkg ~50 MB incl. Node 22 base + better-sqlite3 + node-pty + ccsm_native, claude-agent-sdk ~6 MB per §11.2.1 ×2 consumer copies per §11.2.1, uninstall-helper ~5 MB, @sentry/electron + @sentry/react + @opentelemetry/* observability deps ~25 MB, headroom ~5 MB).
+   - macOS DMG: **≤ 210 MB** (Electron Mach-O is fatter; daemon ships per-arch but DMG carries one arch; same Sentry/OTel weight as Windows).
+   - Linux AppImage: **≤ 220 MB** (AppRun self-extracting stub + libfuse shim adds ~30 MB on top of the deb/rpm payload); `.deb`: **≤ 165 MB**; `.rpm`: **≤ 145 MB**.
+
+   **2026-05-01 rebaseline (PR #765).** Original ceilings (145 / 160 / 140 / 125 / 125 MB) were component-sum estimates from R7. First real CI builds during the v0.3 dark-window measured 25-71% above estimate because: (a) `@sentry/*` + `@opentelemetry/*` observability deps shipped during the window add ~25 MB to the renderer + main bundles (`@sentry/react` alone is ~22 MB unpacked), (b) the SDK is intentionally duplicated under `<resources>/sdk/` for the `loadSdk()` shim AND under `daemon/node_modules/` for the daemon subprocess (per §11.2.1 — verified by `tests/required-after-pack.test.ts`), (c) the Linux `.AppImage` carries a self-extracting AppRun stub + libfuse shim (~30 MB) on top of the same payload as `.deb`/`.rpm`. The new ceilings give 5-10% headroom over observed real sizes; the >10% growth-vs-baseline guard remains the primary regression signal. Real measurement source: GitHub Actions run 25219450679 (PR #765 size-guard matrix). Future Electron bumps may shift these — re-measure and atomically update `installer/size-baseline.json` + `scripts/check-installer-size.mjs` + this section in the same PR.
 
    Standalone daemon binary (`ccsm-daemon-${platform}-${arch}`): **≤ 60 MB** per arch.
 
@@ -566,7 +568,7 @@ Net diff vs current `.github/workflows/release.yml`:
      shell: bash
      run: |
        declare -A LIMIT_MB=(
-         [exe]=145 [dmg]=160 [AppImage]=140 [deb]=125 [rpm]=125
+         [exe]=180 [dmg]=210 [AppImage]=220 [deb]=165 [rpm]=145
        )
        fail=0
        for f in dist-all/**/*.{exe,dmg,AppImage,deb,rpm}; do

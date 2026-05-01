@@ -21,6 +21,14 @@ export const DialogOverlay = forwardRef<
         'fixed inset-0 z-40 bg-black/50 backdrop-blur-[2px]',
         'data-[state=open]:animate-[overlayIn_160ms_cubic-bezier(0.32,0.72,0,1)]',
         'data-[state=closed]:opacity-0',
+        // When Radix nests dialogs (or leaves an overlay mounted with
+        // aria-hidden=true behind a higher modal), the overlay still
+        // intercepts pointer events and breaks click-through to the
+        // underlying UI — surfaces as e2e flakes ("intercepts pointer
+        // events" on `<div data-state="open" aria-hidden="true" ...
+        // backdrop-blur ...>`). aria-hidden=true is Radix's signal that
+        // the element is non-interactive; honor it for hit-testing too.
+        '[&[aria-hidden="true"]]:pointer-events-none',
         className
       )}
       {...rest}

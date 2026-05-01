@@ -192,8 +192,18 @@ export function createDataSocketServer(
     if (!recordAcceptWithinBudget(t)) {
       // EAGAIN-equivalent: refuse the connection by destroying it. The
       // node:net `Server` has already accepted at the kernel level; we
-      // back out at the application layer.
+      // back out at the application layer. We MUST attach a noop 'error'
+      // listener BEFORE destroy(err) — otherwise Node propagates the
+      // error to the Server's 'error' channel and crashes the process
+      // (vitest reports it as an unhandled exception). The peer simply
+      // sees the pipe close, which is the correct EAGAIN-shaped signal
+      // at the protocol layer; the once-per-min log is the operator
+      // signal. (Spec frag-3.4.1 §3.4.1.a does NOT require us to surface
+      // EAGAIN as a Node error — only that we drop the connection.)
       try {
+        socket.on('error', () => {
+          /* swallow — drop is intentional; logged via noteDrop */
+        });
         socket.destroy(
           Object.assign(new Error('accept rate cap exceeded'), {
             code: 'EAGAIN',

@@ -1,14 +1,13 @@
 {
   "_comment": "Installer size baseline (bytes) for Task #1015 / T58 size guard. Per-extension entries; checked by scripts/check-installer-size.mjs. Bump only via dedicated PR with reviewer sign-off (NEVER auto-commit from CI). Spec: docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md §11.5(6).",
-  "_placeholder": true,
-  "_placeholder_reason": "Pool-10 env cannot run `npm run make:win` reliably (missing native toolchain on this checkout); these byte counts are conservative estimates from frag-11 §11.5(6) component breakdown (Electron 41 ~95 MB + daemon ~50 MB + SDK ~6 MB + uninstall-helper ~5 MB) and MUST be replaced by the first green CI build that produces real artifacts. Until then the absolute ceiling check is the real guard. See Task #1015 follow-up.",
-  "version": 1,
+  "_rebaselined_2026_05_01": "PR #765 — replaced placeholder estimates with first real CI measurements from runs/25219450679. Original baseline was a frag-11 §11.5(6) component-sum estimate (~125-146 MB per ext) but real builds carry additional weight from Sentry/OTel observability deps + AppImage AppRun stub + intentional SDK duplication for loadSdk() shim. Numbers below = observed bytes (not rounded MB) so future deltas are precise. Rebaseline rationale documented in PR body + frag-11 §11.5(6).",
+  "version": 2,
   "updated": "2026-05-01",
   "entries": {
-    "exe": 130023424,
-    "dmg": 146800640,
-    "AppImage": 125829120,
-    "deb": 110100480,
-    "rpm": 110100480
+    "exe": 178775058,
+    "dmg": 205936201,
+    "AppImage": 215517934,
+    "deb": 164023612,
+    "rpm": 140292349
   }
 }
