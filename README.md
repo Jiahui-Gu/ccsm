@@ -1,150 +1,228 @@
-# CCSM (Claude Code Session Manager)
+# ccsm
 
-A desktop GUI for [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) — manage multiple parallel agent sessions across repos with the visual density of a CLI and the interaction model of a native app.
+> Manage every Claude Code session from one window. Local-first, multi-project, PTY-native.
 
-<!-- TODO: screenshot here -->
+<!-- TODO: ./docs/screenshots/v0.3-readme/01-hero.png -->
+![ccsm main window with multiple active sessions](./docs/screenshots/v0.3-readme/01-hero.png)
 
-## What it is
+## What is ccsm
 
-Claude Code is a powerful CLI, but switching between 5+ active sessions in different repos becomes tab-juggling. CCSM groups your sessions by task (not by repo) and gives them a sidebar — you stay in flow across multiple parallel conversations.
+**ccsm** (Claude Code Session Manager) is a desktop app for people who run
+[Claude Code](https://docs.anthropic.com/claude/docs/claude-code) all day
+across multiple projects. Instead of juggling five terminal tabs, you get
+one window with a sidebar of grouped sessions, each backed by a real
+`claude` PTY. Every session keeps streaming in the background; the sidebar
+breathes amber when an agent needs you.
 
-- **Groups, not projects** — a group is your task; sessions inside it can live in different repos
-- **Native interactions** — drag to reorder, right-click context menus, keyboard shortcuts, inline rename
-- **CLI-grade information density** — block-based message rendering (`>` user, `●` assistant, `⏺` tool), collapsed tool calls, no chat-bubble fluff
-- **Permission prompts as UI** — answer Allow / Deny inline, see the tool input as structured data
-- **Two-state lifecycle** — `idle` / `waiting`; the sidebar breathes amber when an agent needs you, no manual status to maintain
+ccsm does not reimplement the agent. It delegates 100% of agent execution
+to your locally-installed `claude` binary, with your existing OAuth or
+`ANTHROPIC_API_KEY`. ccsm itself makes zero HTTP calls to Anthropic. It is
+a manager and a UI, not a client.
 
-## Requirements
-
-- **Claude Code CLI** installed and authenticated. CCSM delegates 100% of agent execution to the CLI:
-  - Install: `npm i -g @anthropic-ai/claude-code` (or your platform package manager)
-  - First-time login: run `claude` once to complete OAuth (or set `ANTHROPIC_API_KEY` in your environment)
-  - **If `claude` works in your terminal, CCSM will work. If it doesn't, CCSM won't either.**
-  - Override the binary location with `CCSM_CLAUDE_BIN=/path/to/claude` if needed.
-- **OS**: Windows 10+, macOS 11+ (Big Sur), or Linux (glibc 2.17+)
-- **Disk**: ~200 MB
-
-CCSM does **not** make any HTTP calls to Anthropic itself. All API traffic goes through your local `claude` binary, with your existing credentials.
+It is built for engineers who think in tasks, not in repos: groups are
+your unit of organisation, sessions inside a group can live in different
+working directories, and the same window stays useful whether you have
+one session or twenty.
 
 ## Install
 
-1. Download the latest `.exe` (Windows) / `.dmg` (macOS) / `.AppImage` / `.deb` / `.rpm` (Linux) from [Releases](https://github.com/Jiahui-Gu/ccsm/releases).
-2. Run the installer.
-3. Launch CCSM. If the Claude CLI isn't found, you'll see an actionable error showing every path CCSM searched.
+Download the latest installer from
+[Releases](https://github.com/Jiahui-Gu/ccsm/releases):
+
+| Platform | Artifact | Notes |
+| --- | --- | --- |
+| Windows 10 / 11 | `CCSM-Setup-<version>-x64.exe` | NSIS, per-machine, asks for elevation. |
+| macOS 11+ (Intel + Apple Silicon) | `CCSM-<version>-<arch>.dmg` | Universal binary not yet shipped; pick `x64` or `arm64`. |
+| Linux x64 | `.AppImage`, `.deb`, `.rpm` | glibc 2.17+. |
+
+After install, launch ccsm. If `claude` is not on `PATH`, ccsm shows a
+full-screen "Claude CLI not found" page with the install command and a
+re-check button — no terminal restart needed.
+
+> **Prerequisite**: the Claude Code CLI must be installed and logged in.
+> `npm i -g @anthropic-ai/claude-code`, then run `claude` once to complete
+> OAuth (or set `ANTHROPIC_API_KEY`). Override the binary location with
+> `CCSM_CLAUDE_BIN=/path/to/claude` if needed. **If `claude` works in your
+> terminal, ccsm will work. If it does not, ccsm will not either.**
 
 ## Quickstart
 
-1. Click **+ New Group** in the sidebar to create a task bucket (or skip — CCSM auto-creates a default group on the first session).
-2. Click **+ New Session** inside a group. Pick a working directory (any repo). The session spawns `claude` in that cwd.
-3. Type in the composer at the bottom. **Enter** to send, **Shift+Enter** for newline, **Esc** to cancel inline edits.
-4. When the agent requests a tool, a permission block appears at the tail of the conversation — Allow / Deny.
-5. Switch between sessions with the sidebar. Background sessions keep streaming and surface a breathing amber dot when they need you.
+1. **Create a group.** Click `+ New group` in the sidebar (or skip — the
+   first session lands in a default `Sessions` group).
+2. **Start a session.** Click `+ New session` in a group, pick a working
+   directory. ccsm spawns `claude` in that cwd via a real PTY.
+
+   <!-- TODO: ./docs/screenshots/v0.3-readme/02-quickstart-new-session.png -->
+   ![New-session popover with recent directories](./docs/screenshots/v0.3-readme/02-quickstart-new-session.png)
+
+3. **Type in the composer.** `Enter` sends, `Shift+Enter` newline, `Esc`
+   cancels inline edits. The model picker, permission mode, effort tier
+   and context % live in the status bar.
+4. **Answer permission prompts inline.** When the agent calls `Bash`,
+   `Edit`, `Write`, etc., a permission block appears at the tail of the
+   conversation with `Allow` / `Allow always` / `Deny`.
+
+   <!-- TODO: ./docs/screenshots/v0.3-readme/03-permission-prompt.png -->
+   ![Inline permission prompt for a Bash tool call](./docs/screenshots/v0.3-readme/03-permission-prompt.png)
+
+5. **Switch sessions freely.** Background sessions keep streaming. The
+   sidebar dot breathes amber when a session is waiting for you, and a
+   desktop toast fires if the window is unfocused.
 
 ### Shortcuts
 
-- `Cmd/Ctrl+F` — Search / Command Palette
-- `Cmd/Ctrl+,` — Settings
-- `Cmd/Ctrl+N` — New session
-- `Cmd/Ctrl+Shift+N` — New group
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl/Cmd+F` | Search / command palette |
+| `Ctrl/Cmd+,` | Open settings |
+| `Ctrl/Cmd+N` | New session |
+| `Ctrl/Cmd+Shift+N` | New group |
+| `?` | Show all shortcuts |
 
-## Data location
+## Features
 
-Local SQLite database (groups, sessions, user-defined order, sidebar width, theme):
+What v0.3 actually ships (verified against `src/i18n/locales/en.ts` and
+the v0.3 design spec):
 
-- **Windows**: `%APPDATA%\CCSM\`
-- **macOS**: `~/Library/Application Support/CCSM/`
-- **Linux**: `~/.config/CCSM/`
+- **Multi-session terminal** — each session is a real `claude` PTY hosted
+  by a standalone daemon; sessions survive Electron restart and
+  auto-update.
+- **Groups, not projects** — task-first organisation; sessions inside a
+  group can live in different repos. Drag to reorder, archive, soft-delete
+  with undo.
+- **CLI-grade information density** — block-based message rendering
+  (`>` user, `●` assistant, `⏺` tool), collapsed tool calls, no chat
+  bubbles.
+- **Permission prompts as UI** — inline Allow / Allow always / Deny with
+  the tool input rendered as structured data, including the cwd context.
+- **Two-state lifecycle** — `idle` / `waiting`; the sidebar pulses amber
+  when an agent needs input. No manual statuses to maintain.
+- **Status bar controls** — cwd picker (with recent-dirs fuzzy filter),
+  model picker, permission mode (`Plan` / `Default` / `Accept edits` /
+  `Bypass` / `Auto`), context-window meter, and 6-tier effort/thinking
+  chip.
+- **Command palette** — `Ctrl+F` searches sessions, groups, and built-in
+  commands (new group, switch theme, open settings, import).
+- **Import existing transcripts** — surface `~/.claude/projects/`
+  conversations into ccsm; they resume on open.
+- **Desktop notifications** — OS-native toasts for `permission`,
+  `question` (`AskUserQuestion`), and `turn_done` events. Suppressed when
+  the window is focused on that session. Per-session muting from the
+  context menu.
+- **Settings** — system / light / dark theme, font size (sm / md / lg),
+  language (English / 中文), close-button behaviour (ask / minimize-to-tray
+  / quit), opt-in crash reporting.
+- **Auto-update** — checks GitHub Releases on launch and every 4 hours;
+  in-place upgrade keeps the daemon (and your sessions) running across
+  the restart.
 
-Conversation history is **not** duplicated — CCSM reads it directly from the Claude CLI's `~/.claude/projects/` jsonl files. Anthropic credentials are stored by the CLI itself; CCSM never touches them.
+## Screenshots
 
-## Crash reports
+<!-- TODO: ./docs/screenshots/v0.3-readme/04-command-palette.png -->
+![Command palette in light mode with mixed session, group and command results](./docs/screenshots/v0.3-readme/04-command-palette.png)
 
-CCSM can send crash reports and unhandled errors to Sentry to help fix bugs. Reports include error stack traces and the app version; they do NOT include the contents of your conversations, file paths inside your projects, or environment variables.
+*Command palette — fuzzy search across sessions, groups, and built-in commands.*
 
-Crash reporting is **off by default** in the open-source build: there is no hardcoded DSN. To enable it (e.g. for your own fork), set `SENTRY_DSN=https://<key>@<org>.ingest.sentry.io/<project>` in the process environment before launching the app. If `SENTRY_DSN` is unset, `Sentry.init()` is skipped entirely and a single informational line is logged at startup.
+<!-- TODO: ./docs/screenshots/v0.3-readme/05-status-bar.png -->
+![Status bar detail showing cwd chip, model picker, permission-mode tooltip and context %](./docs/screenshots/v0.3-readme/05-status-bar.png)
 
-To disable after opting in: open Settings → Notifications and uncheck "Send crash reports to developer".
+*Status bar — cwd, model, permission mode (with tooltip), context window, effort tier.*
 
-## Development
+<!-- TODO: ./docs/screenshots/v0.3-readme/06-notifications.png -->
+![Native OS toast firing for a backgrounded session that needs input](./docs/screenshots/v0.3-readme/06-notifications.png)
 
-Requires Node 20+ and `npm`. The native module `better-sqlite3` is rebuilt for Electron's ABI on `npm install` via `electron-builder install-app-deps`.
+*Native OS toast — fires only when the window is unfocused.*
 
-```bash
-npm install
-npm run dev          # webpack-dev-server + electron, concurrently
-npm test             # vitest
-npm run typecheck    # tsc --noEmit (renderer + electron)
-npm run lint         # eslint
-npm run make:win     # build Windows installer (NSIS)
-npm run make:mac     # build macOS .dmg + .zip
-npm run make:linux   # build AppImage / .deb / .rpm
-```
+## How it works
 
-The architecture has a hard rule: **frontend code under `src/` may not import from `electron`**. The only backend entry point is `window.ccsm` (declared in `src/global.d.ts`), exposed via `electron/preload.ts`. This keeps the door open for a future remote daemon. See `docs/mvp-design.md` §15.
+ccsm v0.3 is a two-process app:
 
-### Windows: `gyp ERR! find Python` on `npm install`
+- **Renderer** — Electron + React + Tailwind. Owns the UI, OS integration
+  (tray, dock, dialogs), and user input. Talks to the daemon over a local
+  IPC channel: Windows named pipes / Unix domain sockets, length-prefixed
+  JSON envelope, HMAC-SHA256 challenge-response handshake on connect.
+- **Daemon** (`daemon/`) — standalone Node 22 ESM process. Owns PTY child
+  processes (via `node-pty` plus an in-tree `ccsm_native.node` for
+  Windows JobObject / POSIX `setpgid` + `PDEATHSIG`), the
+  `@anthropic-ai/claude-agent-sdk` calls, SQLite persistence
+  (`better-sqlite3`), structured `pino` logs, and notification fan-out.
+  Survives Electron restart and auto-update.
 
-`better-sqlite3`'s native rebuild uses `node-gyp`, which on Windows often
-picks up the `WindowsApps\python.exe` Microsoft Store launcher stub instead
-of a real interpreter and fails. If you see `gyp ERR! find Python`, point
-node-gyp at a real Python 3.x in your **user-level** `~/.npmrc` (not the
-repo's `.npmrc` — the path is machine-specific):
+A supervisor watches `/healthz` every 5 s with 3-miss restart and a
+crash-loop modal at 5 respawns / 2 min. Conversation history is read
+directly from the Claude CLI's `~/.claude/projects/` jsonl files — ccsm
+does not duplicate it.
 
-```ini
-python=C:/Users/<you>/AppData/Local/Programs/Python/Python312/python.exe
-```
+The terminal is xterm-headless on the daemon side as the authoritative
+scrollback buffer; the renderer's xterm.js is just a view onto a serialized
+snapshot, which is why sessions resume instantly after a window restart.
 
-Any installed Python 3.8+ works. Re-run `npm install` and the rebuild
-will pick up the override automatically.
+Frontend code under `src/` is forbidden from importing `electron` — the
+only backend entry point is `window.ccsm`, exposed via
+`electron/preload.ts`. This keeps the door open for the planned v0.5 web
+client over Cloudflare Tunnel; see [`docs/roadmap.md`](./docs/roadmap.md)
+and [`docs/superpowers/specs/v0.3-design.md`](./docs/superpowers/specs/v0.3-design.md)
+for the full picture.
 
-## Notifications
+### Data location
 
-CCSM raises desktop notifications when a background session needs your
-attention or a long-running turn finishes:
+Local SQLite database (groups, sessions, user-defined order, sidebar
+width, theme), `pino` logs, and the daemon socket / lockfile:
 
-- `permission` — the agent is waiting on an Allow / Allow always / Reject
-  decision (e.g. `Bash`, `Edit`, `Write`).
-- `question` — the agent invoked `AskUserQuestion` and needs you to pick
-  an option.
-- `turn_done` — a turn finished, and either took longer than 15 seconds,
-  errored, or completed in a session that wasn't focused.
+| OS | Path |
+| --- | --- |
+| Windows | `%APPDATA%\CCSM\` |
+| macOS | `~/Library/Application Support/CCSM/` |
+| Linux | `~/.config/CCSM/` |
 
-CCSM uses Electron's built-in `Notification` API, which delivers OS-native
-toasts on Windows (via `ToastNotificationManager` + the AUMID stamped on the
-Start Menu shortcut), macOS, and Linux. Click a toast to bring CCSM forward
-and focus the originating session — no inline action buttons; permission
-approval flows through the in-app dialog where the command + cwd context is
-visible.
+Anthropic credentials are stored by the Claude CLI (under `~/.claude/`);
+ccsm never touches them.
 
-**To disable**: open Settings → Notifications and toggle the master
-**Enable notifications** switch (or any of the per-event sub-toggles for
-`permission` / `question` / `turn done`). Per-session muting is also
-available from the session's context menu.
+## FAQ
 
-**Focus suppression**: when CCSM has the OS focus, no toast fires — you'll
-see the in-app prompt or sidebar pulse instead. This is enforced both in
-the renderer (per-session focus check) and in the main process
-(`BrowserWindow.isFocused()`), so devtools / debuggers / playwright
-sessions can't bypass it.
+**Does ccsm send my code to Claude?**
+Only as much as `claude` itself does — ccsm never makes its own HTTP
+calls to Anthropic. All API traffic flows through your local `claude`
+binary using your existing credentials. ccsm is a manager and a UI on top
+of that binary.
 
-### Dev mode notifications
+**Where does my data live?**
+Locally. SQLite + log files under the OS-specific data directory listed
+above. Conversation history is read in place from
+`~/.claude/projects/`. Nothing leaves your machine through ccsm.
 
-Adaptive Toast notifications require a registered AppUserModelID (AUMID)
-plus a Start Menu shortcut that points at the same AUMID. NSIS installs of
-CCSM register both automatically. For `npm run dev` (no installer is run),
-register them once per machine:
+**Does it work offline?**
+The app launches and renders fine offline. Whether a given session
+*responds* depends on the Claude CLI being able to reach Anthropic.
 
-```powershell
-pwsh scripts/setup-aumid.ps1
-```
+**Can I run multiple Claude Code versions?**
+One global binary at a time, resolved via `PATH` or
+`CCSM_CLAUDE_BIN=/path/to/claude`. ccsm does not bundle the CLI — it
+points at whatever you have installed.
 
-Without this, the Adaptive Toast pipeline silently no-ops in dev mode and
-CCSM falls back to plain Electron notifications.
+**Does ccsm send crash reports?**
+Off by default. Crash reporting requires a build-time `SENTRY_DSN`
+environment variable; the open-source build ships without one. To opt in,
+build your own with `SENTRY_DSN=...` set, or toggle Settings →
+Notifications → "Send crash reports to developer". Reports include stack
+traces and the app version, never conversation contents or environment
+variables.
 
-## Status
+**Why an Electron + daemon split?**
+So PTY children and SDK socket connections survive Electron restart,
+hot-reload, and auto-update. Killing the renderer never orphans an agent
+loop. See [`docs/superpowers/specs/v0.3-daemon-split.md`](./docs/superpowers/specs/v0.3-daemon-split.md)
+for the full rationale.
 
-This is **MVP**. The author uses it daily as a personal driver. Public release pending.
+## Contributing
+
+Issues and PRs welcome. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for
+the dev loop (Node 20+, `npm install`, `npm run dev` for the three-process
+web/daemon/app concurrent setup) and contribution conventions.
+
+Design docs live under [`docs/superpowers/specs/`](./docs/superpowers/specs/);
+the implementation roadmap is at [`docs/roadmap.md`](./docs/roadmap.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](./LICENSE).
