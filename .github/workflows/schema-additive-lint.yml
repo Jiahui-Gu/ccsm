@@ -1,0 +1,17 @@
+name: schema-additive-lint
+on:
+  pull_request:
+    paths:
+      - 'daemon/src/db/migrations/**'
+      - 'scripts/lint-schema-additive.ts'
+      - 'daemon/src/db/migrations/.v03-baseline'
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run lint:schema-additive

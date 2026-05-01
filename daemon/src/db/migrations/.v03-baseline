@@ -1,0 +1,15 @@
+# v0.3 migration baseline marker.
+#
+# The first non-empty, non-comment line below is the filename of the LAST
+# v0.3-era migration in this directory. The schema-additive lint
+# (`scripts/lint-schema-additive.ts`) only enforces additive rules on
+# migrations whose filenames sort AFTER this baseline.
+#
+# v0.3 shipped its schema as a single canonical SQL file
+# (`daemon/src/db/schema/v0.3.sql`) applied by the migration runner / fresh
+# install path; there are no per-step migration files in this directory
+# from the v0.3 era. Use the sentinel `__none__` to mean "no v0.3-era
+# migrations exist; every migration in this directory is post-baseline and
+# must be additive per docs/superpowers/specs/2026-05-01-v0.4-web-design.md
+# chapter 09 §8".
+__none__
