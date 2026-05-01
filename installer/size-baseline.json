@@ -1,6 +1,6 @@
 {
   "_comment": "Installer size baseline (bytes) for Task #1015 / T58 size guard. Per-extension entries; checked by scripts/check-installer-size.mjs. Bump only via dedicated PR with reviewer sign-off (NEVER auto-commit from CI). Spec: docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md §11.5(6).",
-  "_rebaselined_2026_05_01": "PR #765 — replaced placeholder estimates with first real CI measurements from runs/25219450679. Original baseline was a frag-11 §11.5(6) component-sum estimate (~125-146 MB per ext) but real builds carry additional weight from Sentry/OTel observability deps + AppImage AppRun stub + intentional SDK duplication for loadSdk() shim. Numbers below = observed bytes (not rounded MB) so future deltas are precise. Rebaseline rationale documented in PR body + frag-11 §11.5(6).",
+  "_rebaselined_2026_05_01": "PR #765 — manager rebaseline decision. Replaced placeholder estimates with first real CI measurements from runs/25219450679 + new ceilings in scripts/check-installer-size.mjs CEILING_MB. Original baseline + ceilings were copied from frag-11 §11.5(6) pre-v0.3-daemon-split estimates; v0.3 split the daemon out of Electron-main into a separate pkg-built binary with its own native deps + intentional SDK closure duplication for loadSdk() shim, so +27%~+71% growth is the architectural physical result of the split, not a regression. Numbers below = observed bytes (not rounded MB) so future deltas are precise. Rebaseline rationale documented in PR body + frag-11 §11.5(6).",
   "version": 2,
   "updated": "2026-05-01",
   "entries": {

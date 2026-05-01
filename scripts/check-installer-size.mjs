@@ -36,26 +36,29 @@ const BASELINE_PATH = join(REPO_ROOT, 'installer', 'size-baseline.json');
 // docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md §11.5(6).
 // Bumping these requires a spec edit + reviewer sign-off.
 //
-// 2026-05-01 rebaseline (PR #765): the original ceilings were copied from
-// frag-11 §11.5(6) early-design estimates (Electron 41 + daemon + SDK).
-// Real CI builds during the v0.3 dark-window measure 25-71% above those
-// numbers because:
-//   * @sentry/* + @opentelemetry/* observability deps shipped during the
-//     window weigh ~22 MB compressed in @sentry/react alone (renderer
-//     bundle) plus the main-process @sentry/electron + node closure.
-//   * The SDK is intentionally duplicated under `<resources>/sdk/` for the
-//     loadSdk() shim AND under `daemon/node_modules/` for the daemon
+// 2026-05-01 rebaseline (PR #765, manager decision). The original ceilings
+// (145 / 160 / 140 / 125 / 125 MB) were copied from frag-11 §11.5(6) early-
+// design estimates that pre-dated the v0.3 daemon-split. Real CI builds
+// during the v0.3 dark-window measure 25-71% above those numbers because:
+//   * v0.3 split the daemon out of Electron-main into a separate binary
+//     shipped under `daemon/native-staged` + `daemon/sdk-staged` +
+//     `daemon/deps-staged` extraResources -- this is the architecture
+//     change, not a regression.
+//   * @sentry/* + @opentelemetry/* observability deps add ~25 MB
+//     (@sentry/react alone is ~22 MB unpacked).
+//   * The SDK is intentionally duplicated under `<resources>/sdk/` for
+//     the loadSdk() shim AND under `daemon/node_modules/` for the daemon
 //     subprocess (per spec §3.2 + required-after-pack.test.ts).
 //   * Linux AppImage carries a self-extracting AppRun stub + libfuse
 //     shim (~30 MB) on top of the same payload as deb/rpm.
-// New ceilings give 5-10% headroom over observed real sizes; the >10%
-// growth-vs-baseline guard remains the primary regression signal.
+// New ceilings = current max measured + ~20% buffer to leave v0.4 room;
+// the >10% growth-vs-baseline guard remains the primary regression signal.
 const CEILING_MB = {
-  exe: 180,
-  dmg: 210,
-  AppImage: 220,
-  deb: 165,
-  rpm: 145,
+  exe: 210,
+  dmg: 235,
+  AppImage: 250,
+  deb: 190,
+  rpm: 165,
 };
 
 const WARN_PCT = 5;
