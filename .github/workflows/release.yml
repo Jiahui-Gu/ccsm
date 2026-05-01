@@ -171,7 +171,6 @@ jobs:
       # drop symbol uploads. Skipped when SENTRY_AUTH_TOKEN is unset
       # (PR / fork builds, dry-runs without the release secret plugged in).
       - name: Upload symbols to Sentry
-        if: env.SENTRY_AUTH_TOKEN != ''
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ vars.SENTRY_ORG }}
