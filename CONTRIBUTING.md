@@ -14,3 +14,13 @@ CCSM_ELECTRON_INSPECT=1 npm run dev:app
 ```
 
 Attach Chrome DevTools via `chrome://inspect` or a VS Code launch config (T67 wires a launch.json compound).
+
+## Debugging the daemon process
+
+Set `CCSM_DAEMON_INSPECT=1` when running `npm run dev:daemon` (or `npm run dev`) to spawn the daemon tsx child with `--inspect=9230`. Without the env var, no inspector port is opened.
+
+```sh
+CCSM_DAEMON_INSPECT=1 npm run dev:daemon
+```
+
+Attach via the "Attach to daemon" launch config (or the compound that targets both 9229 + 9230).

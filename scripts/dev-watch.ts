@@ -25,7 +25,14 @@ function pipe(stream: NodeJS.ReadableStream, sink: NodeJS.WriteStream): void {
 const isWin = process.platform === 'win32';
 const nodemonBin = isWin ? 'nodemon.cmd' : 'nodemon';
 
-const child = spawn(nodemonBin, ['--config', configPath], {
+const nodemonArgs = ['--config', configPath];
+if (process.env.CCSM_DAEMON_INSPECT === '1') {
+  // Override nodemon.daemon.json `exec` to inject --inspect=9230 on the tsx
+  // child process. Env-gated so prod / default dev stays portless.
+  nodemonArgs.push('--exec', 'tsx --inspect=9230 daemon/src/index.ts');
+}
+
+const child = spawn(nodemonBin, nodemonArgs, {
   cwd: repoRoot,
   stdio: ['inherit', 'pipe', 'pipe'],
   env: process.env,
