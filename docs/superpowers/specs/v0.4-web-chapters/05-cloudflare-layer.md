@@ -5,6 +5,9 @@
 The web client lives on Cloudflare Pages. The user's daemon lives on their Windows box behind whatever NAT / firewall / dynamic IP that machine has. **Cloudflare Tunnel** stitches them together: the daemon (or a `cloudflared` sidecar) opens an outbound connection to Cloudflare; Cloudflare assigns a stable public hostname; HTTPS requests to that hostname are routed back over the tunnel. **Cloudflare Access** sits in front as a zero-trust authenticator: every request is intercepted, redirected to GitHub OAuth on first hit, and signed with a short-lived JWT. The daemon validates the JWT on every remote request; local-socket requests bypass it (peer-cred is the local trust boundary, see chapter 02 §8).
 
 **Terms in this chapter** (per R6 P1-3):
+
+**Tunnel-vs-binary one-liner (per R6 r2 P1):** "Cloudflare Tunnel" (capitalized) is the Cloudflare product/service that provides outbound-only secure ingress; `cloudflared` (code voice) is the daemon binary distributed by Cloudflare that implements a Tunnel client. The two are NOT interchangeable: docs reference the product by name, code references the binary by filename.
+
 - **Cloudflare Tunnel** (capitalized) — the Cloudflare product/service.
 - `cloudflared` (code voice) — the binary that runs locally as a sidecar.
 - *tunnel* (lowercase) — a single tunnel instance / outbound connection.
@@ -280,6 +283,11 @@ The daemon binds **three** listeners in v0.4:
 **Why bind TCP only when remote enabled:** least exposure. If the user never enables remote, no TCP socket is open, no `cloudflared` is running. Local-only mode = unchanged from v0.3 surface area.
 
 **TCP bind is `127.0.0.1`, never `0.0.0.0`:** all external traffic MUST go through `cloudflared`'s outbound connection. Binding `0.0.0.0` would expose the unauth'd Connect surface from the LAN.
+
+**Production TCP listener Host-header + no-JWT-exempt-routes lock (per R2 P0-2; ch04 §5 cross-refs this paragraph):**
+1. **Host-header binding (lock):** the prod TCP listener (`127.0.0.1:7879`) MUST validate the `Host` header on every incoming request equals `127.0.0.1:7879`, `localhost:7879`, or the configured `cloudflared`-set Host (the public Tunnel hostname `<random>.cfargotunnel.com` or the user's optional custom domain per §2). Any other value MUST be rejected with HTTP 421 Misdirected Request **before any handler or interceptor runs**. This defeats DNS rebinding attacks from any browser tab on the user's machine even if a future PR introduces a route that bypasses the JWT interceptor.
+2. **No JWT-exempt routes (hard rule):** the JWT interceptor (§4) MUST apply to **every** route on the remote TCP listener. There is no allowlist, no `/healthz`-style bypass, no per-method exemption. Adding any route that bypasses JWT on the prod TCP listener requires an explicit amendment to this chapter (chapter 05 §5) and the chapter 02 §8 threat model. The transport-tag local-bypass mechanism in §4 applies ONLY to the local-pipe listener; the prod TCP listener carries the `'remote-tcp'` transport tag and JWT validation is unconditional.
+3. **CI lint (gate):** a CI step greps the daemon's Connect server registration for any interceptor-skipping pattern on the prod TCP listener and fails the build on match. Mirrors the dev-listener gate in chapter 04 §5.
 
 **Why three listeners and not two:** the local data-socket and remote TCP serve identical Connect handlers but have different transport tags (per §4). One Http2Server per listener; both register the same Connect routes. Marginal extra code (~30 LOC).
 
