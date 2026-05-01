@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json && tsc --noEmit -p daemon/tsconfig.json",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fixtures": "tsx scripts/lint-fixtures.ts",
+    "lint:schema-additive": "tsx scripts/lint-schema-additive.ts",
     "test": "vitest run",
     "check:electron-pin": "node scripts/check-electron-pin.cjs",
     "pretest": "node scripts/check-electron-pin.cjs",
