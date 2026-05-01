@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Attach to Electron-main",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "localhost",
+      "restart": true,
+      "protocol": "inspector",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/dist/electron/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "presentation": { "group": "ccsm-dev", "order": 1 }
+    },
+    {
+      "name": "Attach to daemon",
+      "type": "node",
+      "request": "attach",
+      "port": 9230,
+      "address": "localhost",
+      "restart": true,
+      "protocol": "inspector",
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceFolder}/daemon/dist-daemon/**/*.js",
+        "!**/node_modules/**"
+      ],
+      "presentation": { "group": "ccsm-dev", "order": 2 }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Attach to both (Electron-main + daemon)",
+      "configurations": ["Attach to Electron-main", "Attach to daemon"],
+      "stopAll": true,
+      "presentation": { "group": "ccsm-dev", "order": 0 }
+    }
+  ]
+}
