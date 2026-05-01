@@ -42,7 +42,8 @@
     "build:icon": "electron scripts/build-icon.cjs",
     "rebuild:natives": "node scripts/electron-rebuild-natives.cjs",
     "build:uninstall-helper": "cd installer/uninstall-helper && pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip",
-    "postinstall": "node scripts/postinstall.mjs"
+    "postinstall": "node scripts/postinstall.mjs",
+    "proto:gen": "cd proto && buf generate"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
@@ -84,6 +85,8 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@bufbuild/buf": "1.69.0",
+    "@bufbuild/protoc-gen-es": "2.12.0",
     "@electron/rebuild": "^4.0.4",
     "@eslint/js": "^9.39.4",
     "@tailwindcss/postcss": "^4.0.0-beta.7",
