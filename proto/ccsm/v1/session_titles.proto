@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// session_titles.proto — SDK-derived session title sync.
+
+message GetSessionTitleRequest {
+  string session_id = 1;
+}
+message GetSessionTitleResponse {
+  string title = 1;
+  bool found = 2;
+}
+
+message RenameSessionTitleRequest {
+  string session_id = 1;
+  string title = 2;
+}
+message RenameSessionTitleResponse {}
+
+message ListSessionTitlesForProjectRequest {
+  string project_path = 1;
+}
+message SessionTitleEntry {
+  string session_id = 1;
+  string title = 2;
+  int64 updated_at_ms = 3;
+}
+message ListSessionTitlesForProjectResponse {
+  repeated SessionTitleEntry entries = 1;
+}
+
+message EnqueuePendingSessionTitleRequest {
+  string session_id = 1;
+  string raw_message = 2;
+  // ch02 §9: dedup key for queue append.
+  string idempotency_key = 3;
+}
+message EnqueuePendingSessionTitleResponse {}
+
+message FlushPendingSessionTitlesRequest {
+  // ch02 §9: dedup key for the flush batch.
+  string idempotency_key = 1;
+}
+message FlushPendingSessionTitlesResponse {
+  int32 flushed_count = 1;
+}

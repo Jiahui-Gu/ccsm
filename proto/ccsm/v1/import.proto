@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// import.proto — importable-session scan + recent cwds.
+
+message ImportableSession {
+  string session_id = 1;
+  string project_path = 2;
+  string title = 3;
+  int64 last_message_at_ms = 4;
+}
+
+message ScanImportableRequest {
+  string root_path = 1;
+}
+message ScanImportableResponse {
+  repeated ImportableSession sessions = 1;
+}
+
+message GetRecentCwdsRequest {
+  int32 limit = 1;
+}
+message GetRecentCwdsResponse {
+  repeated string cwds = 1;
+}

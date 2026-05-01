@@ -18,6 +18,8 @@ jobs:
       - run: npm ci
       - run: npx buf lint
         working-directory: proto
+      - name: idempotency annotation lint (ch02 §9)
+        run: npx tsx scripts/check-idempotency-annotations.ts
       - name: buf breaking (skipped if proto/ absent on baseline)
         working-directory: proto
         run: |

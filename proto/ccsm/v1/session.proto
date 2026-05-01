@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// session.proto — session lifecycle (active session, name, state streams).
+
+// --- messages ---
+
+message SetSessionActiveRequest {
+  string session_id = 1;
+}
+message SetSessionActiveResponse {}
+
+message SetSessionNameRequest {
+  string session_id = 1;
+  string name = 2;
+}
+message SetSessionNameResponse {}
+
+// stream payloads
+message SessionStateEvent {
+  string session_id = 1;
+  string state = 2;
+  int64 ts_ms = 3;
+}
+
+message SessionTitleEvent {
+  string session_id = 1;
+  string title = 2;
+}
+
+message SessionCwdRedirectedEvent {
+  string session_id = 1;
+  string from_cwd = 2;
+  string to_cwd = 3;
+}
+
+message SessionActivateEvent {
+  string session_id = 1;
+}
+
+message StreamSessionStateRequest {}
+message StreamSessionStateResponse {
+  SessionStateEvent event = 1;
+}
+
+message StreamSessionTitleRequest {}
+message StreamSessionTitleResponse {
+  SessionTitleEvent event = 1;
+}
+
+message StreamSessionCwdRedirectedRequest {}
+message StreamSessionCwdRedirectedResponse {
+  SessionCwdRedirectedEvent event = 1;
+}
+
+message StreamSessionActivateRequest {}
+message StreamSessionActivateResponse {
+  SessionActivateEvent event = 1;
+}

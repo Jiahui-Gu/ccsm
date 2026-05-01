@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// notify.proto — user-input markers + visual flash sink.
+
+message NotifyUserInputRequest {
+  string session_id = 1;
+  // ch02 §9: dedup key for marker append.
+  string idempotency_key = 2;
+}
+message NotifyUserInputResponse {}
+
+message NotifyFlashEvent {
+  string session_id = 1;
+  string kind = 2;
+  int64 ts_ms = 3;
+}
+
+message StreamNotifyFlashRequest {}
+message StreamNotifyFlashResponse {
+  NotifyFlashEvent event = 1;
+}

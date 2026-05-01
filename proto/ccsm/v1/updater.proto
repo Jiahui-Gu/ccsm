@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// updater.proto — auto-update lifecycle.
+
+message UpdaterStatus {
+  string kind = 1;
+  string version = 2;
+  string error = 3;
+  int32 progress_percent = 4;
+}
+
+message GetUpdatesStatusRequest {}
+message GetUpdatesStatusResponse {
+  UpdaterStatus status = 1;
+}
+
+message CheckUpdatesRequest {}
+message CheckUpdatesResponse {
+  UpdaterStatus status = 1;
+}
+
+message DownloadUpdateRequest {}
+message DownloadUpdateResponse {
+  UpdaterStatus status = 1;
+}
+
+message InstallUpdateRequest {}
+message InstallUpdateResponse {}
+
+message GetAutoCheckRequest {}
+message GetAutoCheckResponse {
+  bool enabled = 1;
+}
+
+message SetAutoCheckRequest {
+  bool enabled = 1;
+}
+message SetAutoCheckResponse {}
+
+// stream payloads
+message UpdaterStatusEvent {
+  UpdaterStatus status = 1;
+  int64 ts_ms = 2;
+}
+
+message UpdateDownloadedEvent {
+  string version = 1;
+  int64 ts_ms = 2;
+}
+
+message StreamUpdaterStatusRequest {}
+message StreamUpdaterStatusResponse {
+  UpdaterStatusEvent event = 1;
+}
+
+message StreamUpdateDownloadedRequest {}
+message StreamUpdateDownloadedResponse {
+  UpdateDownloadedEvent event = 1;
+}
