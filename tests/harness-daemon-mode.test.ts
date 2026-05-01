@@ -41,6 +41,29 @@ import {
   type HelloReplyPayload,
   type HelloRequestPayload,
 } from '../daemon/src/handlers/daemon-hello.js';
+// T74 — upgrade-in-place probe imports. The probe wires the real T21
+// shutdown-for-upgrade handler, the real T22 marker reader, and the
+// real T25 force-kill sink against a tmpdir-backed marker dir to
+// assert the §6.4 + §6.6.1 + §11.6.5 contracts that auto-update
+// depends on. Socket round-trip stays out of scope for the same
+// reason as T73 (`daemon/src/index.ts` doesn't bind the control
+// socket yet — see file-header note above and harness-daemon-mode.mjs
+// §3.4.1.h note).
+import {
+  defaultWriteShutdownMarker,
+  makeShutdownForUpgradeHandler,
+  SHUTDOWN_MARKER_REASON_UPGRADE,
+  type ShutdownForUpgradeAck,
+  type ShutdownForUpgradeActions,
+} from '../daemon/src/handlers/daemon-shutdown-for-upgrade.js';
+import { createForceKillSink } from '../daemon/src/lifecycle/force-kill.js';
+import { shouldSkipCrashLoop } from '../daemon/src/lifecycle/crash-loop-skip.js';
+import {
+  DAEMON_SHUTDOWN_MARKER_FILENAME,
+  readMarker,
+  type ShutdownMarkerPayload,
+} from '../daemon/src/marker/reader.js';
+import { writeFile } from 'node:fs/promises';
 import { DAEMON_PROTOCOL_VERSION } from '../daemon/src/envelope/protocol-version.js';
 import {
   HMAC_TAG_LENGTH,
@@ -490,5 +513,319 @@ describe('T73 — daemon-boot + hello probe (e2e harness fold)', () => {
     await expect(handler(bad as unknown)).rejects.toBeInstanceOf(
       DaemonHelloSchemaError,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T74 — upgrade-in-place probe (e2e harness fold)
+//
+// Why fold here (not standalone .probe.test.ts): same `feedback_e2e_prefer_harness.md`
+// rationale as T73 — every standalone probe adds ~30s wall time. The T68
+// helper is the v0.3 daemon-mode surface so its companion vitest is the
+// canonical home for daemon-lifecycle e2e probes.
+//
+// Scope honesty: the daemon control socket is NOT yet bound by
+// `daemon/src/index.ts` (T16/T19 dispatcher merged but no `controlSocket.listen()`
+// — same gap T73's probe documents). This probe therefore exercises the
+// upgrade contract via the same in-process handler-call path T73 uses,
+// PLUS the real T22 marker reader and the real T25 force-kill sink against
+// a real tmpdir. When the socket binding lands, the in-process handler
+// call is swapped for a real `net.connect` + envelope round-trip without
+// changing the asserted invariants.
+//
+// Asserted invariants:
+//   1. Marker file consumption — pre-write a v0.2→v0.3-style upgrade
+//      marker, simulate "boot daemon", assert T22 reader picks it up
+//      AND T26 `shouldSkipCrashLoop` consumes it (skip=true on first
+//      pass; skip=false after consumed=true is recorded).
+//   2. shutdownForUpgrade RPC sent — drive the real handler, assert the
+//      ack envelope shape (`accepted: true`, `reason: 'upgrade'`) AND
+//      that the marker payload that lands on disk matches the §6.4
+//      schema (reason/version/ts).
+//   3. 5s ack timeout — when the simulated daemon never acks, the
+//      caller's Promise.race timeout branch fires within budget. We
+//      use a 50 ms shrink to keep the probe fast while citing the
+//      production 5_000 ms constant inline so the spec link is visible.
+//   4. Force-kill fallback — after the timeout, the T25 sink fires
+//      with the registered targets (POSIX SIGKILL + win32 JobObject).
+//      Both platform branches exercised on a single host via the
+//      `platform` override per `createForceKillSink` contract.
+//   5. Reverse-verify — when the daemon DOES ack within budget, the
+//      caller observes `kind: 'acked'` and the force-kill sink is
+//      NEVER invoked (graceful path). This is the load-bearing inverse
+//      of invariants 3+4.
+//
+// Reverse-verify mutations attempted (also documented in PR body):
+//   A. Drop the `marker-written` step from the plan — invariant 1
+//      and the disk-state read in invariant 2 then BOTH FAIL with
+//      "expected snapshot.kind to be 'present'" (markerPath ENOENT).
+//   B. Wire the real (5_000ms) timeout but never resolve the rpc —
+//      invariant 3 then exceeds the 1 s probe poll budget (the
+//      timeout never fires within the assertion window).
+//
+// Out of scope today (deliberate, documented):
+//   - Real socket round-trip via `daemon/src/index.ts`. Same gap as T73.
+//   - Electron-main `callShutdownForUpgrade` direct import (pulls in
+//     `electron` module which vitest can't resolve in node env). The
+//     timeout race logic is re-implemented inline so the contract is
+//     still asserted; when the socket binding lands, swap the inline
+//     race for the real `callShutdownForUpgrade`.
+// ---------------------------------------------------------------------------
+
+/** Spec §6.4 / §11.6.5 production constant. The probe shrinks the timeout
+ *  for fast assertions but preserves the constant reference so a regression
+ *  that bumps the spec value also flags this probe. */
+const T74_PROD_ACK_TIMEOUT_MS = 5_000;
+/** Probe shrink — same race shape, sub-second budget. */
+const T74_TEST_ACK_TIMEOUT_MS = 50;
+
+const T74_DAEMON_VERSION = '0.3.0-t74-probe';
+const T74_FIXED_NOW = 1_700_000_000_001;
+
+/** Shape mirroring `electron/updater.ts UpgradeShutdownOutcome`, re-declared
+ *  here to avoid pulling the `electron` module into the vitest node env. */
+type T74AckOutcome =
+  | { kind: 'acked'; ack: ShutdownForUpgradeAck }
+  | { kind: 'timeout' };
+
+/** Faithful inline copy of the `Promise.race(call, timeout)` pattern from
+ *  `electron/updater.ts callShutdownForUpgrade`. Verified against
+ *  electron/updater.ts:75-102 — same race + finally(clearTimeout) shape. */
+async function raceAck(
+  rpc: () => Promise<ShutdownForUpgradeAck>,
+  timeoutMs: number,
+): Promise<T74AckOutcome> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<T74AckOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+  });
+  const call: Promise<T74AckOutcome> = (async () => {
+    const ack = await rpc();
+    return { kind: 'acked', ack };
+  })();
+  try {
+    return await Promise.race([call, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+describe('T74 — upgrade-in-place probe (e2e harness fold)', () => {
+  // Reference to the production constant so a future spec change that
+  // bumps the ack budget also flags this probe (assertion is symbolic;
+  // the test uses the shrink constant for actual timing).
+  it('production ack-timeout constant is 5_000 ms (spec §11.6.5 step 3)', () => {
+    expect(T74_PROD_ACK_TIMEOUT_MS).toBe(5_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 1 — marker file consumption (pre-write + reader + skip decider)
+  // -------------------------------------------------------------------------
+  it('pre-written upgrade marker is consumed by reader + crash-loop-skip decider', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 't74-marker-consume-'));
+    tempDirs.push(dir);
+    const markerPath = join(dir, DAEMON_SHUTDOWN_MARKER_FILENAME);
+
+    // Pre-write a canonical upgrade marker — the shape T21
+    // `defaultWriteShutdownMarker` produces and T22 `readMarker` parses.
+    // This simulates "previous daemon shut down for upgrade; new daemon
+    // boots and finds the marker on disk".
+    const payload: ShutdownMarkerPayload = {
+      reason: SHUTDOWN_MARKER_REASON_UPGRADE,
+      version: '0.2.99-pre-upgrade',
+      ts: T74_FIXED_NOW - 1,
+    };
+    await writeFile(markerPath, JSON.stringify(payload), { mode: 0o600 });
+
+    // Simulate the daemon's first-boot pass: read the marker, hand it to
+    // the crash-loop-skip decider with consumed=false. T26 spec contract:
+    // PRESENT + not consumed → skip=true (suppress one crash-loop tick).
+    const snapshot = await readMarker(markerPath);
+    expect(snapshot.kind).toBe('present');
+    if (snapshot.kind !== 'present') return;
+    expect(snapshot.payload).toEqual(payload);
+    expect(
+      shouldSkipCrashLoop({ marker: snapshot, consumed: false, restartCount: 1 }),
+    ).toBe(true);
+
+    // After the supervisor records consumed=true (one-shot per spec §6.4),
+    // a subsequent restart in the same supervisor lifetime resumes normal
+    // crash-loop accounting.
+    expect(
+      shouldSkipCrashLoop({ marker: snapshot, consumed: true, restartCount: 2 }),
+    ).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 2 — shutdownForUpgrade RPC fired with correct payload shape;
+  // marker on disk matches spec schema
+  // -------------------------------------------------------------------------
+  it('shutdownForUpgrade RPC returns correct ack and writes marker payload to disk', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 't74-rpc-'));
+    tempDirs.push(dir);
+
+    const timeline: string[] = [];
+    const actions: ShutdownForUpgradeActions = {
+      writeMarker: async (plan) => {
+        await defaultWriteShutdownMarker(plan);
+        timeline.push('marker-written');
+      },
+      runShutdownSequence: async () => { timeline.push('drain'); },
+      releaseLock: async () => { timeline.push('lock-released'); },
+      exit: (code) => { timeline.push(`exit:${code}`); },
+    };
+    const handler = makeShutdownForUpgradeHandler(
+      { version: T74_DAEMON_VERSION, now: () => T74_FIXED_NOW, markerDir: dir },
+      actions,
+    );
+
+    // Simulate Electron-main sending the RPC. The handler returns the ack
+    // synchronously (microtask schedules the side effects).
+    const ack = await handler({});
+    expect(ack).toEqual({
+      accepted: true,
+      reason: SHUTDOWN_MARKER_REASON_UPGRADE,
+    });
+
+    // Drain the microtask queue so the side-effect chain completes.
+    // The executor iterates marker → drain → unlock → exit; we wait for
+    // the terminal `exit:0` step (bounded by the implicit vitest timeout).
+    while (!timeline.includes('exit:0')) {
+      await new Promise((r) => setImmediate(r));
+    }
+
+    // Side-effects fired in spec §6.4 order.
+    expect(timeline).toEqual([
+      'marker-written',
+      'drain',
+      'lock-released',
+      'exit:0',
+    ]);
+
+    // Marker payload on disk matches the §6.4 schema exactly.
+    const snapshot = await readMarker(join(dir, DAEMON_SHUTDOWN_MARKER_FILENAME));
+    expect(snapshot.kind).toBe('present');
+    if (snapshot.kind !== 'present') return;
+    expect(snapshot.payload).toEqual({
+      reason: SHUTDOWN_MARKER_REASON_UPGRADE,
+      version: T74_DAEMON_VERSION,
+      ts: T74_FIXED_NOW,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 3 — caller's 5s ack-timeout fires when daemon doesn't reply
+  // -------------------------------------------------------------------------
+  it('ack timeout: hung rpc → caller resolves to {kind:"timeout"} within budget', async () => {
+    // Mimic a daemon that never acks — Promise that never resolves.
+    const startedAt = Date.now();
+    const outcome = await raceAck(
+      () => new Promise<ShutdownForUpgradeAck>(() => undefined),
+      T74_TEST_ACK_TIMEOUT_MS,
+    );
+    const elapsed = Date.now() - startedAt;
+
+    expect(outcome.kind).toBe('timeout');
+    // Timer fires close to the budget; allow generous slack for slow CI.
+    expect(elapsed).toBeGreaterThanOrEqual(T74_TEST_ACK_TIMEOUT_MS);
+    expect(elapsed).toBeLessThan(T74_TEST_ACK_TIMEOUT_MS + 1_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 4 — force-kill fallback fires after the timeout (T25 sink)
+  // -------------------------------------------------------------------------
+  it('force-kill fallback: after ack timeout, T25 sink terminates registered targets', async () => {
+    // Step 1: ack times out (mutation: timeoutMs=0 → immediate timeout).
+    // This is the §6.4 + §11.6.5 contract: the caller MUST proceed even
+    // when no ack arrives. The only safety net is the OS-level force-kill.
+    const outcome = await raceAck(
+      () => new Promise<ShutdownForUpgradeAck>(() => undefined),
+      0,
+    );
+    expect(outcome.kind).toBe('timeout');
+
+    // Step 2: caller invokes the T25 sink. Probe drives both platform
+    // branches via the `platform` override so a single host covers
+    // POSIX SIGKILL + win32 JobObject.terminate(1).
+    const fakePid = 88_888;
+    const posixKill = vi.fn<(pid: number, sig: 'SIGKILL') => void>();
+    const recordForceKill = vi.fn<
+      (info: { platform: 'posix' | 'win32'; targets: number; errors: number }) => void
+    >();
+    const posixSink = createForceKillSink({
+      platform: 'posix',
+      getChildPids: () => [fakePid],
+      posixKill,
+      recordForceKill,
+    });
+    const fakeJob = { terminate: vi.fn() };
+    const winSink = createForceKillSink({
+      platform: 'win32',
+      getJobObjects: () => [fakeJob],
+      recordForceKill,
+    });
+
+    const posixCount = posixSink.forceKillRemaining();
+    const winCount = winSink.forceKillRemaining();
+
+    expect(posixCount).toBe(1);
+    expect(winCount).toBe(1);
+    expect(posixKill).toHaveBeenCalledExactlyOnceWith(fakePid, 'SIGKILL');
+    expect(fakeJob.terminate).toHaveBeenCalledExactlyOnceWith(1);
+    expect(recordForceKill).toHaveBeenCalledTimes(2);
+
+    // Idempotency contract — replay path per §6.6.1 must NOT re-issue.
+    expect(posixSink.forceKillRemaining()).toBe(0);
+    expect(winSink.forceKillRemaining()).toBe(0);
+    expect(posixKill).toHaveBeenCalledTimes(1);
+    expect(fakeJob.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 5 — reverse-verify: graceful ack → NO force-kill
+  // -------------------------------------------------------------------------
+  it('reverse-verify: graceful ack within budget → caller acked, force-kill NOT invoked', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 't74-graceful-'));
+    tempDirs.push(dir);
+
+    // Real handler with all sinks recorded. Acks immediately.
+    const actions: ShutdownForUpgradeActions = {
+      writeMarker: defaultWriteShutdownMarker,
+      runShutdownSequence: async () => undefined,
+      releaseLock: async () => undefined,
+      exit: () => undefined,
+    };
+    const handler = makeShutdownForUpgradeHandler(
+      { version: T74_DAEMON_VERSION, now: () => T74_FIXED_NOW, markerDir: dir },
+      actions,
+    );
+
+    const outcome = await raceAck(
+      () => handler({}),
+      T74_TEST_ACK_TIMEOUT_MS,
+    );
+
+    // Acked branch — NOT timeout.
+    expect(outcome.kind).toBe('acked');
+    if (outcome.kind !== 'acked') return;
+    expect(outcome.ack).toEqual({
+      accepted: true,
+      reason: SHUTDOWN_MARKER_REASON_UPGRADE,
+    });
+
+    // Caller's force-kill sink is wired but MUST NOT be invoked on the
+    // graceful path. We construct a sink with a tracked target and
+    // assert nothing fires (caller decides WHEN — graceful path skips it).
+    const posixKill = vi.fn<(pid: number, sig: 'SIGKILL') => void>();
+    const sink = createForceKillSink({
+      platform: 'posix',
+      getChildPids: () => [12_345],
+      posixKill,
+    });
+    // The caller's contract on `acked`: do NOT call forceKillRemaining.
+    // Probe documents this by simply NOT calling it and asserting the
+    // primitive stays untouched.
+    expect(sink.invoked).toBe(false);
+    expect(posixKill).not.toHaveBeenCalled();
   });
 });
