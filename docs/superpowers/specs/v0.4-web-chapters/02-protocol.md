@@ -106,15 +106,24 @@ plugins:
 ```
 
 **CI gates** (GitHub Actions, run on every PR touching `proto/**` or `gen/**`):
-1. `buf lint` — must pass (zero warnings, zero errors).
-2. `buf breaking --against '.git#branch=main,subdir=proto'` — must pass against the merge target's `main` branch tip. Detects wire-incompatible edits (deleted field, changed tag number, changed type, changed cardinality).
-3. `buf generate && git diff --exit-code gen/` — verifies vendored codegen matches what `buf generate` would produce. Catches "edited the .proto but forgot to regenerate" PRs.
+1. `buf lint` — MUST pass (zero warnings, zero errors). Budget ≤5s.
+2. `buf breaking --against '.git#branch=working,subdir=proto'` — MUST pass against the **merge target** (`working`) branch tip when `proto/**` changes (skip when only `gen/**` changes — a regen with no `.proto` change cannot be wire-breaking). Detects wire-incompatible edits (deleted field, changed tag number, changed type, changed cardinality). Budget ≤15s. Separate **release-tag job** runs `buf breaking --against '.git#tag=v<previous>,subdir=proto'` at every `v*` tag to catch regressions across releases.
+3. `buf generate && git diff --exit-code gen/` — verifies vendored codegen matches what `buf generate` would produce. Catches "edited the .proto but forgot to regenerate" PRs. Budget ≤10s. When bumping codegen plugins, regenerate `gen/` in the same PR; CI compares against the bumped baseline.
 
-**Why `buf breaking` against `main` not against the latest tag:** the latest tag is the most recently shipped version, but contributors merging multiple PRs into `main` between tags would otherwise produce a series of "breaking against the tag" false-positives. Comparing to `main` matches Buf's documented best practice and catches the intended class of error (the developer forgot they removed a field two commits back). Tag-level breaking-check happens at release time as a separate verification.
+**Why baseline `working` not `main`:** PRs in this repo target `working`; the merge target IS the breaking-check baseline. A separate tag-time check catches release-to-release breaks. Comparing to `main` while merging to `working` produces drift (changes merged to `working` but not yet promoted to `main` would silently re-baseline the next PR).
 
-**Why fail PR on diff in `gen/`:** if the codegen output drifts from the `.proto`, downstream consumers will get type mismatches at build time. Forcing the diff to be clean keeps `gen/` as a deterministic projection of `proto/`.
+**Why fail PR on diff in `gen/`:** if the codegen output drifts from the `.proto`, downstream consumers will get type mismatches at build time. Forcing the diff to be clean keeps `gen/` as a deterministic projection of `proto/`. To prevent codegen-version flake, `@bufbuild/buf` and `@bufbuild/protoc-gen-es` MUST be pinned to **exact** patch versions in `package.json` (no `^`); CI caches the `buf` binary via `actions/cache` keyed on the lockfile.
 
 **Local developer flow:** `npm run proto:gen` (alias for `buf generate`) before committing. Pre-commit hook MAY enforce this; not blocking for v0.4 (CI catches it).
+
+### 4.1 Intentional breaking changes (override mechanism)
+
+The `buf breaking` gate has an explicit override path so the team is never blocked from a needed wire-break (e.g. v0.5 retires a deprecated field, or a hot security fix requires removing a leaky field):
+
+- PR title MUST be prefixed `[proto-break]` to opt out of the standard `buf breaking` gate.
+- A `[proto-break]` PR MUST: (a) bump the namespace to `ccsm.v<N+1>`, AND (b) keep the `ccsm.v<N>` package generated alongside for one release cycle (allows old clients during deprecation window).
+- Deprecation window: previous namespace stays generated for **1 minor release** after introduction of the new namespace; removal in the release after.
+- Without the `[proto-break]` prefix, the standard `buf breaking` gate stays on (i.e. opt-out is explicit and reviewable).
 
 ## 5. Codegen pipeline
 
@@ -128,15 +137,20 @@ plugins:
 
 **Build sequencing:** `buf generate` runs in `npm run build` BEFORE `tsc` so daemon/renderer/web builds always see fresh stubs. CI also runs `buf generate` independently to catch drift.
 
+**Repo hygiene for vendored codegen:** to keep `gen/` from polluting routine PR review:
+- `.gitattributes` MUST mark `gen/** linguist-generated=true -diff` so GitHub collapses generated diffs by default.
+- Expected `gen/` size budget: <10 KLOC at v0.4.0. >30 KLOC = revisit the vendoring decision (drop to CI-regenerate-at-install).
+- **`pkg` ESM-interop spike (M1 prerequisite):** before M1 freezes the toolchain, run a spike that builds the daemon installer with the actual generated ESM Connect stubs through `@yao-pkg/pkg`. v0.3 packaging notes flag pkg ESM as fragile; if it chokes on the generated surface, fall back to the CI-only "regenerate at install" mode (skip vendoring, regen during `npm run build`). See chapter 09 M1 deliverables.
+
 ## 6. What does NOT move to Connect (control socket stays on envelope)
 
-**Decision:** the **control socket** (a.k.a. supervisor transport, `daemon/src/sockets/control-socket.ts` after T14, separate from `data-socket.ts`) keeps the v0.3 hand-rolled envelope. RPC allowlist unchanged: `/healthz`, `/stats`, `daemon.hello`, `daemon.shutdown`, `daemon.shutdownForUpgrade`. See `daemon/src/envelope/supervisor-rpcs.ts`.
+**Decision:** the **control socket** (a.k.a. supervisor transport, `daemon/src/sockets/control-socket.ts`, separate from `data-socket.ts`) keeps the v0.3 hand-rolled envelope. RPC allowlist unchanged: `/healthz`, `/stats`, `daemon.hello`, `daemon.shutdown`, `daemon.shutdownForUpgrade`. See `daemon/src/envelope/supervisor-rpcs.ts`.
 
 **Why deferred:** the supervisor surface is small (5 RPCs), used only locally between Electron-supervisor-child and daemon, and is on the critical path for daemon restart / upgrade. Re-platforming it adds risk to the lifecycle code that the user already depends on, with no user-visible benefit. Convert it in a later release (v0.5 housekeeping) if there's reason to.
 
 **Implication for the daemon process:** the daemon binds **two** transports:
 1. **Control socket** (`\\.\pipe\ccsm-sup` on Win, `~/.ccsm/daemon-sup.sock` on Mac/Linux): hand-rolled envelope, supervisor RPCs only.
-2. **Data socket** (`\\.\pipe\ccsm-daemon` on Win, `~/.ccsm/daemon.sock` on Mac/Linux): **Connect over HTTP/2** in v0.4 (was hand-rolled envelope in v0.3). All ~22 bridge RPCs + future RPCs.
+2. **Data socket** (`\\.\pipe\ccsm-daemon` on Win, `~/.ccsm/daemon.sock` on Mac/Linux): **Connect over HTTP/2** in v0.4 (was hand-rolled envelope in v0.3). All ~46 bridge RPCs (per chapter 03 §1 inventory) + future RPCs.
 
 Both transports inherit v0.3 §3.1.1 hardening: peer-cred verification, named-pipe ACL or 0700 socket mode, 16 MiB frame cap (HTTP/2 frame max). The remote ingress (Cloudflare Tunnel) terminates on the **data socket** only — supervisor RPCs are local-only forever.
 
@@ -169,16 +183,49 @@ The v0.3 hand-rolled envelope carried hardening rules that MUST survive the Conn
 
 | v0.3 mechanism | v0.4 path |
 |---|---|
-| 16 MiB frame cap | HTTP/2 `SETTINGS_MAX_FRAME_SIZE` capped at 16 MiB on the daemon's `Http2Server`. Connect rejects oversized streams natively. |
+| 16 MiB frame cap | **Per-message** cap implemented via Connect-Node `readMaxBytes` option on every server route (HTTP/2 frame size is a separate transport setting we leave at Node default). Per-route caps:<br>- Default: 4 MiB.<br>- `SendPtyInput`: 1 MiB.<br>- `Db.save`: 16 MiB.<br>- `Importer.scanRecentCwds`: 4 MiB.<br>An interceptor logs (and rate-limits) requests within 10% of the cap so attack patterns surface in pino. The HTTP/2 server's `SETTINGS_MAX_FRAME_SIZE` is left at Node default 16 KiB; a single large message is reassembled across many DATA frames bounded by `readMaxBytes`. |
 | Per-frame deadline (`x-ccsm-deadline-ms`) | Connect interceptor on both client + server reading the same header. Default 30s; clamp at 120s per v0.3 §3.4.1.f. |
 | HMAC `daemon.hello` handshake | **Replaced** by Connect TLS-or-local-trust + Cloudflare Access JWT for remote. Local socket peer-cred (v0.3 §3.1.1) is the local trust boundary; HMAC was a same-machine secret check, redundant once peer-cred is enforced. |
 | Trace-id ULID per envelope | Connect interceptor generates ULID per request, propagates via `x-ccsm-trace-id` header. Pino logs include it. |
-| Migration-gate interceptor (block RPCs while SQLite migration in flight) | Re-implemented as Connect interceptor on the data socket. Same predicate (`isMigrationGated()`), same `MIGRATION_PENDING` error code. |
+| Migration-gate interceptor (block RPCs while SQLite migration in flight) | Re-implemented as Connect interceptor on the data socket. Same predicate (`isMigrationGated()`), same `MIGRATION_PENDING` error code. **Test seam:** when `process.env.NODE_ENV === 'test'`, the predicate is replaced by a value set via `__setMigrationGateForTest(boolean)` exported from the gate module; never exposed in production builds. Contract test (chapter 08 §3) forces the gate true, calls a gated RPC, asserts `MIGRATION_PENDING`. |
 | Stream chunk reassembly + 16 KiB sub-chunk rule | **Obsolete.** HTTP/2 native frame fragmentation handles this. Connect server-streams emit messages; HTTP/2 fragments them. No application-layer chunking needed. |
 | Binary-trailer carve-out for PTY bytes | Replaced by Protobuf `bytes` field on `PtyChunk`. No JSON round-trip; raw bytes on the wire. See chapter 06 §2. |
 | `streamId` allocation (odd client / even server) | **Obsolete.** HTTP/2 native stream ids on the daemon's HTTP/2 connection serve the same purpose. |
 | Pre-accept rate cap (50/sec) | Re-implemented at the daemon's `Http2Server.on('session', ...)` handler. |
 
+**Interceptor observability:** every interceptor that rejects a request (deadline exceeded, migration gate fired, JWT invalid, `readMaxBytes` exceeded) emits `pino.warn({ interceptor, method, traceId, reason })`. Same surface as v0.3 envelope interceptors. Heartbeat events (chapter 06 §4) are logged at debug level only to avoid log spam from the higher v0.4 request rate. Daemon log retention inherits v0.3's pino-roll cap (max 50 MB × 5 files = 250 MB ceiling, weekly rotation; per v0.3 frag-3.7) for both the Connect server log and `~/.ccsm/cloudflared.log`.
+
+**Local-vs-remote tag isolation (security-critical):** the JWT-validation interceptor fires only when the request arrived on the remote ingress (Cloudflare Tunnel-fronted TCP listener). Requests on the local socket carry a `localTransportKey` context value tagged at the listener and bypass JWT (chapter 05 §4 details the implementation). Contract test "JWT bypass tag isolation" (chapter 08 §3) MUST cover three sub-cases: (a) remote request without JWT → reject; (b) local request without JWT → accept; (c) local request that forges a `Cf-Access-Jwt-Assertion` header → header is ignored, JWT validation interceptor is not invoked, request is accepted on the local-tag basis (NOT spuriously validated against a mock JWKS).
+
 **Why drop HMAC for the local socket:** it was always belt-and-suspenders on top of peer-cred. Peer-cred (`SO_PEERCRED` on Unix, `GetNamedPipeClientProcessId` on Win, see v0.3 §3.1.1) cryptographically proves same-user-same-machine via the kernel. An HMAC handshake on top adds boot-nonce shenanigans (boot-nonce-precedence.ts, ~70 LOC) and a rotation story we'd have to carry forever. Dropping it removes ~500 LOC across `hmac.ts` + `hello-interceptor.ts` + `boot-nonce-precedence.ts` and matches the standard local-IPC trust model.
 
+**Threat model accepted by dropping HMAC:** v0.4 trusts every same-user local process. A same-user process (compromised dev tool, malicious VS Code extension, attacker with same-user code-exec) can issue arbitrary RPCs against the data socket: read PTY output streams (potentially containing user-typed credentials), enumerate sessions, issue settings RPCs (which after v0.5+ may surface OS-keychain-stored secrets such as the Cloudflare Tunnel token, GitHub OAuth artifacts, SDK API keys). This matches the ambient trust model of most desktop apps that hold credentials and rely on the OS user boundary, but does NOT match the harder model used by 1Password / SSH agent / GitHub CLI (which assume same-user processes can be hostile). Re-introducing HMAC (or a similar second-factor on the data socket) is on the v0.5 candidate list. Any post-v0.4 RPC that surfaces OS-keychain material MUST either gate on a freshly-prompted user confirmation or wait for the second-factor to land. Tracked in chapter 10 risks.
+
 **Why keep HMAC for the supervisor (control socket):** the supervisor stays on the envelope (per §6 above), so HMAC stays there too. No code deletion until the supervisor moves.
+
+### 8.1 JWT validation policy (data socket remote ingress)
+
+The remote-ingress JWT validation interceptor (chapter 05 §4 implements; this section locks the policy fields) MUST configure `jose.jwtVerify` with these explicit options — library defaults are not acceptable because they shift across jose versions:
+
+- `algorithms: ['RS256']` — pin to the algorithm Cloudflare Access actually uses; reject any token signed with another alg even if the JWKS contains a key for it (defends against alg-confusion attacks).
+- `clockTolerance: 30` (seconds) — small skew tolerance between daemon clock and Cloudflare clock; explicit so a future jose default change doesn't silently widen it.
+- `requiredClaims: ['exp', 'iat', 'aud', 'iss', 'sub']` — every Access JWT carries these; missing any = reject.
+- `audience` MUST be the **per-application AUD** for this Access app (NOT a wildcard, NOT shared across the user's other Cloudflare Access apps). Cross-app AUD reuse would let an attacker who got a JWT for an unrelated Access app on the same team validate against this daemon.
+- `issuer` MUST be the team-specific Cloudflare Access issuer URL.
+- JWKS fetch timeout: 5s; fail-closed on timeout (do NOT allow the request through under JWKS unavailability).
+- JWKS unknown-`kid` policy: refresh JWKS at most once per 30s (jose `cooldownDuration: 30000`); on continued miss, fail-closed (do not retry-storm the JWKS endpoint and do not let the request through).
+- `iat` upper-bound check: reject tokens with `iat > now + clockTolerance` (token issued in the future indicates clock-skew attack or compromised CF signer).
+
+Contract test "JWT validation policy" (chapter 08 §3) MUST cover: missing required claim → reject; wrong AUD → reject; alg=HS256 token with key in JWKS → reject; token with `iat` 60s in the future → reject; JWKS endpoint unreachable for new `kid` → reject (NOT pass-through).
+
+## 9. Idempotency model
+
+Connect over HTTP/2 is at-least-once at the application layer when the supervisor respawns the daemon mid-RPC (chapter 07 §1). The client retries; the daemon may have already applied the write. Without an explicit policy, retries duplicate state mutations.
+
+Every RPC defined in `proto/ccsm/v1/` MUST be classified into one of three categories, declared in a `// idempotency:` comment on the RPC definition and reflected in the codegen TS docstring:
+
+1. **`naturally idempotent`** — repeated application produces the same end state. All read RPCs (`ListSessions`, `Ping`, etc.) plus last-write-wins setters (`SetActive`, `SetName`, `SaveSettings`, `Updater.SetChannel`). Client MAY retry freely.
+2. **`dedup-via-server-key`** — the request carries an explicit `string idempotency_key = 1;` field (ULID or UUID). Daemon dedups by key within a 60-second window (in-memory LRU sized for ~10k entries). Repeated submission with the same key returns the cached response. Applies to: `EnqueuePending`, `Notify.Flash`, `UserCwds.Push`, `Db.Save`, any RPC that mutates a queue or appends a row.
+3. **`non-idempotent — must-not-retry`** — repeated application changes monotonic state in a way the daemon cannot dedup. Client MUST surface error to the user and NOT auto-retry on transport failure. Applies to: `Pty.Spawn` (spawning twice creates two PTYs), any future "advance counter" RPC.
+
+`buf lint` MUST enforce that every RPC declaration carries an `// idempotency:` annotation. CI fails if a new RPC lands without one. Chapter 07 §1 daemon-crash recovery references this classification when deciding which RPCs are auto-retried by the bridge layer vs surfaced to the user.
