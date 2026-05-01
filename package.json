@@ -183,7 +183,8 @@
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CCSM"
+      "shortcutName": "CCSM",
+      "include": "build/installer.nsh"
     },
     "mac": {
       "target": [
