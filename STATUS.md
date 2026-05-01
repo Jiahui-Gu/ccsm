@@ -17,8 +17,8 @@ As of 2026-05-01. Refactor only — splits the long-running side (PTY, SDK, pers
 - **Design**: `docs/superpowers/specs/v0.3-design.md` (locked at r12, 7 review angles converged).
 - **Implementation plan**: `docs/superpowers/plans/2026-04-30-v0.3-daemon-split.md`.
 - **State**: daemon process, Connect server skeleton (#752), control + data sockets, ptySubscribe streaming RPC (#723), upgrade-shutdown call site (#720), and the e2e harness (#718) all merged. Migration probes (#713 #719 #738), reconnect probe (#739), modal coexistence probe (#740), L8 drop-slowest probe (#731), cross-user ACL probe (#721), and uninstall hygiene probe (#724) all green.
-- **Open follow-up**: `feat/v04-T05.1-connect-server-p1-followups` (#755) — Connect server P1 polish (chain order, caps, rate-limit, pino, socket wiring). Tracked under v0.4 because it lands on the v0.4 Connect surface, not the v0.3 envelope.
-- **CI tolerance window** (per `feedback_migration_window_ci_tolerance`): some workflows currently disabled during the v0.4 M1 swap; re-enable trigger is M2 start (see `scripts/check-migration-window.ts`).
+- **Open follow-up**: T05.1 follow-ups paused along with v0.4 implementation work (PR #755 closed 2026-05-01) — Connect server P1 polish (chain order, caps, rate-limit, pino, socket wiring) pending re-dispatch. Tracked under v0.4 because it lands on the v0.4 Connect surface, not the v0.3 envelope.
+- **CI tolerance window** (per `feedback_migration_window_ci_tolerance`): some workflows currently disabled during the v0.4 M1 swap; re-enable trigger is M2 start.
 
 ## Next: v0.4 web client + Connect/Protobuf swap (M1 in flight)
 
@@ -37,20 +37,18 @@ Parallel track: **crash observability** (`docs/superpowers/specs/2026-05-01-cras
 
 ## Recent ship
 
-- 2026-05-01 — v0.4 M1 batch lands: T01-T03 proto + tooling, T04 pkg spike verdict, T05 Connect-on-data-socket, T07 parity framework.
-- 2026-05-01 — crash observability phases 1-4 land (consent UI shipped, Sentry routing live, native daemon symbol pipeline operational).
-- 2026-05-01 — v0.4 web design spec consolidated and locked (#743).
+- 2026-05-01 — v0.4 M1 batch + crash observability phases 1-4 + v0.4 web design lock (#743): T01-T03 proto + tooling, T04 pkg spike verdict, T05 Connect-on-data-socket, T07 parity framework, crash consent UI + Sentry routing + native daemon symbol pipeline.
 - 2026-04-30 — **v0.2.0 release** tagged and published.
 - 2026-04-30 — v0.3 daemon-split design locked at r12; daemon process, Connect skeleton, e2e harness, and migration probes land throughout 2026-05-01.
 - 2026-04-27 — **v0.1.0 first ship**.
 
 ## Repo layout
 
-No local main repo. All development happens in pre-installed worktrees `~/ccsm-worktrees/pool-{1..20}` (plus topic-named worktrees for long-running branches). `origin` (`Jiahui-Gu/ccsm`) is the source of truth. Branch flow: feature → `working` → `main`; release tag `v*` triggers release CI. The companion notify package lives at `Jiahui-Gu/ccsm-notify` and is consumed via git+https tag pin in `optionalDependencies`.
+No local main repo. All development happens in pre-installed worktrees under `~/ccsm-worktrees/pool-N` (plus topic-named worktrees for long-running branches). `origin` (`Jiahui-Gu/ccsm`) is the source of truth. Branch flow: feature → `working` → `main`; release tag `v*` triggers release CI. The companion notify package lives at `Jiahui-Gu/ccsm-notify` and is consumed via git+https tag pin in `optionalDependencies`.
 
 ## Where to look
 
-- **Design specs**: `docs/superpowers/specs/`. Current locked specs: `2026-05-01-v0.4-web-design.md`, `v0.3-design.md`, `2026-05-01-crash-observability-design.md`, `mvp-design.md` (v0.2 baseline).
+- **Design specs**: `docs/superpowers/specs/`. Current locked specs: `2026-05-01-v0.4-web-design.md`, `v0.3-design.md`, `2026-05-01-crash-observability-design.md`; v0.2 baseline at `docs/mvp-design.md`.
 - **Implementation plans**: `docs/superpowers/plans/`.
 - **Roadmap pointer**: `docs/roadmap.md` (slice list, lighter than this file).
 - **2026-04-30 architecture audits**: `docs/audit-2026-04-30-{architecture,code-rot,deps,docs,git,persistence,summary,test}.md`.
