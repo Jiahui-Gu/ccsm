@@ -1,5 +1,7 @@
 import { ulid } from 'ulid';
 import pino from 'pino';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { createRequire } from 'node:module';
 import { createSupervisorDispatcher } from './dispatcher.js';
 import {
@@ -9,6 +11,7 @@ import {
   type ShutdownStep,
 } from './handlers/daemon-shutdown.js';
 import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
+import { installCrashHandlers } from './crash/handlers.js';
 
 const require = createRequire(import.meta.url);
 const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
@@ -22,6 +25,23 @@ const logger = pino({
     pid: process.pid,
     boot: bootNonce,
   },
+});
+
+// Phase 1 crash observability (spec §5.2, plan Task 3):
+//   * installCrashHandlers writes <runtimeRoot>/crash/<bootNonce>.json
+//     marker on uncaughtException/unhandledRejection then process.exit(70).
+//     The supervisor's child.on('exit') adopts the marker into the umbrella
+//     incident dir alongside ring-buffer stderr/stdout tails.
+const runtimeRoot = process.env.CCSM_RUNTIME_ROOT ?? path.join(os.homedir(), '.ccsm', 'runtime');
+
+let lastTraceId: string | undefined;
+export function setLastTraceId(id: string): void { lastTraceId = id; }
+
+installCrashHandlers({
+  logger,
+  bootNonce,
+  runtimeRoot,
+  getLastTraceId: () => lastTraceId,
 });
 
 // T25 — force-kill fallback wiring. The reaper-PID set (T38) and the
@@ -99,12 +119,16 @@ const shutdownActions: ShutdownActions = {
 const daemonShutdownHandler = createDaemonShutdownHandler(shutdownActions);
 
 const supervisorDispatcher = createSupervisorDispatcher();
-supervisorDispatcher.register(DAEMON_SHUTDOWN_METHOD, async (req, ctx) =>
-  daemonShutdownHandler.handle(req as Parameters<typeof daemonShutdownHandler.handle>[0], {
+supervisorDispatcher.register(DAEMON_SHUTDOWN_METHOD, async (req, ctx) => {
+  // Phase 1 crash observability: record latest in-flight traceId so a
+  // subsequent uncaught/unhandled crash can correlate the marker file
+  // back to the RPC that triggered it (spec §5.2 lastTraceId).
+  if (ctx.traceId) setLastTraceId(ctx.traceId);
+  return daemonShutdownHandler.handle(req as Parameters<typeof daemonShutdownHandler.handle>[0], {
     traceId: ctx.traceId,
     bootNonce,
-  }),
-);
+  });
+});
 void supervisorDispatcher;
 
 logger.info({ event: 'daemon.boot' }, 'daemon shell booted');
