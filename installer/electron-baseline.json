@@ -1,0 +1,13 @@
+{
+  "_comment": "T61 (#1018) — informational baseline for Electron pinning. Enforcement of installer size lives in T58 (#1015). Recompute on every minor Electron bump per frag-11 §11.5(6).",
+  "electronVersion": "41.3.0",
+  "nodeAbi": "137",
+  "expectedInstallerMB": {
+    "win": 124,
+    "dmg": 140,
+    "appImage": 120,
+    "deb": 105
+  },
+  "specRef": "docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md#11.5",
+  "policy": "package.json devDependencies.electron MUST be an exact version (no ^/~). Drift guard: scripts/check-electron-pin.cjs runs in pretest."
+}
