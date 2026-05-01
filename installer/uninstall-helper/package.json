@@ -1,0 +1,23 @@
+{
+  "name": "@ccsm/uninstall-helper",
+  "version": "0.3.0",
+  "private": true,
+  "description": "ccsm-uninstall-helper.exe — NSIS uninstall pre-step (T53). Sends daemon.shutdownForUpgrade over the control-socket named pipe; falls back to TerminateProcess; idempotent. Spec frag-11 §11.6.4.",
+  "bin": {
+    "ccsm-uninstall-helper": "./index.js"
+  },
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip"
+  },
+  "pkg": {
+    "scripts": [
+      "index.js"
+    ],
+    "targets": [
+      "node22-win-x64"
+    ],
+    "outputPath": "../../daemon/dist/"
+  }
+}

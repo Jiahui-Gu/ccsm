@@ -157,6 +157,32 @@ function stageSdk() {
   }
 }
 
+function stageUninstallHelper(electronPlatformName) {
+  // Spec frag-11 §11.6.4 — `ccsm-uninstall-helper.exe` is a Windows-only
+  // NSIS uninstall pre-step. The helper is built ahead of time by
+  // `npm run build:uninstall-helper` (pkg-bundles installer/uninstall-helper/
+  // into `daemon/dist/ccsm-uninstall-helper.exe`).
+  //
+  // The Windows extraResources row in package.json points at this file
+  // directly; this stage step exists only to (a) emit a placeholder when
+  // the toolchain hasn't run yet (pre-T54 build worker), so the smoke
+  // build doesn't fail, and (b) document the dependency in one place.
+  if (electronPlatformName !== 'win32') return;
+
+  const dst = path.join(REPO_ROOT, 'daemon', 'dist', 'ccsm-uninstall-helper.exe');
+  if (fs.existsSync(dst)) {
+    console.log('[before-pack] uninstall helper present (built by build:uninstall-helper)');
+    return;
+  }
+  console.warn(
+    `[before-pack] WARN uninstall helper missing: ${dst}. ` +
+      `Run \`npm run build:uninstall-helper\` (requires @yao-pkg/pkg). ` +
+      `Falling back to placeholder for smoke builds; T57 after-pack ` +
+      `validation will fail the build once the helper is wired into CI.`,
+  );
+  stagePlaceholder(dst, 'ccsm-uninstall-helper.exe');
+}
+
 function stageDaemonDeps() {
   // Stages daemon's own ESM deps (pino, ulid, ...) into a fixed dir that
   // the `daemon/deps-staged -> daemon/node_modules` extraResources row
@@ -213,6 +239,7 @@ exports.default = async function beforePack(context) {
 
   stageDaemonBinary(electronPlatformName, archName);
   stageNatives(electronPlatformName, archName);
+  stageUninstallHelper(electronPlatformName);
   stageSdk();
   stageDaemonDeps();
 
