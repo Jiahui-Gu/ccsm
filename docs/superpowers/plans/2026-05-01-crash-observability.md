@@ -985,9 +985,17 @@ export function attachCrashCapture(handle: DaemonChildHandle, collector: CrashCo
       markerPath,
     });
     const incidentId = path.basename(dir).split('-').pop()!;
+    // markerPresent: true means the daemon-marker.json file exists in the incident dir
+    // (i.e. collector successfully adopted it). Read it back from meta.json so the wire
+    // payload cannot disagree with what was written to disk.
+    let markerPresent = false;
+    try {
+      const meta = JSON.parse(require('node:fs').readFileSync(path.join(dir, 'meta.json'), 'utf8'));
+      markerPresent = !!meta?.backend?.markerPresent;
+    } catch { /* meta unreadable — leave markerPresent = false */ }
     handle.onCrash?.(dir, {
       exitCode: code, signal, bootNonce: handle.bootNonce,
-      markerPresent: !!markerPath && !require('node:fs').existsSync(markerPath), // adopted means original gone
+      markerPresent,
       incidentId,
     });
   });
@@ -1496,11 +1504,20 @@ module.exports = async function afterAllArtifactBuild(buildResult) {
 
 - [ ] **Step 3: Add `@sentry/cli` to devDependencies and update release workflow**
 
+Install the dep so `require.resolve('@sentry/cli/bin/sentry-cli')` works:
+
 ```bash
-# in worktree:
-# (do not run npm install per task constraints — record this as step the implementer runs)
-# planned change to package.json devDependencies:
-#   "@sentry/cli": "^2.x"
+npm install --save-dev @sentry/cli@^2.39.0
+```
+
+(Worker may bump to a newer 2.x at execution time; pin a real published version, never `latest`.)
+
+Confirm the resulting `package.json` devDependencies entry looks like:
+
+```jsonc
+"devDependencies": {
+  "@sentry/cli": "^2.39.0"
+}
 ```
 
 ```yaml
@@ -1753,12 +1770,17 @@ Expected: FAIL — module not found
 
 - [ ] **Step 2: Implement `electron/crash/ipc.ts` and `zip.ts`**
 
+Install the `archiver` dependency (locked at plan time — no native fallback):
+
+```bash
+npm install archiver@^7.0.1
+```
+
 ```typescript
 // electron/crash/zip.ts
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import * as zlib from 'node:zlib';
-import * as archiver from 'archiver'; // small dep; if not present, replace with node:zlib + tar fallback
+import * as archiver from 'archiver';
 
 export async function zipIncident(srcDir: string, outZip: string): Promise<string> {
   await new Promise<void>((resolve, reject) => {
@@ -1841,7 +1863,7 @@ Expected: PASS (2 tests)
 import { Menu } from 'electron';
 
 const helpSubmenu = [
-  { label: 'Send last crash report…', click: () => emitOpenCrashModal() },
+  { id: 'crash-send', label: 'Send last crash report…', click: () => emitOpenCrashModal() },
   // ... existing items
 ];
 
@@ -2032,6 +2054,21 @@ function attachWindowHangCapture(win: BrowserWindow, collector: CrashCollector, 
 }
 ```
 
+Wire it from the BrowserWindow creation site in `electron/main.ts` so the handlers actually attach. Diff:
+
+```diff
+ // electron/main.ts (existing BrowserWindow creation)
+ const mainWindow = new BrowserWindow({
+   width: 1280,
+   height: 800,
+   webPreferences: { preload: path.join(__dirname, 'preload', 'index.js') },
+ });
+ mainWindow.loadURL(/* ... */);
++attachWindowHangCapture(mainWindow, crashCollector, crashRoot);
+```
+
+`crashCollector` and `crashRoot` are the same instances created in Task 2 (`startCrashCollector(...)`) — reuse them, do not start a second collector.
+
 - [ ] **Step 4: Phase-4 e2e probe**
 
 ```typescript
@@ -2077,6 +2114,121 @@ if (require.main === module) run().catch(e => { console.error(e); process.exit(1
 ```bash
 git add src/components/crash/FirstCrashConsent.tsx electron/main.ts tests/renderer/crash/FirstCrashConsent.test.tsx tests/e2e/crash-phase4.probe.ts
 git commit -m "feat(crash): first-run consent modal + unresponsive-window screenshot capture"
+```
+
+### Task 14b: Renderer blank-screen 3-s ping (spec §5.1)
+
+Closes the white-of-death gap that `unresponsive`/`responsive` cannot catch: renderer finishes loading
+(`did-finish-load` fires) but never paints (`dom-ready` does not arrive within 3 s) — typically a React
+mount-time exception swallowed before the tree paints. The 16:18 incident that motivated this plan
+was exactly this case. Single TDD set, lives in the same Phase 4 PR.
+
+**Files:**
+- Modify: `electron/main.ts` (BrowserWindow creation site, post `did-finish-load`)
+- Test: `tests/electron/crash/renderer-blank-ping.test.ts`
+
+- [ ] **Step 1: Write failing test**
+
+```typescript
+// tests/electron/crash/renderer-blank-ping.test.ts
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { armBlankScreenPing } from '../../../electron/main';
+
+describe('armBlankScreenPing', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('records renderer-blank incident if dom-ready does not fire within 3s after did-finish-load', () => {
+    const recordIncident = vi.fn();
+    const collector = { recordIncident } as any;
+    const handlers: Record<string, () => void> = {};
+    const win: any = {
+      webContents: {
+        on: (evt: string, cb: () => void) => { handlers[evt] = cb; },
+        once: (evt: string, cb: () => void) => { handlers[evt] = cb; },
+      },
+    };
+    armBlankScreenPing(win, collector);
+    handlers['did-finish-load']();
+    vi.advanceTimersByTime(3000);
+    expect(recordIncident).toHaveBeenCalledWith(expect.objectContaining({ surface: 'renderer-blank' }));
+  });
+
+  it('does not record if dom-ready fires within 3s', () => {
+    const recordIncident = vi.fn();
+    const collector = { recordIncident } as any;
+    const handlers: Record<string, () => void> = {};
+    const win: any = {
+      webContents: {
+        on: (evt: string, cb: () => void) => { handlers[evt] = cb; },
+        once: (evt: string, cb: () => void) => { handlers[evt] = cb; },
+      },
+    };
+    armBlankScreenPing(win, collector);
+    handlers['did-finish-load']();
+    vi.advanceTimersByTime(1000);
+    handlers['dom-ready']();
+    vi.advanceTimersByTime(5000);
+    expect(recordIncident).not.toHaveBeenCalled();
+  });
+});
+```
+
+Run: `npx vitest run tests/electron/crash/renderer-blank-ping.test.ts`
+Expected: FAIL — `armBlankScreenPing` not exported.
+
+- [ ] **Step 2: Implement `armBlankScreenPing` in `electron/main.ts`**
+
+```typescript
+// electron/main.ts (additions)
+import type { BrowserWindow } from 'electron';
+import type { CrashCollector } from './crash/collector';
+
+/**
+ * Spec §5.1: 3-second post `did-finish-load` blank-screen ping.
+ * If the renderer finishes loading but never paints (dom-ready misses 3 s window),
+ * record a `renderer-blank` incident. Catches React-mount swallowed exceptions
+ * that don't trigger BrowserWindow `unresponsive` (no main-loop block).
+ */
+export function armBlankScreenPing(win: BrowserWindow, collector: CrashCollector): void {
+  let painted = false;
+  let timer: NodeJS.Timeout | null = null;
+  win.webContents.on('dom-ready', () => {
+    painted = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+  });
+  win.webContents.on('did-finish-load', () => {
+    if (painted) return;
+    timer = setTimeout(() => {
+      if (painted) return;
+      try {
+        collector.recordIncident({
+          surface: 'renderer-blank',
+          error: { message: 'renderer did-finish-load without dom-ready within 3s (white-of-death)' },
+        });
+      } catch { /* collector unavailable — best effort */ }
+    }, 3000);
+  });
+}
+```
+
+Wire it from the BrowserWindow creation site, alongside `attachWindowHangCapture`:
+
+```diff
+ const mainWindow = new BrowserWindow({ /* ... */ });
+ mainWindow.loadURL(/* ... */);
+ attachWindowHangCapture(mainWindow, crashCollector, crashRoot);
++armBlankScreenPing(mainWindow, crashCollector);
+```
+
+Run: `npx vitest run tests/electron/crash/renderer-blank-ping.test.ts`
+Expected: PASS (2 tests)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add electron/main.ts tests/electron/crash/renderer-blank-ping.test.ts
+git commit -m "feat(crash): 3s post-did-finish-load blank-screen ping (spec §5.1, white-of-death)"
 ```
 
 ### Task 15: Open phase-4 PR
