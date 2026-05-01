@@ -25,7 +25,7 @@ v0.3 already covered the bulk of "daemon split" failure modes (daemon crash → 
 
 ### SQLite locked (carryover, behavior unchanged)
 
-Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running migrations block writes; v0.3 §6 migration-gate interceptor still applies on the data-socket — it MUST be re-implemented as a Connect interceptor (chapter 02 §8).
+Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running migrations block writes; v0.3 §6 migration-gate interceptor still applies on the data socket — it MUST be re-implemented as a Connect interceptor (chapter 02 §8).
 
 ### Daemon hangs (process alive, RPCs not progressing)
 
@@ -36,6 +36,12 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 ### Daemon disk full (new edge case worth calling out)
 
 - SQLite write fails with `SQLITE_FULL`. Daemon's existing storage-full handler (v0.3 frag-8) surfaces a `storage.full` banner. v0.4: same banner reaches both Electron and web (it's in the renderer; both clients render it).
+- **In-flight RPC mapping (new in v0.4):** `SQLITE_FULL` MUST map to Connect `resource_exhausted` (not `internal`). The transactional write is rolled back so partial-row corruption is impossible.
+- **Bridge short-circuit:** once the daemon sets the `storage.full` flag, a Connect interceptor (chapter 02 §8 — add "storage-full short-circuit interceptor for write RPCs") rejects all subsequent **write** RPCs locally with `resource_exhausted` until the flag clears, so clients don't burn additional disk attempts. Read RPCs (PTY snapshot, list sessions, title stream) continue normally.
+- **Client behavior:** Bridge maps `resource_exhausted` to a non-retrying local error (different from `unavailable`, which auto-retries). UI surfaces the `storage.full` banner; user is expected to free disk before retry.
+- **Logger fallback under ENOSPC:** when the daemon detects ENOSPC on log writes, the pino transport switches to an in-memory ring buffer (last 1000 lines, replayed to disk once `storage.full` clears). Prevents the event loop from stalling on blocked writes and preserves the audit trail across the incident.
+- **Side-channel signal:** `storage.full` MUST be exposed in the control-socket `/healthz` response (e.g. `{"ok":false,"reason":"storage.full"}`) so the supervisor and the Electron health bridge can detect it without depending on disk-backed RPC paths.
+- **Testability:** chapter 08 §3 adds a contract test that injects a disk-full simulation hook (e.g. `daemon.__test_setStorageFull(true)`) and asserts (a) write RPCs return `resource_exhausted`, (b) read RPCs succeed, (c) `storage.full` event appears on the cross-client `streamSessionStateChanges` so the **web** client renders the banner (chapter 08 §5 case `web-disk-full-banner`).
 
 ## 2. Cloudflare layer failures
 
@@ -48,8 +54,11 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 ### Cloudflare Access misconfigured (e.g. wrong AUD claim)
 
 - Daemon's JWT interceptor rejects with `unauthenticated`. Web client sees auth error → redirects to Access flow → Cloudflare returns the user to the SPA → SPA reloads, retries, gets the same JWT → still `unauthenticated`. Loop.
-- **Mitigation:** daemon logs `pino.warn({ aud: actual, expected, traceId }, 'jwt_aud_mismatch')` once per minute (rate-limited). User checks daemon log, fixes Access app config in Cloudflare dashboard, re-runs setup wizard step 2.
-- **Why not a UI surface:** the misconfiguration is a Cloudflare-account-level error the daemon can't fix. Logging is the right escalation; the alternative (silent loop) is worse.
+- **Client-side break-out (new in v0.4):** the SPA's transport interceptor MUST track redirect attempts in `sessionStorage` (counter + first-attempt timestamp). On the **3rd redirect within 30s**, the SPA aborts the redirect, clears the counter, and renders a `auth.looped` banner: "Authentication looped — check daemon log or Cloudflare Access policy" with a link to the diagnostics page (`/diagnostics`, surfaces the last 5 daemon JWT errors and a copy-able trace ID). Same break-out logic applies to JWT-expiry redirects (§4) since the failure shape is identical from the SPA's POV.
+- **In-app surface (new in v0.4):** when JWT failures classified as `aud_mismatch` exceed **5 per minute** at the daemon, daemon emits a `cloudflare.misconfigured` banner via `streamSessionStateChanges` (chapter 06 §8). Electron Settings UI renders "Cloudflare Access misconfigured: AUD mismatch — re-run setup wizard step 2" with the actual vs expected AUD shown. Banner clears once 5 minutes pass without a new mismatch.
+- **Log classification (new in v0.4):** daemon JWT-failure log line includes a `failure_class` field with one of `{ no_jwt, aud_mismatch, expired, invalid_sig, unknown }`. Each class has different semantics: `no_jwt` = Tunnel not behind Access (operator misconfig); `aud_mismatch` = Access app config drift; `expired` = normal session expiry (no banner); `invalid_sig` = JWKS rotation in flight or attack. The user-visible banner is rate-limited (per above); the **log line is NOT rate-limited** so defenders retain visibility into probe rates.
+- **Why a UI surface is appropriate now:** v0.3 logged-only because there was no remote ingress to misconfigure; v0.4 introduces the Cloudflare layer, so misconfig is now a first-class failure mode that warrants surfacing.
+- **Operator recovery:** user re-runs setup wizard step 2 (chapter 05 §3) with the correct AUD claim. Banner clears after 5 minutes of no further mismatches.
 
 ### Cloudflare Pages deploy fails
 
@@ -83,12 +92,16 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 - If reconnect succeeds within ~30 minutes: replay or re-snapshot, continue. Seamless.
 - If reconnect succeeds after >30 minutes: fanout buffer at the daemon may have rolled past `fromSeq`. Force re-snapshot. User sees current state; lost-output is in the original PTY's history (visible in scrollback as part of the snapshot — xterm-headless preserves scrollback up to the configured limit, default 10k lines).
 - If session was killed during the drop: snapshot includes the exit message; UI marks session as exited.
+- **Snapshot bandwidth budget:** snapshot payload is gzip-compressed and capped per chapter 06 R4 P0-1 (compression + size cap with truncation marker). Over slow links the snapshot is still bounded; client renders a "scrollback truncated" marker if the cap fired.
+- **Future hybrid (deferred to v0.5):** when `fromSeq` is within ~1 MB of the buffer-edge, ship a partial replay + delta-snapshot rather than a full snapshot. Documented as the path; not implemented in v0.4 to keep M4 scope tight. Why deferred: full re-snapshot is correct and simple; hybrid is a perf optimization for the slow-link reconnect case.
 
 ### Browser tab backgrounded for >100s
 
-- Tab suspends or throttles event loop.
-- HTTP/2 stream may or may not be killed by Cloudflare (heartbeats from daemon keep edge happy, but the browser may ignore them if throttled).
-- On tab refocus: if stream is alive, normal resume. If not, reconnect with `fromSeq`. User probably sees a brief skeleton flicker.
+- Tab suspends or throttles event loop (Chrome aggressively throttles background tabs to ~1 Hz timer cap as of 2024+).
+- HTTP/2 stream may or may not be killed by Cloudflare (heartbeats from daemon keep edge happy, but the browser may ignore them if throttled). Client-side liveness check fires after 120s of no event per chapter 06 §4.
+- **Proactive pause (new in v0.4):** the web bridge MUST listen to the Page Visibility API. On `visibilitychange` → `hidden`, the bridge **closes** the active PTY stream cleanly (CANCEL frame, recording `lastSeenSeq`). On `visibilitychange` → `visible`, the bridge re-attaches with `fromSeq = lastSeenSeq + 1`. **Why:** prevents the daemon from accumulating bytes for a slow consumer (drop-slowest fires repeatedly otherwise → repeated multi-MB snapshot fetches on every tab refocus, the dominant laptop-user behavior).
+- On refocus: replay if `fromSeq` is in-buffer; snapshot as last resort (subject to the bandwidth budget above).
+- See chapter 06 §7 for the matching daemon-side fanout / drop-slowest description.
 
 ### Bandwidth-constrained network (slow mobile data)
 
@@ -106,6 +119,8 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 - Cloudflare Access checks IdP session; if still valid (GitHub session lasts longer), re-issues JWT, redirects browser back to SPA.
 - SPA reloads; transport reconnects; PTY stream resumes via `fromSeq`.
 - **User experience:** brief redirect-spinner, then back to the same view. Should take <2s on a fresh GitHub session.
+- **Failure path (new in v0.4):** if Access re-issues a JWT the daemon STILL rejects (e.g. team-name changed in dashboard, daemon's stored team-name is stale, AUD drift), the redirect loops. The SPA's redirect-counter (see §2 break-out) catches this: 3 redirects within 30s → abort, render `auth.looped` banner with diagnostics link. Same break-out covers misconfig (§2) and stale-team-name (§4) symmetrically.
+- **Testability (new in v0.4):** chapter 08 §5 case `web-jwt-expiry` runs hermetically as follows. (a) Test harness mints a JWT signed by a test JWKS with `exp` 5s in future (no real CF Access). (b) Daemon is started with the test JWKS URL. (c) The SPA's transport interceptor exposes an `onAuthRedirect: (url: string) => void` injection hook so the test fixture can stub the navigation rather than actually redirecting the browser. (d) Test asserts the callback fires with the documented `https://<tunnel-hostname>/cdn-cgi/access/login/<aud>` URL pattern within 1s of `unauthenticated`. (e) A second variant asserts the redirect-counter break-out: stub the callback to immediately re-issue the same expired JWT, assert `auth.looped` banner appears after the 3rd attempt.
 
 ### JWT JWKS rotation
 
@@ -123,7 +138,14 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 
 - Mitigations: HTTPS-only cookie, `Secure` + `HttpOnly` + `SameSite=Lax` flags (Cloudflare default).
 - Daemon doesn't track JWT-by-JWT to prevent replay (no nonce store). Single-user model: even if replayed, the only authorized user IS the attacker's-target. Multi-user (N2) would need a nonce/jti store.
-- If user suspects compromise: revoke the GitHub OAuth grant in GitHub settings; rotate Access app config in Cloudflare; revoke all sessions in Cloudflare Zero Trust dashboard.
+- **Audit trail (new in v0.4):** every authenticated RPC log line MUST include `Cf-Connecting-Ip` (origin IP from Cloudflare edge), `Cf-Ray` (request ID), `jwt_email`, `jwt_iat`, `jwt_jti` (if present), and `traceId`. The Cf-* headers are forwarded by Cloudflare through the tunnel and are only present on remote ingress (local Electron requests omit them, distinguishable). This gives the user an audit trail to confirm "was that me from my home IP, or someone else?" without requiring the daemon to maintain a nonce store. Cross-refs chapter 05 §4 (logging policy update) and chapter 10 A5.
+- **First-seen-IP banner (new in v0.4):** daemon tracks the set of `(jwt_email, src_ip)` pairs seen in the last 30 days (small SQLite table, MAX 1000 rows, evicted LRU). On a new pair, daemon emits a `auth.new_device` UI banner: "New sign-in: 203.0.113.5 (City, Country) — was this you?" with a "Yes" / "No, revoke" pair. "No, revoke" deep-links to the Cloudflare Zero Trust session-revocation flow. Geo lookup is best-effort using `Cf-IPCountry` header from Cloudflare; no MaxMind dependency.
+- **Recovery (updated in v0.4) — order matters:**
+  1. **First**, revoke active Access sessions in Cloudflare Zero Trust dashboard (Sessions → Revoke). This is **instant** and kills any in-flight stolen JWT, even before its 24h expiry.
+  2. Rotate Cloudflare Access app config (regenerates AUD; existing tokens become `aud_mismatch` immediately).
+  3. Revoke the GitHub OAuth grant (GitHub Settings → Applications); prevents Access from re-issuing on the attacker's IdP session.
+  4. (Optional) regenerate Tunnel credentials if there's any suspicion the tunnel token leaked.
+- **Why instant revoke is the lead step:** the previous spec listed GitHub OAuth revocation first, which only takes effect after the existing 24h JWT expires. CF session revocation is the only step that immediately invalidates an in-flight stolen cookie.
 
 ## 5. Wire-protocol version skew
 
@@ -133,6 +155,7 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 - v0.3.x Electron sends a length-prefixed JSON envelope; v0.4 daemon's HTTP/2 listener sees garbage prefix and rejects.
 - **Outcome:** Electron's bridge sees connection failure; surfaces `daemon.unreachable`.
 - **Recovery:** the v0.4 installer ships matched Electron+daemon. User must run installer. Document the upgrade path: "v0.4 is a wire-protocol change; users on v0.3 must run the installer (auto-update will handle this if enabled)."
+- **Testability (new in v0.4) — wire-skew compat smoke:** chapter 08 §3 adds a once-per-release CI test (`wire-skew-compat`) that boots a v0.3.x Electron probe against a v0.4 daemon container and asserts (a) the renderer surfaces `daemon.unreachable` within 10s, (b) the v0.4 daemon's HTTP/2 listener does NOT crash or leak file descriptors when fed envelope-style bytes (defensive: any HTTP/2 connection-preface parser bug would otherwise take down all v0.4 users), (c) clean rejection in daemon log with `failure_class=protocol_mismatch`. Symmetric reverse test (v0.4 Electron → v0.3 daemon) confirms the envelope listener also rejects cleanly.
 
 ### Electron v0.4 against daemon v0.3.x
 
@@ -215,6 +238,11 @@ Daemon serializes all writes via `better-sqlite3` synchronous API. Long-running 
 
 - v0.3 frag-11 §11 + auto-update rollback (.bak path) covers this.
 - Recovery: user re-runs the installer.
+- **v0.4 re-validation (new):** v0.4 changes the install payload (bundles `cloudflared` ~20 MB plus larger build artifacts), so the v0.3 `.bak` rollback mechanism is NOT automatically inherited. M2 close (chapter 09 §7 post-M2 7-day dogfood gate) MUST include an explicit two-direction test:
+  1. Force update v0.4-rc1 → v0.4-rc2; assert daemon starts on rc2 and `cloudflared` is the rc2-bundled version.
+  2. Force ROLLBACK rc2 → rc1 via the `.bak` mechanism; assert daemon starts on rc1 and `cloudflared` is the rc1-bundled version.
+  Both must pass; if either fails, M2 doesn't close.
+- **"Rollback also failed" recovery (new in v0.4):** if both `.exe` and `.bak` are corrupted (catastrophic auto-update + power loss mid-swap), the user must run the installer manually from `C:\Users\Public\Desktop\CCSM-Setup.exe` (the location the build worker copies fresh installers to, per memory rule). User-facing docs (README + in-app "About" page) MUST cite this manual recovery path. As a fallback, the installer is also published on GitHub Releases with the corresponding tag.
 
 ### Cloudflare account compromised
 
