@@ -12,8 +12,11 @@ inventory step that produces a list you can review before deletion.
 
 - Cleans branches on `origin` (GitHub remote) that are no longer needed.
 - Cleans local branches in the main repo that track those remotes.
-- Resets the 10 worker pool worktrees at `~/ccsm-worktrees/pool-{1..10}` to a
-  clean checkout when they have drifted onto stale feature branches.
+- Resets the worker pool worktrees at `~/ccsm-worktrees/pool-{1..N}` to a
+  clean checkout when they have drifted onto stale feature branches. Discover
+  the active set first: `git worktree list | grep -oE 'pool-[0-9]+' | sort -u`.
+  Note: pools 11–20 may hold long-running spec/feat branches — treat each as a
+  real worktree, do NOT bulk-delete.
 
 It does **not**:
 
@@ -23,8 +26,8 @@ It does **not**:
 
 ## Prerequisites
 
-- Run from the main repo, not a worktree:
-  `cd C:/Users/jiahuigu/ccsm-research/ccsm`
+- Run from any worktree on `[working]` (e.g. `~/ccsm-worktrees/pool-N` or a
+  topic-named worktree). See STATUS.md §47.
 - `gh` CLI authenticated against the repo: `gh auth status`
 - Refresh remote state first: `git fetch origin --prune`
 
@@ -60,8 +63,34 @@ For each candidate branch, assign one of:
 | Local branch with `[gone]` upstream tracking | DELETE local (upstream confirms removal) |
 
 A small Python categorizer that consumes `/tmp/all_prs.json` plus
-`git branch -r` output is the practical way to sort 400+ branches; see the
-inline script in PR #<this-PR>.
+`git branch -r` output is the practical way to sort 400+ branches:
+
+```python
+# branch-categorize.py — emits /tmp/local_delete.txt and /tmp/remote_delete.txt
+import json, subprocess, datetime as dt
+prs = json.load(open('/tmp/all_prs.json'))
+latest = {}
+for p in prs:
+    h = p['headRefName']
+    if h not in latest or (p.get('mergedAt') or p.get('closedAt') or '') > (latest[h].get('mergedAt') or latest[h].get('closedAt') or ''):
+        latest[h] = p
+remotes = subprocess.check_output(['git','branch','-r'], text=True).splitlines()
+cands = [r.strip().removeprefix('origin/') for r in remotes
+         if 'HEAD' not in r and not r.strip().startswith(('origin/main','origin/working','origin/release/'))]
+cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)
+remote_del, investigate = [], []
+for b in cands:
+    pr = latest.get(b)
+    if not pr: investigate.append(b); continue
+    if pr['state'] == 'OPEN': continue
+    if pr['state'] == 'MERGED': remote_del.append(b); continue
+    closed = dt.datetime.fromisoformat(pr['closedAt'].replace('Z','+00:00'))
+    if closed < cutoff: remote_del.append(b)
+open('/tmp/remote_delete.txt','w').write('\n'.join(remote_del))
+open('/tmp/investigate.txt','w').write('\n'.join(investigate))
+gone = [l.split()[0] for l in subprocess.check_output(['git','branch','-vv'], text=True).splitlines() if ': gone' in l]
+open('/tmp/local_delete.txt','w').write('\n'.join(gone))
+```
 
 ## Execute deletions
 
@@ -80,12 +109,18 @@ chase with `--force`.
 
 ## Reset worker pools
 
-Each pool at `~/ccsm-worktrees/pool-N` should normally end on `working` HEAD
-after its worker finishes. If a pool is sitting on a long-stale feature
-branch with no associated open PR:
+Each pool at `~/ccsm-worktrees/pool-N` (N discovered above) should normally
+end on `working` HEAD after its worker finishes. If a pool is sitting on a
+long-stale feature branch with no associated open PR:
 
 ```bash
 cd ~/ccsm-worktrees/pool-N
+
+# 0a. Check for active worker activity (any of these → SKIP this pool):
+test -f .git/index.lock                          && echo skip && exit
+git log -1 --since="30 minutes ago" --oneline    # non-empty → skip
+pgrep -f "node.*$(pwd)" || pgrep -f "electron.*$(pwd)"  # any → skip
+
 oldbr=$(git symbolic-ref --short HEAD)
 git fetch origin --prune
 git checkout --detach origin/working
@@ -117,6 +152,20 @@ git worktree list
 # Confirm no protected refs were touched
 git branch -r | grep -E '(main|working|release/)'
 ```
+
+## Recovery
+
+If a branch was deleted in error, GitHub retains the ref for ~7 days:
+
+```bash
+# Find recently-deleted refs and the SHA they pointed at
+git reflog show origin --date=iso
+
+# Restore by pushing the SHA back to the original name
+git push origin <sha>:refs/heads/<name>
+```
+
+Window is 7 days per GitHub's reflog retention default; act fast.
 
 ## Cadence
 
