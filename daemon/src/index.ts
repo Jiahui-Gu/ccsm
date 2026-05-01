@@ -11,6 +11,7 @@ import {
   type ShutdownStep,
 } from './handlers/daemon-shutdown.js';
 import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
+import { startDevParentWatchdog } from './lifecycle/dev-parent-watchdog.js';
 import { installCrashHandlers } from './crash/handlers.js';
 import { installNativeCrashHandlers } from './crash/native-handlers.js';
 import { initDaemonSentry } from './sentry/init.js';
@@ -351,3 +352,45 @@ function shutdownFromSignal(signal: 'SIGTERM' | 'SIGINT'): void {
 }
 process.on('SIGTERM', () => shutdownFromSignal('SIGTERM'));
 process.on('SIGINT', () => shutdownFromSignal('SIGINT'));
+
+// B9 (Task #25) — dev-mode parent-PID watchdog.
+//
+// In `CCSM_DAEMON_DEV=1` (npm run dev), nodemon owns the daemon
+// lifecycle but its SIGTERM does not always propagate through the tsx
+// wrapper to this Node process — especially on Windows, where Node has
+// no real SIGTERM. Without this watchdog the daemon survives nodemon's
+// kill, the next file save spawns a fresh daemon, and `tasklist` /
+// `ps` shows N stray PIDs after a few reloads.
+//
+// Production stays untouched: the supervisor (electron/daemon/
+// supervisor.ts) intentionally keeps the daemon alive past Electron
+// exit (v0.3 dogfood criterion #1). This block is gated on
+// `CCSM_DAEMON_DEV` so it can never engage in a packaged build.
+if (process.env.CCSM_DAEMON_DEV === '1') {
+  const ppid = process.ppid;
+  if (ppid && ppid > 0) {
+    startDevParentWatchdog({
+      ppid,
+      onParentGone: () => {
+        logger.info(
+          { event: 'daemon.dev.parent-gone', ppid },
+          'dev parent (nodemon/tsx) exited, self-terminating to prevent stray leak',
+        );
+        // Fire the same shutdown path so transports release their bind
+        // slots before exit. exitProcess(0) closes sockets then calls
+        // process.exit(0).
+        void daemonShutdownHandler.handle({ reason: 'SIGTERM' }, { bootNonce });
+      },
+      onUnknown: (probedPpid) => {
+        logger.warn(
+          { event: 'daemon.dev.parent-probe-unknown', ppid: probedPpid },
+          'dev parent probe returned non-ESRCH error; assuming alive',
+        );
+      },
+    });
+    logger.info(
+      { event: 'daemon.dev.parent-watchdog-armed', ppid },
+      'dev parent watchdog armed (B9)',
+    );
+  }
+}
