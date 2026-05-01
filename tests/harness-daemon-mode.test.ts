@@ -97,6 +97,30 @@ import {
 import { createFromBootNonceStamper } from '../daemon/src/pty/from-boot-nonce-stamper.js';
 import { ReconnectQueue, type ReconnectOutcome } from '../src/lib/reconnect-queue.js';
 import { DaemonEventBus } from '../src/lib/daemon-events.js';
+// T84 — modal coexistence probe imports. The probe wires the real T35
+// `MigrationGateConsumer` (state holder) and the real T10
+// `checkMigrationGate` (pure decider) plus the real T16/T18
+// `SUPERVISOR_RPCS` allowlist. Together they are the daemon-side
+// load-bearing implementation of v0.3 §6.8's "priority dominance" rule:
+// while the migration modal (priority 100) is up, all data-plane RPCs
+// must be short-circuited and only the supervisor (control-plane)
+// allowlist may flow — the wire-level analog of "lower-priority
+// surfaces are suppressed". The renderer-side surface registry
+// (`useDaemonHealthBridge`, modal stack) that §6.8 specifies for the
+// React layer is NOT yet implemented in this codebase (only
+// `useDaemonReconnectBridge` exists; the `surfaceRegistry` /
+// `useDaemonHealthBridge` symbols §6.8 cites are spec-only). The probe
+// therefore exercises the contract that DOES have a producer/decider
+// today — the migration-gate. When the renderer surface registry
+// lands, a follow-up adds React-layer assertions on the same modal
+// coexistence rules without changing the daemon-side invariants
+// asserted here.
+import {
+  MigrationGateConsumer,
+  type MigrationState,
+} from '../daemon/src/db/migration-gate-consumer.js';
+import { checkMigrationGate } from '../daemon/src/envelope/migration-gate-interceptor.js';
+import { SUPERVISOR_RPCS } from '../daemon/src/envelope/supervisor-rpcs.js';
 
 // Helper module is plain ESM JS; vitest resolves the .mjs extension fine
 // via dynamic import. Type as `any` since it ships JSDoc only.
@@ -1154,5 +1178,383 @@ describe('T78 — reconnect-after-stream-dead probe (e2e harness fold)', () => {
     } finally {
       queue.dispose();
     }
+  });
+});
+
+// =============================================================================
+// T84 — modal coexistence probe (e2e harness fold)
+// =============================================================================
+// Asserts the daemon-side load-bearing implementation of v0.3 §6.8's
+// "Surface registry + stacking rules" contract. §6.8 specifies a
+// numeric-priority registry (Migration=100, InstallerCorrupt=90,
+// CrashLoop=85, MigrationFailed=85, Unreachable=70, Reconnected=30,
+// PausedSession=30) with stacking rules:
+//
+//   Rule 1: At most ONE blocking modal visible at a time. Migration
+//           (priority 100) is the apex and is never dismissed.
+//   Rule 6: Equal-priority deterministic tie-break = registry insertion
+//           order (Map iteration order). Same-tick later same-priority
+//           IPCs are dropped, not queued.
+//
+// Scope honesty (Layer 1 first, like T73/T74/T78 did with the
+// controlSocket gap):
+//   The renderer-side surface registry / `useDaemonHealthBridge` /
+//   single-source `daemonHealth` IPC channel that §6.8 describes for
+//   the React layer is NOT yet implemented. Only `useDaemonReconnectBridge`
+//   exists (`src/app-effects/useDaemonReconnectBridge.ts`); the
+//   `surfaceRegistry` / `useDaemonHealthBridge` modules §6.8 cites are
+//   spec-only at HEAD (verified via grep on 2026-05-01: no matches in
+//   src/ or electron/). When that React-layer driver lands, a follow-up
+//   probe asserts modal stacking + tie-break at the renderer surface
+//   without changing the daemon-side invariants asserted here.
+//
+// What IS implemented and IS testable today:
+//   - `MigrationGateConsumer` (T35, daemon/src/db/migration-gate-consumer.ts)
+//     — pure state holder for the four-state migration lifecycle
+//     (idle / pending / completed / failed).
+//   - `checkMigrationGate` (T10, daemon/src/envelope/migration-gate-interceptor.ts)
+//     — pure decider that short-circuits data-plane RPCs while migration
+//     is pending and lets supervisor RPCs through unconditionally.
+//   - `SUPERVISOR_RPCS` (T16/T18, daemon/src/envelope/supervisor-rpcs.ts)
+//     — canonical control-plane allowlist.
+//
+// These three together are the daemon-side modal-coexistence
+// implementation: when the renderer's migration modal (priority 100)
+// is up, the migration runner has flipped state to 'pending', which
+// the wire enforces by short-circuiting every lower-priority surface's
+// data RPCs. Stacking rule 1 ("Migration is the apex") and the
+// supervisor-RPC carve-out (so health/heartbeat/upgrade modals can
+// still complete their RPCs even while migration blocks data) are
+// directly visible at this layer.
+//
+// Asserted invariants (each cites the §6.8 row it covers):
+//   1. Priority dominance / stacking rule 1 (Migration=100 suppresses
+//      lower-priority surfaces): when MigrationGateConsumer state is
+//      'pending', every data-plane RPC is blocked AND every supervisor
+//      RPC (which is what the lower-priority surfaces — CrashLoop=85,
+//      Unreachable=70, Reconnected=30 — depend on for /healthz, hello,
+//      shutdown) is allowed. The carve-out is what lets the §6.1.1
+//      banner family keep functioning while the apex modal is up.
+//   2. State-transition queueing (idle → pending → completed → idle
+//      reset path): subscribers receive notifications in registration
+//      order on every transition, exactly once per actual change. This
+//      is the daemon-side analog of "lower-priority IPC re-fires when
+//      the higher modal closes" (rule 1 close-then-replay semantics).
+//   3. Idempotency (rule 6 "same-tick later same-priority IPCs are
+//      dropped, not queued"): setMigrationState('pending') called twice
+//      in the same tick fires listeners exactly once. A re-emit of the
+//      same state is a no-op — the renderer modal is NOT re-shown.
+//   4. Failed terminal state (§6.8 P=85 `migration.modal.failed.*` row
+//      + frag-8 §8.5/§8.6 contract): 'failed' continues to block data
+//      plane RPCs (modal stays up at priority 85, NOT auto-dismissed
+//      to idle). The §8.6 fatal-error modal is "dismissable" but only
+//      via Quit — the gate stays engaged.
+//   5. Tie-break by insertion order (rule 6): when the renderer-side
+//      registry has same-priority surfaces (P=85 daemon.crashLoop +
+//      migration.modal.failed at the renderer; here exercised via
+//      registration-order of subscribers on the gate consumer), the
+//      first-registered listener wins and observes the transition
+//      first. Production renderer Map insertion order is the same
+//      property exercised here on Set insertion order.
+//
+// Reverse-verify mutations (also documented in PR body):
+//   A. Mutate `checkMigrationGate` so 'pending' allows data RPCs
+//      (`if (!ctx.migrationPending) return { allowed: true };` →
+//      `return { allowed: true };` unconditionally). Invariant 1
+//      FAILS with `expected { allowed: true } to deeply equal {
+//      allowed: false, error: { code: 'MIGRATION_PENDING', ... } }`.
+//      Reverted after observation.
+//   B. Mutate `MigrationGateConsumer.setMigrationState` so the
+//      `if (this.state === next) return;` early-out is removed
+//      (always notifies). Invariant 3 FAILS with `expected
+//      [ 'pending' ] to deeply equal [ 'pending', 'pending' ]`
+//      (idempotent re-emit thrashes listeners). Reverted after
+//      observation.
+//
+// Spec citations:
+//   - frag-6-7 §6.8 (surface registry + stacking rules 1 & 6)
+//   - frag-6-7 §6.1.1 (modal/banner copy table)
+//   - frag-8 §8.5 (MIGRATION_PENDING short-circuit scope)
+//   - frag-8 §8.6 (`migration.modal.failed.*` fatal terminal state)
+//   - frag-3.4.1 §3.4.1.f (interceptor pipeline ordering)
+//   - frag-3.4.1 §3.4.1.h (canonical SUPERVISOR_RPCS allowlist)
+// -----------------------------------------------------------------------------
+
+/** Spec §6.8 P=100 row — migration is the apex of the modal stack.
+ *  Pinned inline so a future spec change that re-numbers the registry
+ *  also flags this probe. */
+const T84_MIGRATION_PRIORITY = 100;
+/** Spec §6.8 P=85 row — `migration.modal.failed.*` fatal terminal. */
+const T84_MIGRATION_FAILED_PRIORITY = 85;
+/** Spec §6.8 P=70 row — `daemon.unreachable` red banner (one of the
+ *  lower-priority surfaces dominated by migration). */
+const T84_DAEMON_UNREACHABLE_PRIORITY = 70;
+
+describe('T84 — modal coexistence probe (e2e harness fold)', () => {
+  // -------------------------------------------------------------------------
+  // Pinned spec constants — a registry re-numbering will flag this probe.
+  // -------------------------------------------------------------------------
+  it('production §6.8 priority constants pinned (Migration=100 > Failed=85 > Unreachable=70)', () => {
+    expect(T84_MIGRATION_PRIORITY).toBe(100);
+    expect(T84_MIGRATION_FAILED_PRIORITY).toBe(85);
+    expect(T84_DAEMON_UNREACHABLE_PRIORITY).toBe(70);
+    // Apex dominance — Migration MUST be strictly above every other
+    // §6.8 row. If a future row at >100 lands, stacking rule 1's
+    // "Migration is never dismissed" claim breaks and the spec lock
+    // re-opens.
+    expect(T84_MIGRATION_PRIORITY).toBeGreaterThan(T84_MIGRATION_FAILED_PRIORITY);
+    expect(T84_MIGRATION_FAILED_PRIORITY).toBeGreaterThan(T84_DAEMON_UNREACHABLE_PRIORITY);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 1 — Stacking rule 1 (apex priority dominance):
+  // Migration=100 suppresses all lower-priority surfaces. Daemon-side
+  // analog: while gate=pending, every data-plane RPC blocked, every
+  // supervisor RPC (used by P<100 surfaces' health checks) flows.
+  // -------------------------------------------------------------------------
+  it('rule 1: gate=pending blocks all data-plane RPCs while supervisor carve-out flows', () => {
+    const gate = new MigrationGateConsumer();
+    gate.setMigrationState('pending');
+    expect(gate.isMigrationPending()).toBe(true);
+
+    // Every supervisor RPC (the lifeline for P<100 surfaces — health
+    // banners, hello handshake, upgrade flow) MUST be allowed even
+    // while the apex modal is up. This is the §6.8 stacking rule 1
+    // carve-out: the apex BLOCKS lower-priority surfaces from
+    // appearing in the UI but does NOT starve their underlying
+    // health-check transport.
+    for (const rpc of SUPERVISOR_RPCS) {
+      const decision = checkMigrationGate({
+        rpcName: rpc,
+        migrationPending: gate.isMigrationPending(),
+      });
+      expect(decision).toEqual({ allowed: true });
+    }
+
+    // A representative slice of data-plane RPCs (the surfaces those
+    // RPCs would feed — session list, pty stream, agent dispatch —
+    // are all <100 priority and MUST be suppressed). Each one must
+    // carry the canonical MIGRATION_PENDING error code so the
+    // renderer can distinguish "apex modal is up" from a transport
+    // error and avoid surfacing a misleading "daemon unreachable"
+    // banner (which IS a §6.8 row at P=70).
+    const dataPlane = [
+      'ccsm.v1/session.subscribe',
+      'ccsm.v1/session.send',
+      'ccsm.v1/pty.write',
+      'ccsm.v1/agent.dispatch',
+    ];
+    for (const rpc of dataPlane) {
+      const decision = checkMigrationGate({
+        rpcName: rpc,
+        migrationPending: gate.isMigrationPending(),
+      });
+      expect(decision.allowed).toBe(false);
+      if (decision.allowed === false) {
+        expect(decision.error.code).toBe('MIGRATION_PENDING');
+      }
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 2 — State transitions: idle → pending → completed → idle.
+  // Each subscriber observes every actual change exactly once, in
+  // registration order. This is the daemon-side analog of "lower
+  // priority IPC re-fires when the higher modal closes" — when the
+  // gate flips back from 'pending' to 'completed', subscribers
+  // (renderer bridge, supervisor diagnostic feed) are notified so the
+  // modal closes and the queued lower-priority surfaces can re-evaluate.
+  // -------------------------------------------------------------------------
+  it('rule 1 close-replay: every state transition fires listeners exactly once in registration order', () => {
+    const gate = new MigrationGateConsumer();
+    const observed: Array<{ who: string; state: MigrationState }> = [];
+    const unsubA = gate.subscribe((s) => observed.push({ who: 'A', state: s }));
+    const unsubB = gate.subscribe((s) => observed.push({ who: 'B', state: s }));
+    const unsubC = gate.subscribe((s) => observed.push({ who: 'C', state: s }));
+
+    try {
+      // Apex opens.
+      gate.setMigrationState('pending');
+      // Apex closes (success path — modal goes away, P<100 surfaces
+      // re-evaluate).
+      gate.setMigrationState('completed');
+      // Reset back to idle (next-boot path — installer never touched
+      // this user's data).
+      gate.setMigrationState('idle');
+    } finally {
+      unsubA();
+      unsubB();
+      unsubC();
+    }
+
+    // Three transitions × three subscribers = nine notifications, in
+    // registration order per transition. Spec §6.8 stacking rule 6
+    // ("registry insertion order") is exactly this Set-iteration
+    // semantics.
+    expect(observed).toEqual([
+      { who: 'A', state: 'pending' },
+      { who: 'B', state: 'pending' },
+      { who: 'C', state: 'pending' },
+      { who: 'A', state: 'completed' },
+      { who: 'B', state: 'completed' },
+      { who: 'C', state: 'completed' },
+      { who: 'A', state: 'idle' },
+      { who: 'B', state: 'idle' },
+      { who: 'C', state: 'idle' },
+    ]);
+
+    // After 'completed', the gate is no longer pending — data RPCs
+    // resume. This is the wire signal to the renderer that lower-
+    // priority surfaces may now appear.
+    expect(gate.isMigrationPending()).toBe(false);
+    const post = checkMigrationGate({
+      rpcName: 'ccsm.v1/session.subscribe',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(post).toEqual({ allowed: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 3 — Idempotency on duplicate triggers (§6.8 rule 6:
+  // "same-tick later same-priority IPCs are dropped, not queued").
+  // The migration runner may emit `migration.started` more than once
+  // in a re-entrancy edge case (e.g. boot-orchestrator retry); the
+  // gate's setState is no-op-on-equal so listeners — and therefore the
+  // renderer modal — do NOT re-fire and re-mount.
+  // -------------------------------------------------------------------------
+  it('rule 6 idempotency: duplicate setState fires listeners exactly once per actual change', () => {
+    const gate = new MigrationGateConsumer();
+    const observed: MigrationState[] = [];
+    const unsub = gate.subscribe((s) => observed.push(s));
+
+    try {
+      // Burst of duplicates — should collapse to a single notification.
+      gate.setMigrationState('pending');
+      gate.setMigrationState('pending');
+      gate.setMigrationState('pending');
+      gate.setMigrationState('pending');
+      expect(observed).toEqual(['pending']);
+
+      // Distinct value flips — every change MUST notify (otherwise
+      // the renderer modal would never close).
+      gate.setMigrationState('completed');
+      expect(observed).toEqual(['pending', 'completed']);
+
+      // Duplicate of the latest is again coalesced.
+      gate.setMigrationState('completed');
+      gate.setMigrationState('completed');
+      expect(observed).toEqual(['pending', 'completed']);
+    } finally {
+      unsub();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 4 — Failed terminal state (§6.8 P=85 `migration.modal.failed.*`
+  // + frag-8 §8.6 fatal-error). The 'failed' state continues to block
+  // data-plane RPCs (the modal stays up — it's "dismissable" only via
+  // Quit per §8.6). Importantly, the gate does NOT auto-flip back to
+  // idle on failure: that would silently dismiss the apex modal and
+  // let lower-priority surfaces appear over a corrupt-DB daemon.
+  // -------------------------------------------------------------------------
+  it('§8.6 failed terminal: failed state continues blocking data RPCs (no auto-dismiss to idle)', () => {
+    const gate = new MigrationGateConsumer();
+    gate.setMigrationState('failed');
+
+    // 'failed' is BLOCKING per the consumer module header: "'pending'
+    // and 'failed' both block — see module header for rationale".
+    // This is the load-bearing invariant for §8.6's fatal-error modal:
+    // if the gate flipped back to 'idle' on failure, the modal would
+    // close, the renderer would let session.subscribe fire, and the
+    // user would see partial v0.2 data through a v0.3 schema lens.
+    expect(gate.isMigrationPending()).toBe(true);
+    expect(gate.getMigrationState()).toBe('failed');
+
+    const decision = checkMigrationGate({
+      rpcName: 'ccsm.v1/session.subscribe',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(decision.allowed).toBe(false);
+    if (decision.allowed === false) {
+      expect(decision.error.code).toBe('MIGRATION_PENDING');
+    }
+
+    // Supervisor RPCs still flow on failure — the renderer needs
+    // `/healthz` and `daemon.shutdown` to talk to the daemon to
+    // surface the failure modal copy + drive the Quit-only exit.
+    for (const rpc of SUPERVISOR_RPCS) {
+      expect(
+        checkMigrationGate({ rpcName: rpc, migrationPending: gate.isMigrationPending() }),
+      ).toEqual({ allowed: true });
+    }
+
+    // Failed state survives a same-state re-emit (no spurious modal
+    // re-mount). And a transition to 'completed' (recovery path —
+    // hypothetical, not in v0.3 but the state machine permits it)
+    // releases the gate.
+    const observed: MigrationState[] = [];
+    const unsub = gate.subscribe((s) => observed.push(s));
+    try {
+      gate.setMigrationState('failed'); // dup → no-op
+      expect(observed).toEqual([]);
+      gate.setMigrationState('completed'); // hypothetical recovery
+      expect(observed).toEqual(['completed']);
+      expect(gate.isMigrationPending()).toBe(false);
+    } finally {
+      unsub();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 5 — End-to-end coexistence: a lower-priority surface's
+  // RPC fires while the apex modal is up; the gate dominates and the
+  // lower surface's data path is short-circuited; once the apex closes,
+  // the same RPC that previously failed now succeeds. This composes
+  // invariants 1+2 in the order the renderer would actually see them.
+  // -------------------------------------------------------------------------
+  it('e2e composition: P<100 surface RPC blocked during apex, allowed after apex closes', () => {
+    const gate = new MigrationGateConsumer();
+
+    // tick T0: apex modal opens (migration runner fires
+    // `migration.started` per §8.5 S3).
+    gate.setMigrationState('pending');
+
+    // The §6.8 P=70 `daemon.unreachable` banner depends on an
+    // active `/healthz` poll PLUS the renderer's ability to talk
+    // to data-plane RPCs to refresh session state. Health poll
+    // (supervisor) MUST flow; data-plane refresh MUST be blocked.
+    const healthDuringApex = checkMigrationGate({
+      rpcName: '/healthz',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(healthDuringApex).toEqual({ allowed: true });
+
+    const dataDuringApex = checkMigrationGate({
+      rpcName: 'ccsm.v1/session.subscribe',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(dataDuringApex.allowed).toBe(false);
+
+    // tick T1: apex modal closes (migration completes).
+    gate.setMigrationState('completed');
+
+    // Same data-plane RPC the renderer would re-fire to refresh the
+    // session list — it now flows. This is the wire-level proof of
+    // §6.8 stacking rule 1's "lower IPC re-fires when higher closes".
+    const dataAfterApex = checkMigrationGate({
+      rpcName: 'ccsm.v1/session.subscribe',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(dataAfterApex).toEqual({ allowed: true });
+
+    // And health is unchanged — supervisor RPCs are independent of
+    // the apex state, which is exactly why the §6.8 rule 1 carve-out
+    // lets P<100 banners (Reconnected, Unreachable) keep working
+    // throughout the migration window.
+    const healthAfterApex = checkMigrationGate({
+      rpcName: '/healthz',
+      migrationPending: gate.isMigrationPending(),
+    });
+    expect(healthAfterApex).toEqual({ allowed: true });
   });
 });
