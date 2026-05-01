@@ -1,0 +1,14 @@
+{
+  "_comment": "Installer size baseline (bytes) for Task #1015 / T58 size guard. Per-extension entries; checked by scripts/check-installer-size.mjs. Bump only via dedicated PR with reviewer sign-off (NEVER auto-commit from CI). Spec: docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md §11.5(6).",
+  "_placeholder": true,
+  "_placeholder_reason": "Pool-10 env cannot run `npm run make:win` reliably (missing native toolchain on this checkout); these byte counts are conservative estimates from frag-11 §11.5(6) component breakdown (Electron 41 ~95 MB + daemon ~50 MB + SDK ~6 MB + uninstall-helper ~5 MB) and MUST be replaced by the first green CI build that produces real artifacts. Until then the absolute ceiling check is the real guard. See Task #1015 follow-up.",
+  "version": 1,
+  "updated": "2026-05-01",
+  "entries": {
+    "exe": 130023424,
+    "dmg": 146800640,
+    "AppImage": 125829120,
+    "deb": 110100480,
+    "rpm": 110100480
+  }
+}
