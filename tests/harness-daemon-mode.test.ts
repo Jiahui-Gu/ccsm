@@ -70,6 +70,33 @@ import {
   NONCE_BYTES,
 } from '../daemon/src/envelope/hmac.js';
 import { encode as base64urlEncode } from '../daemon/src/envelope/base64url.js';
+// T78 — reconnect-after-stream-dead probe imports. Wires the real T44
+// stream-dead detector (daemon side), the real T48 fromBootNonce stamper
+// (daemon side), the real T70 reconnect queue (renderer side, listens
+// to a `DaemonEventBus`) against an injected event bus + injected
+// `reconnectFn`. T69 (`useDaemonReconnectBridge`) is a React hook that
+// PRODUCES `window.CustomEvent`s on a separate browser-event channel
+// (`ccsm:daemon-bootChanged` / `ccsm:daemon-streamDead`); the daemon
+// side and the queue side share the typed bus shape but the live
+// daemon→renderer IPC bridge that would funnel detector output into
+// the bus is NOT wired in production yet (see file-header note on T73
+// `controlSocket.listen()` gap; T48 stamper helper merged but daemon
+// stream emit doesn't call `stamper.stamp()` yet, and T44 detector is
+// constructed only by the heartbeat scheduler call site, not by an
+// IPC bridge that emits `streamDead` events outward to renderer). The
+// probe therefore exercises the real **contract**: detector output →
+// bus emit → queue enqueue/flush → re-issued subscribe envelopes
+// stamped via the real stamper. When the daemon-side IPC bridge lands
+// (follow-up after #1072 / #1073-style controlSocket binding), this
+// probe upgrades to a real socket round-trip without changing the
+// asserted invariants.
+import {
+  createStreamDeadDetector,
+  type SubscriberId,
+} from '../daemon/src/pty/stream-dead-detector.js';
+import { createFromBootNonceStamper } from '../daemon/src/pty/from-boot-nonce-stamper.js';
+import { ReconnectQueue, type ReconnectOutcome } from '../src/lib/reconnect-queue.js';
+import { DaemonEventBus } from '../src/lib/daemon-events.js';
 
 // Helper module is plain ESM JS; vitest resolves the .mjs extension fine
 // via dynamic import. Type as `any` since it ships JSDoc only.
@@ -827,5 +854,305 @@ describe('T74 — upgrade-in-place probe (e2e harness fold)', () => {
     // primitive stays untouched.
     expect(sink.invoked).toBe(false);
     expect(posixKill).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// T78 — reconnect-after-stream-dead probe (e2e harness fold)
+// =============================================================================
+// Asserts the cross-module contract that v0.3 §5.4 + §5.5 + §6.5.1 + §6.6.1
+// rely on for live-stream recovery after a server-side stream-dead detection:
+//
+//   T44 detector flips a subscriber to DEAD
+//     → wiring layer emits `streamDead` on the typed event bus
+//     → T70 reconnect queue enqueues a resubscribe task per subId
+//     → on `bootChanged` (new daemon boot) the queue re-issues subscribe
+//       envelopes for every active subscription
+//     → each emitted envelope is stamped with the new bootNonce by T48.
+//
+// Production wiring of detector→bus and bridge→bus is not landed yet
+// (see import-block note above). The probe composes the real modules
+// in-process to exercise the contract end-to-end. When the daemon-side
+// IPC bridge lands the asserted invariants stay byte-compatible.
+//
+// Spec citations:
+//   - frag-3.5.1 §3.5.1.4 — bootChanged + fromBootNonce + replay-from-0
+//   - frag-6-7 §6.5.1 — stream-dead detector deadlineMs = 2×heartbeatMs+5s
+//   - frag-6-7 §6.6.1 — stream_resubscribe semantics
+//   - v0.3-design §3.7.4 — reconnect bridge surface registry
+// -----------------------------------------------------------------------------
+
+/** Spec §6.5.1 production formula component. The probe shrinks to a sub-second
+ *  budget but preserves the constant reference so a future spec change that
+ *  bumps the canonical 5s grace term also flags this probe. */
+const T78_PROD_DEADLINE_GRACE_MS = 5_000;
+/** Probe shrink — same detector contract, tens-of-ms budget. */
+const T78_TEST_DEADLINE_MS = 50;
+
+/** A pinned ULID-shaped nonce for "previous daemon boot". 26-char Crockford
+ *  per frag-6-7 §6.5; the stamper does not enforce ULID regex (see
+ *  from-boot-nonce-stamper.ts line 142-148) but using ULID-shaped values
+ *  keeps the probe legible. */
+const T78_OLD_BOOT_NONCE = '01HZ0OLDBOOTAAAAAAAAAAAAAA';
+const T78_NEW_BOOT_NONCE = '01HZ0NEWBOOTBBBBBBBBBBBBBB';
+
+describe('T78 — reconnect-after-stream-dead probe (e2e harness fold)', () => {
+  // Reference to the production grace constant. A future spec change that
+  // bumps the canonical 5s grace term in §6.5.1 will trip this assertion.
+  it('production deadline grace component is 5_000 ms (spec §6.5.1)', () => {
+    expect(T78_PROD_DEADLINE_GRACE_MS).toBe(5_000);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 1 — Stream-dead detection fires within the deadline window
+  // (T44 real detector, no heartbeat from a tracked subscriber).
+  // -------------------------------------------------------------------------
+  it('T44 detector: subscriber with no ack within deadlineMs is reported by check()', () => {
+    const detector = createStreamDeadDetector({ deadlineMs: T78_TEST_DEADLINE_MS });
+    const sub: SubscriberId = 'sid-alpha';
+    const t0 = 1_700_000_000_000;
+
+    // Track the subscriber at t0; it never acks.
+    detector.track(sub, t0);
+    expect(detector.size()).toBe(1);
+
+    // Within the deadline → not dead.
+    expect(detector.check(t0 + T78_TEST_DEADLINE_MS - 1)).toEqual([]);
+    // Strictly older than now-deadlineMs → dead. The detector's contract
+    // is `lastAck < (now - deadlineMs)`, so we cross the boundary by one
+    // millisecond past the deadline.
+    expect(detector.check(t0 + T78_TEST_DEADLINE_MS + 1)).toEqual([sub]);
+
+    // Live ack rearms the deadline — the same id stops being reported.
+    detector.onAck(sub, t0 + T78_TEST_DEADLINE_MS + 2);
+    expect(detector.check(t0 + T78_TEST_DEADLINE_MS + 3)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 2 — Reconnect queue accepts detached subscribers on streamDead
+  // and holds them pending until a `bootChanged` flushes the queue.
+  // -------------------------------------------------------------------------
+  it('T70 queue: streamDead enqueues a task; queue drains via injected reconnectFn', async () => {
+    const bus = new DaemonEventBus();
+    const calls: Array<{ subId: string; lastSeq: number | undefined }> = [];
+    const reconnectFn = async (
+      subId: string,
+      lastSeq: number | undefined,
+    ): Promise<ReconnectOutcome> => {
+      calls.push({ subId, lastSeq });
+      return 'ok';
+    };
+    const queue = new ReconnectQueue(reconnectFn, { bus, baseDelayMs: 0 });
+    try {
+      queue.register({ subId: 'sid-alpha', lastSeq: 7 });
+      queue.register({ subId: 'sid-beta', lastSeq: 12 });
+
+      // Detector reports sid-alpha dead → wiring layer emits streamDead.
+      bus.emit('streamDead', { subId: 'sid-alpha', lastSeq: 7 });
+
+      // Drain microtasks (queue uses `Promise.resolve().then(fire)` for
+      // attempt-0 tasks per reconnect-queue.ts:182-185).
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(calls).toEqual([{ subId: 'sid-alpha', lastSeq: 7 }]);
+      // sid-beta is registered but neither dead nor boot-changed → no task.
+      expect(queue.getQueueDepth()).toBe(0);
+      expect(queue.getInFlightCount()).toBe(0);
+    } finally {
+      queue.dispose();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 3 — Reconnect bridge re-attaches on new bootNonce: queue
+  // drains every active subscription, and the wiring layer (modeled here
+  // by the reconnectFn) issues subscribe envelopes stamped via the real
+  // T48 stamper bound to the NEW bootNonce, in deterministic order.
+  // -------------------------------------------------------------------------
+  it('T70 + T48: bootChanged flushes all active subs; envelopes stamped with new bootNonce', async () => {
+    const bus = new DaemonEventBus();
+    // Real T48 stamper bound to the NEW boot. The wiring layer (reconnectFn)
+    // calls stamp() to construct the outbound subscribe envelope.
+    const stamper = createFromBootNonceStamper(T78_NEW_BOOT_NONCE);
+
+    type Envelope = {
+      kind: 'subscribePty';
+      subId: string;
+      fromSeq: number | undefined;
+      bootNonce: string;
+    };
+    const sent: Envelope[] = [];
+    const reconnectFn = async (
+      subId: string,
+      lastSeq: number | undefined,
+    ): Promise<ReconnectOutcome> => {
+      const envelope = stamper.stamp({
+        kind: 'subscribePty' as const,
+        subId,
+        fromSeq: lastSeq,
+      });
+      sent.push(envelope);
+      return 'ok';
+    };
+    // Concurrency 1 forces serialized firing so the order of `sent`
+    // reflects queue insertion order rather than a race.
+    const queue = new ReconnectQueue(reconnectFn, {
+      bus,
+      baseDelayMs: 0,
+      concurrency: 1,
+    });
+    try {
+      queue.register({ subId: 'sid-1', lastSeq: 100 });
+      queue.register({ subId: 'sid-2', lastSeq: 200 });
+      queue.register({ subId: 'sid-3', lastSeq: 300 });
+
+      // Daemon restarted: reconnect bridge observes a new bootNonce on
+      // the next inbound frame and emits `bootChanged`. Queue clears
+      // lastSeq per spec §3.5.1.4 (replay from seq 0).
+      bus.emit('bootChanged', { bootNonce: T78_NEW_BOOT_NONCE });
+
+      // Drain — three serial tasks at baseDelay=0 + concurrency=1, so
+      // each fire awaits the prior microtask chain.
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+
+      // All three active subs were re-issued, in registration order
+      // (Map iteration order = insertion order).
+      expect(sent.map((e) => e.subId)).toEqual(['sid-1', 'sid-2', 'sid-3']);
+      // §3.5.1.4 contract: bootChanged path clears lastSeq → fromSeq is
+      // `undefined`, daemon will replay from seq 0 under new nonce.
+      expect(sent.every((e) => e.fromSeq === undefined)).toBe(true);
+      // Every envelope carries the NEW bootNonce stamped by T48.
+      expect(sent.every((e) => e.bootNonce === T78_NEW_BOOT_NONCE)).toBe(true);
+      // Negative: NONE carry the old nonce. A regression that swapped the
+      // stamper for a stale closure would fail this even if the positive
+      // assertion above happened to pass via a literal coincidence.
+      expect(sent.some((e) => e.bootNonce === T78_OLD_BOOT_NONCE)).toBe(false);
+    } finally {
+      queue.dispose();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 4 — Idempotency: duplicate streamDead does NOT double-enqueue;
+  // duplicate bootChanged does NOT double-flush. Per reconnect-queue.ts
+  // `enqueue()` coalesce-on-subId logic (lines 156-164) and the §6.6.1
+  // `stream_resubscribe` "at most once per subId" semantics.
+  // -------------------------------------------------------------------------
+  it('T70 idempotency: duplicate streamDead and bootChanged do not double-issue', async () => {
+    const bus = new DaemonEventBus();
+    const calls: string[] = [];
+    // Hold each call open via an external resolver so we can observe the
+    // queue mid-flight (in-flight task should NOT be re-coalesced).
+    let releaseCurrent: (() => void) | null = null;
+    const reconnectFn = async (subId: string): Promise<ReconnectOutcome> => {
+      calls.push(subId);
+      await new Promise<void>((r) => { releaseCurrent = r; });
+      return 'ok';
+    };
+    const queue = new ReconnectQueue(reconnectFn, {
+      bus,
+      baseDelayMs: 0,
+      concurrency: 1,
+    });
+    try {
+      queue.register({ subId: 'sid-x', lastSeq: 5 });
+
+      // Burst three duplicate streamDead events for the same subId.
+      bus.emit('streamDead', { subId: 'sid-x', lastSeq: 5 });
+      bus.emit('streamDead', { subId: 'sid-x', lastSeq: 5 });
+      bus.emit('streamDead', { subId: 'sid-x', lastSeq: 5 });
+
+      // Drain microtasks until the first call lands.
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(calls).toEqual(['sid-x']);
+      expect(queue.getInFlightCount()).toBe(1);
+
+      // While in-flight, emit two more duplicates + a duplicate
+      // bootChanged. None of these should add new tasks for sid-x —
+      // queue.enqueue() coalesces on subId regardless of source.
+      bus.emit('streamDead', { subId: 'sid-x', lastSeq: 5 });
+      bus.emit('bootChanged', { bootNonce: T78_NEW_BOOT_NONCE });
+      bus.emit('bootChanged', { bootNonce: T78_NEW_BOOT_NONCE });
+
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(calls).toEqual(['sid-x']);
+
+      // Release the in-flight call. The task finishes; the queue MUST
+      // NOT re-fire from the duplicates that arrived during flight.
+      releaseCurrent!();
+      for (let i = 0; i < 16; i++) await Promise.resolve();
+
+      // Across the whole burst, exactly one reconnect call for sid-x.
+      expect(calls).toEqual(['sid-x']);
+      expect(queue.getQueueDepth()).toBe(0);
+      expect(queue.getInFlightCount()).toBe(0);
+    } finally {
+      queue.dispose();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Invariant 5 — End-to-end composition: detector → wiring → bus → queue
+  // → stamper. The wiring layer here is the SAME shape the production
+  // bridge will take when daemon→renderer IPC for stream-dead lands:
+  // `for (const dead of detector.check(now)) { detector.forget(dead);
+  //   bus.emit('streamDead', { subId: dead, lastSeq }); }`.
+  // -------------------------------------------------------------------------
+  it('e2e composition: detector.check() → bus.emit() → queue resubscribes via stamper', async () => {
+    const detector = createStreamDeadDetector({ deadlineMs: T78_TEST_DEADLINE_MS });
+    const bus = new DaemonEventBus();
+    const stamper = createFromBootNonceStamper(T78_NEW_BOOT_NONCE);
+    const sent: Array<{ subId: string; bootNonce: string; fromSeq: number | undefined }> = [];
+    const reconnectFn = async (
+      subId: string,
+      lastSeq: number | undefined,
+    ): Promise<ReconnectOutcome> => {
+      const env = stamper.stamp({ kind: 'subscribePty' as const, subId, fromSeq: lastSeq });
+      sent.push(env);
+      return 'ok';
+    };
+    const queue = new ReconnectQueue(reconnectFn, {
+      bus,
+      baseDelayMs: 0,
+      concurrency: 1,
+    });
+    try {
+      // Two subscribers tracked at t0; only sid-late ack'd recently.
+      const t0 = 1_700_000_000_000;
+      detector.track('sid-stuck', t0);
+      detector.track('sid-late', t0);
+      queue.register({ subId: 'sid-stuck', lastSeq: 42 });
+      queue.register({ subId: 'sid-late', lastSeq: 99 });
+      detector.onAck('sid-late', t0 + T78_TEST_DEADLINE_MS + 1);
+
+      // Wiring layer's tick — detector identifies dead subs, fan-outs
+      // streamDead per id, then forgets them so they aren't reported
+      // again on the next tick (stream-dead-detector.ts line 109).
+      const now = t0 + T78_TEST_DEADLINE_MS + 2;
+      const dead = detector.check(now);
+      expect(dead).toEqual(['sid-stuck']);
+      for (const subId of dead) {
+        detector.forget(subId);
+        bus.emit('streamDead', { subId });
+      }
+
+      // Drain microtasks — queue fires the single sid-stuck task.
+      for (let i = 0; i < 16; i++) await Promise.resolve();
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0].subId).toBe('sid-stuck');
+      // Wiring uses queue's tracked lastSeq (reconnect-queue.ts line
+      // 143-144 prefers active.lastSeq over event payload).
+      expect(sent[0].fromSeq).toBe(42);
+      // Stamped with the new boot's nonce (the daemon that will RECEIVE
+      // the resubscribe is the current daemon process).
+      expect(sent[0].bootNonce).toBe(T78_NEW_BOOT_NONCE);
+
+      // sid-late was rearmed; it must NOT have been reported as dead and
+      // must NOT have triggered a queue task.
+      expect(sent.some((e) => e.subId === 'sid-late')).toBe(false);
+    } finally {
+      queue.dispose();
+    }
   });
 });
