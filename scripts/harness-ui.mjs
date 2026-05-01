@@ -154,17 +154,48 @@ async function caseSettingsOpen({ win, log }) {
   } catch (err) {
     // CI-only flake diagnosis (PR #765): on ubuntu/macos lanes the button
     // wait times out even though the same case passes locally. Dump the
-    // actual DOM state so we can see whether the Sidebar mounted, whether
-    // AppSkeleton is still up, and what role=button names ARE present.
+    // actual DOM state, every <button>'s accessible-name calculation, and
+    // Playwright's own role-resolved candidate count so we can see whether
+    // (a) the button is missing from the DOM, (b) the accessible name is
+    // not "Settings", or (c) Playwright's role engine disagrees with the
+    // browser AX tree.
+    let pwButtonCount = -1;
+    let pwSettingsCount = -1;
+    try {
+      pwButtonCount = await win.getByRole('button').count();
+      pwSettingsCount = await win.getByRole('button', { name: /^settings$/i }).count();
+    } catch {}
     const diag = await win.evaluate(() => {
       const aside = document.querySelector('aside');
       const skeleton = document.querySelector('[data-testid="sidebar-skeleton"]');
+      // Best-effort accessible-name calc: aria-label > aria-labelledby > textContent
+      // (close enough to the ARIA spec for most practical cases; real engines
+      // do more, but for a button with text + an SVG icon child this matches
+      // the expected output).
+      const accName = (el) => {
+        const al = el.getAttribute('aria-label');
+        if (al) return al.trim();
+        const lbId = el.getAttribute('aria-labelledby');
+        if (lbId) {
+          const ref = document.getElementById(lbId);
+          if (ref) return (ref.textContent ?? '').trim();
+        }
+        // textContent walks subtree, including any visually-hidden text.
+        return (el.textContent ?? '').trim();
+      };
       const buttons = Array.from(document.querySelectorAll('button')).map((b) => {
         const r = b.getBoundingClientRect();
         const cs = getComputedStyle(b);
+        const name = accName(b);
         return {
           text: (b.textContent ?? '').trim().slice(0, 40),
           aria: b.getAttribute('aria-label'),
+          accName: name,
+          accNameJSON: JSON.stringify(name), // exposes hidden chars / NBSP
+          ariaHidden: b.getAttribute('aria-hidden'),
+          inertAncestor: !!b.closest('[inert]'),
+          ariaHiddenAncestor: !!b.closest('[aria-hidden="true"]'),
+          html: b.outerHTML.slice(0, 200),
           rect: { w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x), y: Math.round(r.y) },
           display: cs.display,
           visibility: cs.visibility,
@@ -190,7 +221,7 @@ async function caseSettingsOpen({ win, log }) {
         buttons,
       };
     }).catch((e) => ({ diagError: String(e) }));
-    throw new Error(`settings-open sidebar button waitFor timeout. diag=${JSON.stringify(diag)}`);
+    throw new Error(`settings-open sidebar button waitFor timeout. pwButtonCount=${pwButtonCount} pwSettingsCount=${pwSettingsCount} diag=${JSON.stringify(diag)}`);
   }
   await sidebarBtn.click();
   await expectSettingsDialogOpen('sidebar button');
