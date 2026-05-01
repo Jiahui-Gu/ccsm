@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// core.proto — app-level RPCs (versions, OS info, paths, db, i18n).
+// Window chrome and folder picker stay on ipcRenderer per spec ch03 §2 and
+// are NOT declared here; they never cross the daemon boundary.
+
+// --- messages ---
+
+message GetAppVersionRequest {}
+message GetAppVersionResponse {
+  string version = 1;
+}
+
+message UserHomeRequest {}
+message UserHomeResponse {
+  string path = 1;
+}
+
+message GetUserCwdsRequest {}
+message GetUserCwdsResponse {
+  repeated string cwds = 1;
+}
+
+message PushUserCwdRequest {
+  string cwd = 1;
+  // ch02 §9: dedup key — daemon LRU dedups within 60s window.
+  string idempotency_key = 2;
+}
+message PushUserCwdResponse {}
+
+message PathsExistRequest {
+  repeated string paths = 1;
+}
+message PathsExistResponse {
+  // map of path → exists
+  map<string, bool> exists = 1;
+}
+
+message GetSystemLocaleRequest {}
+message GetSystemLocaleResponse {
+  string locale = 1;
+}
+
+message DbLoadRequest {
+  string key = 1;
+}
+message DbLoadResponse {
+  bytes value = 1;
+  bool found = 2;
+}
+
+message DbSaveRequest {
+  string key = 1;
+  bytes value = 2;
+  // ch02 §9: dedup key for write deduplication.
+  string idempotency_key = 3;
+}
+message DbSaveResponse {}
+
+message SetLanguageRequest {
+  string language = 1;
+}
+message SetLanguageResponse {}
+
+// --- window event payloads ---
+// NOTE: window:* channels stay on ipcRenderer per spec ch03 §2 — they never
+// cross the daemon boundary. The streams below are declared here so the proto
+// inventory matches chapter 03 §1's canonical 46-RPC count (paired-signal
+// convention per §1 footnote: beforeHide+afterShow = one WindowVisibility
+// stream). The daemon does NOT bind these; they exist for inventory parity.
+
+message WindowMaximizedChangedEvent {
+  bool maximized = 1;
+}
+
+message WindowVisibilityEvent {
+  // "hidden" or "shown" (paired-signal: beforeHide + afterShow)
+  string state = 1;
+}
+
+message StreamWindowMaximizedChangedRequest {}
+message StreamWindowMaximizedChangedResponse {
+  WindowMaximizedChangedEvent event = 1;
+}
+
+message StreamWindowVisibilityRequest {}
+message StreamWindowVisibilityResponse {
+  WindowVisibilityEvent event = 1;
+}

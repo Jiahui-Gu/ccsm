@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// pty.proto — terminal lifecycle + IO.
+
+message PtyDescriptor {
+  string session_id = 1;
+  int32 cols = 2;
+  int32 rows = 3;
+  string cwd = 4;
+}
+
+message ListPtyRequest {}
+message ListPtyResponse {
+  repeated PtyDescriptor sessions = 1;
+}
+
+message SpawnPtyRequest {
+  string session_id = 1;
+  string cwd = 2;
+}
+message SpawnPtyResponse {
+  PtyDescriptor descriptor = 1;
+}
+
+message AttachPtyRequest {
+  string session_id = 1;
+}
+message AttachPtyResponse {
+  PtyDescriptor descriptor = 1;
+}
+
+message DetachPtyRequest {
+  string session_id = 1;
+}
+message DetachPtyResponse {}
+
+message SendPtyInputRequest {
+  string session_id = 1;
+  bytes data = 2;
+}
+message SendPtyInputResponse {}
+
+message ResizePtyRequest {
+  string session_id = 1;
+  int32 cols = 2;
+  int32 rows = 3;
+}
+message ResizePtyResponse {}
+
+message KillPtyRequest {
+  string session_id = 1;
+}
+message KillPtyResponse {}
+
+message GetPtyRequest {
+  string session_id = 1;
+}
+message GetPtyResponse {
+  PtyDescriptor descriptor = 1;
+  bool found = 2;
+}
+
+message GetPtyBufferSnapshotRequest {
+  string session_id = 1;
+}
+message GetPtyBufferSnapshotResponse {
+  string buffer = 1;
+  int64 seq = 2;
+}
+
+// stream payloads
+message PtyDataChunk {
+  string session_id = 1;
+  bytes data = 2;
+  int64 seq = 3;
+}
+
+message PtyExitEvent {
+  string session_id = 1;
+  int32 exit_code = 2;
+  string signal = 3;
+}
+
+message StreamPtyDataRequest {
+  string session_id = 1;
+  int64 from_seq = 2;
+}
+message StreamPtyDataResponse {
+  PtyDataChunk chunk = 1;
+}
+
+message StreamPtyExitRequest {}
+message StreamPtyExitResponse {
+  PtyExitEvent event = 1;
+}

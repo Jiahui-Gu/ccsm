@@ -1,4 +1,200 @@
 syntax = "proto3";
+
 package ccsm.v1;
-// umbrella service. RPCs added per-domain in T02.
-service CcsmService {}
+
+import "ccsm/v1/core.proto";
+import "ccsm/v1/session.proto";
+import "ccsm/v1/session_titles.proto";
+import "ccsm/v1/pty.proto";
+import "ccsm/v1/notify.proto";
+import "ccsm/v1/settings.proto";
+import "ccsm/v1/updater.proto";
+import "ccsm/v1/import.proto";
+
+// CcsmService — single umbrella per spec ch02 §3 (Connect routes per-method,
+// not per-service). Per ch02 §9, every RPC carries an `// idempotency:` line:
+//   - naturally idempotent: client may retry freely.
+//   - dedup-via-server-key: client supplies an idempotency_key field.
+//   - non-idempotent: client MUST surface error and NOT auto-retry.
+//
+// RPC inventory comes from spec ch03 §1 (31 unary + 4 fire-and-forget +
+// 11 server-stream = 46). Fire-and-forget RPCs use proto-level
+// request/response messages (Connect has no native one-way semantics);
+// the daemon-side handler returns immediately and the client treats them
+// as send-only. See ch03 §1.
+service CcsmService {
+  // ===== core (8 unary + 1 fire-and-forget + 2 streams) =====
+
+  // idempotency: naturally idempotent
+  rpc GetAppVersion(GetAppVersionRequest) returns (GetAppVersionResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc UserHome(UserHomeRequest) returns (UserHomeResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetUserCwds(GetUserCwdsRequest) returns (GetUserCwdsResponse) {}
+
+  // idempotency: dedup-via-server-key
+  rpc PushUserCwd(PushUserCwdRequest) returns (PushUserCwdResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc PathsExist(PathsExistRequest) returns (PathsExistResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetSystemLocale(GetSystemLocaleRequest) returns (GetSystemLocaleResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc DbLoad(DbLoadRequest) returns (DbLoadResponse) {}
+
+  // idempotency: dedup-via-server-key
+  rpc DbSave(DbSaveRequest) returns (DbSaveResponse) {}
+
+  // idempotency: naturally idempotent
+  // fire-and-forget (renderer -> main); last-write-wins setter.
+  rpc SetLanguage(SetLanguageRequest) returns (SetLanguageResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamWindowMaximizedChanged(StreamWindowMaximizedChangedRequest) returns (stream StreamWindowMaximizedChangedResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream (paired-signal: beforeHide + afterShow)
+  rpc StreamWindowVisibility(StreamWindowVisibilityRequest) returns (stream StreamWindowVisibilityResponse) {}
+
+  // ===== session (0 unary + 2 fire-and-forget + 4 streams) =====
+
+  // idempotency: naturally idempotent
+  // fire-and-forget; last-write-wins active-session setter.
+  rpc SetSessionActive(SetSessionActiveRequest) returns (SetSessionActiveResponse) {}
+
+  // idempotency: naturally idempotent
+  // fire-and-forget; last-write-wins name setter.
+  rpc SetSessionName(SetSessionNameRequest) returns (SetSessionNameResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamSessionState(StreamSessionStateRequest) returns (stream StreamSessionStateResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamSessionTitle(StreamSessionTitleRequest) returns (stream StreamSessionTitleResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamSessionCwdRedirected(StreamSessionCwdRedirectedRequest) returns (stream StreamSessionCwdRedirectedResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamSessionActivate(StreamSessionActivateRequest) returns (stream StreamSessionActivateResponse) {}
+
+  // ===== session_titles (5 unary) =====
+
+  // idempotency: naturally idempotent
+  rpc GetSessionTitle(GetSessionTitleRequest) returns (GetSessionTitleResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc RenameSessionTitle(RenameSessionTitleRequest) returns (RenameSessionTitleResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc ListSessionTitlesForProject(ListSessionTitlesForProjectRequest) returns (ListSessionTitlesForProjectResponse) {}
+
+  // idempotency: dedup-via-server-key
+  rpc EnqueuePendingSessionTitle(EnqueuePendingSessionTitleRequest) returns (EnqueuePendingSessionTitleResponse) {}
+
+  // idempotency: dedup-via-server-key
+  rpc FlushPendingSessionTitles(FlushPendingSessionTitlesRequest) returns (FlushPendingSessionTitlesResponse) {}
+
+  // ===== pty (9 unary + 2 streams) =====
+
+  // idempotency: naturally idempotent
+  rpc ListPty(ListPtyRequest) returns (ListPtyResponse) {}
+
+  // idempotency: non-idempotent
+  // spawning twice creates two PTYs; client MUST NOT auto-retry.
+  rpc SpawnPty(SpawnPtyRequest) returns (SpawnPtyResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc AttachPty(AttachPtyRequest) returns (AttachPtyResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc DetachPty(DetachPtyRequest) returns (DetachPtyResponse) {}
+
+  // idempotency: dedup-via-server-key
+  // input batches are deduped to avoid double-applying keystroke chunks.
+  rpc SendPtyInput(SendPtyInputRequest) returns (SendPtyInputResponse) {}
+
+  // idempotency: naturally idempotent
+  // last-write-wins resize.
+  rpc ResizePty(ResizePtyRequest) returns (ResizePtyResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc KillPty(KillPtyRequest) returns (KillPtyResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetPty(GetPtyRequest) returns (GetPtyResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetPtyBufferSnapshot(GetPtyBufferSnapshotRequest) returns (GetPtyBufferSnapshotResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamPtyData(StreamPtyDataRequest) returns (stream StreamPtyDataResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamPtyExit(StreamPtyExitRequest) returns (stream StreamPtyExitResponse) {}
+
+  // ===== notify (1 fire-and-forget + 1 stream) =====
+
+  // idempotency: dedup-via-server-key
+  // fire-and-forget; user-input markers append to the per-session log.
+  rpc NotifyUserInput(NotifyUserInputRequest) returns (NotifyUserInputResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamNotifyFlash(StreamNotifyFlashRequest) returns (stream StreamNotifyFlashResponse) {}
+
+  // ===== settings (1 unary) =====
+
+  // idempotency: naturally idempotent
+  rpc GetDefaultModel(GetDefaultModelRequest) returns (GetDefaultModelResponse) {}
+
+  // ===== updater (6 unary + 2 streams) =====
+
+  // idempotency: naturally idempotent
+  rpc GetUpdatesStatus(GetUpdatesStatusRequest) returns (GetUpdatesStatusResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc CheckUpdates(CheckUpdatesRequest) returns (CheckUpdatesResponse) {}
+
+  // idempotency: naturally idempotent
+  // re-downloading the same artifact converges to the same on-disk file.
+  rpc DownloadUpdate(DownloadUpdateRequest) returns (DownloadUpdateResponse) {}
+
+  // idempotency: non-idempotent
+  // triggers app restart; second call after restart hits a different binary.
+  rpc InstallUpdate(InstallUpdateRequest) returns (InstallUpdateResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetAutoCheck(GetAutoCheckRequest) returns (GetAutoCheckResponse) {}
+
+  // idempotency: naturally idempotent
+  // last-write-wins boolean setter.
+  rpc SetAutoCheck(SetAutoCheckRequest) returns (SetAutoCheckResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamUpdaterStatus(StreamUpdaterStatusRequest) returns (stream StreamUpdaterStatusResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream
+  rpc StreamUpdateDownloaded(StreamUpdateDownloadedRequest) returns (stream StreamUpdateDownloadedResponse) {}
+
+  // ===== import (2 unary) =====
+
+  // idempotency: naturally idempotent
+  rpc ScanImportable(ScanImportableRequest) returns (ScanImportableResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetRecentCwds(GetRecentCwdsRequest) returns (GetRecentCwdsResponse) {}
+}

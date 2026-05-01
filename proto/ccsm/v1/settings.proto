@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// settings.proto — settings get/set (default model, etc.).
+
+message GetDefaultModelRequest {}
+message GetDefaultModelResponse {
+  string model = 1;
+}
