@@ -18,6 +18,89 @@ let installed = false;
 let autoCheckEnabled = true;
 let periodicHandle: ReturnType<typeof setInterval> | null = null;
 
+// ----------------------------------------------------------------------------
+// T62 — Upgrade-shutdown RPC hook (frag-11 §11.6.5)
+//
+// Before applying an in-place upgrade, Electron-main MUST send
+// `daemon.shutdownForUpgrade` over the control socket and wait for ack with a
+// 5 s timeout. On ack OR timeout, proceed with `autoUpdater.quitAndInstall(...)`.
+// The actual transport (control-socket envelope client) lives outside this
+// module; we accept it as an injected async function so the call site stays
+// testable and the wiring layer can plug in the real client when daemon-split
+// lands. Default = no-op (resolves immediately) so the existing flow is
+// preserved on hosts where the daemon hasn't been spawned (e.g. dev).
+// ----------------------------------------------------------------------------
+
+/** Ack envelope returned by the daemon's `daemon.shutdownForUpgrade` handler.
+ *  Mirrors `ShutdownForUpgradeAck` from `daemon/src/handlers/daemon-shutdown-for-upgrade.ts`
+ *  but kept structurally-typed here so the electron module never imports across
+ *  the daemon boundary at runtime. */
+export interface UpgradeShutdownAck {
+  readonly accepted: true;
+  readonly reason: 'upgrade';
+}
+
+/** Single-shot RPC sender. Resolves with the ack envelope, rejects on
+ *  transport error. The 5 s timeout is enforced by `callShutdownForUpgrade`,
+ *  not by the sender itself, so the sender stays a thin wire-call. */
+export type UpgradeShutdownRpc = () => Promise<UpgradeShutdownAck>;
+
+let upgradeShutdownRpc: UpgradeShutdownRpc | null = null;
+
+/** Spec §11.6.5 step 3: 5 s ack window from the moment we write the
+ *  `daemon.shutdownForUpgrade` envelope to the moment we receive the reply. */
+export const UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS = 5_000;
+
+/** Wiring entry point — called from `main.ts` after the control-socket client
+ *  is constructed. Passing `null` reverts to the no-op default (used by tests
+ *  and by dev hosts that never spawn the daemon). */
+export function setUpgradeShutdownRpc(rpc: UpgradeShutdownRpc | null): void {
+  upgradeShutdownRpc = rpc;
+}
+
+/** Outcome of the pre-upgrade shutdown call. Surfaced for tests + future
+ *  observability hooks. Per spec §11.6.5 step 3-4 BOTH `acked` and `timeout`
+ *  proceed with the upgrade; only `error` is interesting (currently still
+ *  proceeds — the OS-level force-kill in the wiring layer is the safety net). */
+export type UpgradeShutdownOutcome =
+  | { kind: 'noop' }
+  | { kind: 'acked'; ack: UpgradeShutdownAck }
+  | { kind: 'timeout' }
+  | { kind: 'error'; message: string };
+
+/** Send `daemon.shutdownForUpgrade` and wait up to 5 s for the ack.
+ *  Always resolves — never throws — because the spec's race fallback
+ *  (force-kill + proceed with upgrade) means the caller MUST proceed
+ *  regardless. The returned outcome is informational only. */
+export async function callShutdownForUpgrade(): Promise<UpgradeShutdownOutcome> {
+  const rpc = upgradeShutdownRpc;
+  if (!rpc) return { kind: 'noop' };
+
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<UpgradeShutdownOutcome>((resolve) => {
+    timer = setTimeout(
+      () => resolve({ kind: 'timeout' }),
+      UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS,
+    );
+    (timer as unknown as { unref?: () => void }).unref?.();
+  });
+
+  const call: Promise<UpgradeShutdownOutcome> = (async () => {
+    try {
+      const ack = await rpc();
+      return { kind: 'acked', ack };
+    } catch (e) {
+      return { kind: 'error', message: (e as Error).message };
+    }
+  })();
+
+  try {
+    return await Promise.race([call, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // 4 hours. Electron-updater recommends not checking more often than hourly;
 // 4h is a reasonable default that keeps users on the latest signed build
 // without hammering GitHub releases.
@@ -161,7 +244,7 @@ export function installUpdaterIpc(): void {
     }
   });
 
-  ipcMain.handle('updates:install', () => {
+  ipcMain.handle('updates:install', async () => {
     if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
     // Defense-in-depth: refuse to call quitAndInstall unless we've
     // actually broadcast a `downloaded` event. Without this guard a
@@ -174,6 +257,13 @@ export function installUpdaterIpc(): void {
     if (lastStatus.kind !== 'downloaded') {
       return { ok: false as const, reason: 'not-ready' as const };
     }
+    // T62 — frag-11 §11.6.5: send daemon.shutdownForUpgrade BEFORE
+    // quitAndInstall so the daemon writes its upgrade marker, drains, and
+    // releases the lockfile. We always proceed regardless of ack/timeout/
+    // error because the spec's race fallback (force-kill + proceed) is
+    // owned by the wiring layer; returning early here would brick legit
+    // upgrades on hosts where the daemon is unresponsive.
+    await callShutdownForUpgrade();
     // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
     // on Windows (isSilent=false) and to relaunch after install on all OSes.
     setImmediate(() => autoUpdater.quitAndInstall(false, true));
@@ -202,5 +292,6 @@ export function __resetUpdaterForTests(): void {
   installed = false;
   autoCheckEnabled = true;
   lastStatus = { kind: 'idle' };
+  upgradeShutdownRpc = null;
   stopPeriodicChecks();
 }
