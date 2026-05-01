@@ -11,8 +11,16 @@ import './styles/global.css';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
 // init. The renderer SDK auto-discovers them via the IPC bridge that
-// @sentry/electron/preload installs.
-sentryInit({});
+// @sentry/electron/preload installs. The `surface` tag (spec §6) lets a
+// single Sentry project de-mux events from main / renderer / daemon.
+//
+// SENTRY_DSN_RENDERER is baked at build time by webpack.DefinePlugin
+// (phase 2 build-time DSN injection); the renderer SDK uses it only as
+// an additional signal — the actual transport is the main-process IPC
+// bridge installed by @sentry/electron/preload.
+sentryInit({
+  initialScope: { tags: { surface: 'renderer' } },
+});
 
 // Funnel silent persist failures (db locked, disk full, schema mismatch)
 // to Sentry + console so we stop losing them. The previous handler hook
