@@ -2,9 +2,16 @@
 
 Temporary working files for parallel drafting of design v2 sections.
 
-**Lifecycle**: each `frag-*.md` is written by a dedicated worker, then merged
-into `docs/superpowers/specs/2026-04-30-web-remote-design.md` by the manager
-in pool-2. After merge, this entire directory is deleted in the merge commit.
+**Lifecycle (updated 2026-05-01, Task #1043)**: each `frag-*.md` was originally
+drafted by a dedicated worker for parallel review. They were then concatenated
+into `docs/superpowers/specs/v0.3-design.md`. The original plan was to delete
+this directory after merge — that plan is reversed: the fragments are retained
+as the **canonical** spec and `v0.3-design.md` is now a thin index pointing
+into them (drift between the two copies during r10–r12 review forced the flip;
+see PR #757 / #758 for the perMachine reconciliation that exposed the drift).
+
+All future spec edits land in the fragment file only. Do not re-embed fragments
+into `v0.3-design.md`.
 
 **Why fragments**: 7 sections drafted in parallel against a single spec file
 would rebase-storm. Fragments are independent files, zero conflicts.
