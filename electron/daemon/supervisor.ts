@@ -42,7 +42,7 @@ export function attachCrashCapture(handle: DaemonChildHandle, collector: CrashCo
       : undefined;
     const lastHealthzAgoMs = handle.lastHealthzAt ? Date.now() - handle.lastHealthzAt : null;
     const dir = collector.recordIncident({
-      surface: ringStderr.length === 0 && ringStdout.length === 0 && !markerPath ? 'daemon-boot-crash' : 'daemon-exit',
+      surface: ringStderr.length === 0 && ringStdout.length === 0 && (!markerPath || !fs.existsSync(markerPath)) ? 'daemon-boot-crash' : 'daemon-exit',
       exitCode: code,
       signal,
       stderrTail: ringStderr.snapshot(),

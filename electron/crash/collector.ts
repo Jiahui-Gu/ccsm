@@ -105,6 +105,8 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
         signal: input.signal ?? null,
         bootNonce: input.bootNonce,
         lastTraceId: input.lastTraceId,
+        // TODO(v0.3-supervisor): producer wired when supervisor publishes health pings (spec §5.3, §9).
+        // Until then DaemonChildHandle.lastHealthzAt is never set, so this field is always null.
         lastHealthzAgoMs: input.lastHealthzAgoMs ?? null,
         markerPresent,
       } : undefined,
@@ -145,8 +147,8 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
       const e = entries[i]!;
       const tooOld = e.mtime < cutoff;
       const overCount = i >= maxCount;
-      // Keep larger of "20 newest" and "all within 30 days".
-      if (tooOld || overCount) {
+      // spec §10: keep last 20 OR 30 days, whichever is larger → prune only when BOTH conditions met
+      if (tooOld && overCount) {
         try { fs.rmSync(path.join(opts.crashRoot, e.name), { recursive: true, force: true }); } catch {}
       }
     }

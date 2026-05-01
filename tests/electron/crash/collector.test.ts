@@ -43,12 +43,45 @@ describe('crash collector', () => {
     expect(fs.existsSync(path.join(staging, 'a.dmp'))).toBe(false);
   });
 
-  it('retention prunes beyond max(20 incidents, 30 days)', () => {
-    // Create 25 incidents all dated today, expect 5 oldest pruned (>20, all within 30d).
+  it('retention prunes only entries that are BOTH older than maxAgeDays AND beyond maxCount (spec §10 AND-prune)', () => {
+    // 21 incidents; oldest is 31 days old; expect exactly 1 pruned (the >30d one beyond the 20-newest window).
+    const c = startCrashCollector({ crashRoot: tmp, dmpStaging: path.join(tmp, '_dmp-staging'), appVersion: '0.3.0', electronVersion: '41.3.0' });
+    const dirs: string[] = [];
+    for (let i = 0; i < 21; i++) dirs.push(c.recordIncident({ surface: 'main' }));
+    const dayMs = 24 * 3600 * 1000;
+    const now = Date.now();
+    // Backdate mtimes spanning ~31 days: dirs[0] is 31 days old, dirs[20] is today.
+    for (let i = 0; i < 21; i++) {
+      const ageDays = 31 - (i * (31 / 20)); // 31, ~29.45, ..., 0
+      const t = (now - ageDays * dayMs) / 1000;
+      fs.utimesSync(dirs[i]!, t, t);
+    }
+    c.pruneRetention({ maxCount: 20, maxAgeDays: 30 });
+    const remaining = fs.readdirSync(tmp).filter(n => !n.startsWith('_'));
+    expect(remaining.length).toBe(20);
+    // The 31-day-old entry (dirs[0]) must be the one pruned.
+    expect(fs.existsSync(dirs[0]!)).toBe(false);
+    expect(fs.existsSync(dirs[20]!)).toBe(true);
+  });
+
+  it('retention does NOT prune when count exceeds limit but all are recent (age alone does not trigger)', () => {
+    // 25 incidents all dated today → 0 pruned (none are >30d, even though 5 are over the 20-count limit).
     const c = startCrashCollector({ crashRoot: tmp, dmpStaging: path.join(tmp, '_dmp-staging'), appVersion: '0.3.0', electronVersion: '41.3.0' });
     for (let i = 0; i < 25; i++) c.recordIncident({ surface: 'main' });
     c.pruneRetention({ maxCount: 20, maxAgeDays: 30 });
     const remaining = fs.readdirSync(tmp).filter(n => !n.startsWith('_'));
-    expect(remaining.length).toBe(20);
+    expect(remaining.length).toBe(25);
+  });
+
+  it('retention does NOT prune when entries are old but count is under limit (count alone does not trigger)', () => {
+    // 5 incidents all 35 days old → 0 pruned (under the 20-count window, so kept regardless of age).
+    const c = startCrashCollector({ crashRoot: tmp, dmpStaging: path.join(tmp, '_dmp-staging'), appVersion: '0.3.0', electronVersion: '41.3.0' });
+    const dirs: string[] = [];
+    for (let i = 0; i < 5; i++) dirs.push(c.recordIncident({ surface: 'main' }));
+    const old = (Date.now() - 35 * 24 * 3600 * 1000) / 1000;
+    for (const d of dirs) fs.utimesSync(d, old, old);
+    c.pruneRetention({ maxCount: 20, maxAgeDays: 30 });
+    const remaining = fs.readdirSync(tmp).filter(n => !n.startsWith('_'));
+    expect(remaining.length).toBe(5);
   });
 });
