@@ -585,13 +585,13 @@ Net diff vs current `.github/workflows/release.yml`:
 
 **Surface vs disk-mechanics split (round-3 X3 dedupe).** The in-app surface that *triggers* uninstall-style cleanup (close-to-tray menu item, "Reset CCSM…" tray menu, post-uninstall toast, etc.) is owned by **frag-6-7 §6.8** with a numeric priority registry. Frag-11 §11.6 owns only the disk-removal *mechanics*: NSIS `customUnInstall`, `.deb` postrm, `.rpm` %preun, the canonical paths table, and the `ccsm-uninstall-helper.exe` orchestration shim. Cross-ref: see frag-6-7 §6.8 for the in-app surface registry; frag-11 §11.6 owns disk-removal mechanics on each OS.
 
-**Per-user install root (round-3 P0-1; r9 oneClick reconciled with working tip).** **[manager r9 lock: r8 packaging P0-2 — keep working-tip `oneClick: false` / `allowElevation: true` / `allowToChangeInstallationDirectory: true` for v0.3 freeze; assisted-mode installer wizard preserved; user can change install dir; no UX migration friction; updater compatible.]** electron-builder NSIS is configured with:
+**Per-machine install root (round-3 P0-1; r9 oneClick reconciled with working tip; r12 perMachine reconciled with PR #682).** **[manager r9 lock: r8 packaging P0-2 — keep working-tip `oneClick: false` / `allowElevation: true` / `allowToChangeInstallationDirectory: true` for v0.3 freeze; assisted-mode installer wizard preserved; user can change install dir; no UX migration friction; updater compatible.]** **[manager r12 lock (2026-05-01): reconcile `perMachine` to match production. PR #682 (T51) flipped `perMachine: true` because the daemon-at-boot story (HKLM Run key, Task Scheduler, system-wide service registration) requires a per-machine install. The earlier r3 P0-1 `perMachine: false` lock was made before T51 added boot-time daemon registration; it is superseded. Install root is now `%ProgramFiles%\ccsm\` (or user-redirected via the assisted-mode picker), with one-time UAC at install + update. User data still lives under per-user `%LOCALAPPDATA%\ccsm\` (paths table below) so multi-user boxes get one install but separate per-user state. Follow-up #1058a: revisit auto-update without UAC story (electron-updater under perMachine prompts on each upgrade) — not blocking v0.3 freeze.]** electron-builder NSIS is configured with:
 
 ```json
 "build": {
   "nsis": {
     "include": "build/installer.nsh",
-    "perMachine": false,
+    "perMachine": true,
     "oneClick": false,
     "allowElevation": true,
     "allowToChangeInstallationDirectory": true,
@@ -603,11 +603,11 @@ Net diff vs current `.github/workflows/release.yml`:
 Rationale for keeping `oneClick: false` (not flipping to `oneClick: true`):
 - **No UX migration friction**: working tip already ships the assisted-mode wizard; v0.3 keeps it. `oneClick: true` would silently strip the install-path picker, the finish page, and the "Run CCSM" checkbox — a UX regression on every existing user's upgrade.
 - **`allowToChangeInstallationDirectory: true` survives**: power users who keep `%LOCALAPPDATA%` on a smaller SSD can redirect to a different drive at install time. `oneClick: true` would have forced this off.
-- **`allowElevation: true` is harmless under `perMachine: false`**: when the chosen install dir is `%LOCALAPPDATA%` no UAC fires; if the user redirects to an elevation-required path (e.g. `D:\Program Files\ccsm`) UAC prompts and the install proceeds. The `perMachine: false` lock keeps the auto-update-without-UAC contract for the default install location.
+- **`allowElevation: true` under `perMachine: true`**: install/uninstall/upgrade trigger UAC once per operation (per-machine writes to `%ProgramFiles%\ccsm\` and HKLM). Routine app launches by the user do not prompt. The `perMachine: true` lock (r12, PR #682) is the gate that lets the daemon register a boot-time entry under HKLM Run / Task Scheduler so `ccsm-daemon` starts before any user logs in — required by the daemon-at-boot story.
 - **Updater-compatible**: electron-updater works identically with assisted-mode NSIS; the upgrade-in-place flow in §11.6.5 is unaffected.
 - **`customUnInstall` macro stays silent**: with `oneClick: false` the installer/uninstaller has its own first-class UI. The previously-proposed `MessageBox MB_YESNO` in §11.6.1 is dropped (see §11.6.1 below) — modal dialogs from inside `customUnInstall` are inappropriate for the assisted-mode uninstaller flow which already has its own progress UI; it would also auto-default to "No" under silent (`/S`) updater-driven uninstall paths, silently skipping user-data cleanup. The macro now performs the always-safe disk-removal mechanics (kill daemon, drop install root) and leaves opt-in user-data cleanup to a separate user-initiated flow (frag-6-7 §6.8 in-app "Reset CCSM…" surface).
 
-`perMachine: false` makes NSIS install to `%LOCALAPPDATA%\ccsm\` (i.e. `$LOCALAPPDATA\ccsm` in NSIS variables) under the invoking user's profile — no UAC prompt, no `Program Files` write, auto-update can write in-place from a non-elevated Electron process. This is the gate that satisfies frag-6-7 §7.4 T9/T14 "user-only ACL" claim: the install root inherits `%LOCALAPPDATA%`'s default ACL (owner = user, no Authenticated-Users read+execute). On macOS the per-user analog is `~/Library/Application Support/ccsm/`; on Linux `~/.local/share/ccsm/` (AppImage extraction target; `.deb`/`.rpm` install symlinks from the same root via `category=Utility`).
+`perMachine: true` (r12 lock above) makes NSIS install to `%ProgramFiles%\ccsm\` (i.e. `$INSTDIR` under `$PROGRAMFILES64`) for all users on the machine — one-time UAC at install/upgrade/uninstall, single binary tree, HKLM Run key + Task Scheduler entry that survives across user accounts. The frag-6-7 §7.4 T9/T14 "user-only ACL" claim is downgraded to apply only to per-user *data* paths (the table below), not the install root; the install root inherits `%ProgramFiles%`'s default ACL (Authenticated-Users read+execute, Administrators write). On macOS the per-machine analog is `/Applications/CCSM.app`; on Linux `.deb`/`.rpm` install to `/opt/ccsm/` with symlinks under `/usr/local/bin`. **Per-user data paths remain per-user across all platforms** (table below).
 
 **v0.3 daemon-owned paths** (canonical list — single source of truth; round-3 P0-2 reconciles every row to per-user OS-native roots, NOT `~/.ccsm/`):
 
@@ -654,7 +654,7 @@ Rationale for keeping `oneClick: false` (not flipping to `oneClick: true`):
 !macroend
 ```
 
-(`deleteAppDataOnUninstall: false` keeps electron-builder's automatic deletion off — user data survives uninstall by default, matching the §11.6 paths table "retained" cleanup default. The full `nsis` block including `oneClick: false / perMachine: false / allowElevation: true / allowToChangeInstallationDirectory: true` is shown above the paths table.)
+(`deleteAppDataOnUninstall: false` keeps electron-builder's automatic deletion off — user data survives uninstall by default, matching the §11.6 paths table "retained" cleanup default. The full `nsis` block including `oneClick: false / perMachine: true / allowElevation: true / allowToChangeInstallationDirectory: true` is shown above the paths table.)
 
 #### 11.6.2 macOS: no native uninstaller
 
@@ -826,7 +826,7 @@ Round-3-specific ownership notes (deltas on top of the round-2 cross-frag block 
 
 **Reclaimed / clarified by frag-11:**
 
-- **NSIS `perMachine: false` + per-user install root (round-3 P0-1)** — TAKEN. Sole owner. The choice spans every paragraph in this file that previously said "Program Files" or `$INSTDIR` semantics; all are now scoped to `$LOCALAPPDATA\ccsm\`.
+- **NSIS `perMachine: true` + per-machine install root (round-3 P0-1, superseded by r12 lock 2026-05-01)** — TAKEN. Sole owner. The original r3 lock chose `perMachine: false` + `$LOCALAPPDATA\ccsm\`; PR #682 (T51) flipped to `perMachine: true` + `$PROGRAMFILES64\ccsm\` for the daemon-at-boot story (HKLM Run / Task Scheduler). §11.6 reconciled to match production. Per-user *data* paths (`%LOCALAPPDATA%\ccsm\` for db / logs / crashes / secret) are unaffected by the install-root change.
 - **`ccsm_native.node` canonical name (round-3 P0-3)** — TAKEN. Frag-11 picks up the rename sweep across `pkg.assets`, `before-pack.cjs`, `after-pack.cjs`, signtool/codesign loops. Frag-3.5.1 §3.5.1.1 already specifies the addon export shape; frag-11 follows.
 - **Linux postrm `${HOME:-/root}` bug (round-3 P0-4)** — TAKEN. Replaced with `SUDO_USER`-gated `getent passwd` lookup; documented manual `rm -rf ~/.local/share/ccsm` fallback in §11.6.3.
 - **Uninstall-hygiene disk mechanics dedupe (round-3 X3)** — TAKEN by §11.6 with explicit cross-ref. The in-app surface (close-to-tray, "Reset CCSM…", post-uninstall toast, etc.) and its numeric-priority registry are owned by **frag-6-7 §6.8**; frag-11 §11.6 owns only the disk-removal mechanics (NSIS macro / postrm / paths table / shutdown helper).
