@@ -28,10 +28,26 @@ export interface CollectorOpts {
   electronVersion: string;
 }
 
+export interface PruneOpts {
+  /** Legacy global cap — prune entries that are BOTH older than `maxAgeDays`
+   *  AND beyond the `maxCount` newest. Phase 1 contract. Optional now. */
+  maxCount?: number;
+  /** Legacy global age threshold (days). Pairs with `maxCount`. */
+  maxAgeDays?: number;
+  /** Phase 5 — keep the N newest incidents per surface (by mtime). When
+   *  omitted, only the legacy global cap applies. Default at the call site
+   *  is 20 (`crashLogRetention.maxPerSurface`). */
+  maxPerSurface?: number;
+  /** Phase 5 — never prune an incident that has NO `.uploaded` marker AND
+   *  whose mtime is younger than this many days, so the user can still send
+   *  it via the Help-menu re-upload button (phase 4). Default 7. */
+  protectUnsentYoungerThanDays?: number;
+}
+
 export interface CrashCollector {
   recordIncident(input: IncidentInput): string;
   flush(): Promise<void>;
-  pruneRetention(opts: { maxCount: number; maxAgeDays: number }): void;
+  pruneRetention(opts: PruneOpts): void;
 }
 
 export function startCrashCollector(opts: CollectorOpts): CrashCollector {
@@ -132,25 +148,76 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
     return lines.join('\n') + '\n';
   }
 
-  function pruneRetention({ maxCount, maxAgeDays }: { maxCount: number; maxAgeDays: number }): void {
-    const cutoff = Date.now() - maxAgeDays * 24 * 3600 * 1000;
-    let entries: { name: string; mtime: number }[];
+  function pruneRetention(pruneOpts: PruneOpts): void {
+    const { maxCount, maxAgeDays, maxPerSurface, protectUnsentYoungerThanDays } = pruneOpts;
+
+    interface Entry { name: string; full: string; mtime: number; surface: string | null; protected: boolean }
+
+    let entries: Entry[];
     try {
       entries = fs.readdirSync(opts.crashRoot)
-        .filter(n => !n.startsWith('_'))
-        .map(n => ({ name: n, mtime: fs.statSync(path.join(opts.crashRoot, n)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime); // newest first
+        .filter(n => !n.startsWith('_') && !n.startsWith('.'))
+        .map<Entry | null>((n) => {
+          const full = path.join(opts.crashRoot, n);
+          let stat: fs.Stats;
+          try { stat = fs.statSync(full); } catch { return null; }
+          if (!stat.isDirectory()) return null;
+          let surface: string | null = null;
+          try {
+            const meta = JSON.parse(fs.readFileSync(path.join(full, 'meta.json'), 'utf8')) as { surface?: string };
+            surface = meta.surface ?? null;
+          } catch {
+            // Incident dir without meta — treat as unknown-surface; still subject to global rules.
+          }
+          const isUploaded = fs.existsSync(path.join(full, '.uploaded'));
+          let protectedByWindow = false;
+          if (protectUnsentYoungerThanDays != null && !isUploaded) {
+            const cutoff = Date.now() - protectUnsentYoungerThanDays * 24 * 3600 * 1000;
+            if (stat.mtimeMs >= cutoff) protectedByWindow = true;
+          }
+          return { name: n, full, mtime: stat.mtimeMs, surface, protected: protectedByWindow };
+        })
+        .filter((x): x is Entry => x !== null);
     } catch {
       return;
     }
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i]!;
-      const tooOld = e.mtime < cutoff;
-      const overCount = i >= maxCount;
-      // spec §10: keep last 20 OR 30 days, whichever is larger → prune only when BOTH conditions met
-      if (tooOld && overCount) {
-        try { fs.rmSync(path.join(opts.crashRoot, e.name), { recursive: true, force: true }); } catch {}
+
+    const toDelete = new Set<string>();
+
+    // Phase 1 / legacy global rule: prune entries that are BOTH older than
+    // maxAgeDays AND beyond the newest maxCount. Kept for backward-compat
+    // when callers don't pass maxPerSurface.
+    if (maxCount != null && maxAgeDays != null) {
+      const cutoff = Date.now() - maxAgeDays * 24 * 3600 * 1000;
+      const sorted = [...entries].sort((a, b) => b.mtime - a.mtime); // newest first
+      for (let i = 0; i < sorted.length; i++) {
+        const e = sorted[i]!;
+        if (i >= maxCount && e.mtime < cutoff && !e.protected) {
+          toDelete.add(e.full);
+        }
       }
+    }
+
+    // Phase 5 per-surface keep-N rule.
+    if (maxPerSurface != null) {
+      const bySurface = new Map<string, Entry[]>();
+      for (const e of entries) {
+        const key = e.surface ?? '__unknown__';
+        const arr = bySurface.get(key) ?? [];
+        arr.push(e);
+        bySurface.set(key, arr);
+      }
+      for (const arr of bySurface.values()) {
+        arr.sort((a, b) => b.mtime - a.mtime); // newest first
+        for (let i = maxPerSurface; i < arr.length; i++) {
+          const e = arr[i]!;
+          if (!e.protected) toDelete.add(e.full);
+        }
+      }
+    }
+
+    for (const full of toDelete) {
+      try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
   }
 

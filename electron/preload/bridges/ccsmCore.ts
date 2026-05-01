@@ -133,6 +133,22 @@ const api = {
     } | null> => ipcRenderer.invoke('crash:get-last-incident'),
     sendLastIncident: (): Promise<{ ok: true; eventId?: string } | { ok: false; reason: string }> =>
       ipcRenderer.invoke('crash:send-last-incident'),
+    /**
+     * Phase 5 — renderer error forwarder. Renderer hooks window.onerror /
+     * window.onunhandledrejection and forwards each event to the main-process
+     * collector, which records a `surface: 'renderer'` incident on disk
+     * (always) and forwards via Sentry (consent-gated, phase 4).
+     *
+     * The IPC is rate-limited at the main side (≤10/min per renderer process)
+     * so a tight error loop can't fill the disk. Excess events are silently
+     * dropped; the dropped count is folded into the next accepted incident.
+     */
+    reportRendererError: (report: {
+      error: { name?: string; message: string; stack?: string };
+      source: string;
+      url?: string;
+    }): Promise<{ accepted: boolean; reason?: string }> =>
+      ipcRenderer.invoke('crash:report-renderer-error', report),
   },
   onUpdateStatus: (handler: (s: UpdateStatus) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
