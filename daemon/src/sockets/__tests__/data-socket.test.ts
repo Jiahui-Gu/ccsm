@@ -51,9 +51,17 @@ describe('dataSocketPath', () => {
     expect(p).toBe(join('/run/user/1000/ccsm', 'ccsm-data.sock'));
   });
 
-  it('returns Windows named pipe regardless of runtimeRoot', () => {
+  it('returns Windows named pipe with userhash suffix regardless of runtimeRoot', () => {
     const p = dataSocketPath('C:\\Users\\me\\AppData\\Local\\ccsm\\run', 'win32');
-    expect(p).toBe('\\\\.\\pipe\\ccsm-data');
+    expect(p).toMatch(/^\\\\\.\\pipe\\ccsm-data-[0-9a-f]{8}$/);
+  });
+
+  it('uses the supplied userhash override on Windows (anti-collision: distinct users → distinct paths)', () => {
+    const a = dataSocketPath('C:\\anywhere', 'win32', 'aaaaaaaa');
+    const b = dataSocketPath('C:\\anywhere', 'win32', 'bbbbbbbb');
+    expect(a).toBe('\\\\.\\pipe\\ccsm-data-aaaaaaaa');
+    expect(b).toBe('\\\\.\\pipe\\ccsm-data-bbbbbbbb');
+    expect(a).not.toBe(b);
   });
 });
 

@@ -16,7 +16,8 @@
 //   Linux: ~/.local/share/ccsm
 
 import { mkdirSync, statSync, accessSync, constants as fsConstants } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname, userInfo } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 function resolveDataRoot(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string {
@@ -97,4 +98,30 @@ export function resolveRuntimeRoot(opts: ResolveRuntimeRootOptions = {}): string
   }
 
   return runtimeRoot;
+}
+
+/**
+ * 8-hex-char per-user namespace tag for socket / pipe paths.
+ *
+ * Spec: docs/superpowers/specs/v0.3-design.md L267 + L272 and
+ *       frag-3.4.1-envelope-hardening.md L237 mandate `\\.\pipe\ccsm-data-<userhash>`
+ *       on Windows so multi-user hosts (Citrix / RDS / shared workstations)
+ *       cannot collide on bind. Without the suffix, an unprivileged second
+ *       user could win the bind race against the daemon, leaving the
+ *       §3.4.1.g HMAC handshake as the only imposter defense.
+ *
+ * Definition: lowercase first 8 hex chars of SHA-256(`<username>@<hostname>`).
+ * Pure / deterministic / no I/O. Same OS user on the same host always yields
+ * the same value; distinct usernames or hostnames yield (overwhelmingly)
+ * distinct values.
+ *
+ * Sibling helper to `resolveRuntimeRoot()` so T14 (control-socket) and T15
+ * (data-socket) can share a single source of truth — T14's existing private
+ * implementation can be refactored later to import this.
+ */
+export function userHash(opts: { username?: string; host?: string } = {}): string {
+  const username = opts.username ?? userInfo().username;
+  const host = opts.host ?? hostname();
+  const digest = createHash('sha256').update(`${username}@${host}`).digest('hex');
+  return digest.slice(0, 8).toLowerCase();
 }

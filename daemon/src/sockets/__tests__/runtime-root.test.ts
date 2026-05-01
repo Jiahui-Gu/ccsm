@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, sep } from 'node:path';
-import { resolveRuntimeRoot } from '../runtime-root.js';
+import { resolveRuntimeRoot, userHash } from '../runtime-root.js';
 
 let scratch: string;
 
@@ -161,5 +161,40 @@ describe('resolveRuntimeRoot — mkdir behavior', () => {
       ensure: false,
     });
     expect(existsSync(root)).toBe(false);
+  });
+});
+
+describe('userHash', () => {
+  it('returns 8 lowercase hex chars', () => {
+    const h = userHash({ username: 'alice', host: 'workstation' });
+    expect(h).toMatch(/^[0-9a-f]{8}$/);
+    expect(h.length).toBe(8);
+  });
+
+  it('is deterministic for the same (username, host)', () => {
+    const a = userHash({ username: 'alice', host: 'workstation' });
+    const b = userHash({ username: 'alice', host: 'workstation' });
+    const c = userHash({ username: 'alice', host: 'workstation' });
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  it('produces distinct hashes for distinct usernames on the same host (anti-collision)', () => {
+    const alice = userHash({ username: 'alice', host: 'shared-rds' });
+    const bob = userHash({ username: 'bob', host: 'shared-rds' });
+    expect(alice).not.toBe(bob);
+  });
+
+  it('produces distinct hashes for the same username on distinct hosts', () => {
+    const home = userHash({ username: 'alice', host: 'home-pc' });
+    const work = userHash({ username: 'alice', host: 'work-pc' });
+    expect(home).not.toBe(work);
+  });
+
+  it('falls back to os.userInfo()/hostname() when called with no args', () => {
+    const h = userHash();
+    expect(h).toMatch(/^[0-9a-f]{8}$/);
+    // Same call twice — process identity is fixed for the test run.
+    expect(userHash()).toBe(h);
   });
 });

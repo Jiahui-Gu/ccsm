@@ -5,7 +5,7 @@
 // Spec citations:
 //   - docs/superpowers/specs/v0.3-design.md §3.4.1.h (two-socket topology;
 //     data-socket = `<runtimeRoot>/ccsm-data.sock` on POSIX,
-//     `\\.\pipe\ccsm-data` on Windows).
+//     `\\.\pipe\ccsm-data-<userhash>` on Windows — see L267+L272).
 //   - frag-3.4.1 §3.4.1.a "Pre-accept rate cap (round-2 security T15)":
 //     `MAX_ACCEPT_PER_SEC = 50`; excess fails with EAGAIN + once-per-min log.
 //   - frag-3.4.1 §3.4.1.h: peer-cred + DACL/file-ACL + accept-rate-cap +
@@ -27,6 +27,7 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { chmodSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { userHash } from './runtime-root.js';
 
 /** Per spec frag-3.4.1 §3.4.1.a: 50 accepts per rolling 1s window. */
 export const MAX_ACCEPT_PER_SEC = 50;
@@ -90,15 +91,20 @@ export interface DataSocketServer {
 /**
  * Compute the OS-native data-socket path.
  *   - POSIX:  `<runtimeRoot>/ccsm-data.sock`
- *   - Win32:  `\\.\pipe\ccsm-data`  (runtimeRoot is a notional anchor only;
- *             the named-pipe namespace is global per-user)
+ *   - Win32:  `\\.\pipe\ccsm-data-<userhash>`  (runtimeRoot is a notional
+ *             anchor only; the named-pipe namespace is global per machine,
+ *             so the userhash suffix prevents bind collisions on multi-user
+ *             hosts — Citrix / RDS / shared workstations. Spec:
+ *             v0.3-design.md L267+L272, frag-3.4.1 L237.)
  */
 export function dataSocketPath(
   runtimeRoot: string,
   platform: NodeJS.Platform = process.platform,
+  hashOverride?: string,
 ): string {
   if (platform === 'win32') {
-    return '\\\\.\\pipe\\ccsm-data';
+    const tag = hashOverride ?? userHash();
+    return `\\\\.\\pipe\\ccsm-data-${tag}`;
   }
   return join(runtimeRoot, 'ccsm-data.sock');
 }
