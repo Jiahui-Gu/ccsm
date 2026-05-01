@@ -1,0 +1,11 @@
+untrusted comment: PLACEHOLDER — not a real ccsm minisign public key
+RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+# This file is a PLACEHOLDER. The real ccsm release-signing minisign public
+# key will be generated and committed during the v0.3 ship-day ops task
+# (see release-keys/README.md "First-time keypair generation"). Until then,
+# any minisign signature verified against this key will FAIL — which is the
+# intended state, because the matching MINISIGN_PRIVATE_KEY repo secret is
+# also unprovisioned.
+#
+# Do NOT replace this file by hand outside the documented rotation runbook.
