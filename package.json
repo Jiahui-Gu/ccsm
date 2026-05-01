@@ -27,6 +27,7 @@
     "build:daemon": "node -e \"require('fs').rmSync('daemon/dist-daemon',{recursive:true,force:true})\" && tsc -p daemon/tsconfig.json && node -e \"require('fs').writeFileSync('daemon/dist-daemon/package.json',JSON.stringify({type:'module'}))\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json && tsc --noEmit -p daemon/tsconfig.json",
     "lint": "eslint . --ext .ts,.tsx",
+    "lint:fixtures": "tsx scripts/lint-fixtures.ts",
     "test": "vitest run",
     "check:electron-pin": "node scripts/check-electron-pin.cjs",
     "pretest": "node scripts/check-electron-pin.cjs",
@@ -106,6 +107,7 @@
     "eslint": "^9.17.0",
     "eslint-plugin-react": "^7.37.2",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "glob": "^10.5.0",
     "html-webpack-plugin": "^5.6.3",
     "jsdom": "^29.0.2",
     "nodemon": "^3.1.14",
@@ -139,10 +141,22 @@
     "afterPack": "scripts/after-pack.cjs",
     "afterSign": "scripts/after-sign.cjs",
     "extraResources": [
-      { "from": "daemon/native-staged", "to": "daemon/native" },
-      { "from": "daemon/sdk-staged", "to": "daemon/node_modules/@anthropic-ai/claude-agent-sdk" },
-      { "from": "daemon/deps-staged", "to": "daemon/node_modules" },
-      { "from": "node_modules/@anthropic-ai/claude-agent-sdk", "to": "sdk/claude-agent-sdk" }
+      {
+        "from": "daemon/native-staged",
+        "to": "daemon/native"
+      },
+      {
+        "from": "daemon/sdk-staged",
+        "to": "daemon/node_modules/@anthropic-ai/claude-agent-sdk"
+      },
+      {
+        "from": "daemon/deps-staged",
+        "to": "daemon/node_modules"
+      },
+      {
+        "from": "node_modules/@anthropic-ai/claude-agent-sdk",
+        "to": "sdk/claude-agent-sdk"
+      }
     ],
     "files": [
       "dist/**/*",
@@ -175,8 +189,14 @@
       "icon": "build/icon.ico",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
       "extraResources": [
-        { "from": "daemon/dist/ccsm-daemon-staged.exe", "to": "daemon/ccsm-daemon.exe" },
-        { "from": "daemon/dist/ccsm-uninstall-helper.exe", "to": "daemon/ccsm-uninstall-helper.exe" }
+        {
+          "from": "daemon/dist/ccsm-daemon-staged.exe",
+          "to": "daemon/ccsm-daemon.exe"
+        },
+        {
+          "from": "daemon/dist/ccsm-uninstall-helper.exe",
+          "to": "daemon/ccsm-uninstall-helper.exe"
+        }
       ]
     },
     "nsis": {
@@ -212,7 +232,10 @@
       "gatekeeperAssess": false,
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "extraResources": [
-        { "from": "daemon/dist/ccsm-daemon-staged", "to": "daemon/ccsm-daemon" }
+        {
+          "from": "daemon/dist/ccsm-daemon-staged",
+          "to": "daemon/ccsm-daemon"
+        }
       ]
     },
     "dmg": {
@@ -245,7 +268,10 @@
       "icon": "build/icon.png",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
       "extraResources": [
-        { "from": "daemon/dist/ccsm-daemon-staged", "to": "daemon/ccsm-daemon" }
+        {
+          "from": "daemon/dist/ccsm-daemon-staged",
+          "to": "daemon/ccsm-daemon"
+        }
       ]
     }
   }
