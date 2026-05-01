@@ -9,6 +9,13 @@
 //   per-method registration + envelope HMAC + hello-required gates and is
 //   declared by the data-socket transport).
 //
+// T24 (frag-6-7 §6.3 ack-source clarification): every successful reply carries
+// `ack_source: 'handler' | 'dispatcher'` so the transport (T14) can disambiguate
+// handler-result acks from streaming-init dispatcher acks. `dispatch()` (unary)
+// fills `'handler'` on success; `dispatchStreamingInit()` fills `'dispatcher'`.
+// Existing handlers are untouched — the field is set by the dispatch entry
+// point used, not the handler.
+//
 // Spec citations:
 //   - docs/superpowers/specs/v0.3-fragments/frag-3.4.1-envelope-hardening.md
 //     §3.4.1.h (control-socket: `/healthz`, `/stats`, `daemon.hello`,
@@ -64,9 +71,44 @@ export interface DispatcherError {
   readonly message: string;
 }
 
+/**
+ * Source of a successful reply envelope (T24, frag-6-7 §6.3 ack-semantics
+ * disambiguation).
+ *
+ *   - `'handler'`    — the registered handler ran to completion and its
+ *                      return value populates `DispatchOk.value`. This is the
+ *                      ack a unary RPC caller waits for.
+ *   - `'dispatcher'` — the dispatcher accepted the request and started a
+ *                      streaming response, but no handler return value exists
+ *                      yet. The transport (T14) emits this as the
+ *                      streaming-init ack so the client knows the request
+ *                      reached the dispatcher; subsequent stream frames carry
+ *                      the actual data, and a terminal `'handler'`-sourced
+ *                      reply closes the stream.
+ *
+ * The field is filled automatically by the dispatch entry point used; handlers
+ * never set it themselves.
+ */
+export type AckSource = 'handler' | 'dispatcher';
+
+/** All legal `ack_source` values. Exported so schema validators / tests can
+ *  enumerate without re-declaring the union. */
+export const ACK_SOURCES: readonly AckSource[] = ['handler', 'dispatcher'] as const;
+
+/** Type-guard for envelope-level schema validation (T5 envelope adapter / T14
+ *  control-socket reply serialiser). Returns true for the two canonical
+ *  values, false otherwise. */
+export function isAckSource(v: unknown): v is AckSource {
+  return v === 'handler' || v === 'dispatcher';
+}
+
 export interface DispatchOk {
   readonly ok: true;
   readonly value: unknown;
+  /** Source of this reply envelope — see {@link AckSource}. Always present;
+   *  unary `dispatch()` returns `'handler'`, `dispatchStreamingInit()` returns
+   *  `'dispatcher'`. */
+  readonly ack_source: AckSource;
 }
 
 export interface DispatchErr {
@@ -245,7 +287,9 @@ export class Dispatcher {
 
     try {
       const value = await handler(req, ctx);
-      return { ok: true, value };
+      // T24: handler-completion path — the registered handler returned a
+      // value, so the reply envelope's ack source is `'handler'`.
+      return { ok: true, value, ack_source: 'handler' };
     } catch (err) {
       if (err instanceof NotImplementedError) {
         return {
@@ -259,5 +303,51 @@ export class Dispatcher {
       }
       throw err;
     }
+  }
+
+  /**
+   * Streaming-init dispatch: announce that a streaming RPC has been received
+   * and routed, BEFORE any handler return value exists (T24, frag-6-7 §6.3).
+   *
+   * Used by the transport (T14) when the caller's request opens a streaming
+   * response: the transport emits this `'dispatcher'`-sourced reply
+   * immediately so the client can begin receiving stream frames; the eventual
+   * terminal reply (sent when the handler completes) carries
+   * `ack_source: 'handler'` via the regular `dispatch()` path.
+   *
+   * The same allowlist + UNKNOWN_METHOD checks apply as `dispatch()` — the
+   * dispatcher is the single decider on whether a method may be invoked at
+   * all, regardless of unary vs. streaming response shape. The handler is
+   * NOT invoked here; only the routing decision is made.
+   *
+   * Returns:
+   *   - `{ ok: true, value: undefined, ack_source: 'dispatcher' }` on a
+   *     routable method (handler exists). The transport serialises this as
+   *     the streaming-init ack envelope; `value` is `undefined` because no
+   *     handler return value exists yet (the stream is the value).
+   *   - `{ ok: false, error: NOT_ALLOWED | UNKNOWN_METHOD }` on rejection.
+   */
+  dispatchStreamingInit(method: string): DispatchResult {
+    if (!isSupervisorRpc(method)) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_ALLOWED',
+          method,
+          message: `RPC ${JSON.stringify(method)} is not on the control-socket allowlist (SUPERVISOR_RPCS, §3.4.1.h)`,
+        },
+      };
+    }
+    if (!this.#handlers.has(method)) {
+      return {
+        ok: false,
+        error: {
+          code: 'UNKNOWN_METHOD',
+          method,
+          message: `no handler registered for control-socket RPC ${method}`,
+        },
+      };
+    }
+    return { ok: true, value: undefined, ack_source: 'dispatcher' };
   }
 }
