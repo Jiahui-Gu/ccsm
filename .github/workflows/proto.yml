@@ -1,0 +1,31 @@
+name: proto
+on:
+  pull_request:
+    paths:
+      - 'proto/**'
+      - 'package.json'
+      - '.github/workflows/proto.yml'
+jobs:
+  buf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npx buf lint
+        working-directory: proto
+      - name: buf breaking (skipped if proto/ absent on baseline)
+        working-directory: proto
+        run: |
+          if git -C .. cat-file -e "origin/working:proto/buf.yaml" 2>/dev/null; then
+            npx buf breaking --against '../.git#branch=origin/working,subdir=proto'
+          else
+            echo "proto/ not yet on origin/working; skipping breaking check (bootstrap PR)"
+          fi
+      - run: npx buf generate
+        working-directory: proto
+      - run: git diff --exit-code gen/

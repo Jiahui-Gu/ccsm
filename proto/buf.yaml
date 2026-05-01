@@ -1,0 +1,11 @@
+version: v2
+modules:
+  - path: .
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX  # we use ccsm.v1, not ccsm.v1alpha

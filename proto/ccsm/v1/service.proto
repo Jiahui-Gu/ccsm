@@ -1,0 +1,4 @@
+syntax = "proto3";
+package ccsm.v1;
+// umbrella service. RPCs added per-domain in T02.
+service CcsmService {}
