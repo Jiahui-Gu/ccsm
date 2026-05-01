@@ -163,6 +163,23 @@ jobs:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
+      # Phase 3 crash observability (spec §5.4 / §6, plan Task 10).
+      # Symbol upload to the three per-surface Sentry projects. The
+      # afterAllArtifactBuild hook already fires inside electron-builder
+      # above; this step is a belt-and-suspenders re-run so a workflow
+      # change to skip the hook (e.g. `--publish=onTag`) doesn't silently
+      # drop symbol uploads. Skipped when SENTRY_AUTH_TOKEN is unset
+      # (PR / fork builds, dry-runs without the release secret plugged in).
+      - name: Upload symbols to Sentry
+        if: env.SENTRY_AUTH_TOKEN != ''
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT_RENDERER: ${{ vars.SENTRY_PROJECT_RENDERER }}
+          SENTRY_PROJECT_MAIN: ${{ vars.SENTRY_PROJECT_MAIN }}
+          SENTRY_PROJECT_DAEMON: ${{ vars.SENTRY_PROJECT_DAEMON }}
+        run: node scripts/sentry-upload-symbols.cjs
+
       - name: Upload artifacts to workflow run
         uses: actions/upload-artifact@v4
         with:

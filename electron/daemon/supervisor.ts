@@ -57,6 +57,26 @@ export function attachCrashCapture(handle: DaemonChildHandle, collector: CrashCo
       lastHealthzAgoMs,
       markerPath,
     });
+    // Phase 3 crash observability (spec §5.2 / §10, plan Task 11):
+    // adopt the daemon native-fault marker (`<bootNonce>-native.dmp`)
+    // written by daemon/src/crash/native-handlers.ts into the umbrella
+    // incident dir as `backend.dmp`. Best-effort — abnormal-exit paths
+    // (signal != null OR exitCode != 0 && != 70) get adopted; orderly
+    // exit (code === 0) skips the scan since no native fault could
+    // produce a marker on a clean shutdown.
+    const abnormal = signal != null || (code != null && code !== 0 && code !== 70);
+    if (abnormal && handle.bootNonce) {
+      const nativeDmp = path.join(handle.runtimeRoot, 'crash', `${handle.bootNonce}-native.dmp`);
+      if (fs.existsSync(nativeDmp)) {
+        try {
+          fs.renameSync(nativeDmp, path.join(dir, 'backend.dmp'));
+          // eslint-disable-next-line no-console
+          console.info(`[daemon-crash] adopted backend.dmp at ${path.join(dir, 'backend.dmp')}`);
+        } catch {
+          /* swallow — adoption is best-effort */
+        }
+      }
+    }
     const incidentId = path.basename(dir).split('-').pop()!;
     // markerPresent: true means the daemon-marker.json file exists in the
     // incident dir (i.e. collector successfully adopted the marker file
