@@ -808,7 +808,7 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
   user-authored aria-hidden divs.
 */
 [data-state][aria-hidden="true"] {
-  pointer-events: none;
+  pointer-events: none !important;
 }
 
 /*
