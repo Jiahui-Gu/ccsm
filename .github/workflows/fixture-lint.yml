@@ -1,0 +1,21 @@
+name: fixture-lint
+on:
+  pull_request:
+    paths:
+      - '**/__fixtures__/**'
+      - '**/*.fixture.json'
+      - '**/test/fixtures/**'
+      - '**/__tests__/**/fixtures/**'
+      - 'scripts/lint-fixtures.ts'
+      - 'scripts/__test-uuids.txt'
+      - '.github/workflows/fixture-lint.yml'
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run lint:fixtures
