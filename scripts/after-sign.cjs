@@ -5,7 +5,10 @@ const path = require('path');
 module.exports = async function afterSign(context) {
   const platform = context.electronPlatformName;
   if (platform === 'darwin' || platform === 'mas') {
-    const signMac = require(path.join(__dirname, 'sign-macos.cjs'));
+    // sign-macos.cjs uses `exports.signMacApp` / `exports.default` rather
+    // than `module.exports = fn`, so the bare module is `{ signMacApp,
+    // default, ... }` — pick the named export.
+    const signMac = require(path.join(__dirname, 'sign-macos.cjs')).signMacApp;
     await signMac(context);
   }
   if (platform === 'win32') {
