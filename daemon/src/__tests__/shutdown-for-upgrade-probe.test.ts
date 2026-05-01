@@ -151,10 +151,10 @@ describe('T82 daemon.shutdownForUpgrade ack-timeout probe', () => {
   // Assertion 1: ACK arrives within deadline budget (T24 handler-ack).
   // -------------------------------------------------------------------------
   it('ack arrives within 5 s deadline budget with ack_source=handler', async () => {
-    const { dispatch } = wire({ runShutdownSequence: async () => undefined });
+    const wired = wire({ runShutdownSequence: async () => undefined });
 
     const startedAt = Date.now();
-    const reply = await dispatch();
+    const reply = await wired.dispatch();
     const ackElapsedMs = Date.now() - startedAt;
 
     expect(ackElapsedMs).toBeLessThan(ACK_DEADLINE_MS);
@@ -170,6 +170,12 @@ describe('T82 daemon.shutdownForUpgrade ack-timeout probe', () => {
       accepted: true,
       reason: SHUTDOWN_MARKER_REASON_UPGRADE,
     });
+
+    // Wait for the post-ack side-effect chain (marker → drain → unlock
+    // → exit) to flush before returning. Otherwise `afterEach` races the
+    // microtask-scheduled marker write and `rm` fails with ENOTEMPTY on
+    // fast Linux runners.
+    await pollUntil(() => wired.exitInvocations.length > 0);
   });
 
   // -------------------------------------------------------------------------

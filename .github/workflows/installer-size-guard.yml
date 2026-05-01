@@ -61,6 +61,14 @@ jobs:
       - name: Install deps
         run: npm ci --legacy-peer-deps
 
+      - name: Build web + electron
+        # Mirrors release.yml — electron-builder packs `dist/**/*` from
+        # `package.json#build.files`, so the TS→JS compile (`tsc -p
+        # tsconfig.electron.json`) and the renderer webpack bundle MUST
+        # run before the pack step, otherwise `app.asar` is missing
+        # `dist/electron/main.js` and electron-builder fails the pack.
+        run: npm run build
+
       - name: Build installer (${{ matrix.platform }})
         run: npx electron-builder --${{ matrix.platform }} --publish never
         env:
