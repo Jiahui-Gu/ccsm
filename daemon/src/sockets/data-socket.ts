@@ -75,6 +75,15 @@ export interface CreateDataSocketServerOptions {
 
   /** Override for tests — defaults to {@link MAX_ACCEPT_PER_SEC}. */
   readonly maxAcceptPerSec?: number;
+
+  /** Override the auto-derived socket path. When provided, we trust the
+   *  caller (test harness, alternative deployment) and skip both the
+   *  POSIX `<runtimeRoot>/ccsm-data.sock` derivation and the Windows
+   *  `\\.\pipe\ccsm-data-<userhash>` derivation. Mirrors the
+   *  `socketPath` override on `createControlSocketServer` (T14) so tests
+   *  can inject a unique address per run and avoid named-pipe namespace
+   *  collisions on consecutive boots. */
+  readonly socketPath?: string;
 }
 
 export interface DataSocketServer {
@@ -120,7 +129,7 @@ export function createDataSocketServer(
 ): DataSocketServer {
   const platform = process.platform;
   const isWindows = platform === 'win32';
-  const path = dataSocketPath(opts.runtimeRoot, platform);
+  const path = opts.socketPath ?? dataSocketPath(opts.runtimeRoot, platform);
   const now = opts.now ?? Date.now;
   const maxAccept = opts.maxAcceptPerSec ?? MAX_ACCEPT_PER_SEC;
   const logger = opts.logger ?? {

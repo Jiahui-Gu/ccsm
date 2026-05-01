@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath } from 'node:path';
 import { Buffer } from 'node:buffer';
 import { createHmac, randomBytes } from 'node:crypto';
+import { createConnection } from 'node:net';
 
 // T73 — daemon-boot+hello e2e probe imports. The probe spawns the real
 // `daemon/src/index.ts` to assert the boot supervisor signal (ready
@@ -478,9 +479,26 @@ describe('T73 — daemon-boot + hello probe (e2e harness fold)', () => {
     // stdout/stderr. A real spawn (NOT the fake-daemon.cjs smoke) is what
     // makes this an e2e probe — any regression in `daemon/src/index.ts`
     // (e.g. an import crash before pino logs the boot line) surfaces here.
+    // Phase 0: per-test unique socket env. The daemon now binds the control
+    // + data sockets at boot (Task #1072 wiring of `controlSocket.listen()`),
+    // so a parallel CCSM install on the dev box would otherwise win the
+    // canonical pipe and crash this child with EADDRINUSE. Test-only env
+    // overrides give us a fresh address per run.
+    const t73Uniq = `t73-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const t73CtrlPath = process.platform === 'win32'
+      ? `\\\\.\\pipe\\ccsm-control-test-${t73Uniq}`
+      : join(tmpdir(), `ccsm-control-${t73Uniq}.sock`);
+    const t73DataPath = process.platform === 'win32'
+      ? `\\\\.\\pipe\\ccsm-data-test-${t73Uniq}`
+      : join(tmpdir(), `ccsm-data-${t73Uniq}.sock`);
+
     const handle = bootDaemon({
       entry: DAEMON_ENTRY,
       bootTimeoutMs: 15_000,
+      env: {
+        CCSM_CONTROL_SOCKET_PATH: t73CtrlPath,
+        CCSM_DATA_SOCKET_PATH: t73DataPath,
+      },
     });
 
     try {
@@ -1557,4 +1575,211 @@ describe('T84 — modal coexistence probe (e2e harness fold)', () => {
     });
     expect(healthAfterApex).toEqual({ allowed: true });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Task #1072 — controlSocket.listen() wire smoke
+//
+// Asserted invariants:
+//   1. The real daemon (`tsx daemon/src/index.ts`) emits BOTH the
+//      `daemon.boot.control-socket-listening` AND
+//      `daemon.boot.data-socket-listening` JSON-log events before the
+//      canonical "daemon shell booted" ready marker.
+//   2. The control-socket address logged is reachable: a `net.connect()` to
+//      the address resolves with a `connect` event (no ECONNREFUSED / ENOENT).
+//      The placeholder onConnection destroys the socket immediately — that's
+//      fine; the smoke is "did the OS listener bind", not "did an envelope
+//      adapter route /healthz". The latter is T-future.
+//   3. Same for the data-socket address.
+//
+// Why this can't yet round-trip /healthz:
+//   The envelope adapter that would frame Duplex bytes → `decodeFrame` →
+//   dispatcher is a separate slice (T-future). This PR's contract is
+//   listener-bound; routing lands separately.
+//
+// Reverse-verify: see PR body — temporarily commenting out the
+//   `await controlSocket.listen()` call makes invariant 2 fail with
+//   ECONNREFUSED (POSIX) / ENOENT (Windows pipe).
+// ---------------------------------------------------------------------------
+describe('Task #1072 — controlSocket.listen() wire smoke', () => {
+  const isWin = process.platform === 'win32';
+
+  it('binds both control + data sockets and logs `bound` before the ready marker', async () => {
+    const tmpRuntime = mkdtempSync(join(tmpdir(), 't1072-runtime-'));
+    tempDirs.push(tmpRuntime);
+
+    // Force the daemon's `resolveRuntimeRoot()` onto a deterministic, isolated
+    // path so a parallel daemon process on the dev box can't collide. The
+    // resolver reads:
+    //   - linux  : XDG_RUNTIME_DIR (preferred) → <runtimeRoot> = <env>/ccsm
+    //   - macOS  : <dataRoot>/run where dataRoot uses HOME-derived path
+    //   - win32  : <LOCALAPPDATA>/ccsm/run
+    // The simplest cross-platform isolation: point both XDG_RUNTIME_DIR and
+    // LOCALAPPDATA at our tmpRuntime; the unused one is a no-op. We pre-mkdir
+    // the LOCALAPPDATA `ccsm/run` subdir so the `mkdirpPrivate` inside the
+    // resolver finds it cheaply.
+    //
+    // Additionally, force unique socket paths via the test-only env overrides
+    // (`CCSM_CONTROL_SOCKET_PATH` / `CCSM_DATA_SOCKET_PATH`). Windows named
+    // pipes live in a single global namespace per user, so consecutive test
+    // runs without unique names would collide on EADDRINUSE before the OS
+    // recycles the prior pipe handle. POSIX uses paths under tmpRuntime so
+    // the same env overrides resolve to a per-run unique inode.
+    const uniq = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ctrlPath = isWin
+      ? `\\\\.\\pipe\\ccsm-control-test-${uniq}`
+      : join(tmpRuntime, `ccsm-control-${uniq}.sock`);
+    const dataPath = isWin
+      ? `\\\\.\\pipe\\ccsm-data-test-${uniq}`
+      : join(tmpRuntime, `ccsm-data-${uniq}.sock`);
+
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      XDG_RUNTIME_DIR: tmpRuntime,
+      LOCALAPPDATA: tmpRuntime,
+      // Keep the crash-handler runtime root inside our scratch as well so a
+      // crash mid-test doesn't pollute the user's real ~/.ccsm.
+      CCSM_RUNTIME_ROOT: join(tmpRuntime, 'ccsm-crash'),
+      CCSM_CONTROL_SOCKET_PATH: ctrlPath,
+      CCSM_DATA_SOCKET_PATH: dataPath,
+    };
+
+    const stdoutLines: string[] = [];
+    const stderrLines: string[] = [];
+    let controlAddress: string | undefined;
+    let dataAddress: string | undefined;
+    let bootedAt = -1;
+
+    const child = spawn(
+      process.execPath,
+      // tsx is a dev dep of the repo; use the local .bin shim so the
+      // spawn does not depend on a global install.
+      [resolvePath(__dirname, '..', 'node_modules', 'tsx', 'dist', 'cli.mjs'), DAEMON_ENTRY],
+      {
+        cwd: resolvePath(__dirname, '..'),
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+
+    const ready = new Promise<void>((resolve, reject) => {
+      const onLine = (chunk: string): void => {
+        const lines = chunk.split(/\r?\n/);
+        for (const line of lines) {
+          if (!line) continue;
+          // Pino emits one JSON object per line on stdout; parse defensively
+          // (some lines may be tsx warnings, ignore those).
+          let parsed: Record<string, unknown> | undefined;
+          try {
+            parsed = JSON.parse(line) as Record<string, unknown>;
+          } catch {
+            // non-JSON (tsx loader noise, etc.); skip
+          }
+          if (parsed && typeof parsed.event === 'string') {
+            if (parsed.event === 'daemon.boot.control-socket-listening') {
+              controlAddress = String(parsed.address);
+            } else if (parsed.event === 'daemon.boot.data-socket-listening') {
+              dataAddress = String(parsed.address);
+            } else if (parsed.event === 'daemon.boot') {
+              bootedAt = stdoutLines.length;
+              resolve();
+            }
+          }
+        }
+      };
+      child.stdout!.setEncoding('utf8');
+      child.stdout!.on('data', (s: string) => {
+        stdoutLines.push(s);
+        onLine(s);
+      });
+      child.stderr!.setEncoding('utf8');
+      child.stderr!.on('data', (s: string) => {
+        stderrLines.push(s);
+        // Some pino async-destinations route through stderr; sniff there too.
+        onLine(s);
+      });
+      child.once('exit', (code, signal) => {
+        if (controlAddress === undefined || dataAddress === undefined || bootedAt < 0) {
+          reject(
+            new Error(
+              `daemon exited (code=${code} signal=${signal}) before all events:\n` +
+                `  control=${controlAddress}\n  data=${dataAddress}\n  bootedAt=${bootedAt}\n` +
+                `  stdout:\n${stdoutLines.join('')}\n  stderr:\n${stderrLines.join('')}`,
+            ),
+          );
+        }
+      });
+      const timer = setTimeout(() => {
+        reject(
+          new Error(
+            `boot timed out (15s); control=${controlAddress} data=${dataAddress}\n` +
+              `stdout:\n${stdoutLines.join('')}\nstderr:\n${stderrLines.join('')}`,
+          ),
+        );
+      }, 15_000);
+      // Clear the timer once ready resolves — chained off the same promise
+      // so we don't leak the handle if reject paths win.
+      void Promise.resolve()
+        .then(async () => {
+          await new Promise<void>((r) => {
+            const tick = setInterval(() => {
+              if (bootedAt >= 0) {
+                clearInterval(tick);
+                r();
+              }
+            }, 25);
+          });
+        })
+        .finally(() => clearTimeout(timer));
+    });
+
+    try {
+      await ready;
+
+      // Invariant 1 — both bound events fired before the ready marker.
+      expect(controlAddress, 'control-socket address logged').toBeDefined();
+      expect(dataAddress, 'data-socket address logged').toBeDefined();
+
+      // Invariant 2 — `net.connect` to control reaches a listener.
+      await new Promise<void>((res, rej) => {
+        const c = createConnection(controlAddress!);
+        c.once('connect', () => {
+          c.destroy();
+          res();
+        });
+        c.once('error', (err) => rej(err));
+        setTimeout(() => rej(new Error('control connect timed out')), 3_000);
+      });
+
+      // Invariant 3 — same for data-socket.
+      await new Promise<void>((res, rej) => {
+        const c = createConnection(dataAddress!);
+        c.once('connect', () => {
+          c.destroy();
+          res();
+        });
+        c.once('error', (err) => rej(err));
+        setTimeout(() => rej(new Error('data connect timed out')), 3_000);
+      });
+    } finally {
+      // Best-effort tear down. SIGTERM on POSIX runs the shutdown sequence;
+      // on Windows kill() maps to TerminateProcess so the listener gets
+      // ripped away — which is fine, the OS reclaims the pipe.
+      try {
+        child.kill(isWin ? undefined : 'SIGTERM');
+      } catch {
+        // ignore
+      }
+      // Wait for exit so the next test does not race a still-running daemon
+      // on the same scratch socket directory.
+      await new Promise<void>((res) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          res();
+          return;
+        }
+        child.once('exit', () => res());
+        setTimeout(() => res(), 5_000);
+      });
+    }
+  }, 30_000);
 });
