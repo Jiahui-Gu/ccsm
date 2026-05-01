@@ -7,6 +7,7 @@ import '@fontsource-variable/jetbrains-mono';
 import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
+import { installRendererErrorForwarder } from './lib/installRendererErrorForwarder';
 import './styles/global.css';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
@@ -20,6 +21,16 @@ import './styles/global.css';
 // bridge installed by @sentry/electron/preload.
 sentryInit({
   initialScope: { tags: { surface: 'renderer' } },
+});
+
+// Phase 5 crash observability — install renderer-side error forwarders that
+// route window.onerror + window.onunhandledrejection through the main-proc
+// collector, guaranteeing an on-disk `surface: 'renderer'` incident even
+// when the Sentry SDK is disabled (no DSN, or consent not granted).
+// console.error capture is dev-only; production stays focused on the two
+// real signals to keep the rate limit (≤10/min) signal-rich.
+installRendererErrorForwarder({
+  captureConsoleError: process.env.NODE_ENV !== 'production',
 });
 
 // Funnel silent persist failures (db locked, disk full, schema mismatch)

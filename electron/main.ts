@@ -78,8 +78,17 @@ app.on('child-process-gone', (_e, details) => {
   });
 });
 
-// Best-effort retention pruning at boot.
-try { crashCollector.pruneRetention({ maxCount: 20, maxAgeDays: 30 }); } catch {}
+// Best-effort retention pruning at boot. Phase 5 layers per-surface keep-N
+// (default 20) on top of the legacy global cap, with a 7-day protect window
+// for unsent incidents so the user can still re-upload via "Send last crash".
+try {
+  crashCollector.pruneRetention({
+    maxCount: 20,
+    maxAgeDays: 30,
+    maxPerSurface: 20,
+    protectUnsentYoungerThanDays: 7,
+  });
+} catch {}
 
 // Exposed for supervisor wiring (Task 4) and downstream IPC fan-out.
 export function emitDaemonCrash(payload: { incidentId: string; exitCode: number | null; signal: string | null; bootNonce?: string; markerPresent: boolean }): void {
@@ -114,6 +123,7 @@ import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
 import { registerCrashIncidentsIpc } from './ipc/crashIncidents';
+import { registerRendererErrorForwarderIpc } from './ipc/rendererErrorForwarder';
 import { subscribeCrashConsentInvalidation } from './prefs/crashConsent';
 import {
   registerUtilityIpc,
@@ -267,6 +277,7 @@ app.whenReady().then(() => {
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
   registerCrashIncidentsIpc({ ipcMain });
+  registerRendererErrorForwarderIpc({ ipcMain, collector: crashCollector });
 
   installUpdaterIpc();
 
