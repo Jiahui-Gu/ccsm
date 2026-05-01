@@ -1,10 +1,20 @@
-// Control-socket dispatcher (T16) — literal-method router for the canonical
-// SUPERVISOR_RPCS allowlist (frag-3.4.1 §3.4.1.h).
+// Control-socket / data-socket dispatcher — literal-method router with
+// plane-scoped allowlist enforcement.
+//
+// T16 (PR #x): introduced supervisor-only `Dispatcher` pre-wired with
+//   SUPERVISOR_RPCS allowlist (frag-3.4.1 §3.4.1.h).
+// T23 (this commit): generalised to a two-plane dispatcher. Supervisor plane
+//   continues to enforce the SUPERVISOR_RPCS allowlist at the boundary;
+//   data plane skips the allowlist (its surface is governed by separate
+//   per-method registration + envelope HMAC + hello-required gates and is
+//   declared by the data-socket transport).
 //
 // Spec citations:
 //   - docs/superpowers/specs/v0.3-fragments/frag-3.4.1-envelope-hardening.md
 //     §3.4.1.h (control-socket: `/healthz`, `/stats`, `daemon.hello`,
 //     `daemon.shutdown`, `daemon.shutdownForUpgrade`).
+//   - frag-6-7 §6.1 + §6.2 (supervisor RPCs allowlist enforcement at the
+//     dispatcher boundary; data-socket has its own surface).
 //   - frag-6-7 §6.5 (supervisor transport = the `ccsm-control` socket; the
 //     control-socket dispatcher is the routing surface on that transport).
 //   - T11 (PR #646) landed the canonical `SUPERVISOR_RPCS` constant + the
@@ -86,11 +96,24 @@ class NotImplementedError extends Error {
   }
 }
 
-/** Build the default dispatcher pre-wired with NOT_IMPLEMENTED stubs for the
- *  five canonical SUPERVISOR_RPCS. T17–T21 each call `register()` (or build
- *  their own dispatcher in tests) to swap a stub for a real handler. */
+/** Dispatcher plane (T23). Supervisor plane enforces the SUPERVISOR_RPCS
+ *  allowlist at the dispatcher boundary; data plane delegates surface
+ *  control to per-method registration only (its envelope HMAC + hello-gate
+ *  live in the data-socket transport, not here). */
+export type DispatcherPlane = 'supervisor' | 'data';
+
+export interface DispatcherOptions {
+  /** Defaults to `'supervisor'` for backward compatibility with T16
+   *  consumers (`new Dispatcher()` continues to enforce SUPERVISOR_RPCS). */
+  readonly plane?: DispatcherPlane;
+}
+
+/** Build the default supervisor-plane dispatcher pre-wired with
+ *  NOT_IMPLEMENTED stubs for the five canonical SUPERVISOR_RPCS. T17–T21
+ *  each call `register()` (or build their own dispatcher in tests) to swap
+ *  a stub for a real handler. */
 export function createSupervisorDispatcher(): Dispatcher {
-  const d = new Dispatcher();
+  const d = new Dispatcher({ plane: 'supervisor' });
   // Stub registration order mirrors the SUPERVISOR_RPCS tuple so the wire
   // contract row in §3.4.1.h and this file stay visually 1:1.
   for (const method of SUPERVISOR_RPCS) {
@@ -99,17 +122,31 @@ export function createSupervisorDispatcher(): Dispatcher {
   return d;
 }
 
+/** Build a bare data-plane dispatcher. The data-socket transport calls
+ *  `register()` for each data-plane RPC it owns; the dispatcher does NOT
+ *  apply the SUPERVISOR_RPCS allowlist. Unknown methods still resolve to
+ *  UNKNOWN_METHOD per the standard decision table. */
+export function createDataDispatcher(): Dispatcher {
+  return new Dispatcher({ plane: 'data' });
+}
+
 /**
- * Literal-method router for the supervisor / control-socket plane.
+ * Literal-method router with plane-scoped allowlist enforcement.
  *
- * Responsibilities:
- *   1. Reject non-allowlisted method names with NOT_ALLOWED (defence in depth
- *      — the data-socket has its own dispatcher with a disjoint allowlist).
- *   2. Reject unknown allowlisted methods (e.g. an allowlisted name with no
+ * Supervisor-plane responsibilities (T23 — boundary enforcement):
+ *   1. Reject non-allowlisted method names with NOT_ALLOWED (defence in
+ *      depth — handlers stay simple and never see disallowed methods).
+ *   2. Reject unknown allowlisted methods (allowlisted name with no
  *      registered handler) with UNKNOWN_METHOD.
  *   3. Invoke the registered handler and forward its resolved value.
  *   4. Convert a thrown `NotImplementedError` from a stub into a typed
  *      NOT_IMPLEMENTED reply (does NOT escape as an unhandled rejection).
+ *
+ * Data-plane responsibilities:
+ *   - Skip the SUPERVISOR_RPCS allowlist gate entirely. Surface control is
+ *     declared by the data-socket transport via per-method `register()`.
+ *   - All other behaviour (UNKNOWN_METHOD for missing handler, stub
+ *     conversion, exception propagation) is identical to supervisor plane.
  *
  * Non-responsibilities (intentional, per Single Responsibility):
  *   - No envelope parsing / serialisation (lives in T14 control-socket).
@@ -117,18 +154,33 @@ export function createSupervisorDispatcher(): Dispatcher {
  *   - No metrics emission (metricsInterceptor §3.4.1.f).
  *   - No allowlist mutation — `SUPERVISOR_RPCS` is the single source of truth.
  *   - No normalisation (literal compare, per §3.4.1.h carve-out lock).
+ *   - No envelope HMAC / hello-required gating on data plane (those live in
+ *     the data-socket transport itself).
  */
 export class Dispatcher {
   readonly #handlers: Map<string, Handler> = new Map();
+  readonly #plane: DispatcherPlane;
 
-  /** Register or replace the handler for a canonical RPC method.
+  constructor(opts: DispatcherOptions = {}) {
+    this.#plane = opts.plane ?? 'supervisor';
+  }
+
+  /** Plane this dispatcher was constructed with (test-facing helper). */
+  get plane(): DispatcherPlane {
+    return this.#plane;
+  }
+
+  /** Register or replace the handler for a method.
    *
-   *  Throws if `method` is not a SUPERVISOR_RPCS member — registering a
-   *  handler the dispatcher would never call is a programming error and must
-   *  fail loud at boot (per Single Responsibility: producer must use the
-   *  canonical allowlist). */
+   *  Supervisor plane: throws if `method` is not a SUPERVISOR_RPCS member —
+   *  registering a handler the dispatcher would never call is a programming
+   *  error and must fail loud at boot (per Single Responsibility: producer
+   *  must use the canonical allowlist).
+   *
+   *  Data plane: accepts any method name; the data-socket transport owns
+   *  surface declaration. */
   register(method: string, handler: Handler): void {
-    if (!isSupervisorRpc(method)) {
+    if (this.#plane === 'supervisor' && !isSupervisorRpc(method)) {
       throw new Error(
         `Dispatcher.register: refusing to register non-supervisor RPC ${JSON.stringify(method)}; only SUPERVISOR_RPCS (§3.4.1.h) are routable on the control socket`,
       );
@@ -144,27 +196,37 @@ export class Dispatcher {
   /**
    * Route an inbound RPC to its handler.
    *
-   * Decision table:
+   * Decision table (supervisor plane):
    *   isSupervisorRpc=false                       → NOT_ALLOWED
    *   isSupervisorRpc=true  ∧ no handler          → UNKNOWN_METHOD
    *   isSupervisorRpc=true  ∧ handler throws stub → NOT_IMPLEMENTED
    *   isSupervisorRpc=true  ∧ handler resolves    → { ok: true, value }
    *
+   * Decision table (data plane):
+   *   no handler                                  → UNKNOWN_METHOD
+   *   handler throws stub                         → NOT_IMPLEMENTED
+   *   handler resolves                            → { ok: true, value }
+   *
    * Handler exceptions OTHER than the stub sentinel are NOT swallowed —
    * they propagate to the caller (T14) which owns wire-level error mapping.
+   *
+   * NOT_ALLOWED messages intentionally do NOT enumerate the allowlist — the
+   * caller learns only that their method is rejected, not which methods
+   * exist. This avoids leaking the supervisor-plane surface to data-plane
+   * clients that probe with random method names.
    */
   async dispatch(
     method: string,
     req: unknown,
     ctx: DispatchContext,
   ): Promise<DispatchResult> {
-    if (!isSupervisorRpc(method)) {
+    if (this.#plane === 'supervisor' && !isSupervisorRpc(method)) {
       return {
         ok: false,
         error: {
           code: 'NOT_ALLOWED',
           method,
-          message: `RPC ${JSON.stringify(method)} is not on the control-socket allowlist (SUPERVISOR_RPCS, §3.4.1.h)`,
+          message: `RPC ${JSON.stringify(method)} is not allowed on the supervisor / control-socket plane (SUPERVISOR_RPCS, §3.4.1.h)`,
         },
       };
     }
@@ -176,7 +238,7 @@ export class Dispatcher {
         error: {
           code: 'UNKNOWN_METHOD',
           method,
-          message: `no handler registered for control-socket RPC ${method}`,
+          message: `no handler registered for ${this.#plane}-plane RPC ${method}`,
         },
       };
     }
