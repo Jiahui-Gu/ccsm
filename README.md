@@ -47,6 +47,20 @@ Ships via GitHub Releases with delta updates. New versions install in the backgr
 | Linux (AppImage) | [ccsm-0.2.0.AppImage](https://github.com/Jiahui-Gu/ccsm/releases/download/v0.2.0/ccsm-0.2.0.AppImage) |
 | Linux (rpm) | [ccsm-0.2.0.x86_64.rpm](https://github.com/Jiahui-Gu/ccsm/releases/download/v0.2.0/ccsm-0.2.0.x86_64.rpm) |
 
+## Verify your download
+
+Every installer ships with three sidecar files in the same release. We
+recommend verifying at least the SHA before running unfamiliar installers,
+and the SLSA provenance for stronger authenticity guarantees.
+
+| Sidecar | What it proves | Verify with |
+|---------|----------------|-------------|
+| `<artifact>.sha256` | The file you downloaded matches the bytes we built | `sha256sum -c ccsm-Setup-0.3.0.exe.sha256` |
+| `<artifact>.intoto.jsonl` | The file was built by [this exact `release.yml` workflow](.github/workflows/release.yml) on `Jiahui-Gu/ccsm`, signed by GitHub's OIDC root (SLSA L3) | [`slsa-verifier verify-artifact ccsm-Setup-0.3.0.exe --provenance-path ccsm-Setup-0.3.0.exe.intoto.jsonl --source-uri github.com/Jiahui-Gu/ccsm`](https://github.com/slsa-framework/slsa-verifier) |
+| `<artifact>.minisig` | The file was signed by the ccsm release-signing key (offline-verifiable; used by the daemon-only updater) | `minisign -V -p release-keys/minisign.pub -m ccsm-Setup-0.3.0.exe` |
+
+The minisign public key lives at [`release-keys/minisign.pub`](release-keys/minisign.pub) — copy it once, verify any release. See [`release-keys/README.md`](release-keys/README.md) for the rotation runbook and the meaning of each sidecar in detail.
+
 ## How it works
 
 ccsm spawns the official `claude` binary as a PTY in Electron's main process and renders its output in a React surface. It reads `CLAUDE_CONFIG_DIR` so your existing CLI configuration — skills, agents, MCP servers, permissions — works untouched. ccsm doesn't parse or rewrite your config; it just gives the CLI a better window.

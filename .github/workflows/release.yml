@@ -195,24 +195,234 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Only create/update the GitHub Release when this was a real tag push —
-      # `workflow_dispatch` dry-runs stop at the artifact upload above so we
-      # don't pollute the Releases tab with `v0.0.0-dryrun` entries.
+  # T59 (v0.3 frag-11 §11.4 + §11.4.1): release attestation — for every
+  # installer artifact we publish three sidecar files alongside it:
+  #   <artifact>.sha256          SHA-256 hash (integrity vs network corruption)
+  #   <artifact>.intoto.jsonl    SLSA L3 provenance attestation (authenticity vs
+  #                              compromised pipeline; signed by GitHub OIDC root
+  #                              via the SLSA reusable workflow)
+  #   <artifact>.minisig         Linux minisign signature (offline verifier on
+  #                              the daemon-only updater + initial-install path)
+  #
+  # The attest stage runs a single `release-publish`-style job that downloads
+  # every matrix leg's artifacts, computes SHA + minisign sidecars locally, then
+  # hands the SHA hashes to the SLSA reusable workflow which produces a single
+  # signed `*.intoto.jsonl`. The `publish` job verifies all three sidecars
+  # exist for every installer artifact (sidecar-verify gate) before uploading
+  # to the GitHub Release.
+  attest:
+    name: SHA + minisign sidecars
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+
+      # Flatten dist-all/<matrix-name>/<files> -> dist-flat/<files> so sidecar
+      # filenames sit beside their parent. The SLSA generator + GitHub Release
+      # upload both want a single flat directory.
+      - name: Flatten artifact layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-flat
+          find dist-all -type f \( \
+              -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \
+              -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+              -o -name 'latest*.yml' -o -name '*.blockmap' \
+            \) -exec cp -n {} dist-flat/ \;
+          ls -la dist-flat/
+
+      # Per-artifact .sha256 sidecar. Format matches `sha256sum` output so
+      # downstream verifiers can `sha256sum -c <file>.sha256`.
+      - name: Generate SHA-256 sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist-flat
+          for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+            echo "wrote $f.sha256"
+          done
+
+      # Minisign signatures. Public key lives in repo at release-keys/minisign.pub
+      # (committed). Private key is provisioned via the MINISIGN_PRIVATE_KEY
+      # repo secret + MINISIGN_PASSWORD secret (see release-keys/README.md for
+      # rotation runbook). When the secret is absent we still write empty
+      # placeholder .minisig files so the sidecar-verify gate can distinguish
+      # "missing because unsigned" from "missing because forgotten" — and we
+      # warn loudly in the workflow log.
+      - name: Install minisign
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Generate minisign signatures
+        shell: bash
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_PRIVATE_KEY:-}" ]; then
+            echo "::warning title=Unsigned release::MINISIGN_PRIVATE_KEY secret not set. Writing placeholder .minisig files; the sidecar-verify gate will fail. See release-keys/README.md for provisioning."
+            cd dist-flat
+            for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
+              [ -f "$f" ] || continue
+              : > "$f.minisig"
+            done
+            exit 0
+          fi
+          umask 077
+          KEY=$(mktemp)
+          printf '%s' "$MINISIGN_PRIVATE_KEY" > "$KEY"
+          cd dist-flat
+          for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
+            [ -f "$f" ] || continue
+            echo "$MINISIGN_PASSWORD" | minisign -S -s "$KEY" -m "$f" -t "ccsm $GITHUB_REF_NAME"
+            echo "wrote $f.minisig"
+          done
+          shred -u "$KEY"
+
+      # Compute the SLSA hashes input. The SLSA reusable workflow expects a
+      # base64-encoded SHA256SUMS-format payload listing every subject we want
+      # provenance over (the installers themselves; sidecars are derivative).
+      - name: Compute SLSA hashes input
+        id: hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist-flat
+          HASHES=$( \
+            sha256sum *.exe *.dmg *.zip *.AppImage *.deb *.rpm 2>/dev/null \
+              | base64 -w0 \
+          )
+          echo "hashes=$HASHES" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sidecars + installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccsm-attested
+          path: dist-flat/**
+          if-no-files-found: error
+          retention-days: 14
+
+  # SLSA L3 provenance via the official reusable workflow. This produces a
+  # single signed `<workflow-name>.intoto.jsonl` whose subjects cover every
+  # installer artifact (one provenance file documents the entire release —
+  # this is the SLSA spec's canonical shape; per-artifact provenance is not
+  # required and would be redundant). The `publish` job renames a copy to
+  # `<artifact>.intoto.jsonl` for each installer so the README's
+  # "verify your download" workflow stays one-pattern.
+  #
+  # `upload-assets: false` is intentional: we don't want the SLSA reusable
+  # workflow to push to a GitHub Release directly. Instead the downstream
+  # `publish` job downloads the provenance artifact, runs the sidecar-verify
+  # gate (every installer must have .sha256 + .minisig + .intoto.jsonl), and
+  # only then uploads to a draft Release via `softprops/action-gh-release`.
+  # This puts the verification step between provenance generation and
+  # release publication so a missing-sidecar bug can't ship.
+  provenance:
+    name: SLSA L3 provenance
+    needs: attest
+    if: needs.attest.outputs.hashes != ''
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.attest.outputs.hashes }}
+      provenance-name: ccsm.intoto.jsonl
+      upload-assets: false
+
+  publish:
+    name: Sidecar-verify gate + GitHub Release upload
+    needs: [attest, provenance]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download attested artifacts + sidecars
+        uses: actions/download-artifact@v4
+        with:
+          name: ccsm-attested
+          path: dist-flat
+
+      - name: Download SLSA provenance
+        uses: actions/download-artifact@v4
+        with:
+          # The SLSA generic generator's reusable workflow exposes
+          # `provenance-name` as both the artifact name uploaded to the
+          # workflow run and the filename inside it (they're set to the
+          # same string from the `provenance-name` input we pass above —
+          # `ccsm.intoto.jsonl`). Use that output here so this stays in
+          # sync if we ever rename the input.
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist-flat
+
+      # Sidecar-verify gate: every installer must have all three sidecars
+      # present (and the minisig must be non-empty). This is the post-tag-push
+      # safety check that catches "someone commented out a sidecar step in a
+      # rebase" before we publish a release with missing attestations.
+      - name: Sidecar-verify gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist-flat
+          PROV=$(ls *.intoto.jsonl 2>/dev/null | head -n1 || true)
+          if [ -z "$PROV" ]; then
+            echo "::error title=Sidecar-verify failed::no *.intoto.jsonl SLSA provenance file present"
+            exit 1
+          fi
+          fail=0
+          for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
+            [ -f "$f" ] || continue
+            if [ ! -s "$f.sha256" ]; then
+              echo "::error title=Sidecar-verify failed::$f missing or empty .sha256"; fail=1
+            fi
+            if [ ! -s "$f.minisig" ]; then
+              echo "::error title=Sidecar-verify failed::$f missing or empty .minisig"; fail=1
+            fi
+            # Materialize a per-artifact intoto.jsonl alias so the README's
+            # one-pattern verify command works for every download.
+            cp "$PROV" "$f.intoto.jsonl"
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Refusing to publish release with missing sidecars."
+            exit 1
+          fi
+          echo "All installers have .sha256 + .minisig + .intoto.jsonl sidecars."
+          ls -la
+
       - name: Upload to GitHub Release (draft)
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
           fail_on_unmatched_files: false
           files: |
-            release/*.exe
-            release/*.dmg
-            release/*.zip
-            release/*.AppImage
-            release/*.deb
-            release/*.rpm
-            release/latest*.yml
-            release/*.blockmap
+            dist-flat/*.exe
+            dist-flat/*.dmg
+            dist-flat/*.zip
+            dist-flat/*.AppImage
+            dist-flat/*.deb
+            dist-flat/*.rpm
+            dist-flat/latest*.yml
+            dist-flat/*.blockmap
+            dist-flat/*.sha256
+            dist-flat/*.minisig
+            dist-flat/*.intoto.jsonl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
