@@ -1,0 +1,21 @@
+{
+  "name": "ccsm-spike-pkg-esm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/entry.js",
+  "bin": "dist/entry.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "pkg:host": "pkg dist/entry.js --targets node22-win-x64 --output out/spike-win-x64.exe",
+    "pkg:all": "pkg dist/entry.js --targets node22-win-x64,node22-macos-x64,node22-linux-x64 --output out/spike"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.19.0",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.6.0"
+  }
+}
