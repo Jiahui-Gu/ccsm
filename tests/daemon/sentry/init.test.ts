@@ -33,21 +33,21 @@ beforeEach(() => {
 describe('initDaemonSentry', () => {
   it('returns false (no init) when DSN is empty string', () => {
     const { sentry, init } = makeSpy();
-    const ok = initDaemonSentry({ dsn: '', release: '0.3.0', bootNonce: 'BN', sentry });
+    const ok = initDaemonSentry({ dsn: '', release: '0.3.0', bootNonce: 'BN', consent: 'opted-in', sentry });
     expect(ok).toBe(false);
     expect(init).not.toHaveBeenCalled();
   });
 
   it('returns false when DSN is the redacted placeholder', () => {
     const { sentry, init } = makeSpy();
-    const ok = initDaemonSentry({ dsn: '***REDACTED***', release: '0.3.0', bootNonce: 'BN', sentry });
+    const ok = initDaemonSentry({ dsn: '***REDACTED***', release: '0.3.0', bootNonce: 'BN', consent: 'opted-in', sentry });
     expect(ok).toBe(false);
     expect(init).not.toHaveBeenCalled();
   });
 
   it('returns false when DSN is whitespace only', () => {
     const { sentry, init } = makeSpy();
-    const ok = initDaemonSentry({ dsn: '   ', release: '0.3.0', bootNonce: 'BN', sentry });
+    const ok = initDaemonSentry({ dsn: '   ', release: '0.3.0', bootNonce: 'BN', consent: 'opted-in', sentry });
     expect(ok).toBe(false);
     expect(init).not.toHaveBeenCalled();
   });
@@ -58,6 +58,7 @@ describe('initDaemonSentry', () => {
       dsn: 'https://x@y.ingest.sentry.io/1',
       release: '0.3.0',
       bootNonce: 'BN-XYZ',
+      consent: 'opted-in',
       sentry,
     });
     expect(ok).toBe(true);
@@ -69,10 +70,37 @@ describe('initDaemonSentry', () => {
     expect(arg.initialScope.tags.bootNonce).toBe('BN-XYZ');
   });
 
+  // Phase 4 consent gate.
+  it('returns false when consent is pending (default), even with valid DSN', () => {
+    const { sentry, init } = makeSpy();
+    const ok = initDaemonSentry({
+      dsn: 'https://x@y.ingest.sentry.io/1',
+      release: '0.3.0',
+      bootNonce: 'BN',
+      // consent omitted — defaults to 'pending'
+      sentry,
+    });
+    expect(ok).toBe(false);
+    expect(init).not.toHaveBeenCalled();
+  });
+
+  it('returns false when consent is opted-out, even with valid DSN', () => {
+    const { sentry, init } = makeSpy();
+    const ok = initDaemonSentry({
+      dsn: 'https://x@y.ingest.sentry.io/1',
+      release: '0.3.0',
+      bootNonce: 'BN',
+      consent: 'opted-out',
+      sentry,
+    });
+    expect(ok).toBe(false);
+    expect(init).not.toHaveBeenCalled();
+  });
+
   it('flushDaemonSentry swallows transport errors', async () => {
     const { sentry, flush } = makeSpy();
     flush.mockRejectedValueOnce(new Error('network down'));
-    initDaemonSentry({ dsn: 'https://x@y/1', release: '0', bootNonce: 'B', sentry });
+    initDaemonSentry({ dsn: 'https://x@y/1', release: '0', bootNonce: 'B', consent: 'opted-in', sentry });
     await expect(flushDaemonSentry(50)).resolves.toBeUndefined();
     expect(flush).toHaveBeenCalledWith(50);
   });
@@ -80,7 +108,7 @@ describe('initDaemonSentry', () => {
   it('captureDaemonException swallows transport errors', () => {
     const { sentry, captureException } = makeSpy();
     captureException.mockImplementationOnce(() => { throw new Error('boom'); });
-    initDaemonSentry({ dsn: 'https://x@y/1', release: '0', bootNonce: 'B', sentry });
+    initDaemonSentry({ dsn: 'https://x@y/1', release: '0', bootNonce: 'B', consent: 'opted-in', sentry });
     expect(() => captureDaemonException(new Error('x'))).not.toThrow();
     expect(captureException).toHaveBeenCalled();
   });

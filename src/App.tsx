@@ -7,6 +7,7 @@ import { AppSkeleton } from './components/AppSkeleton';
 import { TerminalPane } from './components/TerminalPane';
 import { ClaudeMissingGuide } from './components/ClaudeMissingGuide';
 import { SettingsDialog } from './components/SettingsDialog';
+import { CrashConsentModal } from './components/CrashConsentModal';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
@@ -377,6 +378,7 @@ export default function App() {
           }
         />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <CrashConsentModal />
         <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
         <CommandPalette
           open={paletteOpen}

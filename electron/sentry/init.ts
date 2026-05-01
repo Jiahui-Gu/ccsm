@@ -21,7 +21,7 @@
 
 import * as Sentry from '@sentry/electron/main';
 import { app } from 'electron';
-import { loadCrashReportingOptOut } from '../prefs/crashReporting';
+import { isCrashUploadAllowed, loadCrashConsent } from '../prefs/crashConsent';
 
 const REDACTED = '***REDACTED***';
 
@@ -44,6 +44,15 @@ function loadBuildInfo(): BuildInfo {
 }
 
 export function initSentry(): void {
+  // Phase 4 consent gate: when the user has not explicitly opted in, do NOT
+  // create the SDK client at all. This is the user's hard constraint —
+  // `pending` (first run, no answer yet) and `opted-out` both block upload.
+  // Local crash logs are unaffected (phase 1 collector writes regardless).
+  const consent = loadCrashConsent();
+  if (consent !== 'opted-in') {
+    console.info(`[sentry] crash upload consent=${consent} — Sentry off for surface=main.`);
+    return;
+  }
   const buildInfo = loadBuildInfo();
   const envDsn = process.env.SENTRY_DSN_MAIN?.trim() || process.env.SENTRY_DSN?.trim() || '';
   const dsn = envDsn || (buildInfo.sentryDsnMain ?? '').trim();
@@ -59,8 +68,7 @@ export function initSentry(): void {
     initialScope: { tags: { surface: 'main' } },
     beforeSend(event) {
       try {
-        const optOut = loadCrashReportingOptOut();
-        if (optOut) return null;
+        if (!isCrashUploadAllowed()) return null;
       } catch {
         /* fall through, send anyway */
       }

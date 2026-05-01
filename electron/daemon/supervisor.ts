@@ -132,6 +132,10 @@ export interface SpawnDaemonOpts {
   runtimeRoot?: string;
   /** Override DSN (otherwise resolveDaemonSentryDsn). Mostly for tests. */
   dsn?: string;
+  /** Phase 4 consent — forwarded as `CCSM_DAEMON_CRASH_CONSENT`. The daemon
+   *  Sentry init early-returns when this is not `'opted-in'`, even if the
+   *  DSN is populated. Defaults to `'pending'` so a missing call fails closed. */
+  consent?: 'pending' | 'opted-in' | 'opted-out';
   /** Pass-through spawn options. `env` is merged on top of the baseline. */
   spawnOptions?: SpawnOptions;
   /** Test seam — defaults to node:child_process.spawn. */
@@ -145,13 +149,19 @@ export interface SpawnDaemonOpts {
  * being defined and apply its own short-circuit; this also lets a test assert
  * the supervisor wired the forwarding correctly without distinguishing
  * "didn't set" from "set to empty".
+ *
+ * `CCSM_DAEMON_CRASH_CONSENT` is also always set (defaults to `'pending'`)
+ * so the daemon never silently uploads when the user hasn't answered the
+ * first-run consent modal.
  */
 export function spawnDaemon(opts: SpawnDaemonOpts): ChildProcess {
   const dsn = opts.dsn ?? resolveDaemonSentryDsn();
+  const consent = opts.consent ?? 'pending';
   const spawnFn = opts.spawnFn ?? spawn;
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
     CCSM_DAEMON_SENTRY_DSN: dsn,
+    CCSM_DAEMON_CRASH_CONSENT: consent,
   };
   if (opts.runtimeRoot) baseEnv.CCSM_RUNTIME_ROOT = opts.runtimeRoot;
   const merged: SpawnOptions = {

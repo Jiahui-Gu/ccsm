@@ -86,6 +86,25 @@ declare global {
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
       onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
 
+      /**
+       * Phase 4 crash observability — most-recent on-disk incident summary
+       * + re-upload action backing the Settings "Send last crash report"
+       * button. The summary is null when no incident exists; `alreadySent`
+       * is true when the incident dir contains a `.uploaded` marker.
+       */
+      crash: {
+        getLastIncident: () => Promise<{
+          id: string;
+          dirName: string;
+          ts: string;
+          surface: string;
+          alreadySent: boolean;
+        } | null>;
+        sendLastIncident: () => Promise<
+          { ok: true; eventId?: string } | { ok: false; reason: string }
+        >;
+      };
+
       window: {
         minimize: () => Promise<void>;
         toggleMaximize: () => Promise<boolean>;

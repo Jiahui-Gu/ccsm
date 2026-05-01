@@ -115,6 +115,25 @@ const api = {
   updatesGetAutoCheck: (): Promise<boolean> => ipcRenderer.invoke('updates:getAutoCheck'),
   updatesSetAutoCheck: (enabled: boolean): Promise<boolean> =>
     ipcRenderer.invoke('updates:setAutoCheck', enabled),
+
+  /**
+   * Phase 4 crash observability — surface the most recent on-disk incident
+   * to the Settings page so the user can re-upload via "Send last crash
+   * report". Returns `null` when no incident exists. `alreadySent` is true
+   * when a `.uploaded` marker is present in the incident dir (so the UI
+   * disables the button to prevent double-send).
+   */
+  crash: {
+    getLastIncident: (): Promise<{
+      id: string;
+      dirName: string;
+      ts: string;
+      surface: string;
+      alreadySent: boolean;
+    } | null> => ipcRenderer.invoke('crash:get-last-incident'),
+    sendLastIncident: (): Promise<{ ok: true; eventId?: string } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke('crash:send-last-incident'),
+  },
   onUpdateStatus: (handler: (s: UpdateStatus) => void): (() => void) => {
     const wrap = (_e: IpcRendererEvent, payload: UpdateStatus) => handler(payload);
     ipcRenderer.on('updates:status', wrap);

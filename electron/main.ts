@@ -113,6 +113,8 @@ import { registerDbIpc } from './ipc/dbIpc';
 import { registerSystemIpc } from './ipc/systemIpc';
 import { registerSessionIpc } from './ipc/sessionIpc';
 import { registerWindowIpc } from './ipc/windowIpc';
+import { registerCrashIncidentsIpc } from './ipc/crashIncidents';
+import { subscribeCrashConsentInvalidation } from './prefs/crashConsent';
 import {
   registerUtilityIpc,
   primeImportableCache,
@@ -229,6 +231,7 @@ app.whenReady().then(() => {
   // auto-persisted setting on first paint) reaches the cache subscribers.
   // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
   subscribeCrashReportingInvalidation();
+  subscribeCrashConsentInvalidation();
   subscribeNotifyEnabledInvalidation();
   // Order is significant for systemIpc: it seeds the active i18n language
   // from the OS locale, so any subsequent producer that calls i18n.t()
@@ -263,6 +266,7 @@ app.whenReady().then(() => {
   });
   registerWindowIpc({ ipcMain });
   registerUtilityIpc({ ipcMain });
+  registerCrashIncidentsIpc({ ipcMain });
 
   installUpdaterIpc();
 
