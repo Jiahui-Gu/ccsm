@@ -28,7 +28,7 @@ Per user clarification 2026-05-01, v0.4 = "do the web client": (a) replace v0.3'
 
 Milestones (chapter 09 release-slicing):
 
-- **M1 — `proto/` locked + first bridge swapped end-to-end.** In flight. T01 proto skeleton (#746), T02 8-domain protos + 46-RPC inventory (#749), T03 `@ccsm/proto-gen` wrapper + tree-shake verification (#750), T04 pkg ESM-interop spike (#751, verdict: NO-GO direct, GO via `esbuild → CJS bundle → pkg`), T05 Connect server bound on daemon data socket (#752), T07 parity-test framework (#754), T31 schema-additive migration lint (#747), T32 fixture lint (#745). Remaining M1 tasks: T05.1 follow-ups (#755 open), T06, T08.
+- **M1 — `proto/` locked + first bridge swapped end-to-end.** In flight. T01 proto skeleton (#746), T02 8-domain protos + 46-RPC inventory (#749), T03 `@ccsm/proto-gen` wrapper + tree-shake verification (#750), T04 pkg ESM-interop spike (#751, verdict: NO-GO direct, GO via `esbuild → CJS bundle → pkg`), T05 Connect server bound on daemon data socket (#752), T07 parity-test framework (#754), T31 schema-additive migration lint (#747), T32 fixture lint (#745). Remaining M1 tasks: T05.1 follow-ups (paused with v0.4 implementation), T06, T08.
 - **M2 — all bridges swapped, envelope deleted from data socket.** Not started. Gated on M1 close + 7-day post-M2 dogfood (chapter 09 §7 / §1914).
 - **M3 — web client functional (local-only, via dev TCP listener).** Not started.
 - **M4 — Cloudflare wired, remote access live.** Not started. Pre-M4 spike: 7-day Cloudflare Tunnel bandwidth probe required before implementation begins (`docs/spikes/2026-05-cloudflare-tunnel-bandwidth.md`, not yet started).
