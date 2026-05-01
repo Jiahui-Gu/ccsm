@@ -1,1 +1,6 @@
 gen/** linguist-generated=true -diff
+
+# Hand-written barrel files for the @ccsm/proto-gen wrapper (T03). Show diffs
+# in PR review even though they live under gen/.
+gen/ts/index.ts -linguist-generated linguist-generated=false diff
+gen/ts/ccsm/v1/index.ts -linguist-generated linguist-generated=false diff

@@ -16,9 +16,11 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@ccsm/proto-gen": ["./gen/ts/index.ts"],
+      "@ccsm/proto-gen/v1": ["./gen/ts/ccsm/v1/index.ts"]
     }
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "gen/ts/**/*"],
   "exclude": ["node_modules", "dist", "electron"]
 }

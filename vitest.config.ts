@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config';
+import * as path from 'node:path';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@ccsm/proto-gen/v1': path.resolve(__dirname, 'gen/ts/ccsm/v1/index.ts'),
+      '@ccsm/proto-gen': path.resolve(__dirname, 'gen/ts/index.ts'),
+    },
+  },
   test: {
     environment: 'jsdom',
     include: [
