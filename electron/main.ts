@@ -35,6 +35,7 @@ import { createTray, type TrayController } from './tray/createTray';
 import { startCrashCollector } from './crash/collector';
 import { resolveCrashRoot } from './crash/incident-dir';
 import { wireCrashHandlers } from './main-crash-wiring';
+import { bootDaemon } from './daemon/bootDaemon';
 
 // Phase 1 crash observability (spec §5.1, plan Task 2):
 //   * crashReporter.start with empty submitURL + uploadToServer:false enables
@@ -234,6 +235,21 @@ app.whenReady().then(() => {
   }
 
   initDb();
+
+  // ─────────────────────── daemon spawn-or-attach (Task 4 / frag-6-7 §6.1) ──
+  // Fire-and-forget. The wire honors three constraints:
+  //   1. CCSM_DAEMON_DEV=1 → no-op (nodemon owns daemon lifecycle in dev).
+  //   2. Existing daemon already bound to control socket → skip spawn,
+  //      attach to it (re-opening Electron must reuse the surviving daemon
+  //      per v0.3 dogfood metric #1).
+  //   3. Spawn detached + unref so the daemon SURVIVES Electron quit.
+  // Outcome is logged; renderer's existing not-connected UX surfaces any
+  // failure. Full supervisor.start() (lock-file probe, healthz, crash-loop,
+  // .bak rollback) lands in Task 7.
+  void bootDaemon({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  });
 
   // ─────────────────────────── IPC registration ──────────────────────────
   // Wire prefs cache invalidation to the stateSavedBus BEFORE registering
