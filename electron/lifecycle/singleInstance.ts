@@ -14,12 +14,29 @@
 
 import { app, BrowserWindow } from 'electron';
 
-/** Returns true iff the env opts out of the lock (E2E probes). Pure
- *  helper — exported for unit tests. */
-export function shouldSkipSingleInstanceLock(env: NodeJS.ProcessEnv): boolean {
-  return (
-    env.CCSM_E2E_HIDDEN === '1' || env.CCSM_E2E_NO_SINGLE_INSTANCE === '1'
-  );
+/** Returns true iff we should opt out of the lock. Pure helper — exported
+ *  for unit tests.
+ *
+ *  Skips when:
+ *  - E2E env vars are set (probes spawn the app multiple times in parallel)
+ *  - The current electron is unpackaged (dev mode via `npm run dev`). This
+ *    prevents the dev electron from silently exiting when the user's
+ *    installed (packaged) CCSM.exe is also running and already holds the
+ *    global single-instance lock. Production (packaged) builds keep the
+ *    lock so double-clicking the desktop icon doesn't spawn duplicates. */
+export function shouldSkipSingleInstanceLock(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.CCSM_E2E_HIDDEN === '1') return true;
+  if (env.CCSM_E2E_NO_SINGLE_INSTANCE === '1') return true;
+  // Dev mode: skip lock so `npm run dev` doesn't lose the contest when the
+  // user's installed (packaged) CCSM is also running.
+  try {
+    if (app && app.isPackaged === false) return true;
+  } catch {
+    // app may be unavailable in unit tests — treat as packaged (don't skip).
+  }
+  return false;
 }
 
 /** Acquire the single-instance lock + register the second-instance focus
