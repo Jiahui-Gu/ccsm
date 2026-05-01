@@ -813,20 +813,25 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
 
 /*
   Body-lock leak guard. Radix's react-remove-scroll sets inline
-  `pointer-events: none` on <body> when a modal opens. If the modal
-  closes but its overlay leaks (the case above) without Radix releasing
-  the inline lock, Playwright reports the next click failing on
-  `<html>` because <body> is still pointer-events:none with no
-  interactive descendant to receive the event.
+  `pointer-events: none` on <body> when a modal opens. Stale overlays
+  + DismissableLayer tear-down race occasionally leak the lock past the
+  modal close, which surfaces in Playwright as the next click failing
+  on `<html>` (no descendant accepts the event because body is locked
+  to its children).
 
-  Match the leak case explicitly: there is NO live interactive modal
-  (i.e. no `[data-state="open"]:not([aria-hidden="true"])` overlay
-  element). When that's true, force <body> back to interactive --
-  Radix's inline style has higher specificity than this rule under
-  normal modal-open conditions, so this only takes effect when Radix
-  has either released the lock or never had reason to hold it.
-  `:has()` is supported in Electron 41 (Chromium 124+).
+  Force-release on <html> + <body> when there is NO interactive Radix
+  surface left mounted. We accept losing the body-scroll-lock-while-open
+  side-effect (modal overlays handle their own scroll contention via
+  the overlay click-to-dismiss + DismissableLayer ESC handler; losing
+  the body-scroll-lock just means a wheel scroll behind a modal goes
+  through, which is a much smaller bug than e2e clicks broken). The
+  `:not(:has(...))` match still scopes to the leak window: if a
+  data-state=open + interactive (aria-hidden=false) Radix surface IS
+  mounted (real live modal / open menu / open popover), Radix's inline
+  lock takes over via specificity. `:has()` is Electron 41 / Chromium
+  124+.
 */
+html:not(:has([data-state="open"]:not([aria-hidden="true"]))),
 body:not(:has([data-state="open"]:not([aria-hidden="true"]))) {
   pointer-events: auto !important;
 }
