@@ -38,6 +38,7 @@
     "make:linux": "npm run build && electron-builder --linux --publish never",
     "build:icon": "electron scripts/build-icon.cjs",
     "rebuild:natives": "node scripts/electron-rebuild-natives.cjs",
+    "build:uninstall-helper": "cd installer/uninstall-helper && pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
@@ -170,7 +171,8 @@
       "icon": "build/icon.ico",
       "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
       "extraResources": [
-        { "from": "daemon/dist/ccsm-daemon-staged.exe", "to": "daemon/ccsm-daemon.exe" }
+        { "from": "daemon/dist/ccsm-daemon-staged.exe", "to": "daemon/ccsm-daemon.exe" },
+        { "from": "daemon/dist/ccsm-uninstall-helper.exe", "to": "daemon/ccsm-uninstall-helper.exe" }
       ]
     },
     "nsis": {

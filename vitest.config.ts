@@ -8,6 +8,7 @@ export default defineConfig({
       'tests/**/*.test.tsx',
       'electron/**/__tests__/**/*.test.ts',
       'daemon/**/__tests__/**/*.test.ts',
+      'installer/**/__tests__/**/*.test.ts',
     ],
     globals: true,
     setupFiles: ['tests/setup.ts'],
