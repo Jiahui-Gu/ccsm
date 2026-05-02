@@ -26,9 +26,10 @@ syntax, Win Get-Content caveat, e2e pkill target).
 2. close-to-tray SQLite key = `close_to_tray_shown_at` (timestamp), owned by
    frag-6-7 §6.8. §3.7.8.b (which had been claiming `close_to_tray_hint_shown`
    boolean) is collapsed into the §3.7.8 deletion.
-3. Per-user install (`%LOCALAPPDATA%\ccsm\`) + OS-native data root
-   (`%APPDATA%\ccsm\` on Win, `~/Library/Application Support/ccsm/` on macOS,
-   `~/.config/ccsm/` on Linux). The `daemon.lock` resolution in §3.7.2's
+3. Per-user install (`%LOCALAPPDATA%\ccsm\`) + OS-native data root —
+   see frag-11 §11.6 for dataRoot single source
+   (`%LOCALAPPDATA%\ccsm\` Win, `~/Library/Application Support/ccsm/` mac,
+   `~/.local/share/ccsm/` Linux). The `daemon.lock` resolution in §3.7.2's
    `wait-on file:` snippet uses the OS-native data root, not the install root.
 4. `bootNonce` is camelCase across the bundle (subscribe response, hello
    reply, healthz payload, stream heartbeat). §3.7.5 reader is fixed below.
@@ -89,20 +90,20 @@ extends to **three** named processes. Replace with:
 > **Cross-platform `wait-on file:` note (closes round-2 P0-2 + R1 OPEN q3;
 > round-3 manager arch decision #3 path-root lock):**
 > `scripts/wait-daemon.cjs` resolves the daemon lockfile path against the
-> **OS-native data root** (NOT `~/.ccsm/`):
-> - Win: `path.join(process.env.APPDATA, 'ccsm', 'daemon.lock')`
-> - macOS: `path.join(os.homedir(), 'Library', 'Application Support', 'ccsm', 'daemon.lock')`
-> - Linux: `path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'ccsm', 'daemon.lock')`
+> **OS-native data root** — see frag-11 §11.6 for dataRoot single source
+> (`%LOCALAPPDATA%\ccsm\` Win, `~/Library/Application Support/ccsm/` mac,
+> `~/.local/share/ccsm/` Linux); concatenate `daemon.lock` to that root.
 >
 > Then invokes `wait-on file:<resolved> http://localhost:4100`. The
 > previous `tcp:127.0.0.1:0` was a no-op (port 0 resolves immediately) and
 > silently let Electron race the daemon's pipe bind, dumping every dev
 > boot into the auto-reconnect loop. The lockfile is the same one frag-6-7
 > §6.4 mandates daemon write at startup via `proper-lockfile`, so no new
-> daemon-side work is needed. Note: per-user install (round-3 lock #3)
-> goes to `%LOCALAPPDATA%\ccsm\` for the install root; daemon **data**
-> (lockfile, sqlite, logs) lives at `%APPDATA%\ccsm\` — these are
-> different directories.
+> daemon-side work is needed. Note: per-user install (round-3 lock #3) and
+> per-user data both go to `%LOCALAPPDATA%\ccsm\` on Windows under the
+> r12 lock (PR #682 `perMachine: true` flipped install root to
+> `$PROGRAMFILES64\ccsm\` while data paths stayed at `%LOCALAPPDATA%`);
+> see frag-11 §11.6 for the canonical paths table.
 
 Process graph:
 
@@ -188,10 +189,11 @@ the wider tradeoff.
 Prod dogfood (per `feedback_dogfood_protocol`) runs the installed binary
 where `stdio: "ignore"` (§3.7.6) hides daemon stderr. The only signal is
 the daemon log written by `pino-roll` (frag-6-7 §6.6) under the OS-native
-data root (`%APPDATA%\ccsm\logs\daemon.log` on Win,
-`~/Library/Logs/ccsm/daemon.log` on macOS, `~/.config/ccsm/logs/daemon.log`
-on Linux). Per round-3 manager arch decision #3, log paths follow the
-OS-native data root, not `~/.ccsm/`. v0.3 mandates **two** affordances,
+data root (`<dataRoot>/logs/daemon.log` — see frag-11 §11.6 for the
+canonical dataRoot paths: `%LOCALAPPDATA%\ccsm\` Win,
+`~/Library/Application Support/ccsm/` mac, `~/.local/share/ccsm/` Linux).
+Per round-3 manager arch decision #3, log paths follow the OS-native data
+root, not `~/.ccsm/`. v0.3 mandates **two** affordances,
 both shipped in Phase 0 (no dogfood gate without them):
 
 - **`pino-roll` `symlink: true`** — daemon writes a stable symlink
@@ -745,8 +747,8 @@ Concrete edits to `docs/superpowers/plans/2026-04-30-v0.3-daemon-split.md`:
   can locate `<dataRoot>/logs/daemon.log` for support diagnostics.
 - Acceptance: pino-roll rotation cycle works on Win 11 (rotated file
   written) AND on macOS / Linux (symlink updated). Path is OS-native
-  data root per round-3 lock #3 (`%APPDATA%\ccsm\logs\daemon.log` on
-  Win, NOT `~/.ccsm/`).
+  data root per round-3 lock #3 (`<dataRoot>/logs/daemon.log` — see
+  frag-11 §11.6 for the canonical dataRoot paths, NOT `~/.ccsm/`).
 - [manager r7 lock: cut as polish — N2# + N3# from r6 feature-parity.
   Tray "Open daemon log" entry + Win "Tail daemon log in new terminal"
   entry DELETED entirely; v0.3 is refactor scope, no new tray menu
