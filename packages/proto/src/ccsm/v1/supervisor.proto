@@ -1,0 +1,83 @@
+// Daemon-internal supervisor surface. NOT shipped to clients (no codegen
+// for renderer / web / iOS targets — see chapter 04 §1 file layout note
+// "supervisor.proto: NOT shipped to clients; daemon-internal mirror of HTTP
+// supervisor"). The wire transport on the actual Supervisor channel is
+// PLAIN HTTP (curl-callable from installer / postmortem shell — see
+// chapter 03 §7), NOT Connect-RPC. This .proto exists to give the daemon's
+// internal supervisor implementation a typed schema for the request /
+// response bodies that mirrors the HTTP endpoints, and to lock those
+// shapes against accidental drift. The HTTP URLs and JSON shapes are
+// forever-stable per chapter 15 §3 forbidden-pattern row 9.
+//
+// Endpoints mirrored (chapter 03 §7):
+//   - GET  /healthz   -> HealthCheckResponse           (no admin check)
+//   - POST /hello     -> SupervisorHelloResponse       (admin-only via peer-cred)
+//   - POST /shutdown  -> ShutdownResponse              (admin-only via peer-cred)
+//
+// Transport invariant (chapter 02 §4 + chapter 03 §7 + chapter 15 §3 row 16):
+//   Supervisor is UDS-only on every OS — Windows named pipe
+//   (`\\.\pipe\ccsm-supervisor`), macOS / Linux UDS — forever. Loopback-TCP
+//   supervisor is forbidden. Authentication is OS peer-cred (uid / SID)
+//   only; JWT MUST NOT be added to this surface ever, including v0.4+.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+
+// Daemon-internal supervisor surface. Listed here for typed mirroring of
+// the HTTP body shapes; the actual transport is HTTP, not Connect.
+service SupervisorService {
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc SupervisorHello(SupervisorHelloRequest) returns (SupervisorHelloResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+// GET /healthz — no admin check (any peer that can reach the socket may
+// probe readiness). Daemon returns 503 (instead of populating this body)
+// before startup ordering step 5 (chapter 02 §3) completes.
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool ready = 1;          // true once startup step 5 completes
+  string version = 2;      // daemon semver, e.g. "0.3.x"
+  int64 uptime_s = 3;      // seconds since process start
+  string boot_id = 4;      // UUIDv4 regenerated on every daemon process start;
+                           // matches `listener-a.json` boot_id (chapter 03 §3.2)
+}
+
+// POST /hello — records caller PID + version. Admin-only via peer-cred
+// uid/SID check (chapter 03 §7.1). Used by installer post-register
+// verification.
+message SupervisorHelloRequest {
+  RequestMeta meta = 1;
+  string caller_kind = 2;  // open string set; e.g. "installer", "uninstaller", "postmortem"
+}
+
+message SupervisorHelloResponse {
+  RequestMeta meta = 1;
+  string daemon_version = 2;
+  string boot_id = 3;
+}
+
+// POST /shutdown — admin-only via peer-cred uid/SID check. Triggers the
+// graceful shutdown path (chapter 02 §4 OS-initiated path). Daemon
+// returns the response BEFORE beginning shutdown so the caller (typically
+// the uninstaller) sees the acknowledgement; the actual exit happens on
+// the next event-loop turn. Non-admin peers are rejected at the peer-cred
+// middleware with HTTP 403 (no body shape involved). When v0.3 runs the
+// integration test `supervisor/admin-only.spec.ts`, the rejection path
+// is asserted by the transport, not by this message.
+message ShutdownRequest {
+  RequestMeta meta = 1;
+  // Optional reason carried into the daemon's exit log entry / crash_log
+  // entry (`source = "supervisor_shutdown"`; chapter 09 §1). Open string
+  // set; daemon does not branch behavior on the value.
+  string reason = 2;
+}
+
+message ShutdownResponse {
+  RequestMeta meta = 1;
+  bool accepted = 2;          // true iff peer-cred admin check passed and shutdown was scheduled
+  int32 grace_ms = 3;         // budget the daemon will give in-flight RPCs (chapter 02 §4: <=5000)
+}

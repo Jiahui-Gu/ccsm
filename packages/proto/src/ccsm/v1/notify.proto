@@ -1,0 +1,81 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §6.1 for the contract. Field numbers MUST NOT be reused or
+// renumbered.
+//
+// F6: closes R1 P0.2 / P0.4 (chapter 08) — daemon owns the 7-rule notify
+// decider so toast / badge / flash / OSC-title triggers reach Electron
+// renderer / v0.4 web / v0.4 iOS through one stream. The decider's inputs
+// (PTY data, claude SDK JSONL tail, session state changes) all live in the
+// daemon; the only client-supplied inputs are `focused`, `active_sid`, and
+// `user_input` markers.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+
+service NotifyService {
+  // Server-streams decider-emitted events. Client subscribes once on
+  // boot. Stream lifecycle mirrors WatchSessions (UNAVAILABLE on
+  // daemon restart -> client reconnects with backoff; daemon emits a
+  // catch-up burst of any unread events on resume — bounded at 100
+  // entries per session to avoid overwhelm after a long offline).
+  rpc WatchNotifyEvents(WatchNotifyEventsRequest) returns (stream NotifyEvent);
+
+  // Client -> daemon setters. Drive decider Rules 1-3 (focus mute,
+  // active-sid mute, post-input mute). All unary; daemon updates
+  // in-memory decider state; no DB write.
+  rpc MarkUserInput(MarkUserInputRequest) returns (MarkUserInputResponse);
+  rpc SetActiveSid(SetActiveSidRequest) returns (SetActiveSidResponse);
+  rpc SetFocused(SetFocusedRequest) returns (SetFocusedResponse);
+}
+
+message WatchNotifyEventsRequest {
+  RequestMeta meta = 1;
+  // Per-principal filter is implicit (peer-cred middleware scopes to
+  // ctx.principal's sessions). No `scope` widening in v0.3; v0.4 admin
+  // principals get a separate `WatchAllNotifyEvents` admin RPC if
+  // needed (additive new RPC, not a new field on this request).
+}
+
+// One event per decider firing. Forever-stable.
+message NotifyEvent {
+  string id = 1;            // ULID; client uses for dedupe across reconnects
+  int64 ts_unix_ms = 2;
+  string session_id = 3;
+  NotifyKind kind = 4;
+  // Optional payload by kind:
+  string toast_title = 5;          // for TOAST kind
+  string toast_body = 6;           // for TOAST kind
+  int32 badge_unread_count = 7;    // for BADGE kind; absolute count, not delta
+  // Open string set for v0.4 additions; v0.3 emits "" or one of the known set.
+  string flash_pattern = 8;        // for FLASH kind: "halo-pulse" (v0.3 only); v0.4 may add others
+}
+
+// Forever-stable. Append-only.
+enum NotifyKind {
+  NOTIFY_KIND_UNSPECIFIED = 0;
+  NOTIFY_KIND_TOAST = 1;     // OS native notification
+  NOTIFY_KIND_BADGE = 2;     // dock/taskbar unread count update
+  NOTIFY_KIND_FLASH = 3;     // in-renderer AgentIcon halo pulse
+  NOTIFY_KIND_TITLE = 4;     // OSC-title-derived title push (Sidebar refresh)
+}
+
+message MarkUserInputRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  int64 ts_unix_ms = 3;       // client-supplied; daemon uses for the Rule-1 60s post-input mute window
+}
+message MarkUserInputResponse { RequestMeta meta = 1; }
+
+message SetActiveSidRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;      // empty = no session is active (renderer in non-terminal view)
+}
+message SetActiveSidResponse { RequestMeta meta = 1; }
+
+message SetFocusedRequest {
+  RequestMeta meta = 1;
+  bool focused = 2;           // OS-window focused state; drives Rule-2 active-window mute
+}
+message SetFocusedResponse { RequestMeta meta = 1; }
