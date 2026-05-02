@@ -1,1 +1,0 @@
-[case=askuserquestion-full] FAIL  J8  --  (1) after ArrowUp from Other input expected TypeScript option focused, got {tag:DIV,label:null,role:textbox}
