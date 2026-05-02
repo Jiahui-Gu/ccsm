@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  entitlements-jit.plist — macOS hardened-runtime entitlements with JIT allowance.
+
+  Spike-harness fixture pinned by spec ch14 §1.B (forever-stable contract).
+  Used by ch14 §1.13 (macOS notarization spike). Per ch14 §1.13 step 2:
+
+    codesign --sign "Developer ID Application: <team> (<id>)" \
+             --options runtime \
+             --entitlements tools/spike-harness/entitlements-jit.plist \
+             --timestamp <binary>
+
+  Required entitlements (Node JIT needs both — see ch14 §1.13):
+    com.apple.security.cs.allow-jit
+    com.apple.security.cs.allow-unsigned-executable-memory
+
+  Forever-stable: v0.4 may ADD entitlements; never remove these two or the
+  notarization spike regresses.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
