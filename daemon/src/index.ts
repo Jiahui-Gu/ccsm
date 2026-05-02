@@ -21,7 +21,6 @@ import {
   LOCKFILE_FATAL_EXIT_CODE,
   type LockHandle,
 } from './lifecycle/lockfile.js';
-import { resolveDataRoot } from './db/ensure-data-dir.js';
 import {
   createShutdownDrain,
   type ShutdownDriver,
