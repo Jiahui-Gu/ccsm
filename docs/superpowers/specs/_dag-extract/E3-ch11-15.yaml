@@ -1,0 +1,286 @@
+# Stage-6 DAG extract — chapters 11-15 (E3)
+# Scope: monorepo scaffold, ship-gate harnesses, spike resolution, zero-rework enforcement.
+# Levels: L0 = scaffold, L8 = ship-gate harness/CI, L9 = spike, L10 = zero-rework enforcement.
+
+# ==========================
+# L0 — Monorepo scaffolding (chapter 11)
+# ==========================
+
+- subject: "[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"
+  level: 0
+  blockedBy: []
+  notes: "ch11 §1, §2 — pnpm-workspace.yaml + per-package package.json with @ccsm/* names; gitignored gen/ + dist/"
+
+- subject: "[T0.2] monorepo: Turborepo turbo.json with build/gen/test/lint task graph + cache outputs"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch11 §1, §4 — '@ccsm/proto#gen' as build dep; outputs include gen/** so cache restores codegen"
+
+- subject: "[T0.3] monorepo: tsconfig.base.json + per-package tsconfig.json extends"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch11 §2"
+
+- subject: "[T0.4] monorepo: ESLint flat config + per-package no-restricted-imports rules"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch11 §5 — proto/electron/daemon eslint.config.js forbid cross-package + native imports; backstop for ship-gate (a)"
+
+- subject: "[T0.5] monorepo: buf.gen.yaml v2 + connect-es codegen producing gen/ts (gen/go gen/swift placeholders)"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch11 §4"
+
+- subject: "[T0.6] monorepo: packages/proto lock.json + lock + lock-check scripts (SHA256 per .proto)"
+  level: 0
+  blockedBy: ["[T0.5] monorepo: buf.gen.yaml v2 + connect-es codegen producing gen/ts (gen/go gen/swift placeholders)"]
+  notes: "ch11 §4 — pnpm --filter @ccsm/proto run lock / lock-check"
+
+- subject: "[T0.7] monorepo: Changesets + scripts/sync-version + PROTO_VERSION drift-check script"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch11 §7 — version-drift-check asserts PROTO_VERSION >= last tag's"
+
+- subject: "[T0.8] CI: .github/workflows/ci.yml install + proto-gen-and-lint + daemon/electron-test matrix"
+  level: 0
+  blockedBy: ["[T0.2] monorepo: Turborepo turbo.json with build/gen/test/lint task graph + cache outputs", "[T0.4] monorepo: ESLint flat config + per-package no-restricted-imports rules", "[T0.6] monorepo: packages/proto lock.json + lock + lock-check scripts (SHA256 per .proto)"]
+  notes: "ch11 §6 — install-cache artifact share; turbo cache key includes .proto + lock.json; ubuntu/macos/windows matrix"
+
+- subject: "[T0.9] CI: package job (win-msi/mac-pkg/linux-deb-rpm) + verify-signing.{sh,ps1}"
+  level: 0
+  blockedBy: ["[T0.8] CI: .github/workflows/ci.yml install + proto-gen-and-lint + daemon/electron-test matrix"]
+  notes: "ch11 §6 — chapter 10 §7 signing verify"
+
+- subject: "[T0.10] CI: self-hosted runner provisioning (ccsm-soak + win11-25h2-vm labels) under infra/win11-runner"
+  level: 0
+  blockedBy: []
+  notes: "ch11 §6, ch10 §6 — out-of-band infra repo; gates ship-gate (c) and (d) jobs"
+
+# ==========================
+# L8 — Ship-gate test harnesses + CI specs (chapter 12 + 13 phases)
+# Forever-stable per chapter 15.
+# ==========================
+
+- subject: "[T8.1] tools/lint-no-ipc.sh + tools/.no-ipc-allowlist (descriptor preload only)"
+  level: 8
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch12 §4.1 — ship-gate (a); forever-stable (ch15 §3 #11, #29); allowlist is one line"
+
+- subject: "[T8.2] ESLint backstop in packages/electron/eslint.config.js (ipcMain/ipcRenderer/contextBridge ban)"
+  level: 8
+  blockedBy: ["[T0.4] monorepo: ESLint flat config + per-package no-restricted-imports rules"]
+  notes: "ch12 §4.1 — paired with grep; AST-aware backstop for renamed imports; forever-stable"
+
+- subject: "[T8.3] packages/electron/test/e2e/sigkill-reattach.spec.ts (ship-gate (b))"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §4.2 — Playwright + per-OS kill helper; subprocess daemon variant per-PR + service-installed nightly; byte-equality assertion via SnapshotV1; forever-stable"
+
+- subject: "[T8.4] packages/daemon/test/integration/pty-soak-1h.spec.ts (ship-gate (c)) + pty-soak-10m smoke variant"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §4.3 — canonical path locked (ch15 §3 #28); workload classes table; SendInput p99<5ms blocking; self-hosted runner; phase 5 ships 10m smoke variant"
+
+- subject: "[T8.5] packages/electron/test/e2e/pty-soak-reconnect.spec.ts (Electron-side reattach companion)"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §4.3 — Electron-side companion to pty-soak-1h"
+
+- subject: "[T8.6] tools/installer-roundtrip.ps1 + test/installer-residue-allowlist.txt (ship-gate (d))"
+  level: 8
+  blockedBy: ["[T0.10] CI: self-hosted runner provisioning (ccsm-soak + win11-25h2-vm labels) under infra/win11-runner"]
+  notes: "ch12 §4.4 — file-tree+registry diff, fail-closed; loops both REMOVEUSERDATA=0/1; mac/linux installer-roundtrip.sh is non-gating draft; forever-stable"
+
+- subject: "[T8.7] packages/daemon/test/fixtures/claude-sim Go module + per-OS build step"
+  level: 8
+  blockedBy: ["[T0.8] CI: .github/workflows/ci.yml install + proto-gen-and-lint + daemon/electron-test matrix"]
+  notes: "ch12 §5 — Go source committed, bin/ gitignored; setup-go@v5 in CI; --simulate-workload 60m drives ship-gate (c); JSONL script format"
+
+- subject: "[T8.8] packages/proto unit tests (lock.spec, request-meta-validation, open-string-tolerance, proto-min-version, error-detail-roundtrip)"
+  level: 8
+  blockedBy: ["[T0.5] monorepo: buf.gen.yaml v2 + connect-es codegen producing gen/ts (gen/go gen/swift placeholders)"]
+  notes: "ch12 §2 — @ccsm/proto unit suite; lock.spec is forever-stable enforcement"
+
+- subject: "[T8.9] packages/daemon integration spec family — connect-roundtrip / pty-attach-stream / pty-reattach / pty-too-far-behind / pty-sendinput / pty-resize"
+  level: 8
+  blockedBy: ["[T8.7] packages/daemon/test/fixtures/claude-sim Go module + per-OS build step"]
+  notes: "ch12 §3 — per-RPC happy+error path coverage criterion"
+
+- subject: "[T8.10] integration spec family — peer-cred-rejection / version-mismatch / crash-stream / crash-getlog / settings-roundtrip / settings-error"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §3 — peer-cred runs OS-syscall variant only on ubuntu self-hosted with second user; mocked elsewhere"
+
+- subject: "[T8.11] integration spec — rpc/clients-transport-matrix.spec.ts (parameterized over transport enum)"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §3 — guards spike fallback transports; ensures every BindDescriptor.kind has a tested wiring"
+
+- subject: "[T8.12] integration spec — bundle/no-jwt-in-v03.spec.ts (no jwtValidator string in built sea)"
+  level: 8
+  blockedBy: ["[T0.9] CI: package job (win-msi/mac-pkg/linux-deb-rpm) + verify-signing.{sh,ps1}"]
+  notes: "ch12 §3 — prevents v0.4 listener-b leakage; stands in for absent listener-b.ts"
+
+- subject: "[T8.13] packages/daemon/test/bench/* (cold-start, hello-rtt, sendinput-rtt, snapshot-encode, rss)"
+  level: 8
+  blockedBy: []
+  notes: "ch12 §7 — nightly; advisory except SendInput p99 (gate-c blocking via soak)"
+
+- subject: "[T8.14] coverage enforcement — daemon 80% / electron renderer 60% in vitest configs + CI step"
+  level: 8
+  blockedBy: ["[T0.8] CI: .github/workflows/ci.yml install + proto-gen-and-lint + daemon/electron-test matrix"]
+  notes: "ch12 §6 — fails PR; supersedes legacy advisory thresholds"
+
+- subject: "[T8.15] tools/release-candidate.sh — orchestrate ship-gate (a-d) green-on-same-commit"
+  level: 8
+  blockedBy: ["[T8.1] tools/lint-no-ipc.sh + tools/.no-ipc-allowlist (descriptor preload only)", "[T8.3] packages/electron/test/e2e/sigkill-reattach.spec.ts (ship-gate (b))", "[T8.4] packages/daemon/test/integration/pty-soak-1h.spec.ts (ship-gate (c)) + pty-soak-10m smoke variant", "[T8.6] tools/installer-roundtrip.ps1 + test/installer-residue-allowlist.txt (ship-gate (d))"]
+  notes: "ch13 §2 phase 11 — gh run list verify (a)+(b); workflow_dispatch (c)+(d) pinned to SHA; emits suggested git tag command"
+
+- subject: "[T8.16] tools/dogfood-window-check.sh — phase-12 7-day no-architectural-regression measurement"
+  level: 8
+  blockedBy: []
+  notes: "ch13 §2 phase 12 — gh pr list merged-since; greps architecture-regression label + forever-stable file touches"
+
+# ==========================
+# L9 — Spikes (chapter 14)
+# Each MUST resolve before the dependent implementation task.
+# ==========================
+
+- subject: "[T9.1] spike [win-localservice-uds] Win 11 25H2 LocalService UDS/named pipe reachability"
+  level: 9
+  blockedBy: ["[T0.10] CI: self-hosted runner provisioning (ccsm-soak + win11-25h2-vm labels) under infra/win11-runner"]
+  notes: "ch14 §1.1; phase 0.5 — spike — must resolve before E1 daemon listener-A wiring on Windows"
+
+- subject: "[T9.2] spike [macos-uds-cross-user] macOS UDS cross-user reachability without FDA"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.2; phase 0.5 — spike — must resolve before E1 daemon listener-A wiring on macOS"
+
+- subject: "[T9.3] spike [loopback-h2c-on-25h2] Win 11 25H2 loopback HTTP/2 cleartext"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.3; phase 0.5 — spike — must resolve before transport pick row in ch14 §1.A matrix"
+
+- subject: "[T9.4] spike [uds-h2c-on-darwin-and-linux] Node 22 http2 over UDS 1h soak"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.4; phase 0.5 — spike — must resolve before E1 listener-A on darwin+linux"
+
+- subject: "[T9.5] spike [win-h2-named-pipe] Node 22 http2 over Windows named pipe"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.5; phase 0.5 — spike — must resolve before A4 transport pick on Windows"
+
+- subject: "[T9.6] spike [child-process-pty-throughput] node-pty + xterm-headless throughput in child_process"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.7; phase 4.5 — spike — must resolve before E1 phase-5 PTY host work; baseline appended to ch06 §4"
+
+- subject: "[T9.7] spike [snapshot-roundtrip-fidelity] SnapshotV1 encode→decode→encode byte-identical"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.8; phase 4.5 — spike — must resolve before E1 phase-5 PTY snapshot encoder; uses xterm test corpus + vt-grammar"
+
+- subject: "[T9.8] spike [better-sqlite3-in-sea] better-sqlite3 .node embed in Node 22 sea"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.9 — spike — must resolve before E1 native-loader; expected fallback = sidecar"
+
+- subject: "[T9.9] spike [sea-on-22-three-os] Node 22 sea hello-world on win/mac/linux"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.10; phase 9.5 — spike — must resolve before E1 phase-10 installer build; runs in phase 0 (proto-free harness)"
+
+- subject: "[T9.10] spike [node-pty-22] node-pty Node 22 ABI on 6 matrix combos"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.11 — spike — must resolve before E1 phase-5 PTY host"
+
+- subject: "[T9.11] spike [better-sqlite3-22-arm64] arm64 prebuilds for darwin/linux"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.12 — spike — must resolve before E1 phase-3 SQLite on arm64 matrix"
+
+- subject: "[T9.12] spike [macos-notarization-sea] notarize Node sea binary with hardened runtime + JIT"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.13; phase 9.5 — spike — must resolve before E1 phase-10 installer macOS; ops prereq (Apple Dev ID cert) blocks phase 0"
+
+- subject: "[T9.13] spike [msi-service-install-25h2] WiX 4 ServiceInstall on 25H2"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.14; phase 9.5 — spike — must resolve before E1 phase-10 Windows installer"
+
+- subject: "[T9.14] spike [msi-tooling-pick] WiX 4 vs electron-builder MSI builder bake-off"
+  level: 9
+  blockedBy: ["[T9.9] spike [sea-on-22-three-os] Node 22 sea hello-world on win/mac/linux"]
+  notes: "ch14 §1.16; phase 9.5 — spike — must resolve before E1 phase-10 Windows MSI tooling pick"
+
+- subject: "[T9.15] tools/spike-harness/ shared scripts (wrap-as-localservice, set-pipe-dacl, connect-and-peercred, pty-emitter, delta-collector, vt-grammar, snapshot-roundtrip.spec, sea-hello, entitlements-jit.plist, install-residue-diff, rtt-histogram, stream-truncation-detector)"
+  level: 9
+  blockedBy: []
+  notes: "ch14 §1.B — shared harness contract; forever-stable shape; reused by ship-gate (d)"
+
+# ==========================
+# L10 — Zero-rework enforcement scripts + lock specs (chapter 15)
+# ==========================
+
+- subject: "[T10.1] tools/check-migration-locks.sh + db/migration-lock.spec.ts"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #4 — fetches v0.3 release tag, asserts SHA256 of every migration matches packages/daemon/src/db/locked.ts"
+
+- subject: "[T10.2] proto/lock.spec.ts in @ccsm/proto unit suite"
+  level: 10
+  blockedBy: ["[T0.6] monorepo: packages/proto lock.json + lock + lock-check scripts (SHA256 per .proto)"]
+  notes: "ch12 §2, ch15 §3 #1/#2/#19/#23 — every .proto SHA256 vs lock.json (forever-stable)"
+
+- subject: "[T10.3] daemon/listeners/array-shape.spec.ts + as-const tuple type + ESLint ccsm/no-listener-slot-mutation"
+  level: 10
+  blockedBy: ["[T0.4] monorepo: ESLint flat config + per-package no-restricted-imports rules"]
+  notes: "ch15 §3 #6, #18 — listeners.length===2, slot 1 is RESERVED_FOR_LISTENER_B sentinel; ESLint forbids writes outside listener-b.ts"
+
+- subject: "[T10.4] daemon/descriptor/schema.spec.ts + listener-a.schema.json (v1 JSON Schema)"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #8 — every emitted descriptor validates against v1 schema"
+
+- subject: "[T10.5] supervisor/contract.spec.ts golden response bodies for /healthz /hello /shutdown"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #9 — table-tests against checked-in goldens; URLs as const"
+
+- subject: "[T10.6] tools/packages-shape.spec.ts (v0.3 packages set is subset of actual)"
+  level: 10
+  blockedBy: ["[T0.1] monorepo: pnpm workspaces + packages/{daemon,electron,proto} skeleton"]
+  notes: "ch15 §3 #10 — human-review smoke check"
+
+- subject: "[T10.7] daemon/state-dir/paths.spec.ts (per-OS state directory constants frozen)"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #12"
+
+- subject: "[T10.8] pty/snapshot-codec.spec.ts + golden binary at packages/daemon/test/fixtures/snapshot-v1-golden.bin (codec=1 zstd + codec=2 gzip)"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #5, #21 — round-trip golden byte-for-byte for both codecs"
+
+- subject: "[T10.9] pty/segmentation-cadence.spec.ts (cadence constants in single source file; no per-subscriber knobs)"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #26"
+
+- subject: "[T10.10] tools/perf-budgets-locked.spec.ts (Listener-A row in ch12 §7 byte-identical to v0.3 release tag)"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §3 #27 — appended Listener-B rows OK; in-place edits forbidden"
+
+- subject: "[T10.11] tools/audit-table-revalidate.sh — re-run ch15 §1/§2 audit verdicts on every PR touching forever-stable files"
+  level: 10
+  blockedBy: []
+  notes: "ch15 §1, §2 — mechanical reviewer checklist driver; flags REMOVED items audit (e.g., ch14 §1.6, §1.15) regressions"
+
+- subject: "[T10.12] CI step: buf breaking against merge-base SHA pre-tag / v0.3 release tag post-tag"
+  level: 10
+  blockedBy: ["[T0.8] CI: .github/workflows/ci.yml install + proto-gen-and-lint + daemon/electron-test matrix"]
+  notes: "ch11 §4, ch15 §3 #1, #2, #19, #20 — active from phase 1 onward; rejects field renumber + reserved-slot bypass"
