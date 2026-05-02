@@ -1,0 +1,133 @@
+name: ccsm-native
+
+# Build + load-smoke the in-tree N-API helper on the v0.3 platform
+# matrix. Spec: docs/superpowers/specs/v0.3-fragments/frag-3.5.1-pty-hardening.md
+# §3.5.1.1 + §3.5.1.6.
+#
+# We pin Node to `daemon/.nvmrc` (the daemon's locked target) so the
+# .node we produce here matches the ABI the daemon will dlopen at
+# runtime — same single-source-of-truth rule frag-11 §11.5(0a) /
+# Task 20f locked in.
+#
+# This workflow is intentionally separate from the main `ci` job so:
+#   - main CI lint/typecheck/test stays fast (no node-gyp on every PR)
+#   - matrix changes here don't reshuffle the main verify path
+#   - the daemon-side smoke (loadCcsmNative on the freshly built
+#     artifact) runs against the actual binary, not a JS fake.
+
+on:
+  pull_request:
+    branches: [main, working]
+    paths:
+      - 'daemon/native/ccsm_native/**'
+      - 'daemon/src/native/**'
+      - 'daemon/.nvmrc'
+      - 'scripts/build-ccsm-native.cjs'
+      - 'eslint-rules/no-direct-native-import.js'
+      - '.github/workflows/ccsm-native.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ccsm-native-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    name: build + smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin the daemon Node target via daemon/.nvmrc — same source of
+      # truth used by scripts/build-ccsm-native.cjs and frag-11.
+      - name: Setup Node (from daemon/.nvmrc)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: daemon/.nvmrc
+          cache: 'npm'
+
+      - name: Setup Python (node-gyp)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # node-gyp on Windows needs the MSVC build tools shipped with
+      # the GitHub-hosted windows-latest image. No extra install
+      # required; we just verify the toolchain is there before we
+      # spend time on the addon build.
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          node --version
+          npm --version
+          python --version
+          which node-gyp || npx node-gyp --version || true
+
+      # We only need the addon's own deps (node-addon-api headers).
+      # Install via the dedicated build script which also runs node-gyp.
+      - name: Build ccsm_native
+        run: npm run build:ccsm-native
+        env:
+          # Force node-gyp to download fresh headers if cache is cold.
+          npm_config_build_from_source: 'true'
+
+      - name: Verify artifact present
+        shell: bash
+        run: |
+          ARCH=$(node -p "process.arch")
+          PLAT=$(node -p "process.platform")
+          OUT="daemon/native/${PLAT}-${ARCH}/ccsm_native.node"
+          if [ ! -f "$OUT" ]; then
+            echo "FATAL: ccsm_native.node not at $OUT" >&2
+            exit 1
+          fi
+          ls -lah "$OUT"
+          echo "CCSM_NATIVE_NODE=$PWD/$OUT" >> "$GITHUB_ENV"
+
+      # Install the root project's deps (vitest, typescript, etc.) so
+      # we can run the load-smoke test against the freshly built
+      # artifact. We skip native rebuilds via ELECTRON_SKIP_BINARY_DOWNLOAD
+      # and `--ignore-scripts` is intentionally NOT used: we DO want
+      # better-sqlite3's postinstall to run on Linux (other matrix
+      # legs may need it for unrelated tests we trigger below). On
+      # Windows the postinstall sometimes fails on a fresh checkout
+      # because node-pty's submodule scripts need git-bash; we tolerate
+      # that here because the only test we run cares about ccsm_native.
+      - name: Install root deps
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+        continue-on-error: ${{ matrix.os == 'windows-latest' }}
+
+      # Smoke: load the built .node via the production loader shim.
+      # The vitest filter limits us to the loader's __tests__ tree so
+      # we don't pay the full daemon-tests wall-clock here.
+      - name: Smoke (loadCcsmNative real artifact)
+        shell: bash
+        run: |
+          npx vitest run daemon/src/native/__tests__/index.test.ts --reporter=verbose
+        env:
+          CCSM_NATIVE_NODE: ${{ env.CCSM_NATIVE_NODE }}
+
+      # Lint: prove the no-direct-native-import rule is wired and
+      # green on the daemon tree (no other file requires the .node).
+      - name: Lint (no-direct-native-import)
+        run: npx eslint daemon/src --ext .ts
+
+      # Upload the .node so a downstream job (or release.yml in the
+      # future) can consume it. For now this is observability — we
+      # want to see the per-platform sizes drift over time.
+      - name: Upload ccsm_native.node
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccsm_native-${{ runner.os }}-${{ runner.arch }}
+          path: daemon/native/*/ccsm_native.node
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,15 @@
+{
+  "name": "ccsm_native",
+  "version": "0.3.0",
+  "private": true,
+  "description": "In-tree N-API helper for CCSM daemon (winjob + pipeAcl + pdeathsig + peerCred + sigchld). Spec: docs/superpowers/specs/v0.3-fragments/frag-3.5.1-pty-hardening.md §3.5.1.1.",
+  "main": "index.js",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "rebuild": "node-gyp rebuild"
+  },
+  "gypfile": true,
+  "dependencies": {
+    "node-addon-api": "^8.5.0"
+  }
+}
