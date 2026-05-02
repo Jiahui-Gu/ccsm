@@ -52,6 +52,9 @@
     "proto:gen": "cd proto && buf generate",
     "setup": "node scripts/setup.cjs"
   },
+  "overrides": {
+    "html-encoding-sniffer": "5.x"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@bufbuild/protobuf": "^2.12.0",
