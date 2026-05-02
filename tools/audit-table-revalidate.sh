@@ -251,6 +251,14 @@ extract_paths() {
                 print tok
                 next
             }
+            # Allow extensionless dotfiles under a known top-level dir
+            # (e.g. tools/.no-ipc-allowlist, packages/electron/.no-ipc-allowlist).
+            # These are config files explicitly named in spec (ch15 §3 #29) and
+            # have no extension to anchor the previous rule.
+            if (tok ~ /^(packages|tools|docs|native|scripts|src|build|electron|tests)\/([^\/]+\/)*\.[A-Za-z0-9_][A-Za-z0-9._-]*$/) {
+                print tok
+                next
+            }
         }
       ' \
       | sort -u
@@ -259,12 +267,26 @@ extract_paths() {
 extract_paths "$CH15" > "$PATHS_FILE"
 
 # REMOVED items from chapter 14 — pull paragraphs mentioning REMOVED, capture
-# any backtick tokens. Used for the reintroduction warning.
+# any backtick tokens. Used for the reintroduction warning. Also scan heading
+# lines (e.g. `##### 1.15 [watchdog-darwin-approach] — REMOVED from ...`) and
+# extract the bracketed identifier so headings without backticked tokens still
+# fire the reintroduction warning.
 if [[ -s "$CH14" ]]; then
-    awk '/REMOVED/ {print; for (i=0;i<3;i++){ if ((getline line) > 0) print line; else break } }' "$CH14" \
-      | grep -oE '`[^`]+`' \
-      | sed -e 's/^`//' -e 's/`$//' \
-      | sort -u > "$REMOVED_FILE"
+    {
+        awk '/REMOVED/ {print; for (i=0;i<3;i++){ if ((getline line) > 0) print line; else break } }' "$CH14" \
+          | grep -oE '`[^`]+`' \
+          | sed -e 's/^`//' -e 's/`$//'
+        # Heading-line bracketed identifiers on REMOVED lines
+        awk '/^#+ .*REMOVED/ {
+            s = $0
+            while (match(s, /\[[^]]+\]/)) {
+                tok = substr(s, RSTART+1, RLENGTH-2)
+                # skip markdown link anchors like [Chapter 14]
+                if (tok !~ /^[Cc]hapter / && tok != "" ) print tok
+                s = substr(s, RSTART+RLENGTH)
+            }
+        }' "$CH14"
+    } | sort -u > "$REMOVED_FILE"
 else
     : > "$REMOVED_FILE"
 fi
