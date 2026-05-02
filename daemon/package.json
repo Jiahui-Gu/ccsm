@@ -38,6 +38,8 @@
     "@sinclair/typebox": "^0.34.49",
     "better-sqlite3": "^12.9.0",
     "node-pty": "1.1.0",
+    "@xterm/headless": "^5.5.0",
+    "@xterm/addon-serialize": "^0.13.0",
     "pino": "^9.5.0",
     "pino-roll": "^3.0.0",
     "proper-lockfile": "^4.1.2",

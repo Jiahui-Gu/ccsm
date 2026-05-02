@@ -33,6 +33,7 @@ import {
 } from './lifecycle/diskCapWatchdog.js';
 import * as fs from 'node:fs';
 import { native, IsBindingMissingError } from './native/index.js';
+import { createPtyRegistry, type PtyRegistry } from './pty/registry.js';
 import { installCrashHandlers } from './crash/handlers.js';
 import { installNativeCrashHandlers } from './crash/native-handlers.js';
 import { initDaemonSentry } from './sentry/init.js';
@@ -145,12 +146,11 @@ const dataRoot =
 let lockHandle: LockHandle | undefined;
 
 // T25 — force-kill fallback wiring. The reaper-PID set (T38) and the
-// JobObject handle (T39) are owned by the per-spawn wiring that lands
-// alongside the real ptyService. Until those wires are in, the
-// getters return empty arrays so the sink is a safe no-op; the
-// shutdown handler still calls it on overrun and the warn line
-// records `targets: 0`. When the spawn wiring lands it will populate
-// these snapshots from the real reaper / job-object singletons.
+// JobObject handle (T39) are populated by the PTY registry singleton
+// (#108) below: every spawn pushes into `childPidRegistry`, every exit
+// removes from it. JobObjects stay shaped as a placeholder array until
+// the win-jobobject wiring inside the registry's killTerminally hook
+// is finalised (Win-only follow-up).
 const childPidRegistry: Set<number> = new Set();
 const jobObjectRegistry: ForceKillJobHandle[] = [];
 const forceKillSink = createForceKillSink({
@@ -167,6 +167,45 @@ const forceKillSink = createForceKillSink({
       { event: 'daemon-shutdown.force-kill.error', target, err: String(err) },
       'force-kill target failed',
     );
+  },
+});
+
+// Task #108 — PTY registry singleton (frag-3.5.1 §3.5.1.1 + §3.5.1.2).
+//
+// The registry owns every node-pty + xterm-headless mirror in the
+// daemon, plus the fan-out subscriber registry that Connect /
+// envelope `pty.subscribe` handlers attach to. The shutdown drain's
+// step 4 (`wind-down-pty-children`) and step 6
+// (`close-fanout-registry`) drivers below delegate to it; the
+// previous "deferred to #108" placeholders are now live.
+//
+// Population of `childPidRegistry` (consumed by the T25 force-kill
+// sink + the orchestrator's waitpid loop) happens through the
+// registry's `registerChildPid` / `unregisterChildPid` callbacks —
+// every spawn adds the PID, every exit removes it. The JobObject
+// array stays empty in this PR; the Win-only TerminateJobObject
+// wiring is plugged in by a follow-up that creates the JobHandle in
+// `pty/win-jobobject.ts` and feeds it through the registry's
+// `killTerminally` hook (out of #108 scope — only the seam exists
+// here).
+export const ptyRegistry: PtyRegistry = createPtyRegistry({
+  registerChildPid: (sid, pid) => {
+    childPidRegistry.add(pid);
+    logger.info(
+      { event: 'pty.pid.adopt', sid, pid },
+      'pty child PID adopted into shutdown bookkeeping',
+    );
+  },
+  unregisterChildPid: (sid, pid) => {
+    childPidRegistry.delete(pid);
+    logger.info(
+      { event: 'pty.pid.release', sid, pid },
+      'pty child PID released from shutdown bookkeeping',
+    );
+  },
+  logger: {
+    warn: (obj, msg) => logger.warn(obj, msg),
+    info: (obj, msg) => logger.info(obj, msg),
   },
 });
 
@@ -282,11 +321,28 @@ const shutdownDriver: ShutdownDriver = {
   drainConnectStreams: (reason) => {
     logger.info({ event: 'daemon-shutdown', step: 'drain-connect-streams', reason }, 'connect/fanout going_away');
   },
-  // Step 4 — wait for PTY children to exit via ccsm_native.sigchld.
-  // Today the per-spawn registry (childPidRegistry) is empty until the
-  // PTY spawn wiring lands; loop is a no-op then. When children exist
-  // we waitpid(-1) once per known PID with a per-child deadline.
+  // Step 4 — wait for PTY children to exit. Two-phase per #108:
+  //   (a) Registry-driven graceful → terminal kill: SIGTERM each
+  //       node-pty entry, await per-child deadline, escalate to
+  //       SIGKILL/TerminateJobObject for survivors, then FSM
+  //       running→shutting_down→exited|paused (frag-3.5.1 §3.5.1.2).
+  //       The registry's onExit hook removes each PID from
+  //       `childPidRegistry` synchronously, so the waitpid loop
+  //       below has nothing to do for cleanly-exited children.
+  //   (b) ccsm_native.sigchld waitpid sweep on any PIDs still
+  //       lingering in the set (defensive — covers the case where a
+  //       rogue grandchild kept the PID alive past the registry's
+  //       perceived exit, or a future caller plugged a PID into
+  //       `childPidRegistry` outside the registry's path).
   windDownPtyChildren: async ({ perChildDeadlineMs }) => {
+    try {
+      await ptyRegistry.windDown({ perChildDeadlineMs });
+    } catch (err) {
+      logger.warn(
+        { event: 'daemon-shutdown.pty-registry-windDown-failed', err: String(err) },
+        'pty registry windDown threw; falling through to waitpid sweep',
+      );
+    }
     const pids = Array.from(childPidRegistry);
     if (pids.length === 0 || process.platform === 'win32') return;
     let binding: ReturnType<typeof native> | null = null;
@@ -330,12 +386,27 @@ const shutdownDriver: ShutdownDriver = {
       'DB checkpoint deferred to #105 shared-handle slice',
     );
   },
-  // Step 6 — final fan-out registry sweep. Placeholder until #108 lands
-  // the registry singleton in this process.
+  // Step 6 — final fan-out registry sweep (#108). Drains every
+  // remaining subscriber on the PTY registry's fan-out singleton with
+  // `daemon-shutdown` reason. Renderers / Connect clients see a
+  // clean stream end + reconnect on next boot rather than a
+  // transport-level RST.
   closeFanoutRegistry: (reason) => {
+    let count = 0;
+    try {
+      count = ptyRegistry.closeAllSubscribers({
+        kind: 'daemon-shutdown',
+        detail: reason,
+      });
+    } catch (err) {
+      logger.warn(
+        { event: 'daemon-shutdown.fanout-close-failed', err: String(err) },
+        'fan-out registry close threw',
+      );
+    }
     logger.info(
-      { event: 'subscribers-closed', count: 0, reason, placeholder: true },
-      'fan-out registry close deferred to #108',
+      { event: 'subscribers-closed', count, reason },
+      'fan-out subscribers closed',
     );
   },
   // Step 7 — best-effort logger flush. #147 will swap for pino.final.
@@ -540,10 +611,12 @@ const supervisorWiringManifest = wireSupervisorDispatcher(supervisorDispatcher, 
     version: DAEMON_VERSION,
     bootedAtMs,
     now: () => Date.now(),
-    // Live counter providers will be plugged in by their owning subsystems
-    // (session registry, fan-out registry, migration FSM, swap-window
-    // observer) as they land. Defaults to 0 / 'absent' / false until then —
-    // the wire field is always present so renderer parsing never breaks.
+    // Task #108 — live PTY session count provider plugged into the
+    // /healthz reply. The fan-out subscriber count + migration FSM +
+    // swap-window observer remain unwired (their owning slices have
+    // not landed yet); the wire field stays default (0 / 'absent' /
+    // false) until those land.
+    getSessionCount: () => ptyRegistry.size(),
   },
   stats: {
     // getMemoryUsage falls back to process.memoryUsage(); see
