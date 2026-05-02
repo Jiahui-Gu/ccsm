@@ -1,8 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 
 // ----------------------------------------------------------------------------
 // Mocks
@@ -113,28 +110,6 @@ function sendsFor(channel: string) {
   return webContentsSends.filter((s) => s.channel === channel).map((s) => s.payload);
 }
 
-// On-disk artifact + .minisig sidecar shared across the install-path tests.
-// verifyMinisign's Linux pre-flight runs `fs.existsSync(args.artifactPath)`
-// before the runner stub is consulted, so a non-existent placeholder path
-// (e.g. '/tmp/x.AppImage') makes the verify chain fail closed on CI ubuntu
-// and the install handler returns `{ok:false, reason:'verify-failed'}`. The
-// fix is to point `downloadedFile` at a real on-disk path; the file content
-// is irrelevant because the runner stub returns code:0 unconditionally.
-let __artifactDir = '';
-let __artifactPath = '';
-function downloadedArtifactPath(): string {
-  return __artifactPath;
-}
-beforeEach(() => {
-  __artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-updater-test-'));
-  __artifactPath = path.join(__artifactDir, 'ccsm.AppImage');
-  fs.writeFileSync(__artifactPath, 'fake binary');
-  fs.writeFileSync(`${__artifactPath}.minisig`, 'fake sig');
-});
-afterEach(() => {
-  try { fs.rmSync(__artifactDir, { recursive: true, force: true }); } catch { /* ignore */ }
-});
-
 describe('updater: IPC wiring', () => {
   beforeEach(async () => {
     await freshModule();
@@ -196,7 +171,7 @@ describe('updater: IPC wiring', () => {
   });
 
   it('broadcasts status on update-downloaded and fires update:downloaded channel', () => {
-    autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3', downloadedFile: downloadedArtifactPath() });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3', downloadedFile: '/tmp/x.AppImage' });
 
     expect(sendsFor('updates:status')).toContainEqual({ kind: 'downloaded', version: '1.2.3' });
     expect(sendsFor('update:downloaded')).toContainEqual({ version: '1.2.3' });
@@ -241,7 +216,7 @@ describe('updater: IPC wiring', () => {
     // Defense-in-depth gate (#TBD): updates:install refuses unless
     // lastStatus is `downloaded`. Drive the broadcast first so the
     // handler can proceed.
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: downloadedArtifactPath() });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
@@ -309,7 +284,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
   });
 
   it('default (no rpc wired) resolves immediately and proceeds with quitAndInstall', async () => {
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: downloadedArtifactPath() });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
@@ -362,7 +337,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
         }),
     );
 
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.4', downloadedFile: downloadedArtifactPath() });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.4', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const promise = handler({});
 
@@ -385,7 +360,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
     try {
       const mod = await import('../updater');
       mod.setUpgradeShutdownRpc(() => new Promise(() => undefined));
-      autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.5', downloadedFile: downloadedArtifactPath() });
+      autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.5', downloadedFile: '/tmp/x.AppImage' });
       const handler = ipcHandlers.get('updates:install')!;
       const promise = handler({});
       await vi.advanceTimersByTimeAsync(mod.UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS);
@@ -407,7 +382,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
     mod.setUpgradeShutdownRpc(async () => {
       throw new Error('control socket EPIPE');
     });
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.6', downloadedFile: downloadedArtifactPath() });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.6', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });

@@ -105,27 +105,12 @@ async function freshModuleWithGate(gate: boolean) {
 
 let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
-// On-disk artifact for install-path SLSA tests — verifyMinisign's Linux
-// pre-flight runs fs.existsSync before the stubbed runner, so a placeholder
-// path (e.g. '/tmp/ccsm.AppImage') makes the SLSA-accept case regress to
-// `{ok:false, reason:'verify-failed'}` on CI ubuntu under Node 22.
-let __artifactDir = '';
-let __artifactPath = '';
-function downloadedArtifactPath(): string {
-  return __artifactPath;
-}
-
 beforeEach(() => {
   consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-  __artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-verify-test-'));
-  __artifactPath = path.join(__artifactDir, 'ccsm.AppImage');
-  fs.writeFileSync(__artifactPath, 'fake binary');
-  fs.writeFileSync(`${__artifactPath}.minisig`, 'fake sig');
 });
 
 afterEach(() => {
   consoleErrorSpy.mockRestore();
-  try { fs.rmSync(__artifactDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
 function canonicalLogLines(): string[] {
@@ -173,7 +158,7 @@ describe('updater verify: SLSA', () => {
 
     autoUpdaterEmitter.emit('update-downloaded', {
       version: '0.2.0',
-      downloadedFile: downloadedArtifactPath(),
+      downloadedFile: '/tmp/ccsm.AppImage',
     });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
@@ -193,7 +178,7 @@ describe('updater verify: SLSA', () => {
 
     autoUpdaterEmitter.emit('update-downloaded', {
       version: '0.2.0',
-      downloadedFile: downloadedArtifactPath(),
+      downloadedFile: '/tmp/ccsm.AppImage',
     });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});

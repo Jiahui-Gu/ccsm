@@ -237,11 +237,7 @@ describe('control-socket /healthz p99 isolation under data-socket load (frag-3.4
   // task"): event-loop isolation between supervisor and data planes.
   // Candidate fixes — worker_thread for binary frame parsing OR setImmediate
   // yield inside `processBuffer` between frames OR child-process data plane.
-  // TODO(#151): re-enable as plain `it(...)` once event-loop isolation between
-  // supervisor and data planes lands. On Node 22.22.2 the assertion sometimes
-  // PASSES, which makes `it.fails` (its previous form) go red. Skipping
-  // preserves the spec for #151 to pick up; do NOT delete.
-  it.skip(
+  it.fails(
     'saturated data socket does not delay control-socket /healthz p99 by >5 ms',
     async () => {
       // -------- Wire control + data servers with real adapters + dispatchers
