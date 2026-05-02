@@ -1,0 +1,13 @@
+# Override root .gitignore's broad `gen/` rule so we can keep placeholder
+# .gitkeep files for the per-language gen subdirs (per spec ch11 §4 layout).
+# We must un-ignore the directory itself before negating individual files.
+!gen/
+!gen/go/
+!gen/swift/
+!gen/go/.gitkeep
+!gen/swift/.gitkeep
+
+# But keep generated TypeScript output untracked. It is regenerated from
+# src/**.proto via `pnpm --filter @ccsm/proto run gen` and gated in CI by
+# T0.8 (generated-code-up-to-date check).
+gen/ts/
