@@ -59,29 +59,62 @@ The following table is the v0.3 starting state — every `ipcMain.handle` regist
 
 ### 4. Electron process model post-migration
 
+<!-- F2: closes R0 08-P0.2 / R0 08-P0.3 / R2 P0-08-1 / R2 P0-08-2 — bootstrap mechanism is descriptor-handshake-by-fetch (no contextBridge); transport bridge ships unconditionally; DNS rebinding mitigated by bridge bound to UDS / named pipe (no loopback TCP for bridge↔daemon); descriptor authenticity via Hello-echo of boot_id. -->
+
 ```
 electron main process (minimal):
   - BrowserWindow lifecycle (create/show/close)
-  - reads listener-a.json, exposes the descriptor to renderer via a SINGLE
-    initial preload-time global: window.__CCSM_LISTENER__ = { transport, address, ... }
+  - reads listener-a.json (chapter [03](./03-listeners-and-transport.md) §3) at app start; pins
+    descriptor + boot_id for the renderer's session
+  - hosts the renderer transport bridge (see §4.2 below) — ships unconditionally in v0.3
+  - registers a custom scheme handler via protocol.handle so the renderer can
+    fetch app://ccsm/listener-descriptor.json and read the (validated) descriptor
+    without contextBridge / additionalArguments
   - NO ipcMain.handle calls
   - NO business logic
   - tray menu (quit / open settings) — UI, no IPC
 
-electron preload (minimal):
-  - reads window.__CCSM_LISTENER__ (already injected by main via webPreferences.additionalArguments)
-  - NO contextBridge.exposeInMainWorld for callable APIs
-  - the descriptor is the ONLY thing exposed; everything else is renderer-side Connect
+electron preload (minimal — no contextBridge):
+  - intentionally empty (or omitted entirely); the descriptor reaches the
+    renderer via the app:// scheme, NOT via injection
+  - NO contextBridge.exposeInMainWorld for callable APIs OR for data
+  - sandbox: true; nodeIntegration: false; contextIsolation: true on every BrowserWindow
 
 electron renderer:
-  - constructs a Connect transport from window.__CCSM_LISTENER__
+  - on boot, fetch("app://ccsm/listener-descriptor.json") → parse → construct Connect
+    transport pointed at the bridge (see §4.2)
+  - immediately calls Hello and verifies boot_id echoes the descriptor's boot_id
+    (chapter [03](./03-listeners-and-transport.md) §3.3); rejects + retries on mismatch
   - wraps the proto-generated SessionService/PtyService/... clients in React Query / TanStack Query hooks
   - all UI state comes from RPC results
 ```
 
-**Why expose the descriptor via `additionalArguments` not `contextBridge`**: `contextBridge` is the regulated channel for callable APIs; passing a static read-only object via `additionalArguments` keeps the grep gate clean (`contextBridge` literally does not appear in the source) while still respecting Electron's context isolation. The descriptor object is JSON-serializable and contains no functions.
+#### 4.1 Bootstrap mechanism (locked: descriptor served via `protocol.handle`, no `contextBridge`)
 
-> **MUST-SPIKE [renderer-h2-uds]**: hypothesis: an Electron renderer (Chromium) can talk Connect-RPC over the chosen Listener A transport without an electron-main proxy. UDS / named pipe via fetch is unsupported in Chromium; loopback TCP is fine. · validation: smoke each transport from a renderer page. · fallback: a tiny **transport bridge** in the main process — a plain `http2.Server` on `127.0.0.1:<ephemeral>` that proxies to the UDS / named pipe; renderer connects to the loopback. The bridge is NOT an IPC re-introduction (it speaks Connect, same proto, no `ipcMain.handle`); ship-gate (a) grep still passes.
+R0 08-P0.2 flagged that `webPreferences.additionalArguments` does NOT inject onto `window` under context isolation — `additionalArguments` only appends to the renderer's `process.argv`, which is invisible from the renderer's window scope. The naive fix (`contextBridge.exposeInMainWorld`) trips ship-gate (a). The locked v0.3 mechanism avoids both:
+
+1. Electron main reads `listener-a.json` from the locked per-OS path (chapter [07](./07-data-and-state.md) §2 / chapter [03](./03-listeners-and-transport.md) §3) at app start.
+2. Electron main rewrites the descriptor's `address` field to point at the bridge's loopback endpoint (§4.2) — the renderer never sees the daemon's UDS / named pipe path because the renderer never speaks to it directly.
+3. Electron main registers a custom scheme handler via `protocol.handle("app", ...)` that serves the rewritten descriptor at `app://ccsm/listener-descriptor.json` (read-only; `Content-Type: application/json`).
+4. Renderer at boot calls `await fetch("app://ccsm/listener-descriptor.json")` and parses the result. No `contextBridge`, no `additionalArguments`, no preload-injected globals — `lint:no-ipc` (§5h.1) passes mechanically.
+5. Renderer constructs the Connect transport from the descriptor and runs the `Hello`-echo `boot_id` verification (chapter [03](./03-listeners-and-transport.md) §3.3) before any other RPC. The bridge forwards `Hello` to the daemon and the daemon's in-memory `boot_id` reaches the renderer untouched.
+
+#### 4.2 Renderer transport bridge — ships unconditionally in v0.3
+
+**Decision (locked, no spike outcome required)**: the Electron main process hosts a transport bridge for the renderer; v0.3 ships this bridge **unconditionally** on every OS. The bridge is `packages/electron/src/main/transport-bridge.ts`.
+
+**Why ship unconditionally (R5 P1-14-2 + R0 08-P0.3 resolution)**:
+
+1. **Predictability across OS** — Chromium fetch cannot use UDS or named pipes anywhere; loopback TCP works but the daemon's chosen Listener A transport may be UDS or named pipe per OS. Shipping the bridge eliminates the per-OS conditional in the renderer.
+2. **Avoids Electron renderer-side gotchas** — `additionalArguments` doesn't hit `window` under context isolation; preload `contextBridge` trips `lint:no-ipc`; `protocol.handle` only serves data, not full Connect framing. The bridge sidesteps every one of these.
+3. **Zero-rework for v0.4** — the v0.4 web client uses `connect-web` directly (browser → cloudflared → Listener B); v0.4 iOS uses `connect-swift` directly (iOS → cloudflared → Listener B). NEITHER goes through the Electron transport bridge — they don't even ship the Electron renderer code. So the bridge is forever Electron-internal; v0.4 never modifies it. Chapter [15](./15-zero-rework-audit.md) §3 forbidden-pattern locks this: "v0.4 MUST NOT modify `packages/electron/src/main/transport-bridge.ts` for web/iOS reasons; web/iOS do not use it."
+
+**Bridge shape**:
+
+- Renderer ↔ bridge: `http2` server on `127.0.0.1:<ephemeral-port>` bound on `127.0.0.1` only (no `0.0.0.0`); `Host:` header MUST equal `127.0.0.1:<our-port>` (anything else → 421 Misdirected Request — closes the structural part of R2 P0-08-1 / R2 P0-03-1 DNS-rebinding hole at the bridge layer; per-request `Host:` allowlist enforcement is restated here, the deeper bearer-token belt-and-suspenders is deferred to v0.4 per dispatch plan §0).
+- Bridge ↔ daemon: speaks the daemon's chosen Listener A transport (UDS / named pipe / loopback TCP / loopback TLS — whichever was negotiated). For UDS / named pipe, the bridge is the ONLY caller across the OS-level socket; the renderer never touches it. This means the bridge sits "around" the otherwise UDS-protected daemon BUT ONLY exposes loopback TCP to the renderer (which is the only way Chromium can speak Connect).
+- The bridge is NOT an IPC re-introduction (it speaks Connect, same proto, no `ipcMain.handle`); ship-gate (a) grep still passes.
+- Bridge process identity: the bridge runs in Electron main, so the daemon's peer-cred sees the Electron main process's uid (== the logged-in user). Correct attribution for v0.3 single-user.
 
 ### 5. Cutover sequence (single PR)
 
@@ -92,11 +125,28 @@ electron renderer:
    c. Replace every existing `ipcRenderer.invoke(...)` and `ipcRenderer.on(...)` site with the corresponding hook (mechanical 1:1).
    d. Delete `packages/electron/src/main/ipc/` directory.
    e. Delete `packages/electron/src/preload/contextBridge.ts`.
-   f. Replace preload with a 5-line file that injects the descriptor.
-   g. Update `packages/electron/src/main/index.ts` to remove all `ipcMain.handle` registrations and instead spawn a tray menu only.
-   h. Add the `npm run lint:no-ipc` script: `grep -r "contextBridge\|ipcMain\|ipcRenderer" packages/electron/src && exit 1 || exit 0`.
+   f. Replace preload with an empty (or omitted) file; the descriptor reaches the renderer via `protocol.handle("app", ...)` per §4.1, NOT via injection.
+   g. Update `packages/electron/src/main/index.ts` to remove all `ipcMain.handle` registrations, register `protocol.handle("app", ...)` for the descriptor (§4.1), spin up the transport bridge (§4.2), and spawn a tray menu only.
+   h. Add the `npm run lint:no-ipc` script per §5h.1 (canonical specification below).
    i. Wire the script into CI (see [12](./12-testing-strategy.md) §3).
 3. (Post-merge) E2E test (ship-gate (a)/(b)/(c)) runs in CI nightly and on every release tag.
+
+#### 5h.1 `lint:no-ipc` canonical specification (single source of truth, this chapter)
+
+<!-- F2: closes R5 P0-08-1 / R0 P0-08-1 / R4 P0 ch 08 / ch 12 — chapter 08 specifies; chapter 12 implements; brief references this section. -->
+
+This chapter specifies the v0.3 canonical form of the `lint:no-ipc` ship-gate. Any divergence in 00-brief.md or chapter [12](./12-testing-strategy.md) is a documentation bug — chapter 08 §5h.1 is the source of truth. Chapter [12](./12-testing-strategy.md) §3 implements the actual ESLint config + CI wiring; this section pins WHAT must be forbidden:
+
+**Forbidden patterns (rejecting any one of these blocks the PR)**:
+
+1. `import { ipcMain | ipcRenderer | contextBridge } from "electron"` — any named import of these three symbols from the `electron` package, in any source file under `packages/electron/src/`.
+2. `require("electron").ipcMain` / `require("electron").ipcRenderer` / `require("electron").contextBridge` — destructuring or property access on the dynamically-required `electron` module.
+3. Any method call shaped `.send(` / `.handle(` / `.on(` / `.invoke(` / `.handleOnce(` invoked on a symbol whose value flows from one of the forbidden Electron imports above (caught by ESLint `no-restricted-properties` + a custom rule `ccsm/no-electron-ipc-call` that performs intra-file constant-tracking; full rule body lives in chapter [11](./11-monorepo-layout.md) §5).
+4. Any usage of `webContents.send`, `webContents.executeJavaScript`, `MessageChannelMain`, `MessagePortMain`, or `process.parentPort` outside `packages/electron/src/main/transport-bridge.ts` (the only sanctioned non-Connect main↔renderer surface; see §4.2). The bridge is exempt because it speaks Connect framing, not IPC.
+
+**Allowlist**: NONE in v0.3. The descriptor injection mechanism uses `protocol.handle` (§4.1), which is not on the forbidden-pattern list — no allowlist entry is needed for it.
+
+**Implementation reference**: chapter [12](./12-testing-strategy.md) §3 ships the actual ESLint config + the `tools/lint-no-ipc.sh` driver script + the CI wiring; chapter 08 §5h.1 is the spec.
 
 ### 6. Renderer error-handling contract
 
@@ -121,4 +171,5 @@ electron renderer:
 
 - **Add** new RPCs as needed; the renderer's clients factory automatically picks them up from regenerated proto stubs. Existing call sites: unchanged.
 - **Add** new UI for v0.4 features (tunnel toggle, principal switcher) by composing additional React Query hooks against new RPCs.
-- **Unchanged**: every existing call site, the descriptor injection mechanism, the no-IPC lint rule (still gates merge in v0.4 too), the error contract, the cutover-style migration philosophy (v0.4 web/iOS clients are net-new packages, not migrations).
+- **Web/iOS clients DO NOT use the transport bridge** (§4.2): they speak `connect-web` / `connect-swift` directly to Listener B over cloudflared. The bridge is forever Electron-internal; chapter [15](./15-zero-rework-audit.md) §3 forbidden-pattern locks "v0.4 MUST NOT modify `packages/electron/src/main/transport-bridge.ts` for web/iOS reasons."
+- **Unchanged**: every existing call site, the `protocol.handle` descriptor injection mechanism (§4.1), the `lint:no-ipc` rule (still gates merge in v0.4 too — chapter 08 §5h.1 is forever-stable), the error contract, the cutover-style migration philosophy (v0.4 web/iOS clients are net-new packages, not migrations), the descriptor schema (additions only in NEW top-level fields per chapter [03](./03-listeners-and-transport.md) §3.2).

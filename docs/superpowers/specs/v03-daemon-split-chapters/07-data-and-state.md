@@ -13,13 +13,25 @@ Single-file SQLite database, `better-sqlite3` driver, WAL mode, `synchronous = N
 
 ### 2. State directory layout (per OS)
 
+<!-- F2: closes R0 03-P0.3 / R2 P0-02-3 — descriptor path is locked unconditionally per OS; no per-install variation. -->
+
 | OS | Daemon state root | DB path | Crash log file (raw) | Listener descriptor |
 | --- | --- | --- | --- | --- |
-| Windows | `%PROGRAMDATA%\ccsm\` | `state\ccsm.db` | `state\crash-raw.ndjson` | `listener-a.json` (also `%LOCALAPPDATA%\ccsm\listener-a.json` if cross-user requires it) |
-| macOS | `/Library/Application Support/ccsm/` | `state/ccsm.db` | `state/crash-raw.ndjson` | `listener-a.json` |
-| Linux | `/var/lib/ccsm/` | `state/ccsm.db` | `state/crash-raw.ndjson` | `/run/ccsm/listener-a.json` (volatile) |
+| Windows | `%PROGRAMDATA%\ccsm\` | `state\ccsm.db` | `state\crash-raw.ndjson` | `%PROGRAMDATA%\ccsm\listener-a.json` (LOCKED unconditionally; NEVER `%LOCALAPPDATA%`, NEVER `%APPDATA%`; DACL `BUILTIN\Users:Read` + `BUILTIN\Administrators:FullControl` + `LocalService:Modify` per [03](./03-listeners-and-transport.md) §3) |
+| macOS | `/Library/Application Support/ccsm/` | `state/ccsm.db` | `state/crash-raw.ndjson` | `/Library/Application Support/ccsm/listener-a.json` (system-wide; NEVER `~/Library/...`; mode `0644` owner `_ccsm:_ccsm`) |
+| Linux | `/var/lib/ccsm/` | `state/ccsm.db` | `state/crash-raw.ndjson` | `/var/lib/ccsm/listener-a.json` (durable state dir, NOT `/run/ccsm/`; mode `0644` owner `ccsm:ccsm` for FHS group-readability) |
 
-All paths created with mode `0700` for the daemon's service account; directory ownership and ACL set by the installer (see [10](./10-build-package-installer.md) §5).
+All paths created with mode `0700` for the daemon's service account EXCEPT the descriptor file which is mode `0644` (group-readable so per-user Electron can read it without joining the daemon's service-account group). Directory ownership and ACL set by the installer (see [10](./10-build-package-installer.md) §5).
+
+#### 2.1 Descriptor file lifecycle (locked, no installer or shutdown-hook GC required)
+
+<!-- F2: closes R2 P0-02-3 / R2 P0-03-4 — atomic write; per-boot rewrite; no within-boot churn; orphan files between boots are normal and handled by boot_id mismatch. -->
+
+- Daemon writes the descriptor exactly **once per daemon boot**, atomically (write `listener-a.json.tmp` → `fsync` → `rename`), at startup ordering step 5 (chapter [02](./02-process-topology.md) §3) BEFORE Supervisor `/healthz` flips to 200. The descriptor carries `boot_id` (random UUIDv4 per boot, regenerated on every daemon process start), `daemon_pid`, `listener_addr`, `protocol_version`, plus the §3.2 fields in [03](./03-listeners-and-transport.md).
+- Daemon does NOT re-write the descriptor within a single boot. Listener A reconnect inside the same daemon process keeps the same `boot_id` and address; nothing on disk changes.
+- On daemon clean shutdown the file is **left in place**. Orphan files between daemon boots are normal — Electron's `boot_id` mismatch check (chapter [03](./03-listeners-and-transport.md) §3.3) catches stale files on the next connect attempt and triggers a re-read with backoff. There is no installer / shutdown-hook GC step required for descriptor files.
+- On daemon start, the daemon ALWAYS rewrites the file (does not trust prior contents) — the new `boot_id` is the freshness witness; even if the address is identical the file is rewritten so a stale `daemon_pid` doesn't linger.
+- On daemon hard crash (no graceful unlink): the OS leaves the file in place; the next daemon boot rewrites it; any Electron that connected between crash and rewrite hits the `boot_id` mismatch path and retries.
 
 XDG: on Linux, the daemon runs as a system service (not `--user`), so `XDG_*` user vars do not apply; `/var/lib/ccsm/` is the FHS-correct path. **Do not respect `XDG_DATA_HOME` for daemon state** — the daemon may run with no logged-in user.
 

@@ -41,12 +41,13 @@ Format: each row is reproduced from the chapter that introduced it; this chapter
 - **Kill-criterion**: stream stalls under load OR API rejects pipe handle.
 - **Fallback**: A2 with PID-based peer-cred synthesis (per [03](./03-listeners-and-transport.md) §5).
 
-#### 1.6 [renderer-h2-uds] — Electron renderer over chosen Listener A transport
+#### 1.6 [renderer-h2-uds] — RESOLVED (no spike needed)
+
+<!-- F2: closes R5 P1-14-2 / R0 08-P0.3 / R4 P0 ch 14 — transport bridge spike resolved: bridge ships unconditionally per chapter 08 §4.2; renderer-h2-uds is no longer a MUST-SPIKE. -->
+
 - **From**: [08](./08-electron-client-migration.md) §4
-- **Hypothesis**: Chromium-in-Electron renderer can speak Connect-RPC directly over the chosen transport (UDS or named pipe or loopback TCP) without a main-process proxy.
-- **Validation**: smoke each transport from a renderer page.
-- **Kill-criterion**: Chromium fetch cannot use UDS / named pipe (this is true today for stock fetch; Connect-node provides a `node:http2` based transport that requires main-process construction OR a polyfill).
-- **Fallback**: a plain `http2.Server` bridge in the Electron main process bound to ephemeral loopback TCP; renderer connects to loopback; bridge proxies bytes to the daemon's chosen transport. Bridge speaks Connect (no IPC); ship-gate (a) grep still passes. The bridge is the most-likely-needed adaptation; v0.3 SHOULD ship this bridge for predictability across all OSes.
+- **Status**: **RESOLVED — no spike needed**. Decision (locked across chapters 08 + 14 + 15): the Electron renderer transport bridge ships unconditionally in v0.3 on every OS. Chromium fetch cannot use UDS / named pipe; the bridge speaks loopback TCP to the renderer and forwards Connect to whatever Listener A transport the daemon picked. See chapter [08](./08-electron-client-migration.md) §4.2 for the full bridge spec. The "ship vs. spike" indecision that spanned chapter 08 §4 + chapter 14 §1.6 + chapter 15 §4 item 9 is now a single locked decision; reviewers do not need to audit a spike outcome here.
+- **v0.4**: web client uses `connect-web` directly; iOS client uses `connect-swift` directly. Neither goes through the bridge — chapter [15](./15-zero-rework-audit.md) §3 forbidden-pattern forbids modifying the bridge for web/iOS reasons.
 
 #### 1.7 [worker-thread-pty-throughput] — PTY worker keeps up
 - **From**: [06](./06-pty-snapshot-delta.md) §1

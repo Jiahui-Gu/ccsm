@@ -6,7 +6,7 @@ v0.3 has exactly two long-lived processes per user machine: `ccsm-daemon` (syste
 
 | Process | Identity | Lifetime | Started by | Stopped by | Hosts |
 | --- | --- | --- | --- | --- | --- |
-| `ccsm-daemon` | per-OS service account (see §2) | boot → shutdown | OS service manager | OS service manager (or `shutdown` RPC on Supervisor UDS, admin only) | Listener A, Supervisor UDS, all session/PTY/SQLite state |
+| `ccsm-daemon` | per-OS service account (see §2) | boot → shutdown | OS service manager | OS service manager (or `shutdown` RPC on Supervisor UDS / named pipe, admin-only via peer-cred — see [03](./03-listeners-and-transport.md) §7) | Listener A, Supervisor UDS (UDS-only on every OS, no loopback-TCP fallback ever), all session/PTY/SQLite state |
 | `ccsm-electron` | logged-in user | user-launched → user-quit (or OS logout) | user (Start menu / Dock) | user (window close, tray quit, OS logout) | Connect client, UI, no business logic |
 | `claude` CLI subprocess(es) | daemon's service account | per session lifetime | daemon (per session create) | daemon (on session destroy / PTY EOF / crash) | one per active Session |
 
@@ -31,7 +31,7 @@ There is **no** intermediate broker, no shared-memory layer, no file-watcher IPC
 - **LaunchDaemon vs LaunchAgent**: choose **LaunchDaemon**. **Why**: brief §7 mandates "survives logout" because v0.4 web/iOS clients (additive) reach the daemon while no user is logged in. A LaunchAgent runs only inside an interactive user session and would force a disruptive change in v0.4. Picking LaunchDaemon now is the zero-rework choice.
 - Account: dedicated `_ccsm` system user (created by installer pkg postinstall). **Why not root**: same least-privilege argument as Windows.
 - Bootstrap: `RunAtLoad=true`, `KeepAlive={SuccessfulExit=false, Crashed=true}`.
-- File locations: binary in `/Library/Application Support/ccsm/ccsm-daemon`; state in `/Library/Application Support/ccsm/state/` (chowned to `_ccsm`); UDS path `/var/run/ccsm/daemon.sock` (created by daemon at startup with mode `0660`, group `_ccsm`; per-user Electron joins group via installer step OR daemon writes a per-user proxy socket — MUST-SPIKE).
+- File locations: binary in `/Library/Application Support/ccsm/ccsm-daemon`; state in `/Library/Application Support/ccsm/state/` (chowned to `_ccsm`); UDS path `/var/run/com.ccsm.daemon/daemon.sock` (reverse-DNS subdir per Apple SIP-safe convention; created by daemon at startup with mode `0660`, group `_ccsm`; per-user Electron joins group via installer step OR daemon writes a per-user proxy socket — MUST-SPIKE). Supervisor UDS is at `/var/run/com.ccsm.daemon/supervisor.sock` (UDS-only on every OS — see [03](./03-listeners-and-transport.md) §7).
 
 > **MUST-SPIKE [macos-uds-cross-user]**: hypothesis: `/var/run/ccsm/daemon.sock` with group ACL is reachable from per-user Electron without granting Full Disk Access. · validation: clean macOS 14+ install, run installer, log in as second user, launch Electron, attempt connect. · fallback: per-user UDS at `~/Library/Containers/com.ccsm.electron/Data/ccsm.sock` proxied by a launchd per-user agent (this would be a v0.3 addition; we want to avoid it).
 
@@ -40,16 +40,17 @@ There is **no** intermediate broker, no shared-memory layer, no file-watcher IPC
 - Unit: `/etc/systemd/system/ccsm-daemon.service`.
 - `User=ccsm` (created by .deb/.rpm postinst). **Why not user-level systemd unit**: brief §7 explicitly mandates "system-level (not `--user`)" for the same survives-logout reason as macOS.
 - Directives: `Type=notify`, `Restart=on-failure`, `RestartSec=5s`, `WatchdogSec=30s` (daemon emits `READY=1` then `WATCHDOG=1` keepalives — see [09-crash-collector](./09-crash-collector.md) §6).
-- File locations (XDG-respecting where possible for system-mode): binary `/usr/lib/ccsm/ccsm-daemon`; state `/var/lib/ccsm/`; UDS `/run/ccsm/daemon.sock` (group `ccsm`, mode `0660`).
+- File locations (XDG-respecting where possible for system-mode): binary `/usr/lib/ccsm/ccsm-daemon`; state `/var/lib/ccsm/`; UDS `/run/ccsm/daemon.sock` (group `ccsm`, mode `0660`); Supervisor UDS `/run/ccsm/supervisor.sock` (UDS-only on every OS — see [03](./03-listeners-and-transport.md) §7).
 - Per-user Electron: installer adds the installing user to group `ccsm` (postinst, requires logout/login). MUST-SPIKE: this is intrusive; alternative is a per-user proxy as above.
 
 ### 3. Startup order
 
 1. **Boot**: OS service manager starts `ccsm-daemon`.
 2. Daemon: open SQLite, run migrations, replay WAL → reconstruct in-memory session list.
-3. Daemon: start Supervisor UDS (`/healthz` returns 503 until step 5).
+3. Daemon: start Supervisor UDS / named pipe (UDS-only on every OS — see [03](./03-listeners-and-transport.md) §7; `/healthz` returns 503 until step 5).
 4. Daemon: re-spawn `claude` CLI subprocesses for sessions marked `should-be-running` in SQLite (cwd, env restored; PTY host re-attaches; see [06-pty-snapshot-delta](./06-pty-snapshot-delta.md) §7).
-5. Daemon: bind Listener A; instantiate Listener trait array (slot 0 = Listener A; slot 1 = `null` reserved for v0.4 Listener B); Supervisor `/healthz` returns 200.
+<!-- F2: closes R0 03-P0.1 / R2 P0-02-3 / R2 P0-03-4 — startup writes the typed sentinel into slot 1 and writes the descriptor atomically before /healthz returns 200. -->
+5. Daemon: generate a fresh `boot_id` (UUIDv4) and pin it in memory; bind Listener A; instantiate the Listener trait array (slot 0 = `makeListenerA(env)`; slot 1 = typed sentinel `RESERVED_FOR_LISTENER_B` from [03](./03-listeners-and-transport.md) §1); assert `listeners[1] === RESERVED_FOR_LISTENER_B` and abort startup if not (the assert + ESLint rule together close R0 03-P0.1 — see [03](./03-listeners-and-transport.md) §1); atomically write `listener-a.json` (temp + fsync + rename, per [03](./03-listeners-and-transport.md) §3.1) carrying `boot_id` / `daemon_pid` / `listener_addr` / `protocol_version`; THEN flip Supervisor `/healthz` to return 200. Order matters — Electron's startup handshake (chapter [03](./03-listeners-and-transport.md) §3.3) relies on the descriptor being readable before `/healthz` 200 so the `Hello`-echo `boot_id` round-trip succeeds on the first attempt.
 6. **User login** (any time later): user launches Electron from Start menu / Dock.
 7. Electron: read connection descriptor (UDS path or loopback port — see [03-listeners-and-transport](./03-listeners-and-transport.md) §3); connect; `Hello` RPC; subscribe to session-list stream.
 
@@ -59,7 +60,7 @@ The daemon MUST be in state (5) before accepting any Listener A connect. If a cl
 
 - **OS-initiated** (shutdown / reboot / `systemctl stop` / Services.msc Stop): service manager sends platform stop signal (Windows: `SERVICE_CONTROL_STOP`; mac/linux: `SIGTERM`). Daemon: stop accepting new Listener A connects; finish in-flight unary RPCs (≤5s budget); for streaming RPCs, send `aborted` and close; gracefully terminate `claude` CLI subprocesses (`SIGTERM` then `SIGKILL` after 3s); checkpoint SQLite WAL; flush crash log; exit 0.
 - **Electron quit**: daemon notices via Listener A connection close; **does NOT** terminate sessions or PTYs (brief §11(b)). claude CLI subprocesses keep running; PTY host keeps recording deltas; on next Electron launch the snapshots replay (see [06-pty-snapshot-delta](./06-pty-snapshot-delta.md)).
-- **`shutdown` RPC on Supervisor UDS**: only callable by an admin (peer-cred uid == root/SYSTEM/Administrators) — Electron is NOT admin. Used by installer uninstall, never by Electron UI. Triggers the OS-initiated path internally.
+- **`shutdown` RPC on Supervisor UDS / named pipe**: only callable by an admin (peer-cred uid/SID check per [03](./03-listeners-and-transport.md) §7.1) — Electron is NOT admin. Used by installer uninstall, never by Electron UI. Triggers the OS-initiated path internally. <!-- F2: closes R2 P0-02-2 / R2 P0-03-3 — Supervisor is UDS-only on every OS; no loopback-TCP fallback exists, ever. -->
 
 ### 5. Install / uninstall responsibility
 
@@ -84,7 +85,7 @@ The daemon MUST be in state (5) before accepting any Listener A connect. If a cl
 
 ### 7. v0.4 delta
 
-- **Add** to startup order step 5: instantiate Listener B in slot 1 of the listener array (existing trait, new factory call). Existing handler code unchanged.
+- **Add** to startup order step 5: instantiate Listener B in slot 1 (replace the `RESERVED_FOR_LISTENER_B` sentinel write with `makeListenerB(env)` — one-line edit at the startup site, plus the new `listener-b.ts` file per [03](./03-listeners-and-transport.md) §8). Existing handler code unchanged.
 - **Add** cloudflared subprocess to daemon supervision (similar to `claude` CLI: spawn, monitor, restart). New SQLite row in a new `tunnel_state` table (additive; no existing table modified).
 - **Add** to install step list: optionally configure cloudflared (user-toggled, off by default). Existing service registration unchanged.
 - Service account, file locations, startup ordering, shutdown contract, Supervisor UDS shape: **unchanged**.
