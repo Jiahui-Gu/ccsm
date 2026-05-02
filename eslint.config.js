@@ -16,6 +16,7 @@ export default [
       'scripts/**',
       'tests/**',
       'docs/**',
+      'tools/spike-harness/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'

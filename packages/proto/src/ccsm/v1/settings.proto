@@ -1,0 +1,124 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §6 for the contract. Field numbers MUST NOT be reused or
+// renumbered. SECURITY-SENSITIVE keys (claude_binary_path) are deliberately
+// excluded from the RPC; they live in the daemon config file only.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+import "ccsm/v1/pty.proto";
+
+// F1: closes R0 04-P0.2 / R0 07-P0.2 / R2 P0-04-3 — scope enum pinned at
+// v0.3 freeze; security-sensitive keys removed from RPC entirely so v0.4
+// admin gating is config-file-only and additive.
+
+service SettingsService {
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
+  // F7: closes R5 P1-04-1 — `UpdateSettings` semantics are PARTIAL UPDATE
+  // by field presence: daemon REPLACES only fields whose proto3 presence
+  // bit is set on the incoming `Settings` message; fields with no
+  // presence-bit set are LEFT AT THEIR CURRENT VALUE (NOT cleared, NOT
+  // defaulted). `Settings` fields use the `optional` keyword (proto3
+  // field presence) so a client clearing `crash_retention.max_entries`
+  // back to 0 is wire-distinguishable from "not touching the field".
+  // Daemon MUST round-trip the post-merge `Settings` in the response so
+  // the client sees the authoritative resolved view.
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+}
+
+// Forever-stable. v0.3 daemon honors only SETTINGS_SCOPE_GLOBAL; v0.4 adds
+// SETTINGS_SCOPE_PRINCIPAL additively. The enum value lives at v0.3 freeze
+// so v0.4 introduces no new oneof / no new request shape.
+enum SettingsScope {
+  SETTINGS_SCOPE_UNSPECIFIED = 0;  // treated as GLOBAL
+  SETTINGS_SCOPE_GLOBAL = 1;       // single-row-per-key for the daemon install
+  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with InvalidArgument in v0.3
+}
+
+message GetSettingsRequest {
+  RequestMeta meta = 1;
+  SettingsScope scope = 2;         // default UNSPECIFIED == GLOBAL
+}
+message GetSettingsResponse {
+  RequestMeta meta = 1;
+  Settings settings = 2;
+  SettingsScope effective_scope = 3; // echo of the scope the daemon resolved
+}
+
+message UpdateSettingsRequest {
+  RequestMeta meta = 1;
+  Settings settings = 2;
+  SettingsScope scope = 3;         // default UNSPECIFIED == GLOBAL
+}
+message UpdateSettingsResponse {
+  RequestMeta meta = 1;
+  Settings settings = 2;
+  SettingsScope effective_scope = 3;
+}
+
+// Forever-stable wrapper. Field additions are additive (proto3 default to zero).
+//
+// SECURITY-SENSITIVE KEYS EXCLUDED FROM RPC.
+// `claude_binary_path` and any other key that controls which executable the
+// daemon spawns or which library it loads is a code-execution primitive and
+// MUST NOT be settable via UpdateSettings. v0.3 reads these keys ONLY from
+// the daemon config file written at install time (per-OS path in chapter
+// 10 §5). The RPC surface deliberately omits a `claude_binary_path` field
+// so the boundary is mechanical: there is no proto field to set. v0.4 keeps
+// the same exclusion; if a per-user override is ever needed it ships as a
+// separate AdminSettingsService gated on a peer-cred admin allowlist
+// (additive new RPC, not a new field on the existing message).
+message Settings {
+  // field 1 reserved historically for claude_binary_path; intentionally
+  // omitted in v0.3 so the wire schema cannot carry it. Do NOT reuse field
+  // number 1 for anything else (see chapter 15 §3).
+  reserved 1;
+  reserved "claude_binary_path";
+
+  // F7: closes R5 P1-04-1 — every field below uses the `optional` keyword
+  // (proto3 field presence) so `UpdateSettings` PARTIAL semantics are
+  // mechanically encoded on the wire. A scalar at zero with the presence
+  // bit set means "the client wants this set to zero"; absence-of-bit
+  // means "leave it alone". Adding new fields in v0.4+ MUST keep the
+  // `optional` keyword for the same reason.
+  optional PtyGeometry default_geometry = 2;
+  optional CrashRetention crash_retention = 3;
+  // F6: closes R1 P0.4 / P0.5 (chapter 08) — v0.2 per-renderer prefs
+  // (theme, font, drafts list, closeAction, notifyEnabled, sidebar
+  // width, language, etc.) live in this map so the daemon DB is the
+  // single source of truth across Electron / v0.4 web / v0.4 iOS.
+  // Keys are dotted paths (e.g., `appearance.theme`, `composer.fontSizePx`,
+  // `notify.enabled`); values are JSON-encoded strings (parsed per
+  // documented key). The map is open: new keys land additively without
+  // a proto bump. Daemon does NOT validate the value shape — clients
+  // own the schema for their own keys.
+  map<string, string> ui_prefs = 4;
+  // F6: closes R1 P0.1 / P0.4 (chapter 08) — surfaces the user's
+  // `~/.claude/settings.json` `model` field as the default for new
+  // sessions; daemon reads at boot and on each GetSettings call. Empty
+  // string == "no default model detected; use claude CLI's own default".
+  string detected_claude_default_model = 5;
+  // F6: closes R1 P0.4 / P0.5 (chapter 08) — surfaces `os.homedir()` from
+  // the daemon's resolved process owner (NOT the calling client's home —
+  // daemon and client may be different OS users in v0.4) so the renderer's
+  // "Browse..." default and the import-scanner know which directory to
+  // root at.
+  string user_home_path = 6;
+  // F6: closes R1 P0.4 (chapter 08) — OS-derived (or user-overridden via
+  // UpdateSettings) IETF BCP 47 language tag (e.g., "en-US", "zh-CN").
+  // Drives renderer i18n init AND the daemon's OS notification language so
+  // toasts match the UI. Empty = use the renderer's own detection.
+  string locale = 7;
+  // F6: closes R1 P1.1 (chapter 09) — preserved Sentry opt-out toggle
+  // (today's `crashReporting` pref). Default true (matches v0.2). When
+  // false, the Electron-side Sentry init (chapter 09 §5) skips
+  // initialization. The daemon's local SQLite crash log is independent of
+  // this toggle and is always-on.
+  bool sentry_enabled = 8;
+}
+
+message CrashRetention {
+  int32 max_entries = 1;       // daemon caps at 10000
+  int32 max_age_days = 2;      // daemon caps at 90
+}
