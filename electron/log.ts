@@ -17,6 +17,9 @@
 //   - `pino.final` analog on every Electron-main exit path
 //     (`app.before-quit`, `process.on('uncaughtException')`,
 //     `process.on('unhandledRejection')`) — see installCrashHooks().
+//     pino v9 dropped the `pino.final` export, so the analog is a sync
+//     `logger.flush()` after the fatal line is logged (mirrors daemon
+//     task #124's choice).
 //   - Renderer console-forward gated by CCSM_RENDERER_LOG_FORWARD=1
 //     (default OFF in production; renderer code uses preload bridge to ship
 //     console.* to main, main writes pino).
@@ -93,7 +96,6 @@ export const ELECTRON_REDACT_PATHS: readonly string[] = Object.freeze([
   'authorization',
   // Daemon §6.6.1 superset (mirror).
   '*.apiKey',
-  '*.token',
   'Authorization',
   'Cookie',
   'ANTHROPIC_API_KEY',
@@ -111,6 +113,13 @@ export const ELECTRON_REDACT_PATHS: readonly string[] = Object.freeze([
   '*.headers',
   '*.formData',
 ]);
+
+/**
+ * Censor string used for redacted values. Spec wording is `[Redacted]`
+ * (frag-12 §12.1) — matches daemon-side `DAEMON_REDACT_CENSOR` (task #124,
+ * `daemon/src/log/index.ts`) so cross-side log scrubbing is byte-identical.
+ */
+export const ELECTRON_REDACT_CENSOR = '[Redacted]';
 
 /** Default electron log directory: `<dataRoot>/logs/electron/`. Per
  *  frag-6-7 §6.6.2 + §6.6 path table; per-side subdir keeps daemon and
@@ -172,13 +181,11 @@ export function createLogger(opts: LoggerOptions): Logger {
     },
     redact: {
       paths: [...ELECTRON_REDACT_PATHS],
-      censor: '[REDACTED]',
+      censor: ELECTRON_REDACT_CENSOR,
     },
-    // Use ISO timestamps so cross-side correlation against daemon lines
-    // (which inherit the pino default ms epoch) goes through one
-    // normalisation step. Spec §6.6.1 leaves the pino default in place
-    // for daemon, so we mirror it here too.
-    timestamp: pino.stdTimeFunctions.isoTime,
+    // Timestamps: pino default (epoch ms). Mirrors daemon §6.6.1 which
+    // also uses the pino default — keeps cross-side correlation a single
+    // numeric compare instead of needing ISO parsing on one side.
   };
 
   return dest ? pino(baseConfig, dest) : pino(baseConfig);
@@ -208,8 +215,7 @@ export function getLogger(opts?: Partial<LoggerOptions>): Logger {
         pid: process.pid,
         boot: electronBootNonce,
       },
-      redact: { paths: [...ELECTRON_REDACT_PATHS], censor: '[REDACTED]' },
-      timestamp: pino.stdTimeFunctions.isoTime,
+      redact: { paths: [...ELECTRON_REDACT_PATHS], censor: ELECTRON_REDACT_CENSOR },
     });
     return singleton;
   }
@@ -223,10 +229,20 @@ export function __setLoggerForTest(l: Logger | undefined): void {
 }
 
 /**
- * Install pino.final-equivalent crash hooks against the Electron app +
- * Node process. Mirrors daemon §6.6.1: every observable exit path flushes
- * pino synchronously so the most diagnostic moment (the crash) is not
- * lost from the Electron side (r2-obs P0-4).
+ * Install crash hooks against the Electron app + Node process. Mirrors
+ * daemon §6.6.1: every observable exit path flushes pino so the most
+ * diagnostic moment (the crash) is not lost from the Electron side
+ * (r2-obs P0-4).
+ *
+ * pino.final note: the spec text references `pino.final`, but that helper
+ * was removed in pino v7+ and is not exported by pino v9 (the version
+ * pinned in package.json). The v9 idiom — and what daemon-side task #124
+ * also uses — is to call `logger.flush()` synchronously inside the crash
+ * handler. For pino-roll's SonicBoom-backed destination this drains the
+ * buffer to disk before `process.exit()` returns; for the in-memory
+ * destinations used by tests it's a no-op. Either way the crash line is
+ * emitted before the flush call, so the line itself is durable as soon as
+ * pino's sync write returns.
  *
  * Hooks installed:
  *   - `app.before-quit`           — graceful Cmd-Q / "Quit ccsm".
@@ -273,7 +289,8 @@ export function installCrashHooks(
     }
   });
 
-  // uncaughtException: pino.final-equivalent flush, then exit.
+  // uncaughtException: log the fatal line, drain the destination, exit.
+  // (pino.final equivalent for v9 — see installCrashHooks header.)
   proc.on('uncaughtException', (err: Error) => {
     try {
       logger.fatal({ err, event: 'electron_uncaught_exception' }, 'electron_uncaught_exception');
@@ -330,11 +347,27 @@ export interface RendererLogPayload {
  * env gate is off; safe to call unconditionally from main.ts boot.
  *
  * Sender provenance: we trust only the main-frame top-level frame (per
- * the project-wide `fromMainFrame` ipc guard pattern) — non-main frames
- * cannot inject log lines.
+ * the project-wide `fromMainFrame` ipc guard pattern in
+ * electron/security/ipcGuards.ts — see also rendererErrorForwarder.ts:139
+ * for the canonical application). Non-main frames (iframes, future
+ * <webview>) cannot inject log lines: a sub-frame sender is silently
+ * dropped before the payload is parsed.
  */
+export interface RendererLogIpcEvent {
+  senderFrame?: unknown;
+  sender?: { mainFrame?: unknown };
+}
+
 export interface RendererLogIpcMain {
-  on(channel: string, handler: (event: unknown, payload: RendererLogPayload) => void): unknown;
+  on(channel: string, handler: (event: RendererLogIpcEvent, payload: RendererLogPayload) => void): unknown;
+}
+
+/** Inline main-frame check — mirrors electron/security/ipcGuards.ts
+ *  `fromMainFrame()` (which is typed for IpcMainInvokeEvent and so can't
+ *  be reused directly against the `on()` event shape). Pure structural
+ *  identity test: senderFrame must be the WebContents' mainFrame. */
+function isFromMainFrame(e: RendererLogIpcEvent): boolean {
+  return !!e && !!e.sender && e.senderFrame === e.sender.mainFrame;
 }
 
 export function installRendererLogForwarder(
@@ -343,7 +376,11 @@ export function installRendererLogForwarder(
 ): boolean {
   if (!isRendererLogForwardEnabled(options.env)) return false;
   const logger = options.logger ?? getLogger();
-  ipcMain.on(RENDERER_LOG_FORWARD_CHANNEL, (_event, payload) => {
+  ipcMain.on(RENDERER_LOG_FORWARD_CHANNEL, (event, payload) => {
+    // Sub-frame guard (per project ipcGuards pattern). Drop silently to
+    // avoid giving a compromised iframe a feedback channel. Closes the
+    // iframe-injection gap when CCSM_RENDERER_LOG_FORWARD=1.
+    if (!isFromMainFrame(event)) return;
     if (!payload || typeof payload !== 'object') return;
     const lvl: RendererLogLevel = payload.level && ['trace', 'debug', 'info', 'warn', 'error'].includes(payload.level)
       ? payload.level

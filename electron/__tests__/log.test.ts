@@ -102,7 +102,7 @@ describe('electron/log — redact list', () => {
     expect(flat).not.toContain('tok_abc');
     expect(flat).not.toContain('s3cr3t');
     expect(flat).not.toContain('NOPE');
-    expect(flat).toContain('[REDACTED]');
+    expect(flat).toContain('[Redacted]');
   });
 
   it('exposes the canonical redact paths constant including all six task-required keys', () => {
@@ -245,11 +245,32 @@ describe('electron/log — renderer log forward gating', () => {
       env: { [RENDERER_LOG_FORWARD_ENV]: '1' },
       logger: fakeLogger as never,
     });
-    handler?.({}, { level: 'warn', args: ['hello', { a: 1 }] });
+    // Pass the fromMainFrame guard: senderFrame === sender.mainFrame.
+    const mainFrame = { id: 'main' };
+    const event = { senderFrame: mainFrame, sender: { mainFrame } };
+    handler?.(event, { level: 'warn', args: ['hello', { a: 1 }] });
     expect(fakeLogger.warn).toHaveBeenCalled();
     const callArgs = fakeLogger.warn.mock.calls[0]!;
     expect(callArgs[0]).toMatchObject({ event: 'renderer_console_forward', source: 'renderer' });
     expect(typeof callArgs[1]).toBe('string');
+  });
+
+  it('drops payload from sub-frame senders (fromMainFrame guard)', () => {
+    let handler: ((event: unknown, payload: unknown) => void) | undefined;
+    const ipcMain = {
+      on(_ch: string, h: (event: unknown, payload: unknown) => void) { handler = h; },
+    };
+    const fakeLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn() };
+    installRendererLogForwarder(ipcMain, {
+      env: { [RENDERER_LOG_FORWARD_ENV]: '1' },
+      logger: fakeLogger as never,
+    });
+    const mainFrame = { id: 'main' };
+    const subFrame = { id: 'iframe' };
+    const event = { senderFrame: subFrame, sender: { mainFrame } };
+    handler?.(event, { level: 'warn', args: ['evil-iframe-injection'] });
+    expect(fakeLogger.warn).not.toHaveBeenCalled();
+    expect(fakeLogger.info).not.toHaveBeenCalled();
   });
 });
 
