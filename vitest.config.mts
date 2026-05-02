@@ -31,12 +31,18 @@ export default defineConfig({
     // cycles). Bump to 15s globally — well below CI job timeout, and
     // leaves headroom for `npm run coverage`.
     testTimeout: 15000,
-    // Vitest 4 + jsdom 29 transitively pulls `@exodus/bytes` (pure ESM,
-    // `"type": "module"`) via `html-encoding-sniffer`. The default CJS
-    // worker can't `require()` those, producing ERR_REQUIRE_ESM in every
-    // jsdom suite. Inline-bundle the chain so Vite transforms it to CJS
-    // before the worker loads. Keep this list narrow — broad inlining
-    // hurts cold-start perf.
+    // jsdom 29 transitively requires `@exodus/bytes` (pure ESM,
+    // `"type": "module"`) via `html-encoding-sniffer@6` and direct
+    // imports throughout `node_modules/jsdom/lib/**`. Vitest's pool
+    // worker loads the test environment outside Vite's transform
+    // pipeline (native `require()` from `cli-api` Pool.schedule), so
+    // `server.deps.inline` does NOT cover the worker's environment
+    // setup — the real fix is Node 22.12+, which stabilized
+    // `require(esm)`. The Node bump lives in `daemon/.nvmrc` (CI's
+    // single source of truth). The inline list below is kept as a
+    // belt-and-suspenders for any test code path that imports the
+    // chain through Vite's resolver. Keep this list narrow — broad
+    // inlining hurts cold-start perf.
     server: {
       deps: {
         inline: [/^@exodus\//, 'html-encoding-sniffer'],
