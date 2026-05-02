@@ -1,62 +1,72 @@
 # 00 — Overview
 
-> Status: DRAFT (Stage 1 author output, awaiting reviewer).
-> Authority: [`2026-05-02-final-architecture.md`](../2026-05-02-final-architecture.md) — read it first; this chapter set is a strict refinement of that diagram, not a re-derivation.
+> **Status:** v0.3 design spec (Stage 1 author draft, 2026-05-02). Authoritative input: [`../2026-05-02-final-architecture.md`](../2026-05-02-final-architecture.md). Any conflict with prior `v0.3-design.md` / `v0.3-fragments/*` resolves in favor of final-architecture.
 
-## Ship goal (frozen)
+## What v0.3 is
 
-v0.3 ships a **single ccsm-daemon binary** that exposes the **exact wire surface** the final architecture diagram demands, on the **exact two listeners** it demands, with **session semantics** identical to the multi-client v0.4 case — but with the cloudflared sidecar / web client / iOS client / OS-level supervisor / scrollback persistence intentionally not built. v0.3 is the topology, minus three optional consumers and one optional supervisor.
+v0.3 is the **first concrete slice** of the topology frozen in `2026-05-02-final-architecture.md`. It ships exactly one client (desktop / Electron) and exactly one daemon binary on the user's machine. It does NOT ship cloudflared, web client, iOS client, or an OS-level service installer.
 
-**Zero-rework guarantee.** Every line of code that ships in v0.3 must still be present, untouched, in v0.4 when web + iOS + cloudflared land. v0.4 = v0.3 + new files; v0.4 ≠ v0.3 + edits. If a chapter contains a TODO, a placeholder, a "v0.4 will rip this out", or a transitional shim, it has failed the ship goal and must be redesigned.
+Despite shipping only one client, **every backend interface required by the final architecture is already present in v0.3**. v0.3 is a *real subset* of final architecture, not a prototype that will be reshaped.
 
-## True-subset claim
+## The zero-rework guarantee
 
-v0.3 ⊂ final-architecture means, concretely:
+> Every line of code that ships in v0.3 MUST remain unchanged when v0.4 adds web + iOS + cloudflared. v0.4 work is **additive**: generate more client stubs, install a sidecar binary, install an OS service unit. v0.4 does not delete, replace, or refactor v0.3 daemon code.
 
-| Element of final-architecture §1 diagram | v0.3 ships | v0.3 defers |
-|---|---|---|
-| ccsm-daemon (single binary, backend-authoritative) | YES | — |
-| Listener A (loopback / UDS, peer-cred trusted, JWT bypass) | YES, bound day 1 | — |
-| Listener B (`127.0.0.1:PORT_TUNNEL`, JWT validated) | YES, bound day 1 | — |
-| Connect-RPC over HTTP/2 data plane | YES, **only data plane** | — |
-| Supervisor control plane (UDS, v0.3 envelope) | YES, hello-HMAC stripped | — |
-| Session manager · PTY host · snapshot+delta · broadcast+LWW · N≥3 fan-out | YES | — |
-| SQLite, cwd state, crash collector | YES (in-daemon) | — |
-| Desktop client (Connect over Listener A) | YES | — |
-| `cloudflared` sidecar | NO (Listener B has no consumer in v0.3) | v0.4 |
-| Web client / iOS client | NO | v0.4 |
-| Cloudflare Edge / Access JWT issuance | NO (validator code is on Listener B from day 1) | v0.4 |
-| OS-level supervisor (launchd / Win Service / systemd-user) | NO | v0.4 |
-| Scrollback persistence (long-tail history) | NO (RAM ring buffer only) | v0.4+ |
-| Multi-machine semantics | NO | v0.4+ |
+This guarantee is the single load-bearing constraint of this spec. It governs every "MUST" in chapters 01-16. Any v0.3 design choice that forces v0.4 to delete or refactor v0.3 code is a P0 spec defect.
 
-The deferred rows do not require v0.3 code to be deleted or rewritten. They require v0.3 code to be **bypassed** (Listener B with no sidecar consumer, OS supervisor not installed) or **extended** (more clients, more proto methods on the same Connect server).
+**Why:** see [`../2026-05-02-final-architecture.md`](../2026-05-02-final-architecture.md) §2 principles 1-10 + the "frozen baseline" status header.
 
-## Diagram (verbatim from final-architecture §1)
+## True-subset construction (the recipe)
 
-See [final-architecture.md §1](../2026-05-02-final-architecture.md#1-the-diagram). Not duplicated here — the diagram is the source, this chapter set is the derivation.
+The v0.3 ship is constructed by **deleting clients and sidecars** from the final-architecture diagram, then verifying the daemon side is unchanged:
 
-## Reading order
+| Final-architecture component        | v0.3 disposition                                    |
+| ----------------------------------- | --------------------------------------------------- |
+| GitHub OAuth IdP                    | not used (no remote auth path active)               |
+| Cloudflare Access / Tunnel edge     | not used                                            |
+| `cloudflared` sidecar (local)       | NOT spawned. Listener B has no consumer             |
+| Listener B (`127.0.0.1:PORT_TUNNEL`) | **bound, JWT interceptor live, UT exhaustive**      |
+| Listener A (peer-cred UDS / pipe)   | bound, peer-cred enforced                           |
+| ccsm-daemon (single binary)         | shipped, full Connect-RPC surface                   |
+| Supervisor control plane (envelope) | shipped, hello-HMAC removed                         |
+| Session manager / PTY host / SQLite | shipped inside daemon                               |
+| Desktop client (Electron)           | shipped as pure thin client over Listener A         |
+| Web client                          | NOT shipped (proto schema exists)                   |
+| iOS client                          | NOT shipped (proto schema exists)                   |
 
-1. [01-goals-and-non-goals](./01-goals-and-non-goals.md) — what v0.3 must do, must not do, and the anti-patterns that fail the ship goal.
-2. [02-process-topology](./02-process-topology.md) — daemon process tree and lifecycle posture.
-3. [03-listener-A-peer-cred](./03-listener-A-peer-cred.md), [04-listener-B-jwt](./04-listener-B-jwt.md) — the two listeners.
-4. [05-supervisor-control-plane](./05-supervisor-control-plane.md) — what survives of the v0.3 envelope.
-5. [06-proto-schema](./06-proto-schema.md), [07-connect-server](./07-connect-server.md) — the data plane wire.
-6. [08-session-model](./08-session-model.md), [09-pty-host](./09-pty-host.md) — backend-authoritative session semantics.
-7. [10-sqlite-and-db-rpc](./10-sqlite-and-db-rpc.md), [11-crash-and-observability](./11-crash-and-observability.md) — durable state and ops.
-8. [12-electron-thin-client](./12-electron-thin-client.md) — the only v0.3 client.
-9. [13-packaging-and-release](./13-packaging-and-release.md) — single binary, signing, three OS × two arch.
-10. [14-deletion-list](./14-deletion-list.md) — files that MUST disappear; the bar for "v0.3 ships clean".
-11. [15-testing-strategy](./15-testing-strategy.md) — UT/IT/e2e/dogfood smoke gate.
-12. [16-risks-and-open-questions](./16-risks-and-open-questions.md) — what Stage 2 reviewer must adjudicate.
+The only items above that "do nothing useful" in v0.3 are Listener B and the JWT interceptor — and they MUST still be live and tested, because the cost of leaving them out is exactly what v0.4 returns to fix.
 
-## §0.Z Zero-rework self-check
+## What this chapter set covers
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。本章是导读 + 真子集口径声明。"v0.3 ⊂ final-architecture" 是一次性论断 — v0.4 落地不会让 v0.3 退出 final-architecture 的子集 (引 final-architecture §1 diagram)。表中 "v0.3 deferred" 的行在 v0.4 变成 "shipped", 但 v0.3 已写代码不动。
+| Chapter | Scope                                                                           |
+| ------- | ------------------------------------------------------------------------------- |
+| 01      | Goals, non-goals, anti-patterns                                                 |
+| 02      | Process topology, daemon OS lifecycle, cloudflared placeholder                  |
+| 03      | Listener A — UDS / named pipe + peer-cred (3 OS)                                |
+| 04      | Listener B — TCP loopback bind + CF-Access JWT interceptor + UT matrix          |
+| 05      | Supervisor control plane (envelope retained, hello-HMAC stripped)               |
+| 06      | `proto/` schema (5 services, server-streaming, buf CI)                          |
+| 07      | Connect-Node server scaffold; mounting both listeners                           |
+| 08      | Backend-authoritative session model (snapshot+delta, broadcast, LWW)            |
+| 09      | PTY host inside daemon (`ccsm_native`, node-pty Win prebuild)                   |
+| 10      | SQLite inside daemon; `db.*` Connect service                                    |
+| 11      | Crash collector inside daemon; Sentry symbol upload; log rotation               |
+| 12      | Electron thin client (Connect over Listener A; renderer/main kill survives)     |
+| 13      | Packaging + signing + release (single binary, 3 OS × 2 arch, installer size)    |
+| 14      | Deletion list (envelope data plane ~1100 LOC, hello-HMAC, trace-id-map, etc.)   |
+| 15      | Testing strategy (UT/IT/e2e/dogfood)                                            |
+| 16      | Risks + open questions for downstream specs                                     |
+| 17      | Zero-rework acceptance checklist (ship gate)                                    |
+
+## How to read
+
+- **Reviewer:** read 00 → 01 → 14, then dive into the area you're reviewing. The deletion list (14) is the fastest way to see what's *gone* relative to v0.2/v0.3-old.
+- **Implementer of one area:** find the chapter for your area; read its "Cross-refs" tail to discover the chapters that frame your contract.
+- **Manager planning Stage 6 DAG:** every chapter is parallelizable except where "blockedBy" appears in its Cross-refs section.
 
 ## Cross-refs
 
-- [final-architecture §1](../2026-05-02-final-architecture.md#1-the-diagram) — the diagram that owns this spec.
-- [final-architecture §2](../2026-05-02-final-architecture.md#2-locked-principles) — every "Why:" in subsequent chapters cites a numbered principle here.
-- [final-architecture §3](../2026-05-02-final-architecture.md#3-what-this-doc-does-not-decide) — every "Why deferred:" cites this list.
+- [01 — Goals and non-goals](./01-goals-and-non-goals.md)
+- [14 — Deletion list](./14-deletion-list.md)
+- [17 — Zero-rework acceptance checklist (ship gate)](./17-zero-rework-acceptance-checklist.md)
+- [`../2026-05-02-final-architecture.md`](../2026-05-02-final-architecture.md) (authoritative baseline)
