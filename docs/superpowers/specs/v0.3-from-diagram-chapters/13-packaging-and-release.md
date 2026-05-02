@@ -1,68 +1,81 @@
-# 13 — Packaging and release
+# 13 — Packaging + signing + release
 
-> Authority: [final-architecture §2.1](../2026-05-02-final-architecture.md#2-locked-principles) (single binary, runs on user's local machine).
+## Scope
 
-## Artifacts per release
+Single binary daemon + Electron app, packaged together by electron-builder, shipped on three OS × two arch under one `v*` tag.
 
-| Artifact | Targets | Notes |
-|---|---|---|
-| `ccsm-daemon` standalone binary | darwin-arm64, darwin-x64, linux-x64, linux-arm64, win-x64, win-arm64 | bundled via `@yao-pkg/pkg` (or equivalent); embeds Node runtime + node-pty prebuilds + ccsm_native prebuild |
-| `ccsm` Electron app | macOS universal `.dmg`, Linux `.AppImage` + `.deb` (x64 + arm64), Windows `.exe` (x64 + arm64) | bundles its arch-matched `ccsm-daemon` binary alongside |
-| Connect protobuf descriptors | platform-independent | published as a release asset for downstream tooling |
+This chapter consolidates the surviving packaging concerns from the v0.3 reconciliation (#23, #45, #62, #64, #65, #66, #78) and pins them against the final-architecture topology.
 
-## Single binary discipline
+## Outputs (per release)
 
-`ccsm-daemon` MUST run on a fresh OS install with no external runtime (no system Node, no Python). **Why:** §2.1 — single binary.
+| Platform                | Artifact                                                  |
+| ----------------------- | --------------------------------------------------------- |
+| macOS (arm64 + x64)     | `.dmg` + notarized `.app`                                 |
+| Windows (x64 + arm64)   | NSIS `.exe` (per-user install)                            |
+| Linux (x64 + arm64)     | `.AppImage` + `.deb` + `.rpm` (minisign signed)           |
 
-`node-pty` and `ccsm_native` prebuilds are vendored at six target tuples ([09-pty-host](./09-pty-host.md)); the build pipeline rejects any release artifact missing a prebuild for its target.
+Each artifact contains the Electron app **plus** the bundled daemon binary as an extraResource.
 
-## Release tag = single tag
+## Daemon binary build pipeline (resolves #45)
 
-One git tag per release: `v0.3.<patch>`. The tag triggers the matrix CI build that produces all artifacts. **Why:** [project_v03_ship_intent](../../) — single tag is part of the ship intent.
+1. Daemon source TS → `tsc` → JS bundle.
+2. Native deps prebuilt for Node 22 ABI:
+   - `node-pty` (Win prebuild — resolves #78; pin to a version with Win prebuilds).
+   - `better-sqlite3` (or sqlite3, see [16](./16-risks-and-open-questions.md)).
+   - `ccsm_native` — built in-tree, per-OS .node files (resolves #79).
+3. Bundle daemon JS + Node 22 runtime into a single executable via `pkg` (or equivalent — `node-sea` is an option but pkg has more mature multi-arch story today; spec leaves the exact tool to implementer with the constraint "single binary, no node_modules at runtime").
+4. Sentry sourcemap upload happens **before** step 3 — see [11 §symbol upload](./11-crash-and-observability.md).
+5. Post-build size assertion against `installer/size-baseline.json` (resolves #65; baseline is re-generated after Connect lands; budget is "v0.2 size + 15%").
 
-## Signing (placeholder-safe)
+## Electron-builder integration
 
-- **macOS:** Developer ID signing + notarization required for distribution. v0.3 ships **either** with real Developer ID **or** with a documented unsigned dev path; the build pipeline accepts a placeholder identity in CI dry-runs and reports `signed:false` in `ServerInfo` so the dogfood gate can detect unsigned builds.
-- **Windows:** Authenticode signing similarly placeholder-safe.
-- **Linux:** No signing; minisign over release tarballs. **minisign is the only hard blocker** before tagging — the release pipeline MUST refuse to publish without a valid minisign signature.
+- `extraResources`: daemon binary + `ccsm_native.node` files + claude-agent-sdk staging blob (existing v0.3 frag-11 dual-staging dance).
+- `asarUnpack`: same set, so they're real files at runtime, not inside the asar archive.
+- `before-pack`: existing `REQUIRED_NATIVES` check (resolves #66) — refuses to ship if any native is missing or 0-byte.
+- `after-pack`: existing content-sanity check (resolves #66 belt-and-suspenders).
 
-**Why placeholder-safe:** the spec must let CI run end-to-end without secrets in PR builds; release tagging requires the real keys. Same code path in both modes.
+## Codesigning (resolves #64)
 
-## `.bak` rollback path
+- macOS: codesign the daemon binary AND every `.node` file with the Developer ID Application certificate (existing v0.3 per-`.node` codesign loop). Notarize the final `.app`.
+- Windows: signtool the daemon `.exe` AND every `.node` file with the EV cert.
+- Linux: minisign the AppImage / deb / rpm (no per-file signing required).
 
-The installer MUST preserve the previously-installed `ccsm-daemon` as `${binary}.bak` before overwriting. The in-process supervisor's rollback ([ch.11](./11-crash-and-observability.md)) depends on this. Installer for each OS:
-- macOS pkg: pre-install script copies existing binary to `.bak`.
-- Linux deb/AppImage: post-extract step in our wrapper.
-- Windows: NSIS / WiX `.bak` step.
+The daemon binary MUST be signed; an unsigned daemon would fail Gatekeeper on macOS when spawned by Electron.
 
-## Uninstall hygiene
+## NSIS settings (Windows, frag-11 carried forward)
 
-Uninstaller MUST remove `${dataRoot}/runtime/` (PID, port-tunnel, crashloop). It MUST NOT remove `${dataRoot}/db/` or `${dataRoot}/logs/` without explicit user opt-in. **Why:** session metadata + crash logs survive across reinstalls — that's the user's data.
+- `oneClick: false`, `allowElevation: true`, `allowToChangeInstallationDirectory: true`, `perMachine: false`.
+- Install root: `%LOCALAPPDATA%\ccsm\` (no UAC, no Program Files).
+- Auto-update writes in-place; `daemon.shutdownForUpgrade` + marker (see [05](./05-supervisor-control-plane.md)) orchestrates the daemon side.
 
-## CI matrix
+## Release CI on `v*` tag (resolves #23)
 
-```
-matrix:
-  os: [macos-latest, ubuntu-latest, windows-latest]
-  arch: [x64, arm64]
-  exclude:
-    - os: ubuntu-latest, arch: arm64    # cross-compile path used instead
-```
+- Single `v*` tag triggers full release (no `daemon-v*` separate channel — the daemon ships inside the Electron installer; placeholder-safe rule from project_v03_ship_intent).
+- SLSA-3 provenance generation on every release (existing).
+- After each release: dogfood smoke run (#14 modified) against the actual installer.
 
-Each cell:
-1. Build `ccsm-daemon` standalone.
-2. Build Electron app embedding daemon.
-3. Run unit tests.
-4. Run integration tests (IT-E1..E3 on each OS where Electron runs).
-5. Upload artifacts.
-6. (Tag builds only) sign + minisign + publish.
+## Release verify steps
 
-## §13.Z Zero-rework self-check
+The existing `release.yml` verify job (already includes `npm run build` per commit e983c04) extends with:
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。单 binary、六 target tuple、单 git tag、placeholder-safe 签名、minisign 硬阻塞、`.bak` 回滚约定、CI matrix — v0.4 全部沿用。v0.4 加 cloudflared 时**追加** sidecar 二进制到安装包 (新文件, 不修改打包脚本现有路径); v0.4 加 OS supervisor 时**追加** install/uninstall 脚本片段 (新增, 不替换)。**Why 不变:** final-architecture §2.1 (单 binary 永久原则) + §2.9 (in-process supervisor 仅做 .bak 回滚)。
+- Verify daemon binary present in installer at expected path.
+- Verify daemon `--version` runs (sanity).
+- Verify discovery-file path policy by smoke-launching daemon and reading its discovery file.
+
+## Single tag, no schema-tag separation
+
+There is no `proto-v*` tag. proto schema versioning lives in the package (`ccsm.v1`) and is governed by `buf breaking` in CI (see [06](./06-proto-schema.md)). Schema and binary version are decoupled at the protocol level (additive proto changes are non-breaking) but coupled at the release level (one ship, one tag).
+
+## Installer size budget
+
+- Baseline: re-set after first post-Connect release.
+- Hard ceiling: v0.2 + 15% (this is the reconciliation-baked guard; if Connect bundling overshoots, that's a build-task to optimize before ship, not an excuse to bump the baseline).
 
 ## Cross-refs
 
-- [09-pty-host](./09-pty-host.md) — prebuild requirements.
-- [11-crash-and-observability](./11-crash-and-observability.md) — `.bak` consumer.
-- [15-testing-strategy](./15-testing-strategy.md) — CI suites.
+- [05 — Supervisor (`daemon.shutdownForUpgrade` consumer)](./05-supervisor-control-plane.md)
+- [09 — PTY host (node-pty + ccsm_native deps)](./09-pty-host.md)
+- [10 — SQLite (sqlite native dep)](./10-sqlite-and-db-rpc.md)
+- [11 — Crash + observability (pre-pkg sourcemap upload)](./11-crash-and-observability.md)
+- [12 — Electron thin client (daemon binary path discovery)](./12-electron-thin-client.md)
+- [16 — Risks (sqlite library choice; pkg vs node-sea)](./16-risks-and-open-questions.md)
