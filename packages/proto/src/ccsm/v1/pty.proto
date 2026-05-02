@@ -1,0 +1,117 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §4 (and chapter 06 for snapshot/delta wire format) for the
+// contract. Field numbers MUST NOT be reused or renumbered.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+
+service PtyService {
+  // Forever-stable. See chapter 06 for snapshot/delta wire format.
+  rpc Attach(AttachRequest) returns (stream PtyFrame);   // server-stream
+  rpc SendInput(SendInputRequest) returns (SendInputResponse);  // client -> daemon keystrokes
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
+  // F3: closes R0 06-P0.3 — per-frame ack ships in v0.3 so v0.4 web/iOS get
+  // exactly-once delta application semantics WITHOUT a request-shape change.
+  // v0.3 Electron MAY no-op (HTTP/2 flow control + the `since_seq` resume
+  // tree (chapter 06 §5) already give the dogfood-needed reliability over
+  // loopback); v0.4 web/iOS over CF Tunnel MUST set `requires_ack = true`
+  // on `AttachRequest` and MUST call `AckPty(session_id, applied_seq)` after
+  // each persisted frame so daemon can advance its per-subscriber seq watermark
+  // and prune deltas safely.
+  rpc AckPty(AckPtyRequest) returns (AckPtyResponse);
+  // F6: closes R1 P0.3 (chapter 08) — surfaces whether the daemon's
+  // configured `claude` CLI binary is on PATH (or at the configured
+  // `claude_binary_path`) and resolves the absolute path. Drives the
+  // renderer's "claude not installed" empty-state and disables the
+  // CreateSession affordance accordingly. Daemon owns the lookup
+  // because the daemon, not the renderer, spawns the binary.
+  rpc CheckClaudeAvailable(CheckClaudeAvailableRequest) returns (CheckClaudeAvailableResponse);
+}
+
+message PtyGeometry {
+  int32 cols = 1;
+  int32 rows = 2;
+}
+
+message AttachRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  // Last delta seq the client has; daemon resumes from here.
+  // 0 means "send fresh snapshot then deltas from snapshot's seq".
+  uint64 since_seq = 3;
+  // F3: closes R0 06-P0.3 — opt-in per-frame ack channel.
+  // v0.3 Electron leaves this `false` (default proto3 zero) — the server
+  // streams freely; loopback HTTP/2 flow control suffices and the `since_seq`
+  // resume tree handles disconnect cases. v0.4 web/iOS clients running over
+  // CF Tunnel set this `true` and MUST call `AckPty` after each persisted
+  // frame; daemon then bounds per-subscriber unacked-frame backlog (kicks
+  // the subscriber with `RESOURCE_EXHAUSTED` if backlog exceeds N=4096).
+  bool requires_ack = 4;
+}
+
+message AckPtyRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  uint64 applied_seq = 3;        // highest contiguous seq the client has persisted
+}
+message AckPtyResponse {
+  RequestMeta meta = 1;
+  uint64 daemon_max_seq = 2;     // highest seq daemon currently has buffered for this session
+}
+
+message PtyFrame {
+  oneof kind {
+    PtySnapshot snapshot = 1;   // sent at most once per Attach (first frame if since_seq=0
+                                // OR if since_seq is older than retained delta window)
+    PtyDelta delta = 2;         // may be sent many times
+    PtyHeartbeat heartbeat = 3; // every 10s when no other frame; lets client detect stall
+  }
+}
+
+// Forever-stable. Schema details in chapter 06.
+message PtySnapshot {
+  uint64 base_seq = 1;
+  PtyGeometry geometry = 2;
+  bytes screen_state = 3;       // serialized xterm-headless state; opaque to clients
+  uint32 schema_version = 4;    // bump to add fields; never repurpose
+}
+
+message PtyDelta {
+  uint64 seq = 1;               // strictly monotonic per session
+  bytes payload = 2;            // chunk of raw VT bytes; see chapter 06 §3
+  int64 ts_unix_ms = 3;
+}
+
+message PtyHeartbeat {
+  uint64 last_seq = 1;
+  int64 ts_unix_ms = 2;
+}
+
+message SendInputRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  bytes data = 3;               // raw bytes; daemon writes to PTY master
+}
+message SendInputResponse { RequestMeta meta = 1; }
+
+message ResizeRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  PtyGeometry geometry = 3;
+}
+message ResizeResponse { RequestMeta meta = 1; }
+
+// F6: closes R1 P0.3 (chapter 08). Forever-stable. Daemon resolves the
+// `claude` binary via (a) `Settings`-derived `claude_binary_path` config
+// (chapter 10 §5; not RPC-settable — security-sensitive), or (b) PATH
+// lookup if the config is unset.
+message CheckClaudeAvailableRequest { RequestMeta meta = 1; }
+message CheckClaudeAvailableResponse {
+  RequestMeta meta = 1;
+  bool available = 2;            // true iff daemon successfully resolved an executable
+  string resolved_path = 3;      // absolute path; empty if !available
+  string version = 4;            // best-effort `claude --version` parse; empty on failure
+  string error_code = 5;         // "ENOENT" / "EACCES" / "" — surfaces the lookup failure mode for UI messaging
+}

@@ -1,0 +1,42 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §6.2 for the contract. Field numbers MUST NOT be reused or
+// renumbered.
+//
+// F6: closes R1 P1.4 (chapter 08) — drafts (per-session composer text)
+// survive Electron restart AND v0.4 web/iOS pick up where the user left
+// off. Daemon stores drafts in the `app_state`-style settings table under
+// key `draft:<session_id>` for v0.3 simplicity; a dedicated table can be
+// added additively in v0.4 if perf demands.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+
+service DraftService {
+  // Forever-stable. Drafts are per-session, owned by the session's
+  // principal (peer-cred middleware enforces; daemon NEVER returns
+  // a draft whose session.owner != ctx.principal).
+  rpc GetDraft(GetDraftRequest) returns (GetDraftResponse);
+  rpc UpdateDraft(UpdateDraftRequest) returns (UpdateDraftResponse);
+}
+
+message GetDraftRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+}
+message GetDraftResponse {
+  RequestMeta meta = 1;
+  string text = 2;             // empty if no draft exists
+  int64 updated_unix_ms = 3;   // 0 if no draft exists
+}
+
+message UpdateDraftRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  string text = 3;             // empty string DELETES the draft (matches v0.2 behavior — clearing the composer wipes the draft)
+}
+message UpdateDraftResponse {
+  RequestMeta meta = 1;
+  int64 updated_unix_ms = 2;
+}

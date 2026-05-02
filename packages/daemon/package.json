@@ -1,0 +1,7 @@
+{
+  "name": "@ccsm/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CCSM daemon (headless RPC server). Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11."
+}
