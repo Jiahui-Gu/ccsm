@@ -501,7 +501,7 @@ diagnostic UI." This fragment's r3 edit aligns the wording.
   (platform-aware target — round-3 devx P1-5: under prod-installed
   harness use `taskkill /F /IM ccsm-daemon.exe` on Win and
   `pkill -f /Applications/ccsm.app/Contents/Resources/daemon/ccsm-daemon`
-  on macOS / `pkill -f /opt/ccsm/resources/daemon/ccsm-daemon` on Linux;
+  on macOS / `pkill -f /opt/CCSM/resources/daemon/ccsm-daemon` on Linux;
   ONLY in dev-mode harness use `pkill -f dist-daemon/index.js`), assert
   renderer DOM shows `[data-toast-kind="reconnecting"]`, restart daemon
   via `spawnOrAttach`, assert toast clears within 1 s and a follow-on

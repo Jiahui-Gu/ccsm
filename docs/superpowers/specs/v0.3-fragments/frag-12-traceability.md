@@ -30,7 +30,7 @@ They are CLOSED below as "manager r3 lock" rather than punted to the
 fragment authors.
 
 1. **Install path = per-machine `%ProgramFiles%\ccsm\` (Win) and OS-equivalents
-   elsewhere** (`/Applications/CCSM.app` mac, `/opt/ccsm/` Linux). Per
+   elsewhere** (`/Applications/CCSM.app` mac, `/opt/CCSM/` Linux). Per
    `[manager r12 lock 2026-05-01]` (frag-11 §11.6) electron-builder ships
    `nsis: { perMachine: true, oneClick: false }` — superseding the original
    r3 P0-1 `perMachine: false` lock; PR #682 (T51) flipped to per-machine for

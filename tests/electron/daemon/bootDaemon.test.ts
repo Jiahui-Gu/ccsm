@@ -175,10 +175,10 @@ describe('resolveDaemonBinary', () => {
   it('Linux packaged: <resources>/daemon/ccsm-daemon', () => {
     const got = resolveDaemonBinary({
       isPackaged: true,
-      resourcesPath: '/opt/ccsm/resources',
+      resourcesPath: '/opt/CCSM/resources',
       platform: 'linux',
     });
-    expect(got).toBe('/opt/ccsm/resources/daemon/ccsm-daemon');
+    expect(got).toBe('/opt/CCSM/resources/daemon/ccsm-daemon');
   });
   it('unpackaged returns null', () => {
     expect(
