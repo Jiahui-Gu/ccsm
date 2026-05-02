@@ -65,6 +65,28 @@ The minisign public key lives at [`release-keys/minisign.pub`](release-keys/mini
 
 ccsm spawns the official `claude` binary as a PTY in Electron's main process and renders its output in a React surface. It reads `CLAUDE_CONFIG_DIR` so your existing CLI configuration — skills, agents, MCP servers, permissions — works untouched. ccsm doesn't parse or rewrite your config; it just gives the CLI a better window.
 
+## Develop
+
+One-shot bootstrap for a fresh checkout (Node 20.x, npm 10+):
+
+```sh
+git clone https://github.com/Jiahui-Gu/ccsm.git
+cd ccsm
+npm run setup
+npm run dev
+```
+
+`npm run setup` (`scripts/setup.cjs`) is idempotent and does, in order:
+
+1. `npm install` at the root (also installs the `daemon` workspace).
+2. Builds the `ccsm_native` N-API addon for the daemon's Node ABI.
+3. Runs `@electron/rebuild` for `better-sqlite3` + `node-pty` against Electron's ABI (a no-op when the `postinstall` hook already ran).
+4. Creates the dev dataRoot. Defaults to `~/.ccsm-dev`; override with `CCSM_DATA_ROOT=/your/path npm run setup`.
+
+Re-run `npm run setup` any time after `git pull` — none of the steps destroy work.
+
+Toolchain: Windows needs Visual Studio Build Tools (C++ workload) + Python 3 on PATH; macOS needs Xcode CLT; Linux needs `build-essential` + `python3`.
+
 ## Roadmap
 
 - **v0.3** — daemon split (sessions survive app restarts), in flight
