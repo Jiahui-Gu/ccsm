@@ -85,19 +85,39 @@ CREATE TABLE pty_delta (
 );
 -- pruning: see chapter 06 §4
 
+<!-- F1: closes R0 07-P0.1 / R0 07-P0.2 / R0 07-P0.3 / R0 09-P0.1 — owner_id, scoped settings, and principal_aliases land in 001_initial.sql so v0.4 multi-principal scoping is row-additive, not column-additive. -->
+
 CREATE TABLE crash_log (
   id        TEXT PRIMARY KEY,                 -- ULID
   ts_ms     INTEGER NOT NULL,
-  source    TEXT NOT NULL,                    -- chapter 04 §5 open string set
+  source    TEXT NOT NULL,                    -- chapter 04 §5 / chapter 09 §1 open string set
   summary   TEXT NOT NULL,
   detail    TEXT NOT NULL,
-  labels_json TEXT NOT NULL DEFAULT '{}'
+  labels_json TEXT NOT NULL DEFAULT '{}',
+  owner_id  TEXT NOT NULL DEFAULT 'daemon-self' -- principalKey for session-attributable crashes; sentinel 'daemon-self' otherwise (see chapter 09 §1)
 );
 CREATE INDEX idx_crash_log_recent ON crash_log(ts_ms DESC);
+CREATE INDEX idx_crash_log_owner_recent ON crash_log(owner_id, ts_ms DESC);
 
 CREATE TABLE settings (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL                          -- JSON-encoded; readers parse per key
+  -- Composite PK from day one so v0.4 per-principal overrides land as new
+  -- rows with scope='principal:<principalKey>', not as a column add or a
+  -- new table. v0.3 daemon writes scope='global' for every row and rejects
+  -- any other scope at the RPC layer (see chapter 04 §6 and chapter 05 §5).
+  scope TEXT NOT NULL,                         -- 'global' in v0.3; 'principal:<principalKey>' in v0.4+
+  key   TEXT NOT NULL,
+  value TEXT NOT NULL,                         -- JSON-encoded; readers parse per key
+  PRIMARY KEY (scope, key)
+);
+
+CREATE TABLE principal_aliases (
+  -- Empty in v0.3; populated in v0.4 to thread local-user continuity
+  -- across identity sources (e.g., a user's local-user uid → their
+  -- cf-access sub). Keyed by alias so a single canonical principal can
+  -- absorb many aliases over time. v0.3 daemon ignores this table.
+  alias_principal_key     TEXT NOT NULL PRIMARY KEY,
+  canonical_principal_key TEXT NOT NULL,
+  created_ms              INTEGER NOT NULL
 );
 
 CREATE TABLE cwd_state (
@@ -136,9 +156,11 @@ v0.3 has **no automated backup**. Recovery posture:
 ### 7. v0.4 delta
 
 - **Add** new migration files `002_*.sql`, `003_*.sql`, ... (additive only):
-  - `crash_log.owner_id TEXT` (NULL = global), `crash_log.uploaded_at INTEGER`.
+  - `crash_log.uploaded_at INTEGER` column for upload tracking (NULL = never uploaded).
   - `tunnel_state` table for cloudflared sidecar config.
-  - `settings_per_principal` table.
   - new `principals.kind` value `cf-access`.
+- **Use** existing `crash_log.owner_id` column (already `NOT NULL` from v0.3 with `'daemon-self'` sentinel) — v0.4 starts populating it with attributable principalKeys for cf-access principals; no schema change.
+- **Use** existing `settings(scope, key, value)` shape — v0.4 inserts new rows with `scope = 'principal:<principalKey>'`; existing `scope = 'global'` rows remain valid as defaults.
+- **Populate** existing `principal_aliases` table — v0.4 inserts mapping rows to thread `local-user` uid continuity into cf-access `sub` values; v0.3 daemon ignores the table.
 - **Add** optional automated daily backup (writes `VACUUM INTO` to a rolling location); v0.3 manual backup remains.
-- **Unchanged**: every column listed in §3, every table definition, the pty wire payloads, the migration discipline, the per-OS state root.
+- **Unchanged**: every column listed in §3, every table definition, the pty wire payloads, the migration discipline, the per-OS state root, the `crash_log.owner_id` column shape, the `settings (scope, key, value)` shape, the `principal_aliases` table shape.

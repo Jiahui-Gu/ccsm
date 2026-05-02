@@ -128,7 +128,21 @@ message DestroySessionRequest {
 }
 message DestroySessionResponse { RequestMeta meta = 1; }
 
-message WatchSessionsRequest { RequestMeta meta = 1; }
+<!-- F1: closes R0 04-P0.3 / R0 05-P0.2 — WatchSessions scope made explicit so v0.4 cross-principal admin filter is a value-add, not a semantic shift. -->
+// Forever-stable. v0.3 daemon honors only WATCH_SCOPE_OWN; WATCH_SCOPE_ALL
+// is reserved here so v0.4 (multi-principal + admin) flips behavior by enum
+// value, not by reshaping the request. v0.3 daemon MUST reject ALL with
+// PermissionDenied so v0.4 enforcement is purely an additive enum-branch.
+enum WatchScope {
+  WATCH_SCOPE_UNSPECIFIED = 0;     // treated as WATCH_SCOPE_OWN
+  WATCH_SCOPE_OWN = 1;             // events for sessions owned by ctx.principal
+  WATCH_SCOPE_ALL = 2;             // v0.4: admin principals only
+}
+
+message WatchSessionsRequest {
+  RequestMeta meta = 1;
+  WatchScope scope = 2;            // default UNSPECIFIED == OWN
+}
 message SessionEvent {
   oneof kind {
     Session created = 1;
@@ -236,30 +250,47 @@ service CrashService {
   rpc WatchCrashLog(WatchCrashLogRequest) returns (stream CrashEntry);
 }
 
+<!-- F1: closes R0 04-P0.3 / R0 09-P0.1 / R0 05-P0.1 / R2 P0-05-2 — owner_filter pinned at v0.3 freeze so v0.4 multi-principal scoping is enum-additive, not a semantic flip. -->
+// Forever-stable. v0.3 has a single principal kind so the filter is moot
+// at runtime; v0.4 multi-principal makes UNSPECIFIED == OWN binding and
+// adds OWNER_FILTER_ALL for admin principals. Defaults are forever-stable.
+enum OwnerFilter {
+  OWNER_FILTER_UNSPECIFIED = 0;    // treated as OWN
+  OWNER_FILTER_OWN = 1;            // entries with owner_id == principalKey(ctx.principal) OR owner_id == "daemon-self"
+  OWNER_FILTER_ALL = 2;            // v0.3: only the local-user principal MAY use this; v0.4: admin principals only
+}
+
 message GetCrashLogRequest {
   RequestMeta meta = 1;
-  int32 limit = 2;          // max entries; daemon caps at 1000
-  int64 since_unix_ms = 3;  // 0 = no lower bound
+  int32 limit = 2;            // max entries; daemon caps at 1000
+  int64 since_unix_ms = 3;    // 0 = no lower bound
+  OwnerFilter owner_filter = 4; // default UNSPECIFIED == OWN
 }
 message GetCrashLogResponse {
   RequestMeta meta = 1;
   repeated CrashEntry entries = 2;
 }
 
-message WatchCrashLogRequest { RequestMeta meta = 1; }
+message WatchCrashLogRequest {
+  RequestMeta meta = 1;
+  OwnerFilter owner_filter = 2; // same semantics as GetCrashLogRequest.owner_filter
+}
 
 // Forever-stable.
 message CrashEntry {
   string id = 1;             // ULID
   int64 ts_unix_ms = 2;
-  string source = 3;         // "uncaughtException" | "unhandledRejection" | "claude_exit" | "pty_eof" | "sqlite_open" | ...
+  string source = 3;         // open string set; see chapter 09 §1 for v0.3 sources
   string summary = 4;        // single-line summary
   string detail = 5;         // multiline; stack trace if any
   map<string, string> labels = 6;  // session_id, pid, etc.
+  string owner_id = 7;       // principalKey of attributable principal, or "daemon-self" for daemon-side crashes (chapter 09 §1)
 }
 ```
 
-`source` is a string (not enum) on purpose: new sources surface from the wild and must be addable without a proto bump. Daemon code SHOULD use a typed const set internally; the wire layer accepts any string from any version.
+`source` is a string (not enum) on purpose: new sources surface from the wild and must be addable without a proto bump. Daemon code SHOULD use a typed const set internally; the wire layer accepts any string from any version. The set is **open**; chapter [09](./09-crash-collector.md) §1 enumerates the v0.3 named sources but explicitly disclaims exhaustiveness — v0.4 may add sources additively (e.g., `claude_spawn`, `session_restore`) and v0.3 clients tolerate any value.
+
+`owner_id` is a string with a single sentinel value `"daemon-self"` for crashes that are not attributable to a session principal (e.g., `sqlite_open`, `listener_bind`, `migration`, `watchdog_miss`). Session-attributable crashes (e.g., `claude_exit`, `pty_eof`, `worker_exit`) carry the owning session's `principalKey` as `owner_id`. v0.3 daemon enforces only that `OWNER_FILTER_ALL` is rejected for non-`local-user` principals; v0.4 adds full per-principal scoping additively (no proto reshape, no column add — the column ships from day one — see chapter [07](./07-data-and-state.md) §3 and chapter [09](./09-crash-collector.md) §1).
 
 ### 6. Settings service (`settings.proto`)
 
@@ -268,29 +299,61 @@ syntax = "proto3";
 package ccsm.v1;
 import "ccsm/v1/common.proto";
 
+<!-- F1: closes R0 04-P0.2 / R0 07-P0.2 / R2 P0-04-3 — scope enum pinned at v0.3 freeze; security-sensitive keys removed from RPC entirely so v0.4 admin gating is config-file-only and additive. -->
+
 service SettingsService {
   rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
   rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
 }
 
-message GetSettingsRequest { RequestMeta meta = 1; }
+// Forever-stable. v0.3 daemon honors only SETTINGS_SCOPE_GLOBAL; v0.4 adds
+// SETTINGS_SCOPE_PRINCIPAL additively. The enum value lives at v0.3 freeze
+// so v0.4 introduces no new oneof / no new request shape.
+enum SettingsScope {
+  SETTINGS_SCOPE_UNSPECIFIED = 0;  // treated as GLOBAL
+  SETTINGS_SCOPE_GLOBAL = 1;       // single-row-per-key for the daemon install
+  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with InvalidArgument in v0.3
+}
+
+message GetSettingsRequest {
+  RequestMeta meta = 1;
+  SettingsScope scope = 2;         // default UNSPECIFIED == GLOBAL
+}
 message GetSettingsResponse {
   RequestMeta meta = 1;
   Settings settings = 2;
+  SettingsScope effective_scope = 3; // echo of the scope the daemon resolved
 }
 
 message UpdateSettingsRequest {
   RequestMeta meta = 1;
   Settings settings = 2;
+  SettingsScope scope = 3;         // default UNSPECIFIED == GLOBAL
 }
 message UpdateSettingsResponse {
   RequestMeta meta = 1;
   Settings settings = 2;
+  SettingsScope effective_scope = 3;
 }
 
 // Forever-stable wrapper. Field additions are additive (proto3 default to zero).
+//
+// SECURITY-SENSITIVE KEYS EXCLUDED FROM RPC.
+// `claude_binary_path` and any other key that controls which executable the
+// daemon spawns or which library it loads is a code-execution primitive and
+// MUST NOT be settable via UpdateSettings. v0.3 reads these keys ONLY from
+// the daemon config file written at install time (per-OS path in chapter
+// [10](./10-build-package-installer.md) §5). The RPC surface deliberately
+// omits a `claude_binary_path` field so the boundary is mechanical: there
+// is no proto field to set. v0.4 keeps the same exclusion; if a per-user
+// override is ever needed it ships as a separate AdminSettingsService gated
+// on a peer-cred admin allowlist (additive new RPC, not a new field on the
+// existing message). See chapter [05](./05-session-and-principal.md) §5
+// "Per-RPC enforcement matrix" for the principal-side rule.
 message Settings {
-  string claude_binary_path = 1;            // override path to claude CLI
+  // field 1 reserved historically for claude_binary_path; intentionally
+  // omitted in v0.3 so the wire schema cannot carry it. Do NOT reuse field
+  // number 1 for anything else (see chapter [15](./15-zero-rework-audit.md) §3).
   PtyGeometry default_geometry = 2;
   CrashRetention crash_retention = 3;
 }
@@ -300,6 +363,8 @@ message CrashRetention {
   int32 max_age_days = 2;      // daemon caps at 90
 }
 ```
+
+The on-disk shape mirrors the wire enum: the SQLite `settings` table is keyed `(scope, key, value)` from day one with `scope = 'global'` for every v0.3 row (see chapter [07](./07-data-and-state.md) §3). v0.4 inserts rows with `scope = 'principal:<principalKey>'` additively; v0.3 rows remain valid as global defaults.
 
 ### 7. Forever-stable vs v0.3-internal labels
 

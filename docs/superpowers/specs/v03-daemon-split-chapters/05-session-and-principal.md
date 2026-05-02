@@ -70,6 +70,8 @@ export function assertOwnership(p: Principal, s: Session): void {
 
 ### 5. Per-RPC enforcement matrix
 
+<!-- F1: closes R0 05-P0.1 / R0 05-P0.2 / R0 05-P0.3 / R2 P0-04-3 / R2 P0-05-2 — principal-scoping baseline locked at v0.3 freeze; security-sensitive Settings keys removed from RPC. -->
+
 | RPC | Enforcement |
 | --- | --- |
 | `Hello` | none (returns the principal; auth already happened in middleware) |
@@ -77,14 +79,14 @@ export function assertOwnership(p: Principal, s: Session): void {
 | `GetSession` | load by id; `assertOwnership` before returning |
 | `CreateSession` | new session's `owner_id := principalKey(ctx.principal)`; no further check |
 | `DestroySession` | load by id; `assertOwnership`; then delete + tear down PTY + kill claude CLI |
-| `WatchSessions` | filter the in-memory event bus by `principalKey(ctx.principal)`; never emit other-owner events on this stream |
+| `WatchSessions` | `WatchSessionsRequest.scope` (chapter [04](./04-proto-and-rpc-surface.md) §3) defaults to `WATCH_SCOPE_OWN`; daemon filters the in-memory event bus by `principalKey(ctx.principal)`; `WATCH_SCOPE_ALL` is rejected with `PermissionDenied` in v0.3 (the enum value exists for v0.4 admin principals only) |
 | `Attach` (PtyService) | load session by id; `assertOwnership`; then begin streaming |
 | `SendInput` | as above |
 | `Resize` | as above |
-| `GetCrashLog` / `WatchCrashLog` | v0.3: open to any local-user principal (no owner column on crash_log); rationale below |
-| `GetSettings` / `UpdateSettings` | v0.3: open to any local-user principal (settings are global to the daemon install) |
+| `GetCrashLog` / `WatchCrashLog` | `OwnerFilter` (chapter [04](./04-proto-and-rpc-surface.md) §5) defaults to `OWNER_FILTER_OWN`; daemon filters `crash_log` by `owner_id IN (principalKey(ctx.principal), 'daemon-self')`; `OWNER_FILTER_ALL` is permitted in v0.3 only because there is exactly one local-user principal whose effective view is identical to `ALL` (the rule preserves the v0.4 invariant that `ALL` is admin-only — see chapter [07](./07-data-and-state.md) §3 for the column and chapter [09](./09-crash-collector.md) §1 for source-attribution rules) |
+| `GetSettings` / `UpdateSettings` | `SettingsScope` (chapter [04](./04-proto-and-rpc-surface.md) §6) defaults to `SETTINGS_SCOPE_GLOBAL`; v0.3 daemon rejects `SETTINGS_SCOPE_PRINCIPAL` with `InvalidArgument` (the enum value exists for v0.4 only). Open to any local-user principal because v0.3 has exactly one. **`claude_binary_path` and any other code-execution-controlling key is NOT a `Settings` proto field** (see chapter [04](./04-proto-and-rpc-surface.md) §6); these are read by the daemon from the install-time config file only. There is no RPC path to set them in v0.3 or v0.4 — the boundary is mechanical (the field does not exist on the wire). |
 
-**Why crash log + settings are not principal-scoped in v0.3**: there is exactly one principal in v0.3, so scoping is moot. v0.4 with multiple principals MUST add an `owner_id` column on `crash_log` (additive: new column, default NULL = "global") and a per-principal `settings` table (additive: new table). Existing rows remain valid as global. See [15-zero-rework-audit](./15-zero-rework-audit.md).
+**Why crash log + settings ship principal-scoped from v0.3 day one**: even with exactly one principal, the schema, proto enum, and SQL columns are present so that v0.4 multi-principal lands as new enum-value branches and new row inserts — not as a column add or a request-shape change. See chapter [15](./15-zero-rework-audit.md) §1 (rows §5, §10) for the audit verdict. The `principal_aliases` table (chapter [07](./07-data-and-state.md) §3) is empty in v0.3 and exists so v0.4 can thread `local-user` continuity (e.g., user uid 1000 → SSO sub) without rewriting historical `owner_id` values.
 
 ### 6. Session create flow (canonical)
 
@@ -120,7 +122,8 @@ The principal is **not** re-derived on daemon restart — the recorded `owner_id
 ### 8. v0.4 delta
 
 - **Add** `cf-access:<sub>` to the `Principal` union; add `CfAccess` proto message; add JWT validator middleware on Listener B that produces it. Existing peer-cred middleware on Listener A: unchanged.
-- **Add** `owner_id` column on `crash_log` (default NULL = global); existing rows valid.
-- **Add** per-principal `settings_per_principal` table; existing global `settings` table remains as defaults.
-- **Add** optional admin principal kind for support flows; `assertOwnership` gets one early-return clause.
-- **Unchanged**: `Session.owner_id` column, `principalKey` format, every existing handler, every existing enforcement point, RPC-layer enforcement contract, session restore on boot.
+- **Use** the existing `crash_log.owner_id` column (already `NOT NULL` from v0.3 with `'daemon-self'` sentinel for daemon-side crashes; see chapter [07](./07-data-and-state.md) §3); v0.4 simply starts setting it to attributable principalKeys for cf-access principals.
+- **Use** the existing `settings(scope, key, value)` shape (already shipped in v0.3 with `scope = 'global'`); v0.4 inserts new rows with `scope = 'principal:<principalKey>'`.
+- **Populate** the existing `principal_aliases` table (empty in v0.3) to thread `local-user` continuity into cf-access principals when a user moves between identity sources.
+- **Add** optional admin principal kind for support flows; `assertOwnership` gets one early-return clause; `WATCH_SCOPE_ALL` and `OWNER_FILTER_ALL` are accepted from admin principals only.
+- **Unchanged**: `Session.owner_id` column, `principalKey` format, every existing handler, every existing enforcement point, RPC-layer enforcement contract, session restore on boot, `crash_log.owner_id` column shape, `settings` table shape, `principal_aliases` table shape, the exclusion of `claude_binary_path` from the RPC surface.

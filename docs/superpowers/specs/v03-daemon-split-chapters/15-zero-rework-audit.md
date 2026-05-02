@@ -19,7 +19,8 @@ Acceptable answers: **none** / **purely additive** (specify what is added). Unac
 | §7 | Daemon = system service per OS; survives logout (LaunchDaemon, not LaunchAgent) | LaunchDaemon choice already supports v0.4 web/iOS reaching daemon while user logged out. No service shape change. cloudflared subprocess ADDED to daemon supervision. | **additive** |
 | §8 | Monorepo `packages/{daemon, electron, proto}`; pnpm + Turborepo | ADD `packages/web`, `packages/ios`, optionally `packages/cloudflared-config`. Existing packages unchanged. Workspace tool unchanged. | **additive** |
 | §9 | Node 22 sea single binary per OS; native deps via `native/` sidecar | sea pipeline unchanged; `native/` may grow if v0.4 needs new natives (currently doesn't — JWT validation is pure JS via `jose`). | **none** (or **additive** if cloudflared is bundled in install dir) |
-| §10 | Crash collector local-only; SQLite log table; `GetCrashLog` RPC | ADD `crash_log.owner_id`, `crash_log.uploaded_at` columns (NULL-tolerant). ADD `CrashService.UploadCrashLog` RPC. ADD upload UI in Settings. Capture path unchanged. | **additive** |
+<!-- F1: closes R0 15-P0.1 / R0 15-P0.2 — audit verdicts revised; v0.3 ships scoping baseline so v0.4 add is row-additive, not column-additive. -->
+| §10 | Crash collector local-only; SQLite log table; `GetCrashLog` RPC | `CrashEntry.owner_id` field, `crash_log.owner_id NOT NULL` column with `'daemon-self'` sentinel, and `OwnerFilter` enum all SHIPPED in v0.3 (chapter [04](./04-proto-and-rpc-surface.md) §5, chapter [07](./07-data-and-state.md) §3, chapter [09](./09-crash-collector.md) §1). v0.4 ADDS only `crash_log.uploaded_at` column + `CrashService.UploadCrashLog` RPC + upload UI; populates the existing `owner_id` with cf-access principalKeys. No backfill, no semantic flip. | **additive** |
 | §11(a) | Ship-gate: zero IPC residue grep | v0.4 still gates on the same grep. | **none** |
 | §11(b) | Ship-gate: daemon survives Electron SIGKILL | Same harness; v0.4 also runs analogous "daemon survives web client tab close" harness as ADDITIVE. | **additive** |
 | §11(c) | Ship-gate: 1-hour PTY zero-loss | Same harness; v0.4 may add a CF Tunnel variant additively. | **additive** |
@@ -47,7 +48,8 @@ Acceptable answers: **none** / **purely additive** (specify what is added). Unac
 | [04 §8](./04-proto-and-rpc-surface.md) | additivity contract enforced via `buf breaking` | enforced in v0.4 too | **none** |
 | [05 §1](./05-session-and-principal.md) | `principalKey` format `kind:identifier` | new `cf-access:<sub>` keys; format unchanged | **additive** |
 | [05 §4](./05-session-and-principal.md) | `assertOwnership` early return | gains optional admin clause; existing logic unchanged | **additive** |
-| [05 §5](./05-session-and-principal.md) | Crash log + Settings open to any local-user in v0.3 | crash_log gains `owner_id`; settings gains per-principal table — existing rows valid as global | **additive** |
+| [05 §5](./05-session-and-principal.md) | Crash log + Settings principal-scoped from v0.3 day one (`crash_log.owner_id NOT NULL` with `'daemon-self'` sentinel; `settings(scope, key, value)` with `scope='global'`; `OwnerFilter` / `SettingsScope` / `WatchScope` enums on the wire) | v0.4 inserts `crash_log` rows with attributable principalKeys, `settings` rows with `scope='principal:<principalKey>'`, and starts honoring `OWNER_FILTER_ALL` / `WATCH_SCOPE_ALL` for admin principals. No column add, no table add (the `principal_aliases` table also already ships empty in v0.3). | **additive** |
+| [05 §5](./05-session-and-principal.md) | `claude_binary_path` and other code-execution-controlling keys EXCLUDED from `Settings` proto wire (config-file-only) | v0.4 keeps the same exclusion; if per-user override is ever needed it ships as a separate admin-only `AdminSettingsService` (additive new RPC, not a new field on `Settings`) | **additive / none** |
 | [05 §7](./05-session-and-principal.md) | Restored sessions trust recorded `owner_id` | unchanged | **none** |
 | [06 §1](./06-pty-snapshot-delta.md) | One worker_threads worker per session; main thread coalesces SQLite | unchanged | **none** |
 | [06 §2](./06-pty-snapshot-delta.md) | SnapshotV1 binary format with `magic="CSS1"`, `schema_version=1` | new schemas use `schema_version=2+`; v1 retained forever | **additive** |
@@ -57,13 +59,13 @@ Acceptable answers: **none** / **purely additive** (specify what is added). Unac
 | [06 §6](./06-pty-snapshot-delta.md) | Multi-attach broadcast | already supports N subscribers; v0.4 web/iOS use unchanged | **none** |
 | [07 §1](./07-data-and-state.md) | better-sqlite3, WAL, NORMAL synchronous | unchanged | **none** |
 | [07 §2](./07-data-and-state.md) | Per-OS state directory paths | unchanged | **none** |
-| [07 §3](./07-data-and-state.md) | All v0.3 tables and columns | new tables and new columns ADDED via new migration files; v0.3 columns retained | **additive** |
+| [07 §3](./07-data-and-state.md) | All v0.3 tables and columns — including `crash_log.owner_id NOT NULL DEFAULT 'daemon-self'`, `settings(scope, key, value)` composite PK, `principal_aliases` table | new tables and new columns ADDED via new migration files; v0.3 columns retained. v0.4 multi-principal lands as **row inserts** into existing tables, NOT as column or table additions. | **additive** |
 | [07 §4](./07-data-and-state.md) | Migration files immutable post-ship; SHA256 in `locked.ts` | enforced in v0.4 too | **none** |
 | [07 §6](./07-data-and-state.md) | No automated backup in v0.3 | v0.4 adds optional automated backup as additive feature | **additive** |
 | [08 §3](./08-electron-client-migration.md) | IPC → Connect 1:1 mapping table | new RPCs added in v0.4 are wired via new mapping rows (additive); existing mappings unchanged | **additive** |
 | [08 §4](./08-electron-client-migration.md) | Descriptor injected via `additionalArguments`; no `contextBridge` for callable APIs | unchanged; same `lint:no-ipc` gate | **none** |
 | [08 §6](./08-electron-client-migration.md) | Renderer error contract (UNAVAILABLE, FailedPrecondition, etc.) | unchanged | **none** |
-| [09 §1](./09-crash-collector.md) | Capture sources list + `source` open string set | new sources added freely; existing unchanged | **additive** |
+| [09 §1](./09-crash-collector.md) | Capture sources list + `source` open string set + `owner_id` attribution rules (sources are an open set; v0.4 may add freely; `daemon-self` sentinel forever-stable) | new sources added freely; existing unchanged | **additive** |
 | [09 §2](./09-crash-collector.md) | `crash-raw.ndjson` recovery on boot | unchanged | **none** |
 | [09 §3](./09-crash-collector.md) | Rotation caps (10000 / 90 days) | unchanged; user override remains | **none** |
 | [09 §6](./09-crash-collector.md) | Linux watchdog via systemd; mac/win deferred | mac/win watchdog ADDED in v0.4 as hardening | **additive** |
@@ -102,6 +104,9 @@ When auditing a v0.4 PR, the reviewer MUST reject any of:
 10. Reshuffling `packages/` directories; only additions allowed.
 11. Bypassing the `lint:no-ipc` gate.
 12. Changing per-OS state directory paths.
+<!-- F1: closes R0 15-P0.3 — items 13/14 lock the behavioral-additivity invariants F1 enforces in chapters 04/05/07/09. -->
+13. v0.4 adding a mandatory non-NULL column to a v0.3 table (any new column added in v0.4 MUST be NULL-tolerant or have a literal default that v0.3 rows already satisfy). The intended seam is row-additive — new rows with new `scope` / `owner_id` values, not new columns on existing tables. The v0.3 baseline already ships `crash_log.owner_id NOT NULL DEFAULT 'daemon-self'`, `settings(scope, key, value)` composite PK, and the empty `principal_aliases` table precisely so v0.4 needs zero non-NULL column additions on principal-scoping state.
+14. v0.4 reshaping the request semantics of `WatchSessions`, `GetCrashLog`, `WatchCrashLog`, `GetSettings`, or `UpdateSettings`. The `WatchScope`, `OwnerFilter`, and `SettingsScope` enums (chapter [04](./04-proto-and-rpc-surface.md) §3 / §5 / §6) are the only knobs v0.4 may touch; flipping defaults, adding behavior to existing enum values, or reading scope from any source other than the request enum is a hard block. v0.4 multi-principal enforcement happens by daemon-side branch on the existing enum value, not by a request-shape change.
 
 If a v0.4 PR needs to do any of the above, the v0.3 design picked the wrong shape and we go back to spec — **inside v0.3, before v0.3 ships**. Per brief: "these mean the v0.3 design picked the wrong shape and MUST be reworked inside v0.3."
 
