@@ -30,9 +30,13 @@ describe('incident-dir', () => {
     expect(read.surface).toBe('daemon-exit');
   });
 
-  it('resolveCrashRoot returns OS-appropriate path', () => {
+  it('resolveCrashRoot returns OS-appropriate path with lowercase ccsm', () => {
     const root = resolveCrashRoot();
-    expect(root).toContain('CCSM');
+    // Per frag-11 §11.6 manager lock the data root is lowercase `ccsm`.
+    // Uppercase `CCSM` is the legacy v0.2 path (frag-8 §8.1) and MUST NOT
+    // appear in v0.3 crash paths (Task #58 / Audit 2 F1 — single dataRoot).
+    expect(root).toContain('ccsm');
+    expect(root).not.toContain(path.sep + 'CCSM' + path.sep);
     expect(root).toContain('crashes');
   });
 });

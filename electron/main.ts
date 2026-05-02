@@ -44,9 +44,12 @@ import { setUpgradeShutdownRpc } from './updater';
 //     Electron's native minidump generation into the staging dir without any
 //     network upload. The collector adopts dmps from staging into the
 //     incident dir on the next recordIncident call.
-//   * resolveCrashRoot picks %LOCALAPPDATA%\CCSM\crashes (win32) /
-//     ~/Library/Application Support/CCSM/crashes (darwin) /
-//     ~/.local/share/CCSM/crashes (linux).
+//   * resolveCrashRoot picks %LOCALAPPDATA%\ccsm\crashes (win32) /
+//     ~/Library/Application Support/ccsm/crashes (darwin) /
+//     ~/.local/share/ccsm/crashes (linux) per frag-11 §11.6 (manager-locked
+//     single dataRoot, lowercase `ccsm`). Test override: `CCSM_DATA_ROOT`
+//     env var redirects all 3 surfaces (electron-main, renderer-forwarded,
+//     daemon-via-supervisor-adoption) to the same root (Task #58).
 //   * wireCrashHandlers installs uncaughtException + unhandledRejection that
 //     route through the collector, replacing the prior console.error-only
 //     handlers so every escaped throw leaves a recoverable artifact.
