@@ -47,12 +47,16 @@
     "rebuild:natives": "node scripts/electron-rebuild-natives.cjs",
     "build:ccsm-native": "node scripts/build-ccsm-native.cjs",
     "build:uninstall-helper": "cd installer/uninstall-helper && pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip",
+    "build:uninstall-helper-mac": "bash scripts/build-mac-uninstall-helper.sh",
     "postinstall": "node scripts/postinstall.mjs",
-    "proto:gen": "cd proto && buf generate"
+    "proto:gen": "cd proto && buf generate",
+    "setup": "node scripts/setup.cjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@bufbuild/protobuf": "^2.12.0",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1",
     "@dnd-kit/core": "^6.1.0",
     "@dnd-kit/sortable": "^8.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -65,6 +69,7 @@
     "@radix-ui/react-tooltip": "^1.1.6",
     "@sentry/electron": "7.11.0",
     "@sentry/react": "10.49.0",
+    "@sigstore/verify": "2.1.1",
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-clipboard": "^0.2.0",
     "@xterm/addon-fit": "^0.10.0",
@@ -83,6 +88,7 @@
     "lucide-react": "^0.469.0",
     "node-pty": "1.1.0",
     "pino": "^9.5.0",
+    "pino-roll": "^3.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-i18next": "^17.0.4",
@@ -108,6 +114,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "@vitest/coverage-v8": "^4.1.5",
+    "@yao-pkg/pkg": "^6.6.0",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "css-loader": "^7.1.2",
@@ -134,8 +141,7 @@
     "wait-on": "^8.0.1",
     "webpack": "^5.97.1",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.0",
-    "@yao-pkg/pkg": "^6.6.0"
+    "webpack-dev-server": "^5.2.0"
   },
   "build": {
     "appId": "com.ccsm.app",
@@ -248,6 +254,10 @@
         {
           "from": "daemon/dist/ccsm-daemon-staged",
           "to": "daemon/ccsm-daemon"
+        },
+        {
+          "from": "daemon/dist/ccsm-uninstall-helper-macos-universal",
+          "to": "daemon/ccsm-uninstall-helper"
         }
       ]
     },
@@ -286,6 +296,12 @@
           "to": "daemon/ccsm-daemon"
         }
       ]
+    },
+    "deb": {
+      "afterRemove": "build/linux-postrm.sh"
+    },
+    "rpm": {
+      "afterRemove": "build/linux-postrm.sh"
     }
   }
 }
