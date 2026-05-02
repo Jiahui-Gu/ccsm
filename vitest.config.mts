@@ -16,6 +16,19 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Force threads pool (#174 Plan E): the default `forks` pool spawns
+    // child Node processes that re-import every transitive dep. Under
+    // Node 22 strict require, html-encoding-sniffer (ESM, pulled in via
+    // @exodus/bytes) blows up at worker boot. `threads` runs tests in
+    // worker_threads inside the parent process which already has the
+    // ESM module graph wired up, dodging the strict-require error.
+    pool: 'threads',
+    poolOptions: {
+      threads: {
+        singleThread: false,
+        isolate: true,
+      },
+    },
     include: [
       'tests/**/*.test.ts',
       'tests/**/*.test.tsx',
