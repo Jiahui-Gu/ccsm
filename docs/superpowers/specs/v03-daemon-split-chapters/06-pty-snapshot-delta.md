@@ -259,7 +259,7 @@ On daemon restart, the pty-host worker for a recovered session starts with the m
 
 ### 8. 1-hour zero-loss validation harness (ship-gate (c))
 
-Test name: `pty-soak-1h`. Lives in `packages/daemon/test/integration/pty-soak.test.ts` and the corresponding Electron-side harness in `packages/electron/test/e2e/pty-soak-reconnect.test.ts`.
+Test name: `pty-soak-1h`. Lives in `packages/daemon/test/integration/pty-soak-1h.spec.ts` and the corresponding Electron-side harness in `packages/electron/test/e2e/pty-soak-reconnect.spec.ts`.
 
 ```
 1. Boot daemon under test (in-process for unit; service-installed for E2E).
@@ -296,7 +296,7 @@ The following spec files MUST exist and pass in CI before v0.3 ship. Paths are r
 
 | Spec file | Purpose | Closes |
 | --- | --- | --- |
-| `test/integration/pty-soak.test.ts` (`pty-soak-1h`) | 1-hour zero-loss workload (§8) | ship-gate (c) |
+| `test/integration/pty-soak-1h.spec.ts` | 1-hour zero-loss workload (§8) | ship-gate (c) |
 | `test/integration/pty-daemon-restart-replay.spec.ts` | Daemon restart mid-session; reattach; replay yields byte-identical Terminal state (ship-gate (b) for daemon-restart variant) | R4 P0 ch 06 |
 | `test/integration/pty-multi-attach.spec.ts` | N concurrent Attach streams receive same byte boundaries; one slow subscriber doesn't block others; eviction at retention boundary (§6) | R4 P1 ch 06 multi-attach |
 | `test/integration/pty/snapshot-cadence.spec.ts` | K_TIME / M_DELTAS / B_BYTES triggers at extreme low (1-byte burst) and extreme high (saturated 50 MB/s) workloads; Resize coalescing (§4 500 ms cap) | R4 P1 ch 06 cadence |

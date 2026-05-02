@@ -12,7 +12,7 @@ v0.3 has exactly two long-lived processes per user machine: `ccsm-daemon` (syste
 
 There is **no** intermediate broker, no shared-memory layer, no file-watcher IPC. Every Electron → daemon call is a Connect RPC over Listener A. Every claude CLI process is a child of the daemon (NOT of Electron).
 
-> **v0.3 single-Electron-user posture (closes R0 02-P0.1)**: v0.3 supports exactly one Electron user per host. The peer-cred uid checked on Listener A pins the daemon to a single principal at install time; concurrent connects from a second interactive user are rejected with `PERMISSION_DENIED`. Multi-user on one host requires v0.4 cf-access via Listener B (see [15-audit-and-forbidden-patterns](./15-audit-and-forbidden-patterns.md) §3 forbidden-pattern entry).
+> **v0.3 single-Electron-user posture (closes R0 02-P0.1)**: v0.3 supports exactly one Electron user per host. The peer-cred uid checked on Listener A pins the daemon to a single principal at install time; concurrent connects from a second interactive user are rejected with `PERMISSION_DENIED`. Multi-user on one host requires v0.4 cf-access via Listener B (see [15-zero-rework-audit](./15-zero-rework-audit.md) §3 forbidden-pattern entry).
 
 ### 2. Per-OS service shape
 

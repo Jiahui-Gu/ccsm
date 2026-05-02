@@ -497,7 +497,7 @@ message RawCrashChunk {
 
 `source` is a string (not enum) on purpose: new sources surface from the wild and must be addable without a proto bump. Daemon code SHOULD use a typed const set internally; the wire layer accepts any string from any version. The set is **open**; chapter [09](./09-crash-collector.md) §1 enumerates the v0.3 named sources but explicitly disclaims exhaustiveness — v0.4 may add sources additively (e.g., `claude_spawn`, `session_restore`) and v0.3 clients tolerate any value.
 
-`owner_id` is a string with a single sentinel value `"daemon-self"` for crashes that are not attributable to a session principal (e.g., `sqlite_open`, `listener_bind`, `migration`, `watchdog_miss`). Session-attributable crashes (e.g., `claude_exit`, `pty_eof`, `worker_exit`) carry the owning session's `principalKey` as `owner_id`. v0.3 daemon enforces only that `OWNER_FILTER_ALL` is rejected for non-`local-user` principals; v0.4 adds full per-principal scoping additively (no proto reshape, no column add — the column ships from day one — see chapter [07](./07-data-and-state.md) §3 and chapter [09](./09-crash-collector.md) §1).
+`owner_id` is a string with a single sentinel value `"daemon-self"` for crashes that are not attributable to a session principal (e.g., `sqlite_open`, `listener_bind`, `migration`, `watchdog_miss`). Session-attributable crashes (e.g., `claude_exit`, `pty_eof`, `worker_exit`) carry the owning session's `principalKey` as `owner_id`. v0.3 daemon rejects `OWNER_FILTER_ALL` with `PermissionDenied` (v0.4 admin principals will accept it additively, no wire shape change); v0.3 local-user clients use `OWNER_FILTER_OWN` which yields the same effective view (no proto reshape, no column add — the column ships from day one — see chapter [07](./07-data-and-state.md) §3 and chapter [09](./09-crash-collector.md) §1).
 
 ### 6. Settings service (`settings.proto`)
 
@@ -570,6 +570,8 @@ message Settings {
   // field 1 reserved historically for claude_binary_path; intentionally
   // omitted in v0.3 so the wire schema cannot carry it. Do NOT reuse field
   // number 1 for anything else (see chapter [15](./15-zero-rework-audit.md) §3).
+  reserved 1;
+  reserved "claude_binary_path";
   //
   // F7: closes R5 P1-04-1 — every field below uses the `optional` keyword
   // (proto3 field presence) so `UpdateSettings` PARTIAL semantics are
@@ -776,8 +778,8 @@ The forever-stability promise is enforced mechanically by `buf breaking` (above)
 - `proto/error-detail-roundtrip.spec.ts` — closes R4 P1. Asserts an `ErrorDetail` attached to a `ConnectError` survives the wire and parses back into the same `code` / `message` / `extra` map on the Connect-es client. Covers a representative sample of error codes (`session.not_found`, `session.not_owned`, `version.client_too_old`, `request.missing_id`).
 
 Additional cross-chapter tests that touch chapter 04 surface but live in their owning chapter's test directory:
-- `proto/lock.spec.ts` (chapter [12](./12-test-strategy.md) §2) — SHA-checks every `.proto` against `packages/proto/lock.json`.
-- `version-mismatch.spec.ts` (chapter [12](./12-test-strategy.md) §3) — integration variant of the truth-table test above.
+- `proto/lock.spec.ts` (chapter [12](./12-testing-strategy.md) §2) — SHA-checks every `.proto` against `packages/proto/lock.json`.
+- `version-mismatch.spec.ts` (chapter [12](./12-testing-strategy.md) §3) — integration variant of the truth-table test above.
 
 ### 8. The additivity contract (mechanical)
 

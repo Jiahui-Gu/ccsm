@@ -53,7 +53,7 @@ Phases are NOT serial — they have explicit dependencies that allow parallelism
 #### Phase 2 — Daemon skeleton + Listener A + Supervisor
 - Daemon binary boots (no sessions); writes `listener-a.json`; binds Listener A; Supervisor `/healthz` returns 200.
 - `Hello` RPC works end-to-end via Connect over Listener A.
-- Listener trait + 2-slot array; `makeListenerB` throws.
+- Listener trait + 2-slot array; v0.3 ships no `listener-b.ts`; slot 1 holds the typed `RESERVED_FOR_LISTENER_B` sentinel.
 - Peer-cred middleware on Listener A produces `local-user` principal.
 - All MUST-SPIKE items in [03](./03-listeners-and-transport.md) resolved **in phase 0.5**; phase 2 consumes the per-OS transport decision matrix as a frozen input.
 - **Done when**: integration test `connect-roundtrip` Hello-only variant green on all OSes.

@@ -279,7 +279,7 @@ v0.4 web client may either (a) share the file (move to `packages/shared-renderer
 ### 7. Verification harness (ship-gate (a) and (b))
 
 - Static (gate (a)): the `lint:no-ipc` script in CI; blocks merge.
-- Runtime (gate (b)): an E2E test at `packages/electron/test/e2e/sigkill-survival.spec.ts` that:
+- Runtime (gate (b)): an E2E test at `packages/electron/test/e2e/sigkill-reattach.spec.ts` that:
   1. Starts daemon (in CI: in-process; in nightly: service-installed VM).
   2. Launches Electron in test mode, creates 3 sessions, waits for `RUNNING`.
   3. Records each session's last applied PTY seq AND each session's `runtime_pid` (from `Session.runtime_pid`, chapter [04](./04-proto-and-rpc-surface.md) §3 — added in v0.3 freeze precisely for this gate).

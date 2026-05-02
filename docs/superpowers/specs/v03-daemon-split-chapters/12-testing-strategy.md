@@ -25,7 +25,6 @@ Per-package, fully isolated.
   - `pty/replay-invariant.property.spec.ts` — property-based test (fast-check) for the replay invariant: for any deterministic VT byte sequence S fed into a fresh xterm-headless `Terminal` X, `encode(snapshot(X))` equals `encode(snapshot(Y))` where Y is built by encoding a snapshot of X' (a checkpoint mid-stream of S) and replaying the post-checkpoint deltas of S into a fresh Terminal initialized from that snapshot. Shrinker catches edge-case VT byte sequences that the canned soak workload (§4.3) misses.
   - `crash/capture.spec.ts` — every source's mock fires once and writes one row
   - `listeners/peer-cred.spec.ts` — mocked syscall outputs map to expected principals
-  - `listeners/listener-b.spec.ts` — `makeListenerB` throws (v0.3 stub assertion — prevents accidental wiring)
 
 - `@ccsm/electron` unit:
   - `rpc/clients.spec.ts` — descriptor → transport factory (mocked transports per kind)
@@ -34,6 +33,10 @@ Per-package, fully isolated.
 
 - `@ccsm/proto` unit:
   - `lock.spec.ts` — every `.proto` file's SHA256 vs a checked-in lockfile (forever-stable enforcement; not a buf-breaking replacement, complements it)
+  - `proto/request-meta-validation.spec.ts` — `RequestMeta` field-presence + value-shape validation truth table (chapter [04](./04-proto-and-rpc-surface.md) §3)
+  - `proto/open-string-tolerance.spec.ts` — daemon tolerates open-set string values (`client_kind="web"`, `client_kind="rust-cli"`, etc.) without rejection (chapter [04](./04-proto-and-rpc-surface.md) §3 / §7.1)
+  - `proto/proto-min-version-truth-table.spec.ts` — proto min-version negotiation matrix (`HelloRequest.proto_min_version` × daemon supported set → accept/reject) (chapter [04](./04-proto-and-rpc-surface.md) §3)
+  - `proto/error-detail-roundtrip.spec.ts` — `ErrorDetail` proto round-trips structured `code` / `retryable` fields byte-for-byte (chapter [04](./04-proto-and-rpc-surface.md) §2)
   - `buf-lint` runs in CI
 
 ### 3. Integration tests (daemon ↔ Electron over Listener A)
@@ -58,7 +61,7 @@ Per-RPC coverage criterion (see §6): every RPC declared in chapter [04](./04-pr
 - `settings-roundtrip.spec.ts` — SettingsService.Update + Get happy path: round-trip equal.
 - `settings-error.spec.ts` — SettingsService error paths: Update with invalid schema returns `InvalidArgument`; Get on unknown key returns `NotFound`.
 - `rpc/clients-transport-matrix.spec.ts` — parameterized over `transport ∈ {h2c-uds, h2c-loopback, h2-tls-loopback, h2-named-pipe}`; for each transport kind in the descriptor enum, construct a Connect transport from a synthesized descriptor and run `Hello`. Guards the MUST-SPIKE fallback paths (chapter [14](./14-risks-and-spikes.md)) so flipping the transport pick after a spike outcome doesn't ship an untested transport.
-- `bundle/no-jwt-in-v03.spec.ts` — negative-path companion to `listeners/listener-b.spec.ts` (§2): asserts the built sea bundle does NOT contain the string `jwtValidator` and `import('./jwt-validator')` rejects (file does not exist). Prevents accidental landing of v0.4 JWT middleware in v0.3 bundles (brief §1 mandate).
+- `bundle/no-jwt-in-v03.spec.ts` — asserts the built sea bundle does NOT contain the string `jwtValidator` and `import('./jwt-validator')` rejects (file does not exist). Prevents accidental landing of v0.4 JWT middleware in v0.3 bundles (brief §1 mandate); also stands in for the absent `listener-b.ts` (chapter [03](./03-listeners-and-transport.md) §6 — v0.3 ships no listener-b file).
 
 CI runs integration tests on `{ubuntu, macos, windows}` matrix per PR. Integration tests use a **temp file-based** SQLite DB (per-test tmpdir, deleted on teardown); unit tests use `:memory:` (see §2 `db/migrations.spec.ts`).
 
@@ -76,12 +79,11 @@ set -euo pipefail
 hits=$(grep -rEn 'contextBridge|ipcMain|ipcRenderer' packages/electron/src \
        --exclude-dir=node_modules --exclude-dir=dist || true)
 # F3: optional descriptor-preload allowlist if F2 picks the contextBridge whitelist path.
-# When `.no-ipc-allowlist` exists, each line is a `path:line-number-range` entry that
-# the grep MUST exclude before failing. Format example:
-#   packages/electron/src/preload/preload-descriptor.ts:1-40
+# When `.no-ipc-allowlist` exists, each line is exactly a path (no line ranges).
+# Allowlisted files MUST be < 100 lines so accidental growth is reviewed in PRs.
 # Empty / missing file = no allowlist (the gate is unconditional).
 if [ -f tools/.no-ipc-allowlist ]; then
-  hits=$(echo "$hits" | grep -vFf <(awk -F: '{print $1}' tools/.no-ipc-allowlist) || true)
+  hits=$(echo "$hits" | grep -vFf tools/.no-ipc-allowlist || true)
 fi
 if [ -n "$hits" ]; then
   echo "FAIL: IPC residue:"; echo "$hits"; exit 1
@@ -89,23 +91,27 @@ fi
 echo "PASS: zero IPC residue"
 ```
 
-ESLint backstop in `packages/electron/.eslintrc.cjs` (enforced in `electron-test` job per chapter [11](./11-monorepo-layout.md) §6):
+**v0.3 `tools/.no-ipc-allowlist` contents** are exactly: `packages/electron/src/preload/preload-descriptor.ts` (one line). Any addition is a chapter [15](./15-zero-rework-audit.md) forever-stable touch and requires R4 sign-off.
+
+ESLint backstop in `packages/electron/eslint.config.js` (flat-config v9, matching chapter [11](./11-monorepo-layout.md) §5; enforced in `electron-test` job per chapter [11](./11-monorepo-layout.md) §6):
 
 ```js
 // F3: closes R4 P0 ch 12 ship-gate (a) — substring grep is unsound for renamed
 // imports (e.g., `import { ipcMain as M } from "electron"`); pair the grep
 // with a structural rule that catches the import itself, not the usage.
-module.exports = {
-  rules: {
-    "no-restricted-imports": ["error", {
-      paths: [{
-        name: "electron",
-        importNames: ["ipcMain", "ipcRenderer", "contextBridge"],
-        message: "v0.3 forbids ipcMain / ipcRenderer / contextBridge — see chapter 08 §5; sanctioned exceptions go through tools/.no-ipc-allowlist (descriptor preload only).",
+export default [
+  {
+    rules: {
+      "no-restricted-imports": ["error", {
+        paths: [{
+          name: "electron",
+          importNames: ["ipcMain", "ipcRenderer", "contextBridge"],
+          message: "v0.3 forbids ipcMain / ipcRenderer / contextBridge — see chapter 08 §5; sanctioned exceptions go through tools/.no-ipc-allowlist (descriptor preload only).",
+        }],
       }],
-    }],
+    },
   },
-};
+];
 ```
 
 Wired into `electron-test` job (per [11](./11-monorepo-layout.md) §6) as TWO sequential steps (grep then ESLint rule); both must pass; either failing blocks merge.
@@ -119,7 +125,7 @@ Canonical test file: `packages/electron/test/e2e/sigkill-reattach.spec.ts` (Play
 3. Kill the Electron main PID with `taskkill /F` (win) / `kill -9` (mac/linux). On POSIX the Electron PID is killed; the daemon, in a separate process group from step 1, is unaffected.
 4. Verify `curl <supervisor>/healthz` returns 200; verify `claude` PIDs still alive (`tasklist` / `ps`).
 5. Relaunch Electron via Playwright; wait for `Hello`; verify the 3 sessions appear in `ListSessions`.
-6. For each session, attach with the recorded last applied seq; assert receive deltas with `seq > recorded` immediately, no `snapshot` frame (still within retention window), no gaps.
+6. For each session, attach with the recorded last applied seq; assert receive deltas with `seq > recorded` immediately, no gaps. If the gap delta count `< DELTA_RETENTION_SEQS` (currently 4096), reattach receives those deltas without a `snapshot` frame; if `>= DELTA_RETENTION_SEQS`, a `snapshot` frame is expected. Step 7's byte-equality assertion is the load-bearing gate regardless of which path is taken.
 7. **Byte-equality "no data loss" assertion** (closes brief §11(b) "no data loss" — gate (b) without this passes vacuously when seq is monotonic but bytes are corrupt):
    - On the daemon side: serialize the current xterm-headless terminal state for each session via the SnapshotV1 encoder (encoder determinism pinned in chapter [06](./06-pty-snapshot-delta.md) §2; see §4.3 below).
    - On the client side: replay all received frames (the recorded snapshot from step 2 + every delta received in steps 2 and 6) into a fresh xterm-headless `Terminal` instance, then serialize via the same SnapshotV1 encoder.
@@ -154,6 +160,8 @@ Specified in [06](./06-pty-snapshot-delta.md) §8. **Canonical test name `pty-so
 
 **CI orchestration**: nightly schedule + opt-in via `[soak]` token in commit message. **Non-blocking for PRs** (regressions caught the next morning); **blocking for release tags** via the explicit release procedure pinned in chapter [13](./13-release-slicing.md) §5 — at tag time, an on-demand soak run is triggered; the tag is promoted only after the soak run on that exact commit is green. This removes the "same commit never simultaneously green" race noted in R4.
 
+**macOS hang-detection note**: on macOS, no kernel watchdog reaps a hung daemon (per chapter [09](./09-crash-collector.md) §6 — macOS watchdog deferred to v0.4 hardening). A stalled stream observed during the 1h soak is interpreted as a daemon hang and fails the gate; the operator MUST `ps -p` + `sample` the daemon before the next attempt.
+
 #### 4.4 Ship-gate (d): clean installer round-trip on Win 11 25H2
 
 `test/installer-roundtrip.ps1` runs on a self-hosted Win 11 25H2 VM (snapshotted to a clean state before each run). The VM image is provisioned and maintained per chapter [13](./13-release-slicing.md) phase 11(d) precondition; **GitHub-hosted `windows-latest` is NOT 25H2** (currently Server 2022) so the VM is a hard prerequisite, not optional. Runner label: `self-hosted-win11-25h2-vm`.
@@ -161,7 +169,11 @@ Specified in [06](./06-pty-snapshot-delta.md) §8. **Canonical test name `pty-so
 The check is a **file-tree + registry diff** (snapshot before install, snapshot after uninstall, diff against a documented allowlist) — not a fixed list of expected leftover locations. Fixed-list checks pass when residue lands in an unexpected location; diff-based checks fail closed.
 
 ```powershell
-# pseudo-flow
+# pseudo-flow — chapter 10 §5 step 4 promises BOTH REMOVEUSERDATA variants are
+# exercised under ship-gate (d); loop over both, restoring the snapshot between
+# variants so each begins from a clean baseline.
+$variants = @('=0', '=1')
+foreach ($removeUserData in $variants) {
 Invoke-Snapshot-Restore "win11-25h2-clean"
 
 # 1. Pre-install baseline: full file-tree + registry export
@@ -189,8 +201,8 @@ if ($ok.StatusCode -ne 200) { throw "supervisor /healthz not 200" }
 # 4. Launch electron, smoke-create a session, smoke-destroy
 & "$env:ProgramFiles\ccsm\ccsm.exe" --test-mode --smoke
 
-# 5. Uninstall
-Start-Process -Wait msiexec -ArgumentList "/x C:\install\ccsm-setup.msi /qn /l*v C:\install\uninstall.log"
+# 5. Uninstall — variant-specific REMOVEUSERDATA value drives chapter 10 §5 step 4 matrix
+Start-Process -Wait msiexec -ArgumentList "/x C:\install\ccsm-setup.msi REMOVEUSERDATA$removeUserData /qn /l*v C:\install\uninstall.log"
 
 # 6. Post-uninstall snapshot + diff
 Get-ChildItem -Recurse -Force `
@@ -213,7 +225,8 @@ $residue = @($fsDiff,$hklmDiff,$hkcuDiff,$taskDiff) | ForEach-Object { $_.InputO
            | Where-Object { $entry = $_; -not ($allowlist | Where-Object { $entry -match $_ }) }
 
 if ($residue.Count -gt 0) {
-  throw "Uninstall residue (not on allowlist):`n$($residue -join "`n")"
+  throw "Uninstall residue (REMOVEUSERDATA$removeUserData, not on allowlist):`n$($residue -join "`n")"
+}
 }
 ```
 

@@ -119,7 +119,7 @@ Format: each row is reproduced from the chapter that introduced it; this chapter
 - **From**: [10](./10-build-package-installer.md) §3
 - **Phase**: blocks phase 10 (build/notarization); see [13](./13-release-slicing.md) §Phase 9.5 — and ops prereq blocks phase 0.
 - **Hypothesis**: a Node sea binary passes Apple notarization with hardened runtime + JIT entitlement.
-- **Ops prereq (must be in place by phase 0, NOT phase 10)**: Apple Developer ID Application certificate provisioned in the project Apple Developer team; certificate + private key installed in the macOS notarization runner's keychain (CI self-hosted mac runner OR a designated maintainer's machine); `notarytool` API key (or app-specific password) stored in `~/.zsh-secrets/ccsm-notarytool.env` (operator-managed, NOT in repo). Pin the prereq owner in chapter [11](./11-monorepo-and-ci.md) §6 (CI matrix); spike cannot start until prereq closed.
+- **Ops prereq (must be in place by phase 0, NOT phase 10)**: Apple Developer ID Application certificate provisioned in the project Apple Developer team; certificate + private key installed in the macOS notarization runner's keychain (CI self-hosted mac runner OR a designated maintainer's machine); `notarytool` API key (or app-specific password) stored in `~/.zsh-secrets/ccsm-notarytool.env` (operator-managed, NOT in repo). Pin the prereq owner in chapter [11](./11-monorepo-layout.md) §6 (CI matrix); spike cannot start until prereq closed.
 - **Validation (repro recipe)**:
   1. Build the §1.10 hello-world sea on macOS 14.5 arm64.
   2. Sign: `codesign --sign "Developer ID Application: <team-name> (<team-id>)" --options runtime --entitlements tools/spike-harness/entitlements-jit.plist --timestamp <binary>`. Entitlements file MUST grant `com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-unsigned-executable-memory` (Node JIT).
@@ -183,7 +183,7 @@ All spike repro recipes above reference scripts under a single `tools/spike-harn
 - `rtt-histogram.js` — HTTP/2 unary p50/p95/p99 RTT histogram (loopback or UDS). Used by §1.3, §1.4, §1.5.
 - `stream-truncation-detector.js` — server-stream consumer that asserts no truncation under a configurable rate. Used by §1.3, §1.4, §1.5.
 
-Cross-link: chapter [11](./11-monorepo-and-ci.md) §2 / §6 references `tools/spike-harness/` as a pinned source path; chapter [12](./12-testing-strategy.md) §3 reuses `install-residue-diff.ps1` for ship-gate (d).
+Cross-link: chapter [11](./11-monorepo-layout.md) §2 / §6 references `tools/spike-harness/` as a pinned source path; chapter [12](./12-testing-strategy.md) §3 reuses `install-residue-diff.ps1` for ship-gate (d).
 
 ### 2. Residual risks (no spike, but flagged)
 
