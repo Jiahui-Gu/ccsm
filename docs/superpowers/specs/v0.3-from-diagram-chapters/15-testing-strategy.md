@@ -1,75 +1,163 @@
 # 15 — Testing strategy
 
-> Authority: [01 G10](./01-goals-and-non-goals.md#goals-must-ship-in-v03) (dogfood smoke gate, 4 metrics).
-
 ## Tiers
 
-### Unit tests (UT)
+| Tier        | Scope                                                       | Run on                  |
+| ----------- | ----------------------------------------------------------- | ----------------------- |
+| UT          | Single module / handler / interceptor                       | Every PR                |
+| IT          | Daemon + simulated clients (no Electron)                    | Every PR (except heavy) |
+| E2E         | Daemon + real Electron + harness (`scripts/harness-*.mjs`)  | Every PR (heavy IT)     |
+| Dogfood     | Released installer on each OS, 4 metrics                    | Pre-tag + nightly        |
 
-Per-module, fast, in-process. Cover:
-- `daemon/src/connect/peer-cred.ts` — happy path + rejection ([ch.03 T-A1..A3](./03-listener-A-peer-cred.md#test-matrix-referenced-from-15-testing-strategy)).
-- `daemon/src/connect/jwt.ts` — full T-B1..B10 matrix ([ch.04](./04-listener-B-jwt.md#ut-matrix-referenced-from-15-testing-strategy)).
-- `daemon/src/pty/fanout.ts` — N=3 broadcast, slow-subscriber drop, seq monotonicity.
-- `daemon/src/pty/ringbuffer.ts` — snapshot reproducibility, line cap eviction.
-- `daemon/src/db/migrations.ts` — apply/idempotent.
-- Connect codec round-trips for every method in `proto/`.
+## UT MUSTs
 
-### Integration tests (IT)
+### Per-listener interceptors
 
-In-process or per-binary, real sockets / pipes / SQLite, mocked PTY where the OS doesn't allow.
+- [04 §UT matrix](./04-listener-B-jwt.md) — full 17-row JWT interceptor matrix.
+- [03 §peer-cred test matrix](./03-listener-A-peer-cred.md) — same-UID accept passes; different-UID rejects (POSIX); different-SID rejects (Windows).
 
-- IT-L1: bind both listeners, verify `port-tunnel` file written, ServerInfo reflects ready state.
-- IT-L2: kill listener A's underlying socket file; daemon health-degrades but Listener B still serves.
-- IT-S1: Create → Snapshot → Subscribe round-trip with one client.
-- IT-S2: same, with three concurrent subscribers (covers fan-out N=3 from day 1).
-- IT-S3: slow subscriber with throttled stream — verify dropped at `MAX_QUEUE_BYTES`, others unaffected.
-- IT-S4: ring-buffer truncation surfaces as `Delta{kind:RESET}`.
-- IT-D1: DbService AppStateSet/Get round-trip; concurrent set from two clients linearizable.
-- IT-E1..E3: Electron lifecycle decoupling ([ch.12](./12-electron-thin-client.md#lifecycle-decoupling-verified-by-it)).
-- IT-X1: Listener A connection from a same-UID process succeeds; cross-UID fails (Linux).
-- IT-X2: Listener B request without JWT → Unauthenticated; with valid JWT → handler invoked.
+### Connect handlers
 
-### End-to-end (e2e)
+- Each handler tested with fake dependencies (PtyHost / SessionManager / SqliteDb fakes). Verified contracts:
+  - PtyService: spawn returns sessionId, input forwarded, kill closes session, subscribe emits snapshot then deltas in order.
+  - SessionsService: list / get / update / close round-trip metadata.
+  - DbService: get/set/list/delete on isolated in-memory SQLite.
+  - CrashService: report inserts row; uploader picks it up.
+  - DaemonService: Info returns version + bootNonce; SetRemoteEnabled throws Unimplemented; GetRemoteStatus returns disabled.
 
-Full Electron + daemon on each OS. Smoke-level only:
+### Session model (chapter 08 test matrix)
 
-- E2E-1: app launch → first PTY byte visible in renderer.
-- E2E-2: type / receive echo loop.
-- E2E-3: open second window pointing at same daemon → both render same session.
+- All 10 rows from [08 §test matrix](./08-session-model.md).
+- N≥3 fan-out is mandatory (anti-pattern: skipping the multi-subscriber rows).
 
-### Dogfood smoke gate (release blocker)
+### PTY host
 
-Four metrics, captured on each tag candidate, comparing to v0.2 baseline:
+- Spawn / kill / write / resize against a fake PTY (node-pty with a no-op shell binary).
+- Orphan prevention is IT-tier (see IT-4 below) since it requires real subprocess kill.
 
-| Metric | Target |
-|---|---|
-| M1 cold start (Electron launch → first PTY byte) | <= v0.2 + 20% |
-| M2 PTY echo round-trip latency (p50, p99) | within v0.2 +/- 10% |
-| M3 daemon survives Electron renderer kill + main kill, re-attach restores session | binary pass/fail |
-| M4 SQLite write throughput with 3 concurrent Connect clients | >= v0.2 single-client throughput |
+### Supervisor envelope (KEPT files)
 
-Baseline numbers are captured in a `tools/dogfood-baseline.json` file at v0.2.x tag time and used as the reference for the gate. If v0.3 misses any metric, tagging blocked until the responsible chapter's design is revisited.
+- daemon.hello returns version + bootNonce + addresses; HMAC fields absent in payload (asserts deletion).
+- daemon.shutdown closes listeners in correct order.
+- daemon.shutdownForUpgrade writes marker atomically with correct fields.
+- /healthz returns listenersBound flags accurately.
+- Migration-gate interceptor allows hello/shutdown* during MIGRATION_PENDING; rejects others.
 
-## Harness
+### Proto contract
 
-- UT: `vitest` (already in repo, presumably).
-- IT: `vitest` + spawned daemon binary in test-fixtures dir; per-test `dataRoot` under `os.tmpdir()`.
-- e2e: `playwright` driving Electron via `_electron.launch`.
-- Dogfood: a `tools/dogfood-bench.ts` script that boots daemon + Electron, runs each metric, writes JSON results comparable across runs.
+- `buf lint` clean.
+- `buf breaking --against working` clean for any PR not intentionally bumping schema major.
+- `npm run proto:gen && git diff --exit-code` clean (committed gen matches source).
 
-## CI placement
+### Deletion verification (chapter 14)
 
-- UT + most IT: every PR.
-- e2e: every PR on macOS + Linux (Windows e2e is heavier; nightly + tag).
-- Dogfood gate: tag builds only; manual approval to override (admin override is **not** allowed by branch protection per [project_branch_protection_working](../../) — admin override is locked).
+- CI script checks every file in chapter 14 §"to DELETE" is absent and every file in §"KEPT" is present.
 
-## §15.Z Zero-rework self-check
+## IT MUSTs
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。所有 v0.3 测试 (UT/IT/e2e/dogfood) 在 v0.4 时**只会增加**新测试 (web client e2e、cloudflared sidecar IT、JWT 实参 UT 替换 placeholder), 不会修改现有 v0.3 测试断言, 因为 v0.3 的语义 (peer-cred trust on A, JWT validate on B, fan-out N>=3, snapshot+delta, lifecycle decoupling) 在 v0.4 同样为真 (引 final-architecture §2.3, §2.7, §2.9)。
+### IT-1 — Two listeners physically bound
+
+- Boot daemon, read discovery file, assert both addresses bind.
+- `nc` / netcat to Listener B port should accept TCP, then HTTP/2 preface should succeed, then any RPC returns `Unauthenticated`.
+
+### IT-2 — Connect over Listener A end-to-end
+
+- Boot daemon, create a Connect-Node client over the UDS, call `pty.Spawn`, send input, subscribe, observe echoed output.
+- Same test with **3 concurrent clients** subscribing to the same session.
+
+### IT-3 — Daemon survives Electron exit (the v0.3 dogfood proof)
+
+- Spawn daemon detached. Spawn fake-Electron client. Establish a session.
+- SIGKILL the fake-Electron PID.
+- Assert daemon `/healthz` continues to respond.
+- Assert PTY child of the session is still alive.
+- Reconnect a new fake-Electron client. Resubscribe with `from_seq = lastKnown`. Assert it gets the deltas it missed.
+
+### IT-4 — Daemon kill takes PTY children with it
+
+- Spawn daemon, create session, capture PTY child PID.
+- SIGKILL daemon.
+- Assert PTY child PID is gone within 2 s.
+- POSIX: verifies PR_SET_PDEATHSIG / kqueue parent-watcher.
+- Windows: verifies JobObject `KILL_ON_JOB_CLOSE`.
+
+### IT-5 — JWKS pre-warm bind-gate
+
+- Boot daemon with a configured (test) team URL pointing at a fake JWKS server.
+- Assert one JWKS fetch occurred at boot before listener B is reported as "remote-ready".
+- (v0.3 has no consumer of "remote-ready" but the fetch-at-boot behavior is the seam.)
+
+### IT-6 — Migration gate
+
+- Stage a v0.2 DB at the legacy location.
+- Boot daemon; while migration runs, attempt a Connect data-plane RPC → expect `FailedPrecondition`.
+- After migration completes, retry → expect success.
+
+### IT-7 — Discovery file lifecycle
+
+- Boot daemon → discovery file present with both listener addresses + supervisor address.
+- `daemon.shutdown` → discovery file removed.
+- Crash daemon (SIGKILL) → discovery file remains stale; next daemon boot atomically overwrites it.
+
+## E2E MUSTs (real Electron via existing harness)
+
+The existing `scripts/harness-*.mjs` test harness is reused. Reconciliation #52 KEEP (replace 70× hard sleep with condition wait) is integrated.
+
+### E2E-1 — Renderer reload preserves session
+
+- Launch app, create session, type input, observe output.
+- Cmd-R the renderer.
+- Assert renderer comes back to same session with full scrollback (snapshot served from main cache + deltas resumed).
+
+### E2E-2 — Main process kill, daemon survives
+
+- Launch app, create session.
+- SIGKILL Electron main pid.
+- Relaunch Electron app. Assert session is still listed (in DB), but PTY may show as exited (since v0.3 does not persist scrollback / live PTY across daemon restart — daemon was not killed here, only Electron main, so PTY actually IS still alive; assert resubscribe yields the deltas it missed during disconnect).
+
+### E2E-3 — Stacked-dialog regression (#54 KEEP)
+
+- Existing renderer-only regression test for CrashConsentModal / SettingsDialog stacking.
+
+### E2E-4 — close-session, crash-recovery, user-journey (#71 KEEP)
+
+- Existing harness cases preserved, ported to the new IPC bridge contract.
+
+## Dogfood smoke (4 metrics — #14 MODIFIED)
+
+The four dogfood metrics survive the architecture transition. They are re-baselined against the Connect-RPC stack:
+
+| Metric                                 | v0.3 target                                       |
+| -------------------------------------- | ------------------------------------------------- |
+| Idle RAM (no sessions, daemon + Electron) | < v0.2 baseline + 30%                          |
+| 5-session RAM                          | < v0.2 baseline + 30%                             |
+| RPC bridge p95 (input → echo on screen) | < 50 ms                                          |
+| Daemon survives Electron quit          | TRUE (binary; assert via post-quit `/healthz`)    |
+
+The smoke harness runs against the actual installer post-pkg.
+
+## Test infra changes
+
+- Harness flakiness fix (#52) reused: condition-wait helper (`waitFor(predicate, timeout)`) replaces hard sleeps.
+- Connect-Node test client factory at `tests/helpers/connectClient.ts` with `over-uds` and `over-tcp+jwt` factories.
+- Fake JWKS server at `tests/helpers/fakeJwks.ts` for JWT UT + IT.
+- Fake PTY shell binary (echoes input) at `tests/helpers/fakeShell.ts`.
+
+## What is NOT in v0.3 testing scope
+
+- Web client E2E (no web client).
+- iOS client E2E (no iOS client).
+- cloudflared sidecar IT (no sidecar).
+- Real CF-Access JWT against real CF (only fake JWKS in CI).
+
+These come in v0.4 with the corresponding components.
 
 ## Cross-refs
 
-- [01-goals-and-non-goals](./01-goals-and-non-goals.md) — G10.
-- [03-listener-A-peer-cred](./03-listener-A-peer-cred.md), [04-listener-B-jwt](./04-listener-B-jwt.md) — UT matrices sourced here.
-- [12-electron-thin-client](./12-electron-thin-client.md) — IT-E1..E3.
-- [13-packaging-and-release](./13-packaging-and-release.md) — CI matrix.
+- [01 — Goals + anti-patterns](./01-goals-and-non-goals.md)
+- [03 — Listener A peer-cred matrix](./03-listener-A-peer-cred.md)
+- [04 — Listener B JWT 17-row matrix](./04-listener-B-jwt.md)
+- [08 — Session model 10-row matrix](./08-session-model.md)
+- [12 — Electron thin client (kill-renderer / kill-main IT)](./12-electron-thin-client.md)
+- [13 — Packaging + dogfood baseline location](./13-packaging-and-release.md)
+- [14 — Deletion verification CI step](./14-deletion-list.md)
