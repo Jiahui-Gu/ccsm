@@ -14,8 +14,18 @@ export default defineConfig({
       '@ccsm/proto-gen': path.resolve(__dirname, 'gen/ts/index.ts'),
     },
   },
+  // Pre-bundle ESM-only deps as CJS so the jsdom transitive `require()`
+  // chain (jsdom → html-encoding-sniffer → @exodus/bytes etc.) doesn't
+  // hit `ERR_REQUIRE_ESM` under Node 22. See task #173 / Plan F.
+  // In Vitest 3+/4.x this lives at `test.server.deps.inline` (the old
+  // top-level `deps.inline` is deprecated).
   test: {
     environment: 'jsdom',
+    server: {
+      deps: {
+        inline: ['@exodus/bytes', 'html-encoding-sniffer'],
+      },
+    },
     include: [
       'tests/**/*.test.ts',
       'tests/**/*.test.tsx',
