@@ -47,9 +47,11 @@ afterEach(() => {
 describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
   it("returns outcome 'fresh-install' when ensureDataDir reports kind='fresh'", () => {
     const runMigration = vi.fn();
+    const runAdditiveMigrations = vi.fn();
     const result = bootDb({
       ensureDataDir: () => ensured('fresh'),
       runMigration,
+      runAdditiveMigrations,
     });
     expect(result.outcome).toBe('fresh-install');
     expect(result.ensured.kind).toBe('fresh');
@@ -57,9 +59,11 @@ describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
 
   it("does NOT invoke runMigration on the fresh path", () => {
     const runMigration = vi.fn();
+    const runAdditiveMigrations = vi.fn();
     bootDb({
       ensureDataDir: () => ensured('fresh'),
       runMigration,
+      runAdditiveMigrations,
     });
     // The single load-bearing assertion: silent path skips the runner
     // entirely so no `migration.*` events can fire.
@@ -72,9 +76,24 @@ describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
       ensureDataDir: () => ensured('fresh'),
       applyFreshSchema,
       runMigration: vi.fn(),
+      runAdditiveMigrations: vi.fn(),
     });
     expect(applyFreshSchema).toHaveBeenCalledTimes(1);
     expect(applyFreshSchema).toHaveBeenCalledWith(dbPath);
+  });
+
+  it("invokes runAdditiveMigrations with the canonical db path on fresh path", () => {
+    // T31a: additive migrations apply on BOTH branches so fresh ends up
+    // shape-equal to upgraded. Assert the dep is invoked here.
+    const runAdditiveMigrations = vi.fn();
+    bootDb({
+      ensureDataDir: () => ensured('fresh'),
+      applyFreshSchema: vi.fn(),
+      runMigration: vi.fn(),
+      runAdditiveMigrations,
+    });
+    expect(runAdditiveMigrations).toHaveBeenCalledTimes(1);
+    expect(runAdditiveMigrations).toHaveBeenCalledWith(dbPath);
   });
 
   it("creates a real v0.3 db file (default applyFreshSchema, real sqlite)", () => {
@@ -82,6 +101,7 @@ describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
       ensureDataDir: () => ensured('fresh'),
       runMigration: vi.fn(),
       // default applyFreshSchema → opens better-sqlite3, exec()s v0.3.sql
+      // default runAdditiveMigrations → applies the 7 shipped .sql files
     });
     expect(existsSync(dbPath)).toBe(true);
     const db = new Database(dbPath, { readonly: true });
@@ -97,6 +117,10 @@ describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
       expect(names.has('agents')).toBe(true);
       expect(names.has('jobs')).toBe(true);
       expect(names.has('app_state')).toBe(true);
+      // T31a additive tables also present (default runAdditiveMigrations
+      // ran on top of the fresh schema).
+      expect(names.has('session_titles')).toBe(true);
+      expect(names.has('applied_migrations')).toBe(true);
 
       const ver = db.prepare('SELECT v FROM schema_version').get() as VersionRow;
       expect(ver.v).toBe('0.3');
@@ -117,6 +141,7 @@ describe('bootDb — fresh-install silent path (§8.3 step 5)', () => {
       ensureDataDir: () => e,
       applyFreshSchema: vi.fn(),
       runMigration: vi.fn(),
+      runAdditiveMigrations: vi.fn(),
     });
     expect(result.ensured).toBe(e);
     expect(result.ensured.orphansRemoved).toBe(3);
@@ -128,6 +153,7 @@ describe('bootDb — existing-db delegate path (§8.3 step 3)', () => {
     const result = bootDb({
       ensureDataDir: () => ensured('existing'),
       runMigration: vi.fn(),
+      runAdditiveMigrations: vi.fn(),
     });
     expect(result.outcome).toBe('existing');
   });
@@ -137,6 +163,7 @@ describe('bootDb — existing-db delegate path (§8.3 step 3)', () => {
     bootDb({
       ensureDataDir: () => ensured('existing'),
       runMigration,
+      runAdditiveMigrations: vi.fn(),
     });
     expect(runMigration).toHaveBeenCalledTimes(1);
     expect(runMigration).toHaveBeenCalledWith(dbPath);
@@ -147,15 +174,32 @@ describe('bootDb — existing-db delegate path (§8.3 step 3)', () => {
     bootDb({
       ensureDataDir: () => ensured('existing'),
       runMigration: vi.fn(),
+      runAdditiveMigrations: vi.fn(),
       applyFreshSchema,
     });
     expect(applyFreshSchema).not.toHaveBeenCalled();
   });
 
+  it("invokes runAdditiveMigrations AFTER runMigration on the existing path", () => {
+    const order: string[] = [];
+    bootDb({
+      ensureDataDir: () => ensured('existing'),
+      runMigration: vi.fn(() => {
+        order.push('migrate');
+      }),
+      runAdditiveMigrations: vi.fn(() => {
+        order.push('additive');
+      }),
+    });
+    expect(order).toEqual(['migrate', 'additive']);
+  });
+
   it("with a real pre-existing v0.3 db, the default runner is a no-op (idempotent)", () => {
     // Seed a real v0.3-shaped db at dbPath, then call bootDb with the
     // default runMigration. T29's `isAlreadyV03` guard MUST short-circuit
-    // so no DDL re-runs and no events fire.
+    // so no DDL re-runs and no events fire. The default additive runner
+    // also runs and will add post-baseline columns/tables — that is the
+    // correct shape after T31a, NOT a regression of T29's idempotency.
     {
       const db = new Database(dbPath);
       db.exec(`
@@ -169,20 +213,26 @@ describe('bootDb — existing-db delegate path (§8.3 step 3)', () => {
       ensureDataDir: () => ensured('existing'),
       // default runMigration → migrateV02ToV03 (T29). Should detect
       // already-v0.3 and return without touching the file.
+      // default runAdditiveMigrations → applies the 7 shipped .sql files.
     });
     expect(result.outcome).toBe('existing');
 
-    // Re-open and confirm the seeded schema is intact (no ALTER, no DROP).
     const db = new Database(dbPath, { readonly: true });
     try {
       const ver = db.prepare('SELECT v FROM schema_version').get() as VersionRow;
       expect(ver.v).toBe('0.3');
-      const sessionsCols = db
-        .prepare("PRAGMA table_info('sessions')")
+      // T29 idempotency on the pre-existing tables is unchanged: the
+      // seed had no `messages`/`agents`/`jobs` and T29 did NOT recreate
+      // them (would have changed the row count of sqlite_master).
+      const seededOnly = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('messages','agents','jobs')")
         .all() as Array<{ name: string }>;
-      // The seed had only `id`; if T29 ran it would have added all
-      // v0.3.sql columns. Idempotency check: still just `id`.
-      expect(sessionsCols.map((c) => c.name)).toEqual(['id']);
+      expect(seededOnly).toEqual([]);
+      // T31a additive migrations DID add their own tables on top.
+      const additive = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_titles','applied_migrations')")
+        .all() as Array<{ name: string }>;
+      expect(additive.map((r) => r.name).sort()).toEqual(['applied_migrations', 'session_titles']);
     } finally {
       db.close();
     }
@@ -223,6 +273,11 @@ describe('bootDb — existing-db delegate path (§8.3 step 3)', () => {
       const colNames = new Set(cols.map((c) => c.name));
       expect(colNames.has('id')).toBe(true);
       expect(colNames.has('close_action')).toBe(true);
+      // T31a additive migrations ran on top.
+      const additive = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='applied_migrations'")
+        .all();
+      expect(additive.length).toBe(1);
     } finally {
       db.close();
     }

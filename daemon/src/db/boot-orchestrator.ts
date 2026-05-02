@@ -39,6 +39,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { runAdditiveMigrations as defaultRunAdditiveMigrations } from './additive-migrations.js';
 import { ensureDataDir as defaultEnsureDataDir, type EnsuredDataDir } from './ensure-data-dir.js';
 import { migrateV02ToV03 as defaultRunMigration } from './migrate-v02-to-v03.js';
 
@@ -106,6 +107,18 @@ export interface BootDbDeps {
    * when `ensured.kind === 'fresh'`.
    */
   readonly applyFreshSchema?: (dbPath: string) => void;
+  /**
+   * Post-schema additive migration runner (T31a). Defaults to
+   * `runAdditiveMigrations` over `daemon/src/db/migrations/`. Called on
+   * BOTH `fresh` and `existing` paths AFTER the schema / migration
+   * runner has produced a v0.3-baseline-shaped db, so every additive
+   * delta from the chapter 09 §8 schema-additive promise is applied
+   * exactly once (ledger-tracked).
+   *
+   * Receives the canonical db path; opens its own `Database` handle so
+   * the runner is decoupled from the fresh / existing handle lifetimes.
+   */
+  readonly runAdditiveMigrations?: (dbPath: string) => void;
 }
 
 /**
@@ -121,6 +134,25 @@ function defaultApplyFreshSchema(dbPath: string): void {
   const db = new Database(dbPath);
   try {
     db.exec(loadV03Schema());
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Default additive-migration runner wrapper. Opens the canonical db
+ * file, delegates to `runAdditiveMigrations` over the shipped
+ * `daemon/src/db/migrations/` directory, then closes. Synchronous for
+ * the same reason as `defaultApplyFreshSchema` — better-sqlite3 is sync
+ * and the boot path runs before the event loop is busy.
+ *
+ * Throws on checksum mismatch or SQL exec error; the caller (boot path)
+ * surfaces as fatal per frag-8 §8.6 daemon-spawn-failure modal.
+ */
+function defaultRunAdditive(dbPath: string): void {
+  const db = new Database(dbPath);
+  try {
+    defaultRunAdditiveMigrations(db);
   } finally {
     db.close();
   }
@@ -150,6 +182,7 @@ export function bootDb(deps: BootDbDeps = {}): BootDbResult {
   const ensureDataDirFn = deps.ensureDataDir ?? defaultEnsureDataDir;
   const runMigrationFn = deps.runMigration ?? defaultRunMigration;
   const applyFreshSchemaFn = deps.applyFreshSchema ?? defaultApplyFreshSchema;
+  const runAdditiveFn = deps.runAdditiveMigrations ?? defaultRunAdditive;
 
   const ensured = ensureDataDirFn();
 
@@ -160,6 +193,10 @@ export function bootDb(deps: BootDbDeps = {}): BootDbResult {
     // strictly the silent-schema branch; the marker is the boot path's
     // responsibility once the marker writer module lands.
     applyFreshSchemaFn(ensured.dbPath);
+    // Apply the additive deltas (T31a) on top of the freshly-stamped
+    // v0.3 baseline. Same call on both branches so a fresh install ends
+    // up at the same shape an upgraded install does — no shape skew.
+    runAdditiveFn(ensured.dbPath);
     return { ensured, outcome: 'fresh-install' };
   }
 
@@ -172,5 +209,9 @@ export function bootDb(deps: BootDbDeps = {}): BootDbResult {
   // migration: T29 will translate it and the events the runner emits
   // are the source of truth.
   runMigrationFn(ensured.dbPath);
+  // Apply the additive deltas (T31a) AFTER the v0.2→v0.3 lift so the
+  // ledger sees the v0.3 baseline tables already present. Idempotent:
+  // re-runs short-circuit on the `applied_migrations` ledger.
+  runAdditiveFn(ensured.dbPath);
   return { ensured, outcome: 'existing' };
 }
