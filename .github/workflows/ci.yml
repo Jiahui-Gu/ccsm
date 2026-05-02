@@ -4,8 +4,6 @@ on:
   pull_request:
     branches: [main, working]
     paths-ignore:
-      - '**.md'
-      - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
   workflow_dispatch:
