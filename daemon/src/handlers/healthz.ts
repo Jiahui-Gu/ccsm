@@ -172,5 +172,11 @@ export function handleHealthz(_req: unknown, ctx: HealthzContext): HealthzReply 
 export function makeHealthzHandler(
   ctx: HealthzContext,
 ): (req: unknown) => Promise<HealthzReply> {
-  return async (req: unknown) => handleHealthz(req, ctx);
+  // `_req` (leading underscore): /healthz takes no payload per
+  // frag-6-7 §6.5; the wrapper exists only to fit the dispatcher's
+  // unary `Handler` signature. Marking the param unused (a) silences
+  // `@typescript-eslint/no-unused-vars`, and (b) signals to
+  // `ccsm-local/no-handler-without-check` (frag-3.4.1 §3.4.1.d) that
+  // there is no payload to validate.
+  return async (_req: unknown) => handleHealthz(_req, ctx);
 }
