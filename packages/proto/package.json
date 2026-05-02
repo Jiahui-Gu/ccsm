@@ -2,5 +2,13 @@
   "name": "@ccsm/proto",
   "version": "0.0.0",
   "private": true,
-  "description": "CCSM proto definitions and generated Connect-RPC code. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11."
+  "description": "CCSM proto definitions and generated Connect-RPC code. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('gen/ts',{recursive:true,force:true})\"",
+    "gen": "buf generate"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.50.0",
+    "@bufbuild/protoc-gen-es": "^2.2.3"
+  }
 }
