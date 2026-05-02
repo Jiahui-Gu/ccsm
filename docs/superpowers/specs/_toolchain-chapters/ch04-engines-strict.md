@@ -121,7 +121,7 @@ because the value is identical to root.
 | `.nvmrc` | yes | inherited (no file in package) |
 | `packageManager` | yes (pnpm@10.33.2) | NO (would create drift) |
 | `engines.node` | yes (`22.x`) | yes (`22.x`, identical) |
-| `engines.pnpm` | yes (`10.x`) | NO (root install enforces) |
+| `engines.pnpm` | yes (`>=10.33.2 <11`) | NO (root install enforces) |
 | `.npmrc` engine-strict | yes | inherited (no file in package) |
 | `node-linker` | yes (`hoisted`) | inherited |
 
