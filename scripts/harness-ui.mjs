@@ -17,6 +17,8 @@
 //   - palette-nav                          (probe-e2e-palette-nav)
 //   - settings-open                        (probe-e2e-settings-open, sidebar + Cmd+,)
 //   - settings-updates-pane                (Settings → Updates pane render contract)
+//   - stacked-dialog                       (#20 / PR #765 — aria-hidden overlay neutralizer)
+//   - scroll-lock                          (#20 / PR #765 — body pointer-events leak guard)
 //   - search-shortcut-f                    (probe-e2e-search-shortcut-f)
 //   - tutorial                             (probe-e2e-tutorial)
 //   - titlebar                             (probe-e2e-titlebar)
@@ -244,6 +246,181 @@ async function caseSettingsUpdatesPane({ win, log }) {
 
   log('updates pane: version + status labels render, idle status line + check button visible');
 }
+
+// ---------- stacked-dialog ----------
+// Regression: PR #765 / Task #20 root cause. CrashConsentModal mounted a Radix
+// Dialog whose Portal/Overlay siblings carried `data-state="open"
+// aria-hidden="true"` while a higher-stacking modal was active. The aria-hidden
+// overlay sat above the sidebar at z-index 40+ and intercepted pointer events,
+// so clicking the Sidebar "Settings" button silently failed (Playwright surfaced
+// it as "intercepts pointer events"). The fix lives in src/styles/global.css:
+//   [data-state][aria-hidden="true"] { pointer-events: none !important; }
+//
+// This case reproduces the structural shape directly — it injects a synthetic
+// overlay matching the offending selector, opens the real SettingsDialog on top
+// (so we have a true stacked-dialog scenario), then asserts the Sidebar Settings
+// button stays clickable both while the stack is up and after the top dialog
+// closes. If someone removes / scopes-too-tightly the global.css rule the click
+// path would re-break and this case fails fast.
+async function caseStackedDialog({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      tutorialSeen: true,
+    });
+  });
+  await win.waitForTimeout(150);
+
+  // Inject a synthetic Radix-shaped overlay. Matches the exact selector in
+  // global.css (`[data-state][aria-hidden="true"]`) that the regression guard
+  // targets. Without that CSS rule this <div> would intercept every click on
+  // the sidebar (it spans the whole viewport at z-index 60 with auto pointer
+  // events). The probe-side cleanup is registered below so a failure mid-case
+  // does not poison subsequent cases.
+  await win.evaluate(() => {
+    const o = document.createElement('div');
+    o.setAttribute('data-state', 'open');
+    o.setAttribute('aria-hidden', 'true');
+    o.setAttribute('data-ccsm-stacked-overlay-fixture', '');
+    o.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:60',
+      'background:transparent', 'pointer-events:auto',
+    ].join(';');
+    document.body.appendChild(o);
+  });
+
+  try {
+    // Confirm the regression-guard CSS actually neutralizes the overlay's
+    // pointer-events (computed style, not inline) — this is the load-bearing
+    // contract.
+    const overlayPe = await win.evaluate(() => {
+      const el = document.querySelector('[data-ccsm-stacked-overlay-fixture]');
+      return el ? getComputedStyle(el).pointerEvents : null;
+    });
+    if (overlayPe !== 'none') {
+      throw new Error(`stacked overlay still intercepts pointer events: pointer-events=${overlayPe} (expected 'none' from global.css [data-state][aria-hidden="true"] rule)`);
+    }
+
+    // Open SettingsDialog ON TOP of the synthetic overlay — true stacked-dialog
+    // condition (overlay below, real Radix modal above).
+    await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+    await win.keyboard.press(`${mod}+,`);
+    const settingsTab = win.getByRole('tab', { name: /^appearance$/i });
+    await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
+
+    // Close the top modal. With both the regression-guard rule AND the body
+    // pointer-events guard in place, the sidebar must remain interactive.
+    await win.getByRole('dialog').first().focus().catch(() => {});
+    await win.keyboard.press('Escape');
+    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+
+    // The synthetic overlay still sits above the sidebar in the DOM. The
+    // Sidebar Settings button must still be reachable through getByRole AND
+    // clickable — this is the exact failure mode #20 reported.
+    const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
+    await sidebarBtn.waitFor({ state: 'visible', timeout: 3000 });
+    await sidebarBtn.click({ timeout: 3000 });
+    await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
+
+    // Tear the re-opened SettingsDialog back down so we leave the page clean
+    // for the next case.
+    await win.getByRole('dialog').first().focus().catch(() => {});
+    await win.keyboard.press('Escape');
+    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+  } finally {
+    await win.evaluate(() => {
+      document.querySelector('[data-ccsm-stacked-overlay-fixture]')?.remove();
+    });
+  }
+
+  log('stacked overlay neutralized; sidebar Settings button stays clickable through the stack');
+}
+
+// ---------- scroll-lock ----------
+// Regression: Radix Dialog mounts react-remove-scroll which sets inline
+// `pointer-events: none` on <body> + `overflow: hidden` while open. If the
+// DismissableLayer tear-down races with the next case (a known leak path —
+// see comments in src/styles/global.css around `html, body { pointer-events:
+// auto !important; }`) the lock survives the modal close and every later
+// click on the sidebar fails. The unconditional `!important` rule defeats
+// the leak; this case pins that contract.
+//
+// Asserts: (a) body computed `pointer-events` stays 'auto' WHILE a Radix
+// modal is open (the rule defeats the inline lock immediately, not just on
+// close); (b) after Esc the lock is fully gone; (c) the Sidebar Settings
+// button is clickable post-close — meaning a stale lock cannot recreate the
+// #20 click-blocked symptom from the scroll-lock side.
+async function caseScrollLock({ win, log }) {
+  await win.evaluate(() => {
+    window.__ccsmStore.setState({
+      groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
+      sessions: [{ id: 's1', name: 's', state: 'idle', cwd: 'C:/x', model: 'claude-opus-4', groupId: 'g1', agentType: 'claude-code' }],
+      activeId: 's1',
+      messagesBySession: { s1: [] },
+      tutorialSeen: true,
+    });
+  });
+  await win.waitForTimeout(150);
+
+  // Open SettingsDialog — Radix react-remove-scroll fires the body lock here.
+  await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+  await win.keyboard.press(`${mod}+,`);
+  const settingsTab = win.getByRole('tab', { name: /^appearance$/i });
+  await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
+
+  // While the modal is open, computed pointer-events on <html> + <body> must
+  // be 'auto' (global.css `!important` overrides the inline lock). If a
+  // future Radix bump or our own !important removal regresses this, the
+  // assertion below catches it before #20 reproduces in the wild.
+  const peOpen = await win.evaluate(() => ({
+    html: getComputedStyle(document.documentElement).pointerEvents,
+    body: getComputedStyle(document.body).pointerEvents,
+    bodyInline: document.body.style.pointerEvents || null,
+  }));
+  if (peOpen.html !== 'auto' || peOpen.body !== 'auto') {
+    throw new Error(`body lock leaked WHILE modal open: ${JSON.stringify(peOpen)} (expected html+body computed pointer-events=auto)`);
+  }
+
+  // Close the modal.
+  await win.getByRole('dialog').first().focus().catch(() => {});
+  await win.keyboard.press('Escape');
+  await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+
+  // After close, both must still be 'auto'. We measure twice — once
+  // immediately, once after a 200ms settle — to catch race-window leaks
+  // where the lock briefly survives DismissableLayer tear-down.
+  const peClosedImmediate = await win.evaluate(() => ({
+    html: getComputedStyle(document.documentElement).pointerEvents,
+    body: getComputedStyle(document.body).pointerEvents,
+  }));
+  await win.waitForTimeout(200);
+  const peClosedSettled = await win.evaluate(() => ({
+    html: getComputedStyle(document.documentElement).pointerEvents,
+    body: getComputedStyle(document.body).pointerEvents,
+  }));
+  if (peClosedImmediate.body !== 'auto' || peClosedSettled.body !== 'auto') {
+    throw new Error(`body pointer-events leaked after modal close: immediate=${JSON.stringify(peClosedImmediate)} settled=${JSON.stringify(peClosedSettled)}`);
+  }
+
+  // Final integration check: the Sidebar Settings button is still clickable.
+  // This is the user-facing symptom of #20 — if the lock leaked, this click
+  // would fail with "intercepts pointer events" on <body>.
+  const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
+  await sidebarBtn.waitFor({ state: 'visible', timeout: 3000 });
+  await sidebarBtn.click({ timeout: 3000 });
+  await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
+
+  // Clean up so the next case starts with no dialog mounted.
+  await win.getByRole('dialog').first().focus().catch(() => {});
+  await win.keyboard.press('Escape');
+  await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+
+  log(`body pointer-events stayed auto open=${peOpen.body} closed=${peClosedSettled.body}; sidebar Settings click survived scroll-lock`);
+}
+
 // ---------- titlebar ----------
 // No native frame on win/linux; >=2 top drag regions of expected height;
 // window controls inside right pane (not sidebar) on win/linux.
@@ -1635,6 +1812,13 @@ await runHarness({
     // covered by tests/command-palette.test.tsx.
     { id: 'settings-open', run: caseSettingsOpen },
     { id: 'settings-updates-pane', run: caseSettingsUpdatesPane },
+    // stacked-dialog + scroll-lock: regression防线 for #20 / PR #765 root
+    // cause. The first pins the global.css `[data-state][aria-hidden="true"]`
+    // pointer-events neutralizer; the second pins the unconditional
+    // `html, body { pointer-events: auto !important }` body-lock-leak guard.
+    // Both failure modes manifested as "Sidebar Settings button uncliclable".
+    { id: 'stacked-dialog', run: caseStackedDialog },
+    { id: 'scroll-lock', run: caseScrollLock },
     // search-shortcut-f removed — Task #740 Batch 3.1. Already covered
     // by tests/app-effects/useShortcutHandlers.test.tsx (Ctrl+F branch).
     // tutorial removed — Task #740 Batch 3.1. Pure self-contained
