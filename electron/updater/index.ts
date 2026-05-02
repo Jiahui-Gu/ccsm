@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
+import { verifySlsaProvenance } from './verifySlsa';
+import { verifyMinisign, minisignPubkeyFingerprint } from './verifyMinisign';
 
 // All status updates flow through one channel so the renderer doesn't have to
 // subscribe to N separate event names. The shape mirrors electron-updater's
@@ -106,6 +108,111 @@ export async function callShutdownForUpgrade(): Promise<UpgradeShutdownOutcome> 
 // without hammering GitHub releases.
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
+// ----------------------------------------------------------------------------
+// Auto-update gate (frag-6-7 §7.3, Task #137)
+//
+// v0.3 ships SLSA-attested with auto-update DEFAULT OFF. Users who want the
+// background download/install flow set CCSM_DAEMON_AUTOUPDATE=1. Default UX
+// is "check + notify; user clicks to download/install; verify always runs
+// before install" — same verification chain whether the user clicked or the
+// background path triggered.
+//
+// Read once at module load. Tests reset via __resetUpdaterForTests + can
+// override via setAutoUpdateGateForTests. We deliberately do NOT re-read on
+// every IPC call: the gate is a deployment posture, not a runtime toggle, and
+// re-reading would let a renderer-side env mutation flip it mid-session.
+// ----------------------------------------------------------------------------
+export const AUTO_UPDATE_GATE_ENV = 'CCSM_DAEMON_AUTOUPDATE';
+
+function readAutoUpdateGate(): boolean {
+  return process.env[AUTO_UPDATE_GATE_ENV] === '1';
+}
+
+let autoUpdateGate = readAutoUpdateGate();
+
+/** Test-only override. Production code MUST set the env var instead. */
+export function __setAutoUpdateGateForTests(enabled: boolean): void {
+  autoUpdateGate = enabled;
+}
+
+export function isAutoUpdateGateEnabled(): boolean {
+  return autoUpdateGate;
+}
+
+// ----------------------------------------------------------------------------
+// Canonical log helper for verify failures (frag-6-7 §7.3, Task #137)
+//
+// Spec line shape: `updater_verify_fail {kind, reason}`. Electron-side does
+// not yet have the daemon's pino mirror (frag-6-7 Task 6c) wired; we emit on
+// stderr in a parser-stable form so the line shows up in packaged-app log
+// capture and existing CI grep predicates work today. When the pino mirror
+// lands, this helper is the single replacement point.
+// ----------------------------------------------------------------------------
+export type VerifyFailKind = 'slsa' | 'minisign';
+
+export function logUpdaterVerifyFail(kind: VerifyFailKind, reason: string): void {
+  // Single-line JSON-ish so the log scraper can match `updater_verify_fail`
+  // and parse the brace payload without ambiguity.
+  console.error(
+    `updater_verify_fail ${JSON.stringify({ kind, reason })}`,
+  );
+}
+
+// ----------------------------------------------------------------------------
+// Verify orchestrator (frag-6-7 §7.3, Task #137)
+//
+// Runs SLSA + (Linux) minisign in sequence. Either failure rejects install
+// and emits the canonical log line. Order matters: SLSA first because it's
+// the platform-agnostic cryptographic check; minisign is a defense-in-depth
+// second factor that only exists on Linux.
+//
+// Sidecar paths: electron-updater downloads <name>.exe / .dmg / .AppImage
+// into its cache dir. Release.yml publishes <name>.intoto.jsonl and (Linux)
+// <name>.minisig alongside. The autoUpdater download path doesn't fetch
+// sidecars — that's left to the verify orchestrator's caller, which knows
+// the artifact path from the `update-downloaded` event. For v0.3 we expect
+// sidecars to be co-located in the same directory (release.yml staging
+// + electron-updater cacheDir layout); v0.4 will fetch sidecars explicitly
+// over HTTPS with their own SHA verify.
+// ----------------------------------------------------------------------------
+export interface VerifyArtifactArgs {
+  readonly artifactPath: string;
+  readonly platform?: NodeJS.Platform;
+}
+
+export type VerifyArtifactResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly kind: VerifyFailKind; readonly reason: string };
+
+export async function verifyDownloadedArtifact(
+  args: VerifyArtifactArgs,
+): Promise<VerifyArtifactResult> {
+  const slsa = await verifySlsaProvenance({
+    artifactPath: args.artifactPath,
+    bundlePath: `${args.artifactPath}.intoto.jsonl`,
+  });
+  if (!slsa.ok) {
+    logUpdaterVerifyFail('slsa', slsa.reason);
+    return { ok: false, kind: 'slsa', reason: slsa.reason };
+  }
+
+  const minisign = await verifyMinisign({
+    artifactPath: args.artifactPath,
+    signaturePath: `${args.artifactPath}.minisig`,
+    platform: args.platform,
+  });
+  if (!minisign.ok) {
+    logUpdaterVerifyFail('minisign', minisign.reason);
+    return { ok: false, kind: 'minisign', reason: minisign.reason };
+  }
+
+  return { ok: true };
+}
+
+// Set by the `update-downloaded` event handler so `updates:install` knows
+// which artifact to verify. Cleared on reset for test isolation.
+let lastDownloadedArtifactPath: string | null = null;
+
 // Named event channels — requested in the release infra spec in addition to
 // the aggregated `updates:status` channel. Keeping both channels is cheap and
 // makes renderer code (e.g. "show a toast on downloaded") trivial.
@@ -155,6 +262,10 @@ function startPeriodicChecks(): void {
   if (periodicHandle) return;
   if (!autoCheckEnabled) return;
   if (!app.isPackaged) return;
+  // Gate (frag-6-7 §7.3, Task #137): periodic background checks only run
+  // when the user has opted into auto-update. With the gate OFF, the user
+  // drives checks via the Settings → Updates → "Check now" button.
+  if (!autoUpdateGate) return;
   // Node's setInterval returns NodeJS.Timeout; Electron's `app` prevents
   // premature quit while timers are pending. .unref() so it doesn't keep
   // the event loop alive during shutdown.
@@ -175,10 +286,13 @@ export function installUpdaterIpc(): void {
   if (installed) return;
   installed = true;
 
-  // electron-updater is noisy by default; quiet it down — we surface state
-  // through our own channel.
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // Auto-update gate (frag-6-7 §7.3, Task #137): when CCSM_DAEMON_AUTOUPDATE=1
+  // electron-updater can download in the background and queue install on quit.
+  // When the gate is OFF (default), the user must explicitly drive both steps
+  // via the `updates:download` / `updates:install` IPCs — verify still runs
+  // before install in BOTH paths.
+  autoUpdater.autoDownload = autoUpdateGate;
+  autoUpdater.autoInstallOnAppQuit = autoUpdateGate;
   autoUpdater.logger = null;
 
   // Dual-install (#891): the dev variant pulls GitHub pre-releases so we can
@@ -208,9 +322,14 @@ export function installUpdaterIpc(): void {
       total: p.total
     })
   );
-  autoUpdater.on('update-downloaded', (info) =>
-    broadcast({ kind: 'downloaded', version: info.version })
-  );
+  autoUpdater.on('update-downloaded', (info) => {
+    // Capture the on-disk artifact path so `updates:install` can verify the
+    // exact file the user is about to launch. electron-updater types extend
+    // UpdateInfo with `downloadedFile` on the event payload.
+    const ev = info as { downloadedFile?: string; version: string };
+    lastDownloadedArtifactPath = ev.downloadedFile ?? null;
+    broadcast({ kind: 'downloaded', version: ev.version });
+  });
   autoUpdater.on('error', (err) =>
     broadcast({ kind: 'error', message: err?.message ?? String(err) })
   );
@@ -257,6 +376,29 @@ export function installUpdaterIpc(): void {
     if (lastStatus.kind !== 'downloaded') {
       return { ok: false as const, reason: 'not-ready' as const };
     }
+    // SLSA + (Linux) minisign verify (frag-6-7 §7.3, Task #137). MUST run
+    // before quitAndInstall regardless of gate state — the gate only changes
+    // whether download/install were triggered automatically; verification is
+    // unconditional. If the artifact path was lost (e.g. event ordering bug
+    // or a stale `downloaded` status from a previous session), refuse rather
+    // than install an unverified binary.
+    if (!lastDownloadedArtifactPath) {
+      const reason = 'artifact_path_missing';
+      logUpdaterVerifyFail('slsa', reason);
+      broadcast({ kind: 'error', message: `update verify failed: ${reason}` });
+      return { ok: false as const, reason: 'verify-failed' as const };
+    }
+    const verify = await verifyDownloadedArtifact({
+      artifactPath: lastDownloadedArtifactPath,
+    });
+    if (!verify.ok) {
+      // Canonical log line was already emitted inside verifyDownloadedArtifact.
+      // Surface a generic error to the renderer (the verify reason is in logs;
+      // we don't leak it through the IPC reply because a future telemetry
+      // pipeline will read the canonical line directly).
+      broadcast({ kind: 'error', message: `update verify failed: ${verify.kind}` });
+      return { ok: false as const, reason: 'verify-failed' as const };
+    }
     // T62 — frag-11 §11.6.5: send daemon.shutdownForUpgrade BEFORE
     // quitAndInstall so the daemon writes its upgrade marker, drains, and
     // releases the lockfile. We always proceed regardless of ack/timeout/
@@ -293,5 +435,12 @@ export function __resetUpdaterForTests(): void {
   autoCheckEnabled = true;
   lastStatus = { kind: 'idle' };
   upgradeShutdownRpc = null;
+  lastDownloadedArtifactPath = null;
+  autoUpdateGate = readAutoUpdateGate();
   stopPeriodicChecks();
 }
+
+// Re-export the minisign pubkey fingerprint for diagnostic surfaces (e.g. an
+// "About → security" panel). Hardcoded import here keeps the public surface
+// of the updater module self-contained.
+export { minisignPubkeyFingerprint };

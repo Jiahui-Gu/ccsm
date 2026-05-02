@@ -91,6 +91,17 @@ async function freshModule() {
   resetState();
   const mod = await import('../updater');
   mod.__resetUpdaterForTests();
+  // Auto-update gate (frag-6-7 §7.3, Task #137): production default is OFF
+  // (env opt-in). The existing IPC-wiring suite asserts the autoDownload /
+  // autoInstall path; force gate ON so that branch fires. Verify-OFF / gate-
+  // OFF behavior is covered by the dedicated verify.test.ts suite.
+  mod.__setAutoUpdateGateForTests(true);
+  // Stub the verify chain so install tests don't try to read real
+  // SLSA/minisign sidecars from disk.
+  const verifySlsa = await import('../updater/verifySlsa');
+  verifySlsa.__setVerifyImpl(async () => ({ ok: true }));
+  const verifyMinisign = await import('../updater/verifyMinisign');
+  verifyMinisign.__setMinisignRunner(async () => ({ code: 0, stderr: '' }));
   mod.installUpdaterIpc();
   return mod;
 }
@@ -160,7 +171,7 @@ describe('updater: IPC wiring', () => {
   });
 
   it('broadcasts status on update-downloaded and fires update:downloaded channel', () => {
-    autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3' });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '1.2.3', downloadedFile: '/tmp/x.AppImage' });
 
     expect(sendsFor('updates:status')).toContainEqual({ kind: 'downloaded', version: '1.2.3' });
     expect(sendsFor('update:downloaded')).toContainEqual({ version: '1.2.3' });
@@ -205,7 +216,7 @@ describe('updater: IPC wiring', () => {
     // Defense-in-depth gate (#TBD): updates:install refuses unless
     // lastStatus is `downloaded`. Drive the broadcast first so the
     // handler can proceed.
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3' });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
@@ -273,7 +284,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
   });
 
   it('default (no rpc wired) resolves immediately and proceeds with quitAndInstall', async () => {
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3' });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.3', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
@@ -326,7 +337,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
         }),
     );
 
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.4' });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.4', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const promise = handler({});
 
@@ -349,7 +360,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
     try {
       const mod = await import('../updater');
       mod.setUpgradeShutdownRpc(() => new Promise(() => undefined));
-      autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.5' });
+      autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.5', downloadedFile: '/tmp/x.AppImage' });
       const handler = ipcHandlers.get('updates:install')!;
       const promise = handler({});
       await vi.advanceTimersByTimeAsync(mod.UPGRADE_SHUTDOWN_ACK_TIMEOUT_MS);
@@ -371,7 +382,7 @@ describe('updater: T62 upgrade-shutdown RPC', () => {
     mod.setUpgradeShutdownRpc(async () => {
       throw new Error('control socket EPIPE');
     });
-    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.6' });
+    autoUpdaterEmitter.emit('update-downloaded', { version: '0.1.6', downloadedFile: '/tmp/x.AppImage' });
     const handler = ipcHandlers.get('updates:install')!;
     const res = await handler({});
     expect(res).toEqual({ ok: true });
