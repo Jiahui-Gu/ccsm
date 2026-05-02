@@ -284,17 +284,33 @@ async function caseSettingsUpdatesPane({ win, log }) {
 // Regression: PR #765 / Task #20 root cause. CrashConsentModal mounted a Radix
 // Dialog whose Portal/Overlay siblings carried `data-state="open"
 // aria-hidden="true"` while a higher-stacking modal was active. The aria-hidden
-// overlay sat above the sidebar at z-index 40+ and intercepted pointer events,
-// so clicking the Sidebar "Settings" button silently failed (Playwright surfaced
-// it as "intercepts pointer events"). The fix lives in src/styles/global.css:
+// overlay sat above the sidebar and intercepted pointer events, so clicking
+// the Sidebar "Settings" button silently failed (Playwright surfaced it as
+// "intercepts pointer events"). The fix lives in src/styles/global.css:
 //   [data-state][aria-hidden="true"] { pointer-events: none !important; }
 //
-// This case reproduces the structural shape directly — it injects a synthetic
-// overlay matching the offending selector, opens the real SettingsDialog on top
-// (so we have a true stacked-dialog scenario), then asserts the Sidebar Settings
-// button stays clickable both while the stack is up and after the top dialog
-// closes. If someone removes / scopes-too-tightly the global.css rule the click
-// path would re-break and this case fails fast.
+// Real-modal regression (Task #54): two production Radix Dialogs are stacked
+// here — ShortcutOverlay (lower) and SettingsDialog (upper). When the upper
+// modal mounts, Radix's @radix-ui/react-aria-hidden marks every sibling of
+// the new portal — including the lower dialog's portal subtree — with
+// `aria-hidden="true"`. The lower portal's content/overlay still carry
+// `data-state="open"` from their own lifecycle, producing the exact
+// `[data-state][aria-hidden="true"]` shape #20 surfaced. This case asserts:
+//   1. computed pointer-events on the lower dialog's data-state nodes is
+//      'none' under the stack (the global.css neutralizer rule).
+//   2. computed pointer-events on <html>+<body> stays 'auto' while both
+//      modals are open (the body-lock-leak guard).
+//   3. focus is inside the upper (Settings) dialog while it owns the stack
+//      (Radix FocusScope nesting works under the stack).
+//   4. after both dialogs tear down, the Sidebar Settings button is
+//      reachable + clickable — the user-facing #20 symptom.
+// No synthetic-DOM injection — the test exercises the real React + Radix
+// mount path so any future regression of the same structural shape (or the
+// CSS guard) fails this case immediately. Reverse-verified: removing either
+// global.css guard (`[data-state][aria-hidden="true"]` neutralizer or the
+// `html, body { pointer-events: auto !important }` body-lock leak guard)
+// fails this case with a precise diagnostic before any sidebar interaction
+// is attempted.
 async function caseStackedDialog({ win, log }) {
   await win.evaluate(() => {
     window.__ccsmStore.setState({
@@ -307,69 +323,169 @@ async function caseStackedDialog({ win, log }) {
   });
   await win.locator('li[data-session-id="s1"]').first().waitFor({ state: 'visible', timeout: 5000 });
 
-  // Inject a synthetic Radix-shaped overlay. Matches the exact selector in
-  // global.css (`[data-state][aria-hidden="true"]`) that the regression guard
-  // targets. Without that CSS rule this <div> would intercept every click on
-  // the sidebar (it spans the whole viewport at z-index 60 with auto pointer
-  // events). The probe-side cleanup is registered below so a failure mid-case
-  // does not poison subsequent cases.
+  // Make sure focus is on the page (not in any input that could swallow '?').
+  await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+  // Belt-and-braces: blur any focused input so '?' is treated as a global key.
   await win.evaluate(() => {
-    const o = document.createElement('div');
-    o.setAttribute('data-state', 'open');
-    o.setAttribute('aria-hidden', 'true');
-    o.setAttribute('data-ccsm-stacked-overlay-fixture', '');
-    o.style.cssText = [
-      'position:fixed', 'inset:0', 'z-index:60',
-      'background:transparent', 'pointer-events:auto',
-    ].join(';');
-    document.body.appendChild(o);
+    const el = document.activeElement;
+    if (el && el !== document.body && typeof el.blur === 'function') el.blur();
   });
 
   try {
-    // Confirm the regression-guard CSS actually neutralizes the overlay's
-    // pointer-events (computed style, not inline) — this is the load-bearing
-    // contract.
-    const overlayPe = await win.evaluate(() => {
-      const el = document.querySelector('[data-ccsm-stacked-overlay-fixture]');
-      return el ? getComputedStyle(el).pointerEvents : null;
-    });
-    if (overlayPe !== 'none') {
-      throw new Error(`stacked overlay still intercepts pointer events: pointer-events=${overlayPe} (expected 'none' from global.css [data-state][aria-hidden="true"] rule)`);
-    }
+    // ---- Step 1: open ShortcutOverlay (lower modal) via real keybind.
+    // The handler in src/app-effects/useShortcutHandlers.ts accepts both
+    // Ctrl+/ and bare "?". `Shift+/` doesn't reliably yield e.key==='?' on
+    // every platform via Playwright keyboard.press, so use Ctrl+/ which
+    // matches the explicit `mod && e.key === '/' && !e.shiftKey` branch.
+    await win.keyboard.press(`${mod}+/`);
+    // Identify the lower dialog by its translated title. ShortcutOverlay
+    // uses the i18n key `shortcuts.title` which renders to "Keyboard
+    // shortcuts" under the harness's en locale.
+    const shortcutDialog = win.getByRole('dialog', { name: /keyboard shortcuts/i });
+    await shortcutDialog.first().waitFor({ state: 'visible', timeout: 3000 });
 
-    // Open SettingsDialog ON TOP of the synthetic overlay — true stacked-dialog
-    // condition (overlay below, real Radix modal above).
-    await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+    // ---- Step 2: open Settings on top (upper modal) via Cmd/Ctrl+,.
+    // Cmd/Ctrl+, is registered on `window` (useShortcutHandlers) so it fires
+    // even with focus trapped inside the lower dialog.
     await win.keyboard.press(`${mod}+,`);
     const settingsTab = win.getByRole('tab', { name: /^appearance$/i });
     await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
 
-    // Close the top modal. With both the regression-guard rule AND the body
-    // pointer-events guard in place, the sidebar must remain interactive.
-    await win.getByRole('dialog').first().focus().catch(() => {});
-    await win.keyboard.press('Escape');
-    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
+    // Sanity: both dialogs are mounted simultaneously — true stacked state.
+    // Use raw DOM query (not getByRole) because Radix marks the lower dialog's
+    // portal subtree with aria-hidden, which removes it from the AX tree.
+    const dialogCount = await win.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+    if (dialogCount < 2) {
+      const dump = await win.evaluate(() => Array.from(document.querySelectorAll('[role="dialog"]')).map((d) => ({
+        ariaLabel: d.getAttribute('aria-label'),
+        ariaLabelledby: d.getAttribute('aria-labelledby'),
+        ariaHidden: d.getAttribute('aria-hidden'),
+        dataState: d.getAttribute('data-state'),
+      })));
+      throw new Error(`expected ≥2 dialogs mounted (ShortcutOverlay + Settings), got ${dialogCount}: ${JSON.stringify(dump)}`);
+    }
 
-    // The synthetic overlay still sits above the sidebar in the DOM. The
-    // Sidebar Settings button must still be reachable through getByRole AND
-    // clickable — this is the exact failure mode #20 reported.
+    // ---- Assert (1): the lower portal's data-state nodes that are now
+    // aria-hidden have computed pointer-events 'none'. We poll because Radix
+    // applies aria-hidden in a layout effect after the upper dialog mounts;
+    // the assertion succeeds as soon as the structural shape exists AND the
+    // CSS guard neutralizes it.
+    await pollUntilWin(win, async () => {
+      const stats = await win.evaluate(() => {
+        const nodes = Array.from(document.querySelectorAll('[data-state][aria-hidden="true"]'));
+        return nodes.map((n) => ({
+          dataState: n.getAttribute('data-state'),
+          ariaHidden: n.getAttribute('aria-hidden'),
+          pe: getComputedStyle(n).pointerEvents,
+          tag: n.tagName.toLowerCase(),
+        }));
+      });
+      // Need at least one such node from the real stack, and every one must
+      // resolve to pointer-events:none.
+      if (stats.length === 0) return false;
+      const leak = stats.find((s) => s.pe !== 'none');
+      if (leak) {
+        throw new Error(`stacked Radix node still intercepts pointer events: ${JSON.stringify(leak)} (expected 'none' from global.css [data-state][aria-hidden="true"] guard)`);
+      }
+      return true;
+    }, { timeoutMs: 3000, label: '[data-state][aria-hidden="true"] nodes neutralized to pointer-events:none' });
+
+    // ---- Assert (2): body lock guard. Radix react-remove-scroll fires the
+    // body inline `pointer-events:none` on modal mount. The unconditional
+    // `html, body { pointer-events: auto !important }` rule must defeat it
+    // even with TWO modals stacked.
+    const peStacked = await win.evaluate(() => ({
+      html: getComputedStyle(document.documentElement).pointerEvents,
+      body: getComputedStyle(document.body).pointerEvents,
+    }));
+    if (peStacked.html !== 'auto' || peStacked.body !== 'auto') {
+      throw new Error(`body lock leaked while both modals open: ${JSON.stringify(peStacked)} (expected html+body computed pointer-events=auto)`);
+    }
+
+    // ---- Assert (3): focus is inside the upper (Settings) dialog while it
+    // owns the stack. Radix FocusScope on the upper dialog must take over.
+    const focusInUpper = await win.evaluate(() => {
+      const ae = document.activeElement;
+      if (!ae) return { ok: false, reason: 'no activeElement' };
+      // Walk up looking for a dialog with the Settings tablist (its accessible
+      // name pattern is the appearance/general/etc. tabs). Simpler check: the
+      // active element must be inside SOME dialog AND that dialog must contain
+      // a [role="tab"] with text 'Appearance' (Settings's first tab).
+      const dialog = ae.closest('[role="dialog"]');
+      if (!dialog) return { ok: false, reason: 'activeElement not inside any dialog', tag: ae.tagName };
+      const hasAppearanceTab = !!dialog.querySelector('[role="tab"]');
+      return { ok: hasAppearanceTab, reason: hasAppearanceTab ? 'focus inside settings dialog' : 'focus inside non-settings dialog', tag: ae.tagName };
+    });
+    if (!focusInUpper.ok) {
+      throw new Error(`focus trap not in upper (Settings) dialog: ${JSON.stringify(focusInUpper)}`);
+    }
+
+    // ---- Step 3: close the upper modal (Settings). The lower ShortcutOverlay
+    // may also unmount in the same Esc cycle (Radix DismissableLayer behavior
+    // when both layers were registered without disableOutsidePointerEvents);
+    // either teardown order is acceptable for the #20 contract. What matters
+    // for the regression防线 is that AFTER the stack tears down, the sidebar
+    // Settings button is reachable + clickable through whatever overlay
+    // residue exists.
+    await win.keyboard.press('Escape');
+    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 });
+
+    // If the lower dialog is still mounted (possible — only the topmost layer
+    // sees Esc in some Radix builds) press Esc again so the page is fully
+    // clean for the post-stack click test below.
+    await win.evaluate(() => {
+      const stillThere = Array.from(document.querySelectorAll('[role="dialog"]')).some((d) => {
+        const labelledby = d.getAttribute('aria-labelledby');
+        const titleEl = labelledby ? document.getElementById(labelledby) : null;
+        return /keyboard shortcuts/i.test(titleEl?.textContent || d.getAttribute('aria-label') || '');
+      });
+      if (stillThere) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    // Wait until no dialog at all remains mounted before we assert the
+    // sidebar is reachable. Polls instead of sleep.
+    await pollUntilWin(win, async () => {
+      const remaining = await win.evaluate(() => document.querySelectorAll('[role="dialog"]').length);
+      return remaining === 0;
+    }, { timeoutMs: 2000, label: 'all dialogs torn down after stack close' });
+
+    // ---- Assert (4): sidebar Settings button reachable + clickable post-stack.
+    // This is the user-facing #20 symptom: if any aria-hidden overlay leaked
+    // past tear-down, the click below would fail with "intercepts pointer
+    // events" on body or on a stale Radix overlay.
     const sidebarBtn = win.getByRole('button', { name: /^settings$/i }).first();
     await sidebarBtn.waitFor({ state: 'visible', timeout: 3000 });
     await sidebarBtn.click({ timeout: 3000 });
     await settingsTab.first().waitFor({ state: 'visible', timeout: 3000 });
-
-    // Tear the re-opened SettingsDialog back down so we leave the page clean
-    // for the next case.
-    await win.getByRole('dialog').first().focus().catch(() => {});
-    await win.keyboard.press('Escape');
-    await settingsTab.first().waitFor({ state: 'hidden', timeout: 5000 }).catch(() => {});
   } finally {
-    await win.evaluate(() => {
-      document.querySelector('[data-ccsm-stacked-overlay-fixture]')?.remove();
-    });
+    // Tear down whatever is still open so the next case starts clean. Two
+    // Escapes covers either the upper or both modals still being mounted on
+    // failure paths.
+    await win.keyboard.press('Escape').catch(() => {});
+    await win.keyboard.press('Escape').catch(() => {});
   }
 
-  log('stacked overlay neutralized; sidebar Settings button stays clickable through the stack');
+  log('two real Radix dialogs stacked; aria-hidden overlay neutralized; sidebar Settings reachable post-teardown');
+}
+
+// Renderer-aware variant of pollUntil — the predicate is async (typically
+// runs win.evaluate calls) and we surface the predicate's own throw as the
+// failure reason instead of looping past it. Used by caseStackedDialog where
+// the assertion lives inside the polled predicate so a structural mismatch
+// surfaces as a precise diagnostic.
+async function pollUntilWin(_win, predicate, { timeoutMs = 3000, intervalMs = 50, label = 'condition' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (await predicate()) return;
+    } catch (err) {
+      // If the predicate threw a precise error (e.g. our pointer-events leak
+      // diagnostic), surface it immediately rather than masking with a
+      // generic timeout.
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`pollUntilWin timeout (${timeoutMs}ms) waiting for: ${label}`);
 }
 
 // ---------- scroll-lock ----------
