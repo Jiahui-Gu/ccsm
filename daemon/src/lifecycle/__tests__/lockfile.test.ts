@@ -25,6 +25,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   acquireDaemonLock,
+  DAEMON_LOCK_DIR_SUFFIX,
   DAEMON_LOCK_FILENAME,
   LOCKFILE_FATAL_EXIT_CODE,
   LockfileBusyError,
@@ -102,6 +103,25 @@ function makeRecorder(): {
     },
   };
 }
+
+describe('External PID source contract (Task #154 / cross-ref helpers)', () => {
+  it('exports DAEMON_LOCK_DIR_SUFFIX = ".lock" matching proper-lockfile mkdir', () => {
+    // External consumers (mac uninstall-helper Swift, build/linux-postrm.sh)
+    // hard-code the `.lock` suffix when cleaning the proper-lockfile atomic
+    // gate directory at `<dataRoot>/daemon.lock.lock`. The constant exists
+    // so the suffix lives in exactly one place. If proper-lockfile ever
+    // changes its convention this constant flips and external consumers
+    // get a clear single-line diff to chase.
+    expect(DAEMON_LOCK_DIR_SUFFIX).toBe('.lock');
+  });
+
+  it('keeps DAEMON_LOCK_FILENAME stable for external PID readers', () => {
+    // The mac uninstall-helper Swift source hard-codes "daemon.lock" as
+    // the basename it reads PID from. Changing this string is a breaking
+    // change for both that helper and build/linux-postrm.sh.
+    expect(DAEMON_LOCK_FILENAME).toBe('daemon.lock');
+  });
+});
 
 describe('acquireDaemonLock — real fs', () => {
   let dataRoot: string;

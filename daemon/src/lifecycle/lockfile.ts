@@ -87,6 +87,51 @@ function defaultProperLockfile(): ProperLockfile {
  *  can derive the same path without re-stating the literal. */
 export const DAEMON_LOCK_FILENAME = 'daemon.lock' as const;
 
+/**
+ * Suffix appended to `<dataRoot>/daemon.lock` to derive the directory
+ * `<dataRoot>/daemon.lock.lock` that proper-lockfile mkdirs as the
+ * atomic gate. Exported so the stale-recovery branch above AND external
+ * cleanup consumers (postrm, mac uninstall-helper, win helper) share a
+ * single source of truth.
+ *
+ * Anyone removing the PID file MUST also remove the `.lock` directory or
+ * the next daemon boot will hit ELOCKED + run the noisy steal-recovery
+ * branch (functionally fine, but emits a `lockfile_steal` warn line that
+ * looks like a crash-loop signal in dashboards).
+ */
+export const DAEMON_LOCK_DIR_SUFFIX = '.lock' as const;
+
+/**
+ * External PID source contract (frag-11 §11.6.3 / §11.6.4 cross-ref).
+ *
+ * The daemon writes its PID as `${pid}\n` (decimal, single line) into
+ * `<dataRoot>/daemon.lock` AFTER proper-lockfile successfully mkdirs the
+ * `<dataRoot>/daemon.lock.lock` directory (the atomic gate). The mac
+ * uninstall-helper (`installer/uninstall-helper-mac/ccsm-uninstall-helper.swift`),
+ * the linux postrm script (`build/linux-postrm.sh`), and any future
+ * external lifecycle consumer MUST read the PID from this file and treat
+ * the two paths as the canonical contract:
+ *
+ *   PID payload  : `<dataRoot>/daemon.lock`           (regular file, mode 0600)
+ *   Atomic gate  : `<dataRoot>/daemon.lock.lock`      (directory, proper-lockfile)
+ *
+ * Both paths MUST be cleaned together — removing only the PID file
+ * leaves a stale `.lock` directory that triggers steal-recovery on next
+ * boot. Removing only the `.lock` directory leaves a stale PID payload
+ * that the next daemon will overwrite (harmless) but external readers
+ * may briefly observe a stale PID with no live process.
+ *
+ * The contract is intentionally cross-platform-uniform: Win uses the
+ * same files at the same dataRoot-relative paths, even though the Win
+ * uninstall-helper today prefers control-socket RPC + tasklist (the file
+ * pair is still cleaned by the daemon's own LockHandle.release on
+ * graceful shutdown).
+ *
+ * v0.4 forward-compat: the `<dataRoot>` location is locked in
+ * frag-11 §11.6 and the proper-lockfile dependency is the v0.3 long-term
+ * choice (frag-6-7 §6.4). No "v0.4 will replace this" placeholder.
+ */
+
 /** Recommended exit code on EROFS-class fatal (sysexits.h: EX_CONFIG = 78,
  *  "configuration error"). Exported so the daemon entry can map without
  *  re-stating the literal. */
@@ -336,7 +381,7 @@ export async function acquireDaemonLock(
           // its in-memory map (which only happens on a successful
           // `lock()`). Direct rmdir matches what proper-lockfile itself
           // does internally during its own stale-recovery branch.
-          const staleLockDir = `${lockPath}.lock`;
+          const staleLockDir = `${lockPath}${DAEMON_LOCK_DIR_SUFFIX}`;
           try {
             rmSync(staleLockDir, { recursive: true, force: true });
           } catch {

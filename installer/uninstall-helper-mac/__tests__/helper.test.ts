@@ -76,6 +76,28 @@ describe('mac-uninstall-helper / Swift source shape', () => {
     expect(src).toMatch(/SIGKILL/);
   });
 
+  it('cleans up BOTH daemon.lock and daemon.lock.lock (Task #154)', () => {
+    // Cross-ref daemon/src/lifecycle/lockfile.ts "External PID source
+    // contract": the regular file daemon.lock holds the PID payload AND
+    // proper-lockfile mkdirs daemon.lock.lock as the atomic gate. The
+    // helper MUST clean both — leaving the `.lock` directory triggers a
+    // noisy `lockfile_steal` warn on next boot. Test asserts both the
+    // suffix concatenation and the directoryExists probe are present.
+    expect(src).toMatch(/let lockDirPath = "\\\(lockPath\)\.lock"/);
+    expect(src).toMatch(/directoryExists/);
+    expect(src).toMatch(/removeTree\(path: lockDirPath\)/);
+  });
+
+  it('has a pgrep -f fallback when PID payload missing (Task #154)', () => {
+    // Mirrors build/linux-postrm.sh `pkill -f` fallback. Without this,
+    // a daemon that crashed before stamping its PID payload (proper-
+    // lockfile mkdir succeeded but PID write didn't) would silently
+    // survive the uninstall.
+    expect(src).toMatch(/pgrepKill/);
+    expect(src).toMatch(/DAEMON_PGREP_PATTERN/);
+    expect(src).toMatch(/ccsm-daemon/);
+  });
+
   it('has --purge as opt-in (default = retain user data)', () => {
     // Matches frag-11 §11.6 paths table "Cleanup default = retained" for
     // data/, logs/, crashes/, daemon.secret. Default-purge would be a
