@@ -28,10 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node (from daemon/.nvmrc)
+        # Single-source-of-truth: daemon/.nvmrc pins the daemon Node
+        # target (currently 22.11.0). All workflows read from it so a
+        # bump there propagates everywhere — frag-11 §11.5 + Task #135.
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: daemon/.nvmrc
           cache: 'npm'
 
       # Linux native builds for better-sqlite3 need python + build tools; the
@@ -57,7 +60,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+          # Cache key includes BOTH the root lockfile (workspace deps live
+          # here) AND daemon/package-lock.json if/when it appears, so a
+          # daemon-local lockfile change also busts the cache. `node22`
+          # tracks daemon/.nvmrc — bump in lockstep when .nvmrc bumps.
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
@@ -88,6 +95,18 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # Task #135 (frag-11 §11.5) — dedicated daemon-only test job.
+      # The root `npm test` above already includes daemon tests via the
+      # vitest `include` glob, but a daemon-only re-run gives us a
+      # focused signal when only daemon code changes break and keeps
+      # the daemon test surface auditable as a first-class CI gate.
+      # Runs on Linux only to keep the matrix wall-clock flat — the
+      # daemon code is platform-agnostic and the cross-OS coverage
+      # already comes from the main `npm test` matrix above.
+      - name: Test (daemon only)
+        if: matrix.os == 'ubuntu-latest'
+        run: npx vitest run daemon
 
       # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
       # keep the matrix lean (coverage instrumentation roughly doubles
