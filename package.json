@@ -67,6 +67,7 @@
     "@radix-ui/react-tooltip": "^1.1.6",
     "@sentry/electron": "7.11.0",
     "@sentry/react": "10.49.0",
+    "@sigstore/verify": "2.1.1",
     "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-clipboard": "^0.2.0",
     "@xterm/addon-fit": "^0.10.0",
@@ -110,6 +111,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "@vitest/coverage-v8": "^4.1.5",
+    "@yao-pkg/pkg": "^6.6.0",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "css-loader": "^7.1.2",
@@ -136,8 +138,7 @@
     "wait-on": "^8.0.1",
     "webpack": "^5.97.1",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.0",
-    "@yao-pkg/pkg": "^6.6.0"
+    "webpack-dev-server": "^5.2.0"
   },
   "build": {
     "appId": "com.ccsm.app",
