@@ -1,0 +1,115 @@
+# Stage-6 DAG extract — Extractor E1 (chapters 01-05)
+# Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+# Scope: ch01 overview, ch02 process topology, ch03 listeners+transport,
+#        ch04 proto+RPC, ch05 session+principal.
+# Manager will TaskCreate these and reconcile cross-extractor blockedBy.
+
+- subject: "[T0.1] monorepo: scaffold packages/{daemon,electron,proto} workspace"
+  level: 0
+  blockedBy: []
+  notes: "ch04 §1 file layout + ch11 monorepo (cross-extractor); foundation for every other task"
+
+- subject: "[T0.2] proto: author ccsm.v1 .proto files (common/session/pty/crash/settings/notify/draft/supervisor)"
+  level: 0
+  blockedBy: ["[T0.1] monorepo: scaffold packages/{daemon,electron,proto} workspace"]
+  notes: "ch04 §1-§6.2; freezes wire schema; supervisor.proto is daemon-internal"
+
+- subject: "[T0.3] proto: configure buf + connect-es codegen + lock.json SHA gate"
+  level: 0
+  blockedBy: ["[T0.2] proto: author ccsm.v1 .proto files (common/session/pty/crash/settings/notify/draft/supervisor)"]
+  notes: "ch04 §1 buf.gen.yaml; §7 lock.json; §8 additivity contract; CI buf-breaking active from phase 1"
+
+- subject: "[T0.4] proto: implement contract test suite (open-string, version negotiation, request_id, error-detail roundtrip)"
+  level: 0
+  blockedBy: ["[T0.3] proto: configure buf + connect-es codegen + lock.json SHA gate"]
+  notes: "ch04 §7.1 four named spec files; mechanical enforcement of forever-stable contract"
+
+- subject: "[T1.1] daemon: implement entrypoint, DaemonEnv, lifecycle (boot_id, startup phases)"
+  level: 1
+  blockedBy: ["[T0.1] monorepo: scaffold packages/{daemon,electron,proto} workspace"]
+  notes: "ch02 §3 startup order steps 1-5; generates per-boot UUIDv4 boot_id; gates /healthz flip"
+
+- subject: "[T1.2] daemon: implement Listener trait + 2-slot array + RESERVED_FOR_LISTENER_B sentinel"
+  level: 1
+  blockedBy: ["[T1.1] daemon: implement entrypoint, DaemonEnv, lifecycle (boot_id, startup phases)"]
+  notes: "ch03 §1 trait shape; §1a BindDescriptor closed enum; startup assert on slot 1"
+
+- subject: "[T1.3] daemon: implement peer-cred auth middleware (UDS/named-pipe/loopback-TCP)"
+  level: 1
+  blockedBy: ["[T1.2] daemon: implement Listener trait + 2-slot array + RESERVED_FOR_LISTENER_B sentinel"]
+  notes: "ch03 §5 per-transport mechanism; ch05 §3 derivation rules; produces ctx.principal"
+
+- subject: "[T1.4] daemon: implement Listener A factory + bind (UDS / named-pipe / loopback-TCP variants)"
+  level: 1
+  blockedBy: ["[T1.3] daemon: implement peer-cred auth middleware (UDS/named-pipe/loopback-TCP)", "[T1.6] daemon: implement connection-descriptor atomic writer (listener-a.json)"]
+  notes: "ch03 §2 makeListenerA; §4 transport pick A1-A4 covered behind BindDescriptor"
+
+- subject: "[T1.5] daemon: implement HTTP/2 transport adapters (h2c-UDS, h2c-loopback, h2-named-pipe, h2-TLS)"
+  level: 1
+  blockedBy: ["[T1.2] daemon: implement Listener trait + 2-slot array + RESERVED_FOR_LISTENER_B sentinel"]
+  notes: "ch03 §4 four transport options A1-A4; switch lives only in factory + Electron transport factory"
+
+- subject: "[T1.6] daemon: implement connection-descriptor atomic writer (listener-a.json)"
+  level: 1
+  blockedBy: ["[T1.1] daemon: implement entrypoint, DaemonEnv, lifecycle (boot_id, startup phases)"]
+  notes: "ch03 §3.1-§3.2 atomic write tmp+fsync+rename; descriptor v1 schema with boot_id"
+
+- subject: "[T1.7] daemon: implement Supervisor UDS + /healthz, /hello, /shutdown endpoints + admin allowlist"
+  level: 1
+  blockedBy: ["[T1.1] daemon: implement entrypoint, DaemonEnv, lifecycle (boot_id, startup phases)", "[T1.3] daemon: implement peer-cred auth middleware (UDS/named-pipe/loopback-TCP)"]
+  notes: "ch02 §4 + ch03 §7-§7.2; UDS-only on every OS, peer-cred sole authn, admin allowlist enforced"
+
+- subject: "[T1.8] daemon: implement graceful shutdown sequence (SIGTERM, in-flight RPC budget, claude SIGKILL)"
+  level: 1
+  blockedBy: ["[T1.4] daemon: implement Listener A factory + bind (UDS / named-pipe / loopback-TCP variants)", "[T1.7] daemon: implement Supervisor UDS + /healthz, /hello, /shutdown endpoints + admin allowlist"]
+  notes: "ch02 §4 shutdown order; ≤5s RPC budget, 3s SIGKILL window, WAL checkpoint"
+
+- subject: "[T1.9] daemon: ESLint rule ccsm/no-listener-slot-mutation enforcing slot-1 immutability"
+  level: 1
+  blockedBy: ["[T1.2] daemon: implement Listener trait + 2-slot array + RESERVED_FOR_LISTENER_B sentinel"]
+  notes: "ch03 §1 + ch11 §5 (cross-extractor); whitelists listener-b.ts only in v0.4"
+
+- subject: "[T2.1] proto: generate TS Connect-es client + server stubs for all v0.3 services"
+  level: 2
+  blockedBy: ["[T0.3] proto: configure buf + connect-es codegen + lock.json SHA gate"]
+  notes: "ch04 §1 connect-es codegen; produces SessionService/PtyService/CrashService/SettingsService/NotifyService/DraftService stubs"
+
+- subject: "[T2.2] daemon: wire ConnectRouter + register stub handlers (no behavior) for all v0.3 services"
+  level: 2
+  blockedBy: ["[T2.1] proto: generate TS Connect-es client + server stubs for all v0.3 services", "[T1.4] daemon: implement Listener A factory + bind (UDS / named-pipe / loopback-TCP variants)"]
+  notes: "ch04 §3-§6.2 service surface; handlers throw Unimplemented until L3+ tasks land behavior"
+
+- subject: "[T2.3] daemon: implement Hello RPC + version negotiation + listener_id surfacing"
+  level: 2
+  blockedBy: ["[T2.2] daemon: wire ConnectRouter + register stub handlers (no behavior) for all v0.3 services", "[T1.6] daemon: implement connection-descriptor atomic writer (listener-a.json)"]
+  notes: "ch04 §3 HelloRequest/HelloResponse; ch02 §6 one-directional negotiation; structured ErrorDetail on rejection"
+
+- subject: "[T2.4] daemon: implement RequestMeta validation middleware (reject empty request_id INVALID_ARGUMENT)"
+  level: 2
+  blockedBy: ["[T2.2] daemon: wire ConnectRouter + register stub handlers (no behavior) for all v0.3 services"]
+  notes: "ch04 §2 RequestMeta semantics; F7 forbids silent synthesis; applies to every Connect RPC"
+
+- subject: "[T2.5] daemon: implement structured ErrorDetail emitter + standard codes (daemon.starting, version.client_too_old, request.missing_id, session.not_owned)"
+  level: 2
+  blockedBy: ["[T2.2] daemon: wire ConnectRouter + register stub handlers (no behavior) for all v0.3 services"]
+  notes: "ch02 §3/§6 + ch04 §2 ErrorDetail message; codes referenced across ch04 §3/§5/§7.1"
+
+- subject: "[T3.1] daemon: implement Principal model + principalKey + assertOwnership"
+  level: 3
+  blockedBy: ["[T1.3] daemon: implement peer-cred auth middleware (UDS/named-pipe/loopback-TCP)"]
+  notes: "ch05 §1, §4; canonical owner_id format `kind:identifier` forever-stable; throws session.not_owned"
+
+- subject: "[T3.2] daemon: implement SessionManager (Create/Get/List/Destroy + in-memory event bus)"
+  level: 3
+  blockedBy: ["[T3.1] daemon: implement Principal model + principalKey + assertOwnership", "[T2.2] daemon: wire ConnectRouter + register stub handlers (no behavior) for all v0.3 services"]
+  notes: "ch05 §5 enforcement matrix + §6 create flow; principal-scoped from day one; depends on L5 sessions table (cross-extractor)"
+
+- subject: "[T3.3] daemon: implement WatchSessions stream with WATCH_SCOPE_OWN filter + ALL→PermissionDenied"
+  level: 3
+  blockedBy: ["[T3.2] daemon: implement SessionManager (Create/Get/List/Destroy + in-memory event bus)"]
+  notes: "ch04 §3 WatchScope enum; ch05 §5 double-scoped (principal filter + scope enum); v0.3 honors only OWN"
+
+- subject: "[T3.4] daemon: implement session restore on boot + orphan-uid validation (mark ORPHANED)"
+  level: 3
+  blockedBy: ["[T3.2] daemon: implement SessionManager (Create/Get/List/Destroy + in-memory event bus)", "[T1.1] daemon: implement entrypoint, DaemonEnv, lifecycle (boot_id, startup phases)"]
+  notes: "ch02 §3 step 4 + ch05 §7; resolves owner_uid via LookupAccountSid/getpwuid; writes session_restore crash_log entry"
