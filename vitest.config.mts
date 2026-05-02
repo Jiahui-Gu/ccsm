@@ -7,24 +7,43 @@ import { fileURLToPath } from 'node:url';
 // `std-env` (pulled in transitively by vitest 4.x / pino).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export default defineConfig({
-  resolve: {
-    alias: {
-      '@ccsm/proto-gen/v1': path.resolve(__dirname, 'gen/ts/ccsm/v1/index.ts'),
-      '@ccsm/proto-gen': path.resolve(__dirname, 'gen/ts/index.ts'),
-    },
+const sharedResolve = {
+  alias: {
+    '@ccsm/proto-gen/v1': path.resolve(__dirname, 'gen/ts/ccsm/v1/index.ts'),
+    '@ccsm/proto-gen': path.resolve(__dirname, 'gen/ts/index.ts'),
   },
+};
+
+// Tests that genuinely need a browser-like environment (jsdom). Everything
+// else runs under the `node` project so that loading vitest does not pull
+// jsdom (which transitively imports html-encoding-sniffer@6 — an ESM-only
+// package whose @exodus/bytes dep crashes our CI loader). See task #172.
+const DOM_TESTS = [
+  // All component tests written as .tsx use @testing-library/react.
+  'tests/**/*.test.tsx',
+  // .ts tests that touch DOM globals or import @testing-library/react.
+  'tests/store-rename-session.test.ts',
+  'tests/store-backfill-titles.test.ts',
+  'tests/store-preferences.test.ts',
+  'tests/sidebar/useSidebarDnd.test.ts',
+  'tests/components/cwd/useCwdRecentList.test.ts',
+  'tests/components/cwd/useCwdPanelPosition.test.ts',
+  'tests/agent-lifecycle-unfocused.test.ts',
+  'tests/drafts.test.ts',
+  'tests/stores/slices/sessionTitleBackfillSlice.test.ts',
+  'tests/stores/slices/sessionCrudSlice.test.ts',
+];
+
+const NODE_INCLUDE = [
+  'tests/**/*.test.ts',
+  'electron/**/__tests__/**/*.test.ts',
+  'daemon/**/__tests__/**/*.test.ts',
+  'installer/**/__tests__/**/*.test.ts',
+];
+
+export default defineConfig({
+  resolve: sharedResolve,
   test: {
-    environment: 'jsdom',
-    include: [
-      'tests/**/*.test.ts',
-      'tests/**/*.test.tsx',
-      'electron/**/__tests__/**/*.test.ts',
-      'daemon/**/__tests__/**/*.test.ts',
-      'installer/**/__tests__/**/*.test.ts',
-    ],
-    globals: true,
-    setupFiles: ['tests/setup.ts'],
     // v8 coverage instrumentation roughly doubles test wall-clock under
     // jsdom, so the default 5s testTimeout starts to flake on slower
     // suites (e.g. shortcut-overlay-platform with multiple act/render
@@ -46,11 +65,6 @@ export default defineConfig({
         'scripts/**',
         'dist/**',
       ],
-      // Initial roll-out — start lenient. Adjusted to current actuals
-      // (see PR #802 body for measured numbers). Bump in follow-up tasks
-      // as suites grow. Thresholds are NOT enforced in CI yet — the CI
-      // job runs `npm run coverage` to produce lcov.info as an artifact
-      // but does not fail on threshold misses for this initial roll-out.
       thresholds: {
         lines: 60,
         functions: 60,
@@ -58,5 +72,36 @@ export default defineConfig({
         statements: 60,
       },
     },
+    projects: [
+      {
+        resolve: sharedResolve,
+        test: {
+          name: 'node',
+          environment: 'node',
+          globals: true,
+          include: NODE_INCLUDE,
+          // Skip anything that needs DOM — those run under the `dom`
+          // project below. We exclude .tsx outright (none of them are
+          // DOM-free) plus the hand-curated list of .ts files that
+          // depend on jsdom globals.
+          exclude: [
+            '**/node_modules/**',
+            '**/dist/**',
+            'tests/**/*.test.tsx',
+            ...DOM_TESTS,
+          ],
+        },
+      },
+      {
+        resolve: sharedResolve,
+        test: {
+          name: 'dom',
+          environment: 'jsdom',
+          globals: true,
+          include: DOM_TESTS,
+          setupFiles: ['tests/setup.ts'],
+        },
+      },
+    ],
   },
 });
