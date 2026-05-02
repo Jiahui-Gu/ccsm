@@ -25,10 +25,13 @@
 
 import { describe, expect, it } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Repo root = parent of this file's directory (`tools/`).
-const REPO_ROOT = resolve(__dirname, '..');
+// ESM-safe: project is "type":"module", so `__dirname` is undefined and
+// flagged by ESLint no-undef. Derive it from `import.meta.url` instead.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // FROZEN v0.3 packages set. Adding entries here is a v0.3 contract change
 // and requires R4 sign-off. Removing or renaming entries is forbidden.
