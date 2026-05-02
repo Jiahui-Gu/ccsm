@@ -1,5 +1,11 @@
 import { defineConfig } from 'vitest/config';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// ESM equivalent of __dirname — required because this file is loaded as ESM
+// (`.mts`) so vitest's config loader can resolve ESM-only deps such as
+// `std-env` (pulled in transitively by vitest 4.x / pino).
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   resolve: {
