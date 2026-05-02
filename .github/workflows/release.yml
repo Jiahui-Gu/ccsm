@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: daemon/.nvmrc
           cache: 'npm'
       - uses: actions/setup-python@v5
         with:
@@ -45,6 +45,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+      # Task #135 (frag-11 §11.5) — daemon-only test gate. Pinned Node
+      # comes from daemon/.nvmrc above so this exercises the daemon
+      # surface against its locked Node target before we ship.
+      - name: Test (daemon only)
+        run: npx vitest run daemon
 
   build:
     name: build (${{ matrix.os }})
@@ -80,7 +85,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: daemon/.nvmrc
           cache: 'npm'
 
       - uses: actions/setup-python@v5
@@ -93,7 +98,7 @@ jobs:
           path: |
             ~/.cache/electron
             ~/.cache/electron-builder
-          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
 
       - name: Install deps
         run: npm ci --legacy-peer-deps
