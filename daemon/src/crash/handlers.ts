@@ -2,6 +2,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type pino from 'pino';
+import { redactSecrets } from './scrub.js';
 
 export interface InstallOpts {
   logger: pino.Logger;
@@ -30,7 +31,11 @@ export function installCrashHandlers(opts: InstallOpts): void {
 
   function record(kind: MarkerV1['kind'], errLike: unknown): void {
     const err = errLike instanceof Error ? errLike : new Error(String(errLike));
-    const marker: MarkerV1 = {
+    // Redact secrets from message + stack BEFORE constructing the marker.
+    // err.message / err.stack can contain Authorization headers, env-style
+    // ANTHROPIC_API_KEY=..., or daemon.secret values surfaced by an HMAC
+    // misconfiguration error path. See frag-6-7 §6.6.3.
+    const marker: MarkerV1 = redactSecrets<MarkerV1>({
       schemaVersion: 1,
       bootNonce: opts.bootNonce,
       ts: new Date().toISOString(),
@@ -39,9 +44,9 @@ export function installCrashHandlers(opts: InstallOpts): void {
       message: err.message,
       stack: err.stack,
       lastTraceId: opts.getLastTraceId(),
-    };
+    });
     try {
-      opts.logger.fatal({ event: 'daemon.crash', kind, err: { message: err.message, stack: err.stack } });
+      opts.logger.fatal({ event: 'daemon.crash', kind, err: redactSecrets({ message: err.message, stack: err.stack }) });
       fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2), 'utf8');
     } catch (e) {
       try { opts.logger.fatal({ event: 'daemon.crash.write_failed', err: String(e) }); } catch {}
