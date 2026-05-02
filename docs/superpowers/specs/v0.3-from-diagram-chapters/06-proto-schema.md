@@ -1,78 +1,153 @@
-# 06 — Proto schema
+# 06 — `proto/` schema (Connect-RPC source of truth)
 
-> Authority: [final-architecture §2.2](../2026-05-02-final-architecture.md#2-locked-principles) (three first-class clients, all consume same `proto/`), §2.8 (data plane = Connect-RPC over HTTP/2, generated from `proto/`, `buf breaking` gates every PR).
+## Scope
+
+`proto/` is the single source of truth for the Connect-RPC data plane. **It contains every service required by every v0.4 client**, even ones not used in v0.3. Adding clients in v0.4 generates more stubs from the same schema — it does not change the schema.
+
+**Why all-services-now:** final-architecture §2 principle 2 — "Three first-class clients (desktop, web, iOS). None is primary. All three consume the same `proto/` schema." Skipping a service in v0.3 would force v0.4 to bump schema versions, regenerate, and check breaking-change exemptions. Zero rework requires the schema be complete at v0.3 ship.
 
 ## Layout
 
 ```
 proto/
-├── buf.yaml
-├── buf.gen.yaml
-├── buf.lock
-└── ccsm/
-    └── v1/
-        ├── common.proto         (shared scalar types, error model, pagination)
-        ├── control.proto        (data-plane control: list_listeners, server_info)
-        ├── session.proto        (session CRUD, snapshot, list, attach)
-        ├── pty.proto            (PTY input, output stream, resize, signal)
-        ├── db.proto             (DB RPCs: app_state, session_meta — see ch.10)
-        └── presence.proto       ("another client typing"; v0.3 stub, full in v0.4)
+  buf.yaml
+  buf.gen.yaml
+  ccsm/
+    v1/
+      pty.proto
+      sessions.proto
+      db.proto
+      crash.proto
+      daemon.proto
+      common.proto      # shared messages (Empty-ish, Identifier types, Timestamp aliases)
+  gen/
+    ts/                 # generated TS stubs (committed)
+      ccsm/v1/...
 ```
 
-**Why this is v0.4-complete in v0.3:** §2.2 says "adding a fourth client = generating a fourth client; no backend change". For that to hold, the schema MUST already declare the methods v0.4's web/iOS clients need. v0.3 ships **method bodies for everything desktop needs** and **method stubs (returning `Code.Unimplemented`) for everything web/iOS will need**. v0.4 fills in the unimplemented bodies; v0.4 does not edit `.proto` files except additively.
+- Generated TS code (`proto/gen/ts/`) is committed (build hermeticity, fast install, no contributor protoc dance).
+- All client generators (TS for desktop+web in v0.4, Swift for iOS in v0.4) emit into `proto/gen/<lang>/` from the same schema.
 
-## Required services and notable methods
+## Service surface
 
-### `ccsm.v1.SessionService`
-- `Create(CreateRequest) returns (Session)` — implemented v0.3.
-- `Get(GetRequest) returns (Session)` — implemented v0.3.
-- `List(ListRequest) returns (ListResponse)` — implemented v0.3, paginated.
-- `Snapshot(SnapshotRequest) returns (SnapshotResponse)` — bounded ring buffer dump (xterm-headless), see [09-pty-host](./09-pty-host.md).
-- `Subscribe(SubscribeRequest) returns (stream Delta)` — server-streaming, snapshot+delta-from-`seq`. Implemented v0.3.
-- `Close(CloseRequest) returns (Empty)` — implemented v0.3.
+The five services below MUST exist at v0.3 ship. Every method's request/response messages MUST be defined. Method bodies (server handlers) MAY return `Unimplemented` for things v0.3 does not actually serve (`daemon.SetRemoteEnabled`); see [07 §"Stubbed methods"](./07-connect-server.md). What is forbidden is *adding* methods after v0.3 ship.
 
 ### `ccsm.v1.PtyService`
-- `Write(stream PtyWriteFrame) returns (Empty)` — client-streaming. Implemented v0.3 with broadcast-all + LWW ([08-session-model](./08-session-model.md)).
-- `Resize(ResizeRequest) returns (Empty)` — implemented v0.3.
-- `Signal(SignalRequest) returns (Empty)` — implemented v0.3 (SIGINT/SIGTERM to claude CLI subprocess).
+
+Per-session terminal interaction.
+
+| Method      | Type                  | Purpose                                                                       |
+| ----------- | --------------------- | ----------------------------------------------------------------------------- |
+| `Spawn`     | unary                 | Create a new PTY-backed session; returns `sessionId`                          |
+| `Input`     | unary                 | Send keystrokes / bytes to a session                                          |
+| `Resize`    | unary                 | Resize PTY (cols, rows)                                                       |
+| `Kill`      | unary                 | Send signal to PTY child; closes session                                      |
+| `Subscribe` | server-streaming      | `(snapshot, delta-stream)`; first message = snapshot, then delta frames      |
+
+**Server-streaming signature for `Subscribe`:**
+```
+rpc Subscribe(SubscribeRequest) returns (stream PtyEvent);
+
+message SubscribeRequest {
+  string session_id = 1;
+  // Optional: client's last seen seq for delta-only resume. If absent → snapshot+full delta.
+  optional uint64 from_seq = 2;
+}
+
+message PtyEvent {
+  oneof event {
+    PtySnapshot snapshot = 1;     // bounded ring-buffer dump; sent first
+    PtyDelta    delta    = 2;     // {seq, bytes, ts}
+    PtyExit     exit     = 3;     // PTY child exited
+    PtyHeartbeat hb      = 4;     // server-side liveness ping (every 30s; configurable)
+  }
+}
+```
+
+**Why server-streaming, not bidi:** input is unary because each keystroke is a separate auth/log boundary; bidi would conflate. Server→client stream is the only direction needing high-throughput. Web (connect-web over fetch) supports server-streaming reliably; bidi support in browsers requires HTTP/2-explicit transport which not all proxies pass through. Pinning to server-streaming = max client compatibility.
+
+### `ccsm.v1.SessionsService`
+
+Session lifecycle and metadata.
+
+| Method      | Type                  | Purpose                                                  |
+| ----------- | --------------------- | -------------------------------------------------------- |
+| `List`      | unary                 | All sessions (active + recent, bounded)                 |
+| `Get`       | unary                 | One session by id                                        |
+| `Update`    | unary                 | Mutate metadata (title, color, pinned)                  |
+| `Close`     | unary                 | End session (kill PTY, archive to DB)                   |
+| `Subscribe` | server-streaming      | Push session-list deltas (created / updated / closed)   |
 
 ### `ccsm.v1.DbService`
-- `AppStateGet(KeyRequest) returns (Value)` — implemented v0.3.
-- `AppStateSet(KeyValue) returns (Empty)` — implemented v0.3.
-- `SessionMetaGet/Set/List` — implemented v0.3.
 
-### `ccsm.v1.ControlService`
-- `ServerInfo(Empty) returns (ServerInfo)` — `{version, build_sha, listener_a_ready, listener_b_ready, pid, uptime_s}`. Implemented v0.3.
-- `ListListeners(Empty) returns (ListenersResponse)` — implemented v0.3 (returns the two listeners + their ready state; never the supervisor socket).
+Generic key-value access for app state (settings, prefs, last-opened, etc.). Replaces all v0.2-era IPC-based storage paths.
 
-### `ccsm.v1.PresenceService` (v0.3 stub)
-- `Subscribe(Empty) returns (stream PresenceEvent)` — returns immediately with `Code.Unimplemented` in v0.3. Schema present so v0.4 web client can compile against it without proto change. **Why deferred:** §3 ("presence indicators / 'another client is typing' UX").
+| Method   | Type   | Purpose                                |
+| -------- | ------ | -------------------------------------- |
+| `Get`    | unary  | Read by key                            |
+| `Set`    | unary  | Write key→value                        |
+| `List`   | unary  | List keys with optional prefix filter  |
+| `Delete` | unary  | Remove key                             |
 
-## buf CI
+Values are bytes (client decides encoding). Keys are strings, dotted-namespace convention (`ui.sidebar.collapsed`, `app.lastSession`).
 
-`buf lint`, `buf format --diff --exit-code`, and `buf breaking --against '.git#branch=main,subdir=proto'` MUST run on every PR that touches `proto/**`. **Why:** §2.8 explicit ("`buf breaking` gates every PR that touches the schema").
+### `ccsm.v1.CrashService`
 
-`buf.gen.yaml` MUST emit:
-- TypeScript via `@bufbuild/protoc-gen-es` and `@connectrpc/protoc-gen-connect-es` for daemon + Electron consumption.
-- Swift via `connect-swift` plugin — **generated in v0.3 even with no consumer**, so v0.4 iOS client compiles against current outputs and the plugin is proven on CI day 1. **Why:** zero-rework; if Swift codegen breaks at v0.4, that's a v0.3 schema bug surfaced too late.
-- (Web client uses the same TS output — no separate target needed.)
+Renderer / Electron-main / daemon crash report submission and listing.
 
-## Server-streaming contract
+| Method   | Type   | Purpose                                                     |
+| -------- | ------ | ----------------------------------------------------------- |
+| `Report` | unary  | Submit a crash payload (stack, breadcrumbs, sentry envelope) |
+| `List`   | unary  | List recent crash reports (for in-app diagnostics view)     |
 
-`SessionService.Subscribe` and `PresenceService.Subscribe` are server-streaming. Connect over HTTP/2 supports server-streaming natively. Browser stream-support matrix is a v0.4 concern ([final-architecture §4](../2026-05-02-final-architecture.md#4-subordinate-specs-placeholders) — v0.4 transport spec); v0.3 desktop uses Node `@connectrpc/connect-node` which has full HTTP/2 server-streaming.
+### `ccsm.v1.DaemonService`
 
-## Forbidden
+Daemon-level info and control.
 
-- Per-client proto packages (e.g. `ccsm.desktop.v1`). **Why:** §2.2 — single schema, all clients.
-- Removing or renaming methods from one v0.3 → v0.4 (would be a `buf breaking` failure anyway).
-- Embedding envelope-style framing inside Connect messages. **Why:** envelope is supervisor-only.
+| Method               | Type   | Purpose                                                                      |
+| -------------------- | ------ | ---------------------------------------------------------------------------- |
+| `Info`               | unary  | `{ version, bootNonce, uptime_s, listeners }` (data-plane echo of supervisor info) |
+| `SetRemoteEnabled`   | unary  | Toggle cloudflared sidecar (v0.4); v0.3 returns `Unimplemented`              |
+| `GetRemoteStatus`    | unary  | Returns `{ enabled, sidecar_running, public_url? }`; v0.3 returns `{enabled:false, sidecar_running:false}` |
 
-## §6.Z Zero-rework self-check
+**Why `SetRemoteEnabled` exists in v0.3 schema even though server returns `Unimplemented`:** schema additions in v0.4 would force `buf breaking` exemptions and re-roll all client generators. Defining the method now means v0.4's only change is replacing `Unimplemented` with a real handler.
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。proto/ schema 在 v0.3 已声明 v0.4 全部 service (含 PresenceService stub), v0.4 只**填充** `Code.Unimplemented` 的方法体 (additive)。`buf breaking` 在 v0.3 day 1 启动, 后续每次 PR 都 gate, 结构上禁止破坏性修改。Swift codegen 在 v0.3 CI 跑, v0.4 iOS 客户端编译时无新工具链需求。**Why 不变:** final-architecture §2.2 ("adding a fourth client = generating a fourth client; no backend change") + §2.8 ("buf breaking gates every PR")。
+## Common types (`ccsm/v1/common.proto`)
+
+- `message SessionId { string value = 1; }`
+- `message Timestamp { google.protobuf.Timestamp ts = 1; }` (alias for clarity in service signatures)
+- `enum PtySignal { SIGTERM = 0; SIGKILL = 1; SIGINT = 2; SIGHUP = 3; }`
+
+Use Google well-known types where standard (`google.protobuf.Empty`, `Timestamp`, `Duration`).
+
+## Versioning + breaking-change discipline
+
+- Package: `ccsm.v1`. All v0.3 + v0.4 work under v1.
+- `ccsm.v2` is reserved for future incompatible breaks; out of scope.
+- `buf breaking --against '.git#branch=working'` runs on every PR touching `proto/**` in CI. **Hard fail** on any breaking change.
+- `buf lint` runs on every PR touching `proto/**` in CI.
+- `buf format --diff` runs in CI to enforce style.
+
+## Generation pipeline
+
+- Tooling: `buf` CLI + `protoc-gen-es` + `protoc-gen-connect-es` for TypeScript.
+- Trigger: `npm run proto:gen` script (manual + CI dirty-check).
+- CI dirty-check: after `npm run proto:gen` in CI, `git diff --exit-code proto/gen/` MUST pass — i.e. committed generated code matches what regen would produce.
+- For Swift (v0.4 iOS), `protoc-gen-connect-swift` is added at v0.4 time; not in v0.3 toolchain.
+
+## What `proto/` does NOT contain
+
+- No request-tracing fields (trace-id is server-issued via Connect interceptor metadata, see [03 §"Logging"](./03-listener-A-peer-cred.md)).
+- No HMAC / token / nonce fields. Auth is transport-bound.
+- No envelope-related fields. The envelope lives only on the supervisor plane (see [05](./05-supervisor-control-plane.md)).
+- No "v0.5 placeholder" fields. If a future feature needs a field, it adds the field then (additive proto changes are non-breaking).
 
 ## Cross-refs
 
-- [07-connect-server](./07-connect-server.md) — wires this schema to Listener A/B.
-- [08-session-model](./08-session-model.md), [09-pty-host](./09-pty-host.md) — semantics behind `SessionService` and `PtyService`.
-- [10-sqlite-and-db-rpc](./10-sqlite-and-db-rpc.md) — semantics behind `DbService`.
+- [01 — Goals (G2)](./01-goals-and-non-goals.md)
+- [07 — Connect-Node server (consumes the generated TS stubs)](./07-connect-server.md)
+- [08 — Session model (defines server-streaming semantics for `pty.Subscribe` / `sessions.Subscribe`)](./08-session-model.md)
+- [10 — SQLite + db RPC (DbService handler surface)](./10-sqlite-and-db-rpc.md)
+- [11 — Crash + observability (CrashService handler surface)](./11-crash-and-observability.md)
+- [12 — Electron thin client (consumes the generated TS stubs)](./12-electron-thin-client.md)
+- [15 — Testing strategy (proto contract tests)](./15-testing-strategy.md)
