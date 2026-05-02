@@ -244,11 +244,49 @@ describe('drift guard against daemon/src/sockets/* (mirror)', () => {
       { platform: 'linux', env: { XDG_DATA_HOME: '/xdg/data' } },
       { platform: 'darwin', env: {} },
       { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' } },
+      // B10 dev gate: byte-identical mirror in dev mode too.
+      { platform: 'win32', env: { LOCALAPPDATA: 'C:\\x', CCSM_DAEMON_DEV: '1' } },
+      { platform: 'linux', env: { XDG_RUNTIME_DIR: '/run/user/1000', CCSM_DAEMON_DEV: '1' } },
     ];
     for (const { platform, env } of cases) {
       const ours = resolveControlSocketPath(platform, env);
-      const theirs = defaultControlSocketPath(platform, resolveRuntimeRoot(platform, env));
+      const theirs = defaultControlSocketPath(platform, resolveRuntimeRoot(platform, env), env);
       expect(ours).toBe(theirs);
+    }
+  });
+
+  // B10: per-worktree pipe isolation. Same env shape, different cwd → different
+  // Windows pipe path. Implemented by mocking process.cwd() so the test does
+  // not depend on the test runner's actual working directory.
+  it('Windows + CCSM_DAEMON_DEV=1: pipe path varies with process.cwd() (per-worktree)', () => {
+    const env = { LOCALAPPDATA: 'C:\\x', CCSM_DAEMON_DEV: '1' };
+    const realCwd = process.cwd;
+    try {
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-3';
+      const a = resolveControlSocketPath('win32', env);
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-5';
+      const b = resolveControlSocketPath('win32', env);
+      expect(a).not.toBe(b);
+      // And both differ from the production seed.
+      const prod = resolveControlSocketPath('win32', { LOCALAPPDATA: 'C:\\x' });
+      expect(a).not.toBe(prod);
+      expect(b).not.toBe(prod);
+    } finally {
+      (process as any).cwd = realCwd;
+    }
+  });
+
+  it('Windows production env: pipe path is invariant under cwd changes (single-bind across Electron restart)', () => {
+    const env = { LOCALAPPDATA: 'C:\\x' };
+    const realCwd = process.cwd;
+    try {
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-3';
+      const a = resolveControlSocketPath('win32', env);
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-5';
+      const b = resolveControlSocketPath('win32', env);
+      expect(a).toBe(b);
+    } finally {
+      (process as any).cwd = realCwd;
     }
   });
 });

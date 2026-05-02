@@ -63,6 +63,30 @@ describe('dataSocketPath', () => {
     expect(b).toBe('\\\\.\\pipe\\ccsm-data-bbbbbbbb');
     expect(a).not.toBe(b);
   });
+
+  // -------------------------------------------------------------------------
+  // B10 cross-worktree pipe collision fix: in dev mode the auto-derived
+  // Windows pipe userhash must fold in cwd. Production env keeps the
+  // canonical username@hostname seed (single-bind across Electron restarts).
+  // -------------------------------------------------------------------------
+  it('Windows + CCSM_DAEMON_DEV=1: auto-derived pipe differs from production', () => {
+    const prod = dataSocketPath('C:\\x', 'win32', undefined, {});
+    const dev = dataSocketPath('C:\\x', 'win32', undefined, { CCSM_DAEMON_DEV: '1' });
+    expect(prod).not.toBe(dev);
+    expect(dev).toMatch(/^\\\\\.\\pipe\\ccsm-data-[0-9a-f]{8}$/);
+  });
+
+  it('Windows + CCSM_DAEMON_DEV=1: hashOverride still wins over the dev-mode auto-derive', () => {
+    const got = dataSocketPath('C:\\x', 'win32', 'deadbeef', { CCSM_DAEMON_DEV: '1' });
+    expect(got).toBe('\\\\.\\pipe\\ccsm-data-deadbeef');
+  });
+
+  it('POSIX path is unaffected by dev gate', () => {
+    const prod = dataSocketPath('/r', 'linux', undefined, {});
+    const dev = dataSocketPath('/r', 'linux', undefined, { CCSM_DAEMON_DEV: '1' });
+    expect(prod).toBe(dev);
+    expect(prod).toBe(join('/r', 'ccsm-data.sock'));
+  });
 });
 
 describe('createDataSocketServer — basic transport', () => {

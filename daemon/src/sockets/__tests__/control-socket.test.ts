@@ -96,6 +96,35 @@ describe('defaultControlSocketPath', () => {
     const b = defaultControlSocketPath('win32', 'C:\\x');
     expect(a).toBe(b);
   });
+
+  // -------------------------------------------------------------------------
+  // B10 cross-worktree pipe collision fix: when env.CCSM_DAEMON_DEV === '1'
+  // the Windows pipe userhash MUST fold in cwd so two dev daemons launched
+  // from different git worktrees on the same host get distinct pipe names.
+  // Production env keeps the canonical username@hostname seed.
+  // -------------------------------------------------------------------------
+  it('Windows + CCSM_DAEMON_DEV=1: pipe name differs from production for same user/host', () => {
+    const prod = defaultControlSocketPath('win32', 'C:\\x', {});
+    const dev = defaultControlSocketPath('win32', 'C:\\x', { CCSM_DAEMON_DEV: '1' });
+    expect(prod).not.toBe(dev);
+    // Both still match shape \\.\pipe\ccsm-control-<8 hex>
+    expect(dev.startsWith('\\\\.\\pipe\\ccsm-control-')).toBe(true);
+    expect(dev.slice('\\\\.\\pipe\\ccsm-control-'.length)).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('Windows + CCSM_DAEMON_DEV=1: deterministic for the same cwd', () => {
+    const a = defaultControlSocketPath('win32', 'C:\\x', { CCSM_DAEMON_DEV: '1' });
+    const b = defaultControlSocketPath('win32', 'C:\\x', { CCSM_DAEMON_DEV: '1' });
+    expect(a).toBe(b);
+  });
+
+  it('POSIX path is unaffected by dev gate (only Windows pipe namespace collides)', () => {
+    // POSIX uses runtimeRoot directly; dev mode is irrelevant.
+    const prod = defaultControlSocketPath('linux', '/r', {});
+    const dev = defaultControlSocketPath('linux', '/r', { CCSM_DAEMON_DEV: '1' });
+    expect(prod).toBe(dev);
+    expect(prod).toBe('/r/ccsm-control.sock');
+  });
 });
 
 describe('createControlSocketServer — listen + accept', () => {

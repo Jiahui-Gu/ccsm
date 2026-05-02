@@ -105,14 +105,21 @@ export interface DataSocketServer {
  *             so the userhash suffix prevents bind collisions on multi-user
  *             hosts — Citrix / RDS / shared workstations. Spec:
  *             v0.3-design.md L267+L272, frag-3.4.1 L237.)
+ *
+ *   Dev mode: when `env.CCSM_DAEMON_DEV === '1'` the userhash is computed
+ *   over `username@hostname#cwd` (delegated to `userHash()` in
+ *   `runtime-root.ts`) so concurrent dev daemons spawned from different
+ *   git worktrees do NOT collide on bind. Production keeps the canonical
+ *   `username@hostname` shape.
  */
 export function dataSocketPath(
   runtimeRoot: string,
   platform: NodeJS.Platform = process.platform,
   hashOverride?: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (platform === 'win32') {
-    const tag = hashOverride ?? userHash();
+    const tag = hashOverride ?? userHash({ env });
     return `\\\\.\\pipe\\ccsm-data-${tag}`;
   }
   return join(runtimeRoot, 'ccsm-data.sock');

@@ -41,8 +41,7 @@ import {
 } from 'node:net';
 import { unlinkSync, statSync, chmodSync } from 'node:fs';
 import { dirname, posix } from 'node:path';
-import { hostname, userInfo } from 'node:os';
-import { createHash } from 'node:crypto';
+import { userHash } from './runtime-root.js';
 
 /** Pre-accept rate cap, per spec §3.4.1.a (round-2 security T15). Counted
  *  PER LISTENER — control-socket and data-socket each have their own bucket. */
@@ -126,16 +125,21 @@ export interface ControlSocketServer {
  *           short SHA-256 of `username@hostname` (8 hex chars — spec is
  *           silent on width; 32 bits of entropy is plenty for a same-host
  *           same-user collision space and keeps the pipe name short).
+ *
+ *  Dev mode: when `env.CCSM_DAEMON_DEV === '1'` the userhash is computed
+ *  over `username@hostname#cwd` (delegated to `userHash()` in
+ *  `runtime-root.ts`). This isolates concurrent dev daemons spawned from
+ *  different git worktrees on the same host. Production keeps the
+ *  canonical `username@hostname` shape so the packaged Electron app can
+ *  attach to the surviving daemon across re-opens (frag-6-7 §6.1).
  */
 export function defaultControlSocketPath(
   platform: NodeJS.Platform,
   runtimeRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (platform === 'win32') {
-    const ui = userInfo();
-    const tag = `${ui.username}@${hostname()}`;
-    const userhash = createHash('sha256').update(tag).digest('hex').slice(0, 8);
-    return `\\\\.\\pipe\\ccsm-control-${userhash}`;
+    return `\\\\.\\pipe\\ccsm-control-${userHash({ env })}`;
   }
   // POSIX: explicitly use forward-slash join so a Windows-host test forcing
   // `platform: 'linux'` still yields a POSIX-shaped path (the on-disk
