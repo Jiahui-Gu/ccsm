@@ -40,6 +40,12 @@ import {
   universalRequestFromNodeRequest,
 } from '@connectrpc/connect-node';
 import { ulid } from 'ulid';
+import {
+  createPeerCredInterceptor,
+  listenerAPeerCredVerdictKey,
+  type PeerCredInterceptorOptions,
+  type PeerCredStash,
+} from '../listeners/listenerA.js';
 
 // ---------------------------------------------------------------------------
 // Context keys (positive enums per ch05 §4 lock)
@@ -229,30 +235,48 @@ function createTraceIdInterceptor(): Interceptor {
 
 export interface InterceptorChainOptions {
   readonly isMigrationPending: () => boolean;
+  /**
+   * Optional Listener A peer-cred interceptor wiring. When provided,
+   * a peer-cred interceptor is inserted at slot #0 of the chain so it
+   * runs BEFORE transport-tag — same-OS-user check is the gate that
+   * justifies the local-pipe JWT bypass downstream. Omit on
+   * remote-only Connect servers (Listener B carries its own JWT
+   * trust; peer-cred has no meaning over TCP).
+   */
+  readonly peerCred?: PeerCredInterceptorOptions;
 }
 
 /**
  * Build the canonical interceptor stack in the spec-locked order:
  *
- *     [0] transport-tag    (ch05 §4 — positive enum tag, no-op decider in T05)
- *     [1] jwt              (ch05 §4 — placeholder; T08 lands real verify)
- *     [2] migration-gate   (ch02 §8 — block data-plane during migration)
- *     [3] hello-gate       (ch02 §8 — pre-handshake reject)
- *     [4] deadline         (ch02 §8 — placeholder; T08+ lands real reader)
- *     [5] trace-id         (ch02 §8 — ULID per request)
+ *     [0] peer-cred       (frag-6-7 §6.1 — Listener A only; OPTIONAL slot,
+ *                          inserted iff opts.peerCred is provided)
+ *     [1] transport-tag    (ch05 §4 — positive enum tag, no-op decider in T05)
+ *     [2] jwt              (ch05 §4 — placeholder; T08 lands real verify)
+ *     [3] migration-gate   (ch02 §8 — block data-plane during migration)
+ *     [4] hello-gate       (ch02 §8 — pre-handshake reject)
+ *     [5] deadline         (ch02 §8 — placeholder; T08+ lands real reader)
+ *     [6] trace-id         (ch02 §8 — ULID per request)
  *
  * Connect applies SERVER interceptors outermost-first per array order
- * (i.e. element 0 wraps element 1 wraps the handler).
+ * (i.e. element 0 wraps element 1 wraps the handler). Peer-cred runs
+ * outermost so a mismatched peer is rejected before any other slot
+ * burns CPU on it.
  */
 export function buildInterceptorChain(opts: InterceptorChainOptions): Interceptor[] {
-  return [
+  const chain: Interceptor[] = [];
+  if (opts.peerCred !== undefined) {
+    chain.push(createPeerCredInterceptor(opts.peerCred));
+  }
+  chain.push(
     createTransportTagInterceptor(),
     createJwtInterceptor(),
     createMigrationGateInterceptor(opts),
     createHelloGateInterceptor(),
     createDeadlineInterceptor(),
     createTraceIdInterceptor(),
-  ];
+  );
+  return chain;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +293,22 @@ export interface CreateConnectDataServerOptions {
 
   /** Migration-gate predicate. See {@link createMigrationGateInterceptor}. */
   readonly isMigrationPending: () => boolean;
+
+  /**
+   * Listener A peer-cred wiring. When provided:
+   *   - The peer-cred interceptor is inserted at slot #0 of the chain.
+   *   - Each request's contextValues is seeded from `peerCred.stash`
+   *     (keyed by the underlying socket), so the interceptor sees the
+   *     verdict the listener stamped at connection-accept time.
+   *
+   * Omit on Connect servers that are NOT fronted by Listener A
+   * (Listener B carries JWT trust over remote TCP; peer-cred has no
+   * meaning there).
+   */
+  readonly peerCred?: {
+    readonly stash: PeerCredStash;
+    readonly logger?: PeerCredInterceptorOptions['logger'];
+  };
 }
 
 export interface ConnectDataServer {
@@ -318,6 +358,7 @@ export function createConnectDataServer(
 
   const interceptors = buildInterceptorChain({
     isMigrationPending: opts.isMigrationPending,
+    peerCred: opts.peerCred ? { logger: opts.peerCred.logger } : undefined,
   });
 
   const handler = connectNodeAdapter({
@@ -333,6 +374,16 @@ export function createConnectDataServer(
       const tag = sock ? socketTags.get(sock) : undefined;
       if (tag !== undefined) {
         values.set(transportTypeKey, tag);
+      }
+      // Seed the Listener A peer-cred verdict from the per-socket stash
+      // so the slot #0 interceptor can decide pass/reject before any
+      // other interceptor runs. Absent verdict → undefined → interceptor
+      // fail-closes (per listenerA.ts §3 contract).
+      if (sock && opts.peerCred) {
+        const verdict = opts.peerCred.stash.get(sock);
+        if (verdict !== undefined) {
+          values.set(listenerAPeerCredVerdictKey, verdict);
+        }
       }
       return values;
     },
