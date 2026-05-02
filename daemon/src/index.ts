@@ -22,6 +22,18 @@ import {
   type LockHandle,
 } from './lifecycle/lockfile.js';
 import { resolveDataRoot } from './db/ensure-data-dir.js';
+import {
+  createShutdownDrain,
+  type ShutdownDriver,
+} from './lifecycle/shutdownDrain.js';
+import {
+  startDiskCapWatchdog,
+  DEFAULT_LOGS_CAP_BYTES,
+  DEFAULT_CRASHES_CAP_BYTES,
+  DEFAULT_DISK_CAP_TICK_MS,
+} from './lifecycle/diskCapWatchdog.js';
+import * as fs from 'node:fs';
+import { native, IsBindingMissingError } from './native/index.js';
 import { installCrashHandlers } from './crash/handlers.js';
 import { installNativeCrashHandlers } from './crash/native-handlers.js';
 import { initDaemonSentry } from './sentry/init.js';
@@ -218,36 +230,216 @@ async function closeTransports(): Promise<void> {
   ]);
 }
 
-const shutdownActions: ShutdownActions = {
-  markDraining: () => {
-    logger.info({ event: 'daemon-shutdown', step: 'mark-draining' }, 'state=draining');
+// Task #145 — aggregate disk-cap watchdog. Started AFTER the runtime
+// dirs exist (logs / crash) below; declared here so shutdownDriver.step
+// 9 can stop it before process.exit.
+let diskCapWatchdog: ReturnType<typeof startDiskCapWatchdog> | undefined;
+
+// Task #145 — module-level draining flag flipped by step 1 of the
+// 9-step shutdown drain. The dispatcher / Connect server check this on
+// inbound dispatch and short-circuit with UNAVAILABLE so new requests
+// can never block the drain. In-flight calls are not affected — step 2
+// awaits them.
+let daemonDraining = false;
+export function isDaemonDraining(): boolean {
+  return daemonDraining;
+}
+
+// In-flight envelope handler tracker. The envelope adapter increments
+// this at handler-start and decrements at handler-finish (wired in a
+// follow-up slice; today this counter is 0 and step 2 returns
+// immediately). The accessor is exported so the adapter can plug in
+// without circular-importing shutdownDrain.
+let inFlightHandlers = 0;
+export function trackHandlerStart(): void { inFlightHandlers += 1; }
+export function trackHandlerFinish(): void {
+  inFlightHandlers = Math.max(0, inFlightHandlers - 1);
+}
+
+// Task #145 — 9-step shutdown drain driver. Each field is a real
+// subsystem call where the subsystem already exposes one; placeholder-
+// shaped (no-op + log) where the owning slice has not landed yet.
+// Driver swap-friendly: when #108 (PTY FSM) / #105 (DB handle) /
+// #123 (lockfile) land, only the field bodies here change.
+const shutdownDriver: ShutdownDriver = {
+  // Step 1 — flip the draining flag. New dispatch calls short-circuit.
+  stopAcceptingNewRequests: () => {
+    daemonDraining = true;
+    logger.info({ event: 'daemon-shutdown', step: 'stop-accepting' }, 'state=draining');
   },
-  clearHeartbeats: () => {
-    logger.info({ event: 'daemon-shutdown', step: 'clear-heartbeats' }, 'heartbeats cleared');
+  // Step 2 — wait for in-flight envelope handlers to settle. Polled
+  // because the handler set is owned by N independent dispatcher slots;
+  // a single Promise.all would require centralising the registration
+  // (out of scope for #145). Bounded by the orchestrator's 5 s timeout.
+  drainInFlightEnvelope: async () => {
+    const pollMs = 25;
+    while (inFlightHandlers > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+    }
   },
-  rejectPendingCalls: () => {
-    logger.info({ event: 'daemon-shutdown', droppedCalls: 0 }, 'pending calls aggregated-rejected');
+  // Step 3 — emit going_away on Connect/fan-out subscribers. The fan-out
+  // registry singleton lands with #108; today this logs the intent so
+  // the wire ordering test can observe step 3.
+  drainConnectStreams: (reason) => {
+    logger.info({ event: 'daemon-shutdown', step: 'drain-connect-streams', reason }, 'connect/fanout going_away');
   },
-  drainSnapshotSemaphore: (reason) => {
-    logger.info({ event: 'daemon-shutdown', step: 'drain-snapshot-semaphore', reason }, 'snapshot semaphore drained');
+  // Step 4 — wait for PTY children to exit via ccsm_native.sigchld.
+  // Today the per-spawn registry (childPidRegistry) is empty until the
+  // PTY spawn wiring lands; loop is a no-op then. When children exist
+  // we waitpid(-1) once per known PID with a per-child deadline.
+  windDownPtyChildren: async ({ perChildDeadlineMs }) => {
+    const pids = Array.from(childPidRegistry);
+    if (pids.length === 0 || process.platform === 'win32') return;
+    let binding: ReturnType<typeof native> | null = null;
+    try {
+      binding = native();
+    } catch (err) {
+      if (IsBindingMissingError(err)) {
+        logger.warn(
+          { event: 'daemon-shutdown.sigchld-missing', err: String(err) },
+          'ccsm_native.sigchld unavailable; skipping PTY wind-down',
+        );
+        return;
+      }
+      throw err;
+    }
+    for (const pid of pids) {
+      const start = Date.now();
+      try {
+        // waitpid is non-blocking; poll until the child reports exited or
+        // we exceed the per-child deadline.
+        while (Date.now() - start < perChildDeadlineMs) {
+          const r = binding.sigchld.waitpid(pid);
+          if (r && r.state === 'exited') break;
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+      } catch (err) {
+        logger.warn(
+          { event: 'daemon-shutdown.sigchld-waitpid-failed', pid, err: String(err) },
+          'waitpid failed during PTY wind-down',
+        );
+      }
+    }
   },
-  windDownSessions: ({ perChildDeadlineMs }) => {
-    logger.info({ event: 'daemon-shutdown', step: 'wind-down-sessions', perChildDeadlineMs }, 'sessions wound down');
+  // Step 5 — SQLite WAL checkpoint + close. Placeholder-shaped:
+  // #105 hasn't exposed a daemon-wide DB handle yet (each handler
+  // opens its own better-sqlite3 instance). When the shared handle
+  // lands, swap this for `db.pragma('wal_checkpoint(TRUNCATE)'); db.close();`.
+  checkpointAndCloseDb: () => {
+    logger.info(
+      { event: 'daemon-shutdown', step: 'checkpoint-db', placeholder: true },
+      'DB checkpoint deferred to #105 shared-handle slice',
+    );
   },
-  closeSubscribers: (reason) => {
-    logger.info({ event: 'subscribers-closed', count: 0, reason }, 'fan-out subscribers closed');
+  // Step 6 — final fan-out registry sweep. Placeholder until #108 lands
+  // the registry singleton in this process.
+  closeFanoutRegistry: (reason) => {
+    logger.info(
+      { event: 'subscribers-closed', count: 0, reason, placeholder: true },
+      'fan-out registry close deferred to #108',
+    );
   },
-  finalizeLogger: () => {
-    // pino.final flush — synchronous; logger.flush is best-effort under the
-    // default async destination but is the documented shutdown valve.
+  // Step 7 — best-effort logger flush. #147 will swap for pino.final.
+  flushLogs: () => {
     if (typeof logger.flush === 'function') logger.flush();
   },
-  exitProcess: (code) => {
-    // Close OS-level socket listeners before exiting so the next boot does
-    // not collide on a stale POSIX socket node / leftover Windows pipe
-    // handle. Best-effort + bounded — `closeTransports` swallows + logs all
-    // errors and `Promise.allSettled` cannot reject.
-    void closeTransports().finally(() => process.exit(code));
+  // Step 8 — release the daemon lockfile. #123 will replace this with
+  // proper-lockfile.unlock; today we fall back to fs.unlink of the
+  // canonical path and swallow ENOENT (no lock acquired this boot).
+  releaseLockfile: async () => {
+    const lockPath = process.env.CCSM_DAEMON_LOCKFILE_PATH
+      ?? path.join(runtimeRoot, 'daemon.lock');
+    try {
+      await fs.promises.unlink(lockPath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        logger.warn(
+          { event: 'daemon-shutdown.lockfile-release-failed', lockPath, err: String(err) },
+          'lockfile unlink failed; supervisor restart loop is recovery surface',
+        );
+      }
+    }
+  },
+  // Step 9 — close transports then process.exit. Stop the disk-cap
+  // watchdog so its tick cannot fire mid-exit.
+  exitProcess: async (code) => {
+    diskCapWatchdog?.stop();
+    await closeTransports();
+    process.exit(code);
+  },
+};
+
+const shutdownDrainOrchestrator = createShutdownDrain({
+  driver: shutdownDriver,
+  onEvent: (e) => {
+    switch (e.kind) {
+      case 'step-start':
+        logger.info({ event: 'daemon-shutdown.step-start', step: e.step }, 'shutdown step start');
+        break;
+      case 'step-finish':
+        logger.info(
+          { event: 'daemon-shutdown.step-finish', step: e.step, elapsedMs: Math.round(e.elapsedMs) },
+          'shutdown step finish',
+        );
+        break;
+      case 'step-timeout':
+        logger.warn(
+          { event: 'daemon-shutdown.step-timeout', step: e.step, timeoutMs: e.timeoutMs },
+          'shutdown step exceeded timeout; forcing progress',
+        );
+        break;
+      case 'step-error':
+        logger.error(
+          { event: 'daemon-shutdown.step-error', step: e.step, err: String(e.err) },
+          'shutdown step threw',
+        );
+        break;
+      case 'drain-complete':
+        logger.info(
+          { event: 'daemon-shutdown.drain-complete', steps: [...e.ran], elapsedMs: Math.round(e.elapsedMs) },
+          'shutdown drain complete',
+        );
+        break;
+    }
+  },
+});
+
+// The wire-facing daemon.shutdown handler keeps its 7-step contract
+// (callers still see SHUTDOWN_PLAN steps in the ack) but every action
+// delegates to the 9-step drain orchestrator. The handler invokes
+// markDraining first; we fire `shutdownDrainOrchestrator.run()` there
+// and let it own the rest. Subsequent action methods are no-ops because
+// the orchestrator is idempotent — calling run() twice returns the
+// cached result.
+const shutdownActions: ShutdownActions = {
+  markDraining: () => {
+    void shutdownDrainOrchestrator.run();
+  },
+  clearHeartbeats: () => {
+    // Folded into the drain orchestrator (no-op here for spec-ack shape).
+  },
+  rejectPendingCalls: () => {
+    // Folded into step 2 of the drain orchestrator.
+  },
+  drainSnapshotSemaphore: () => {
+    // Folded into step 4 of the drain orchestrator (PTY children wind-down).
+  },
+  windDownSessions: () => {
+    // Folded into step 4 of the drain orchestrator.
+  },
+  closeSubscribers: () => {
+    // Folded into steps 3 + 6 of the drain orchestrator.
+  },
+  finalizeLogger: () => {
+    // Folded into step 7 of the drain orchestrator.
+  },
+  exitProcess: () => {
+    // Folded into step 9 of the drain orchestrator. Run is idempotent
+    // so this is a no-op when the orchestrator already fired in
+    // markDraining; if for some reason markDraining didn't run (test
+    // double, partial mount), kick the orchestrator now.
+    void shutdownDrainOrchestrator.run();
   },
   recordStepError: (step: ShutdownStep, err: unknown) => {
     logger.error({ event: 'daemon-shutdown.step-failed', step, err: String(err) }, 'shutdown step failed');
@@ -560,6 +752,58 @@ void (async (): Promise<void> => {
   }
 
   logger.info({ event: 'daemon.boot' }, 'daemon shell booted');
+
+  // Task #145 — start aggregate disk-cap watchdog (frag-6-7 §6.5).
+  // Logs cap 500 MB, crashes cap 200 MB. Tick 60 s. Stopped in
+  // shutdownDriver.exitProcess so it cannot fire during pino flush.
+  const logsDir = path.join(runtimeRoot, 'logs');
+  const crashesDir = path.join(runtimeRoot, 'crash');
+  for (const d of [logsDir, crashesDir]) {
+    try {
+      await fs.promises.mkdir(d, { recursive: true });
+    } catch (err) {
+      logger.warn(
+        { event: 'daemon.boot.disk-cap-mkdir-failed', dir: d, err: String(err) },
+        'disk-cap watchdog target dir mkdir failed; watchdog will skip on first tick',
+      );
+    }
+  }
+  diskCapWatchdog = startDiskCapWatchdog({
+    targets: [
+      { dir: logsDir, capBytes: DEFAULT_LOGS_CAP_BYTES },
+      { dir: crashesDir, capBytes: DEFAULT_CRASHES_CAP_BYTES },
+    ],
+    tickMs: DEFAULT_DISK_CAP_TICK_MS,
+    onTick: (report) => {
+      if (report.evictedFiles.length === 0) return;
+      logger.info(
+        {
+          event: 'daemon.disk-cap.evict',
+          dir: report.dir,
+          capBytes: report.capBytes,
+          totalBytesBefore: report.totalBytesBefore,
+          totalBytesAfter: report.totalBytesAfter,
+          evicted: report.evictedFiles.length,
+        },
+        'disk-cap watchdog evicted oldest files to bring directory under cap',
+      );
+    },
+    onError: (err, ctx) => {
+      logger.warn(
+        { event: 'daemon.disk-cap.error', dir: ctx.dir, phase: ctx.phase, err: String(err) },
+        'disk-cap watchdog tick failed; continuing',
+      );
+    },
+  });
+  logger.info(
+    {
+      event: 'daemon.boot.disk-cap-watchdog-started',
+      tickMs: DEFAULT_DISK_CAP_TICK_MS,
+      logsCapBytes: DEFAULT_LOGS_CAP_BYTES,
+      crashesCapBytes: DEFAULT_CRASHES_CAP_BYTES,
+    },
+    'disk-cap watchdog armed',
+  );
 })();
 
 // SIGTERM/SIGINT funnel through the same handler so the spec sequence runs
