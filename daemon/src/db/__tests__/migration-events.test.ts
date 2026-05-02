@@ -63,6 +63,9 @@ describe('discriminated union narrowing', () => {
   const started: MigrationStartedEvent = {
     event: MIGRATION_EVENT_NAMES.started,
     traceId: 't-1',
+    // Legacy v0.2 path fixture (uppercase `CCSM`) — frag-8 §8.1; the migration
+    // pipeline reads from this shape and writes to the v0.3 lowercase root.
+    // eslint-disable-next-line ccsm-local/no-uppercase-ccsm-path
     sourcePath: 'C:/Users/u/AppData/Roaming/CCSM/ccsm.db',
     fromVersion: 1,
     toVersion: 3,
@@ -102,7 +105,10 @@ describe('discriminated union narrowing', () => {
       }
     }
 
-    expect(describeEvent(started)).toBe('started:C:/Users/u/AppData/Roaming/CCSM/ccsm.db');
+    expect(describeEvent(started)).toBe(
+      // eslint-disable-next-line ccsm-local/no-uppercase-ccsm-path
+      'started:C:/Users/u/AppData/Roaming/CCSM/ccsm.db',
+    );
     expect(describeEvent(completed)).toBe('completed:42');
     expect(describeEvent(failed)).toBe('failed:corrupt_legacy');
   });

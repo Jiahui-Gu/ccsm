@@ -8,14 +8,19 @@ import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 import { createRequire } from 'node:module';
 
-// Local custom rule: no-direct-native-import (frag-3.5.1 §3.5.1.1.a).
-// Loaded via createRequire so the .js (CJS) rule module works under
-// the ESM flat config without a package boundary.
+// Local custom rules. Loaded via createRequire so the .js (CJS) rule modules
+// work under the ESM flat config without a package boundary.
+//   - no-direct-native-import (frag-3.5.1 §3.5.1.1.a): forbid direct .node /
+//     ccsm_native loads outside the loader shim.
+//   - no-uppercase-ccsm-path (Task #132 / frag-11 §11.6): forbid uppercase
+//     `CCSM` in path literals (Linux dataRoot must be lowercase `ccsm`).
 const require = createRequire(import.meta.url);
 const noDirectNativeImport = require('./eslint-rules/no-direct-native-import.js');
+const noUppercaseCcsmPath = require('./eslint-rules/no-uppercase-ccsm-path.js');
 const ccsmLocalPlugin = {
   rules: {
     'no-direct-native-import': noDirectNativeImport,
+    'no-uppercase-ccsm-path': noUppercaseCcsmPath,
   },
 };
 
@@ -108,6 +113,8 @@ export default [
       // Custom: forbid direct .node / ccsm_native loads outside the
       // loader shim. Spec frag-3.5.1 §3.5.1.1.a.
       'ccsm-local/no-direct-native-import': 'error',
+      // Task #132 (frag-11 §11.6) — Linux dataRoot must be lowercase `ccsm`.
+      'ccsm-local/no-uppercase-ccsm-path': 'error',
       // React 17+ JSX transform — no need to import React in scope.
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',

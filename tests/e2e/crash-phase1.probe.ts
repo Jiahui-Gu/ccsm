@@ -11,11 +11,15 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 export async function run(): Promise<void> {
+  // frag-11 §11.6 (Task #132): the data root is `ccsm` (lowercase) on every
+  // platform. Linux is case-sensitive, so the legacy v0.2 capital-`CCSM`
+  // segment must NEVER appear here — the daemon would fail to find the
+  // lockfile + dataRoot and dogfood would break on first boot.
   const crashRoot = process.platform === 'win32'
-    ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'CCSM', 'crashes')
+    ? path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'ccsm', 'crashes')
     : process.platform === 'darwin'
-      ? path.join(os.homedir(), 'Library', 'Application Support', 'CCSM', 'crashes')
-      : path.join(os.homedir(), '.local', 'share', 'CCSM', 'crashes');
+      ? path.join(os.homedir(), 'Library', 'Application Support', 'ccsm', 'crashes')
+      : path.join(os.homedir(), '.local', 'share', 'ccsm', 'crashes');
   const before = new Set(fs.existsSync(crashRoot) ? fs.readdirSync(crashRoot) : []);
 
   const app = await electron.launch({ args: ['.'] });

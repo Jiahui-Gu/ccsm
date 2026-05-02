@@ -34,9 +34,9 @@
 // `pathProvider` parameter lets tests inject a tmpdir without depending
 // on the real env.
 
-import { existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, posix, win32 } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 
 /** Tmp-file basenames cleaned in step 1a, per frag-8 §8.5 S2. */
 const ORPHAN_TMP_EXTS = ['', '-wal', '-shm'] as const;
@@ -184,6 +184,18 @@ function isAbsoluteIsh(p: string): boolean {
  */
 export function ensureDataDir(provider: PathProvider = defaultPathProvider()): EnsuredDataDir {
   const dataRoot = resolveDataRoot(provider);
+  // Task #132 (frag-11 §11.6): Linux is case-sensitive. If a prior build
+  // accidentally wrote a capital-`CCSM` segment (the legacy v0.2 path
+  // shape, retired for v0.3), the lowercase resolver above will not see
+  // it and the daemon will look like it's running fresh — silently
+  // orphaning the user's data. Best-effort: on platforms where this matters
+  // (anything that's not Windows — Windows is case-insensitive at the FS
+  // layer so the two paths collide on the same inode), if `<dataRoot>` is
+  // missing AND a sibling with the legacy uppercase last segment exists,
+  // rename it into place and emit a canonical log line.
+  if (provider.platform !== 'win32') {
+    migrateLegacyUppercaseDataRoot(dataRoot);
+  }
   const dataDir = join(dataRoot, 'data');
   const dbPath = join(dataDir, 'ccsm.db');
 
@@ -220,5 +232,53 @@ function probeDbFile(dbPath: string): boolean {
     return st.isFile();
   } catch {
     return false;
+  }
+}
+
+/**
+ * Task #132 (frag-11 §11.6): one-shot fallback for the legacy capital-`CCSM`
+ * dataRoot segment on case-sensitive filesystems (Linux + any case-sensitive
+ * macOS volume). If the canonical lowercase `<dataRoot>` does not exist but
+ * an immediate sibling with the literal last segment `CCSM` does, we rename
+ * the sibling into place and emit a single structured `ccsm_path_migrated`
+ * log line so the boot path can be audited post-hoc.
+ *
+ * Pure best-effort: any errors are swallowed (the boot path proceeds with a
+ * fresh `<dataRoot>`). This is intentional — a stuck legacy directory must
+ * not block the daemon from coming up.
+ *
+ * Logging is intentionally `console.warn` (not pino) because this runs
+ * before the logger is constructed in some boot orderings; the canonical
+ * line shape matches what the grep-able log pipeline expects.
+ */
+export function migrateLegacyUppercaseDataRoot(canonicalDataRoot: string): void {
+  // The check is "lowercase missing AND uppercase sibling present". The
+  // sibling is computed by replacing only the LAST path segment so we never
+  // misfire on a path like `/home/CCSM/.local/share/ccsm`.
+  if (existsSync(canonicalDataRoot)) return;
+  const parent = dirname(canonicalDataRoot);
+  // The legacy v0.2 segment IS uppercase by design — that's the whole
+  // reason this fallback exists. The local ESLint rule (Task #132) is
+  // disabled for this single line.
+  // eslint-disable-next-line ccsm-local/no-uppercase-ccsm-path
+  const legacy = join(parent, 'CCSM');
+  if (legacy === canonicalDataRoot) return; // case-insensitive FS: same path
+  let legacyExists = false;
+  try {
+    legacyExists = statSync(legacy).isDirectory();
+  } catch {
+    return;
+  }
+  if (!legacyExists) return;
+  try {
+    renameSync(legacy, canonicalDataRoot);
+    // Canonical log line: `ccsm_path_migrated from=<legacy> to=<canonical>`.
+    // Keep this single-line + grep-able for the dogfood log audit.
+    // eslint-disable-next-line no-console
+    console.warn(`ccsm_path_migrated from=${legacy} to=${canonicalDataRoot}`);
+  } catch {
+    // Rename can fail if the legacy directory is on a different filesystem,
+    // is read-only, or is locked. Don't crash the daemon — we'll just start
+    // fresh under the canonical path.
   }
 }
