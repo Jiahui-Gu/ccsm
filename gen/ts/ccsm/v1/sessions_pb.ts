@@ -270,7 +270,7 @@ export const GetSessionStateResponseSchema: GenMessage<GetSessionStateResponse> 
  * snapshot+delta model. Same `(from_seq, from_boot_nonce, heartbeat_ms)`
  * contract as pty.proto §StreamPtyDataRequest (frag-3.5.1 §3.5.1.4 is
  * the canonical owner; field semantics are identical).
- * 
+ *
  * session_id == "" ⇒ subscribe to ALL sessions (firehose mode for
  * session-list views). Per-session subscribe MUST set session_id.
  *

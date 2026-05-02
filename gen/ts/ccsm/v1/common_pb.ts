@@ -38,14 +38,14 @@ export const DataRootSchema: GenMessage<DataRoot> = /*@__PURE__*/
 /**
  * SessionState — canonical lifecycle / turn-state vocabulary for the
  * backend-authoritative session model (final-arch §2.7).
- * 
+ *
  * Mirrors `src/shared/sessionState.ts` (`idle | running | requires_action`
  * — itself a mirror of the SDK's `SDKSessionStateChangedMessage.state`)
  * plus `EXITED` for the lifecycle-terminal state. `EXITED` is required as
  * an enum value (in addition to the `SessionExited` delta variant) so a
  * `GetSessionState` snapshot of an already-exited session can render
  * correctly without forcing the client to also fold a delta.
- * 
+ *
  * IMPORTANT: this is the IPC / data-plane vocabulary, NOT the renderer's
  * 2-state UI model (`'idle' | 'waiting'` in `src/types.ts`). The mapping
  * IPC → UI lives in `src/agent/lifecycle.ts:mapState`.
