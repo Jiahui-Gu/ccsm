@@ -1,66 +1,94 @@
-# 11 — Crash collector and observability
+# 11 — Crash collector + observability
 
-> Authority: [final-architecture §1 diagram](../2026-05-02-final-architecture.md#1-the-diagram) ("crash collector" inside daemon box).
+## Scope
 
-## Goals
+Crash reporting (Sentry) + log rotation move into the daemon. Electron renderer + main still capture their own crashes but submit through Connect-RPC `CrashService` over Listener A — no direct Sentry HTTP calls from Electron.
 
-- Capture daemon crashes (segfault, unhandled rejection, OOM) with enough context to debug post-mortem.
-- Capture child-process crashes (claude CLI subprocess) with exit code, last-N-lines stderr.
-- Stream structured logs from every component to disk + optional Sentry.
-- Surface lifecycle events (crash, rollback, restart) on the supervisor `supervisor.event` push channel ([ch.05](./05-supervisor-control-plane.md)).
+**Why daemon-collected:** principle 1 (backend owns state); principle 9 (daemon survives Electron). If Electron is the one talking to Sentry, daemon-side crashes go missing whenever Electron isn't running. Funneling through daemon means the daemon retries uploads, has consistent symbol-upload pairing, and one crash store on disk.
 
-## File layout
+## Source layout
 
 ```
-${dataRoot}/
-├── logs/
-│   ├── daemon.log            (current; rotated)
-│   ├── daemon.log.1
-│   └── ...
-├── crash/
-│   ├── 2026-05-02T14-22-11Z-<pid>.dmp   (native dump if available)
-│   ├── 2026-05-02T14-22-11Z-<pid>.json  (structured context: version, build_sha, last log lines, OS info)
-│   └── ...
-└── runtime/
-    ├── daemon.pid
-    ├── port-tunnel
-    └── crashloop.json        (counter for in-process supervisor)
+daemon/src/crash/
+  collector.ts       # CrashService implementation (Report, List)
+  uploader.ts        # background queue: read crash_reports.uploaded=0, upload to Sentry, mark uploaded
+  symbols.ts         # post-pkg sourcemap upload pairing helpers (build-time only)
+  __tests__/
 ```
 
-## In-daemon crash collector
+## CrashService surface
 
-A native crash handler (via `crashpad` if linked, or pure Node `process.on('uncaughtException' / 'unhandledRejection')` + signal handlers as a fallback) writes:
+See [06 §CrashService](./06-proto-schema.md). Two methods:
 
-1. The `.json` context immediately on crash (synchronous fs write).
-2. The native `.dmp` if a crashpad-style handler is in use (out-of-process).
-3. A line to `daemon.log` describing the event.
+- `Report(payload)` — Electron renderer + Electron main + daemon itself call this with a serialized Sentry envelope. Stored in `crash_reports` table (see [10](./10-sqlite-and-db-rpc.md)).
+- `List()` — for in-app diagnostics ("recent crashes" view in Settings); v0.3 may not surface this UI but the RPC exists.
 
-On next start, the daemon scans `crash/` for any unsent dumps; if Sentry is configured, it uploads. Either way, it emits a `supervisor.event{kind:"crashed", prevExitCode, ...}` to any connected supervisor client.
+`Report` is fire-and-forget from the client perspective (returns ack as soon as the row is INSERTed). The actual Sentry network upload is async via the uploader.
 
-## Crash-loop + rollback (in-process supervisor leftover)
+## Uploader
 
-The in-process supervisor ([§2.9](../2026-05-02-final-architecture.md#2-locked-principles)) keeps `crashloop.json = {attempts, first_attempt_at, last_version, last_build_sha}`. If `attempts > N` within `T` seconds with the same version, daemon refuses to start the new version's binary and instead invokes `${binary}.bak` (the previous-good binary preserved by the installer). **Why:** §2.9 explicit. This is the **only** thing the in-process supervisor still does — it does not "keep the daemon alive".
+- Polls `crash_reports WHERE uploaded = 0 ORDER BY occurred_at` on a 30s interval (or on Report-trigger).
+- Uploads via Sentry HTTP envelope endpoint with the daemon's bundled DSN.
+- On 2xx → mark `uploaded = 1`.
+- On 5xx / network fail → leave `uploaded = 0`, exponential backoff up to 1h.
+- On 4xx → log and mark `uploaded = 1` (don't retry forever a malformed payload).
+- Cap retained uploaded reports: most recent 100 (drop older).
 
-## Logging
+## Renderer crash capture
 
-- **Structured JSON lines** to `daemon.log`. Schema: `{ts, level, event, ...fields}`.
-- **Per-request logs** from Connect interceptor ([ch.07](./07-connect-server.md)) include `{listener:"A"|"B", method, code, duration_ms}`.
-- **Listener B unauthenticated** events log at `warn` (one line per request, sampled if rate exceeds threshold).
-- **Sentry** optional via env (`CCSM_SENTRY_DSN`). Off by default. When on, structured errors and crash dumps are uploaded; PII scrubber strips `cwd`, `env`, JWT contents, and ring buffer bytes.
+- Electron renderer keeps its existing Sentry SDK init.
+- The renderer's transport is overridden to call Connect `CrashService.Report` instead of HTTP-to-sentry. (Sentry SDK supports custom transport.)
 
-## What clients see
+## Electron main crash capture
 
-Electron does not poll log files. It receives:
-- `supervisor.event` push for lifecycle (crashed, rolled back, restarting).
-- Connect RPC errors for in-flight operation failures (mapped via `interceptors/error-map.ts`).
-- `ControlService.ServerInfo` for version / uptime / readiness.
+- Electron main's Sentry init also uses the Connect-RPC transport.
+- Electron main's uncaughtException / unhandledRejection handlers call `CrashService.Report` synchronously where possible (best-effort before exit).
 
-## §11.Z Zero-rework self-check
+## Daemon crash capture
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。crash collector + 文件布局 (`logs/`, `crash/`, `runtime/`) + 结构化 JSON 日志 + 可选 Sentry + `.bak` 回滚 — v0.4 全部沿用。v0.4 OS supervisor 接入时, 它读同一个 `daemon.pid` / 写同一个 `crashloop.json`, 不强迫 in-process supervisor 改动 (问题已在 §16 R6 列为 open question 供 reviewer 调; 当前 spec 答案是不改)。**Why 不变:** final-architecture §1 diagram (crash collector 在 daemon 框内) + §2.9 (in-process supervisor 仅 crash-loop+rollback)。
+- Daemon's pino logger captures errors.
+- Daemon's own uncaughtException handler writes a synchronous crash row to SQLite, then exits.
+- On next daemon boot, uploader will pick up the row.
+
+## Sentry symbol upload (resolves task #62 KEEP from reconciliation)
+
+Per the reconciliation, option (a) — pre-pkg sourcemap upload — is the chosen path:
+
+- During the build pipeline, **before** `pkg`-bundling the daemon binary, sourcemaps are uploaded to Sentry tagged with the build's release id.
+- The same release id is baked into the daemon binary as a constant (build-time `process.env.SENTRY_RELEASE`).
+- At runtime, every Sentry event from daemon includes the release id; Sentry symbolicates against the pre-uploaded sourcemaps.
+
+For Electron renderer + main, the existing v0.2 sourcemap upload pipeline is preserved (no change).
+
+**Why pre-pkg:** post-pkg sourcemaps reference the bundled file structure inside the binary, which Sentry can't resolve. Pre-pkg sourcemaps are paired with the unbundled JS that the bundler can resolve.
+
+## Crash dataRoot (resolves task #58 KEEP)
+
+- All crash artifacts live under `<dataRoot>` (no scattered locations). Specifically: `<dataRoot>/crashes/` for any auxiliary minidump files (Electron crashpad still writes minidumps to disk; their root is reconfigured to `<dataRoot>/crashes/electron-main/` and `<dataRoot>/crashes/renderer/`).
+- The daemon's own crash records live in SQLite (see [10](./10-sqlite-and-db-rpc.md) `crash_reports` table).
+
+## Logging (pino)
+
+- Daemon writes structured JSON logs via pino to `<dataRoot>/logs/daemon-<YYYYMMDD>.log`.
+- Daily rotation (open new file at UTC midnight); max 7 files retained.
+- Per-RPC log line format (see [03 §logging](./03-listener-A-peer-cred.md), [04 §logging](./04-listener-B-jwt.md)):
+  ```
+  { ts, level, listener: 'A'|'B'|'supervisor', rpc, trace_id, identity?, latency_ms, status, ... }
+  ```
+- pino redact list (security-sensitive fields): `req.headers["cf-access-jwt-assertion"]`, `jwt`, `secret`, `token`, `password`. Existing v0.3 frag-7 redact list is the baseline; HMAC-related entries are removed (no longer applicable).
+
+## Observability hooks for v0.4 (deferred but doors open)
+
+- Trace IDs are server-issued at every RPC accept; identical mechanism applies whether listener is A or B. v0.4 web/iOS clients will inherit this for free.
+- The crash uploader is shared across all sources (renderer/main/daemon) and will be shared for web/iOS clients too once their crash transport routes through `CrashService.Report` over Listener B.
+
+**Why deferred:** v0.3 has no web/iOS to send crashes; v0.4 just adds new transport-side wiring. Daemon code is unchanged.
 
 ## Cross-refs
 
-- [05-supervisor-control-plane](./05-supervisor-control-plane.md) — `supervisor.event` push channel.
-- [07-connect-server](./07-connect-server.md) — request log interceptor.
-- [13-packaging-and-release](./13-packaging-and-release.md) — `.bak` provenance.
+- [01 — Goals](./01-goals-and-non-goals.md)
+- [06 — Proto (CrashService surface)](./06-proto-schema.md)
+- [07 — Connect server](./07-connect-server.md)
+- [10 — SQLite (crash_reports schema)](./10-sqlite-and-db-rpc.md)
+- [12 — Electron (Sentry transport override)](./12-electron-thin-client.md)
+- [13 — Packaging (pre-pkg sourcemap upload pipeline)](./13-packaging-and-release.md)
