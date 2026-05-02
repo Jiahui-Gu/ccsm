@@ -17,6 +17,15 @@ Strip from the diagram, then design what's left:
 
 In other words v0.3 = pure backend/frontend split of the existing Electron app into **two locally cohabiting binaries** that talk Connect-RPC over Listener A, structured so that v0.4 adding web/iOS is a **purely additive** change.
 
+## Non-goals (v0.2 features dropped, re-added later)
+
+v0.3 is a refactor; every v0.2 user-visible feature is preserved EXCEPT what's explicitly listed here. Any drop must have a clear v0.4 follow-up plan.
+
+| v0.2 feature | v0.3 disposition | v0.4 plan |
+|---|---|---|
+| In-app updater UI | electron-main-only, IPC retained via `.no-ipc-allowlist` | unchanged |
+| (Populated by F6 chapter 08 §3 "explicitly-cut" rows after merge) | — | — |
+
 ## Locked decisions (user 2026-05-03)
 
 1. **Listener architecture**: daemon defines a `Listener` trait/interface; v0.3 instantiates only Listener A (loopback / UDS, peer-cred auth, JWT bypass); Listener B is reserved as a stub array slot — no socket bound, no JWT middleware code shipped, but the trait + the array shape exist.
@@ -38,10 +47,17 @@ In other words v0.3 = pure backend/frontend split of the existing Electron app i
     - Read path: a Connect RPC `GetCrashLog` exposed on Listener A; Electron Settings UI displays the log.
     - NO network upload in v0.3. v0.4 adds upload as additive (must reuse same capture path).
 11. **Ship gate (v0.3 dogfood done = ALL of)**:
-    - (a) `grep -r "contextBridge\|ipcMain\|ipcRenderer" packages/electron/src` returns 0 hits (or only in dead-code paths flagged for removal).
-    - (b) Daemon survives `taskkill /F /IM electron.exe` (Windows) / equivalent SIGKILL (mac/linux). Reattach a fresh Electron — sessions list intact, terminals reconnect to same PTY snapshots, no data loss.
+    - (a) `tools/lint-no-ipc.sh` (canonical, see chapter 12 §4.1) returns 0 hits outside `.no-ipc-allowlist`. The allowlist is FROZEN to: `window:*` (custom titlebar controls), `cwd:pick` (native folder picker), `updates:*` (in-app updater). ESLint `no-restricted-imports` rule on `electron`'s `ipcMain`/`ipcRenderer`/`contextBridge` named imports is the backstop. Allowlisted handlers live under `packages/electron/src/main/ipc-allowlisted/`.
+    - (b) Daemon survives `taskkill /F /IM electron.exe` (Windows) / equivalent SIGKILL (mac/linux). Reattach a fresh Electron — sessions list intact, terminals reconnect to same PTY snapshots, no data loss (asserted via SnapshotV1 byte-equality `Buffer.compare === 0`).
     - (c) PTY zero-loss: 1-hour live dogfood session running real `claude` CLI workload; on reconnect via fresh Electron, terminal state matches binary-identically (snapshot + replayed deltas == truth).
-    - (d) Installer clean: fresh Win 11 25H2 VM → run installer → service registered, started, listening on Listener A → Electron launches and connects → uninstall via Windows Settings → service unregistered, no leftover files in ProgramData / Registry / Scheduled Tasks.
+    - (d) Installer clean: fresh Win 11 25H2 VM (self-hosted runner `self-hosted-win11-25h2-vm`) → run installer → service registered, started, listening on Listener A → Electron launches and connects → uninstall via Windows Settings → service unregistered, file-tree + registry diff against `test/installer-residue-allowlist.txt` shows no unexpected residue. **Windows-only**; mac/linux installer round-trips are tested manually pre-tag, results posted to release notes.
+    - (e) **v0.2 feature-parity check**: tester runs the v0.2-feature-checklist (rename / SDK titles / import / notify pipeline / titlebar controls / cwd picker / drafts / theme persistence / updater UI / clipboard) against v0.3 build; every item passes or is explicitly dropped in §"Non-goals" above.
+
+## Goal: v0.2 feature parity
+
+Every user-visible feature shipped at v0.2.0 is preserved in v0.3 OR has its loss explicitly enumerated in the §"Non-goals" table above. Acceptance test (ship-gate §11(e)): the dogfooded user notices nothing different except (1) daemon survives Electron restart and (2) daemon survives logout.
+
+**v0.2 baseline** = the Electron-only single-process app shipped at tag `v0.2.0`. Reviewers and downstream dev SHOULD treat that commit as the feature reference for v0.3 parity.
 
 ## ZERO-REWORK RULE (must be a top review angle)
 
