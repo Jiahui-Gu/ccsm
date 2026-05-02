@@ -23,6 +23,8 @@ docs/screenshots/dogfood-happy-path/
 *.blockmap
 .pool-synced-at-*
 daemon/dist/
+daemon/dist-daemon/
+daemon/dist-daemon-bundle/
 daemon/native/
 daemon/native-staged/
 daemon/sdk-staged/
