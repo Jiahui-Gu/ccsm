@@ -2,13 +2,13 @@ name: installer-size-guard
 
 # Task #1015 (T58) — Installer size CI guard.
 #
+# ACTIVE: enforces installer size baseline per frag-11-packaging.md §11.5(6).
+# Was temporarily relaxed during the v0.3 migration but is now active.
+#
 # Builds the installer for each OS and runs scripts/check-installer-size.mjs
 # against the artifact. FAILS if size exceeds the absolute per-extension
 # ceiling from frag-11-packaging.md §11.5(6) OR if size grew >10% vs the
 # baseline in installer/size-baseline.json (>5% emits a warning).
-#
-# DISABLED for the v0.3 migration window per Task #1047 (mirrors ci.yml /
-# e2e.yml gating). Will be re-enabled by Task #1048.
 
 on:
   pull_request:
