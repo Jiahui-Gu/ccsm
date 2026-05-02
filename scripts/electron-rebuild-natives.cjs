@@ -108,8 +108,22 @@ for (const mod of DAEMON_MODULES) {
     // N-API binding is ABI-stable; copy the shipped prebuild without rebuild.
     const prebuildDir = path.join(repoRoot, 'node_modules', mod.name, 'prebuilds', platformArch);
     if (!fs.existsSync(prebuildDir)) {
-      console.error(`[rebuild:natives] FATAL: ${mod.name} prebuild dir missing: ${prebuildDir}`);
-      process.exit(1);
+      // node-pty 1.1.0 historically did not always publish a prebuild for
+      // every platform/arch (in particular, fresh installs on Windows fail
+      // mid-rebuild because the bundled winpty submodule's GetCommitHash.bat
+      // requires git-bash on PATH, leaving no .node behind). Treat as a
+      // soft warning: the daemon binary still builds (better-sqlite3 + the
+      // pkg-bundled JS), and pty.node is dlopen'd lazily on first session
+      // spawn. If a user actually starts a session without a working
+      // pty.node the daemon will surface a clear error at that point.
+      // before-pack.cjs's REQUIRED_NATIVES check is the hard gate for
+      // installer builds; this script is only the dev-loop best-effort.
+      console.warn(
+        `[rebuild:natives] WARN ${mod.name} prebuild dir missing: ${prebuildDir}. ` +
+          `Skipping (frag-11 §11.1 daemon-side native; installer build is ` +
+          `gated by before-pack.cjs REQUIRED_NATIVES).`,
+      );
+      continue;
     }
     let copied = 0;
     for (const f of fs.readdirSync(prebuildDir)) {

@@ -1,11 +1,40 @@
 {
   "name": "@ccsm/daemon",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
+  "main": "dist-daemon-bundle/index.cjs",
+  "bin": "dist-daemon-bundle/index.cjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').writeFileSync('dist-daemon/package.json',JSON.stringify({type:'module'}))\"",
+    "package": "pkg . --out-path dist --no-bytecode --public-packages \"*\" --public"
+  },
+  "pkg": {
+    "scripts": [
+      "dist-daemon-bundle/index.cjs"
+    ],
+    "assets": [
+      "native/${PLATFORM}-${ARCH}/*.node",
+      "native/${PLATFORM}-${ARCH}/*.dll",
+      "package.json"
+    ],
+    "outputPath": "dist"
+  },
   "dependencies": {
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-node": "^2.1.1",
+    "@octokit/rest": "^21.0.2",
     "@sentry/node": "^10.51.0",
-    "@sinclair/typebox": "^0.34.49"
+    "@sinclair/typebox": "^0.34.49",
+    "better-sqlite3": "^12.9.0",
+    "node-pty": "1.1.0",
+    "pino": "^9.5.0",
+    "pino-roll": "^3.0.0",
+    "proper-lockfile": "^4.1.2",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.6.0",
+    "node-gyp": "^10.2.0"
   }
 }

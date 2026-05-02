@@ -27,7 +27,11 @@ import {
 } from './sockets/data-socket.js';
 
 const require = createRequire(import.meta.url);
-const DAEMON_VERSION = (require('../../package.json') as { version: string }).version;
+// Resolve the daemon's own package.json (frag-11 §11.1: daemon is a
+// standalone pkg-bundled binary; version lives in daemon/package.json,
+// not the root workspace package.json which pkg cannot reach across the
+// package boundary).
+const DAEMON_VERSION = (require('../package.json') as { version: string }).version;
 
 // Phase 4 consent gate parser. Mirrors the renderer-side `CrashConsent`
 // type. Anything other than the three known strings (or undefined) is
@@ -316,41 +320,50 @@ dataSocket = createDataSocketServer({
   },
 });
 
-try {
-  await controlSocket.listen();
-  logger.info(
-    { event: 'daemon.boot.control-socket-listening', address: controlSocket.address },
-    'control-socket bound',
-  );
-} catch (err) {
-  logger.error(
-    { event: 'daemon.boot.control-socket-bind-failed', err: String(err) },
-    'control-socket bind failed — supervisor /healthz probe will see EAGAIN/ENOENT',
-  );
-  // Do NOT swallow: a bind failure on the supervisor transport means the
-  // daemon is not reachable for shutdown / health probes. Re-throw so the
-  // crash handler routes it as an uncaught and the supervisor restarts us
-  // with a clean slate.
-  throw err;
-}
+// Boot the listeners. Wrapped in an async IIFE rather than top-level
+// await because the daemon binary is produced by @yao-pkg/pkg via an
+// esbuild → CJS bundle pipeline (frag-11 §11.1, spike Fallback A in
+// docs/spikes/2026-05-pkg-esm-connect.md), and esbuild refuses to
+// transform top-level await to CJS. Behaviour is identical: any reject
+// re-throws to the crash handler; signal handlers below are still
+// registered synchronously at module evaluation time.
+void (async (): Promise<void> => {
+  try {
+    await controlSocket.listen();
+    logger.info(
+      { event: 'daemon.boot.control-socket-listening', address: controlSocket.address },
+      'control-socket bound',
+    );
+  } catch (err) {
+    logger.error(
+      { event: 'daemon.boot.control-socket-bind-failed', err: String(err) },
+      'control-socket bind failed — supervisor /healthz probe will see EAGAIN/ENOENT',
+    );
+    // Do NOT swallow: a bind failure on the supervisor transport means the
+    // daemon is not reachable for shutdown / health probes. Re-throw so the
+    // crash handler routes it as an uncaught and the supervisor restarts us
+    // with a clean slate.
+    throw err;
+  }
 
-try {
-  await dataSocket.listen();
-  logger.info(
-    { event: 'daemon.boot.data-socket-listening', address: dataSocket.address() },
-    'data-socket bound',
-  );
-} catch (err) {
-  logger.error(
-    { event: 'daemon.boot.data-socket-bind-failed', err: String(err) },
-    'data-socket bind failed — renderer RPCs will not connect',
-  );
-  // Same posture as the control-socket: refuse to boot in a half-bound
-  // state. The supervisor's restart loop is the right recovery surface.
-  throw err;
-}
+  try {
+    await dataSocket.listen();
+    logger.info(
+      { event: 'daemon.boot.data-socket-listening', address: dataSocket.address() },
+      'data-socket bound',
+    );
+  } catch (err) {
+    logger.error(
+      { event: 'daemon.boot.data-socket-bind-failed', err: String(err) },
+      'data-socket bind failed — renderer RPCs will not connect',
+    );
+    // Same posture as the control-socket: refuse to boot in a half-bound
+    // state. The supervisor's restart loop is the right recovery surface.
+    throw err;
+  }
 
-logger.info({ event: 'daemon.boot' }, 'daemon shell booted');
+  logger.info({ event: 'daemon.boot' }, 'daemon shell booted');
+})();
 
 // SIGTERM/SIGINT funnel through the same handler so the spec sequence runs
 // regardless of whether the trigger is the supervisor RPC or a kill signal.

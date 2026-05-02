@@ -125,6 +125,15 @@ jobs:
       - name: Build web + electron
         run: npm run build
 
+      # Build the standalone daemon binary (frag-11 §11.5 step 2 + §11.1
+      # Task 20). Produces daemon/dist/ccsm-daemon-${platform}-${arch}${ext}
+      # for the host runner via @yao-pkg/pkg, with native modules
+      # (better-sqlite3, node-pty, ccsm_native) rebuilt against Node 22 ABI
+      # and staged into daemon/native/${platform}-${arch}/ for the
+      # before-pack hook to copy into the installer payload.
+      - name: Build daemon binary
+        run: npm run build:daemon-bin
+
       # electron-builder invocation per OS. `--publish never` because we
       # upload via softprops/action-gh-release below — that gives us a
       # single source of release metadata and keeps `publish: github` in
