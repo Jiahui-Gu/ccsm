@@ -1,8 +1,9 @@
 import { ulid } from 'ulid';
-import pino from 'pino';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
+import { createDaemonLogger } from './log/index.js';
+import { resolveDataRoot } from './db/ensure-data-dir.js';
 import { createSupervisorDispatcher, createDataDispatcher } from './dispatcher.js';
 import { mountEnvelopeAdapter } from './envelope/adapter.js';
 import {
@@ -59,13 +60,14 @@ const bootNonce = ulid();
 // (frag-6-7 §6.5). MUST be before any handler module that consumes it.
 const bootedAtMs = Date.now();
 
-const logger = pino({
-  base: {
-    side: 'daemon',
-    v: DAEMON_VERSION,
-    pid: process.pid,
-    boot: bootNonce,
-  },
+const logger = createDaemonLogger({
+  // Frag-12 §12.1 — log dir is `<dataRoot>/logs/daemon/`. Resolve the
+  // OS-native dataRoot via the same per-OS resolver the SQLite migration
+  // uses (T34) so the logger and the database share one parent root.
+  dataRoot: resolveDataRoot(),
+  version: DAEMON_VERSION,
+  pid: process.pid,
+  bootNonce,
 });
 
 // Phase 2 crash observability (spec §5.2 / §6, plan Task 8): initialize
