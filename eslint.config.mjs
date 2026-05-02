@@ -47,7 +47,7 @@ export default [
       'eslint-rules/**',
       'webpack.config.js',
       'postcss.config.js',
-      'eslint.config.js'
+      'eslint.config.mjs'
     ]
   },
   js.configs.recommended,

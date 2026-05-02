@@ -26,7 +26,7 @@
 //     `// eslint-disable-next-line ccsm-local/no-floating-cancellation`
 //   - Type-only references (TypeScript-style) are NOT counted as a read
 //     because they are erased at runtime; we only count value references.
-//   - Files outside the configured scope (set in eslint.config.js).
+//   - Files outside the configured scope (set in eslint.config.mjs).
 //
 // Single-responsibility: this rule is a pure DECIDER over the AST. No
 // auto-fix (the fix is to write business logic that observes abort).

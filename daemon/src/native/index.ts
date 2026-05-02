@@ -10,7 +10,7 @@
 //
 // This module is the ONLY place in the daemon allowed to load the
 // .node binary. The custom ESLint rule `no-direct-native-import`
-// (registered in `eslint.config.js`) enforces it.
+// (registered in `eslint.config.mjs`) enforces it.
 //
 // What this module exports:
 //   - `native: NativeBinding`            — the swap interface
