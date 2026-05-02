@@ -1,55 +1,125 @@
-# 09 — PTY host
+# 09 — PTY host (inside daemon)
 
-> Authority: [final-architecture §1 diagram](../2026-05-02-final-architecture.md#1-the-diagram) ("PTY host (xterm-headless, snapshot+delta) · claude CLI subprocess" inside daemon box), §2.7 (PTY is the serialization point).
+## Scope
 
-## PTY moves into the daemon
+The PTY host module owns spawning, supervising, reading from, writing to, resizing, and reaping PTY child processes. It lives inside the daemon and is consumed by the session manager (see [08](./08-session-model.md)).
 
-In v0.2 the PTY ran in Electron's main process. **In v0.3 the PTY runs inside `ccsm-daemon`.** Electron has zero `node-pty` import. **Why:** §1 diagram explicit; §2.7 ("backend-authoritative; clients are pure subscribers" — a client cannot host the PTY and remain a subscriber).
+**Why in daemon:** final-architecture §2 principle 1 — backend owns state. Principle 9 — daemon's lifecycle is independent of client; PTY children must outlive Electron exits. PTY-in-Electron would die when Electron dies.
 
-## Substrate
-
-- **`node-pty`** for the PTY syscalls. Win prebuild MUST be vendored ([13-packaging-and-release](./13-packaging-and-release.md)) or built at install time; v0.3 vendors prebuilds for all six target tuples to keep the user install free of a C++ toolchain.
-- **`xterm-headless`** for the per-session ring buffer (`@xterm/headless`).
-- **`ccsm_native`** — a minimal native module (Rust or C++ via N-API) holding any non-portable bits: peer-cred socket options that aren't in Node core, fast UTF-8 chunk normalization for the fan-out, and Windows named-pipe ACL setup. **Why a native module at all:** UDS peer-cred plus named-pipe SID extraction need OS calls Node doesn't expose portably; a small native is cheaper than three platform-specific JS shims.
-
-## File layout
+## Module layout
 
 ```
 daemon/src/pty/
-├── runtime.ts          (SessionRuntime: holds pty + headless terminal + subscriber set + seq)
-├── fanout.ts           (Subscriber registry + backpressure)
-├── ringbuffer.ts       (xterm-headless wrapper; dump = Snapshot)
-├── claude-spawn.ts     (spawns claude CLI with cwd, env, args)
-└── resize.ts           (cols/rows updates + broadcast)
-daemon/native/ccsm_native/
-├── Cargo.toml          (or binding.gyp if C++)
-├── src/lib.rs
-└── prebuilds/          (six target tuples: darwin-{arm64,x64} linux-{arm64,x64} win32-{x64,arm64})
+  host.ts            # PtyHost class: spawn / kill / write / resize / on-exit
+  child.ts           # one PTY child wrapper (node-pty handle + state)
+  reaper.ts          # SIGCHLD / waitpid loop on POSIX; JobObject lifetime on Windows
+  signals.ts         # signal name → numeric mapping per OS
+  __tests__/
 ```
 
-## Lifecycle of a session
+## Dependencies
 
-1. `SessionService.Create({cwd, env, args})` → daemon mints `session_id`, inserts row in `sessions`, calls `claude-spawn.ts` to fork PTY, registers in `SessionRuntime`. Returns `Session`.
-2. PTY emits data → `runtime.ts` appends to xterm-headless ring + assigns `seq` + fans out via `fanout.ts`.
-3. Subscribers join via `Snapshot` + `Subscribe` ([ch.08](./08-session-model.md)).
-4. Writers drive PTY via `PtyService.Write`.
-5. On PTY exit: emit final `Delta{kind:EXIT, exit_code}`, close all subscriber streams, mark row `closed`. Ring buffer retained for late `Snapshot` calls until session is GC'd (configurable retention, default 1h).
-6. On `SessionService.Close`: SIGTERM PTY, then SIGKILL after grace.
+### node-pty
 
-## Snapshot semantics
+- Pin to a version that ships **Windows prebuilds** (resolves task #78 KEEP from reconciliation).
+- ABI must match Node 22 (the daemon's bundled Node version per packaging — see [13](./13-packaging-and-release.md)).
+- Accessed via the daemon's bundled Node, not Electron's. node-pty inside daemon is plain Node 22 ABI; no Electron rebuild required.
 
-`xterm-headless.serialize()` (or equivalent buffer dump) gives a textual representation of the visible buffer + scrollback up to the line cap. The Snapshot RPC returns this verbatim plus `seq_at = currentSeq` (the highest `seq` whose bytes are reflected in the dump). Subscriber's first `Subscribe(since_seq=seq_at)` therefore picks up at the next byte. **Why:** §2.7 — snapshot+delta-from-seq is the contract.
+### `ccsm_native`
 
-## Daemon crash handling
+Native addon (existing v0.3 frag-3.5.1 work; #79 KEEP from reconciliation). Provides:
 
-On daemon crash, all PTY children die (they are in the daemon's process group). On respawn, sessions in SQLite marked `running` are downgraded to `interrupted`; clients see `Snapshot` succeed (last persisted state) but `Subscribe` immediately closes with `Code.FailedPrecondition`. Clients render an "interrupted, please restart" UI. **Why:** PTY-process resurrection across daemon restarts is a feature requiring scrollback persistence and detached-PTY tricks; both are deferred ([§3](../2026-05-02-final-architecture.md#3-what-this-doc-does-not-decide)).
+- POSIX `setpgid` / `PDEATHSIG` setup for PTY children (so they die with the daemon).
+- Windows `JobObject` creation + child assignment (so children die with the daemon).
+- `SO_PEERCRED` / `LOCAL_PEERCRED` (POSIX) and named-pipe `GetNamedPipeClientProcessId` + SID lookup (Windows) — shared with peer-cred check (see [03](./03-listener-A-peer-cred.md)).
 
-## §9.Z Zero-rework self-check
+The native addon is loaded at daemon boot; failure to load → daemon exits non-zero.
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。PTY 在 daemon 内 (而非 Electron), node-pty + xterm-headless + ccsm_native 选型, 六 target prebuild, daemon-crash 下 PTY 死 + 标 interrupted — v0.4 全部沿用。v0.4 加 web/iOS 时 PTY 完全不知道 client 类型 (它只面对 fan-out registry)。Cross-restart PTY 复活属于"scrollback 持久化"那条 v0.4+ 新功能, 是新增模块不是修改本章。**Why 不变:** final-architecture §1 diagram (PTY host 在 daemon 框内) + §2.7 (clients are subscribers — PTY 不区分 client)。
+## Spawn contract
+
+```
+PtyHost.spawn(opts: {
+  shell: string;       // resolved absolute path
+  args: string[];
+  cwd: string;
+  env: Record<string,string>;
+  cols: number;
+  rows: number;
+  encoding?: 'utf-8' | null;  // null = raw bytes pass-through
+}): PtyChild
+```
+
+Behavior:
+
+- Child is created via node-pty with the OS-appropriate `setpgid` / JobObject hook executed in `beforeExec` / `pty_fork` callback equivalent.
+- On POSIX: `setpgid(pid, pid)` so child becomes its own process-group leader; `prctl(PR_SET_PDEATHSIG, SIGTERM)` (Linux) or kqueue NOTE_EXIT (macOS) sets up parent-death cleanup.
+- On Windows: child is assigned to a JobObject created at daemon boot; the job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so when daemon exits Windows reaps the child.
+
+`encoding` defaults to `null` (raw bytes). Session manager forwards bytes verbatim to subscribers; **decoding is the client's job** to avoid mid-codepoint splits at the daemon.
+
+## Read path
+
+- node-pty's `onData` fires per OS-buffer chunk.
+- PtyHost forwards `(child, bytes)` to the owning session via callback registered at spawn.
+- No buffering / merging at PtyHost layer; session ring buffer (see [08](./08-session-model.md)) is the only buffer.
+
+## Write path
+
+- `PtyChild.write(bytes)` → node-pty `write`. Bytes are passed through; PtyHost does not interpret.
+- Multi-client input: serialized by Node event loop (see [08 §LWW](./08-session-model.md)).
+
+## Resize
+
+- `PtyChild.resize(cols, rows)` → node-pty `resize`. Triggers SIGWINCH in child.
+
+## Kill / signals
+
+- `PtyChild.kill(signal)` where `signal` ∈ `SIGTERM | SIGKILL | SIGINT | SIGHUP` (matches `PtySignal` enum in proto, see [06](./06-proto-schema.md)).
+- POSIX: `kill(-pgid, signal)` (negative PID → kill the entire process group, not just the leader). This catches the common case where the shell forked something.
+- Windows: signal-name maps to JobObject termination or `GenerateConsoleCtrlEvent` for SIGINT-equivalent; SIGKILL = `TerminateJobObject`.
+
+## Exit + reap
+
+### POSIX (`reaper.ts`)
+
+- Daemon installs a single SIGCHLD handler (waitpid-WNOHANG loop on signal).
+- Per-PID waitpid result is matched against the registry → notifies the owning session with `{ exitCode, signal }`.
+- Avoid the libuv default reaping race: PtyHost owns the SIGCHLD handler, not node-pty's per-child handler (which can lose signals under burst).
+
+### Windows
+
+- JobObject completion port surfaces child exit via `IO_COMPLETION_PORT`; ccsm_native exposes it as a JS event.
+- Same notification path to session.
+
+## PTY child orphan prevention
+
+If the daemon dies abnormally (SIGKILL, panic, pull-the-plug): PTY children MUST die too.
+
+- POSIX: PR_SET_PDEATHSIG (Linux) sends SIGTERM to child when its parent process group disappears. macOS: kqueue + a parent-watcher in ccsm_native that kills children on parent EOF.
+- Windows: JobObject's `KILL_ON_JOB_CLOSE` does this automatically when the daemon's process handle (which holds the job) closes.
+
+This is verified by IT: `kill -9 daemon_pid` → list PTY children of daemon-shell → assert all gone within 2s. See [15 §IT-4](./15-testing-strategy.md).
+
+## Heartbeat / liveness
+
+PtyHost emits an internal liveness tick to session manager every 30 s. Session manager turns it into the `PtyHeartbeat` proto message on subscriber streams (see [08](./08-session-model.md)). The tick is also used to detect PTY children that have entered weird states (e.g. paused via SIGSTOP) — though in v0.3 we do not act on this beyond logging.
+
+## Concurrency caps
+
+- Max concurrent PTY children: 32 per daemon (matches dogfood "5-session RAM" upper bound × ~6 safety margin).
+- Exceeding cap: `PtyService.Spawn` returns `ResourceExhausted`.
+
+## Integration points
+
+- `daemon/src/index.ts` instantiates `PtyHost` after native addon load.
+- `daemon/src/connect/handlers/pty.ts` calls into `PtyHost` and into `SessionManager`.
+- `daemon/src/sessions/manager.ts` passes the session-output callback to PtyHost on spawn.
 
 ## Cross-refs
 
-- [08-session-model](./08-session-model.md) — semantics this chapter implements.
-- [10-sqlite-and-db-rpc](./10-sqlite-and-db-rpc.md) — session row schema.
-- [13-packaging-and-release](./13-packaging-and-release.md) — node-pty / ccsm_native prebuild bundling.
+- [03 — Listener A peer-cred (shares `ccsm_native`)](./03-listener-A-peer-cred.md)
+- [06 — Proto (PtyService methods + PtySignal enum)](./06-proto-schema.md)
+- [07 — Connect server (PtyHost is a wired dependency)](./07-connect-server.md)
+- [08 — Session model (read path / write path / fan-out)](./08-session-model.md)
+- [13 — Packaging (node-pty Win prebuild + native ABI)](./13-packaging-and-release.md)
+- [15 — Testing (orphan-prevention IT)](./15-testing-strategy.md)
