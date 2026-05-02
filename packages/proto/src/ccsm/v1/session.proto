@@ -1,0 +1,207 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §3 for the contract. Field numbers MUST NOT be reused or
+// renumbered.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+import "ccsm/v1/pty.proto";
+
+service SessionService {
+  // Forever-stable.
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc DestroySession(DestroySessionRequest) returns (DestroySessionResponse);
+  // F7: closes R5 P1-04-5 — `WatchSessions` is double-scoped: (1) the
+  // implicit principal scope from peer-cred middleware (the in-memory
+  // event bus filter `principalKey(ctx.principal)` per chapter 05 §5;
+  // daemon MUST NEVER emit events for sessions whose owner != caller's
+  // principalKey when scope resolves to OWN), and (2) the explicit
+  // `WatchSessionsRequest.scope` enum (F1, see below) that flips OWN->ALL
+  // for v0.4 admin principals. The two layers compose: principal filter
+  // is unconditional; `scope` is an enum widening for ALL. v0.3 daemon
+  // honors only OWN; ALL is rejected with PermissionDenied. A handler
+  // implementor MUST apply the principal filter even for OWN — it is a
+  // security boundary, not a performance hint.
+  rpc WatchSessions(WatchSessionsRequest) returns (stream SessionEvent);
+  // F6: closes R1 P0.1 (chapter 08) — v0.2 SessionTitles + import-scanner
+  // surfaces preserved as forever-stable Connect RPCs so the Electron
+  // renderer's Sidebar rename / SDK-title display / "Import existing
+  // claude session" UIs survive the IPC removal cutover. Daemon owns
+  // the claude SDK (`@anthropic-ai/claude-agent-sdk`) integration so
+  // clients never touch `~/.claude/projects/*` directly. v0.4 web/iOS
+  // call the same RPCs unchanged.
+  rpc RenameSession(RenameSessionRequest) returns (Session);
+  rpc GetSessionTitle(GetSessionTitleRequest) returns (GetSessionTitleResponse);
+  rpc ListProjectSessions(ListProjectSessionsRequest) returns (ListProjectSessionsResponse);
+  rpc ListImportableSessions(ListImportableSessionsRequest) returns (ListImportableSessionsResponse);
+  rpc ImportSession(ImportSessionRequest) returns (Session);
+}
+
+message HelloRequest {
+  RequestMeta meta = 1;
+  // F7: closes R0 04-P1.2 — `client_kind` is observability-only.
+  // Daemon MUST NOT branch on this value for behavior selection (auth,
+  // routing, feature gating, schema choice). v0.3 publishes
+  // `{electron, web, ios}` but daemon MUST tolerate any UTF-8 string.
+  string client_kind = 2;       // "electron" | "web" | "ios" — open string set
+  // F3: closes R0 04-P1.1 — `client_version` is carried in `RequestMeta` only.
+  // Field number 3 reserved so v0.4 cannot accidentally re-bind it.
+  reserved 3;                    // historically `client_version`; now in RequestMeta.client_version
+  int32 proto_min_version = 4;  // client's minimum acceptable v1 minor
+}
+
+message HelloResponse {
+  RequestMeta meta = 1;
+  string daemon_version = 2;
+  int32 proto_version = 3;      // current v1 minor; client compares against its min
+  Principal principal = 4;      // who the daemon thinks you are
+  // F3: closes R0 04-P1.3 — listener id surfaces which listener answered the
+  // handshake. v0.3 daemon ALWAYS populates "A"; v0.4 Listener B populates "B".
+  // Open string set so v0.5+ may add "C" etc.
+  string listener_id = 5;       // "A" in v0.3; "B" on Listener B in v0.4
+}
+
+message ListSessionsRequest { RequestMeta meta = 1; }
+message ListSessionsResponse {
+  RequestMeta meta = 1;
+  repeated Session sessions = 2;
+}
+
+message GetSessionRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+}
+message GetSessionResponse {
+  RequestMeta meta = 1;
+  Session session = 2;
+}
+
+message CreateSessionRequest {
+  RequestMeta meta = 1;
+  string cwd = 2;                       // absolute path; daemon validates exists + readable
+  map<string, string> env = 3;          // additive env on top of daemon's service env
+  repeated string claude_args = 4;      // argv for `claude` CLI; daemon prepends binary path
+  PtyGeometry initial_geometry = 5;     // see pty.proto
+}
+message CreateSessionResponse {
+  RequestMeta meta = 1;
+  Session session = 2;
+}
+
+message DestroySessionRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+}
+message DestroySessionResponse { RequestMeta meta = 1; }
+
+// F1: closes R0 04-P0.3 / R0 05-P0.2 — WatchSessions scope made explicit so
+// v0.4 cross-principal admin filter is a value-add, not a semantic shift.
+//
+// Forever-stable. v0.3 daemon honors only WATCH_SCOPE_OWN; WATCH_SCOPE_ALL
+// is reserved here so v0.4 (multi-principal + admin) flips behavior by enum
+// value, not by reshaping the request. v0.3 daemon MUST reject ALL with
+// PermissionDenied so v0.4 enforcement is purely an additive enum-branch.
+enum WatchScope {
+  WATCH_SCOPE_UNSPECIFIED = 0;     // treated as WATCH_SCOPE_OWN
+  WATCH_SCOPE_OWN = 1;             // events for sessions owned by ctx.principal
+  WATCH_SCOPE_ALL = 2;             // v0.4: admin principals only
+}
+
+message WatchSessionsRequest {
+  RequestMeta meta = 1;
+  WatchScope scope = 2;            // default UNSPECIFIED == OWN
+}
+message SessionEvent {
+  oneof kind {
+    Session created = 1;
+    Session updated = 2;     // state, exit_code, geometry change, etc.
+    string destroyed = 3;    // session_id
+  }
+}
+
+// PtyGeometry is defined in pty.proto and reused here (imported above).
+
+// Forever-stable.
+message Session {
+  string id = 1;
+  Principal owner = 2;
+  SessionState state = 3;
+  string cwd = 4;
+  int64 created_unix_ms = 5;
+  int64 last_active_unix_ms = 6;
+  // F7: closes R5 P1-04-2 — `optional` keyword (proto3 field presence) so
+  // an exited-with-code-0 session is wire-distinguishable from a still-
+  // running session whose `exit_code` was never set.
+  optional int32 exit_code = 7;       // valid only when state == EXITED
+  PtyGeometry geometry = 8;
+  // F6: closes R4 P0 ch 08 verification harness step 6 — daemon publishes the
+  // OS pid of the `claude` CLI subprocess for each RUNNING session so the
+  // ship-gate (b) E2E test can assert subprocess survival. Optional +
+  // presence-bit: bit unset means "not currently spawned"; any non-zero
+  // value is a live OS pid attributable to this session.
+  optional int32 runtime_pid = 9;
+}
+
+// F6: closes R1 P0.1 (chapter 08). Forever-stable. Per-session friendly
+// title (claude SDK summary OR user-applied rename) — drives the Sidebar
+// title display and toast labels so notifications carry meaningful text
+// instead of session UUIDs.
+message RenameSessionRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  string new_title = 3;        // UTF-8; daemon trims to 512 bytes; empty clears back to claude SDK summary
+}
+
+message GetSessionTitleRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+}
+message GetSessionTitleResponse {
+  RequestMeta meta = 1;
+  string title = 2;            // resolved title (rename if set, else SDK summary, else empty)
+  string sdk_summary = 3;      // raw claude SDK summary; empty if not yet derived
+  bool pending_rename = 4;     // true if a queued rename has not yet been flushed to the SDK
+}
+
+// Project-scoped session listing — surfaces sessions whose `cwd` resolves
+// under a given project directory. Used by the Sidebar's per-project
+// grouping and by the rename-queue flush logic.
+message ListProjectSessionsRequest {
+  RequestMeta meta = 1;
+  string project_dir = 2;      // absolute path; daemon canonicalizes (resolves symlinks)
+}
+message ListProjectSessionsResponse {
+  RequestMeta meta = 1;
+  repeated Session sessions = 2;
+}
+
+// Importable-session scan — daemon reads `~/.claude/projects/*` (or the
+// per-OS equivalent) and returns historical claude CLI sessions the user
+// can attach to ccsm tracking. v0.4 web/iOS call the same RPC; the
+// daemon's filesystem view is the single source of truth.
+message ListImportableSessionsRequest {
+  RequestMeta meta = 1;
+  string project_dir_filter = 2;  // optional; empty = all projects
+}
+message ListImportableSessionsResponse {
+  RequestMeta meta = 1;
+  repeated ImportableSession importable = 2;
+}
+message ImportableSession {
+  string claude_session_id = 1;   // claude SDK's id
+  string project_dir = 2;
+  string title = 3;               // SDK-derived title if any
+  int64 first_seen_unix_ms = 4;
+  int64 last_active_unix_ms = 5;
+  int32 message_count = 6;
+}
+
+message ImportSessionRequest {
+  RequestMeta meta = 1;
+  string claude_session_id = 2;   // an entry from ListImportableSessions
+  string cwd = 3;                 // honored as the new ccsm session's cwd; empty = use the importable's project_dir
+}
