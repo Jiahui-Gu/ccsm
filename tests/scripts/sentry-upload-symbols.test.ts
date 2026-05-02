@@ -60,11 +60,14 @@ describe('sentry-upload-symbols', () => {
       }
     }
     // The script uses repo-relative paths; existing `dist/renderer`,
-    // `dist/electron`, `daemon/dist` may or may not be present in the
-    // worker checkout — create them if absent and clean up after.
+    // `dist/electron`, `daemon/dist-daemon-bundle`, `daemon/dist-daemon`,
+    // and `daemon/native/<arch>/` may or may not be present in the worker
+    // checkout — create them if absent and clean up after.
     ensureDir(path.join(repoRoot, 'dist', 'renderer'));
     ensureDir(path.join(repoRoot, 'dist', 'electron'));
-    ensureDir(path.join(repoRoot, 'daemon', 'dist'));
+    ensureDir(path.join(repoRoot, 'daemon', 'dist-daemon-bundle'));
+    ensureDir(path.join(repoRoot, 'daemon', 'dist-daemon'));
+    ensureDir(path.join(repoRoot, 'daemon', 'native', 'linux-x64'));
 
     try {
       const calls: { file: string; args: string[]; project?: string }[] = [];
@@ -89,13 +92,19 @@ describe('sentry-upload-symbols', () => {
       expect(projectsCalled.has('p-main')).toBe(true);
       expect(projectsCalled.has('p-dae')).toBe(true);
 
-      // Source-map calls reference upload-sourcemaps.
+      // Source-map calls reference upload-sourcemaps. Post-pkg the daemon
+      // contributes TWO sourcemap dirs (dist-daemon-bundle + dist-daemon)
+      // alongside renderer + electron, so >=4.
       const sourceMapCalls = calls.filter((c) => c.args.includes('upload-sourcemaps'));
-      expect(sourceMapCalls.length).toBeGreaterThanOrEqual(3);
-      // Native dif call uses debug-files upload, scoped to project_main.
+      expect(sourceMapCalls.length).toBeGreaterThanOrEqual(4);
+      // Native dif call uses debug-files upload, scoped to project_main
+      // (Crashpad / electron-builder artifact dirs) AND project_daemon
+      // (daemon/native/<platform>-<arch>/ .node sidecars).
       const nativeCalls = calls.filter((c) => c.args.includes('debug-files'));
-      expect(nativeCalls.length).toBeGreaterThanOrEqual(1);
-      expect(nativeCalls.every((c) => c.project === 'p-main')).toBe(true);
+      expect(nativeCalls.length).toBeGreaterThanOrEqual(2);
+      const nativeProjects = new Set(nativeCalls.map((c) => c.project));
+      expect(nativeProjects.has('p-main')).toBe(true);
+      expect(nativeProjects.has('p-dae')).toBe(true);
     } finally {
       for (const p of created) {
         try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* ignore */ }

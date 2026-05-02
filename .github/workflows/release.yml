@@ -173,12 +173,19 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
       # Phase 3 crash observability (spec §5.4 / §6, plan Task 10).
-      # Symbol upload to the three per-surface Sentry projects. The
+      # Symbol upload to the per-surface Sentry projects. The
       # afterAllArtifactBuild hook already fires inside electron-builder
       # above; this step is a belt-and-suspenders re-run so a workflow
       # change to skip the hook (e.g. `--publish=onTag`) doesn't silently
       # drop symbol uploads. Skipped when SENTRY_AUTH_TOKEN is unset
       # (PR / fork builds, dry-runs without the release secret plugged in).
+      #
+      # Post-pkg layout (audit 3 F1 / PR #781): the daemon source-of-truth
+      # for sourcemaps is `daemon/dist-daemon-bundle/index.cjs(.map)` (the
+      # esbuild CJS bundle pkg ingests) PLUS the raw tsc emit at
+      # `daemon/dist-daemon/`. Daemon native symbols (.node + .pdb / dSYM)
+      # are picked up from `daemon/native/<platform>-<arch>/`. The script
+      # auto-discovers all of these, so this step needs no extra inputs.
       - name: Upload symbols to Sentry
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
