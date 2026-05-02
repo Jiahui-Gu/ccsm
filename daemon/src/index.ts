@@ -3,7 +3,8 @@ import pino from 'pino';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
-import { createSupervisorDispatcher } from './dispatcher.js';
+import { createSupervisorDispatcher, createDataDispatcher } from './dispatcher.js';
+import { mountEnvelopeAdapter } from './envelope/adapter.js';
 import {
   createDaemonShutdownHandler,
   DAEMON_SHUTDOWN_METHOD,
@@ -214,6 +215,17 @@ supervisorDispatcher.register(DAEMON_SHUTDOWN_METHOD, async (req, ctx) => {
 });
 void supervisorDispatcher;
 
+// Task #28 / B7a — daemon-side envelope adapter.
+//
+// Per-plane dispatchers consumed by the envelope adapter mounted on each
+// accepted connection (control-socket -> supervisor plane, data-socket ->
+// data plane). The data dispatcher is bare today; per-method handlers are
+// wired by their owning task slices. The adapter forwards UNKNOWN_METHOD
+// cleanly for any method not yet registered, so this slice is safe to ship
+// before the handlers do.
+const dataDispatcher = createDataDispatcher();
+void dataDispatcher;
+
 // Task #1072 — wire OS-level socket listeners.
 //
 // Before this PR, both `createControlSocketServer` (T14 #676) and
@@ -270,21 +282,19 @@ controlSocket = createControlSocketServer({
     warn: (obj, msg) => logger.warn(obj, msg),
     info: (obj, msg) => logger.info(obj, msg),
   },
-  onConnection: (sock) => {
-    // Envelope adapter wiring is T-future. Until then, every accepted
-    // connection is destroyed loudly so a probe sees "connect succeeded
-    // then peer hung up" rather than a wedge. The transport-level rate
-    // cap (50/s) still fires on a flood; this destroy is per-connection
-    // application-layer cleanup.
-    logger.warn(
-      { event: 'control-socket.connection.no-adapter', address: controlSocket?.address },
-      'control-socket connection accepted but no envelope adapter is wired yet (T-future); destroying',
-    );
-    try {
-      sock.destroy();
-    } catch {
-      // best-effort
-    }
+  onConnection: (sock, peer) => {
+    // Task #28 / B7a -- envelope adapter wires Duplex bytes into the
+    // supervisor dispatcher. Adapter owns per-connection buffer
+    // accumulation, frame decode (envelope/envelope.ts), schema validation
+    // of the routing fields (id, method), and the socket.destroy() +
+    // synthetic error reply on protocol violation per spec §3.4.1.a/d.
+    mountEnvelopeAdapter({
+      socket: sock,
+      dispatcher: supervisorDispatcher,
+      logger: { warn: (obj, msg) => logger.warn(obj, msg) },
+      peer: 'control-socket',
+      ...(peer?.pid !== undefined ? { peerPid: peer.pid } : {}),
+    });
   },
 });
 
@@ -294,16 +304,14 @@ dataSocket = createDataSocketServer({
   logger: {
     warn: (obj, msg) => logger.warn(obj, msg),
   },
-  onConnection: ({ socket }) => {
-    logger.warn(
-      { event: 'data-socket.connection.no-adapter', address: dataSocket?.address() },
-      'data-socket connection accepted but no envelope adapter is wired yet (T-future); destroying',
-    );
-    try {
-      socket.destroy();
-    } catch {
-      // best-effort
-    }
+  onConnection: ({ socket, peer }) => {
+    mountEnvelopeAdapter({
+      socket,
+      dispatcher: dataDispatcher,
+      logger: { warn: (obj, msg) => logger.warn(obj, msg) },
+      peer: 'data-socket',
+      ...(peer?.pid !== undefined ? { peerPid: peer.pid } : {}),
+    });
   },
 });
 
