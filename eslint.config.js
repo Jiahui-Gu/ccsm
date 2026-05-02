@@ -17,10 +17,16 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const noDirectNativeImport = require('./eslint-rules/no-direct-native-import.js');
 const noUppercaseCcsmPath = require('./eslint-rules/no-uppercase-ccsm-path.js');
+// Local custom rule: no-handler-without-check (frag-3.4.1 §3.4.1.d).
+// Envelope handlers under daemon/src/handlers/** must call a recognised
+// validator (Check / validateFoo / planFoo / .check) as their first
+// statement.
+const noHandlerWithoutCheck = require('./eslint-rules/no-handler-without-check.js');
 const ccsmLocalPlugin = {
   rules: {
     'no-direct-native-import': noDirectNativeImport,
     'no-uppercase-ccsm-path': noUppercaseCcsmPath,
+    'no-handler-without-check': noHandlerWithoutCheck,
   },
 };
 
@@ -115,6 +121,10 @@ export default [
       'ccsm-local/no-direct-native-import': 'error',
       // Task #132 (frag-11 §11.6) — Linux dataRoot must be lowercase `ccsm`.
       'ccsm-local/no-uppercase-ccsm-path': 'error',
+      // Custom: every envelope handler in daemon/src/handlers/ must
+      // validate its `req` arg as the first statement. Spec frag-3.4.1
+      // §3.4.1.d.
+      'ccsm-local/no-handler-without-check': 'error',
       // React 17+ JSX transform — no need to import React in scope.
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',

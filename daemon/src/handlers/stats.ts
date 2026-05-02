@@ -124,7 +124,10 @@ export function handleStats(_req: unknown, ctx: StatsContext): StatsReply {
 export function makeStatsHandler(
   ctx: StatsContext,
 ): (req: unknown) => Promise<StatsReply> {
-  return async (req: unknown) => handleStats(req, ctx);
+  // `_req` (leading underscore): /stats takes no payload per
+  // frag-6-7 §6.5; same opt-out reasoning as makeHealthzHandler —
+  // see `ccsm-local/no-handler-without-check` (frag-3.4.1 §3.4.1.d).
+  return async (_req: unknown) => handleStats(_req, ctx);
 }
 
 /** Convenience builder for the production memory-usage provider — kept here
