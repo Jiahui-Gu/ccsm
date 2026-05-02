@@ -282,6 +282,34 @@ jobs:
             echo "wrote $f.sha256"
           done
 
+      # Task #134 (frag-11 §11.4): aggregate SHA256SUMS.txt covering every
+      # release artifact (installers + auto-update yml + blockmaps). One file,
+      # `sha256sum -c SHA256SUMS.txt` compatible (LF-terminated lines of
+      # `<hex>  <filename>`), so a user can verify the full release in a
+      # single command instead of fetching N per-artifact .sha256 sidecars.
+      # We deliberately exclude derivative sidecars (.sha256, .minisig,
+      # .intoto.jsonl) — verifying them against themselves is meaningless and
+      # causes recursion if this file is regenerated.
+      - name: Generate aggregate SHA256SUMS.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist-flat
+          # Stable order so the file is reproducible across runs.
+          : > SHA256SUMS.txt
+          for f in $(ls *.exe *.dmg *.zip *.AppImage *.deb *.rpm latest*.yml *.blockmap 2>/dev/null | LC_ALL=C sort -u); do
+            [ -f "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS.txt
+          done
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+          # Sanity: must be non-empty and parse cleanly via sha256sum -c.
+          if [ ! -s SHA256SUMS.txt ]; then
+            echo "::error title=Aggregate SHA256SUMS.txt empty::no release artifacts matched"
+            exit 1
+          fi
+          sha256sum -c --status SHA256SUMS.txt
+
       # Minisign signatures. Public key lives in repo at release-keys/minisign.pub
       # (committed). Private key is provisioned via the MINISIGN_PRIVATE_KEY
       # repo secret + MINISIGN_PASSWORD secret (see release-keys/README.md for
@@ -315,11 +343,24 @@ jobs:
             echo "$MINISIGN_PASSWORD" | minisign -S -s "$KEY" -m "$f" -t "ccsm $GITHUB_REF_NAME"
             echo "wrote $f.minisig"
           done
+          # Task #134: also sign the aggregate SHA256SUMS.txt so a verifier
+          # can authenticate the whole-release hash list with one minisig
+          # check (`minisign -V -p minisign.pub -m SHA256SUMS.txt`) before
+          # running `sha256sum -c SHA256SUMS.txt` against their downloads.
+          if [ -f SHA256SUMS.txt ]; then
+            echo "$MINISIGN_PASSWORD" | minisign -S -s "$KEY" -m SHA256SUMS.txt -t "ccsm $GITHUB_REF_NAME"
+            echo "wrote SHA256SUMS.txt.minisig"
+          fi
           shred -u "$KEY"
 
       # Compute the SLSA hashes input. The SLSA reusable workflow expects a
       # base64-encoded SHA256SUMS-format payload listing every subject we want
       # provenance over (the installers themselves; sidecars are derivative).
+      # Task #134 (frag-11 §11.4): also enumerate SHA256SUMS.txt as a SLSA
+      # subject so the provenance attests not just each installer but also
+      # the aggregate hash list — preventing a tamperer from swapping
+      # SHA256SUMS.txt for one that points at malicious binaries with valid
+      # hashes. (.minisig / .intoto.jsonl / per-file .sha256 stay derivative.)
       - name: Compute SLSA hashes input
         id: hash
         shell: bash
@@ -327,7 +368,7 @@ jobs:
           set -euo pipefail
           cd dist-flat
           HASHES=$( \
-            sha256sum *.exe *.dmg *.zip *.AppImage *.deb *.rpm 2>/dev/null \
+            sha256sum *.exe *.dmg *.zip *.AppImage *.deb *.rpm SHA256SUMS.txt 2>/dev/null \
               | base64 -w0 \
           )
           echo "hashes=$HASHES" >> "$GITHUB_OUTPUT"
@@ -424,6 +465,19 @@ jobs:
             check_minisig=1
           fi
           fail=0
+          # Task #134: aggregate SHA256SUMS.txt is mandatory and must verify
+          # cleanly with `sha256sum -c` against the artifacts we're about to
+          # publish — catches "someone uploaded a stale hash list".
+          if [ ! -s SHA256SUMS.txt ]; then
+            echo "::error title=Sidecar-verify failed::SHA256SUMS.txt missing or empty"; fail=1
+          else
+            if ! sha256sum -c --status SHA256SUMS.txt; then
+              echo "::error title=Sidecar-verify failed::SHA256SUMS.txt does not verify against artifacts"; fail=1
+            fi
+            if [ "$check_minisig" -eq 1 ] && [ ! -s SHA256SUMS.txt.minisig ]; then
+              echo "::error title=Sidecar-verify failed::SHA256SUMS.txt missing or empty .minisig"; fail=1
+            fi
+          fi
           for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
             [ -f "$f" ] || continue
             if [ ! -s "$f.sha256" ]; then
@@ -441,9 +495,9 @@ jobs:
             exit 1
           fi
           if [ "$check_minisig" -eq 1 ]; then
-            echo "All installers have .sha256 + .minisig + .intoto.jsonl sidecars."
+            echo "All installers have .sha256 + .minisig + .intoto.jsonl sidecars; SHA256SUMS.txt + .minisig present and verified."
           else
-            echo "All installers have .sha256 + .intoto.jsonl sidecars (minisig skipped — secret unset)."
+            echo "All installers have .sha256 + .intoto.jsonl sidecars; SHA256SUMS.txt present and verified (minisig skipped — secret unset)."
           fi
           ls -la
 
@@ -465,5 +519,6 @@ jobs:
             dist-flat/*.sha256
             dist-flat/*.minisig
             dist-flat/*.intoto.jsonl
+            dist-flat/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
