@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { ulid } from 'ulid';
 import { createIncidentDir, writeMeta, writeReadme, IncidentMeta } from './incident-dir';
-import { scrubHomePath } from './scrub';
+import { scrubHomePath, redactSecrets } from './scrub';
 
 export interface SerializedError { message: string; stack?: string; name?: string }
 
@@ -88,20 +88,25 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
     const dir = createIncidentDir(opts.crashRoot, id);
     const ts = new Date().toISOString();
 
+    // Apply both home-path scrub AND secret redact (frag-6-7 §6.6.3) before
+    // any crash artifact lands on disk. redactSecrets covers Authorization /
+    // Cookie headers, ANTHROPIC_API_KEY=... env-style assignments, and
+    // structured *.secret / *.apiKey property names that may appear in
+    // stack traces or stderr tails.
     if (input.stderrTail) {
       fs.writeFileSync(path.join(dir, 'stderr-tail.txt'),
-        input.stderrTail.map(scrubHomePath).join('\n') + '\n', 'utf8');
+        input.stderrTail.map(line => redactSecrets(scrubHomePath(line))).join('\n') + '\n', 'utf8');
     }
     if (input.stdoutTail) {
       fs.writeFileSync(path.join(dir, 'stdout-tail.txt'),
-        input.stdoutTail.map(scrubHomePath).join('\n') + '\n', 'utf8');
+        input.stdoutTail.map(line => redactSecrets(scrubHomePath(line))).join('\n') + '\n', 'utf8');
     }
     if (input.error) {
       fs.writeFileSync(path.join(dir, 'error.json'),
         JSON.stringify({
           name: input.error.name,
-          message: scrubHomePath(input.error.message ?? ''),
-          stack: input.error.stack ? scrubHomePath(input.error.stack) : undefined,
+          message: redactSecrets(scrubHomePath(input.error.message ?? '')),
+          stack: input.error.stack ? redactSecrets(scrubHomePath(input.error.stack)) : undefined,
         }, null, 2), 'utf8');
     }
 

@@ -28,6 +28,7 @@
 import type { IpcMain, IpcMainInvokeEvent } from 'electron';
 import { fromMainFrame } from '../security/ipcGuards';
 import type { CrashCollector, SerializedError } from '../crash/collector';
+import { redactSecrets } from '../crash/scrub';
 
 export interface RendererErrorReport {
   error: SerializedError;
@@ -109,12 +110,16 @@ export function handleRendererErrorReport(report: RendererErrorReport, deps: Han
 
   collector.recordIncident({
     surface: 'renderer',
+    // Redact secrets at the main-side trust boundary (frag-6-7 §6.6.3).
+    // We do this in main rather than in renderer so a compromised renderer
+    // can't bypass scrubbing by skipping the call. The collector also runs
+    // scrubHomePath on top of these strings.
     error: {
       name: report.error.name,
-      message: report.error.message,
-      stack: report.error.stack,
+      message: redactSecrets(report.error.message),
+      stack: report.error.stack ? redactSecrets(report.error.stack) : undefined,
     },
-    stderrTail: breadcrumbs,
+    stderrTail: breadcrumbs.map(b => redactSecrets(b)),
   });
   return { accepted: true };
 }
