@@ -1,68 +1,137 @@
-# 07 — Connect server
+# 07 — Connect-Node server scaffold
 
-> Authority: [final-architecture §2.8](../2026-05-02-final-architecture.md#2-locked-principles) (data plane = Connect-RPC over HTTP/2 on Listener A and Listener B), §2.3 (transport-keyed trust).
+## Scope
 
-## Stack
+The Connect-Node server is the daemon's data-plane surface. It is bound to **two physically separate listeners** (A + B) using the same handler set but with different interceptor chains.
 
-- **Runtime:** Node.js (existing daemon runtime; bundled via `@yao-pkg/pkg` or equivalent — see [13-packaging-and-release](./13-packaging-and-release.md)).
-- **Server library:** `@connectrpc/connect-node` over Node's built-in `http2` for Listener B and `http2` over UDS / named pipe for Listener A.
-- **Codecs:** binary (proto) primary; JSON enabled for dev ergonomics and browser future.
-- **Compression:** gzip + brotli enabled by default.
+**Why:** final-architecture §2 principles 3 + 4. Same handlers means there is exactly one implementation of every method; differing interceptors per listener is what makes trust transport-bound.
 
-## Mount layout
+## Source layout
 
 ```
 daemon/src/connect/
-├── index.ts            (entry: bind both listeners, register interceptors, mount routers)
-├── peer-cred.ts        (used by Listener A; see ch.03)
-├── jwt.ts              (used by Listener B; see ch.04)
-├── routers/
-│   ├── session.ts      (implements SessionService — bodies in ch.08 + ch.09)
-│   ├── pty.ts          (implements PtyService — bodies in ch.09)
-│   ├── db.ts           (implements DbService — bodies in ch.10)
-│   ├── control.ts      (implements ControlService)
-│   └── presence.ts     (Code.Unimplemented stub)
-└── interceptors/
-    ├── logging.ts      (structured request logs to ch.11 sink)
-    ├── error-map.ts    (maps internal errors → Connect Code)
-    └── auth-jwt.ts     (only on Listener B; thin wrapper around jwt.ts)
+  index.ts                     # public mount entrypoint, called by daemon boot
+  servers.ts                   # creates Listener A + Listener B HTTP/2 servers
+  handlers/
+    pty.ts                     # PtyService impl
+    sessions.ts                # SessionsService impl
+    db.ts                      # DbService impl
+    crash.ts                   # CrashService impl
+    daemon.ts                  # DaemonService impl (Info, SetRemoteEnabled stub, GetRemoteStatus)
+  interceptors/
+    peercred.ts                # transport-level accept guard for Listener A + supervisor
+    cf-access-jwt.ts           # JWT validator for Listener B
+    deadline.ts                # per-RPC timeout
+    logging.ts                 # structured per-RPC log + server-issued trace-id
+  peercred/
+    posix.ts                   # SO_PEERCRED / LOCAL_PEERCRED via ccsm_native
+    win32.ts                   # named-pipe peer SID via ccsm_native
+  jwks/
+    cache.ts                   # TTL + cooldown + bind-gate
+    fetch.ts                   # HTTP fetch of /cdn-cgi/access/certs
 ```
 
-## Bind order (synchronous, fail-fast)
+## Boot sequence (in `daemon/src/index.ts`)
 
-1. Read config + `dataRoot`.
-2. Create both `net.Server`s (Listener A UDS/pipe; Listener B `127.0.0.1:0`).
-3. Attach peer-cred check to Listener A's `'connection'` event ([ch.03](./03-listener-A-peer-cred.md)).
-4. Wrap both `net.Server`s with `http2.createSecureServer` (Listener B) / `http2.createServer` (Listener A — UDS, no TLS).
-   - **Listener B uses ALPN h2 over plaintext** (`http2.createServer`, not `createSecureServer`) since the consumer is `cloudflared` on the same loopback. TLS termination is at CF Edge. **Why:** §1 diagram — cloudflared is the only intended Listener B consumer; double-TLS is wasted CPU and a key-management problem.
-5. Mount Connect router on Listener A with **all** services and **only** `logging` + `error-map` interceptors (no `auth-jwt`).
-6. Mount Connect router on Listener B with **all** services and **all** interceptors including `auth-jwt`.
-7. Bind both. Either failing → exit non-zero.
-8. After both bound: write `port-tunnel` file ([ch.04](./04-listener-B-jwt.md)), update `ServerInfo`, mark `listener_a_ready` / `listener_b_ready`.
+1. Load config (data root, logger).
+2. Open SQLite (run migrations if needed; see [10](./10-sqlite-and-db-rpc.md)).
+3. Initialize PTY host module (no children spawned yet; see [09](./09-pty-host.md)).
+4. Initialize session manager (empty registry).
+5. **Mount supervisor plane** (`daemon/src/envelope/...`; see [05](./05-supervisor-control-plane.md)) — serves `/healthz` immediately, but `/healthz` returns `listenersBound: { A:false, B:false }` until step 6 completes.
+6. **Mount Connect data plane** via `daemon/src/connect/index.ts`:
+   - Create handler instances wired to PTY host / session manager / SQLite / crash collector.
+   - Build router (`@connectrpc/connect-node`'s `connectNodeAdapter` or equivalent).
+   - Spin up Listener A HTTP/2 server, bind to UDS / named pipe (see [03](./03-listener-A-peer-cred.md)).
+   - Spin up Listener B HTTP/2 server, bind to `127.0.0.1:0`, capture assigned port (see [04](./04-listener-B-jwt.md)).
+   - Both listeners MUST be listening before this step returns.
+7. Write discovery file (atomic write+rename).
+8. Set `/healthz` `listenersBound` flags to true.
+9. Log "daemon ready" with all three socket addresses.
 
-## Interceptor identity (transport-keyed trust)
+If step 6 fails for either listener, daemon exits non-zero with a structured error log. There is no "partially up" state — both listeners ready, or neither.
 
-The `auth-jwt` interceptor is registered on the Listener B Connect router only. There is **no shared interceptor list** between the two routers; the router objects are distinct constructions. **Why:** §2.3 — sharing an interceptor list invites a future contributor to add a header-bypass branch "for testing"; physically separate stacks make this structurally impossible.
+**Why bind both before discovery file:** consumers of discovery file (Electron + future cloudflared) MUST be able to connect immediately after reading the file. Atomic visibility transition.
 
-## Error model
+## Per-listener interceptor chains
 
-`interceptors/error-map.ts` maps internal errors:
-- `NotFoundError` → `Code.NotFound`
-- `ValidationError` → `Code.InvalidArgument`
-- `UnauthorizedError` → `Code.Unauthenticated` (only ever emitted on Listener B)
-- All other thrown → `Code.Internal` with sanitized message; full stack to log sink only.
+Both listeners mount the same handler set (same `ConnectRouter`). Interceptors differ:
 
-## Streaming PTY semantics
+### Listener A interceptor chain
 
-`PtyService.Write` is client-streaming; `SessionService.Subscribe` is server-streaming. Both lifetimes are bound to the underlying HTTP/2 stream; client disconnect → server-side cleanup ([ch.09](./09-pty-host.md) fan-out registry deregisters subscriber; PtyService.Write end → no PTY child kill, just stream end). **Why:** clients are subscribers ([§2.7](../2026-05-02-final-architecture.md#2-locked-principles)), not owners.
+1. **Peer-cred** (transport-level accept guard; rejects before HTTP/2 preface)
+2. **Deadline**
+3. **Logging** (server-issued trace-id)
 
-## §7.Z Zero-rework self-check
+No JWT interceptor mounted. (This is enforced by code structure: the `cf-access-jwt` interceptor is registered in the Listener B server constructor only — there is no shared "register all interceptors" function. Two server constructions, two distinct interceptor chains.)
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。Connect server 在两个 listener 上 mount 全部 service, 物理隔离的 interceptor stack, error-map / logging interceptor — 这套 scaffold 在 v0.4 加 web/iOS 时**完全沿用**: web 走 cloudflared -> Listener B (同一份 jwt interceptor 处理), iOS 同理。v0.4 不会调整 router 注册顺序、不会合并 interceptor stack (合并 = §2.3 violation)。**Why 不变:** final-architecture §2.3 (transport-keyed trust) + §2.8 (Connect on both listeners)。
+### Listener B interceptor chain
+
+1. **CF-Access JWT** (header validation — see [04](./04-listener-B-jwt.md))
+2. **Deadline**
+3. **Logging** (server-issued trace-id; identity from JWT attached)
+
+No peer-cred interceptor on Listener B. (Cloudflared connects from same machine but its job is to forward external traffic; peer-cred would falsely permit any local process forging JWT-less requests after compromising cloudflared's own UID. JWT is the only valid trust on Listener B.)
+
+**Why two server instances rather than one shared:** the security-critical invariant "Listener B requires JWT" is impossible to break by accident if the JWT interceptor is hard-wired into Listener B's server construction. A "smart" router that picks interceptor by listener is one bug away from a shared-interceptor accident. Hard separation > clever routing.
+
+## Stubbed methods (return `Unimplemented`)
+
+The following methods exist in `proto/` but the v0.3 server returns `Unimplemented` (Connect code `unimplemented`):
+
+- `DaemonService.SetRemoteEnabled` — v0.4 wires cloudflared sidecar.
+- `DaemonService.GetRemoteStatus` — returns `{enabled:false, sidecar_running:false}` always (does NOT throw `Unimplemented`; it returns a real, accurate v0.3 status).
+
+`SetRemoteEnabled` MUST throw `Unimplemented` rather than silently succeeding. A no-op success would let v0.4 client code "work" against a v0.3 daemon while the sidecar is mute.
+
+## Handler wiring contracts
+
+Handlers are constructed with explicit dependencies (no global / no module-level singletons):
+
+```ts
+// daemon/src/connect/index.ts
+export function mountConnectPlane(deps: {
+  ptyHost: PtyHost;
+  sessionManager: SessionManager;
+  db: SqliteDb;
+  crashCollector: CrashCollector;
+  daemonInfo: DaemonInfoProvider;
+  jwksCache: JwksCache;
+  config: ConnectConfig;
+}): { listenerA: Server; listenerB: Server };
+```
+
+This is required by the test strategy: handlers are unit-tested by passing fakes.
+
+## HTTP/2 settings
+
+- Listener A (UDS): default HTTP/2 settings; flow control left to libuv defaults.
+- Listener B (TCP loopback): explicit `maxConcurrentStreams` cap to bound resource use; no TLS (cloudflared terminates TLS at the edge and forwards plain HTTP/2 to loopback). MUST NOT bind a TLS server on Listener B in v0.3 — TLS on loopback adds no security, costs config (cert paths, expiry), and is not what cloudflared expects.
+
+## Removal of envelope-data-plane bootstrap
+
+The boot sequence above replaces the previous v0.3-design `mountEnvelopeAdapter` + `createDataDispatcher` calls in `daemon/src/index.ts`. Those calls are deleted (see [14 §"Files to delete"](./14-deletion-list.md)). The supervisor envelope mount remains.
+
+## Error code mapping
+
+Connect uses gRPC code mapping. Conventions:
+
+- `Unauthenticated` — JWT failures (Listener B), peer-cred failures (Listener A).
+- `PermissionDenied` — reserved; v0.3 has no per-method authz (single user). Not used.
+- `NotFound` — session id / db key absent.
+- `FailedPrecondition` — daemon in migration state (DB migration in progress).
+- `Unimplemented` — `SetRemoteEnabled` in v0.3.
+- `Internal` — handler bug; structured log with trace-id.
+
+`FailedPrecondition` during DB migration is the Connect-side mirror of the v0.3 envelope's `MIGRATION_PENDING` short-circuit (see [10 §migration](./10-sqlite-and-db-rpc.md)). Implemented as a small interceptor that consults a "DB ready" gate; reuses the existing migration-gate logic conceptually.
 
 ## Cross-refs
 
-- [03-listener-A-peer-cred](./03-listener-A-peer-cred.md), [04-listener-B-jwt](./04-listener-B-jwt.md) — auth substrate.
-- [06-proto-schema](./06-proto-schema.md) — schema source.
-- [08-session-model](./08-session-model.md), [09-pty-host](./09-pty-host.md), [10-sqlite-and-db-rpc](./10-sqlite-and-db-rpc.md) — handler bodies.
-- [11-crash-and-observability](./11-crash-and-observability.md) — log + crash sink.
+- [03 — Listener A](./03-listener-A-peer-cred.md)
+- [04 — Listener B](./04-listener-B-jwt.md)
+- [05 — Supervisor control plane (separate, runs first)](./05-supervisor-control-plane.md)
+- [06 — Proto schema (handler signatures)](./06-proto-schema.md)
+- [08 — Session model](./08-session-model.md)
+- [09 — PTY host (`PtyHost` dependency)](./09-pty-host.md)
+- [10 — SQLite + DB](./10-sqlite-and-db-rpc.md)
+- [11 — Crash collector](./11-crash-and-observability.md)
+- [14 — Deletion list (envelope data plane mount calls deleted)](./14-deletion-list.md)
