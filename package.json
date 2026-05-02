@@ -47,6 +47,7 @@
     "rebuild:natives": "node scripts/electron-rebuild-natives.cjs",
     "build:ccsm-native": "node scripts/build-ccsm-native.cjs",
     "build:uninstall-helper": "cd installer/uninstall-helper && pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip",
+    "build:uninstall-helper-mac": "bash scripts/build-mac-uninstall-helper.sh",
     "postinstall": "node scripts/postinstall.mjs",
     "proto:gen": "cd proto && buf generate",
     "setup": "node scripts/setup.cjs"
@@ -249,6 +250,10 @@
         {
           "from": "daemon/dist/ccsm-daemon-staged",
           "to": "daemon/ccsm-daemon"
+        },
+        {
+          "from": "daemon/dist/ccsm-uninstall-helper-macos-universal",
+          "to": "daemon/ccsm-uninstall-helper"
         }
       ]
     },
