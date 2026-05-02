@@ -22,11 +22,16 @@ const noUppercaseCcsmPath = require('./eslint-rules/no-uppercase-ccsm-path.js');
 // validator (Check / validateFoo / planFoo / .check) as their first
 // statement.
 const noHandlerWithoutCheck = require('./eslint-rules/no-handler-without-check.js');
+// Local custom rule: no-floating-cancellation (frag-3.5.1 §3.5.1.3).
+// Connect handlers / electron bridge that take an AbortSignal must
+// observe it (read .aborted, addEventListener, or throwIfAborted).
+const noFloatingCancellation = require('./eslint-rules/no-floating-cancellation.js');
 const ccsmLocalPlugin = {
   rules: {
     'no-direct-native-import': noDirectNativeImport,
     'no-uppercase-ccsm-path': noUppercaseCcsmPath,
     'no-handler-without-check': noHandlerWithoutCheck,
+    'no-floating-cancellation': noFloatingCancellation,
   },
 };
 
@@ -194,8 +199,32 @@ export default [
         global: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
+        Headers: 'readonly',
         URLSearchParams: 'readonly'
       }
     }
+  },
+  {
+    // ccsm-local/no-floating-cancellation — applied to:
+    //   - daemon-side Connect handlers (frag-3.5.1 §3.5.1.3 reviewer
+    //     acceptance: every handler taking `signal` must read it).
+    //   - electron-side Connect bridge (defense-in-depth: the bridge
+    //     itself threads signals; if a future call site wraps a handler
+    //     and shadows the param without observing it, this rule catches).
+    //
+    // Scoped to those directories rather than globally because most
+    // codebase code legitimately ignores aborts (UI event handlers,
+    // pure transforms, etc.) and a global policy would force pervasive
+    // disable comments.
+    files: [
+      'daemon/src/handlers/**/*.ts',
+      'electron/daemonClient/**/*.ts',
+    ],
+    plugins: {
+      'ccsm-local': ccsmLocalPlugin,
+    },
+    rules: {
+      'ccsm-local/no-floating-cancellation': 'error',
+    },
   }
 ];
