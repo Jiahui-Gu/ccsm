@@ -38,6 +38,7 @@ import { wireCrashHandlers } from './main-crash-wiring';
 import { bootDaemon, resolveControlSocketPath } from './daemon/bootDaemon';
 import { createControlClient, type ControlClient } from './daemonClient/controlClient';
 import { setUpgradeShutdownRpc } from './updater';
+import { getLogger, installCrashHooks, installRendererLogForwarder } from './log';
 
 // Phase 1 crash observability (spec §5.1, plan Task 2):
 //   * crashReporter.start with empty submitURL + uploadToServer:false enables
@@ -67,6 +68,16 @@ const crashCollector = startCrashCollector({
 });
 
 wireCrashHandlers({ collector: crashCollector, processRef: process });
+
+// v0.3 task #125 / frag-6-7 §6.6.2: structured pino logger + pino.final
+// hooks. Installed AFTER the crash collector / wireCrashHandlers so the
+// Sentry + crash-incident-dir paths still own the dmp + meta.json
+// artifacts; the pino logger is the structured-line peer of the daemon
+// logger (cross-side trace correlation). Renderer console-forward is
+// gated by CCSM_RENDERER_LOG_FORWARD=1 (default OFF in production).
+const electronLogger = getLogger({ appVersion: app.getVersion() });
+installCrashHooks(app, { logger: electronLogger });
+installRendererLogForwarder(ipcMain, { logger: electronLogger });
 
 app.on('render-process-gone', (_e, _webContents, details) => {
   crashCollector.recordIncident({

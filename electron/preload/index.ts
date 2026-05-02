@@ -13,12 +13,17 @@ import { installCcsmPtyBridge } from './bridges/ccsmPty';
 import { installCcsmSessionBridge } from './bridges/ccsmSession';
 import { installCcsmNotifyBridge } from './bridges/ccsmNotify';
 import { installCcsmSessionTitlesBridge } from './bridges/ccsmSessionTitles';
+import { installCcsmLogBridge } from './bridges/ccsmLog';
 
 installCcsmCoreBridge();
 installCcsmPtyBridge();
 installCcsmSessionBridge();
 installCcsmNotifyBridge();
 installCcsmSessionTitlesBridge();
+// v0.3 task #125 / frag-6-7 §6.6.2: renderer console-forward (gated by
+// CCSM_RENDERER_LOG_FORWARD=1). No-op when the env flag is off, so this
+// install is unconditional.
+installCcsmLogBridge();
 
 export type { CCSMAPI } from './bridges/ccsmCore';
 export type { CCSMPtyAPI } from './bridges/ccsmPty';
