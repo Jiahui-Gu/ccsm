@@ -17,21 +17,29 @@ the failure at the earliest, most diagnostic point: install.
 {
   "engines": {
     "node": "22.x",
-    "pnpm": "10.x"
+    "pnpm": ">=10.33.2 <11"
   }
 }
 ```
 
-Why ranges (`22.x`, `10.x`) and not exact pins:
+Why ranges (`22.x`, `>=10.33.2 <11`) and not bare exact pins:
 
-- The exact pin is already enforced elsewhere — Node by `.nvmrc` + CI
-  setup-node; pnpm by `packageManager` + Corepack.
+- The exact patch pin is already enforced elsewhere — Node by `.nvmrc` + CI
+  setup-node; pnpm by `packageManager: pnpm@10.33.2` + Corepack.
 - The role of `engines` is the BACKSTOP: catch the case where someone
-  bypassed `.nvmrc` (e.g. using a system Node 18 without nvm) and tried to
-  `pnpm install` anyway. A range is enough to catch that.
-- Tightening to `22.11.0` here would mean every Node patch bump requires a
-  `package.json` PR, which buys nothing because `.nvmrc` is already the
-  living pin.
+  bypassed `.nvmrc` (e.g. using a system Node 18 without nvm) OR bypassed
+  Corepack (e.g. set `COREPACK_ENABLE_STRICT=0` and ran an older `pnpm`
+  manually) and tried to `pnpm install` anyway.
+- `engines.pnpm` is `>=10.33.2 <11` (NOT `10.x`) so the backstop is at
+  least as tight as `packageManager`. A loose `10.x` range would accept
+  pnpm 10.0.0, which can produce different peer-dep / optional-dep
+  resolutions than 10.33.2, making the engine-strict gate weaker than the
+  primary lock. When `packageManager` is bumped to a new pnpm patch, both
+  `packageManager` and `engines.pnpm` lower bound bump together (single
+  coordinated change; Renovate v0.4 will keep them in sync).
+- `engines.node: "22.x"` stays a range (not `22.11.0`) because `.nvmrc`
+  already pins the major and we want the latest 22.x security patch on
+  every install (see ch02 §file contents).
 
 ## Root `.npmrc`
 
@@ -50,15 +58,19 @@ committed: a per-machine setting cannot enforce a project-wide policy.
 
 ### Existing `.npmrc` content interaction
 
-The repo's current `.npmrc` already contains:
+The repo's current `.npmrc` (verified on `working` branch) contains ONLY:
 
 ```ini
 clang=0
 ```
 
 (present to keep `@electron/node-gyp` from selecting ClangCL on Windows
-fresh checkouts). We APPEND `engine-strict=true`; we do NOT replace. The
-final file:
+fresh checkouts). Neither `engine-strict` nor `node-linker` is present on
+`working` today. PR D APPENDS both; it does NOT replace. **This chapter
+(ch04) is the canonical spec location for the `node-linker=hoisted`
+addition** — ch03 §workspace configuration cross-references here for the
+mechanism, and ch06 PR D file list cites ch04 for the exact final-file
+content. The final file after PR D:
 
 ```ini
 # Node 22+ defaults process.config.variables.clang=1 on Windows, which
@@ -173,3 +185,9 @@ day-one constraint, not a transition.
   `COREPACK_ENABLE_STRICT=0 pnpm install`) fails with the pnpm-version
   variant of the same error.
 - `pnpm install` on Node 22 + Corepack-resolved pnpm 10.33.2 succeeds.
+- **Frozen-lockfile drift gate**: on a host where `package.json` has been
+  hand-edited to add a phantom dep without re-running install,
+  `pnpm install --frozen-lockfile` exits non-zero (NOT silently rewriting
+  the lockfile). This is the supply-chain control that makes the engine
+  pin meaningful — without it, a contributor with the wrong pnpm could
+  still drift the lockfile silently.

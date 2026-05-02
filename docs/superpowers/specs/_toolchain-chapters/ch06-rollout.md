@@ -18,9 +18,10 @@ which have historical friction with pnpm migration.
 ### Sequence
 
 1. **PR A (low-risk): add `.nvmrc`, bump CI to Node 22.**
-   - Files: `.nvmrc` (new), `.github/workflows/ci.yml` (node-version → 22),
-     `.github/workflows/e2e.yml` (same), `.github/workflows/release.yml`
-     (same).
+   - Files: `.nvmrc` (new), `.github/workflows/ci.yml` (node-version → 22
+     AND `Cache node_modules` key literal `node20` → `node22` per ch05
+     §cache key migration note PR A sub-fix), `.github/workflows/e2e.yml`
+     (same), `.github/workflows/release.yml` (same).
    - Risk: Node 20 → 22 jump. Mitigation: full CI matrix (Linux/macOS/Windows)
      must pass before merge. If a dep breaks on Node 22, fix that dep first
      (separate PR).
@@ -39,13 +40,44 @@ which have historical friction with pnpm migration.
      window. Provides upgrade instructions (link to PR B doc).
 
 4. **PR D (high-risk): pnpm migration + engine-strict.**
-   - Files: `package.json` (`packageManager` field — already present from
-     PR #848; `engines` field — new), root `.npmrc` (add `engine-strict=true`,
-     `node-linker=hoisted`), all `package.json#scripts` (npm → pnpm),
-     `pnpm-lock.yaml` (new, replaces `package-lock.json`),
-     `package-lock.json` (deleted), `.github/workflows/*.yml`
-     (`npm ci` → `pnpm install --frozen-lockfile`, cache step changes),
-     release-candidate verify added.
+   - Files NEWLY created in PR D: `engines` field added to root + each
+     `packages/*/package.json`; `engine-strict=true` and `node-linker=hoisted`
+     APPENDED to existing root `.npmrc` (which today contains only `clang=0`
+     — see ch04 §existing `.npmrc` content interaction); release-candidate
+     verify block in `scripts/release-candidate.sh`.
+   - Files MODIFIED: `package.json#scripts` (only the lines that shell out to
+     a package manager — most `tsc`/`vitest`/`eslint` calls don't need
+     changes); `.github/workflows/{ci,e2e,release}.yml` (`npm ci
+     --legacy-peer-deps` → `pnpm install --frozen-lockfile`, cache step
+     changes per ch05).
+   - Files REGENERATED: `pnpm-lock.yaml` (already exists on `working` from
+     PR #848 / 81ddaca, but its provenance is unknown; PR D regenerates it
+     under the pinned toolchain — see preflight below).
+   - Files DELETED: `package-lock.json` (still present alongside
+     `pnpm-lock.yaml` on `working` today; the dual-lockfile state is the
+     synchronization gap PR D closes).
+   - Files PRESERVED AS-IS: `pnpm-workspace.yaml`, `packages/*` skeletons
+     (already correct from PR #848); `packageManager` field in root
+     `package.json` (already `pnpm@10.33.2`; PR D may add the `+sha512.<hash>`
+     integrity suffix per ch03 §decision).
+   - **Synchronization invariant**: the moment CI flips to `pnpm install
+     --frozen-lockfile`, `package-lock.json` MUST be removed in the same
+     commit; otherwise `npm ci` continues to "work" locally and silently
+     diverges from CI. This is the entire reason PR D exists as ONE atomic
+     change.
+   - **Lockfile-provenance preflight (run BEFORE pushing PR D)**: on a host
+     where `node --version` matches `.nvmrc` (Node 22.x) and `pnpm --version`
+     matches `packageManager` (10.33.2 from Corepack), execute:
+     ```bash
+     rm pnpm-lock.yaml package-lock.json
+     pnpm install
+     git add pnpm-lock.yaml
+     ```
+     Commit the regenerated `pnpm-lock.yaml` in PR D. This guarantees the
+     shipped lockfile is provenance-pinned to the pinned toolchain so the
+     first contributor's `pnpm install --frozen-lockfile` post-merge
+     succeeds without checksum mismatch on native deps (`better-sqlite3`,
+     `node-pty`).
    - Risk: HIGH. Lockfile format change, package manager change, install
      mechanism change, all in one atomic PR.
    - Why atomic: half-migrated state (e.g. pnpm-lock.yaml present but
@@ -54,7 +86,7 @@ which have historical friction with pnpm migration.
      interactions); reverse-verify matrix from `ch05 §reverse-verify matrix`
      run by hand on 3 environments before merge; pinned rollback note in
      PR description with the exact commands to revert.
-   - Rollback: revert PR D restores npm; package-lock.json comes back from
+   - Rollback: revert PR D restores npm; `package-lock.json` comes back from
      git. PR A/B are independent and stay.
 
 ### Why FOUR PRs, not one
@@ -142,6 +174,15 @@ fails," the diagnostic order is:
 5. **Last resort: `rm -rf node_modules pnpm-lock.yaml && pnpm install`**.
    Nuclear, but recoverable because lockfile regenerates from `package.json`.
    Only safe in a clean checkout (no local `package.json` edits).
+6. **Corepack signature error behind corporate proxy**: if `pnpm install`
+   fails with `Error: Cannot find matching keyid` (Corepack 0.31+ verifies
+   signatures of downloaded package-manager tarballs against npm registry
+   keys), the contributor's network is likely blocking
+   `https://registry.npmjs.org`. Fix: point Corepack at an internal mirror
+   via `COREPACK_NPM_REGISTRY=<internal-mirror-url>` in the shell profile;
+   as a last resort, set `COREPACK_INTEGRITY_KEYS=0` to fall back to
+   TLS-only trust. See nodejs/corepack#612 and ch03 §onboarding flow
+   footnote.
 
 This playbook is referenced from CONTRIBUTING.md as "If install fails, see
 TOOLCHAIN-DEBUG.md" — but the content lives ONLY in CONTRIBUTING.md (no
@@ -153,12 +194,31 @@ over time.
 The toolchain-lock initiative is "shipped" when:
 
 - v0.2 PR A, B, D are all merged on `working` branch.
+- PR C announcement was posted ≥7 days before PR D merged (PR C is
+  process-only and not directly testable as a merged commit; this bullet
+  lets a tester verify the 1-week grace window was honored by checking the
+  pinned issue / discussion timestamp against PR D's merge timestamp).
 - CI on `working` is green for 3 consecutive days.
 - Reverse-verify matrix passes on rows 1-3.
-- v0.3 monorepo scaffold (separate spec, daemon-split ch11) lands on top
-  of the locked toolchain without modifying any toolchain file.
+- v0.3 monorepo scaffold (already on `working` since PR #848 / 81ddaca) is
+  verified compatible with the pinned toolchain — i.e. PR D lands on top of
+  the existing scaffold without requiring any change to
+  `pnpm-workspace.yaml` or `packages/*` skeleton structure.
 - Zero open issues mentioning "ERR_PNPM_UNSUPPORTED_ENGINE" or
   "wrong Node version" in the past 7 days (i.e. contributors have absorbed
   the change).
 
-When all five conditions hold, declare done and close the parent task.
+When all six conditions hold, declare done and close the parent task.
+
+## v0.4 forward-compat: daemon binary packaging
+
+The v0.4 daemon-split work will package `@ccsm/daemon` as a single binary
+(via `sea` / `pkg` / `@yao-pkg/pkg` — final tool TBD in daemon-split spec).
+That packager INHERITS this toolchain pin: it embeds whatever Node the
+project's `.nvmrc` says, and the binary's runtime ABI matches what
+`pnpm-lock.yaml` resolved against. **No separate toolchain pin is needed
+for the daemon binary** — bumping `.nvmrc` is the single coordinated change
+that bumps the daemon binary's embedded Node too. Verification step (added
+in v0.4 daemon-split spec, not here): `./dist/ccsm_native --version` reports
+a Node major matching `.nvmrc`. This forward-compat note exists so v0.4
+work doesn't introduce a parallel "daemon toolchain pin" file.

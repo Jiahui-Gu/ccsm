@@ -88,6 +88,18 @@ The cache key changes (from `nm-…-${hashFiles('package-lock.json')}` to
 and will be evicted by GitHub's 7-day LRU policy. Why this is fine: it's a
 one-time migration cost; subsequent builds populate the new key.
 
+**PR A cache-key sub-fix (must ship in PR A, not deferred to PR D):** the
+current `Cache node_modules` step on `working` embeds the literal string
+`node20` in its key (`nm-…-node20-${hashFiles('package-lock.json')}`). PR A
+bumps the runtime to Node 22 but stays on `npm ci` (engine-strict not yet
+on). If the `node20` literal is left unchanged, all PR A builds get a
+cache HIT on a `node_modules/` rebuilt against Node 20 ABI; native modules
+(`better-sqlite3`, `node-pty`) then load against Node 22 →
+`NODE_MODULE_VERSION` mismatch → mysterious CI failure on the PR that's
+supposed to be "low-risk". Fix: PR A renames the literal to `node22` (or
+to `${{ steps.setup.outputs.node-version }}` to be self-updating). This is
+part of the same low-risk PR because it's the same Node-version concern.
+
 ### Why `pnpm install` is unconditional (no `if: cache-miss` guard)
 
 `pnpm install --frozen-lockfile` against a populated store is fast (~5-10s)
@@ -154,6 +166,19 @@ gains a preflight block before any build/publish step:
 set -euo pipefail
 
 # --- toolchain verify ---------------------------------------------------
+# Precheck: ensure the tools we need are on PATH so we can produce a
+# diagnostic error rather than 'command not found'. This matters most on
+# Windows Git Bash freshly-cloned hosts where Node may not be on PATH at
+# all (no nvm/fnm) and where Corepack hasn't yet prepared pnpm.
+command -v node >/dev/null 2>&1 || {
+  echo "FATAL: 'node' not on PATH. Install via fnm/nvm and run 'nvm use'."
+  exit 1
+}
+command -v pnpm >/dev/null 2>&1 || {
+  echo "FATAL: 'pnpm' not on PATH. Run 'corepack enable'."
+  exit 1
+}
+
 expected_node=$(cat .nvmrc)
 actual_node_major=$(node -p 'process.versions.node.split(".")[0]')
 if [[ "${actual_node_major}" != "${expected_node}" ]]; then
@@ -162,7 +187,7 @@ if [[ "${actual_node_major}" != "${expected_node}" ]]; then
   exit 1
 fi
 
-expected_pnpm=$(node -p "require('./package.json').packageManager.split('@')[1]")
+expected_pnpm=$(node -p "require('./package.json').packageManager.split('@')[1].split('+')[0]")
 actual_pnpm=$(pnpm --version)
 if [[ "${actual_pnpm}" != "${expected_pnpm}" ]]; then
   echo "FATAL: pnpm ${actual_pnpm}, package.json wants ${expected_pnpm}"
@@ -206,13 +231,18 @@ visibility.
 
 ### Per-row pass criteria
 
-For each row:
+For each row, run the explicit command sequence (NOT just "no lockfile
+diff" as a soft observation):
 
-- `pnpm install --frozen-lockfile` exits 0 with no lockfile diff.
+- `pnpm install --frozen-lockfile && git diff --exit-code pnpm-lock.yaml`
+  exits 0 — frozen-lockfile is the supply-chain drift gate; explicit
+  `git diff --exit-code` makes drift visible even if `--frozen-lockfile`
+  somehow accepted a mutation.
 - `pnpm test` (or `npm test` for v0.2 pre-migration) exits 0.
 - `pnpm rebuild better-sqlite3` exits 0 (proves native ABI alignment).
 - `node --version` matches `.nvmrc`.
-- `pnpm --version` matches `packageManager`.
+- `pnpm --version` matches `packageManager` (strip the `+sha512.<hash>`
+  suffix for the comparison).
 
 Failures on any row block the rollout. Diagnostic playbook in
 `ch06 §contributor-environment fallback`.

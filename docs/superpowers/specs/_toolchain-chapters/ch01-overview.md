@@ -114,6 +114,16 @@ matrix testing) layers on; it does not replace.
 - **final-architecture spec** (`docs/superpowers/specs/2026-05-02-final-architecture.md`)
   is v0.4 product topology. It assumes a working toolchain; it does not
   speak to how that toolchain is pinned. No conflict.
+- **v0.4 daemon-binary packaging.** v0.4 will package `@ccsm/daemon` as a
+  single binary (via `sea` / `pkg` / `@yao-pkg/pkg` — final tool TBD in
+  daemon-split spec). That packager INHERITS this toolchain pin: it embeds
+  whatever Node `.nvmrc` specifies, and the binary's runtime ABI matches
+  what `pnpm-lock.yaml` resolved against. Bumping `.nvmrc` is the single
+  coordinated change that bumps the daemon binary's embedded Node too.
+  See ch06 §v0.4 forward-compat. No separate daemon-toolchain pin file is
+  needed; this spec's pin IS the v0.4 daemon binary's pin. The
+  Connect-Node server (`@connectrpc/connect-node`, pure JS) is also Node 22
+  compatible — no adjustment needed at the toolchain layer.
 
 ## Reading order
 
