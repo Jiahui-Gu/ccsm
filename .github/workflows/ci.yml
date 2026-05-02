@@ -30,12 +30,25 @@ jobs:
 
       - name: Setup Node (from daemon/.nvmrc)
         # Single-source-of-truth: daemon/.nvmrc pins the daemon Node
-        # target (currently 22.11.0). All workflows read from it so a
+        # target (currently 22.18.0). All workflows read from it so a
         # bump there propagates everywhere — frag-11 §11.5 + Task #135.
         uses: actions/setup-node@v4
         with:
           node-version-file: daemon/.nvmrc
           cache: 'npm'
+
+      - name: Echo build env
+        # Task #164 — make local==CI debuggable. If a future drift
+        # happens, the first thing to compare is node/npm/os.
+        run: |
+          node -v
+          npm -v
+          uname -a || ver
+
+      - name: Verify lockfile is in sync with package.json
+        # Task #164 — fail loud if anyone forgets to commit lockfile
+        # changes alongside package.json edits.
+        run: git diff --exit-code package.json package-lock.json
 
       # Linux native builds for better-sqlite3 need python + build tools; the
       # GitHub-hosted ubuntu image already has them, but setup-python makes
@@ -64,7 +77,7 @@ jobs:
           # here) AND daemon/package-lock.json if/when it appears, so a
           # daemon-local lockfile change also busts the cache. `node22`
           # tracks daemon/.nvmrc — bump in lockstep when .nvmrc bumps.
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-18-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
