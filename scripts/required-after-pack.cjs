@@ -16,6 +16,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const daemonGuard = require('./daemon-binary-guard.cjs');
 
 // app-builder-lib's Arch enum: 0=ia32, 1=x64, 2=armv7l, 3=arm64.
 const ARCH_NAMES = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64' };
@@ -148,12 +149,26 @@ async function validate(context) {
   const extra = checkExtraResources(resourcesDir, electronPlatformName);
   const asar = checkAsarUnpacked(resourcesDir);
 
+  // Task #114 — daemon binary integrity guard. Existence was already
+  // enforced by checkExtraResources above; here we additionally assert
+  // the file is non-zero, plausibly large, and starts with the expected
+  // platform magic. Catches placeholder fallbacks, truncated pkg writes,
+  // and wrong-platform artifacts. Signature verification is OUT OF SCOPE
+  // (PR #116 owns the signed-binary check).
+  const ext = electronPlatformName === 'win32' ? '.exe' : '';
+  const daemonBinPath = path.join(resourcesDir, `daemon/ccsm-daemon${ext}`);
+  const daemonResult = daemonGuard.assertDaemonBinary(
+    daemonBinPath,
+    electronPlatformName,
+  );
+
   console.log(
     `[required-after-pack] OK ${electronPlatformName}-${archName}: ` +
       `${extra.length} extraResources verified at ${resourcesDir}; ` +
       (asar.skipped
-        ? `asarUnpack stage skipped (${asar.reason}).`
-        : `${asar.count} asarUnpack addons verified.`),
+        ? `asarUnpack stage skipped (${asar.reason}); `
+        : `${asar.count} asarUnpack addons verified; `) +
+      `daemon binary OK (${(daemonResult.size / 1024 / 1024).toFixed(1)} MiB, ${daemonResult.magic}).`,
   );
 }
 

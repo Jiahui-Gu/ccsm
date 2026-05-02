@@ -18,6 +18,26 @@ const hook = require('../scripts/required-after-pack.cjs') as {
   resolveResourcesDir: (appOutDir: string, platform: string) => string;
 };
 
+// Magic-byte heads used to forge a "valid" daemon binary in the test
+// fixture so the Task #114 guard accepts it. Mirrors scripts/daemon-
+// binary-guard.cjs MAGIC table; kept inline here to keep the test
+// independent of the guard's internal table layout.
+const PLATFORM_MAGIC: Record<string, number[]> = {
+  win32: [0x4d, 0x5a],
+  darwin: [0xcf, 0xfa, 0xed, 0xfe],
+  linux: [0x7f, 0x45, 0x4c, 0x46],
+};
+
+// Slightly above the guard's 1 MiB minimum.
+const DAEMON_FAKE_SIZE = 1024 * 1024 + 16;
+
+function makeFakeDaemonBuffer(platform: string): Buffer {
+  const magic = PLATFORM_MAGIC[platform] ?? PLATFORM_MAGIC.linux;
+  const buf = Buffer.alloc(DAEMON_FAKE_SIZE);
+  for (let i = 0; i < magic.length; i++) buf[i] = magic[i];
+  return buf;
+}
+
 interface PackContext {
   appOutDir: string;
   electronPlatformName: string;
@@ -34,8 +54,19 @@ function touch(file: string, body = 'x'): void {
 }
 
 function stageExtraResources(resourcesDir: string, platform: string): void {
+  const ext = platform === 'win32' ? '.exe' : '';
+  const daemonRel = `daemon/ccsm-daemon${ext}`;
   for (const rel of hook.requiredExtraResources(platform)) {
-    touch(path.join(resourcesDir, rel), 'stub');
+    if (rel === daemonRel) {
+      // Daemon binary needs to satisfy the Task #114 guard: >= 1 MiB and
+      // valid platform magic bytes. Write a forged buffer just above the
+      // threshold with the right header.
+      const target = path.join(resourcesDir, rel);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, makeFakeDaemonBuffer(platform));
+    } else {
+      touch(path.join(resourcesDir, rel), 'stub');
+    }
   }
 }
 
@@ -218,4 +249,84 @@ describe('required-after-pack: spec contract', () => {
       expect(list.some((x) => x.endsWith('.exe'))).toBe(false);
     }
   });
+});
+
+// Task #114 — daemon binary integrity guard, exercised through validate().
+// daemon-binary-guard has its own unit tests in tests/daemon-binary-guard
+// .test.ts; this block confirms the guard is wired into the after-pack
+// hook and that the failure surface includes the daemon binary path.
+describe('required-after-pack: Task #114 daemon binary guard', () => {
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const ext = platform === 'win32' ? '.exe' : '';
+    const daemonRel = `daemon/ccsm-daemon${ext}`;
+
+    it(`${platform}: fails when daemon binary is zero-byte`, async () => {
+      const { appOutDir, resourcesDir } = tracked(platform);
+      stageExtraResources(resourcesDir, platform);
+      stageAsarUnpacked(resourcesDir);
+      // Truncate daemon binary to zero bytes (the bug this task targets).
+      const daemonAbs = path.join(resourcesDir, daemonRel);
+      fs.writeFileSync(daemonAbs, '');
+      await expect(
+        hook.validate({ appOutDir, electronPlatformName: platform, arch: 1 }),
+      ).rejects.toThrow(/zero-byte/);
+    });
+
+    it(`${platform}: fails when daemon binary is below 1 MiB threshold`, async () => {
+      const { appOutDir, resourcesDir } = tracked(platform);
+      stageExtraResources(resourcesDir, platform);
+      stageAsarUnpacked(resourcesDir);
+      // Replace with a few KiB of correct-magic bytes — passes existence
+      // but should fail size check (real daemon is ~108 MB; 1 MiB minimum).
+      const daemonAbs = path.join(resourcesDir, daemonRel);
+      const small = Buffer.alloc(4096);
+      const magic = PLATFORM_MAGIC[platform];
+      for (let i = 0; i < magic.length; i++) small[i] = magic[i];
+      fs.writeFileSync(daemonAbs, small);
+      await expect(
+        hook.validate({ appOutDir, electronPlatformName: platform, arch: 1 }),
+      ).rejects.toThrow(/suspiciously small/);
+    });
+
+    it(`${platform}: surfaces placeholder marker text in size-failure message`, async () => {
+      const { appOutDir, resourcesDir } = tracked(platform);
+      stageExtraResources(resourcesDir, platform);
+      stageAsarUnpacked(resourcesDir);
+      // Mimic before-pack.cjs stagePlaceholder() output.
+      const daemonAbs = path.join(resourcesDir, daemonRel);
+      fs.writeFileSync(
+        daemonAbs,
+        `placeholder: daemon binary for ${platform}-x64 not yet built\n`,
+      );
+      await expect(
+        hook.validate({ appOutDir, electronPlatformName: platform, arch: 1 }),
+      ).rejects.toThrow(/placeholder marker/);
+    });
+
+    it(`${platform}: fails when daemon binary has wrong-platform magic bytes`, async () => {
+      const { appOutDir, resourcesDir } = tracked(platform);
+      stageExtraResources(resourcesDir, platform);
+      stageAsarUnpacked(resourcesDir);
+      const daemonAbs = path.join(resourcesDir, daemonRel);
+      // Write >= 1 MiB but with garbage header bytes — none of PE/Mach-O/ELF.
+      const buf = Buffer.alloc(DAEMON_FAKE_SIZE);
+      buf[0] = 0x00; buf[1] = 0x01; buf[2] = 0x02; buf[3] = 0x03;
+      fs.writeFileSync(daemonAbs, buf);
+      await expect(
+        hook.validate({ appOutDir, electronPlatformName: platform, arch: 1 }),
+      ).rejects.toThrow(/magic-byte mismatch/);
+    });
+
+    it(`${platform}: passes when daemon binary is well-formed (size + magic)`, async () => {
+      const { appOutDir, resourcesDir } = tracked(platform);
+      stageExtraResources(resourcesDir, platform);
+      stageAsarUnpacked(resourcesDir);
+      // stageExtraResources already wrote a valid forged binary; this
+      // assertion locks the happy path so a future regression in the
+      // forging helper or the guard itself is caught here too.
+      await expect(
+        hook.validate({ appOutDir, electronPlatformName: platform, arch: 1 }),
+      ).resolves.toBeUndefined();
+    });
+  }
 });

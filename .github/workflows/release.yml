@@ -134,6 +134,17 @@ jobs:
       - name: Build daemon binary
         run: npm run build:daemon-bin
 
+      # Task #114 — fail-fast CI gate. Asserts the freshly-built daemon
+      # binary is non-zero, >= 1 MiB, and starts with the host platform's
+      # expected magic bytes (PE / Mach-O / ELF) before electron-builder
+      # consumes it. Catches pkg silent failures and wrong-target artifacts
+      # at the daemon-build step rather than inside the (much slower)
+      # electron-builder pack step. The same guard re-runs inside the
+      # after-pack hook (scripts/required-after-pack.cjs) on the post-pack
+      # staged copy as defence-in-depth.
+      - name: Verify daemon binary integrity
+        run: node scripts/verify-staged-daemon.cjs
+
       # electron-builder invocation per OS. `--publish never` because we
       # upload via softprops/action-gh-release below — that gives us a
       # single source of release metadata and keeps `publish: github` in
