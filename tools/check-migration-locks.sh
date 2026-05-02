@@ -54,6 +54,11 @@ if [ "$GH_STATUS" -ne 0 ] || [ -z "$RELEASE_BODY" ]; then
   exit 0
 fi
 
+# Strip CRLF — `gh release view` on Windows runners (Git Bash) can return
+# release bodies with `\r\n` line endings; POSIX `[[:space:]]` matching of
+# `\r` varies across awk implementations (mawk vs gawk), so normalize early.
+RELEASE_BODY="$(printf '%s' "$RELEASE_BODY" | tr -d '\r')"
+
 # --- pick a sha256 implementation -------------------------------------------
 # Prints the hex digest of the file passed as $1 to stdout, nothing else.
 sha256_of() {

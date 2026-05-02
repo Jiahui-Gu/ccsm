@@ -20,12 +20,15 @@
 
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 // Paths are resolved relative to the daemon package root (parent of test/).
-// __dirname under vitest points at this file's directory.
+// Project is ESM (no CommonJS `__dirname`); derive it from `import.meta.url`.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const DAEMON_ROOT = resolve(__dirname, '..', '..');
 const MIGRATIONS_DIR = join(DAEMON_ROOT, 'src', 'db', 'migrations');
 const LOCKED_TS_PATH = join(DAEMON_ROOT, 'src', 'db', 'locked.ts');
@@ -47,9 +50,12 @@ describe.skipIf(!lockedTsExists)('migration-lock (runtime self-check)', () => {
   // spec to one particular export style — Task #56 picks the shape; this
   // spec just needs (filename, sha256) pairs.
   const lockedSrc = readFileSync(LOCKED_TS_PATH, 'utf8');
+  // Strip `//` line comments so a stale commented-out hash (e.g. left during
+  // a migration rename) does not produce a false-positive match below.
+  const lockedSrcStripped = lockedSrc.replace(/\/\/.*$/gm, '');
   const entryRe = /['"]([0-9]{3}_[A-Za-z0-9_-]+\.sql)['"]\s*[:,]\s*['"]([0-9a-fA-F]{64})['"]/g;
   const recorded = new Map<string, string>();
-  for (const m of lockedSrc.matchAll(entryRe)) {
+  for (const m of lockedSrcStripped.matchAll(entryRe)) {
     recorded.set(m[1], m[2].toLowerCase());
   }
 
