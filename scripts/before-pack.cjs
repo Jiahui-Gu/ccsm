@@ -167,20 +167,43 @@ function stageUninstallHelper(electronPlatformName) {
   // directly; this stage step exists only to (a) emit a placeholder when
   // the toolchain hasn't run yet (pre-T54 build worker), so the smoke
   // build doesn't fail, and (b) document the dependency in one place.
-  if (electronPlatformName !== 'win32') return;
-
-  const dst = path.join(REPO_ROOT, 'daemon', 'dist', 'ccsm-uninstall-helper.exe');
-  if (fs.existsSync(dst)) {
-    console.log('[before-pack] uninstall helper present (built by build:uninstall-helper)');
+  if (electronPlatformName === 'win32') {
+    const dst = path.join(REPO_ROOT, 'daemon', 'dist', 'ccsm-uninstall-helper.exe');
+    if (fs.existsSync(dst)) {
+      console.log('[before-pack] uninstall helper present (built by build:uninstall-helper)');
+      return;
+    }
+    console.warn(
+      `[before-pack] WARN uninstall helper missing: ${dst}. ` +
+        `Run \`npm run build:uninstall-helper\` (requires @yao-pkg/pkg). ` +
+        `Falling back to placeholder for smoke builds; T57 after-pack ` +
+        `validation will fail the build once the helper is wired into CI.`,
+    );
+    stagePlaceholder(dst, 'ccsm-uninstall-helper.exe');
     return;
   }
-  console.warn(
-    `[before-pack] WARN uninstall helper missing: ${dst}. ` +
-      `Run \`npm run build:uninstall-helper\` (requires @yao-pkg/pkg). ` +
-      `Falling back to placeholder for smoke builds; T57 after-pack ` +
-      `validation will fail the build once the helper is wired into CI.`,
-  );
-  stagePlaceholder(dst, 'ccsm-uninstall-helper.exe');
+
+  // Task #136 (frag-11 §11.6.4) — macOS Mach-O uninstall helper. Built by
+  // scripts/build-mac-uninstall-helper.sh (single + universal Mach-O via
+  // swiftc + lipo). The mac extraResources row in package.json points at
+  // the universal artifact; same placeholder-safe contract as Windows so
+  // local smoke builds on a non-mac host (which can't run swiftc) don't
+  // fail electron-builder pack.
+  if (electronPlatformName === 'darwin') {
+    const dst = path.join(REPO_ROOT, 'daemon', 'dist', 'ccsm-uninstall-helper-macos-universal');
+    if (fs.existsSync(dst)) {
+      console.log('[before-pack] mac uninstall helper present (built by build:uninstall-helper-mac)');
+      return;
+    }
+    console.warn(
+      `[before-pack] WARN mac uninstall helper missing: ${dst}. ` +
+        `Run \`npm run build:uninstall-helper-mac\` (requires macOS + xcode-select). ` +
+        `Falling back to placeholder for smoke builds; release.yml mac job ` +
+        `runs the real build script before electron-builder pack.`,
+    );
+    stagePlaceholder(dst, 'ccsm-uninstall-helper-macos-universal');
+    return;
+  }
 }
 
 function stageDaemonDeps() {

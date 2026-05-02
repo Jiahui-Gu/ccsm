@@ -134,6 +134,46 @@ jobs:
       - name: Build daemon binary
         run: npm run build:daemon-bin
 
+      # Task #136 (frag-11 §11.6.4) — Build the macOS Mach-O uninstall
+      # helper. Produces three artifacts in daemon/dist/:
+      #   ccsm-uninstall-helper-macos-x64        (thin Mach-O 64-bit x86_64)
+      #   ccsm-uninstall-helper-macos-arm64      (thin Mach-O 64-bit arm64)
+      #   ccsm-uninstall-helper-macos-universal  (fat Mach-O CAFEBABE)
+      # The build script itself runs the `file` + magic-byte verification
+      # gate (frag-11 §11.6.4 spec language: "CAFEBABE"). The universal
+      # binary is consumed by electron-builder's `mac.extraResources`
+      # block in package.json (placed at Contents/Resources/daemon/
+      # ccsm-uninstall-helper inside CCSM.app); the per-arch thin binaries
+      # are picked up by the codesign loop (sign-macos.cjs Mach-O magic
+      # detection — already extension-agnostic, no changes needed there).
+      # Behaviour smoke (Gates §3): after build, run the universal binary
+      # with --dry-run --data-root <fake> against a known-empty path so
+      # we exercise the parseArgs/decideActions/executeActions path on the
+      # CI runner. Real kill/rm semantics are exercised at install/
+      # uninstall e2e time, not here.
+      - name: Build macOS uninstall helper (Mach-O)
+        if: matrix.platform == 'mac'
+        run: |
+          chmod +x scripts/build-mac-uninstall-helper.sh
+          scripts/build-mac-uninstall-helper.sh
+
+      - name: Smoke test macOS uninstall helper (--dry-run)
+        if: matrix.platform == 'mac'
+        run: |
+          set -euo pipefail
+          BIN=daemon/dist/ccsm-uninstall-helper-macos-universal
+          # --help exits 0
+          "$BIN" --help >/dev/null
+          # --dry-run --purge against a path that almost certainly does not
+          # exist — exercises full decider path; sink logs DRY-RUN lines
+          # but mutates nothing. Exit 0 expected (idempotent on missing
+          # lockfile + missing data root).
+          FAKE_ROOT="/tmp/ccsm-uninstall-helper-smoke-$$"
+          "$BIN" --dry-run --purge --data-root "$FAKE_ROOT"
+          # Confirm it really didn't create anything.
+          test ! -e "$FAKE_ROOT"
+          echo "smoke OK: helper ran dry, FAKE_ROOT untouched"
+
       # Task #114 — fail-fast CI gate. Asserts the freshly-built daemon
       # binary is non-zero, >= 1 MiB, and starts with the host platform's
       # expected magic bytes (PE / Mach-O / ELF) before electron-builder
