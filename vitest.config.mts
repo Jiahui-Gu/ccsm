@@ -31,6 +31,20 @@ export default defineConfig({
     // cycles). Bump to 15s globally — well below CI job timeout, and
     // leaves headroom for `npm run coverage`.
     testTimeout: 15000,
+    // Worker-exit safety net (#160): updater tests use vi.useFakeTimers +
+    // advanceTimersByTimeAsync + setImmediate flushes, which on Node 22.x
+    // can leave a microtask / pending I/O attached to the worker so vitest's
+    // tinypool worker never exits — the CI test step then sits in_progress
+    // until the job timeout. Forcing the `forks` pool with isolate=true gives
+    // each test FILE a fresh forked process that gets killed on completion,
+    // guaranteeing exit even when a test leaks a handle. teardownTimeout
+    // bounds afterEach/afterAll cleanup so a stuck teardown can't masquerade
+    // as a hang either. Note: vitest 4 flattened poolOptions.forks into top-
+    // level options (migration guide); using the new shape avoids deprecation
+    // warnings and silent option drop in a future bump.
+    pool: 'forks',
+    isolate: true,
+    teardownTimeout: 5000,
     // jsdom 29 transitively requires `@exodus/bytes` (pure ESM,
     // `"type": "module"`) via `html-encoding-sniffer@6` and direct
     // imports throughout `node_modules/jsdom/lib/**`. Vitest's pool
