@@ -34,6 +34,12 @@ import { spawnDaemon } from './supervisor';
 
 // ---------------------------------------------------------------------------
 // Pure path resolution (mirror of scripts/double-bind-guard.ts).
+//
+// Dev mode (`CCSM_DAEMON_DEV=1`): the Windows userhash is computed over
+// `username@hostname#cwd` so concurrent dev daemons spawned from different
+// git worktrees do NOT collide on the named-pipe namespace. Production keeps
+// the canonical `username@hostname` shape so the packaged installer can
+// re-attach across Electron restarts (frag-6-7 §6.1 dogfood metric #1).
 // ---------------------------------------------------------------------------
 
 function joinFor(platform: NodeJS.Platform, ...parts: string[]): string {
@@ -74,8 +80,11 @@ export function resolveControlSocketPath(
 ): string {
   if (platform === 'win32') {
     const ui = userInfo();
-    const tag = `${ui.username}@${hostname()}`;
-    const userhash = createHash('sha256').update(tag).digest('hex').slice(0, 8);
+    const seed =
+      env.CCSM_DAEMON_DEV === '1'
+        ? `${ui.username}@${hostname()}#${process.cwd()}`
+        : `${ui.username}@${hostname()}`;
+    const userhash = createHash('sha256').update(seed).digest('hex').slice(0, 8);
     return `\\\\.\\pipe\\ccsm-control-${userhash}`;
   }
   return posix.join(resolveRuntimeRoot(platform, env), 'ccsm-control.sock');

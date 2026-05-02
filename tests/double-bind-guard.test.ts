@@ -106,7 +106,7 @@ describe('resolveControlSocketPath', () => {
       }),
     ).toBe('/run/user/1000/ccsm/ccsm-control.sock');
   });
-  it('Windows: \\\\.\\pipe\\ccsm-control-<userhash>', () => {
+  it('Windows: \\\\.\\pipe\\ccsm-control-<userhash> (production seed = username@hostname)', () => {
     const got = resolveControlSocketPath('win32', {
       LOCALAPPDATA: 'C:\\x',
     });
@@ -114,6 +114,21 @@ describe('resolveControlSocketPath', () => {
     const tag = `${ui.username}@${hostname()}`;
     const expectHash = createHash('sha256').update(tag).digest('hex').slice(0, 8);
     expect(got).toBe(`\\\\.\\pipe\\ccsm-control-${expectHash}`);
+  });
+
+  it('Windows + CCSM_DAEMON_DEV=1: pipe name folds in cwd (per-worktree isolation)', () => {
+    const got = resolveControlSocketPath('win32', {
+      LOCALAPPDATA: 'C:\\x',
+      CCSM_DAEMON_DEV: '1',
+    });
+    const ui = userInfo();
+    const tag = `${ui.username}@${hostname()}#${process.cwd()}`;
+    const expectHash = createHash('sha256').update(tag).digest('hex').slice(0, 8);
+    expect(got).toBe(`\\\\.\\pipe\\ccsm-control-${expectHash}`);
+    // Production-shape (no dev gate) must differ — proves dev gate actually
+    // changed the seed.
+    const prod = resolveControlSocketPath('win32', { LOCALAPPDATA: 'C:\\x' });
+    expect(got).not.toBe(prod);
   });
 });
 
@@ -290,11 +305,52 @@ describe('drift guard against daemon/src/sockets/*', () => {
       { platform: 'linux', env: { XDG_DATA_HOME: '/xdg/data' } },
       { platform: 'darwin', env: {} },
       { platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' } },
+      // B10 dev gate: cwd-mix path must mirror byte-for-byte too.
+      { platform: 'win32', env: { LOCALAPPDATA: 'C:\\x', CCSM_DAEMON_DEV: '1' } },
+      { platform: 'linux', env: { XDG_RUNTIME_DIR: '/run/user/1000', CCSM_DAEMON_DEV: '1' } },
     ];
     for (const { platform, env } of cases) {
       const ours = resolveControlSocketPath(platform, env);
-      const theirs = defaultControlSocketPath(platform, resolveRuntimeRoot(platform, env));
+      const theirs = defaultControlSocketPath(platform, resolveRuntimeRoot(platform, env), env);
       expect(ours).toBe(theirs);
+    }
+  });
+
+  // B10 cross-worktree pipe collision fix.
+  it('Windows + CCSM_DAEMON_DEV=1: pipe path varies with process.cwd() (per-worktree)', () => {
+    const env = { LOCALAPPDATA: 'C:\\x', CCSM_DAEMON_DEV: '1' };
+    const realCwd = process.cwd;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-3';
+      const a = resolveControlSocketPath('win32', env);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-5';
+      const b = resolveControlSocketPath('win32', env);
+      expect(a).not.toBe(b);
+      const prod = resolveControlSocketPath('win32', { LOCALAPPDATA: 'C:\\x' });
+      expect(a).not.toBe(prod);
+      expect(b).not.toBe(prod);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = realCwd;
+    }
+  });
+
+  it('Windows production env: pipe path is invariant under cwd changes', () => {
+    const env = { LOCALAPPDATA: 'C:\\x' };
+    const realCwd = process.cwd;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-3';
+      const a = resolveControlSocketPath('win32', env);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = () => 'C:/Users/x/ccsm-worktrees/pool-5';
+      const b = resolveControlSocketPath('win32', env);
+      expect(a).toBe(b);
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (process as any).cwd = realCwd;
     }
   });
 });

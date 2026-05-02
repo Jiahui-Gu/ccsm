@@ -110,18 +110,38 @@ export function resolveRuntimeRoot(opts: ResolveRuntimeRootOptions = {}): string
  *       user could win the bind race against the daemon, leaving the
  *       §3.4.1.g HMAC handshake as the only imposter defense.
  *
- * Definition: lowercase first 8 hex chars of SHA-256(`<username>@<hostname>`).
- * Pure / deterministic / no I/O. Same OS user on the same host always yields
- * the same value; distinct usernames or hostnames yield (overwhelmingly)
- * distinct values.
+ * Definition (production):
+ *     lowercase first 8 hex chars of SHA-256(`<username>@<hostname>`).
+ * Definition (dev mode, `CCSM_DAEMON_DEV=1` in env):
+ *     lowercase first 8 hex chars of SHA-256(`<username>@<hostname>#<cwd>`).
+ *     This isolates the named-pipe / socket path per git worktree so two
+ *     concurrent dev daemons (e.g. running from `~/ccsm-worktrees/pool-3`
+ *     and `~/ccsm-worktrees/pool-5`) do NOT collide on bind. Production
+ *     installer flow keeps the canonical `username@hostname` shape so
+ *     re-opening the packaged Electron app continues to attach to the
+ *     surviving daemon (frag-6-7 §6.1 dogfood metric #1).
+ *
+ * Pure / deterministic / no I/O. Same inputs always yield the same value;
+ * distinct inputs yield (overwhelmingly) distinct values.
  *
  * Sibling helper to `resolveRuntimeRoot()` so T14 (control-socket) and T15
- * (data-socket) can share a single source of truth — T14's existing private
- * implementation can be refactored later to import this.
+ * (data-socket) can share a single source of truth.
  */
-export function userHash(opts: { username?: string; host?: string } = {}): string {
+export function userHash(
+  opts: {
+    username?: string;
+    host?: string;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
+): string {
   const username = opts.username ?? userInfo().username;
   const host = opts.host ?? hostname();
-  const digest = createHash('sha256').update(`${username}@${host}`).digest('hex');
+  const env = opts.env ?? process.env;
+  const devMode = env.CCSM_DAEMON_DEV === '1';
+  const seed = devMode
+    ? `${username}@${host}#${opts.cwd ?? process.cwd()}`
+    : `${username}@${host}`;
+  const digest = createHash('sha256').update(seed).digest('hex');
   return digest.slice(0, 8).toLowerCase();
 }

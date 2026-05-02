@@ -197,4 +197,76 @@ describe('userHash', () => {
     // Same call twice — process identity is fixed for the test run.
     expect(userHash()).toBe(h);
   });
+
+  // -------------------------------------------------------------------------
+  // Dev-mode cwd-mix gate (B10 cross-worktree pipe collision fix). When
+  // `env.CCSM_DAEMON_DEV === '1'` the seed folds in `cwd` so two dev daemons
+  // spawned from different git worktrees on the same Windows host bind to
+  // distinct named pipes. Production gate stays canonical so the packaged
+  // installer keeps single-bind semantics across Electron restarts (frag-6-7
+  // §6.1 dogfood metric #1).
+  // -------------------------------------------------------------------------
+  describe('CCSM_DAEMON_DEV cwd-mix gate', () => {
+    it('production env: same (user, host) yields the same hash regardless of cwd', () => {
+      const a = userHash({
+        username: 'alice',
+        host: 'workstation',
+        cwd: '/repo/worktree-a',
+        env: {},
+      });
+      const b = userHash({
+        username: 'alice',
+        host: 'workstation',
+        cwd: '/repo/worktree-b',
+        env: {},
+      });
+      expect(a).toBe(b);
+    });
+
+    it('dev env: same (user, host, cwd) yields the same hash (deterministic)', () => {
+      const env = { CCSM_DAEMON_DEV: '1' };
+      const a = userHash({ username: 'alice', host: 'host', cwd: '/a', env });
+      const b = userHash({ username: 'alice', host: 'host', cwd: '/a', env });
+      expect(a).toBe(b);
+    });
+
+    it('dev env: distinct cwds yield distinct hashes (per-worktree isolation)', () => {
+      const env = { CCSM_DAEMON_DEV: '1' };
+      const a = userHash({ username: 'alice', host: 'host', cwd: '/repo/pool-3', env });
+      const b = userHash({ username: 'alice', host: 'host', cwd: '/repo/pool-5', env });
+      expect(a).not.toBe(b);
+    });
+
+    it('dev hash differs from production hash for the same (user, host)', () => {
+      const prod = userHash({ username: 'alice', host: 'host', cwd: '/x', env: {} });
+      const dev = userHash({
+        username: 'alice',
+        host: 'host',
+        cwd: '/x',
+        env: { CCSM_DAEMON_DEV: '1' },
+      });
+      expect(dev).not.toBe(prod);
+    });
+
+    it('dev gate is strict on the literal "1" sentinel (does NOT fire on "true" / "0" / unset)', () => {
+      const base = { username: 'alice', host: 'host', cwd: '/wt' };
+      const prod = userHash({ ...base, env: {} });
+      expect(userHash({ ...base, env: { CCSM_DAEMON_DEV: 'true' } })).toBe(prod);
+      expect(userHash({ ...base, env: { CCSM_DAEMON_DEV: '0' } })).toBe(prod);
+      expect(userHash({ ...base, env: { CCSM_DAEMON_DEV: '' } })).toBe(prod);
+      expect(userHash({ ...base, env: { CCSM_DAEMON_DEV: '1' } })).not.toBe(prod);
+    });
+
+    it('falls back to process.cwd() when cwd opt is omitted (dev mode)', () => {
+      const env = { CCSM_DAEMON_DEV: '1' };
+      const explicit = userHash({
+        username: 'alice',
+        host: 'host',
+        cwd: process.cwd(),
+        env,
+      });
+      const implicit = userHash({ username: 'alice', host: 'host', env });
+      expect(explicit).toBe(implicit);
+    });
+  });
 });
