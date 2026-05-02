@@ -10,7 +10,12 @@ export default defineConfig({
     // `eslint-plugins/**` holds the local ESLint plugin source + its
     // RuleTester suite (e.g. T1.9 ccsm/no-listener-slot-mutation). They
     // are not under `src/` because they are tooling, not daemon runtime.
-    include: ['src/**/*.spec.ts', 'eslint-plugins/**/*.spec.ts'],
+    // `build/**` holds the SEA build pipeline tooling + tests (T7.1).
+    include: [
+      'src/**/*.spec.ts',
+      'build/**/*.spec.ts',
+      'eslint-plugins/**/*.spec.ts',
+    ],
     globals: false,
   },
 });
