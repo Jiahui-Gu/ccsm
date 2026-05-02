@@ -13,6 +13,14 @@ import {
 } from './handlers/daemon-shutdown.js';
 import { createForceKillSink, type ForceKillJobHandle } from './lifecycle/force-kill.js';
 import { startDevParentWatchdog } from './lifecycle/dev-parent-watchdog.js';
+import {
+  acquireDaemonLock,
+  LockfileBusyError,
+  LockfileFatalError,
+  LOCKFILE_FATAL_EXIT_CODE,
+  type LockHandle,
+} from './lifecycle/lockfile.js';
+import { resolveDataRoot } from './db/ensure-data-dir.js';
 import { installCrashHandlers } from './crash/handlers.js';
 import { installNativeCrashHandlers } from './crash/native-handlers.js';
 import { initDaemonSentry } from './sentry/init.js';
@@ -97,6 +105,32 @@ installCrashHandlers({
 // `daemon/src/crash/native-handlers.ts` for the deferred-WER rationale.
 installNativeCrashHandlers({ runtimeRoot, bootNonce });
 
+// Task #123 — daemon single-instance lockfile (frag-6-7 §6.4).
+//
+// Acquired BEFORE any data-dir or socket work so:
+//   1. A second daemon spawned by a racing supervisor exits cleanly via
+//      `LockfileBusyError` instead of half-binding sockets and
+//      half-touching the data dir (frag-8 §8.3 step 1a's orphan-tmp
+//      unlink is only safe under single-instance enforcement).
+//   2. EROFS / read-only mount surfaces as a clear `lockfile_erofs_fatal`
+//      log + exit(78) BEFORE pino's async destination buffers anything
+//      we cannot flush.
+//
+// Forward-declared so:
+//   - The `daemon.shutdownForUpgrade` handler's `releaseLock` action
+//     (frag-6-7 §6.4 step 4) can release the same handle the boot path
+//     acquired (swap-lock contract).
+//   - The `closeTransports`-then-exit shutdown chain can release on
+//     planned exit so the next boot doesn't see a stale `.lock` dir.
+//
+// The acquire itself runs inside the same async IIFE that boots the
+// listeners (below) — first step. A throw there propagates through the
+// crash handler so a fatal lockfile error gets the same forensic
+// treatment as any other boot failure.
+const dataRoot =
+  process.env.CCSM_DATA_ROOT ?? resolveDataRoot();
+let lockHandle: LockHandle | undefined;
+
 // T25 — force-kill fallback wiring. The reaper-PID set (T38) and the
 // JobObject handle (T39) are owned by the per-spawn wiring that lands
 // alongside the real ptyService. Until those wires are in, the
@@ -161,6 +195,21 @@ async function closeTransports(): Promise<void> {
         logger.warn(
           { event: 'daemon-shutdown.data-socket-close-failed', err: String(err) },
           'data-socket close failed during shutdown',
+        );
+      }
+    })(),
+    // Release the daemon-singleton lockfile so the next boot does not
+    // see a stale `daemon.lock.lock` directory and have to walk the
+    // stale-PID steal path. `release()` is idempotent — the upgrade
+    // handler may have already invoked it via the swap-lock contract.
+    (async () => {
+      if (!lockHandle) return;
+      try {
+        await lockHandle.release();
+      } catch (err) {
+        logger.warn(
+          { event: 'daemon-shutdown.lockfile-release-failed', err: String(err) },
+          'daemon.lock release failed during shutdown',
         );
       }
     })(),
@@ -321,15 +370,32 @@ const supervisorWiringManifest = wireSupervisorDispatcher(supervisorDispatcher, 
       runShutdownSequence: async () => {
         await daemonShutdownHandler.handle({ reason: 'upgrade' }, { bootNonce });
       },
-      // proper-lockfile wiring lands with the lockfile slice (frag-6-7
-      // §6.4 step 3). Until then this is a no-op so the marker write +
-      // drain still complete; the supervisor's restart loop is the
-      // ultimate recovery surface if the lock is stale.
+      // frag-6-7 §6.4 step 4 (swap-lock contract): release the SAME
+      // `daemon.lock` the boot path acquired so the supervisor's binary
+      // swap window cannot race a fresh-daemon-boot for the bin/
+      // directory. If the handle is undefined (acquire deferred /
+      // skipped — e.g. test override env), fall back to a no-op log
+      // line so the marker write + drain still complete.
       releaseLock: async () => {
-        logger.info(
-          { event: 'daemon-shutdown-for-upgrade.release-lock-noop' },
-          'lockfile release deferred to lockfile slice; continuing exit',
-        );
+        if (!lockHandle) {
+          logger.info(
+            { event: 'daemon-shutdown-for-upgrade.release-lock-noop' },
+            'lockfile not held; continuing exit',
+          );
+          return;
+        }
+        try {
+          await lockHandle.release();
+          logger.info(
+            { event: 'daemon-shutdown-for-upgrade.release-lock' },
+            'daemon.lock released for upgrade swap window',
+          );
+        } catch (err) {
+          logger.warn(
+            { event: 'daemon-shutdown-for-upgrade.release-lock-failed', err: String(err) },
+            'daemon.lock release failed; supervisor will retry-or-steal on next boot',
+          );
+        }
       },
       exit: (code) => {
         // Same posture as `shutdownActions.exitProcess`: close transports
@@ -412,6 +478,51 @@ dataSocket = createDataSocketServer({
 // re-throws to the crash handler; signal handlers below are still
 // registered synchronously at module evaluation time.
 void (async (): Promise<void> => {
+  // Step 1 (frag-6-7 §6.4): acquire the daemon-singleton lockfile
+  // BEFORE binding sockets / touching the data dir. A racing second
+  // daemon throws `LockfileBusyError` here and exits non-zero; an
+  // EROFS / read-only mount throws `LockfileFatalError` → exit(78)
+  // (sysexits.h EX_CONFIG). Stale-PID recovery is internal to
+  // `acquireDaemonLock`.
+  try {
+    lockHandle = await acquireDaemonLock({
+      dataRoot,
+      logger: {
+        info: (obj, msg) => logger.info(obj, msg),
+        warn: (obj, msg) => logger.warn(obj, msg),
+        error: (obj, msg) => logger.error(obj, msg),
+      },
+    });
+  } catch (err) {
+    if (err instanceof LockfileBusyError) {
+      // Pre-pino-flush stderr line per frag-6-7 §6.4 "Lockfile
+      // create-fail policy" — surfaces even if pino's async dest
+      // hasn't drained.
+      process.stderr.write(
+        `daemon.lock held by live PID ${err.holderPid}; another daemon is running\n`,
+      );
+      logger.error(
+        { event: 'lockfile_busy', holder_pid: err.holderPid, path: err.path },
+        'daemon already running; exiting',
+      );
+      // Exit code 75 (sysexits.h EX_TEMPFAIL) — supervisor's
+      // spawn-or-attach (§6.1) treats this as "attach to existing
+      // holder" rather than entering the crash-loop counter.
+      process.exit(75);
+    }
+    if (err instanceof LockfileFatalError) {
+      process.stderr.write(
+        `daemon lockfile site unwritable (${err.code}) at ${err.path}; refusing to boot\n`,
+      );
+      // The acquire path already emitted `lockfile_erofs_fatal`. Exit
+      // EX_CONFIG (78) — supervisor surfaces the configuration-error
+      // modal rather than retry.
+      process.exit(LOCKFILE_FATAL_EXIT_CODE);
+    }
+    // Unknown error → re-throw into the crash handler.
+    throw err;
+  }
+
   try {
     await controlSocket.listen();
     logger.info(
