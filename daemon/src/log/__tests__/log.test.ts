@@ -224,17 +224,28 @@ describe('maintainCurrentSymlink', () => {
 
     const linkPath = join(logDir, DAEMON_LOG_CURRENT_SYMLINK);
     let content: string | undefined;
+    let readErr: unknown;
     try {
       content = readFileSync(linkPath, 'utf8');
-    } catch {
-      // Symlink creation can fail on Windows w/o developer mode; the
-      // function is best-effort and we accept that scenario rather than
-      // failing the test on a permissions issue. If the symlink wasn't
-      // created the file simply won't exist, which is the documented
-      // fallback.
+    } catch (err) {
+      readErr = err;
     }
-    if (content !== undefined) {
-      expect(content).toBe('new\n');
+
+    if (process.platform === 'win32') {
+      // Windows requires SeCreateSymbolicLinkPrivilege (developer mode or
+      // Administrator) to create symlinks. CI agents and many dev boxes
+      // run without it, so symlink creation is best-effort and we accept
+      // EPERM here. If the symlink WAS created, still assert correctness.
+      if (content !== undefined) {
+        expect(content).toBe('new\n');
+      }
+      return;
     }
+
+    // POSIX: symlink creation MUST succeed. A failure here is a real bug
+    // (previously this test silently passed on POSIX too — reviewer
+    // CHANGES verdict on PR #800 #3).
+    expect(readErr, `daemon.log symlink read failed on POSIX: ${String(readErr)}`).toBeUndefined();
+    expect(content).toBe('new\n');
   });
 });

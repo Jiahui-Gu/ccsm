@@ -89,13 +89,14 @@ export interface CreateDaemonLoggerOptions {
 export const DAEMON_LOG_SIZE_CAP = '50m';
 
 /**
- * Number of historical files retained in addition to the currently-active
- * file. Spec: 7 files total → `limit.count = 7` (pino-roll's count is the
- * number of files KEPT in addition to the active one, but we treat the
- * spec literally as the total cap and pass 7 here; older files are deleted
- * by pino-roll on rotation).
+ * Number of historical files retained IN ADDITION to the currently-active
+ * file (this is pino-roll's `limit.count` semantic — see
+ * `node_modules/pino-roll/README.md`: "number of log files, in addition to
+ * the currently used file"). Spec frag-6-7 §6.6.1 budgets 7 files × 50 MB
+ * = 350 MB per side, so the intent is **7 files total on disk** → 6
+ * historical + 1 active. Older files are deleted by pino-roll on rotation.
  */
-export const DAEMON_LOG_RETENTION_COUNT = 7;
+export const DAEMON_LOG_RETENTION_COUNT = 6;
 
 /**
  * Date format embedded in the rotated file names. Daily rotation → one
@@ -167,6 +168,23 @@ export function createDaemonLogger(opts: CreateDaemonLoggerOptions): Logger {
   // so log writes happen off the main loop — same posture pino-roll's own
   // README recommends and what production daemons want.
   //
+  // We use pino's `targets:` array form (multi-destination transport) so
+  // every log line is fanned out to BOTH the rotated file AND the parent
+  // process's stdout. Stdout is required because the supervisor (and the
+  // harness `tests/harness-daemon-mode.test.ts`) watches `child.stdout`
+  // for the JSON ready marker `{ event: 'daemon.boot' }` to know the
+  // daemon is up. Without the stdout target, the boot marker would only
+  // land in the rotated file (worker-thread sink) and the supervisor /
+  // harness would time out at 15 s.
+  //
+  // Why the targets-array (option B) over `pino.multistream` (option A):
+  // multistream writes synchronously on the main thread, defeating the
+  // off-loop posture pino-roll requires. The targets-array keeps both
+  // sinks in the worker thread (pino-roll for file, `pino/file` with
+  // `destination: 1` for stdout) so both writes stay off the main loop
+  // and share one set of base fields + redact codegen — there is no
+  // parallel write path that could bypass the redact pipeline.
+  //
   // NOTE on `symlink`: pino-roll's built-in `symlink: true` option
   // creates a hardcoded `current.log` symlink and unconditionally calls
   // `fs.symlink()` — which throws EPERM on Windows without developer
@@ -176,15 +194,28 @@ export function createDaemonLogger(opts: CreateDaemonLoggerOptions): Logger {
   // our own `<logDir>/daemon.log` symlink via `maintainCurrentSymlink`
   // (best-effort, swallows errors on hosts that disallow symlinks).
   const transport = pino.transport({
-    target: 'pino-roll',
-    options: {
-      file: filePath,
-      frequency: 'daily',
-      size: DAEMON_LOG_SIZE_CAP,
-      dateFormat: DAEMON_LOG_DATE_FORMAT,
-      mkdir: true,
-      limit: { count: DAEMON_LOG_RETENTION_COUNT },
-    },
+    targets: [
+      {
+        target: 'pino-roll',
+        options: {
+          file: filePath,
+          frequency: 'daily',
+          size: DAEMON_LOG_SIZE_CAP,
+          dateFormat: DAEMON_LOG_DATE_FORMAT,
+          mkdir: true,
+          limit: { count: DAEMON_LOG_RETENTION_COUNT },
+        },
+        level: 'trace',
+      },
+      {
+        // Built-in pino transport that writes to a numeric fd — `1` is
+        // stdout. Keeps the stdout sink inside the same worker thread as
+        // pino-roll so both share the redact + base-field codegen.
+        target: 'pino/file',
+        options: { destination: 1 },
+        level: 'trace',
+      },
+    ],
   });
 
   const logger = pino(
