@@ -67,16 +67,46 @@ import fs from 'node:fs';
 import path from 'node:path';
 // readFile/stat were used by the removed app-icon-default case.
 
+// ---------- node-side condition wait helpers ----------
+// `pollUntil` is the node-side equivalent of Playwright's waitForFunction:
+// it polls a predicate until it returns truthy, with a hard timeout so a
+// stuck condition fails loudly instead of hanging the harness. Used wherever
+// we need to wait on Electron main-process state (BrowserWindow visibility,
+// IPC spy logs, etc.) rather than DOM state — Playwright locators don't
+// reach into the main process.
+async function pollUntil(predicate, { timeoutMs = 5000, intervalMs = 25, label = 'condition' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = null;
+  while (Date.now() < deadline) {
+    try {
+      if (await predicate()) return;
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`pollUntil timeout (${timeoutMs}ms) waiting for: ${label}${lastErr ? ` (last error: ${lastErr})` : ''}`);
+}
+
 // ---------- sidebar-align ----------
 async function caseSidebarAlign({ win, log }) {
   // The empty ("No sessions yet") main panel exhibits the same geometry as
   // the populated one — no need to seed sessions here.
   await win.waitForFunction(
-    () => !!document.querySelector('main') && !!document.querySelector('aside'),
+    () => {
+      const aside = document.querySelector('aside');
+      const main = document.querySelector('main');
+      if (!aside || !main) return false;
+      // Layout must be settled: both elements must have non-zero box and the
+      // top edges must already be measurable (i.e. layout has run at least
+      // once). The earlier 200ms sleep was a blind "let layout settle" wait.
+      const a = aside.getBoundingClientRect();
+      const m = main.getBoundingClientRect();
+      return a.height > 0 && m.height > 0 && a.bottom > 0 && m.bottom > 0;
+    },
     null,
     { timeout: 10000 }
   );
-  await win.waitForTimeout(200);
 
   const geo = await win.evaluate(() => {
     const aside = document.querySelector('aside');
@@ -121,7 +151,10 @@ async function caseSettingsOpen({ win, log }) {
       tutorialSeen: true
     });
   });
-  await win.waitForTimeout(200);
+  // Wait for the seeded session to render in the sidebar instead of a blind
+  // sleep — the sidebar Settings button is rendered eagerly but we want the
+  // store hydration + sidebar list re-render to commit before clicking.
+  await win.locator('li[data-session-id="s1"]').first().waitFor({ state: 'visible', timeout: 5000 });
 
   // Use the Settings tablist as the unique tell — there are other role=dialog
   // surfaces (Tutorial, CommandPalette) that may linger across cases; we only
@@ -188,7 +221,7 @@ async function caseSettingsUpdatesPane({ win, log }) {
       tutorialSeen: true,
     });
   });
-  await win.waitForTimeout(150);
+  await win.locator('li[data-session-id="s1"]').first().waitFor({ state: 'visible', timeout: 5000 });
 
   // Open Settings via the keyboard shortcut so this case doesn't depend on
   // the sidebar button position. (Custom 'ccsm:open-settings' window event
@@ -272,7 +305,7 @@ async function caseStackedDialog({ win, log }) {
       tutorialSeen: true,
     });
   });
-  await win.waitForTimeout(150);
+  await win.locator('li[data-session-id="s1"]').first().waitFor({ state: 'visible', timeout: 5000 });
 
   // Inject a synthetic Radix-shaped overlay. Matches the exact selector in
   // global.css (`[data-state][aria-hidden="true"]`) that the regression guard
@@ -363,7 +396,7 @@ async function caseScrollLock({ win, log }) {
       tutorialSeen: true,
     });
   });
-  await win.waitForTimeout(150);
+  await win.locator('li[data-session-id="s1"]').first().waitFor({ state: 'visible', timeout: 5000 });
 
   // Open SettingsDialog — Radix react-remove-scroll fires the body lock here.
   await win.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
@@ -396,7 +429,20 @@ async function caseScrollLock({ win, log }) {
     html: getComputedStyle(document.documentElement).pointerEvents,
     body: getComputedStyle(document.body).pointerEvents,
   }));
-  await win.waitForTimeout(200);
+  // Race-window detection: wait ~3 frames for any deferred Radix tear-down to
+  // attempt a leak, then re-measure. waitForFunction polls every animation
+  // frame, so we resolve as soon as 3 successive frames see body=='auto'. If
+  // the lock leaks during the settle window the next assertion below catches
+  // it via the second snapshot.
+  await win.evaluate(() => new Promise((resolve) => {
+    let frames = 0;
+    const tick = () => {
+      frames += 1;
+      if (frames >= 3) resolve();
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
   const peClosedSettled = await win.evaluate(() => ({
     html: getComputedStyle(document.documentElement).pointerEvents,
     body: getComputedStyle(document.body).pointerEvents,
@@ -517,8 +563,18 @@ async function caseTray({ app, win, log, registerDispose }) {
     const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
     w?.close();
   });
-  // Main process fades for 180ms before hide().
-  await new Promise((r) => setTimeout(r, 600));
+  // Main process fades for 180ms before hide(). Poll BrowserWindow visibility
+  // instead of a blind 600ms sleep — slow CI runners can take longer than
+  // 600ms total (dialog round-trip + fade + hide), and a blind wait either
+  // false-passes (window not yet hidden but we read visible=false because the
+  // poll happened to land between fade frames) or false-fails on slow boxes.
+  await pollUntil(async () => {
+    const v = await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      return w?.isVisible() ?? null;
+    });
+    return v === false;
+  }, { timeoutMs: 5000, intervalMs: 25, label: 'tray: window hidden after close' });
 
   const state = await app.evaluate(({ BrowserWindow }) => {
     const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
@@ -620,8 +676,19 @@ async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
     const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
     w?.close();
   });
-  // Allow the async dialog promise + fadeThenHide (180ms) to settle.
-  await new Promise((r) => setTimeout(r, 600));
+  // Allow the async dialog promise + fadeThenHide (180ms) to settle. Poll the
+  // spy log + visibility flag rather than burning a fixed 600ms — the close
+  // path is async (showMessageBox await + fade + hide) and the wall time is
+  // platform-dependent.
+  await pollUntil(async () => {
+    const ok = await app.evaluate(({ BrowserWindow }) => {
+      const log = /** @type {any} */ (globalThis).__ccsmCloseDialogLog ?? [];
+      if (!Array.isArray(log) || log.length === 0) return false;
+      const w = BrowserWindow.getAllWindows().find((x) => !x.webContents.getURL().startsWith('devtools://'));
+      return w?.isVisible() === false;
+    });
+    return ok;
+  }, { timeoutMs: 5000, intervalMs: 25, label: 'close-dialog-is-native: spy fired and window hidden' });
 
   const calls = await app.evaluate(() => {
     return /** @type {any} */ (globalThis).__ccsmCloseDialogLog ?? [];
@@ -714,7 +781,16 @@ async function caseThemeToggle({ win, log, registerDispose }) {
   }
 
   await win.evaluate(() => { window.__ccsmStore.getState().setTheme('dark'); });
-  await win.waitForTimeout(150);
+  // Wait for the theme class flip to commit instead of a blind sleep — the
+  // setTheme reducer is sync but React's resulting useEffect that toggles
+  // <html> classes runs on the next commit.
+  await win.waitForFunction(
+    () => document.documentElement.classList.contains('dark') &&
+      !document.documentElement.classList.contains('theme-light') &&
+      document.documentElement.dataset.theme === 'dark',
+    null,
+    { timeout: 1500 }
+  );
   const dark1 = await snapshot();
   if (!dark1.themeClassDark || dark1.themeClassLight) throw new Error(`expected initial dark theme classes, got ${JSON.stringify(dark1)}`);
   if (dark1.dataTheme !== 'dark') throw new Error(`html[data-theme] should be 'dark', got ${dark1.dataTheme}`);
@@ -820,7 +896,9 @@ async function caseImportEmptyGroups({ win, log }) {
       tutorialSeen: true
     });
   });
-  await win.waitForTimeout(150);
+  // setState is synchronous + the next assertion reads from the store, not
+  // the DOM, so no settle wait needed. The sidebar-row visibility checks
+  // later in this case use waitFor() with their own timeouts.
 
   const beforeGroupCount = await win.evaluate(() => window.__ccsmStore.getState().groups.length);
   if (beforeGroupCount !== 0) throw new Error(`expected 0 groups before import, got ${beforeGroupCount}`);
@@ -907,17 +985,74 @@ async function caseRename({ win, log }) {
     await input.click();
     return input;
   }
+  // ---- Condition-wait helpers (replace the pre-Task#52 hard sleeps) ----
+  async function expectSessionNameEquals(id, expected, label) {
+    try {
+      await win.waitForFunction(
+        ({ sid, want }) => {
+          const s = window.__ccsmStore.getState().sessions.find((x) => x.id === sid);
+          return (s?.name ?? null) === want;
+        },
+        { sid: id, want: expected },
+        { timeout: 2000 }
+      );
+    } catch {
+      const actual = await sessionName(id);
+      throw new Error(`${label}: expected "${expected}", got "${actual}"`);
+    }
+  }
+  async function expectGroupNameEquals(id, expected, label) {
+    try {
+      await win.waitForFunction(
+        ({ gid, want }) => {
+          const g = window.__ccsmStore.getState().groups.find((x) => x.id === gid);
+          return (g?.name ?? null) === want;
+        },
+        { gid: id, want: expected },
+        { timeout: 2000 }
+      );
+    } catch {
+      const actual = await groupName(id);
+      throw new Error(`${label}: expected "${expected}", got "${actual}"`);
+    }
+  }
+  async function expectSessionRenameInputClosed(id, label) {
+    try {
+      await win.locator(`li[data-session-id="${id}"] input`).first().waitFor({ state: 'detached', timeout: 2000 });
+    } catch {
+      throw new Error(`${label}: input still visible after commit`);
+    }
+  }
+  async function expectGroupRenameInputClosed(id, label) {
+    try {
+      await win.locator(`[data-group-header-id="${id}"] input`).first().waitFor({ state: 'detached', timeout: 2000 });
+    } catch {
+      throw new Error(`${label}: input still visible after commit`);
+    }
+  }
+  // For "non-event" waits (IME guard / ArrowDown guard / settled-name checks):
+  // wait two animation frames so any synchronous + microtask + rAF work that
+  // would have committed has had a chance to run, then the assertion below
+  // verifies the no-op outcome.
+  async function settleFrames(n = 2) {
+    await win.evaluate((count) => new Promise((resolve) => {
+      let f = 0;
+      const tick = () => {
+        f += 1;
+        if (f >= count) resolve();
+        else requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }), n);
+  }
 
   // Case 1: session Enter commits.
   {
     const input = await openSessionRename('s1');
     await input.fill('first renamed');
     await input.press('Enter');
-    await win.waitForTimeout(200);
-    const after = await sessionName('s1');
-    if (after !== 'first renamed') throw new Error(`session Enter commit: expected "first renamed", got "${after}"`);
-    const stillEditing = await win.locator('li[data-session-id="s1"] input').count();
-    if (stillEditing !== 0) throw new Error('session Enter commit: input still visible after commit');
+    await expectSessionNameEquals('s1', 'first renamed', 'session Enter commit');
+    await expectSessionRenameInputClosed('s1', 'session Enter commit');
   }
 
   // Case 2: session Escape cancels.
@@ -925,9 +1060,8 @@ async function caseRename({ win, log }) {
     const input = await openSessionRename('s2');
     await input.fill('should not stick');
     await input.press('Escape');
-    await win.waitForTimeout(200);
-    const after = await sessionName('s2');
-    if (after !== 'second') throw new Error(`session Escape cancel: expected "second", got "${after}"`);
+    await expectSessionRenameInputClosed('s2', 'session Escape cancel input close');
+    await expectSessionNameEquals('s2', 'second', 'session Escape cancel');
   }
 
   // Case 3: empty / whitespace draft + Enter cancels.
@@ -935,9 +1069,8 @@ async function caseRename({ win, log }) {
     const input = await openSessionRename('s2');
     await input.fill('   ');
     await input.press('Enter');
-    await win.waitForTimeout(200);
-    const after = await sessionName('s2');
-    if (after !== 'second') throw new Error(`session whitespace Enter: expected name unchanged, got "${after}"`);
+    await expectSessionRenameInputClosed('s2', 'session whitespace Enter input close');
+    await expectSessionNameEquals('s2', 'second', 'session whitespace Enter');
   }
 
   // Case 4: click outside commits.
@@ -945,9 +1078,7 @@ async function caseRename({ win, log }) {
     const input = await openSessionRename('s3');
     await input.fill('clicked away');
     await win.locator('aside button:has-text("New session")').first().click({ force: true });
-    await win.waitForTimeout(250);
-    const after = await sessionName('s3');
-    if (after !== 'clicked away') throw new Error(`session click-outside commit: expected "clicked away", got "${after}"`);
+    await expectSessionNameEquals('s3', 'clicked away', 'session click-outside commit');
   }
 
   // Case 5: IME composition — Enter during isComposing must NOT commit.
@@ -972,7 +1103,10 @@ async function caseRename({ win, log }) {
       });
       el.dispatchEvent(ev);
     });
-    await win.waitForTimeout(150);
+    // Non-event wait: if the IME guard is intact, the Enter keydown is a no-op
+    // and no async commit work will run. Settle two frames so any regression
+    // (guard removed → commit dispatched) has had time to write the store.
+    await settleFrames(2);
     const midComp = await sessionName('s1');
     if (midComp !== 'first renamed') {
       throw new Error(`session IME composition Enter must not commit; expected "first renamed", got "${midComp}"`);
@@ -985,11 +1119,7 @@ async function caseRename({ win, log }) {
     if (valBefore !== 'ni hao') throw new Error(`session post-IME: input value should be "ni hao" before Enter, got "${valBefore}"`);
     await win.locator('li[data-session-id="s1"] input').focus();
     await win.locator('li[data-session-id="s1"] input').press('Enter');
-    await win.waitForTimeout(200);
-    const afterComp = await sessionName('s1');
-    if (afterComp !== 'ni hao') {
-      throw new Error(`session post-IME Enter commit: expected "ni hao", got "${afterComp}"`);
-    }
+    await expectSessionNameEquals('s1', 'ni hao', 'session post-IME Enter commit');
   }
 
   // Case 6: group Enter commits + Escape cancels.
@@ -997,17 +1127,14 @@ async function caseRename({ win, log }) {
     const input = await openGroupRename('g1');
     await input.fill('Alpha+');
     await input.press('Enter');
-    await win.waitForTimeout(200);
-    const after = await groupName('g1');
-    if (after !== 'Alpha+') throw new Error(`group Enter commit: expected "Alpha+", got "${after}"`);
+    await expectGroupNameEquals('g1', 'Alpha+', 'group Enter commit');
   }
   {
     const input = await openGroupRename('g2');
     await input.fill('Charlie');
     await input.press('Escape');
-    await win.waitForTimeout(200);
-    const after = await groupName('g2');
-    if (after !== 'Bravo') throw new Error(`group Escape cancel: expected "Bravo", got "${after}"`);
+    await expectGroupRenameInputClosed('g2', 'group Escape cancel input close');
+    await expectGroupNameEquals('g2', 'Bravo', 'group Escape cancel');
   }
 
   // Case 7: SESSION focus race — after right-click → Rename, focus must
@@ -1069,8 +1196,12 @@ async function caseRename({ win, log }) {
     });
     await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
     await win.locator('li[data-session-id="s2"] input').waitFor({ state: 'visible', timeout: 3000 });
-    // Wait past simulator self-removal (25ms), InlineRename arm tick
-    // (50ms), and A3 belt-and-suspenders refocus tick (51ms).
+    // Wait past simulator self-removal (25ms), InlineRename arm tick (50ms),
+    // and A3 belt-and-suspenders refocus tick (51ms). This wait is INTENTIONAL
+    // and timing-bound — see the long comment block above. waitForFunction
+    // would resolve as soon as focus briefly lands on the input (during a
+    // micro-window between simulator steals) and produce false-greens
+    // pre-fix. Keep the fixed 150ms settle that the reverse-verify validated.
     await win.waitForTimeout(150);
     const focused = await win.evaluate(() => {
       const el = document.querySelector('li[data-session-id="s2"] input');
@@ -1083,7 +1214,7 @@ async function caseRename({ win, log }) {
     const inputVal = await win.locator('li[data-session-id="s2"] input').inputValue();
     if (inputVal !== 'X') throw new Error(`session rename type-overwrite: expected input value "X" after typing one char, got "${inputVal}" (text was not pre-selected, or focus was on LI not input)`);
     await win.locator('li[data-session-id="s2"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectSessionRenameInputClosed('s2', 'session focus-race Escape close');
   }
 
   // Case 8: ArrowDown / ArrowUp inside the rename input must NOT navigate
@@ -1093,7 +1224,10 @@ async function caseRename({ win, log }) {
     const input = await openSessionRename('s2');
     await input.fill('arrow probe');
     await input.press('ArrowDown');
-    await win.waitForTimeout(100);
+    // Non-event wait: if the guard holds, ArrowDown is a no-op and no async
+    // listbox navigation will run. Settle two frames so any regression has
+    // time to detach the input.
+    await settleFrames(2);
     const stillOpen = await win.locator('li[data-session-id="s2"] input').count();
     if (stillOpen !== 1) throw new Error('session ArrowDown in rename: input closed (listbox navigation hijacked the keystroke)');
     const stillFocused = await win.evaluate(() => {
@@ -1104,7 +1238,7 @@ async function caseRename({ win, log }) {
     const valStill = await win.locator('li[data-session-id="s2"] input').inputValue();
     if (valStill !== 'arrow probe') throw new Error(`session ArrowDown in rename: input value mutated; got "${valStill}"`);
     await input.press('Escape');
-    await win.waitForTimeout(150);
+    await expectSessionRenameInputClosed('s2', 'session ArrowDown Escape close');
   }
 
   // Case 9: Tab commits the rename (and advances focus naturally).
@@ -1112,18 +1246,16 @@ async function caseRename({ win, log }) {
     const input = await openSessionRename('s3');
     await input.fill('tab committed');
     await input.press('Tab');
-    await win.waitForTimeout(200);
-    const after = await sessionName('s3');
-    if (after !== 'tab committed') throw new Error(`session Tab commit: expected "tab committed", got "${after}"`);
-    const stillEditing = await win.locator('li[data-session-id="s3"] input').count();
-    if (stillEditing !== 0) throw new Error('session Tab commit: input still visible after Tab');
+    await expectSessionNameEquals('s3', 'tab committed', 'session Tab commit');
+    await expectSessionRenameInputClosed('s3', 'session Tab commit input close');
   }
 
   // Case 10: F2 on a focused session row enters rename mode.
   {
     const row = win.locator('li[data-session-id="s2"]').first();
     await row.click(); // selects + focuses the LI (selected → tabIndex=0)
-    await win.waitForTimeout(120);
+    // The next step explicitly forces focus back to the LI, so the prior
+    // 120ms post-click sleep was redundant — drop it.
     // Make sure the LI itself is focused, not a child — the F2 handler
     // guards on `e.target === e.currentTarget`.
     await win.evaluate(() => {
@@ -1131,22 +1263,18 @@ async function caseRename({ win, log }) {
       el?.focus();
     });
     await win.keyboard.press('F2');
-    await win.waitForTimeout(150);
-    const inputCount = await win.locator('li[data-session-id="s2"] input').count();
-    if (inputCount !== 1) throw new Error('session F2 trigger: rename input did not open');
+    await win.locator('li[data-session-id="s2"] input').waitFor({ state: 'visible', timeout: 2000 });
     await win.locator('li[data-session-id="s2"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectSessionRenameInputClosed('s2', 'session F2 Escape close');
   }
 
   // Case 11: double-click the session label enters rename mode.
   {
     const label = win.locator('li[data-session-id="s2"] span.truncate').first();
     await label.dblclick();
-    await win.waitForTimeout(150);
-    const inputCount = await win.locator('li[data-session-id="s2"] input').count();
-    if (inputCount !== 1) throw new Error('session dblclick trigger: rename input did not open');
+    await win.locator('li[data-session-id="s2"] input').waitFor({ state: 'visible', timeout: 2000 });
     await win.locator('li[data-session-id="s2"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectSessionRenameInputClosed('s2', 'session dblclick Escape close');
   }
 
   // Case 12: GROUP focus / type-overwrite parity. Group rows already win
@@ -1157,17 +1285,27 @@ async function caseRename({ win, log }) {
     await header.click({ button: 'right' });
     await win.getByRole('menuitem', { name: /^Rename$/ }).first().click();
     await win.locator('[data-group-header-id="g1"] input').waitFor({ state: 'visible', timeout: 3000 });
-    await win.waitForTimeout(120);
-    const focused = await win.evaluate(() => {
-      const el = document.querySelector('[data-group-header-id="g1"] input');
-      return document.activeElement === el;
-    });
-    if (!focused) throw new Error('group rename focus: activeElement is not the input');
+    // Wait for activeElement === input rather than a fixed 120ms.
+    let groupFocused = false;
+    try {
+      await win.waitForFunction(
+        () => document.activeElement === document.querySelector('[data-group-header-id="g1"] input'),
+        null,
+        { timeout: 500 }
+      );
+      groupFocused = true;
+    } catch {
+      groupFocused = await win.evaluate(() => {
+        const el = document.querySelector('[data-group-header-id="g1"] input');
+        return document.activeElement === el;
+      });
+    }
+    if (!groupFocused) throw new Error('group rename focus: activeElement is not the input');
     await win.keyboard.type('Y');
     const inputVal = await win.locator('[data-group-header-id="g1"] input').inputValue();
     if (inputVal !== 'Y') throw new Error(`group rename type-overwrite: expected "Y", got "${inputVal}"`);
     await win.locator('[data-group-header-id="g1"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectGroupRenameInputClosed('g1', 'group focus Escape close');
   }
 
   // Case 13: F2 on group rename + dblclick on group label.
@@ -1176,20 +1314,16 @@ async function caseRename({ win, log }) {
     const btn = header.locator('button').first();
     await btn.focus();
     await win.keyboard.press('F2');
-    await win.waitForTimeout(150);
-    const inputCount = await win.locator('[data-group-header-id="g1"] input').count();
-    if (inputCount !== 1) throw new Error('group F2 trigger: rename input did not open');
+    await win.locator('[data-group-header-id="g1"] input').waitFor({ state: 'visible', timeout: 2000 });
     await win.locator('[data-group-header-id="g1"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectGroupRenameInputClosed('g1', 'group F2 Escape close');
   }
   {
     const label = win.locator('[data-group-header-id="g1"] span.truncate').first();
     await label.dblclick();
-    await win.waitForTimeout(150);
-    const inputCount = await win.locator('[data-group-header-id="g1"] input').count();
-    if (inputCount !== 1) throw new Error('group dblclick trigger: rename input did not open');
+    await win.locator('[data-group-header-id="g1"] input').waitFor({ state: 'visible', timeout: 2000 });
     await win.locator('[data-group-header-id="g1"] input').press('Escape');
-    await win.waitForTimeout(150);
+    await expectGroupRenameInputClosed('g1', 'group dblclick Escape close');
   }
 
   log('session: Enter / Escape / whitespace / click-outside / IME guard / focus-race / type-overwrite / arrow-guard / Tab-commit / F2 / dblclick; group: Enter / Escape / focus / type-overwrite / F2 / dblclick');
@@ -1224,7 +1358,8 @@ async function caseSidebarLongNameTruncates({ win, log }) {
     ],
     activeId: 's-long',
   });
-  await win.waitForTimeout(150);
+  // Row visibility is asserted explicitly below via waitFor — no settle sleep
+  // needed.
 
   const row = win.locator('li[data-session-id="s-long"]').first();
   await row.waitFor({ state: 'visible', timeout: 3000 });
@@ -1702,7 +1837,9 @@ async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
   // Dismiss menu before subcase 2.
   await win.keyboard.press('Escape');
   await win.keyboard.press('Escape');
-  await win.waitForTimeout(150);
+  // Wait for the move-to-group submenu content to detach so subcase 2 starts
+  // with no leaked menu state.
+  await win.locator('[data-testid="move-to-group-content"]').first().waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
 
   // ---- Subcase 2: single-group → submenu trigger is STILL visible (#629),
   // and the submenu contains only the "New group…" escape hatch — no
@@ -1740,7 +1877,9 @@ async function caseMoveToGroupExcludesOwnGroup({ win, log }) {
   }
   await win.keyboard.press('Escape');
   await win.keyboard.press('Escape');
-  await win.waitForTimeout(100);
+  // Cleanup: ensure menu detaches so subsequent cases don't inherit leaked
+  // menu state.
+  await win.locator('[data-testid="move-to-group-content"]').first().waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
 
   log('multi-group: own group excluded from submenu; single-group: submenu visible with only "New group…" entry');
 }
