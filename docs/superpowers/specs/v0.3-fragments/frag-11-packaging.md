@@ -699,7 +699,9 @@ set -e
 # per-user manual step.
 case "$1" in
   remove|purge)
-    pkill -f /usr/lib/ccsm/resources/daemon/ccsm-daemon || true
+    # Install path is /opt/CCSM/ per electron-builder LinuxTargetHelper
+    # (installPrefix=/opt, sanitizedProductName preserves casing of "CCSM").
+    pkill -f /opt/CCSM/resources/daemon/ccsm-daemon || true
     if [ "$1" = "purge" ] && [ -n "${SUDO_USER:-}" ]; then
       # Best-effort: if `sudo apt-get purge` was used, we know the invoking
       # user and can clean their data root. If apt was run as root directly

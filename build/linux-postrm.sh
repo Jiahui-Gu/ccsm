@@ -25,7 +25,19 @@
 
 set -eu
 
-DAEMON_BIN_PATH="/usr/lib/ccsm/resources/daemon/ccsm-daemon"
+# electron-builder linux deb/rpm install layout (verified task #152, frag-11):
+#   - electron-builder app-builder-lib/out/targets/LinuxTargetHelper.js sets
+#     installPrefix = "/opt".
+#   - FpmTarget.js stages app at `${installPrefix}/${sanitizedProductName}/`.
+#   - sanitizedProductName preserves productName casing (sanitizeFileName only
+#     strips path-unsafe chars; does NOT lowercase). package.json `build.productName`
+#     is "CCSM", so the install root is `/opt/CCSM/`.
+#   - extraResources land under `<installRoot>/resources/`. The linux block puts
+#     `daemon/dist/ccsm-daemon-staged` -> `daemon/ccsm-daemon`, giving the final
+#     binary path `/opt/CCSM/resources/daemon/ccsm-daemon`.
+# This is also documented user-facing in docs/reference/packaging.md
+# ("Install path: /opt/CCSM/").
+DAEMON_BIN_PATH="/opt/CCSM/resources/daemon/ccsm-daemon"
 TERM_GRACE_SECONDS=5
 
 log() {
