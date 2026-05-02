@@ -1,59 +1,135 @@
-# 08 — Session model
+# 08 — Session model: backend-authoritative + snapshot+delta + broadcast + LWW
 
-> Authority: [final-architecture §2.7](../2026-05-02-final-architecture.md#2-locked-principles) ("backend-authoritative; clients are pure subscribers; snapshot + delta-from-`seq` replay; broadcast-all + last-writer-wins at the PTY layer; PTY is the serialization point; no locks; no 'primary' client; scrollback RAM-only").
+> **Hard rule:** the PTY/session model is N≥3-correct from the first commit. There is no "v0.3 only has Electron, optimize for N=1, generalize later" path.
 
-## Authority and ownership
+## Why backend-authoritative
 
-The daemon is the source of truth for every session. A client (Electron in v0.3, web/iOS in v0.4) is a **pure subscriber**: it has no local session state that the daemon doesn't know about. A client kill / reload / network blip MUST result in a re-subscribe and a re-paint identical to the daemon's view, with no client-resident data lost. **Why:** §2.7.
+Final-architecture §2 principle 7: the daemon owns session state; clients are pure subscribers. This is the load-bearing decision for multi-client (web + iOS in v0.4) — but it is **also** the right model for desktop-only v0.3 because:
 
-## Session identity
+- Electron renderer reload (Cmd-R, devtools refresh) MUST not lose terminal state. Snapshot+delta from a backend-authoritative source serves this perfectly.
+- Multiple Electron windows on the same session (split-pane future) need the same broadcast contract.
 
-A session is identified by a server-minted `session_id` (ULID, sortable). The `session_id` is created by `SessionService.Create` and never reused. SQLite row in `sessions` table holds the durable metadata; in-memory `SessionRuntime` object holds the PTY handle and ring buffer.
+## Session manager
 
-## Snapshot + delta protocol
+Module: `daemon/src/sessions/manager.ts`. Responsibilities:
 
-Every emitted byte from the PTY has a monotonically increasing `seq` (uint64, per-session). Subscribers attach by:
+- Registry of `Session` objects keyed by `sessionId`.
+- Lifecycle: `create` (allocates id + spawns PTY via PtyHost), `get`, `list`, `update` (metadata), `close` (kill PTY + archive metadata to SQLite).
+- Hands out subscription handles to subscribers.
 
-1. Calling `SessionService.Snapshot(session_id)` → returns `{seq_at: <last_seq_in_snapshot>, content: <ring buffer dump>, cols, rows}`.
-2. Calling `SessionService.Subscribe(session_id, since_seq=seq_at)` → server-streams `Delta{seq, bytes}` for every new chunk.
+`Session` object holds:
 
-If `since_seq` is older than the ring buffer's earliest retained seq, the server responds on the stream with a `Delta{seq:0, kind:RESET}` then closes; client MUST re-Snapshot. **Why:** ring buffer is bounded; truncation is the only honest signal; persistence (which would let history go arbitrarily far back) is deferred ([§3 scrollback persistence](../2026-05-02-final-architecture.md#3-what-this-doc-does-not-decide)).
+- `id`, `metadata` (title, color, cwd, createdAt).
+- Reference to the PTY child handle (owned by PtyHost; see [09](./09-pty-host.md)).
+- Ring buffer (see "Snapshot ring buffer" below).
+- Subscriber registry (see "Broadcast" below).
+- `lastSeq` counter (monotonically increasing per output frame).
+- `bootNonce` (daemon's bootNonce; included in every snapshot; client uses to detect daemon restart).
 
-## Multi-client writes (broadcast-all + LWW)
+Persistence: session **metadata** is written to SQLite on create / update / close. Session **scrollback** is RAM-only (see "Persistence boundary" below).
 
-Three (or more) subscribers may concurrently call `PtyService.Write`. All writes are forwarded into the PTY in **arrival order at the daemon**; no per-client buffering, no fairness, no locks. The PTY itself is the serialization point. The PTY's output is **broadcast to every subscriber** (including the writer) over `SessionService.Subscribe` streams, in `seq` order.
+## Snapshot ring buffer
 
-Last-writer-wins is the natural consequence: if two clients each type a character at the same instant, the PTY sees them in arrival order and emits both; whichever character "wins" at the prompt is whichever the shell processed last. This is identical to two terminals tailing the same `tmux` pane. **Why:** §2.7 explicit.
+Per session, an in-RAM ring buffer of recent PTY output keyed by `seq`. Backed by `xterm-headless` running server-side to compute terminal state (cursor pos, scrollback lines, mode flags). Bounded by:
 
-## Fan-out registry sized for N ≥ 3 (day 1)
+- Max bytes: 256 KiB per session (matches the v0.3 frag-3.5.1 replay budget).
+- Max lines: 1000 lines of scrollback (matches xterm-headless default).
 
-Each `SessionRuntime` holds a `Set<Subscriber>` with no upper-bound assertion. The fan-out path:
+When the buffer fills, oldest frames are evicted; oldest retained `seq` is published to subscribers as `firstAvailableSeq` so they know when delta-only resume is no longer possible (and they need a fresh snapshot).
 
-```
-PTY data event (chunk)
-  → assign next seq
-  → append to ring buffer
-  → for each subscriber in Set: enqueue Delta{seq, chunk}
-```
+### `snapshot` envelope
 
-The enqueue MUST be backpressure-aware: if a subscriber's stream backs up beyond `MAX_QUEUE_BYTES`, the daemon drops the slow subscriber (closes its stream with `Code.ResourceExhausted` and logs `subscriber.dropped.slow`). **Why:** one slow client must not hold up the others; this is the only correct behavior in a broadcast topology and applies identically at N=1, N=3, N=∞ — sizing for N=1 ("just one subscriber, why do I need a queue?") is the rework anti-pattern called out in [01](./01-goals-and-non-goals.md#anti-patterns-any-of-these-in-any-chapter--p0-reject).
+A snapshot is the full xterm-headless state serialized as:
 
-## Scrollback (RAM only, in v0.3)
+- The visible screen (rows × cols cell grid with attributes).
+- Scrollback (up to ring-buffer cap).
+- Cursor position + visibility.
+- Terminal mode flags (cursor key application mode, alt-screen, etc.).
+- The `seq` of the most recent delta included in the snapshot.
 
-Ring buffer is the existing `xterm-headless` instance per session, with a fixed line cap (configurable, default e.g. 5000 lines). Scrollback persistence to SQLite is **deferred**; v0.3 ring buffer is unchanged. **Why deferred:** §2.7 ("scrollback: RAM-only … long-tail history persistence is a separate, later feature").
+Wire form: a `PtySnapshot` proto message (see [06](./06-proto-schema.md) §`PtyService.Subscribe`).
 
-## Resize and signal
+## Broadcast (N≥3 fan-out from day 1)
 
-`PtyService.Resize` MUST broadcast a synthetic `Delta{kind:RESIZE, cols, rows}` to all subscribers so they re-fit local terminals. Last-writer-wins applies to resize too (the PTY's actual size after the call wins).
+When PTY emits output:
 
-`PtyService.Signal` posts a Unix signal (or Windows equivalent — `Ctrl-C` injected via `node-pty.kill('SIGINT')`) to the claude CLI subprocess. No side effect on subscribers beyond what the subprocess emits.
+1. PtyHost calls `session.appendOutput(bytes)`.
+2. Session assigns next `seq`, appends to ring buffer, updates xterm-headless.
+3. Session iterates `subscribers` and pushes `PtyDelta { seq, bytes, ts }` to each subscriber's stream queue.
+4. **Slow subscribers do not block fast subscribers.** Each subscriber has a per-subscriber bounded queue (1 MiB, matching frag-3.5.1 watermark). On overflow → the slowest subscriber is **dropped** (its stream is closed with `ResourceExhausted`); it MUST resubscribe (which gets it a fresh snapshot).
 
-## §8.Z Zero-rework self-check
+**Why drop-slowest at the subscriber, not at the source:** dropping at source punishes all clients for one slow client. Dropping at subscriber preserves the model's semantics for everyone else.
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。session 语义 (backend-authoritative / snapshot+delta / broadcast+LWW / N>=3 fan-out / RAM ring buffer / slow-subscriber drop) 全部源自 final-architecture §2.7。v0.4 web/iOS 接入是**新增 subscriber**, 同一套 fan-out 代码服役。N>=3 day 1 = 不需要"扩容"的代码改动。Scrollback 持久化 (NG5) 进 v0.4 时是**新增** SQLite 写路径, 不修改 ring buffer 既有逻辑。**Why 不变:** §2.7 显式锁定。
+## Last-writer-wins (LWW) on input
+
+When two clients send `pty.Input` concurrently:
+
+- Each input RPC is unary; arrival at the daemon is serialized by the Connect-Node event loop / mutex on the PTY write side.
+- PTY child writes happen in arrival order. There is **no** lock, no "primary client" concept, no input merging.
+- The PTY child's interpretation of interleaved keystrokes IS the LWW semantics. The daemon does not editorialize.
+
+This matches final-architecture §2 principle 7. The PTY layer is the serialization point.
+
+## Subscribe + resubscribe
+
+Initial subscribe (`PtyService.Subscribe { session_id }`):
+
+1. Server immediately sends a `PtyEvent.snapshot` (current xterm-headless state).
+2. Then streams `PtyEvent.delta { seq, bytes }` for every subsequent PTY output.
+3. Sends `PtyEvent.heartbeat` every 30 s with `{ seq: <current lastSeq> }` so client can detect dead streams.
+4. On PTY exit, sends `PtyEvent.exit { code, signal }` then closes the stream.
+
+Resubscribe (`PtyService.Subscribe { session_id, from_seq }`):
+
+- If `from_seq >= firstAvailableSeq` (still in ring buffer): server skips snapshot, sends only deltas from `from_seq + 1` forward.
+- If `from_seq < firstAvailableSeq`: server sends a snapshot then resumes deltas. Client treats this as "you missed too much; here's everything from current state".
+- If `bootNonce` in client's recent state ≠ daemon's current bootNonce: server always sends snapshot (daemon restarted; nothing to delta-from).
+
+Client uses bootNonce comparison (from `daemon.hello` response on reconnect) to know whether to trust its own `from_seq`. Renderer reload of Electron can pass `from_seq` through main process's snapshot cache.
+
+## Persistence boundary
+
+- **In SQLite:** session metadata only (title, color, cwd, createdAt, closedAt, exitCode).
+- **NOT in SQLite (v0.3):** scrollback bytes, snapshots, deltas. RAM-only.
+- The PTY host module's external interface MUST treat persistence as a future-add: append/snapshot operations go through `session.appendOutput(bytes)`, not through "write to ring buffer". v0.5 can interpose a writer that also persists, without changing PTY-host or session-manager external API.
+
+**Why deferred (v0.5):** scrollback persistence requires policy decisions (size cap per session, retention window, eviction strategy). Punting allows the v0.3 ship without baking in a wrong policy.
+
+## Concurrency model
+
+- Single Node event loop. Session manager + PtyHost share state; mutations are synchronous within a tick.
+- PTY output arrival is libuv-driven; each chunk is processed atomically.
+- Subscriber queue writes are non-blocking (drop on overflow as above).
+- No worker threads in v0.3.
+
+## Test matrix (MUST in v0.3)
+
+| # | Scenario                                                               | Expected |
+| - | ---------------------------------------------------------------------- | -------- |
+| 1 | 1 subscriber, normal PTY output                                        | snapshot then deltas in order |
+| 2 | **3 concurrent subscribers**, same session                              | each receives identical snapshot + same delta stream |
+| 3 | **3 subscribers** + 2 clients sending interleaved input               | PTY echoes show LWW interleave; all 3 subscribers see identical output |
+| 4 | Slow subscriber (1 MiB backlog reached)                                | slow subscriber stream closed `ResourceExhausted`; fast subscribers unaffected |
+| 5 | Resubscribe with valid `from_seq` (in ring)                            | no snapshot; deltas from `from_seq+1` |
+| 6 | Resubscribe with stale `from_seq` (evicted)                            | snapshot then deltas |
+| 7 | Resubscribe after daemon restart (bootNonce changed)                   | snapshot regardless of `from_seq` |
+| 8 | PTY exits while subscribers attached                                   | `PtyEvent.exit` to all, streams closed |
+| 9 | Subscriber disconnect mid-stream                                        | session continues, PTY unaffected, other subscribers unaffected |
+| 10 | Heartbeat: subscriber receives `hb` events at ~30 s interval          | observed via fake clock |
+
+## What this chapter does NOT cover
+
+- Specific xterm-headless version pin → see [13 §deps](./13-packaging-and-release.md).
+- Session metadata DB schema → see [10](./10-sqlite-and-db-rpc.md).
+- PTY child spawn details / signal handling → see [09](./09-pty-host.md).
+- Electron's per-session snapshot cache (renderer reload speed) → see [12](./12-electron-thin-client.md).
 
 ## Cross-refs
 
-- [06-proto-schema](./06-proto-schema.md) — `SessionService` / `PtyService` definitions.
-- [09-pty-host](./09-pty-host.md) — implementation substrate.
-- [10-sqlite-and-db-rpc](./10-sqlite-and-db-rpc.md) — durable session metadata.
+- [01 — Goals (G5)](./01-goals-and-non-goals.md)
+- [06 — Proto schema (PtyService server-streaming signature)](./06-proto-schema.md)
+- [07 — Connect server (handler dependency wiring)](./07-connect-server.md)
+- [09 — PTY host](./09-pty-host.md)
+- [10 — SQLite (session metadata only)](./10-sqlite-and-db-rpc.md)
+- [12 — Electron (snapshot cache + bootNonce reconnect)](./12-electron-thin-client.md)
+- [15 — Testing strategy](./15-testing-strategy.md)
