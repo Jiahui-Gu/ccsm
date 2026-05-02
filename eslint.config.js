@@ -6,6 +6,18 @@ import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
+import { createRequire } from 'node:module';
+
+// Local custom rule: no-direct-native-import (frag-3.5.1 §3.5.1.1.a).
+// Loaded via createRequire so the .js (CJS) rule module works under
+// the ESM flat config without a package boundary.
+const require = createRequire(import.meta.url);
+const noDirectNativeImport = require('./eslint-rules/no-direct-native-import.js');
+const ccsmLocalPlugin = {
+  rules: {
+    'no-direct-native-import': noDirectNativeImport,
+  },
+};
 
 export default [
   {
@@ -16,6 +28,7 @@ export default [
       'scripts/**',
       'tests/**',
       'docs/**',
+      'eslint-rules/**',
       'webpack.config.js',
       'postcss.config.js',
       'eslint.config.js'
@@ -85,12 +98,16 @@ export default [
     plugins: {
       '@typescript-eslint': tseslint,
       react,
-      'react-hooks': reactHooks
+      'react-hooks': reactHooks,
+      'ccsm-local': ccsmLocalPlugin
     },
     rules: {
       ...tseslint.configs.recommended.rules,
       ...react.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
+      // Custom: forbid direct .node / ccsm_native loads outside the
+      // loader shim. Spec frag-3.5.1 §3.5.1.1.a.
+      'ccsm-local/no-direct-native-import': 'error',
       // React 17+ JSX transform — no need to import React in scope.
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',
