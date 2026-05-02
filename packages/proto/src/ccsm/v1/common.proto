@@ -1,0 +1,56 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §2 for the contract. Field numbers MUST NOT be reused or
+// renumbered. Additions are always new field numbers with new names.
+syntax = "proto3";
+
+package ccsm.v1;
+
+// Forever-stable. New principal kinds added as new oneof variants in v0.4.
+message Principal {
+  // F3: closes R0 03-P0.2 / R0 04-P0.1 — slot 2 reserved via the protobuf
+  // `reserved` keyword (NOT a `// comment`) so any v0.3.x patch that tries
+  // to bind a different message to field number 2 is rejected by `protoc`
+  // before `buf breaking` even runs. v0.4 lifts the reservation by deleting
+  // the `reserved 2;` line and adding `CfAccess cf_access = 2;` in the same
+  // patch — the deletion-plus-add is a single atomic schema move and is
+  // additive at the wire level (no v0.3 producer ever emitted field 2).
+  oneof kind {
+    LocalUser local_user = 1;
+  }
+  reserved 2;                  // v0.4: CfAccess cf_access = 2;
+}
+
+message LocalUser {
+  string uid = 1;          // numeric uid (unix) or SID (windows), as string
+  string display_name = 2; // OS-reported display name; advisory only
+}
+
+// Forever-stable. Surfaced to UI; ordering MUST match enum int values forever.
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_STARTING = 1;
+  SESSION_STATE_RUNNING = 2;
+  SESSION_STATE_EXITED = 3;
+  SESSION_STATE_CRASHED = 4;
+}
+
+// Forever-stable. Used by every RPC for traceability.
+//
+// F7: closes R4 P1 — daemon MUST validate `request_id` is non-empty on every
+// RPC. Empty `request_id` -> ConnectError `INVALID_ARGUMENT` with
+// `ErrorDetail.code = "request.missing_id"`. Daemon MUST NOT silently
+// synthesize a substitute (would break client-side correlation logs and
+// hide a misbehaving client). Test: `proto/request-meta-validation.spec.ts`
+// covers the rejection path for every Connect RPC.
+message RequestMeta {
+  string request_id = 1;       // client-generated UUIDv4; daemon rejects empty with INVALID_ARGUMENT
+  string client_version = 2;   // semver of caller (electron / web / ios)
+  int64 client_send_unix_ms = 3;
+}
+
+// Forever-stable error detail attached to ConnectError.details.
+message ErrorDetail {
+  string code = 1;             // stable string, e.g. "session.not_found"
+  string message = 2;          // human-readable; UI may show
+  map<string, string> extra = 3;
+}

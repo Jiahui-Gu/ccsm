@@ -1,0 +1,79 @@
+// Forever-stable wire schema. See specs/2026-05-03-v03-daemon-split-design.md
+// chapter 04 §5 for the contract. Field numbers MUST NOT be reused or
+// renumbered. `source` is a deliberately open string set; see chapter 09 §1
+// for the v0.3 named values.
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+
+service CrashService {
+  rpc GetCrashLog(GetCrashLogRequest) returns (GetCrashLogResponse);
+  rpc WatchCrashLog(WatchCrashLogRequest) returns (stream CrashEntry);
+  // F6: closes R0 08-P0.1 / R0 09-P0.2 / R5 P1-09-4 — replaces the
+  // broken "Open raw log file" affordance (chapter 08 §3 rejects
+  // `file://` URLs in `app:open-external`; v0.4 web/iOS cannot open a
+  // daemon-side filesystem path at all). Daemon streams the contents of
+  // `state/crash-raw.ndjson` (chapter 09 §2) as length-bounded chunks;
+  // client renders as "Download raw log" and persists via the renderer's
+  // File System Access API (Electron) / browser save dialog (v0.4 web) /
+  // iOS share sheet (v0.4 iOS). owner-scoped filtering does NOT apply —
+  // the raw log is daemon-self by definition; peer-cred middleware still
+  // scopes admin-only for v0.4.
+  rpc GetRawCrashLog(GetRawCrashLogRequest) returns (stream RawCrashChunk);
+}
+
+// F1: closes R0 04-P0.3 / R0 09-P0.1 / R0 05-P0.1 / R2 P0-05-2 —
+// owner_filter pinned at v0.3 freeze so v0.4 multi-principal scoping is
+// enum-additive, not a semantic flip.
+//
+// Forever-stable. v0.3 has a single principal kind so the filter is moot
+// at runtime; v0.4 multi-principal makes UNSPECIFIED == OWN binding and
+// adds OWNER_FILTER_ALL for admin principals. Defaults are forever-stable.
+enum OwnerFilter {
+  OWNER_FILTER_UNSPECIFIED = 0;    // treated as OWN
+  OWNER_FILTER_OWN = 1;            // entries with owner_id == principalKey(ctx.principal) OR owner_id == "daemon-self"
+  OWNER_FILTER_ALL = 2;            // v0.3: only the local-user principal MAY use this; v0.4: admin principals only
+}
+
+message GetCrashLogRequest {
+  RequestMeta meta = 1;
+  int32 limit = 2;            // max entries; daemon caps at 1000
+  int64 since_unix_ms = 3;    // 0 = no lower bound
+  OwnerFilter owner_filter = 4; // default UNSPECIFIED == OWN
+}
+message GetCrashLogResponse {
+  RequestMeta meta = 1;
+  repeated CrashEntry entries = 2;
+}
+
+message WatchCrashLogRequest {
+  RequestMeta meta = 1;
+  OwnerFilter owner_filter = 2; // same semantics as GetCrashLogRequest.owner_filter
+}
+
+// Forever-stable.
+message CrashEntry {
+  string id = 1;             // ULID
+  int64 ts_unix_ms = 2;
+  string source = 3;         // open string set; see chapter 09 §1 for v0.3 sources
+  string summary = 4;        // single-line summary
+  string detail = 5;         // multiline; stack trace if any
+  map<string, string> labels = 6;  // session_id, pid, etc.
+  string owner_id = 7;       // principalKey of attributable principal, or "daemon-self" for daemon-side crashes (chapter 09 §1)
+}
+
+// F6: closes R0 08-P0.1 / R0 09-P0.2. Forever-stable. Streams the bytes
+// of `state/crash-raw.ndjson` (chapter 09 §2) as 64 KiB chunks. Client
+// concatenates and saves to a user-chosen path. Daemon reads the file at
+// request time (NOT a snapshot — caller sees the file as of read); EOF is
+// signaled by the stream completing normally. If the file does not exist
+// (no fatal-via-NDJSON crashes have occurred), daemon completes the stream
+// after sending zero chunks. Errors map to `INTERNAL` with
+// `ErrorDetail.code = "crash.raw_log_read_failed"`.
+message GetRawCrashLogRequest { RequestMeta meta = 1; }
+message RawCrashChunk {
+  bytes data = 1;       // chunk bytes; daemon emits 64 KiB max per chunk
+  bool eof = 2;         // true on the last chunk (may also be true on a zero-byte chunk if file is empty)
+}
