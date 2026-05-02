@@ -42,12 +42,42 @@ export interface PruneOpts {
    *  whose mtime is younger than this many days, so the user can still send
    *  it via the Help-menu re-upload button (phase 4). Default 7. */
   protectUnsentYoungerThanDays?: number;
+  /** Task #59 / spec frag-6-7 §6.6.3 + §6.6.1 — aggregate per-side byte cap
+   *  for `<dataRoot>/crashes/`. Pruned oldest-first (by mtime) when total
+   *  on-disk size of incident dirs exceeds this cap. Protect-unsent has
+   *  priority: a protected dir is never deleted to satisfy the cap; if the
+   *  cap cannot be hit without deleting protected dirs we log warn + skip.
+   *  Default at the call site is 200 MB. */
+  maxAggregateBytes?: number;
 }
 
 export interface CrashCollector {
   recordIncident(input: IncidentInput): string;
   flush(): Promise<void>;
   pruneRetention(opts: PruneOpts): void;
+}
+
+/** Recursively sum file sizes inside an incident dir. Best-effort: files
+ *  removed mid-walk (race with another collector) are skipped. */
+function computeDirBytes(dir: string): number {
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch { return 0; }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    try {
+      if (ent.isDirectory()) {
+        total += computeDirBytes(full);
+      } else if (ent.isFile()) {
+        total += fs.statSync(full).size;
+      }
+    } catch {
+      // file vanished or permission flake; skip.
+    }
+  }
+  return total;
 }
 
 export function startCrashCollector(opts: CollectorOpts): CrashCollector {
@@ -154,9 +184,9 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
   }
 
   function pruneRetention(pruneOpts: PruneOpts): void {
-    const { maxCount, maxAgeDays, maxPerSurface, protectUnsentYoungerThanDays } = pruneOpts;
+    const { maxCount, maxAgeDays, maxPerSurface, protectUnsentYoungerThanDays, maxAggregateBytes } = pruneOpts;
 
-    interface Entry { name: string; full: string; mtime: number; surface: string | null; protected: boolean }
+    interface Entry { name: string; full: string; mtime: number; surface: string | null; protected: boolean; bytes: number }
 
     let entries: Entry[];
     try {
@@ -180,7 +210,8 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
             const cutoff = Date.now() - protectUnsentYoungerThanDays * 24 * 3600 * 1000;
             if (stat.mtimeMs >= cutoff) protectedByWindow = true;
           }
-          return { name: n, full, mtime: stat.mtimeMs, surface, protected: protectedByWindow };
+          const bytes = computeDirBytes(full);
+          return { name: n, full, mtime: stat.mtimeMs, surface, protected: protectedByWindow, bytes };
         })
         .filter((x): x is Entry => x !== null);
     } catch {
@@ -217,6 +248,38 @@ export function startCrashCollector(opts: CollectorOpts): CrashCollector {
         for (let i = maxPerSurface; i < arr.length; i++) {
           const e = arr[i]!;
           if (!e.protected) toDelete.add(e.full);
+        }
+      }
+    }
+
+    // Spec frag-6-7 §6.6.3: aggregate per-side byte cap (default 200 MB at
+    // call site). Sum surviving (post-other-rules) incident sizes oldest-first
+    // and delete the oldest until total is under the cap. Protected-unsent
+    // incidents are NEVER deleted to satisfy the cap; if removing every
+    // unprotected candidate still leaves us above the cap, we log warn and
+    // skip — the protect-unsent invariant wins (Task #59 dispatch).
+    if (maxAggregateBytes != null) {
+      const surviving = entries.filter(e => !toDelete.has(e.full));
+      let total = surviving.reduce((s, e) => s + e.bytes, 0);
+      if (total > maxAggregateBytes) {
+        // Walk oldest-first; only unprotected can be deleted.
+        const oldestFirst = [...surviving].sort((a, b) => a.mtime - b.mtime);
+        for (const e of oldestFirst) {
+          if (total <= maxAggregateBytes) break;
+          if (e.protected) continue;
+          toDelete.add(e.full);
+          total -= e.bytes;
+        }
+        if (total > maxAggregateBytes) {
+          // Couldn't get under the cap without touching protected dirs.
+          const protectedBytes = oldestFirst
+            .filter(e => e.protected && !toDelete.has(e.full))
+            .reduce((s, e) => s + e.bytes, 0);
+          console.warn(
+            `[crash-collector] aggregate cap ${maxAggregateBytes}B exceeded ` +
+            `(post-prune total=${total}B, protected-unsent=${protectedBytes}B); ` +
+            `skipping protected-unsent incidents per spec frag-6-7 §6.6.3.`,
+          );
         }
       }
     }
