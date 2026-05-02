@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 // packages/proto/scripts/lock-check.mjs
 //
 // Verify packages/proto/lock.json matches the on-disk SHA256 of every
@@ -46,12 +47,10 @@ function main() {
   try {
     lock = JSON.parse(readFileSync(LOCK_PATH, 'utf8'));
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error(`lock-check: failed to read ${LOCK_PATH}: ${err.message}`);
     process.exit(1);
   }
   if (!lock || typeof lock !== 'object' || lock.version !== 1 || !lock.files) {
-    // eslint-disable-next-line no-console
     console.error(`lock-check: ${LOCK_PATH} is not a valid v1 lock (expected { version: 1, files: {...} })`);
     process.exit(1);
   }
@@ -76,26 +75,20 @@ function main() {
   }
 
   if (mismatches.length === 0 && missingInLock.length === 0 && extraInLock.length === 0) {
-    // eslint-disable-next-line no-console
     console.log(`lock-check: OK (${onDisk.size} .proto files match lock.json)`);
     process.exit(0);
   }
 
-  // eslint-disable-next-line no-console
   console.error('lock-check: FAIL — packages/proto/lock.json drift detected');
   for (const { rel, expected, actual } of mismatches) {
-    // eslint-disable-next-line no-console
     console.error(`  mismatch: ${rel}\n    expected ${expected}\n    actual   ${actual}`);
   }
   for (const rel of missingInLock) {
-    // eslint-disable-next-line no-console
     console.error(`  missing in lock: ${rel}`);
   }
   for (const rel of extraInLock) {
-    // eslint-disable-next-line no-console
     console.error(`  extra in lock:   ${rel}`);
   }
-  // eslint-disable-next-line no-console
   console.error('\nRun `pnpm --filter @ccsm/proto run lock` to regenerate after intentional changes.');
   process.exit(1);
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console */
 // packages/proto/scripts/lock.mjs
 //
 // Regenerate packages/proto/lock.json from packages/proto/src/**/*.proto.
@@ -55,7 +56,6 @@ function main() {
   );
   const lock = { version: 1, files: sorted };
   writeFileSync(LOCK_PATH, JSON.stringify(lock, null, 2) + '\n', 'utf8');
-  // eslint-disable-next-line no-console
   console.log(`wrote ${LOCK_PATH} (${Object.keys(sorted).length} files)`);
 }
 
