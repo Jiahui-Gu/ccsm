@@ -1,5 +1,12 @@
 // electron/daemonClient/rpcClient.ts
 //
+// @deprecated Use `connectClient.ts` (Connect-Node over Listener A) for the
+// data plane instead. Removal of this module is tracked in task #115
+// (G5: 删 envelope 数据面代码). Until then, the envelope rpcClient and the
+// Connect-Node bridge coexist: call sites flip in #105 (SQLite) / #106
+// (SessionWatcher) / #108 (PTY); the supervisor / control plane remains on
+// the envelope per ch02 §6.
+//
 // Electron-side socket-RPC client for the v0.3 daemon-split (Task #27 / B7b).
 // Pairs with the daemon-side envelope adapter (`daemon/src/envelope/adapter.ts`,
 // PR #773 / Task #28). Together they complete the v0.3 IPC layer that
