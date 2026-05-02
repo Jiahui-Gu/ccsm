@@ -1,0 +1,13 @@
+{
+  "name": "spike-node-pty-22",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Probe-only package for T9.10 node-pty Node 22 ABI spike. Not part of root deps.",
+  "type": "module",
+  "scripts": {
+    "probe": "node probe.mjs"
+  },
+  "dependencies": {
+    "node-pty": "1.1.0"
+  }
+}
