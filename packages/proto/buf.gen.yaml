@@ -1,0 +1,27 @@
+# Buf code generation config (schema v2).
+# See specs/2026-05-03-v03-daemon-split-design.md ch11 §4 for the layout.
+#
+# What this generates:
+#   - TypeScript Connect-ES bindings (messages + service descriptors) into
+#     packages/proto/gen/ts/. Consumed by @ccsm/daemon (server) and
+#     @ccsm/electron (client) via @connectrpc/connect at runtime.
+#
+# What is intentionally NOT generated yet (placeholders only):
+#   - Go bindings  → packages/proto/gen/go/.gitkeep   (T0.x: Go daemon TBD)
+#   - Swift bindings → packages/proto/gen/swift/.gitkeep (T0.x: iOS client TBD)
+#
+# Regenerate locally:
+#   pnpm --filter @ccsm/proto run gen
+#
+# CI gate: T0.8 wires `pnpm gen` + `git diff --exit-code` so PRs cannot land
+# stale generated code. `buf breaking` is a separate gate (T0.7).
+version: v2
+plugins:
+  # @bufbuild/protoc-gen-es v2 generates both message types and service
+  # descriptors. Connect-ES consumes the generated GenService directly via
+  # @connectrpc/connect — no separate connect-es plugin needed.
+  - local: protoc-gen-es
+    out: gen/ts
+    opt:
+      - target=ts
+      - import_extension=js
