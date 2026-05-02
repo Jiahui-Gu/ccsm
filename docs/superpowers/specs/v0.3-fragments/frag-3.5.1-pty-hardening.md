@@ -1,7 +1,7 @@
 # Fragment: §3.5.1 PTY hardening (orphan reap + bridge timeout + stream heartbeat)
 
 **Owner**: Task #940 (worker, pool-2)
-**Target spec section**: insert immediately after §3.5 in `docs/superpowers/specs/2026-04-30-web-remote-design.md`
+**Target spec section**: §3.5.1 of the v0.3 design (see `v0.3-design.md` index).
 **P0 review items addressed**: rel-M1 (PTY orphan reap, data-layer details), rel-M2 (bridge call timeout + AbortSignal), res-MUST-2 (subscriber multiplexing), res-OPEN-4 (stream backpressure under network drop).
 **Round-2 P0/P1 items applied**: rel-P0-R3 (SIGCHLD shutdown ordering + DB rows), rel-P0-R5 + obs-P0-3 (drain ordering for streams/heartbeat/fanout drop), rel-P1-R5 (per-PID waitpid scope), rel-P1-R6 (heartbeat-vs-supervisor inversion explained), pkg-P0-2 (winjob.node artifact named for frag-11), lockin-P0-2 (`NativeBinding` swap interface), lockin-P1-4 + fwdcompat-P1-2 (heartbeat negotiable), perf-P0-A/B (header cache + shared-frame fan-out), perf-P1-B (xterm-headless backpressure non-optional), perf-P1-C (shared heartbeat scheduler), res-P0-1 (replay budget on resubscribe), res-P1-3 (semaphore deadline starts after admission), res-P1-4 (aggregate per-session subscriber cap), obs-P0-2 (traceId on stream/heartbeat/drop log).
 **Inputs cited**:

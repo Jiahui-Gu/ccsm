@@ -352,5 +352,4 @@ Net (round-3): **27 P0/P1 items applied here** (round-2 baseline 17 + round-3 ad
 - Round-3 reviews: `~/spike-reports/v03-r3-{security,fwdcompat,lockin,perf,observability}.md`.
 - Round-2 reviews: `~/spike-reports/v03-r2-{fwdcompat,observability,perf,lockin,security,resource,reliability,devx,ux,packaging}.md`.
 - Round-1 reviews: `~/spike-reports/v03-review-{perf,security,fwdcompat,observability,lockin}.md`.
-- v1 spec already wired: `docs/superpowers/specs/2026-04-30-web-remote-design.md` §3.1.1 line 80 (envelope cap forward-reference), §3.4 (Connect protocol), §3.5 (PTY headless / snapshot path).
 - v1 plan touched: `docs/superpowers/plans/2026-04-30-v0.3-daemon-split.md` Task 5 (lines 434–620, length-prefixed envelope), Task 11 step 1 (lines 1207–1234, stream extension).

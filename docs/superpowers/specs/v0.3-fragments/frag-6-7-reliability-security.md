@@ -1,7 +1,7 @@
 # Fragment: §6 reliability + §7 security expansion
 
 **Owner**: Task #936 (worker, pool-2). Round-3 fixes applied per `~/spike-reports/v03-r3-*.md`.
-**Target spec sections**: REPLACE existing §6 ("Error handling and edge cases") and §7 ("Testing") in `docs/superpowers/specs/2026-04-30-web-remote-design.md`. The v1 §7 ("Testing") moves to §6.6 below; the new §7 is dedicated Security.
+**Target spec sections**: §6 (reliability) and §7 (security) of the v0.3 design (see `v0.3-design.md` index).
 **P0 review items addressed**: rel-M1..M5, rel-S1/S2/S3/S5/S7, sec-M1..M3, sec-S1..S6, obs-MUST 2/3/4, res-MUST 1, round-2: rel P0-R1..R5, sec P0-S1..S3, obs P0-1..P0-4, fwdcompat P0-2, ux P0-UX-1/UX-3, pkg P0-1 (uninstall hygiene — TAKEN here, see §6.8). **Round-3**: rel R1..R5 (drain order, crash-loop reset, paused/abandoned terminal, daemon.crashing best-effort), sec P0-1/P0-2 (HMAC-of-nonce hello, fromSeq ACCEPTED), ux P0-A/P0-B/P0-C (surface registry canonical, migration priority callout, frag-12 PUNT), obs P1-1/P1-2 (canonical log key names), devx CF-1 (pino-roll symlink), devx CF-3 (BridgeTimeout policy), fwdcompat (boot_nonce → bootNonce, daemonProtocolVersion mirror), lockin CF-2/CF-3 (clientImposterSecret redact + protocolVersion mirror), resource X1/X3/X4 (~/.ccsm aggregate cap, uninstall double-claim, close_to_tray key), perf CF-1/CF-2 (-sup vs control-socket clarification, traceId hot-path carve-out).
 **OS-native install + data root paths (LOCKED v0.3)**:
 - Win: `%LOCALAPPDATA%\ccsm\` (per-user; binaries in `bin\`, data + lock + secret + logs at root)
