@@ -52,22 +52,51 @@ CI runs integration tests on `{ubuntu, macos, windows}` matrix per PR.
 
 ### 4. The four ship-gate harnesses (brief §11)
 
-#### 4.1 Ship-gate (a): no-IPC grep
+#### 4.1 Ship-gate (a): no-IPC grep + ESLint backstop
 
-`tools/lint-no-ipc.sh`:
+The grep is the cheap fast layer; the ESLint rule is the sound layer. Both run in CI; either failing blocks merge. The grep catches stray string literals and template-stringy IPC channel names; the ESLint `no-restricted-imports` catches cases where the symbol is renamed or destructured (e.g., `import { ipcMain as M } from "electron"`).
+
+`tools/lint-no-ipc.sh` (canonical script — referenced by chapter [08](./08-electron-client-migration.md) §5h, chapter [11](./11-monorepo-layout.md) §6, and this section; do NOT inline-duplicate the script anywhere else):
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 hits=$(grep -rEn 'contextBridge|ipcMain|ipcRenderer' packages/electron/src \
        --exclude-dir=node_modules --exclude-dir=dist || true)
+# F3: optional descriptor-preload allowlist if F2 picks the contextBridge whitelist path.
+# When `.no-ipc-allowlist` exists, each line is a `path:line-number-range` entry that
+# the grep MUST exclude before failing. Format example:
+#   packages/electron/src/preload/preload-descriptor.ts:1-40
+# Empty / missing file = no allowlist (the gate is unconditional).
+if [ -f tools/.no-ipc-allowlist ]; then
+  hits=$(echo "$hits" | grep -vFf <(awk -F: '{print $1}' tools/.no-ipc-allowlist) || true)
+fi
 if [ -n "$hits" ]; then
   echo "FAIL: IPC residue:"; echo "$hits"; exit 1
 fi
 echo "PASS: zero IPC residue"
 ```
 
-Wired into `electron-test` job (per [11](./11-monorepo-layout.md) §6); blocks merge.
+ESLint backstop in `packages/electron/.eslintrc.cjs` (enforced in `electron-test` job per chapter [11](./11-monorepo-layout.md) §6):
+
+```js
+// F3: closes R4 P0 ch 12 ship-gate (a) — substring grep is unsound for renamed
+// imports (e.g., `import { ipcMain as M } from "electron"`); pair the grep
+// with a structural rule that catches the import itself, not the usage.
+module.exports = {
+  rules: {
+    "no-restricted-imports": ["error", {
+      paths: [{
+        name: "electron",
+        importNames: ["ipcMain", "ipcRenderer", "contextBridge"],
+        message: "v0.3 forbids ipcMain / ipcRenderer / contextBridge — see chapter 08 §5; sanctioned exceptions go through tools/.no-ipc-allowlist (descriptor preload only).",
+      }],
+    }],
+  },
+};
+```
+
+Wired into `electron-test` job (per [11](./11-monorepo-layout.md) §6) as TWO sequential steps (grep then ESLint rule); both must pass; either failing blocks merge.
 
 #### 4.2 Ship-gate (b): daemon survives Electron SIGKILL
 

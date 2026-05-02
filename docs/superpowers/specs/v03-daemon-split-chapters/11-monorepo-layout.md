@@ -126,7 +126,7 @@ Codegen is invoked via `pnpm --filter @ccsm/proto run gen` which Turborepo treat
 }
 ```
 
-A `buf breaking` job runs in CI on every PR after v0.3 ships, comparing against the v0.3 release tag (see [04](./04-proto-and-rpc-surface.md) §8).
+A `buf breaking` job runs in CI on every PR **from phase 1 onward** (not deferred until v0.3 ships). Pre-tag, the comparison target is the PR's merge-base SHA on the working branch (any in-flight `.proto` shift MUST be intentional and reviewed); post-tag, the comparison target is the v0.3 release tag (see [04](./04-proto-and-rpc-surface.md) §7 / §8 and [13](./13-release-slicing.md) §2 phase 1). In addition, every `.proto` file's SHA256 is recorded in `packages/proto/lock.json` (committed). CI runs a `proto-lock-check` step that recomputes SHA256 over each `.proto` file and rejects any PR that touches a `.proto` file without bumping the matching SHA in `lock.json`. The bump is mechanical: `pnpm --filter @ccsm/proto run lock` regenerates `lock.json` and the PR author commits the result.
 
 ### 5. Per-package responsibilities
 
@@ -155,7 +155,8 @@ jobs:
     steps:
       - run: pnpm --filter @ccsm/proto run gen
       - run: pnpm --filter @ccsm/proto run lint   # buf lint
-      - run: pnpm --filter @ccsm/proto run breaking  # only on PRs after v0.3 tag
+      - run: pnpm --filter @ccsm/proto run lock-check   # SHA256 per .proto MUST match lock.json (rejects .proto touch without lock bump)
+      - run: pnpm --filter @ccsm/proto run breaking     # buf breaking; pre-tag: against merge-base SHA; post-tag: against v0.3 tag (active from phase 1)
 
   daemon-test:
     needs: proto-gen-and-lint

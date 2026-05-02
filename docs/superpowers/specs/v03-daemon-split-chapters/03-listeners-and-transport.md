@@ -84,7 +84,7 @@ export function makeListenerA(env: DaemonEnv): Listener {
           ? "/var/run/com.ccsm.daemon/daemon.sock"
           : "/run/ccsm/daemon.sock" },
     authChain: [
-      peerCredMiddleware(),       // produces principal { kind: "local-user", uid, sid }
+      peerCredMiddleware(),       // produces principal { kind: "local-user", uid }
       // v0.4 inserts the JWT validator here on Listener B; on Listener A the chain stays single-link.
     ],
     start, stop,
@@ -192,7 +192,7 @@ The transport choice does NOT leak into proto, RPC handlers, or Electron busines
 
 ### 5. Peer-cred authentication
 
-Peer-cred middleware derives `ctx.principal = { kind: "local-user", uid, sid }`:
+Peer-cred middleware derives `ctx.principal = { kind: "local-user", uid }` (single `uid` field — Windows SID is encoded as a string in `uid`, matching the `LocalUser.uid` proto field per [04](./04-proto-and-rpc-surface.md) §2; no separate `sid` field exists on the principal):
 
 | Transport | Mechanism |
 | --- | --- |

@@ -34,9 +34,9 @@ Phases are NOT serial — they have explicit dependencies that allow parallelism
 #### Phase 1 — Proto
 - `.proto` files per [04](./04-proto-and-rpc-surface.md).
 - `buf.gen.yaml` produces TS code consumed by daemon and electron stubs.
-- Lock file: `packages/proto/lock.json` with SHA256 per `.proto` file (committed; CI-checked).
-- `buf lint` clean; `buf breaking` job exists but only activates against the v0.3 release tag (no-op until tagged).
-- **Done when**: `pnpm --filter @ccsm/proto run gen && pnpm --filter @ccsm/proto run lint` green in CI on all OSes.
+- Lock file: `packages/proto/lock.json` with SHA256 per `.proto` file (committed; CI rejects any `.proto` mutation that does not bump the matching SHA — see [11](./11-monorepo-layout.md) §6).
+- `buf lint` clean; `buf breaking` job is **active from this phase forward** (NOT deferred until v0.3 tag); pre-tag the comparison target is the PR's merge-base SHA on the working branch, post-tag it switches to the v0.3 release tag.
+- **Done when**: `pnpm --filter @ccsm/proto run gen && pnpm --filter @ccsm/proto run lint && pnpm --filter @ccsm/proto run lock-check && pnpm --filter @ccsm/proto run breaking` green in CI on all OSes.
 
 #### Phase 2 — Daemon skeleton + Listener A + Supervisor
 - Daemon binary boots (no sessions); writes `listener-a.json`; binds Listener A; Supervisor `/healthz` returns 200.

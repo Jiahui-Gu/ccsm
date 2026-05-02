@@ -80,7 +80,7 @@ The daemon MUST be in state (5) before accepting any Listener A connect. If a cl
 ### 6. Process boundary contract (Electron MUST assume)
 
 - Daemon may restart at any time. Electron MUST tolerate Connect `UNAVAILABLE` with auto-reconnect + exponential backoff (cap 30s).
-- Daemon may be older or newer than Electron after either side updates. Electron MUST send a client version in `Hello`; daemon rejects incompatible versions with `FAILED_PRECONDITION` and a structured detail listing min compatible client. (See [04-proto-and-rpc-surface](./04-proto-and-rpc-surface.md) §3.)
+- Daemon may be older or newer than Electron after either side updates. Electron MUST send its `proto_min_version` in `Hello`; daemon rejects incompatible versions with `FAILED_PRECONDITION` and a structured `ErrorDetail` whose `code = "version.client_too_old"` and `extra["daemon_proto_version"] = <int>`. Version negotiation is **one-directional**: daemon does NOT push a `min_compatible_client` back to Electron — the Electron build embeds its own `proto_min_version` baseline at compile time and decides whether to upgrade based on the daemon's reported `proto_version`. (See [04-proto-and-rpc-surface](./04-proto-and-rpc-surface.md) §3 for the proto field set and the negotiation contract; the `HelloResponse` carries `daemon_version`, `proto_version`, `principal`, and `listener_id` — no `min_compatible_client`.)
 - Sessions are daemon-owned. Closing the Electron window does NOT close sessions. The user destroys sessions only via the explicit `DestroySession` RPC.
 
 ### 7. v0.4 delta

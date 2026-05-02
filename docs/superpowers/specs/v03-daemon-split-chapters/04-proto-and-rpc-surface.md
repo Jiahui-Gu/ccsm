@@ -27,9 +27,16 @@ package ccsm.v1;
 
 // Forever-stable. New principal kinds added as new oneof variants in v0.4.
 message Principal {
+  // F3: closes R0 03-P0.2 / R0 04-P0.1 — slot 2 reserved via the protobuf
+  // `reserved` keyword (NOT a `// comment`) so any v0.3.x patch that tries
+  // to bind a different message to field number 2 is rejected by `protoc`
+  // before `buf breaking` even runs. v0.4 lifts the reservation by deleting
+  // the `reserved 2;` line and adding `CfAccess cf_access = 2;` in the same
+  // patch — the deletion-plus-add is a single atomic schema move and is
+  // additive at the wire level (no v0.3 producer ever emitted field 2).
   oneof kind {
     LocalUser local_user = 1;
-    // CfAccess cf_access = 2;  // v0.4 — slot reserved
+    reserved 2;                  // v0.4: CfAccess cf_access = 2;
   }
 }
 
@@ -62,7 +69,7 @@ message ErrorDetail {
 }
 ```
 
-Reservation slot for `cf_access` is a **comment**, not a `reserved` declaration, because `reserved` blocks future field number reuse — exactly what we want to prevent. v0.4 simply adds `CfAccess cf_access = 2;` and a sibling `message CfAccess { string sub = 1; string aud = 2; ... }`.
+Reservation slot for `cf_access` uses the protobuf `reserved` keyword (not a comment) precisely **because** the keyword causes `protoc` to reject any attempt to reuse field number 2 with a different message — exactly the protection v0.3 wants. The earlier "comment is better because reserved blocks reuse" framing was inverted: the v0.4 add is `reserved 2;` deletion plus `CfAccess cf_access = 2;` insertion in the same patch (mechanically additive at the wire level — v0.3 producers never emit field 2 — and `buf breaking` accepts the move because no v0.3 message had `cf_access`). Every comment-only "v0.4 reserved" slot in this chapter MUST use `reserved <number>;` instead; reviewers grep for `// .*v0\.4.*reserved` and reject any hits in `.proto` files.
 
 ### 3. Session service (`session.proto`)
 
@@ -83,8 +90,10 @@ service SessionService {
 
 message HelloRequest {
   RequestMeta meta = 1;
-  string client_kind = 2;       // "electron" | "web" | "ios" — v0.3 only "electron"
-  string client_version = 3;
+  string client_kind = 2;       // "electron" | "web" | "ios" — v0.3 only "electron"; open string set (see §3 below)
+  // F3: closes R0 04-P1.1 — `client_version` is carried in `RequestMeta` only.
+  // Field number 3 reserved so v0.4 cannot accidentally re-bind it.
+  reserved 3;                    // historically `client_version`; now in RequestMeta.client_version
   int32 proto_min_version = 4;  // client's minimum acceptable v1 minor
 }
 
@@ -93,6 +102,10 @@ message HelloResponse {
   string daemon_version = 2;
   int32 proto_version = 3;      // current v1 minor; client compares against its min
   Principal principal = 4;      // who the daemon thinks you are
+  // F3: closes R0 04-P1.3 — listener id surfaces which listener answered the
+  // handshake. v0.3 daemon ALWAYS populates "A" (the only listener instantiated);
+  // v0.4 Listener B populates "B". Open string set so v0.5+ may add "C" etc.
+  string listener_id = 5;       // "A" in v0.3; "B" on Listener B in v0.4
 }
 
 message ListSessionsRequest { RequestMeta meta = 1; }
@@ -164,7 +177,9 @@ message Session {
 }
 ```
 
-`Hello` does **not** authenticate — peer-cred middleware on Listener A already did that; `Hello` exists to negotiate protocol minor and surface the daemon-derived principal back to the client. The `client_kind` field is forever-stable and string-typed (not enum) so v0.5+ can add new client kinds without a proto bump.
+`Hello` does **not** authenticate — peer-cred middleware on Listener A already did that; `Hello` exists to negotiate protocol minor and surface the daemon-derived principal back to the client. The `client_kind` field is forever-stable and string-typed (not enum) so v0.5+ can add new client kinds without a proto bump. **`client_kind` is an open string set** — same wording as `CrashEntry.source` (§5) and `CrashEntry.source` open-set rule: string values are open; daemon and client both tolerate unknown values. v0.3 daemon does NOT branch on `client_kind` for behavior selection (forbidden by chapter [15](./15-zero-rework-audit.md) §3); the field is observability-only in v0.3. v0.3 publishes a known set `{"electron", "web", "ios"}` enumerated in this comment block; clients SHOULD pick a value from this set, but daemon MUST accept any UTF-8 string.
+
+**Version negotiation is one-directional**: the client sends `proto_min_version` in `HelloRequest`; the daemon either accepts (returns its `proto_version` in `HelloResponse`) or rejects with `FAILED_PRECONDITION` and an `ErrorDetail` whose `code = "version.client_too_old"` and `extra["daemon_proto_version"] = <int>`. The daemon does NOT push a `min_compatible_client` value back; the client decides whether to upgrade based on its own embedded `proto_min_version` baseline. (This contract is mirrored in chapter [02](./02-process-topology.md) §6 wording.)
 
 ### 4. PTY service (`pty.proto`)
 
@@ -178,6 +193,15 @@ service PtyService {
   rpc Attach(AttachRequest) returns (stream PtyFrame);   // server-stream
   rpc SendInput(SendInputRequest) returns (SendInputResponse);  // client → daemon keystrokes
   rpc Resize(ResizeRequest) returns (ResizeResponse);
+  // F3: closes R0 06-P0.3 — per-frame ack ships in v0.3 so v0.4 web/iOS get
+  // exactly-once delta application semantics WITHOUT a request-shape change.
+  // v0.3 Electron MAY no-op (HTTP/2 flow control + the `since_seq` resume
+  // tree (chapter 06 §5) already give the dogfood-needed reliability over
+  // loopback); v0.4 web/iOS over CF Tunnel MUST set `requires_ack = true`
+  // on `AttachRequest` and MUST call `AckPty(session_id, applied_seq)` after
+  // each persisted frame so daemon can advance its per-subscriber seq watermark
+  // and prune deltas safely.
+  rpc AckPty(AckPtyRequest) returns (AckPtyResponse);
 }
 
 message PtyGeometry {
@@ -191,6 +215,24 @@ message AttachRequest {
   // Last delta seq the client has; daemon resumes from here.
   // 0 means "send fresh snapshot then deltas from snapshot's seq".
   uint64 since_seq = 3;
+  // F3: closes R0 06-P0.3 — opt-in per-frame ack channel.
+  // v0.3 Electron leaves this `false` (default proto3 zero) — the server
+  // streams freely; loopback HTTP/2 flow control suffices and the `since_seq`
+  // resume tree handles disconnect cases. v0.4 web/iOS clients running over
+  // CF Tunnel set this `true` and MUST call `AckPty` after each persisted
+  // frame; daemon then bounds per-subscriber unacked-frame backlog (kicks
+  // the subscriber with `RESOURCE_EXHAUSTED` if backlog exceeds N=4096).
+  bool requires_ack = 4;
+}
+
+message AckPtyRequest {
+  RequestMeta meta = 1;
+  string session_id = 2;
+  uint64 applied_seq = 3;        // highest contiguous seq the client has persisted
+}
+message AckPtyResponse {
+  RequestMeta meta = 1;
+  uint64 daemon_max_seq = 2;     // highest seq daemon currently has buffered for this session
 }
 
 message PtyFrame {
@@ -377,9 +419,11 @@ The on-disk shape mirrors the wire enum: the SQLite `settings` table is keyed `(
 | `SessionService.*`, `PtyService.*`, `CrashService.*`, `SettingsService.*` | **forever-stable** RPC names + signatures | new RPCs added as new methods only |
 | `PtySnapshot.screen_state` byte payload | **v0.3-internal** | the *bytes field itself* is forever-stable; the encoding inside is gated by `schema_version`; see [06](./06-pty-snapshot-delta.md) for the v0.3 schema |
 | `CrashEntry.source` string values | **v0.3-internal** (open set) | new values added freely; daemon and client both tolerate unknown |
+| `HelloRequest.client_kind` string values | **v0.3-internal** (open set) | same rule as `CrashEntry.source`; v0.3 known set `{electron, web, ios}`; daemon MUST tolerate any UTF-8 string and MUST NOT branch behavior on the value (chapter [15](./15-zero-rework-audit.md) §3) |
+| `HelloResponse.listener_id` string values | **v0.3-internal** (open set) | v0.3 always `"A"`; v0.4 adds `"B"`; clients tolerate unknown |
 | Supervisor HTTP endpoints | **forever-stable** by URL + JSON shape | not Connect, not in proto |
 
-The CI lint job runs `buf breaking --against '.git#branch=v0.3'` on every PR after v0.3 ships. Any forever-stable change is a hard block.
+The CI lint job runs `buf breaking` on every PR **from phase 1 onward** — pre-tag the comparison target is the PR's merge-base SHA on the working branch (so any in-flight PR that shifts a v0.3 message MUST be intentional and reviewed); post-tag the comparison target is the v0.3 release tag. This closes the "buf-breaking is disabled until v0.3 ships" gap that previously let a v0.3.x patch silently mutate the wire schema. In addition, every `.proto` file's SHA256 is recorded in `packages/proto/lock.json` (committed) and CI rejects any PR that touches a `.proto` file without bumping the matching SHA in `lock.json` (the bump is mechanical: `pnpm --filter @ccsm/proto run lock` regenerates and the PR author commits the result). See chapter [11](./11-monorepo-layout.md) §6 for the CI wiring and chapter [13](./13-release-slicing.md) §2 phase 1 for the "active from day one" milestone.
 
 ### 8. The additivity contract (mechanical)
 
@@ -391,13 +435,14 @@ For v0.4+ proto edits to be compliant, ALL of the following MUST hold:
 4. No reuse of any field number, even for previously-unused ones.
 5. Any new field is added with a new field number and is `optional` in semantic terms (proto3 already makes scalars implicitly default-zero — that counts).
 6. New oneof variants are appended; existing variants are never repurposed.
-7. `buf breaking` against the v0.3 tagged commit MUST pass.
+7. `buf breaking` against the v0.3 tagged commit (post-tag) or merge-base SHA (pre-tag) MUST pass; the gate is active from phase 1 onward, not deferred until ship.
+8. Every `.proto` file mutation MUST be accompanied by a `packages/proto/lock.json` SHA bump for that file in the same PR; CI rejects mismatched PRs.
 
 Reviewers MAY block any v0.4 PR that violates any of these mechanically.
 
 ### 9. v0.4 delta
 
 - **Add** new RPCs (e.g., `TunnelService.GetStatus`, `TunnelService.SetEnabled`, `IdentityService.ListPrincipals`, `WebClientService.Register`) in new `.proto` files OR appended to existing services.
-- **Add** new oneof variant `Principal.cf_access` with sibling `CfAccess` message.
+- **Add** new oneof variant `Principal.cf_access` with sibling `CfAccess` message — the `reserved 2;` line in `Principal.kind` is deleted in the same patch (additive at wire level — no v0.3 producer ever emitted field 2 — and `buf breaking` accepts the move).
 - **Add** new optional fields to existing messages where needed (each with a new field number).
-- **Unchanged**: every byte of the proto in this chapter; every existing field number; every existing RPC signature.
+- **Unchanged**: every byte of the proto in this chapter; every existing field number; every existing RPC signature. (SnapshotV1 ships zstd-compressed in v0.3; no `schema_version = 2` is needed for compression — see chapter [06](./06-pty-snapshot-delta.md) §2.)
