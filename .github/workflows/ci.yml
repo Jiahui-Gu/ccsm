@@ -62,9 +62,12 @@ jobs:
           path: node_modules
           # Cache key includes BOTH the root lockfile (workspace deps live
           # here) AND daemon/package-lock.json if/when it appears, so a
-          # daemon-local lockfile change also busts the cache. `node22`
-          # tracks daemon/.nvmrc — bump in lockstep when .nvmrc bumps.
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
+          # daemon-local lockfile change also busts the cache. The
+          # daemon/.nvmrc hash is folded in so a Node version bump
+          # invalidates the cache automatically (Task #167 experiment e:
+          # PR #825 hang root-cause hypothesis — stale better-sqlite3 ABI
+          # binding from previous Node version held in cache).
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node-${{ hashFiles('daemon/.nvmrc') }}-${{ hashFiles('package-lock.json', 'daemon/package-lock.json') }}
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
