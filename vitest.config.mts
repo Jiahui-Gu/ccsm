@@ -31,6 +31,17 @@ export default defineConfig({
     // cycles). Bump to 15s globally — well below CI job timeout, and
     // leaves headroom for `npm run coverage`.
     testTimeout: 15000,
+    // Vitest 4 + jsdom 29 transitively pulls `@exodus/bytes` (pure ESM,
+    // `"type": "module"`) via `html-encoding-sniffer`. The default CJS
+    // worker can't `require()` those, producing ERR_REQUIRE_ESM in every
+    // jsdom suite. Inline-bundle the chain so Vite transforms it to CJS
+    // before the worker loads. Keep this list narrow — broad inlining
+    // hurts cold-start perf.
+    server: {
+      deps: {
+        inline: [/^@exodus\//, 'html-encoding-sniffer'],
+      },
+    },
     // Tech-debt R6 (Task #802) — coverage tooling. Reporters cover both
     // human (text) and machine (json-summary, lcov) consumers; lcov is
     // what CI uploads as an artifact.
