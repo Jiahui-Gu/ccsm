@@ -59,28 +59,44 @@ Defined in [04](./04-proto-and-rpc-surface.md) §5:
 
 - `CrashService.GetCrashLog(limit, since_unix_ms, owner_filter)` returns recent entries (newest first), capped at 1000 per call. Pagination implicit via `since_unix_ms` for older windows. `owner_filter` (chapter [04](./04-proto-and-rpc-surface.md) §5) defaults to `OWNER_FILTER_OWN` and filters `crash_log` by `owner_id IN (principalKey(ctx.principal), 'daemon-self')`.
 - `CrashService.WatchCrashLog(owner_filter)` server-streams new entries as they land, applying the same `owner_filter` semantics.
+- `CrashService.GetRawCrashLog()` (added F6 — closes R0 09-P0.2 / R0 08-P0.1) server-streams the bytes of `state/crash-raw.ndjson` as 64 KiB chunks. Used by the "Download raw log" UI (§5 below). v0.4 web/iOS use this RPC unchanged; the renderer concatenates chunks and persists via the platform's native save mechanism (Electron: File System Access API; v0.4 web: browser save dialog; v0.4 iOS: share sheet).
 
 In v0.3 with a single `local-user` principal, both `OWNER_FILTER_OWN` and `OWNER_FILTER_ALL` return the same effective set (the principal's session-attributable crashes plus all `daemon-self` crashes). v0.4 multi-principal makes the distinction binding: `OWNER_FILTER_ALL` is admin-only. The column, the proto field, and the filter semantics all ship in v0.3 so v0.4 enforcement is a behavior change inside an unchanged surface (see chapter [05](./05-session-and-principal.md) §5 and chapter [15](./15-zero-rework-audit.md) §3 forbidden-pattern 14).
 
 ### 5. Settings UI surface
 
+<!-- F6: closes R0 09-P0.2 / R5 P1-09-4 ("Open raw log file" → "Download raw log" via GetRawCrashLog); R1 P1.1 (Sentry toggle reads Settings.sentry_enabled). -->
+
 Electron's Settings page renders:
 
 - A table of recent crashes (newest first), columns: time, source, summary. Row click expands to show `detail` (multiline, monospace) and `labels` (key/value chips).
 - A counter "X crashes in last 7 days". Clicking filters the table.
-- A "Copy as JSON" button per row (renderer-only — copies the displayed payload to clipboard).
-- A "Open raw log file" button (renderer-only — uses the `app:open-external` replacement to open the daemon's `crash-raw.ndjson` path; shown only on platforms where the user has read access).
+- A "Copy as JSON" button per row (renderer-only — copies the displayed payload to clipboard via `navigator.clipboard.writeText`).
+- A **"Download raw log"** button that calls `CrashService.GetRawCrashLog`, concatenates the streamed `RawCrashChunk` bytes, and saves to a user-chosen path (Electron: renderer's File System Access API `window.showSaveFilePicker`; v0.4 web: same API; v0.4 iOS: share sheet). Shown unconditionally — daemon scopes the read to its own filesystem (the renderer never touches the daemon-side path). Replaces the previous "Open raw log file" affordance, which depended on `app:open-external` opening a `file://` URL — rejected by chapter [08](./08-electron-client-migration.md) §3.2's URL safety policy AND meaningless in v0.4 web/iOS.
+- A **"Send to Sentry"** toggle bound to `Settings.sentry_enabled` (chapter [04](./04-proto-and-rpc-surface.md) §6). Default true (matches v0.2). When false, the Electron-side Sentry init in `packages/electron/src/sentry/init.ts` skips initialization. The daemon's local SQLite crash log (capture path in §1) is independent of this toggle and is always-on. v0.4's "Send to Anthropic" upload UI for the SQLite log will be a sibling toggle (separate boolean, separate consent flow).
 - Retention controls bound to `SettingsService.UpdateSettings`.
 
-No network upload UI in v0.3. The "Send to Anthropic" button is **not present** (not commented out, not behind a flag — it does not exist). v0.4 adds it as an additive UI element.
+No network upload UI for the SQLite log in v0.3. The "Send to Anthropic" button (for the daemon's SQLite log) is **not present** (not commented out, not behind a flag — it does not exist). v0.4 adds it as an additive UI element next to the Sentry toggle.
 
 ### 6. Watchdog (linux only, v0.3)
 
 Linux systemd unit declares `WatchdogSec=30s`. Daemon main thread emits `WATCHDOG=1` via `systemd-notify` (or equivalent direct socket write) every 10s. **Why on the main thread**: the main thread is what blocks on coalesced SQLite writes; if it hangs, the entire RPC surface is dead. Worker thread liveness is implicit (workers signal via `postMessage`; main checks last-message-age per worker every tick).
 
-Windows / macOS lack a comparable cheap watchdog primitive; v0.3 does NOT implement one (would need a sidecar). Service managers on those platforms restart on process death only.
+Windows / macOS lack a comparable cheap watchdog primitive; v0.3 does NOT implement one (would need a sidecar). Service managers on those platforms restart on process death only. macOS hang detection is **deferred to v0.4 hardening** (see chapter [14](./14-risks-and-spikes.md) — the `[watchdog-darwin-approach]` MUST-SPIKE is removed from the v0.3 spike registry).
 
-> **MUST-SPIKE [watchdog-darwin-approach]**: hypothesis: launchd can be configured to restart on QueueDirectories or KeepAlive=Crashed to mimic systemd watchdog behavior; or we can use a periodic launchd `OnDemand` check. · validation: instrument a hang and verify launchd restarts within 60s. · fallback: live without; document as a v0.4 hardening item; do NOT block ship.
+#### 6.1 "Crashes since you last looked" badge
+
+<!-- F6: closes R1 P1.2 (chapter 09) — daemon crashes after Electron exit produce no user-visible signal until the user goes looking. Surface a passive count on Settings. -->
+
+The Settings page surfaces a passive count `crashesSinceLastSeen` on the Crash Reporting section header (e.g., "Crash Reporting · **3 new crashes**"). The count is computed by the renderer comparing `WatchCrashLog`'s emitted entries against a renderer-stored `last_seen_crash_id` (persisted via `Settings.ui_prefs["crash.last_seen_id"]`). Opening the Crash Reporting section flushes `last_seen_crash_id` to the most recent entry's id. Cheap addition; converts silent recurring daemon crashes into an in-app passive signal users notice on next launch.
+
+### 6.2 Capture-sources table-driven contract
+
+<!-- F6: closes R4 P1 ch 09 — capture sources declared in a single table-driven module so spec-list and tests derive from the same source-of-truth. -->
+
+The §1 capture-sources table is mirrored in code at `packages/daemon/src/crash/sources.ts` as an exported `const CAPTURE_SOURCES = [...] as const` array. Each entry has `{name: string, severity: 'fatal'|'warn', defaultOwnerId: 'daemon-self'|'session-principal'}`. Tests in `packages/daemon/test/crash/capture.spec.ts` iterate the array and assert one row lands per source under a synthetic-fire harness. Adding a v0.4 source means appending to `CAPTURE_SOURCES`; the test grows automatically. Rate-limiting on the `sqlite_op` source ("one entry per ~60s per code-class to prevent flooding") is exercised by `packages/daemon/test/crash/rate-limit.spec.ts`. Linux watchdog `WATCHDOG=1` keepalive (§6) is exercised by `packages/daemon/test/integration/watchdog-linux.spec.ts` running daemon under a simulated systemd (set `NOTIFY_SOCKET` env, listen on a UDS, assert `WATCHDOG=1` arrives every 10±2s for 60s). Crash-raw recovery silent-loss failure modes are exercised by `packages/daemon/test/crash/crash-raw-recovery.spec.ts` covering: (a) partial line at end of file, (b) file missing, (c) file present but empty, (d) malformed entries (non-JSON, missing fields), (e) truncation race (daemon killed during truncate). All five cases must complete without losing already-imported entries.
+
+> **REMOVED (deferred to v0.4 hardening)**: the previous `[watchdog-darwin-approach]` MUST-SPIKE has been removed from the v0.3 spike registry per dispatch plan §2 F11. macOS hang detection is a v0.4 hardening item.
 
 ### 7. v0.4 delta
 
