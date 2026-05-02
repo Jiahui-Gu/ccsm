@@ -4,13 +4,15 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { SessionState } from "./common_pb";
+import { file_ccsm_v1_common } from "./common_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file ccsm/v1/session_events.proto.
  */
 export const file_ccsm_v1_session_events: GenFile = /*@__PURE__*/
-  fileDesc("ChxjY3NtL3YxL3Nlc3Npb25fZXZlbnRzLnByb3RvEgdjY3NtLnYxIqYBCg9TZXNzaW9uU25hcHNob3QSEgoKc2Vzc2lvbl9pZBgBIAEoCRILCgNzZXEYAiABKAMSDQoFc3RhdGUYAyABKAkSDQoFdGl0bGUYBCABKAkSCwoDY3dkGAUgASgJEhEKCXNwYXduX2N3ZBgGIAEoCRIVCg1zcGF3bmVkX2F0X21zGAcgASgDEgsKA3BpZBgIIAEoBRIQCghtZXRhZGF0YRgJIAEoDCJeChRTZXNzaW9uU25hcHNob3RFdmVudBIqCghzbmFwc2hvdBgBIAEoCzIYLmNjc20udjEuU2Vzc2lvblNuYXBzaG90Eg0KBXRzX21zGAIgASgDEgsKA2dhcBgDIAEoCCKzAgoRU2Vzc2lvbkRlbHRhRXZlbnQSEgoKc2Vzc2lvbl9pZBgBIAEoCRILCgNzZXEYAiABKAMSDQoFdHNfbXMYAyABKAMSMgoNc3RhdGVfY2hhbmdlZBgKIAEoCzIbLmNjc20udjEuU2Vzc2lvblN0YXRlQ2hhbmdlEjIKDXRpdGxlX2NoYW5nZWQYCyABKAsyGy5jY3NtLnYxLlNlc3Npb25UaXRsZUNoYW5nZRIuCgtjd2RfY2hhbmdlZBgMIAEoCzIZLmNjc20udjEuU2Vzc2lvbkN3ZENoYW5nZRIuCgtwaWRfY2hhbmdlZBgNIAEoCzIZLmNjc20udjEuU2Vzc2lvblBpZENoYW5nZRImCgZleGl0ZWQYDiABKAsyFi5jY3NtLnYxLlNlc3Npb25FeGl0ZWQiIwoSU2Vzc2lvblN0YXRlQ2hhbmdlEg0KBXN0YXRlGAEgASgJIiMKElNlc3Npb25UaXRsZUNoYW5nZRINCgV0aXRsZRgBIAEoCSI0ChBTZXNzaW9uQ3dkQ2hhbmdlEhAKCGZyb21fY3dkGAEgASgJEg4KBnRvX2N3ZBgCIAEoCSIfChBTZXNzaW9uUGlkQ2hhbmdlEgsKA3BpZBgBIAEoBSIyCg1TZXNzaW9uRXhpdGVkEhEKCWV4aXRfY29kZRgBIAEoBRIOCgZzaWduYWwYAiABKAkiYAoVU2Vzc2lvbkhlYXJ0YmVhdEV2ZW50EhIKCnNlc3Npb25faWQYASABKAkSDQoFdHNfbXMYAiABKAMSEAoIbGFzdF9zZXEYAyABKAMSEgoKYm9vdF9ub25jZRgEIAEoCSJbChdTZXNzaW9uQm9vdENoYW5nZWRFdmVudBISCgpzZXNzaW9uX2lkGAEgASgJEhIKCmJvb3Rfbm9uY2UYAiABKAkSGAoQc25hcHNob3RfcGVuZGluZxgDIAEoCCLVAQoMU2Vzc2lvbkV2ZW50Ei8KCHNuYXBzaG90GAEgASgLMh0uY2NzbS52MS5TZXNzaW9uU25hcHNob3RFdmVudBIpCgVkZWx0YRgCIAEoCzIaLmNjc20udjEuU2Vzc2lvbkRlbHRhRXZlbnQSMQoJaGVhcnRiZWF0GAMgASgLMh4uY2NzbS52MS5TZXNzaW9uSGVhcnRiZWF0RXZlbnQSNgoMYm9vdF9jaGFuZ2VkGAQgASgLMiAuY2NzbS52MS5TZXNzaW9uQm9vdENoYW5nZWRFdmVudGIGcHJvdG8z");
+  fileDesc("ChxjY3NtL3YxL3Nlc3Npb25fZXZlbnRzLnByb3RvEgdjY3NtLnYxIqsBCg9TZXNzaW9uU25hcHNob3QSEgoKc2Vzc2lvbl9pZBgBIAEoCRILCgNzZXEYAiABKAMSJAoFc3RhdGUYAyABKA4yFS5jY3NtLnYxLlNlc3Npb25TdGF0ZRINCgV0aXRsZRgEIAEoCRILCgNjd2QYBSABKAkSEQoJc3Bhd25fY3dkGAYgASgJEhUKDXNwYXduZWRfYXRfbXMYByABKAMSCwoDcGlkGAggASgFIl4KFFNlc3Npb25TbmFwc2hvdEV2ZW50EioKCHNuYXBzaG90GAEgASgLMhguY2NzbS52MS5TZXNzaW9uU25hcHNob3QSDQoFdHNfbXMYAiABKAMSCwoDZ2FwGAMgASgIIscCChFTZXNzaW9uRGVsdGFFdmVudBISCgpzZXNzaW9uX2lkGAEgASgJEgsKA3NlcRgCIAEoAxINCgV0c19tcxgDIAEoAxI0Cg1zdGF0ZV9jaGFuZ2VkGAogASgLMhsuY2NzbS52MS5TZXNzaW9uU3RhdGVDaGFuZ2VIABI0Cg10aXRsZV9jaGFuZ2VkGAsgASgLMhsuY2NzbS52MS5TZXNzaW9uVGl0bGVDaGFuZ2VIABIwCgtjd2RfY2hhbmdlZBgMIAEoCzIZLmNjc20udjEuU2Vzc2lvbkN3ZENoYW5nZUgAEjAKC3BpZF9jaGFuZ2VkGA0gASgLMhkuY2NzbS52MS5TZXNzaW9uUGlkQ2hhbmdlSAASKAoGZXhpdGVkGA4gASgLMhYuY2NzbS52MS5TZXNzaW9uRXhpdGVkSABCCAoGY2hhbmdlIjoKElNlc3Npb25TdGF0ZUNoYW5nZRIkCgVzdGF0ZRgBIAEoDjIVLmNjc20udjEuU2Vzc2lvblN0YXRlIiMKElNlc3Npb25UaXRsZUNoYW5nZRINCgV0aXRsZRgBIAEoCSI0ChBTZXNzaW9uQ3dkQ2hhbmdlEhAKCGZyb21fY3dkGAEgASgJEg4KBnRvX2N3ZBgCIAEoCSIfChBTZXNzaW9uUGlkQ2hhbmdlEgsKA3BpZBgBIAEoBSIyCg1TZXNzaW9uRXhpdGVkEhEKCWV4aXRfY29kZRgBIAEoBRIOCgZzaWduYWwYAiABKAkiYAoVU2Vzc2lvbkhlYXJ0YmVhdEV2ZW50EhIKCnNlc3Npb25faWQYASABKAkSDQoFdHNfbXMYAiABKAMSEAoIbGFzdF9zZXEYAyABKAMSEgoKYm9vdF9ub25jZRgEIAEoCSJbChdTZXNzaW9uQm9vdENoYW5nZWRFdmVudBISCgpzZXNzaW9uX2lkGAEgASgJEhIKCmJvb3Rfbm9uY2UYAiABKAkSGAoQc25hcHNob3RfcGVuZGluZxgDIAEoCCLmAQoMU2Vzc2lvbkV2ZW50EjEKCHNuYXBzaG90GAEgASgLMh0uY2NzbS52MS5TZXNzaW9uU25hcHNob3RFdmVudEgAEisKBWRlbHRhGAIgASgLMhouY2NzbS52MS5TZXNzaW9uRGVsdGFFdmVudEgAEjMKCWhlYXJ0YmVhdBgDIAEoCzIeLmNjc20udjEuU2Vzc2lvbkhlYXJ0YmVhdEV2ZW50SAASOAoMYm9vdF9jaGFuZ2VkGAQgASgLMiAuY2NzbS52MS5TZXNzaW9uQm9vdENoYW5nZWRFdmVudEgAQgcKBWV2ZW50YgZwcm90bzM", [file_ccsm_v1_common]);
 
 /**
  * SessionSnapshot — full state of one session at a point in time.
@@ -33,12 +35,11 @@ export type SessionSnapshot = Message<"ccsm.v1.SessionSnapshot"> & {
   seq: bigint;
 
   /**
-   * Lifecycle state — same vocabulary as the legacy session.proto
-   * `SessionStateEvent.state` field ("idle" | "running" | "exited" | ...).
+   * Lifecycle / turn state (see common.proto §SessionState).
    *
-   * @generated from field: string state = 3;
+   * @generated from field: ccsm.v1.SessionState state = 3;
    */
-  state: string;
+  state: SessionState;
 
   /**
    * SDK-derived display title (mirrors session_titles.proto).
@@ -72,14 +73,6 @@ export type SessionSnapshot = Message<"ccsm.v1.SessionSnapshot"> & {
    * @generated from field: int32 pid = 8;
    */
   pid: number;
-
-  /**
-   * Optional per-session metadata blob (model name, env labels, ...).
-   * Reserved for v0.5; v0.3 emits empty.
-   *
-   * @generated from field: bytes metadata = 9;
-   */
-  metadata: Uint8Array;
 };
 
 /**
@@ -125,8 +118,9 @@ export const SessionSnapshotEventSchema: GenMessage<SessionSnapshotEvent> = /*@_
   messageDesc(file_ccsm_v1_session_events, 1);
 
 /**
- * SessionDeltaEvent — one state mutation. Exactly one of the inner
- * `*_changed` fields is populated.
+ * SessionDeltaEvent — one state mutation. Exactly one mutation payload
+ * is populated, modeled as `oneof change` so adding new mutation
+ * variants stays wire-compatible.
  *
  * @generated from message ccsm.v1.SessionDeltaEvent
  */
@@ -147,31 +141,41 @@ export type SessionDeltaEvent = Message<"ccsm.v1.SessionDeltaEvent"> & {
   tsMs: bigint;
 
   /**
-   * Mutation payloads (mutually exclusive — see file header).
+   * Mutation payloads (mutually exclusive).
    *
-   * @generated from field: ccsm.v1.SessionStateChange state_changed = 10;
+   * @generated from oneof ccsm.v1.SessionDeltaEvent.change
    */
-  stateChanged?: SessionStateChange | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionTitleChange title_changed = 11;
-   */
-  titleChanged?: SessionTitleChange | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionCwdChange cwd_changed = 12;
-   */
-  cwdChanged?: SessionCwdChange | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionPidChange pid_changed = 13;
-   */
-  pidChanged?: SessionPidChange | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionExited exited = 14;
-   */
-  exited?: SessionExited | undefined;
+  change: {
+    /**
+     * @generated from field: ccsm.v1.SessionStateChange state_changed = 10;
+     */
+    value: SessionStateChange;
+    case: "stateChanged";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionTitleChange title_changed = 11;
+     */
+    value: SessionTitleChange;
+    case: "titleChanged";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionCwdChange cwd_changed = 12;
+     */
+    value: SessionCwdChange;
+    case: "cwdChanged";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionPidChange pid_changed = 13;
+     */
+    value: SessionPidChange;
+    case: "pidChanged";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionExited exited = 14;
+     */
+    value: SessionExited;
+    case: "exited";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
@@ -186,9 +190,9 @@ export const SessionDeltaEventSchema: GenMessage<SessionDeltaEvent> = /*@__PURE_
  */
 export type SessionStateChange = Message<"ccsm.v1.SessionStateChange"> & {
   /**
-   * @generated from field: string state = 1;
+   * @generated from field: ccsm.v1.SessionState state = 1;
    */
-  state: string;
+  state: SessionState;
 };
 
 /**
@@ -300,6 +304,8 @@ export type SessionHeartbeatEvent = Message<"ccsm.v1.SessionHeartbeatEvent"> & {
   lastSeq: bigint;
 
   /**
+   * ULID per frag-6-7 §6.5 (raw string — see common.proto header).
+   *
    * @generated from field: string boot_nonce = 4;
    */
   bootNonce: string;
@@ -326,6 +332,8 @@ export type SessionBootChangedEvent = Message<"ccsm.v1.SessionBootChangedEvent">
   sessionId: string;
 
   /**
+   * ULID per frag-6-7 §6.5 (raw string — see common.proto header).
+   *
    * @generated from field: string boot_nonce = 2;
    */
   bootNonce: string;
@@ -345,30 +353,41 @@ export const SessionBootChangedEventSchema: GenMessage<SessionBootChangedEvent> 
 
 /**
  * SessionEvent — top-level envelope on the SubscribeSessionEvents
- * server-stream. Exactly one inner field is populated.
+ * server-stream. Exactly one inner field is populated; `oneof event`
+ * makes that contract enforceable on the wire and keeps future variants
+ * non-breaking.
  *
  * @generated from message ccsm.v1.SessionEvent
  */
 export type SessionEvent = Message<"ccsm.v1.SessionEvent"> & {
   /**
-   * @generated from field: ccsm.v1.SessionSnapshotEvent snapshot = 1;
+   * @generated from oneof ccsm.v1.SessionEvent.event
    */
-  snapshot?: SessionSnapshotEvent | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionDeltaEvent delta = 2;
-   */
-  delta?: SessionDeltaEvent | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionHeartbeatEvent heartbeat = 3;
-   */
-  heartbeat?: SessionHeartbeatEvent | undefined;
-
-  /**
-   * @generated from field: ccsm.v1.SessionBootChangedEvent boot_changed = 4;
-   */
-  bootChanged?: SessionBootChangedEvent | undefined;
+  event: {
+    /**
+     * @generated from field: ccsm.v1.SessionSnapshotEvent snapshot = 1;
+     */
+    value: SessionSnapshotEvent;
+    case: "snapshot";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionDeltaEvent delta = 2;
+     */
+    value: SessionDeltaEvent;
+    case: "delta";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionHeartbeatEvent heartbeat = 3;
+     */
+    value: SessionHeartbeatEvent;
+    case: "heartbeat";
+  } | {
+    /**
+     * @generated from field: ccsm.v1.SessionBootChangedEvent boot_changed = 4;
+     */
+    value: SessionBootChangedEvent;
+    case: "bootChanged";
+  } | { case: undefined; value?: undefined };
 };
 
 /**

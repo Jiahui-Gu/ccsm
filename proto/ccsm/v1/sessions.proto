@@ -32,7 +32,7 @@ message SessionInfo {
   string session_id = 1;
   string title = 2;
   string cwd = 3;
-  string state = 4;
+  SessionState state = 4;
   int64 spawned_at_ms = 5;
   int32 pid = 6;
   // Daemon-assigned monotonic seq of the latest mutation; clients can
@@ -44,8 +44,9 @@ message ListSessionsRequest {}
 message ListSessionsResponse {
   repeated SessionInfo sessions = 1;
   // Echoed so clients can validate "did the daemon restart since my
-  // last list" without an extra GetBootNonce roundtrip.
-  BootNonce boot_nonce = 2;
+  // last list" without an extra GetBootNonce roundtrip. ULID per
+  // frag-6-7 §6.5 (raw string, not wrapped — see common.proto header).
+  string boot_nonce = 2;
 }
 
 // SpawnSessionRequest — non-idempotent (each call creates a new PTY
@@ -60,9 +61,6 @@ message SpawnSessionRequest {
   // Optional explicit session_id — empty = daemon assigns. Non-empty
   // values MUST be unique; collision returns ALREADY_EXISTS.
   string session_id = 3;
-  // Reserved for v0.5 (model selector, env override, ...). Daemon
-  // ignores unknown keys — bytes blob keeps the wire forward-compatible.
-  bytes metadata = 4;
 }
 message SpawnSessionResponse {
   SessionInfo session = 1;
@@ -93,7 +91,7 @@ message GetSessionStateResponse {
   // False ⇒ session_id unknown. Snapshot is zero-valued.
   bool found = 2;
   // Echoed for the same reason as ListSessionsResponse.boot_nonce.
-  BootNonce boot_nonce = 3;
+  string boot_nonce = 3;
 }
 
 // SubscribeSessionEventsRequest — server-stream entry point for the

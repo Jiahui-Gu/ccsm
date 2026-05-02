@@ -2,43 +2,15 @@
 // @generated from file ccsm/v1/common.proto (package ccsm.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file ccsm/v1/common.proto.
  */
 export const file_ccsm_v1_common: GenFile = /*@__PURE__*/
-  fileDesc("ChRjY3NtL3YxL2NvbW1vbi5wcm90bxIHY2NzbS52MSIaCglCb290Tm9uY2USDQoFdmFsdWUYASABKAkiGAoIRGF0YVJvb3QSDAoEcGF0aBgBIAEoCWIGcHJvdG8z");
-
-/**
- * BootNonce — daemon boot identifier (ULID per frag-6-7 §6.5).
- *
- * Clients capture this from `Hello` reply (or `/healthz` on the supervisor
- * control plane) and echo it back as `from_boot_nonce` on stream subscribe
- * to detect daemon restarts. Mismatch ⇒ daemon ignores `from_seq` and sends
- * a fresh snapshot (frag-3.5.1 §3.5.1.4 boot-nonce-on-subscribe rule).
- *
- * @generated from message ccsm.v1.BootNonce
- */
-export type BootNonce = Message<"ccsm.v1.BootNonce"> & {
-  /**
-   * ULID string (Crockford base32, 26 chars). Empty string is reserved for
-   * "client has never observed a daemon yet" — the daemon will never emit
-   * an empty value.
-   *
-   * @generated from field: string value = 1;
-   */
-  value: string;
-};
-
-/**
- * Describes the message ccsm.v1.BootNonce.
- * Use `create(BootNonceSchema)` to create a new message.
- */
-export const BootNonceSchema: GenMessage<BootNonce> = /*@__PURE__*/
-  messageDesc(file_ccsm_v1_common, 0);
+  fileDesc("ChRjY3NtL3YxL2NvbW1vbi5wcm90bxIHY2NzbS52MSIYCghEYXRhUm9vdBIMCgRwYXRoGAEgASgJKp0BCgxTZXNzaW9uU3RhdGUSHQoZU0VTU0lPTl9TVEFURV9VTlNQRUNJRklFRBAAEhYKElNFU1NJT05fU1RBVEVfSURMRRABEhkKFVNFU1NJT05fU1RBVEVfUlVOTklORxACEiEKHVNFU1NJT05fU1RBVEVfUkVRVUlSRVNfQUNUSU9OEAMSGAoUU0VTU0lPTl9TVEFURV9FWElURUQQBGIGcHJvdG8z");
 
 /**
  * DataRoot — single per-machine on-disk root (e.g. `~/.ccsm`).
@@ -61,5 +33,55 @@ export type DataRoot = Message<"ccsm.v1.DataRoot"> & {
  * Use `create(DataRootSchema)` to create a new message.
  */
 export const DataRootSchema: GenMessage<DataRoot> = /*@__PURE__*/
-  messageDesc(file_ccsm_v1_common, 1);
+  messageDesc(file_ccsm_v1_common, 0);
+
+/**
+ * SessionState — canonical lifecycle / turn-state vocabulary for the
+ * backend-authoritative session model (final-arch §2.7).
+ *
+ * Mirrors `src/shared/sessionState.ts` (`idle | running | requires_action`
+ * — itself a mirror of the SDK's `SDKSessionStateChangedMessage.state`)
+ * plus `EXITED` for the lifecycle-terminal state. `EXITED` is required as
+ * an enum value (in addition to the `SessionExited` delta variant) so a
+ * `GetSessionState` snapshot of an already-exited session can render
+ * correctly without forcing the client to also fold a delta.
+ *
+ * IMPORTANT: this is the IPC / data-plane vocabulary, NOT the renderer's
+ * 2-state UI model (`'idle' | 'waiting'` in `src/types.ts`). The mapping
+ * IPC → UI lives in `src/agent/lifecycle.ts:mapState`.
+ *
+ * @generated from enum ccsm.v1.SessionState
+ */
+export enum SessionState {
+  /**
+   * @generated from enum value: SESSION_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: SESSION_STATE_IDLE = 1;
+   */
+  IDLE = 1,
+
+  /**
+   * @generated from enum value: SESSION_STATE_RUNNING = 2;
+   */
+  RUNNING = 2,
+
+  /**
+   * @generated from enum value: SESSION_STATE_REQUIRES_ACTION = 3;
+   */
+  REQUIRES_ACTION = 3,
+
+  /**
+   * @generated from enum value: SESSION_STATE_EXITED = 4;
+   */
+  EXITED = 4,
+}
+
+/**
+ * Describes the enum ccsm.v1.SessionState.
+ */
+export const SessionStateSchema: GenEnum<SessionState> = /*@__PURE__*/
+  enumDesc(file_ccsm_v1_common, 0);
 

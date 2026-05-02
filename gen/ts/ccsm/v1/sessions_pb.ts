@@ -4,7 +4,7 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { BootNonce } from "./common_pb";
+import type { SessionState } from "./common_pb";
 import { file_ccsm_v1_common } from "./common_pb";
 import type { SessionEvent, SessionSnapshot } from "./session_events_pb";
 import { file_ccsm_v1_session_events } from "./session_events_pb";
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file ccsm/v1/sessions.proto.
  */
 export const file_ccsm_v1_sessions: GenFile = /*@__PURE__*/
-  fileDesc("ChZjY3NtL3YxL3Nlc3Npb25zLnByb3RvEgdjY3NtLnYxIoQBCgtTZXNzaW9uSW5mbxISCgpzZXNzaW9uX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEgsKA2N3ZBgDIAEoCRINCgVzdGF0ZRgEIAEoCRIVCg1zcGF3bmVkX2F0X21zGAUgASgDEgsKA3BpZBgGIAEoBRISCgpsYXRlc3Rfc2VxGAcgASgDIhUKE0xpc3RTZXNzaW9uc1JlcXVlc3QiZgoUTGlzdFNlc3Npb25zUmVzcG9uc2USJgoIc2Vzc2lvbnMYASADKAsyFC5jY3NtLnYxLlNlc3Npb25JbmZvEiYKCmJvb3Rfbm9uY2UYAiABKAsyEi5jY3NtLnYxLkJvb3ROb25jZSJXChNTcGF3blNlc3Npb25SZXF1ZXN0EgsKA2N3ZBgBIAEoCRINCgV0aXRsZRgCIAEoCRISCgpzZXNzaW9uX2lkGAMgASgJEhAKCG1ldGFkYXRhGAQgASgMIj0KFFNwYXduU2Vzc2lvblJlc3BvbnNlEiUKB3Nlc3Npb24YASABKAsyFC5jY3NtLnYxLlNlc3Npb25JbmZvIkUKEktpbGxTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhsKE2dyYWNlZnVsX3RpbWVvdXRfbXMYAiABKAUiJgoTS2lsbFNlc3Npb25SZXNwb25zZRIPCgdleGlzdGVkGAEgASgIIiwKFkdldFNlc3Npb25TdGF0ZVJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSJ8ChdHZXRTZXNzaW9uU3RhdGVSZXNwb25zZRIqCghzbmFwc2hvdBgBIAEoCzIYLmNjc20udjEuU2Vzc2lvblNuYXBzaG90Eg0KBWZvdW5kGAIgASgIEiYKCmJvb3Rfbm9uY2UYAyABKAsyEi5jY3NtLnYxLkJvb3ROb25jZSJ0Ch1TdWJzY3JpYmVTZXNzaW9uRXZlbnRzUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhAKCGZyb21fc2VxGAIgASgDEhcKD2Zyb21fYm9vdF9ub25jZRgDIAEoCRIUCgxoZWFydGJlYXRfbXMYBCABKAUiRgoeU3Vic2NyaWJlU2Vzc2lvbkV2ZW50c1Jlc3BvbnNlEiQKBWV2ZW50GAEgASgLMhUuY2NzbS52MS5TZXNzaW9uRXZlbnRiBnByb3RvMw", [file_ccsm_v1_common, file_ccsm_v1_session_events]);
+  fileDesc("ChZjY3NtL3YxL3Nlc3Npb25zLnByb3RvEgdjY3NtLnYxIpsBCgtTZXNzaW9uSW5mbxISCgpzZXNzaW9uX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEgsKA2N3ZBgDIAEoCRIkCgVzdGF0ZRgEIAEoDjIVLmNjc20udjEuU2Vzc2lvblN0YXRlEhUKDXNwYXduZWRfYXRfbXMYBSABKAMSCwoDcGlkGAYgASgFEhIKCmxhdGVzdF9zZXEYByABKAMiFQoTTGlzdFNlc3Npb25zUmVxdWVzdCJSChRMaXN0U2Vzc2lvbnNSZXNwb25zZRImCghzZXNzaW9ucxgBIAMoCzIULmNjc20udjEuU2Vzc2lvbkluZm8SEgoKYm9vdF9ub25jZRgCIAEoCSJFChNTcGF3blNlc3Npb25SZXF1ZXN0EgsKA2N3ZBgBIAEoCRINCgV0aXRsZRgCIAEoCRISCgpzZXNzaW9uX2lkGAMgASgJIj0KFFNwYXduU2Vzc2lvblJlc3BvbnNlEiUKB3Nlc3Npb24YASABKAsyFC5jY3NtLnYxLlNlc3Npb25JbmZvIkUKEktpbGxTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhsKE2dyYWNlZnVsX3RpbWVvdXRfbXMYAiABKAUiJgoTS2lsbFNlc3Npb25SZXNwb25zZRIPCgdleGlzdGVkGAEgASgIIiwKFkdldFNlc3Npb25TdGF0ZVJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSJoChdHZXRTZXNzaW9uU3RhdGVSZXNwb25zZRIqCghzbmFwc2hvdBgBIAEoCzIYLmNjc20udjEuU2Vzc2lvblNuYXBzaG90Eg0KBWZvdW5kGAIgASgIEhIKCmJvb3Rfbm9uY2UYAyABKAkidAodU3Vic2NyaWJlU2Vzc2lvbkV2ZW50c1JlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCRIQCghmcm9tX3NlcRgCIAEoAxIXCg9mcm9tX2Jvb3Rfbm9uY2UYAyABKAkSFAoMaGVhcnRiZWF0X21zGAQgASgFIkYKHlN1YnNjcmliZVNlc3Npb25FdmVudHNSZXNwb25zZRIkCgVldmVudBgBIAEoCzIVLmNjc20udjEuU2Vzc2lvbkV2ZW50YgZwcm90bzM", [file_ccsm_v1_common, file_ccsm_v1_session_events]);
 
 /**
  * SessionInfo — compact per-session row for `ListSessions`. Heavier
@@ -40,9 +40,9 @@ export type SessionInfo = Message<"ccsm.v1.SessionInfo"> & {
   cwd: string;
 
   /**
-   * @generated from field: string state = 4;
+   * @generated from field: ccsm.v1.SessionState state = 4;
    */
-  state: string;
+  state: SessionState;
 
   /**
    * @generated from field: int64 spawned_at_ms = 5;
@@ -94,11 +94,12 @@ export type ListSessionsResponse = Message<"ccsm.v1.ListSessionsResponse"> & {
 
   /**
    * Echoed so clients can validate "did the daemon restart since my
-   * last list" without an extra GetBootNonce roundtrip.
+   * last list" without an extra GetBootNonce roundtrip. ULID per
+   * frag-6-7 §6.5 (raw string, not wrapped — see common.proto header).
    *
-   * @generated from field: ccsm.v1.BootNonce boot_nonce = 2;
+   * @generated from field: string boot_nonce = 2;
    */
-  bootNonce?: BootNonce | undefined;
+  bootNonce: string;
 };
 
 /**
@@ -138,14 +139,6 @@ export type SpawnSessionRequest = Message<"ccsm.v1.SpawnSessionRequest"> & {
    * @generated from field: string session_id = 3;
    */
   sessionId: string;
-
-  /**
-   * Reserved for v0.5 (model selector, env override, ...). Daemon
-   * ignores unknown keys — bytes blob keeps the wire forward-compatible.
-   *
-   * @generated from field: bytes metadata = 4;
-   */
-  metadata: Uint8Array;
 };
 
 /**
@@ -260,9 +253,9 @@ export type GetSessionStateResponse = Message<"ccsm.v1.GetSessionStateResponse">
   /**
    * Echoed for the same reason as ListSessionsResponse.boot_nonce.
    *
-   * @generated from field: ccsm.v1.BootNonce boot_nonce = 3;
+   * @generated from field: string boot_nonce = 3;
    */
-  bootNonce?: BootNonce | undefined;
+  bootNonce: string;
 };
 
 /**

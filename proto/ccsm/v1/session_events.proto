@@ -2,15 +2,19 @@ syntax = "proto3";
 
 package ccsm.v1;
 
+import "ccsm/v1/common.proto";
+
 // session_events.proto — snapshot + delta event payloads for the
 // backend-authoritative session model (final-arch §2.7 + reconciliation
 // §N7 "snapshot + delta + last-writer-wins").
 //
 // Wire shape: a single server-stream `SubscribeSessionEvents` (declared
 // in sessions.proto + bound on CcsmService in service.proto) emits a
-// sequence of `SessionEvent` envelopes. Exactly one inner field is
-// populated per envelope; modeled as flat optional fields rather than a
-// `oneof` to keep future schema evolution wire-additive.
+// sequence of `SessionEvent` envelopes. Variants are modeled as `oneof`
+// (both at the envelope level and inside `SessionDeltaEvent`) — these
+// messages are brand-new in this PR, so introducing `oneof` is
+// wire-compatible against the `origin/working` baseline AND adding new
+// variants later stays non-breaking.
 //
 // Catch-up contract (final-arch §2.7):
 //   1. Client subscribes with `from_seq` + `from_boot_nonce`.
@@ -34,9 +38,8 @@ message SessionSnapshot {
   // Daemon-assigned monotonic sequence; every state mutation increments
   // exactly once. Snapshot's `seq` = the seq of the last delta folded in.
   int64 seq = 2;
-  // Lifecycle state — same vocabulary as the legacy session.proto
-  // `SessionStateEvent.state` field ("idle" | "running" | "exited" | ...).
-  string state = 3;
+  // Lifecycle / turn state (see common.proto §SessionState).
+  SessionState state = 3;
   // SDK-derived display title (mirrors session_titles.proto).
   string title = 4;
   // Effective cwd (after any `SessionCwdRedirected` events).
@@ -46,9 +49,6 @@ message SessionSnapshot {
   int64 spawned_at_ms = 7;
   // Process identity for diagnostics; absent / 0 if not yet spawned.
   int32 pid = 8;
-  // Optional per-session metadata blob (model name, env labels, ...).
-  // Reserved for v0.5; v0.3 emits empty.
-  bytes metadata = 9;
 }
 
 // SessionSnapshotEvent — emitted as the first event on a fresh
@@ -63,23 +63,26 @@ message SessionSnapshotEvent {
   bool gap = 3;
 }
 
-// SessionDeltaEvent — one state mutation. Exactly one of the inner
-// `*_changed` fields is populated.
+// SessionDeltaEvent — one state mutation. Exactly one mutation payload
+// is populated, modeled as `oneof change` so adding new mutation
+// variants stays wire-compatible.
 message SessionDeltaEvent {
   string session_id = 1;
   int64 seq = 2;
   int64 ts_ms = 3;
 
-  // Mutation payloads (mutually exclusive — see file header).
-  SessionStateChange state_changed = 10;
-  SessionTitleChange title_changed = 11;
-  SessionCwdChange cwd_changed = 12;
-  SessionPidChange pid_changed = 13;
-  SessionExited exited = 14;
+  // Mutation payloads (mutually exclusive).
+  oneof change {
+    SessionStateChange state_changed = 10;
+    SessionTitleChange title_changed = 11;
+    SessionCwdChange cwd_changed = 12;
+    SessionPidChange pid_changed = 13;
+    SessionExited exited = 14;
+  }
 }
 
 message SessionStateChange {
-  string state = 1;
+  SessionState state = 1;
 }
 
 message SessionTitleChange {
@@ -107,6 +110,7 @@ message SessionHeartbeatEvent {
   string session_id = 1;
   int64 ts_ms = 2;
   int64 last_seq = 3;
+  // ULID per frag-6-7 §6.5 (raw string — see common.proto header).
   string boot_nonce = 4;
 }
 
@@ -115,15 +119,20 @@ message SessionHeartbeatEvent {
 // SessionSnapshotEvent from seq 0 (frag-3.5.1 §3.5.1.4 fwdcompat-P1-1).
 message SessionBootChangedEvent {
   string session_id = 1;
+  // ULID per frag-6-7 §6.5 (raw string — see common.proto header).
   string boot_nonce = 2;
   bool snapshot_pending = 3;
 }
 
 // SessionEvent — top-level envelope on the SubscribeSessionEvents
-// server-stream. Exactly one inner field is populated.
+// server-stream. Exactly one inner field is populated; `oneof event`
+// makes that contract enforceable on the wire and keeps future variants
+// non-breaking.
 message SessionEvent {
-  SessionSnapshotEvent snapshot = 1;
-  SessionDeltaEvent delta = 2;
-  SessionHeartbeatEvent heartbeat = 3;
-  SessionBootChangedEvent boot_changed = 4;
+  oneof event {
+    SessionSnapshotEvent snapshot = 1;
+    SessionDeltaEvent delta = 2;
+    SessionHeartbeatEvent heartbeat = 3;
+    SessionBootChangedEvent boot_changed = 4;
+  }
 }

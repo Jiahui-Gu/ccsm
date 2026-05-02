@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package ccsm.v1;
 
-import "ccsm/v1/common.proto";
-
 // pty.proto — terminal lifecycle + IO.
 //
 // v0.3 Connect data plane additions (Task #102, additive only):
@@ -174,5 +172,8 @@ message PtyBootChangedEvent {
 // reconnect to populate `from_boot_nonce` for subsequent subscribes.
 message GetBootNonceRequest {}
 message GetBootNonceResponse {
-  BootNonce boot_nonce = 1;
+  // ULID string (Crockford base32, 26 chars; frag-6-7 §6.5). Empty string
+  // is reserved for "client has never observed a daemon yet" — the daemon
+  // will never emit an empty value.
+  string boot_nonce = 1;
 }

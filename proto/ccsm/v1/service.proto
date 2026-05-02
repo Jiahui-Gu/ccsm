@@ -70,6 +70,15 @@ service CcsmService {
   rpc GetBootNonce(GetBootNonceRequest) returns (GetBootNonceResponse) {}
 
   // ===== session (0 unary + 2 fire-and-forget + 4 streams) =====
+  //
+  // DEPRECATION NOTE (final-arch §2.7 + reconciliation §N7 cleanup):
+  // The four singular `StreamSession{State,Title,CwdRedirected,Activate}`
+  // server-streams below are obsoleted by `SubscribeSessionEvents` (in the
+  // sessions block) once the v0.3 → v0.4 Connect cutover completes. They
+  // are kept in this PR to stay additive-only; the §N7 cleanup task will
+  // remove them mechanically (no client-visible behavior change — every
+  // event delivered here also flows through `SubscribeSessionEvents` as a
+  // `SessionDeltaEvent`).
 
   // idempotency: naturally idempotent
   // fire-and-forget; last-write-wins active-session setter.
