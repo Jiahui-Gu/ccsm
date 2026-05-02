@@ -33,7 +33,6 @@ deltas to plan in the merge commit.
 - `~/spike-reports/v03-review-packaging.md` (YELLOW)
 - `~/spike-reports/v03-review-fwdcompat.md` (YELLOW)
 
-**Spec v1 baseline**: `docs/superpowers/specs/2026-04-30-web-remote-design.md`
-(read this entire file once; v2 is additive — keep v1 wording where unchanged).
+**Spec v1 baseline**: `docs/superpowers/specs/v0.3-design.md` (the surviving v0.3 index — see that file for pointers into the canonical fragments).
 
 **Plan v1 baseline**: `docs/superpowers/plans/2026-04-30-v0.3-daemon-split.md`

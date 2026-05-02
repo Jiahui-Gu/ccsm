@@ -1,6 +1,6 @@
 ## 11. Packaging
 
-> Replaces §11 of `2026-04-30-web-remote-design.md`.
+> §11 of the v0.3 design (see `v0.3-design.md` index).
 > P0 items: #9 (extraResources wiring), #10 (daemon code-signing), #11 (NSIS uninstall hygiene — reclaimed from frag-6-7 per round-2 P0-1), #12 (`ccsm_native.node` + every native `.node` ships + signs — round-2 P0-2 / round-3 P0-3 rename).
 > Source reviews: `~/spike-reports/v03-review-packaging.md` §3 (MUST-FIX 1, 2, 3); `~/spike-reports/v03-r2-packaging.md` (P0-1, P0-2, P1-3..P1-6, S1, S3); `~/spike-reports/v03-r2-security.md` (P0-S3 SLSA provenance, SH2/SH3); `~/spike-reports/v03-r3-packaging.md` (P0-1 install path, P0-2 secret path, P0-3 native rename, P0-4 postrm HOME bug); `~/spike-reports/v03-r3-lockin.md` (ccsm_native vs winjob); `~/spike-reports/v03-r3-resource.md` (uninstall hygiene dedupe); `~/spike-reports/v03-r3-devx.md` (CF-2 devTarget fence).
 

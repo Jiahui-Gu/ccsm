@@ -15,10 +15,8 @@ Refactor only — no added or removed features. Splits the long-running side (PT
 - **Implementation plan**: [`docs/superpowers/plans/2026-04-30-v0.3-daemon-split.md`](./superpowers/plans/2026-04-30-v0.3-daemon-split.md).
 - **Status**: design converged at r12 (0 P0 across 7 review angles, 7 review rounds completed). Ready for plan-delta reconciliation (#941) and dispatch.
 
-## v0.4 — Connect+Protobuf swap (planned)
+## v0.4 — three-client architecture (frozen 2026-05-02)
 
-Replaces v0.3's hand-written length-prefixed JSON envelope with native Connect over HTTP/2 and Protobuf. Frame-version nibble and `daemonAcceptedWires[]` already chosen so v0.4 daemon can serve both v0.3 and v0.4 clients during the rolling-upgrade window. Detailed design TBD.
+Backend stays a single binary on the user's local machine. Three first-class clients (desktop, web, iOS) speak the same Connect-RPC surface generated from `proto/`. Two loopback listeners: peer-cred bypass for desktop on the same machine; `cloudflared`-only listener with Cloudflare Access JWT validation for web + iOS via Cloudflare edge.
 
-## v0.5 — Web client over Cloudflare Tunnel (planned)
-
-Browser client over `cf-tunnel` consuming the same Connect+Protobuf wire as the desktop client. CF Access JWT verification slots into the v0.3 interceptor pipeline as a single appended interceptor; per-stream auth tokens slot into the §3.5.1.4 subscribe RPC param shape (already reserved). Detailed design TBD.
+- **Architecture baseline**: [`docs/superpowers/specs/2026-05-02-final-architecture.md`](./superpowers/specs/2026-05-02-final-architecture.md). All v0.4 sub-specs (transport, ops/cloudflared, security/auth, client UX) hang off this baseline.

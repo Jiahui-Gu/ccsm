@@ -1,7 +1,7 @@
 # Spike: `@yao-pkg/pkg` × ESM Connect stubs interop
 
 - **Task:** v0.4 T04 (issue/task `#1078`).
-- **Spec:** `docs/superpowers/specs/2026-05-01-v0.4-web-design.md` chapter 02 §5 final paragraph; chapter 09 M1 prerequisite.
+- **Spec:** `docs/superpowers/specs/v0.3-design.md` (v0.3 index — packaging guidance lives in `docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md`).
 - **Date:** 2026-05-01.
 - **Verdict:** **NO-GO direct, GO via `esbuild → CJS bundle → pkg`** (fallback A below).
 - **T05 unblock:** YES — packaging path is concrete and verified end-to-end on Win 11. T05 worker can assume the daemon binary will be produced by the `esbuild → pkg` two-stage pipeline.
@@ -235,4 +235,3 @@ T05 (`Connect server bind on daemon data socket`) does **not** need to change an
 
 - `docs/spikes/2026-05-pkg-esm-connect.md` — this report.
 - `daemon/spike-pkg-esm/` — repro scaffold (gitignored build artifacts: `dist/`, `dist-bundle/`, `out/`, `node_modules/`).
-- `docs/superpowers/specs/2026-05-01-v0.4-web-design.md` — DAG appendix T04: verdict line appended.
