@@ -1,74 +1,92 @@
 # 01 — Goals and non-goals
 
-> Authority: [final-architecture §2](../2026-05-02-final-architecture.md#2-locked-principles), [§3](../2026-05-02-final-architecture.md#3-what-this-doc-does-not-decide).
+## Goals (MUST do in v0.3)
 
-## Goals (MUST ship in v0.3)
+The six goals below are derived directly from the locked principles in [`../2026-05-02-final-architecture.md`](../2026-05-02-final-architecture.md) §2. None is optional. None is "phase 1 of N". Each is shipped at v0.3.0 GA in its v0.4-final form.
 
-G1. **Single binary `ccsm-daemon`** distributed for darwin-arm64, darwin-x64, linux-x64, linux-arm64, win-x64, win-arm64. **Why:** final-architecture §2.1 ("backend = single binary, runs on the user's local machine ONLY").
+### G1 — Two listeners physically bound from day 1
 
-G2. **Two loopback listeners physically bound at daemon start.** Listener A (UDS / named pipe, peer-cred trusted) and Listener B (`127.0.0.1:PORT_TUNNEL`, CF Access JWT validated). **Why:** §2.3 ("listeners are physically separate; the JWT bypass is keyed on the listener (transport identity), never on a request header"). Binding Listener B from day 1 — even with no consumer — is required to forbid retrofitting a header-keyed bypass later.
+Both listeners are bound at daemon boot, both before the daemon emits its lockfile / readiness signal. **This includes Listener B even though no v0.3 client connects to it.**
 
-G3. **Connect-RPC over HTTP/2 as the entire data plane**, generated from `proto/`. The `proto/` schema MUST already declare every service v0.4 will need (sessions, pty, db, presence stub, control). **Why:** §2.8 ("data plane … moves to Connect-RPC over HTTP/2 on Listener A and Listener B. Generated from `proto/`"). v0.3 generates code from the v0.4-complete schema; v0.4 only adds method bodies / wires more clients. No proto rewrite at v0.4.
+- **Listener A:** OS-specific local-only socket (UDS on macOS/Linux, named pipe on Windows). Trust = peer-cred (same-UID).
+- **Listener B:** TCP `127.0.0.1:PORT_TUNNEL`. Trust = CF-Access JWT interceptor on every RPC.
 
-G4. **Supervisor control plane retained on UDS with the v0.3 envelope**, restricted to `/healthz`, `daemon.hello`, `daemon.shutdown*` and lifecycle. **Hello-HMAC removed.** **Why:** §2.8 ("supervisor control plane … stays on the local UDS with the v0.3 hand-rolled envelope. Unchanged"); HMAC removal is the v0.3 reconciliation — peer-cred replaces it; carrying HMAC into v0.3 produces dead code that v0.4 must delete (rework).
+Trust is bound to **transport identity** (which listener accepted the connection), never to a request header. A request that arrives on Listener A is peer-cred-trusted regardless of headers; a request on Listener B is JWT-validated regardless of headers.
 
-G5. **Daemon owns its own lifecycle.** It is **not** an Electron child process. Closing the desktop client does not stop the daemon; killing the daemon does not affect already-running PTY processes' `claude` subprocess until daemon respawn reattaches. **Why:** §2.9 ("daemon is not a child of any client").
+**Why:** final-architecture §2 principles 3 + 4. Listener B-late-bind would force v0.4 to retrofit a fully-tested interceptor + UT + bind-gate — exactly the rework v0.3 forbids. See [04](./04-listener-B-jwt.md).
 
-G6. **Backend-authoritative session model**, with snapshot+delta catch-up, broadcast-all + LWW writes, **PTY fan-out registry sized for N ≥ 3 subscribers from day 1**. **Why:** §2.7. Sizing for N=1 and "scaling later" is forbidden — that is rework at v0.4.
+### G2 — Connect-RPC over HTTP/2 is the data plane
 
-G7. **Electron desktop client is a pure thin client** speaking Connect over Listener A. No business logic in renderer. No business logic in main beyond OS chrome, file dialogs, deep links, and a Connect client constructor pointed at the UDS. **Why:** §2.4 ("desktop on the same machine → Listener A"); §2.7 ("backend-authoritative; clients are pure subscribers").
+All session / PTY / SQLite / crash / daemon-info RPC traffic is Connect-RPC, generated from `proto/`. Zero envelope (length-prefixed JSON) code on the data plane. Server runs `@connectrpc/connect-node` HTTP/2.
 
-G8. **Crash collector and structured logs in-daemon.** **Why:** §1 diagram ("crash collector" listed inside daemon).
+**Why:** final-architecture §2 principle 8. Envelope-on-data-plane forces full transport rewrite at v0.4. See [06](./06-proto-schema.md), [07](./07-connect-server.md).
 
-G9. **SQLite lives in-daemon** behind a Connect `db.*` service. Electron does not open SQLite directly. **Why:** §1 diagram (SQLite inside daemon box); §2.1 (backend is the source of truth).
+### G3 — Supervisor control plane keeps v0.3 envelope
 
-G10. **Dogfood smoke gate (4 metrics)** must pass before tagging v0.3:
-   1. Cold start (Electron launch → first PTY byte) under target.
-   2. PTY echo round-trip latency under target.
-   3. Daemon survives Electron renderer kill + main kill (re-launch reattaches existing session).
-   4. SQLite write throughput under target with three concurrent Connect clients.
-   Targets are calibrated against v0.2 baseline; numbers live in [15-testing-strategy](./15-testing-strategy.md).
+Five RPCs and the health probe stay on the control socket with the v0.3 length-prefixed JSON envelope: `/healthz`, `/stats`, `daemon.hello`, `daemon.shutdown`, `daemon.shutdownForUpgrade`. **`daemon.hello`'s HMAC handshake is removed** because auth is now transport-bound (peer-cred or JWT), not header-bound.
 
-## Non-goals (MUST NOT ship in v0.3)
+**Why:** final-architecture §2 principle 8 explicitly partitions wire surface; supervisor-on-envelope is correct because supervisor RPCs are control-plane lifecycle and never multi-client. hello-HMAC removed because it is now redundant with peer-cred. See [05](./05-supervisor-control-plane.md).
 
-NG1. **No `cloudflared` sidecar** — neither bundled nor lifecycled. Listener B is bound but has no intended consumer in v0.3. **Why deferred:** final-architecture §3 ("`cloudflared` install / supply-chain / update flow"); v0.4.
+### G4 — Daemon owns its lifecycle
 
-NG2. **No web client.** No `@connectrpc/connect-web` build target. **Why deferred:** §3 ("v0.4 client UX spec — … web SPA shape"); v0.4.
+The daemon process is **not a child of Electron**. Closing the desktop client does not stop the daemon. The daemon's PID is not parented to the Electron PID. The Electron app SHOULD be capable of starting the daemon if it is not running, but daemon survival is independent of Electron survival. Daemon respawn is the responsibility of an OS supervisor (launchd / systemd-user / Windows Service); v0.3 does NOT install one but the daemon's lifecycle MUST already work as if one were present.
 
-NG3. **No iOS client.** No `connect-swift` consumption. **Why deferred:** same as NG2.
+**Why:** final-architecture §2 principle 9. If daemon is born as Electron's child in v0.3, v0.4 cannot detach without rewriting the lifecycle. See [02](./02-process-topology.md).
 
-NG4. **No OS-level supervisor.** v0.3 does not install launchd plists, Windows Services, or systemd-user units. The daemon is started by the Electron launcher (and continues running after Electron exits via OS process detach), or manually by the dev. **Why deferred:** §3 ("OS-level supervisor for headless mode … and the daemon-detach-from-Electron lifecycle"); v0.4.
+### G5 — Session model: backend-authoritative, snapshot+delta, broadcast, LWW, N≥3
 
-NG5. **No scrollback persistence to SQLite.** PTY scrollback remains the existing in-RAM ring buffer. **Why deferred:** §2.7 ("scrollback: RAM-only … long-tail history persistence is a separate, later feature").
+PTY host inside the daemon serves every subscribing client with the same `(snapshot, delta-stream)` semantics. Multi-client input is applied to the PTY in arrival order (last-writer-wins) without locks. **Fan-out is N-broadcast from the first commit; no "N=1 first, generalize later" path.** Test matrix MUST include N≥3 concurrent subscribers to the same session.
 
-NG6. **No multi-machine semantics.** **Why deferred:** §3.
+Scrollback is RAM-only (bounded ring buffer per session); SQLite-backed scrollback is deferred but the in-RAM ring buffer interface MUST already be the seam at which a future persistent layer would slot in (no schema change, no model change).
 
-NG7. **No backend-issued tokens, no user database.** **Why:** §2.5 ("backend never issues its own tokens. Backend never stores a user database"). This is a hard non-goal, not a "later".
+**Why:** final-architecture §2 principle 7. N=1 PTY would force v0.4 to redesign fan-out + replay semantics. See [08](./08-session-model.md).
 
-NG8. **No supervisor envelope on the data plane.** No HMAC-protected hello on the control plane. **Why:** §2.8 plus reconciliation: data plane is Connect; control plane is the bare-minimum envelope; HMAC was a v0.2 artifact whose threat (lateral-process spoofing on UDS) is now covered by peer-cred.
+### G6 — Electron is a pure thin client
 
-## Anti-patterns (any of these in any chapter = P0 reject)
+Electron's main process holds zero business logic and zero persistent state. Its only responsibilities: spawn-or-discover the daemon, render the UI, hold a per-session in-memory snapshot cache for renderer reload speed, and OS integration (tray, dock, dialogs, deep-link, notifications). All session/PTY/SQLite/crash interactions go through the Connect client over Listener A.
 
-The reviewer in Stage 2 must reject the spec set if **any** chapter, code path, or comment includes:
+**Why:** final-architecture §2 principle 2 — "no client is primary; all three consume the same proto". Electron-with-business-logic forces v0.4 to extract that logic to the daemon. See [12](./12-electron-thin-client.md).
 
-- "Send data plane over the supervisor envelope first; switch to Connect in v0.4."
-- "Bind Listener B in v0.4 once the sidecar is ready."
-- "Fan-out registry only needs N=1 for v0.3; resize at v0.4."
-- "Electron keeps {session manager / PTY / SQLite client} for v0.3; move into daemon at v0.4."
-- "Keep hello-HMAC for compatibility / one release / belt-and-suspenders."
-- Any inline marker of the form `TODO(v0.4)`, `FIXME: v0.4`, `// v0.4 will …`.
-- Any header-keyed JWT bypass on Listener B (e.g. `if req.header('X-Local') === '1' skipJwt()`).
-- Any "OS supervisor stub" file created with empty bodies — either ship it or omit it.
+## Non-goals (NOT done in v0.3) — but interfaces preserved
 
-The pattern is the same in each: the line **predicts** that v0.4 will edit/delete v0.3 code. That is the definition of rework.
+Each non-goal below is **deliberately deferred**, not "TBD". For each, the v0.3 surface is shaped so v0.4 can add the deferred piece without modifying v0.3 code.
 
-## §1.Z Zero-rework self-check
+| NOT done in v0.3                                          | Interface / placeholder v0.3 leaves                                                                | Defer-target version |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | -------------------- |
+| `cloudflared` sidecar process management                  | Listener B bound, JWT interceptor live, UT exhaustive, port-discovery contract documented. **No** stubbed `cloudflared` spawn code, no "TODO: spawn sidecar". | v0.4                 |
+| Web client (`web/` Vite + connect-web)                    | `proto/` schema contains every service/method web needs                                            | v0.4                 |
+| iOS client (connect-swift)                                | Same `proto/` schema; server-streaming methods documented as browser+swift compatible              | v0.4                 |
+| OS-level daemon supervisor (launchd / systemd / Windows Service) | Daemon lifecycle is OS-supervisor-ready (G4). Adding the OS unit is a packaging-only delta in v0.4. | v0.4                 |
+| Scrollback persistence to SQLite                          | RAM ring buffer interface is the seam; PTY host module API does not bake in "RAM-only" assumptions | v0.5                 |
+| Multi-machine semantics                                   | N/A — out of scope of final architecture itself                                                    | not planned          |
 
-**v0.4 时本章哪些决策/代码会被修改?** 无。Goals G1..G10 是 final-architecture §2 原则的直接投影, v0.4 同样满足这些原则 (引 §2.1, §2.3, §2.5, §2.7, §2.8, §2.9), 不会撤销。Non-goals NG1..NG6 在 v0.4 变成 goals — 这是**追加** v0.4 spec, 不是修改 v0.3 chapter。NG7 (no backend tokens) / NG8 (no envelope on data plane / no HMAC on hello) 是永久 non-goals, v0.4 也不做 (引 §2.5, §2.8)。
+**Why deferred (each):**
+
+- cloudflared: deferred to v0.4 because installer/distribution of the binary is its own supply-chain question; gating v0.3 on it would block ship. Listener B + JWT being live is what guarantees zero rework.
+- Web/iOS clients: deferred because each is its own packaging problem (static hosting, App Store). Shared `proto/` contract is what guarantees zero rework.
+- OS supervisor: deferred because each OS's installer (pkg, deb/rpm, msi/Service installer) is a separate workstream. Daemon-being-detached-from-Electron is what guarantees zero rework.
+- Scrollback persistence: deferred to v0.5 because it requires schema design + size-management policy. The in-RAM ring-buffer module shape is what guarantees zero rework.
+
+## Anti-patterns (P0 in PR review)
+
+Any chapter, PR, or implementation that contains the following is an automatic REQUEST-CHANGES and must be fixed before merge:
+
+1. **"Use envelope on data plane now, switch to Connect in v0.4."** Connect is mandatory in v0.3.
+2. **"Listener B not bound until v0.4."** Listener B MUST be bound + interceptor live + UT complete in v0.3.
+3. **"PTY host serves N=1 client now, generalize to N in v0.4."** PTY host MUST be N≥3-correct from first commit, with N≥3 tests.
+4. **"Electron main process keeps a small bit of business logic for now."** All business logic MUST be in daemon. The only state in Electron main is a renderer-reload snapshot cache.
+5. **"hello-HMAC stays for compatibility."** hello-HMAC MUST be removed; there are no external clients of the v0.2 envelope.
+6. **Any `// TODO v0.4` / `// will be replaced` / `// temporary` / `// for now` comment** in code that ships. (Spec-internal "deferred to v0.4" notes that point to a non-v0.3 chapter are fine.)
+7. **"Add this proto field in v0.4."** All v0.4 service surface MUST be present in `proto/` at v0.3.0 ship.
+8. **"PTY input flows through Electron then forwards to daemon."** Electron client calls Connect `pty.Input` directly; no shim.
+9. **"Daemon is spawned as Electron child via `child_process.spawn` and inherits parent kill."** Daemon MUST be detached from Electron parent (`detached: true`, no inherit, OS-detached on respawn).
 
 ## Cross-refs
 
-- [00-overview](./00-overview.md)
-- [02-process-topology](./02-process-topology.md) — operationalizes G5.
-- [04-listener-B-jwt](./04-listener-B-jwt.md) — operationalizes G2 + NG1.
-- [14-deletion-list](./14-deletion-list.md) — files whose presence implies an anti-pattern.
+- [00 — Overview](./00-overview.md)
+- [02 — Process topology](./02-process-topology.md)
+- [04 — Listener B + JWT](./04-listener-B-jwt.md)
+- [06 — Proto schema](./06-proto-schema.md)
+- [08 — Session model](./08-session-model.md)
+- [12 — Electron thin client](./12-electron-thin-client.md)
+- [14 — Deletion list](./14-deletion-list.md)
