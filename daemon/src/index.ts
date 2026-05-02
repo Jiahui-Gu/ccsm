@@ -25,6 +25,10 @@ import {
   createDataSocketServer,
   type DataSocketServer,
 } from './sockets/data-socket.js';
+import {
+  wireSupervisorDispatcher,
+  defaultWriteShutdownMarker,
+} from './supervisor-wiring.js';
 
 const require = createRequire(import.meta.url);
 // Resolve the daemon's own package.json (frag-11 §11.1: daemon is a
@@ -43,6 +47,9 @@ function parseDaemonConsent(raw: string | undefined): 'pending' | 'opted-in' | '
 }
 
 const bootNonce = ulid();
+// Captured ONCE at boot so /healthz `uptimeMs` is monotonic across calls
+// (frag-6-7 §6.5). MUST be before any handler module that consumes it.
+const bootedAtMs = Date.now();
 
 const logger = pino({
   base: {
@@ -271,6 +278,83 @@ void dataDispatcher;
 //   - Does not register new RPCs.
 //   - Does not touch v0.4 `connect/` Connect-RPC scaffold.
 const socketRuntimeRoot = resolveRuntimeRoot();
+
+// Task #100 — wire the remaining SUPERVISOR_RPCS handlers (audit-4 F8).
+//
+// Before this slice, the daemon shell only registered `daemon.shutdown` on
+// `supervisorDispatcher`; calls to `/healthz`, `/stats`, and
+// `daemon.shutdownForUpgrade` short-circuited to the NOT_IMPLEMENTED stubs
+// even though pure handlers existed (T17 / T18 / T21).
+//
+// `daemon.hello` is intentionally NOT wired here — the HMAC handshake is
+// being decoupled in a separate slice and the secret-loading site is still
+// in flux. Until that lands, `daemon.hello` keeps returning NOT_IMPLEMENTED
+// (the dispatcher's stub) so the supervisor plane stays free of HMAC
+// coupling per the Task #100 constraint.
+const supervisorWiringManifest = wireSupervisorDispatcher(supervisorDispatcher, {
+  healthz: {
+    bootNonce,
+    pid: process.pid,
+    version: DAEMON_VERSION,
+    bootedAtMs,
+    now: () => Date.now(),
+    // Live counter providers will be plugged in by their owning subsystems
+    // (session registry, fan-out registry, migration FSM, swap-window
+    // observer) as they land. Defaults to 0 / 'absent' / false until then —
+    // the wire field is always present so renderer parsing never breaks.
+  },
+  stats: {
+    // getMemoryUsage falls back to process.memoryUsage(); see
+    // defaultMemoryUsageProvider in handlers/stats.ts.
+  },
+  shutdownForUpgrade: {
+    ctx: {
+      version: DAEMON_VERSION,
+      now: () => Date.now(),
+      markerDir: socketRuntimeRoot,
+    },
+    actions: {
+      writeMarker: defaultWriteShutdownMarker,
+      // The upgrade path's drain is the same §6.6.1 sequence the manual
+      // shutdown handler runs. Reuse the already-wired handler so both
+      // RPCs converge on one code path.
+      runShutdownSequence: async () => {
+        await daemonShutdownHandler.handle({ reason: 'upgrade' }, { bootNonce });
+      },
+      // proper-lockfile wiring lands with the lockfile slice (frag-6-7
+      // §6.4 step 3). Until then this is a no-op so the marker write +
+      // drain still complete; the supervisor's restart loop is the
+      // ultimate recovery surface if the lock is stale.
+      releaseLock: async () => {
+        logger.info(
+          { event: 'daemon-shutdown-for-upgrade.release-lock-noop' },
+          'lockfile release deferred to lockfile slice; continuing exit',
+        );
+      },
+      exit: (code) => {
+        // Same posture as `shutdownActions.exitProcess`: close transports
+        // before exit so the next boot does not collide on stale socket
+        // nodes. Best-effort + bounded.
+        void closeTransports().finally(() => process.exit(code));
+      },
+    },
+    onError: (err) => {
+      logger.warn(
+        { event: 'daemon-shutdown-for-upgrade.error', err: String(err) },
+        'shutdownForUpgrade marker / drain failed; supervisor will fall back to force-kill',
+      );
+    },
+  },
+});
+logger.info(
+  {
+    event: 'daemon.boot.supervisor-rpcs-wired',
+    methods: supervisorWiringManifest.registered,
+    healthzVersion: supervisorWiringManifest.schemaVersions.healthzVersion,
+    statsVersion: supervisorWiringManifest.schemaVersions.statsVersion,
+  },
+  'supervisor RPCs wired',
+);
 
 // Test isolation hooks. Allow overriding the bound socket path via env so
 // integration tests can inject a unique address per run (Windows named-pipe
