@@ -389,5 +389,24 @@ describe('Dispatcher (spec §3.4.1.h control-socket router)', () => {
         expect(terminal.value).toEqual({ final: 'snapshot' });
       });
     });
+
+    describe('dispatchStreamingInit on the data plane (Task #92)', () => {
+      it('accepts any registered method without applying SUPERVISOR_RPCS allowlist', () => {
+        const d = createDataDispatcher();
+        d.register('ccsm.v1/pty.subscribe', async () => ({ streaming: true }));
+        const r = d.dispatchStreamingInit('ccsm.v1/pty.subscribe');
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.ack_source).toBe('dispatcher');
+      });
+
+      it('still rejects unknown methods with UNKNOWN_METHOD on the data plane', () => {
+        const d = createDataDispatcher();
+        const r = d.dispatchStreamingInit('ccsm.v1/missing.method');
+        expect(r.ok).toBe(false);
+        if (r.ok) return;
+        expect(r.error.code).toBe('UNKNOWN_METHOD');
+      });
+    });
   });
 });

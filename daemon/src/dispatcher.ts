@@ -328,7 +328,13 @@ export class Dispatcher {
    *   - `{ ok: false, error: NOT_ALLOWED | UNKNOWN_METHOD }` on rejection.
    */
   dispatchStreamingInit(method: string): DispatchResult {
-    if (!isSupervisorRpc(method)) {
+    // Plane-scoped allowlist (T92 fix): supervisor plane enforces
+    // SUPERVISOR_RPCS at the boundary; data plane delegates surface control
+    // to per-method registration just like `dispatch()` does. Without this
+    // gate the data-socket streaming envelope (frag-3.4.1 §3.4.1.b) would
+    // get a hard NOT_ALLOWED on every legitimate `pty.subscribe` open even
+    // though the dispatcher is in data plane.
+    if (this.#plane === 'supervisor' && !isSupervisorRpc(method)) {
       return {
         ok: false,
         error: {
@@ -344,7 +350,7 @@ export class Dispatcher {
         error: {
           code: 'UNKNOWN_METHOD',
           method,
-          message: `no handler registered for control-socket RPC ${method}`,
+          message: `no handler registered for ${this.#plane}-plane streaming RPC ${method}`,
         },
       };
     }
