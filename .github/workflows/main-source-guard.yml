@@ -10,6 +10,7 @@ permissions:
 jobs:
   check-source:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Reject non-working source
         run: |
