@@ -9,6 +9,8 @@
 //      app.before-quit / uncaughtException / unhandledRejection.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { Writable } from 'node:stream';
 import {
@@ -17,7 +19,9 @@ import {
   installRendererLogForwarder,
   isRendererLogForwardEnabled,
   resolveElectronLogDir,
+  maintainCurrentSymlink,
   ELECTRON_REDACT_PATHS,
+  ELECTRON_LOG_CURRENT_SYMLINK,
   RENDERER_LOG_FORWARD_CHANNEL,
   RENDERER_LOG_FORWARD_ENV,
   electronBootNonce,
@@ -282,5 +286,50 @@ describe('electron/log — log dir resolution', () => {
       env: { CCSM_DATA_ROOT: '/tmp/ccsm-test' },
     });
     expect(dir).toBe(path.join('/tmp/ccsm-test', 'logs', 'electron'));
+  });
+});
+
+// POSIX-only: Windows requires developer mode (or admin) to create
+// symlinks via fs.symlinkSync — exactly the failure mode the daemon
+// hit and that this port is designed to swallow. We verify behaviour
+// where it actually runs (Linux/macOS CI + dev). Windows path is
+// covered by the swallow-error semantics in maintainCurrentSymlink.
+const describePosix = process.platform === 'win32' ? describe.skip : describe;
+
+describePosix('electron/log — maintainCurrentSymlink (POSIX)', () => {
+  it('creates electron.log symlink pointing at the newest rotated file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-elog-'));
+    try {
+      // Write two rotated-style files; touch the second one to be newer.
+      const older = path.join(dir, 'electron.2026-05-01.log');
+      const newer = path.join(dir, 'electron.2026-05-02.log');
+      fs.writeFileSync(older, 'old\n');
+      fs.writeFileSync(newer, 'new\n');
+      const past = new Date(Date.now() - 60_000);
+      fs.utimesSync(older, past, past);
+
+      maintainCurrentSymlink(dir);
+
+      const linkPath = path.join(dir, ELECTRON_LOG_CURRENT_SYMLINK);
+      const lst = fs.lstatSync(linkPath);
+      expect(lst.isSymbolicLink()).toBe(true);
+      expect(fs.readlinkSync(linkPath)).toBe('electron.2026-05-02.log');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op (no throw) when log dir has no electron.* files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-elog-empty-'));
+    try {
+      expect(() => maintainCurrentSymlink(dir)).not.toThrow();
+      expect(fs.existsSync(path.join(dir, ELECTRON_LOG_CURRENT_SYMLINK))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('swallows errors when log dir does not exist', () => {
+    expect(() => maintainCurrentSymlink('/nonexistent/ccsm/elog/dir')).not.toThrow();
   });
 });

@@ -10,9 +10,14 @@
 //   - Base fields: { side: 'electron', v: APP_VERSION, pid, boot: bootNonce }
 //     `side` is REQUIRED so log aggregation does not collide daemon and
 //     electron lines that share `{v, pid, boot}` keys (r2-obs P0-1).
-//   - Same `pino-roll` config as daemon: daily / 50MB / 7-file / symlink:true.
-//     Files at `<dataRoot>/logs/electron/electron-YYYY-MM-DD.log` with stable
-//     `electron.log` symlink → current rotated file.
+//   - Same `pino-roll` config as daemon: daily / 50MB / 6 historical files
+//     (= 7 total on disk per spec budget; pino-roll's `limit.count` is
+//     "in addition to the active file"). Files at
+//     `<dataRoot>/logs/electron/electron-YYYY-MM-DD.log` with stable
+//     `electron.log` symlink → current rotated file. Symlink is managed
+//     by us (`maintainCurrentSymlink`), NOT pino-roll's built-in
+//     `symlink: true` (that hardcodes `current.log` and throws EPERM on
+//     Windows w/o developer mode — see daemon task #124 finding).
 //   - Redact list = daemon §6.6.1 superset PLUS renderer-leaning paths.
 //   - `pino.final` analog on every Electron-main exit path
 //     (`app.before-quit`, `process.on('uncaughtException')`,
@@ -31,6 +36,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ulid } from 'ulid';
 import pino, { type Logger } from 'pino';
+
+/**
+ * Filename for the always-current symlink. Mirrors daemon's
+ * `DAEMON_LOG_CURRENT_SYMLINK` (`daemon/src/log/index.ts`) — naming pattern
+ * `<side>.log` so the header comment ("stable `electron.log` symlink") and
+ * the daemon's `daemon.log` symlink form a consistent per-side convention.
+ */
+export const ELECTRON_LOG_CURRENT_SYMLINK = 'electron.log';
 // pino-roll is loaded lazily via require() inside createLogger so that
 // pure-import test paths (which only need redact / base-field assertions
 // against an in-memory destination) don't have to install the transport.
@@ -137,11 +150,23 @@ function buildPinoRollTransport(logDir: string): pino.DestinationStream {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const pinoRoll = require('pino-roll') as unknown as (opts: Record<string, unknown>) => pino.DestinationStream;
   // pino-roll API: returns a SonicBoom stream piped through the date /
-  // size rotation policy. Same config as daemon §6.6.1: daily, 50 MB
-  // per file, 7-file count, mkdir true, symlink true so `electron.log`
-  // always points to the current rotated file (POSIX `tail -F` survives
-  // the daily rotation, Windows tray entry per r3-devx P1-4 opens the
-  // rotated file directly).
+  // size rotation policy. Same config as daemon §6.6.1: daily + 50 MB
+  // per-file + retention budget. NOTE on `limit.count`: pino-roll's
+  // semantic is "in addition to the currently-active file" (see
+  // node_modules/pino-roll/README.md and daemon `DAEMON_LOG_RETENTION_COUNT`
+  // at daemon/src/log/index.ts §92-99). Spec frag-6-7 §6.6.2 budgets
+  // 7 files × 50 MB = 350 MB per side, so the on-disk total must be 7
+  // → 6 historical + 1 active. Using `count: 6` matches daemon and
+  // keeps the per-side budget honest.
+  //
+  // NOTE on `symlink`: pino-roll's built-in `symlink: true` creates a
+  // hardcoded `current.log` link via `fs.symlink()` — which throws
+  // EPERM on Windows w/o developer mode and propagates as an uncaught
+  // exception out of the worker thread (daemon discovered this; see
+  // daemon/src/log/index.ts §188-195). We disable pino-roll's symlink
+  // and maintain our own `electron.log` symlink via `maintainCurrentSymlink`
+  // (best-effort, swallows errors).
+  //
   // The cast keeps this self-contained when pino-roll's own types
   // disagree across minor versions.
   return pinoRoll({
@@ -149,11 +174,66 @@ function buildPinoRollTransport(logDir: string): pino.DestinationStream {
     extension: '.log',
     frequency: 'daily',
     size: '50M',
-    limit: { count: 7 },
+    limit: { count: 6 },
     mkdir: true,
-    symlink: true,
     dateFormat: 'yyyy-MM-dd',
   });
+}
+
+/**
+ * Re-point `<logDir>/electron.log` at the most recently modified rotated
+ * file. Called once at logger construction; future rotations are picked
+ * up on next process boot (pino-roll does not expose a worker-thread
+ * rotation hook in v0.3 — boot-time refresh is sufficient for the
+ * dogfood `tail -F electron.log` use case since `tail -F` reopens on
+ * symlink change).
+ *
+ * Best-effort: any error (missing target, EPERM on Windows w/o developer
+ * mode, EEXIST race, etc.) is swallowed — the rotated files remain
+ * directly readable via globbing `electron.*`. Mirrors daemon's
+ * `maintainCurrentSymlink()` (`daemon/src/log/index.ts` §264-300); copy
+ * rather than shared helper because daemon's lives behind a different
+ * package boundary and v0.3 zero-rework forbids speculative refactor.
+ *
+ * Exported for the unit test (POSIX-only) to drive symlink maintenance
+ * with a synthetic file tree.
+ */
+export function maintainCurrentSymlink(logDir: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(logDir);
+  } catch {
+    return;
+  }
+  // Find the newest `electron.*` file (excluding our own symlink and
+  // pino-roll's leftover `current.log` from any prior version).
+  let newest: { name: string; mtimeMs: number } | undefined;
+  for (const name of entries) {
+    if (name === ELECTRON_LOG_CURRENT_SYMLINK) continue;
+    if (name === 'current.log') continue;
+    if (!name.startsWith('electron.')) continue;
+    let st: { mtimeMs: number };
+    try {
+      st = fs.statSync(path.join(logDir, name));
+    } catch {
+      continue;
+    }
+    if (!newest || st.mtimeMs > newest.mtimeMs) {
+      newest = { name, mtimeMs: st.mtimeMs };
+    }
+  }
+  if (!newest) return;
+  const linkPath = path.join(logDir, ELECTRON_LOG_CURRENT_SYMLINK);
+  try {
+    fs.unlinkSync(linkPath);
+  } catch {
+    // No existing symlink — fine.
+  }
+  try {
+    fs.symlinkSync(newest.name, linkPath);
+  } catch {
+    // EPERM on Windows w/o developer mode, EEXIST race, etc. Best-effort.
+  }
 }
 
 /**
@@ -166,11 +246,21 @@ function buildPinoRollTransport(logDir: string): pino.DestinationStream {
  * in electron-main — `pino.final` semantics rely on the singleton.
  */
 export function createLogger(opts: LoggerOptions): Logger {
+  const logDir = opts.logDir ?? resolveElectronLogDir(opts.dataRootProvider);
   const dest =
     opts.destination ??
     (opts.skipFileTransport
       ? undefined
-      : buildPinoRollTransport(opts.logDir ?? resolveElectronLogDir(opts.dataRootProvider)));
+      : buildPinoRollTransport(logDir));
+
+  // Best-effort: refresh the canonical `<logDir>/electron.log` symlink to
+  // the newest rotated file at boot. Mirrors daemon (see
+  // `maintainCurrentSymlink` doc above). Only meaningful when we actually
+  // wrote a pino-roll transport (in-memory destination / skipFileTransport
+  // mean there is no on-disk log to point at).
+  if (!opts.destination && !opts.skipFileTransport) {
+    maintainCurrentSymlink(logDir);
+  }
 
   const baseConfig: pino.LoggerOptions = {
     base: {
