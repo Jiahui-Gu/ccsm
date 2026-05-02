@@ -287,6 +287,12 @@
           "to": "daemon/ccsm-daemon"
         }
       ]
+    },
+    "deb": {
+      "afterRemove": "build/linux-postrm.sh"
+    },
+    "rpm": {
+      "afterRemove": "build/linux-postrm.sh"
     }
   }
 }
