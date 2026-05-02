@@ -258,10 +258,11 @@ jobs:
       # Minisign signatures. Public key lives in repo at release-keys/minisign.pub
       # (committed). Private key is provisioned via the MINISIGN_PRIVATE_KEY
       # repo secret + MINISIGN_PASSWORD secret (see release-keys/README.md for
-      # rotation runbook). When the secret is absent we still write empty
-      # placeholder .minisig files so the sidecar-verify gate can distinguish
-      # "missing because unsigned" from "missing because forgotten" — and we
-      # warn loudly in the workflow log.
+      # rotation runbook). When the secret is absent we skip sidecar generation
+      # entirely and the publish job's sidecar-verify gate skips its minisig
+      # check accordingly — matching the v0.3 ship-intent "placeholder-safe"
+      # rule (frag-11 §11.5(5): "MUST continue unsigned if absent") and the
+      # Apple/signtool steps' existing fall-back-to-unsigned behaviour.
       - name: Install minisign
         run: |
           sudo apt-get update -qq
@@ -275,12 +276,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_PRIVATE_KEY:-}" ]; then
-            echo "::warning title=Unsigned release::MINISIGN_PRIVATE_KEY secret not set. Writing placeholder .minisig files; the sidecar-verify gate will fail. See release-keys/README.md for provisioning."
-            cd dist-flat
-            for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
-              [ -f "$f" ] || continue
-              : > "$f.minisig"
-            done
+            echo "::warning title=Unsigned release::MINISIGN_PRIVATE_KEY secret not set. Skipping .minisig sidecar generation; the publish job's sidecar-verify gate will skip its minisig check. See release-keys/README.md for provisioning."
             exit 0
           fi
           umask 077
@@ -376,8 +372,16 @@ jobs:
       # present (and the minisig must be non-empty). This is the post-tag-push
       # safety check that catches "someone commented out a sidecar step in a
       # rebase" before we publish a release with missing attestations.
+      #
+      # Placeholder-safe: when MINISIGN_PRIVATE_KEY is unset (e.g. forks, or
+      # repos that haven't provisioned a minisign keypair yet), the attest job
+      # skips writing .minisig sidecars. Mirror that here by skipping the
+      # minisig portion of the gate so unsigned releases can still publish —
+      # spec frag-11 §11.5(5): "MUST continue unsigned if absent".
       - name: Sidecar-verify gate
         shell: bash
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           cd dist-flat
@@ -386,13 +390,19 @@ jobs:
             echo "::error title=Sidecar-verify failed::no *.intoto.jsonl SLSA provenance file present"
             exit 1
           fi
+          if [ -z "${MINISIGN_PRIVATE_KEY:-}" ]; then
+            check_minisig=0
+            echo "::warning title=Unsigned release::MINISIGN_PRIVATE_KEY secret not set; skipping .minisig sidecar verification."
+          else
+            check_minisig=1
+          fi
           fail=0
           for f in *.exe *.dmg *.zip *.AppImage *.deb *.rpm; do
             [ -f "$f" ] || continue
             if [ ! -s "$f.sha256" ]; then
               echo "::error title=Sidecar-verify failed::$f missing or empty .sha256"; fail=1
             fi
-            if [ ! -s "$f.minisig" ]; then
+            if [ "$check_minisig" -eq 1 ] && [ ! -s "$f.minisig" ]; then
               echo "::error title=Sidecar-verify failed::$f missing or empty .minisig"; fail=1
             fi
             # Materialize a per-artifact intoto.jsonl alias so the README's
@@ -403,7 +413,11 @@ jobs:
             echo "::error::Refusing to publish release with missing sidecars."
             exit 1
           fi
-          echo "All installers have .sha256 + .minisig + .intoto.jsonl sidecars."
+          if [ "$check_minisig" -eq 1 ]; then
+            echo "All installers have .sha256 + .minisig + .intoto.jsonl sidecars."
+          else
+            echo "All installers have .sha256 + .intoto.jsonl sidecars (minisig skipped — secret unset)."
+          fi
           ls -la
 
       - name: Upload to GitHub Release (draft)

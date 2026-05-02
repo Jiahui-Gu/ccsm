@@ -23,8 +23,12 @@ For every installer artifact (`*.exe`, `*.dmg`, `*.AppImage`, `*.deb`,
 | `<artifact>.minisig` | `minisign -S` step in the `attest` job, signed with the key from `MINISIGN_PRIVATE_KEY` | `minisign -V -p release-keys/minisign.pub -m <artifact>` |
 
 The `publish` job in `.github/workflows/release.yml` runs a **sidecar-verify
-gate** that refuses to publish a draft release unless all three sidecars are
-present (and non-empty) for every installer.
+gate** that refuses to publish a draft release unless `.sha256` + `.intoto.jsonl`
+sidecars are present (and non-empty) for every installer. The `.minisig` check
+is only enforced when the `MINISIGN_PRIVATE_KEY` secret is set; when unset,
+the `attest` job skips minisig generation and the gate skips its minisig check
+so unsigned releases can still publish (frag-11 §11.5(5): "MUST continue
+unsigned if absent").
 
 ## First-time keypair generation (release-day ops, NOT in CI)
 
@@ -81,7 +85,7 @@ to verify older `.minisig` files; the simplest path is `git log -- release-keys/
 
 ## Disaster: private key suspected leaked
 
-1. **Immediately revoke** the GitHub Actions secret: `gh secret delete MINISIGN_PRIVATE_KEY --repo Jiahui-Gu/ccsm`. Without the secret, the `attest` job writes empty `.minisig` files and the sidecar-verify gate fails closed — no further releases can ship signed with the compromised key.
+1. **Immediately revoke** the GitHub Actions secret: `gh secret delete MINISIGN_PRIVATE_KEY --repo Jiahui-Gu/ccsm`. Without the secret, the `attest` job skips `.minisig` sidecar generation and subsequent releases ship unsigned (the `publish` job's sidecar-verify gate skips its minisig check) until a fresh keypair is provisioned per the rotation procedure below. Releases keep flowing — they just lose the offline minisign verification path until rotation completes.
 2. Open a high-priority issue on the repo describing the suspected leak.
 3. Run the rotation procedure above.
 4. Publish a security advisory (`gh api repos/Jiahui-Gu/ccsm/security-advisories -f summary='Release-signing key rotation' ...`) listing every release that was signed with the compromised key. Users should re-verify those releases against the historical public key (still valid for those specific binaries; the SLSA L3 attestation provides an independent authenticity check that does NOT depend on minisign).
