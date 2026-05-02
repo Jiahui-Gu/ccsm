@@ -786,3 +786,50 @@ html.theme-light ::-webkit-scrollbar-thumb:hover {
 .pane-resize-handle:focus-visible::after {
   background: var(--color-accent);
 }
+
+/*
+  Radix Dialog overlay leak guard (PR #765 e2e fix).
+
+  When Radix nests/stacks dialogs (or DismissableLayer leaves an overlay
+  mounted briefly with `aria-hidden=true` behind a higher modal), the
+  overlay still intercepts pointer events and breaks click-through to the
+  underlying UI -- surfaces as e2e flakes ("intercepts pointer events" on
+  `<div data-state="open" aria-hidden="true" ... backdrop-blur ...>`).
+
+  We tried Tailwind arbitrary-selector + data- variant forms in
+  `src/components/ui/Dialog.tsx`; both got serialized into the className
+  attribute but Tailwind v4 JIT did not emit the matching rule (verified
+  via DOM dumps in CI runs 25220652854 / 25221052174). Plain CSS is the
+  reliable lever.
+
+  aria-hidden=true is Radix's signal that the element is non-interactive;
+  honor it for hit-testing too. The selector is scoped to elements that
+  also carry `data-state` (i.e. Radix-managed) so it never affects raw
+  user-authored aria-hidden divs.
+*/
+[data-state][aria-hidden="true"] {
+  pointer-events: none !important;
+}
+
+/*
+  Body-lock leak guard. Radix's react-remove-scroll sets inline
+  `pointer-events: none` on <body> when a modal opens. Stale overlays
+  + DismissableLayer tear-down race occasionally leak the lock past the
+  modal close, which surfaces in Playwright as the next click failing
+  on `<html>` (no descendant accepts the event because body is locked
+  to its children).
+
+  We previously tried scoping with `body:not(:has([data-state="open"]:not([aria-hidden="true"])))`
+  but the :has() matched non-modal `data-state="open"` surfaces (open
+  Tooltip / open ContextMenu / open Popover) which kept the lock in
+  effect during normal interaction. Modals do NOT need the body
+  pointer-events lock to function -- the overlay's own click handler
+  + DismissableLayer ESC handler are the actual close paths; the body
+  lock only suppresses scroll-wheel events behind the modal which is
+  a much smaller bug than e2e clicks broken across the board.
+  Unconditional !important on <html> + <body> defeats every leak path
+  Radix can take.
+*/
+html, body {
+  pointer-events: auto !important;
+}

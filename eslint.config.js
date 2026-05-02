@@ -107,6 +107,10 @@ export default [
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-empty-object-type': 'off',
       '@typescript-eslint/no-empty-function': 'off',
+      // Empty `catch {}` is an established pattern across the codebase for
+      // best-effort cleanup paths; keep it permitted for catch blocks while
+      // continuing to flag genuinely empty code blocks elsewhere.
+      'no-empty': ['error', { allowEmptyCatch: true }],
       // TS function overloads legitimately re-declare the same name; defer to
       // the typescript-eslint variant which understands overload signatures.
       'no-redeclare': 'off',
@@ -117,7 +121,16 @@ export default [
     }
   },
   {
-    files: ['electron/**/*.ts'],
+    // Node.js context: Electron main, daemon source, installer scripts and
+    // root-level config files (vitest.config.ts etc.) all run on Node and
+    // need the standard Node globals + a couple of Electron-only types.
+    files: [
+      'electron/**/*.ts',
+      'daemon/src/**/*.ts',
+      'daemon/spike-pkg-esm/src/**/*.ts',
+      'installer/**/*.{js,ts}',
+      '*.config.{js,ts,mjs,cjs}'
+    ],
     languageOptions: {
       globals: {
         process: 'readonly',

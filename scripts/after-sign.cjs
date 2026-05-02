@@ -5,7 +5,12 @@ const path = require('path');
 module.exports = async function afterSign(context) {
   const platform = context.electronPlatformName;
   if (platform === 'darwin' || platform === 'mas') {
-    const signMac = require(path.join(__dirname, 'sign-macos.cjs'));
+    // sign-macos.cjs uses `exports.signMacApp` / `exports.default` rather
+    // than `module.exports = fn`, so `require(...)` returns an object.
+    // The `|| mod` fallback keeps tests working when they pre-populate
+    // `require.cache[...].exports` with a bare spy fn.
+    const mod = require(path.join(__dirname, 'sign-macos.cjs'));
+    const signMac = mod.signMacApp || mod.default || mod;
     await signMac(context);
   }
   if (platform === 'win32') {

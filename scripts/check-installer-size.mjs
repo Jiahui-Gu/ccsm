@@ -35,12 +35,30 @@ const BASELINE_PATH = join(REPO_ROOT, 'installer', 'size-baseline.json');
 // Per-extension absolute ceilings in MB. Locked in
 // docs/superpowers/specs/v0.3-fragments/frag-11-packaging.md §11.5(6).
 // Bumping these requires a spec edit + reviewer sign-off.
+//
+// 2026-05-01 rebaseline (PR #765, manager decision). The original ceilings
+// (145 / 160 / 140 / 125 / 125 MB) were copied from frag-11 §11.5(6) early-
+// design estimates that pre-dated the v0.3 daemon-split. Real CI builds
+// during the v0.3 dark-window measure 25-71% above those numbers because:
+//   * v0.3 split the daemon out of Electron-main into a separate binary
+//     shipped under `daemon/native-staged` + `daemon/sdk-staged` +
+//     `daemon/deps-staged` extraResources -- this is the architecture
+//     change, not a regression.
+//   * @sentry/* + @opentelemetry/* observability deps add ~25 MB
+//     (@sentry/react alone is ~22 MB unpacked).
+//   * The SDK is intentionally duplicated under `<resources>/sdk/` for
+//     the loadSdk() shim AND under `daemon/node_modules/` for the daemon
+//     subprocess (per spec §3.2 + required-after-pack.test.ts).
+//   * Linux AppImage carries a self-extracting AppRun stub + libfuse
+//     shim (~30 MB) on top of the same payload as deb/rpm.
+// New ceilings = current max measured + ~20% buffer to leave v0.4 room;
+// the >10% growth-vs-baseline guard remains the primary regression signal.
 const CEILING_MB = {
-  exe: 145,
-  dmg: 160,
-  AppImage: 140,
-  deb: 125,
-  rpm: 125,
+  exe: 210,
+  dmg: 235,
+  AppImage: 250,
+  deb: 190,
+  rpm: 165,
 };
 
 const WARN_PCT = 5;

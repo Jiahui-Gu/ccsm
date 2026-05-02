@@ -9,7 +9,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
 import { tmpdir, platform as osPlatform } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 
 import {
   ensureDataDir,
@@ -42,12 +42,15 @@ describe('resolveDataRoot', () => {
     const root = resolveDataRoot(
       makeProvider({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' } }),
     );
-    expect(root).toBe(join('C:\\Users\\u\\AppData\\Local', 'ccsm'));
+    // Use win32.join for the expectation: resolveDataRoot picks the
+    // TARGET platform's path flavour (win32.join), so on a Linux/macOS
+    // CI host the expected separator is `\`, not the host's `/`.
+    expect(root).toBe(win32.join('C:\\Users\\u\\AppData\\Local', 'ccsm'));
   });
 
   it('falls back to <home>\\AppData\\Local on Windows when LOCALAPPDATA is missing', () => {
     const root = resolveDataRoot(makeProvider({ platform: 'win32', home: 'C:\\Users\\u', env: {} }));
-    expect(root).toBe(join('C:\\Users\\u', 'AppData', 'Local', 'ccsm'));
+    expect(root).toBe(win32.join('C:\\Users\\u', 'AppData', 'Local', 'ccsm'));
   });
 
   it('returns ~/Library/Application Support/ccsm on macOS', () => {

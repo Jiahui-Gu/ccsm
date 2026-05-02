@@ -21,6 +21,12 @@ export const DialogOverlay = forwardRef<
         'fixed inset-0 z-40 bg-black/50 backdrop-blur-[2px]',
         'data-[state=open]:animate-[overlayIn_160ms_cubic-bezier(0.32,0.72,0,1)]',
         'data-[state=closed]:opacity-0',
+        // Note: the actual aria-hidden=true → pointer-events:none rule
+        // lives in src/styles/global.css (selector
+        // `[data-state][aria-hidden="true"]`). Tailwind v4 JIT did not
+        // compile arbitrary-selector or data-[aria-hidden=true] forms
+        // here reliably (verified by DOM dumps in CI runs 25220652854 /
+        // 25221052174 -- the class name was emitted but no CSS rule).
         className
       )}
       {...rest}

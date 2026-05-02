@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   check-source:
-    if: false  # DISABLED for v0.3 migration window — see Task #1048 to restore
     runs-on: ubuntu-latest
     steps:
       - name: Reject non-working source
