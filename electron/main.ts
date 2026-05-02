@@ -33,7 +33,7 @@ import { initSentry } from './sentry/init';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 import { startCrashCollector } from './crash/collector';
-import { resolveCrashRoot } from './crash/incident-dir';
+import { resolveCrashRoot, schedulePruneIncidents, verifyAndFixCrashAcl } from './crash/incident-dir';
 import { wireCrashHandlers } from './main-crash-wiring';
 import { bootDaemon, resolveControlSocketPath } from './daemon/bootDaemon';
 import { createControlClient, type ControlClient } from './daemonClient/controlClient';
@@ -98,6 +98,14 @@ try {
     maxAggregateBytes: 200 * 1024 * 1024,
   });
 } catch {}
+
+// Task #131 (r3 reliability P1 IN-FLUX lock): standalone 30-day prune scheduler
+// (boot + every 24h) + boot-time owner-only ACL verify on the crash root.
+// Both are fail-soft and emit canonical log lines (`crash_prune_complete`,
+// `crash_acl_fixed`).
+try { verifyAndFixCrashAcl(crashRoot); } catch {}
+const _crashPruneHandle = schedulePruneIncidents(crashRoot, { maxAgeDays: 30 });
+void _crashPruneHandle;
 
 // Exposed for supervisor wiring (Task 4) and downstream IPC fan-out.
 export function emitDaemonCrash(payload: { incidentId: string; exitCode: number | null; signal: string | null; bootNonce?: string; markerPresent: boolean }): void {
