@@ -84,12 +84,15 @@ app.on('child-process-gone', (_e, details) => {
 // Best-effort retention pruning at boot. Phase 5 layers per-surface keep-N
 // (default 20) on top of the legacy global cap, with a 7-day protect window
 // for unsent incidents so the user can still re-upload via "Send last crash".
+// Task #59 / spec frag-6-7 §6.6.3 + §6.6.1: enforce a 200 MB aggregate
+// per-side byte cap so a daemon crash-loop storm cannot fill `<dataRoot>`.
 try {
   crashCollector.pruneRetention({
     maxCount: 20,
     maxAgeDays: 30,
     maxPerSurface: 20,
     protectUnsentYoungerThanDays: 7,
+    maxAggregateBytes: 200 * 1024 * 1024,
   });
 } catch {}
 
