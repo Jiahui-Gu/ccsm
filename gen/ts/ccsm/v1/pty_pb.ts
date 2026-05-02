@@ -4,13 +4,15 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { BootNonce } from "./common_pb";
+import { file_ccsm_v1_common } from "./common_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file ccsm/v1/pty.proto.
  */
 export const file_ccsm_v1_pty: GenFile = /*@__PURE__*/
-  fileDesc("ChFjY3NtL3YxL3B0eS5wcm90bxIHY2NzbS52MSJMCg1QdHlEZXNjcmlwdG9yEhIKCnNlc3Npb25faWQYASABKAkSDAoEY29scxgCIAEoBRIMCgRyb3dzGAMgASgFEgsKA2N3ZBgEIAEoCSIQCg5MaXN0UHR5UmVxdWVzdCI7Cg9MaXN0UHR5UmVzcG9uc2USKAoIc2Vzc2lvbnMYASADKAsyFi5jY3NtLnYxLlB0eURlc2NyaXB0b3IiMgoPU3Bhd25QdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkSCwoDY3dkGAIgASgJIj4KEFNwYXduUHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvciImChBBdHRhY2hQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiPwoRQXR0YWNoUHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvciImChBEZXRhY2hQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiEwoRRGV0YWNoUHR5UmVzcG9uc2UiNwoTU2VuZFB0eUlucHV0UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEgwKBGRhdGEYAiABKAwiFgoUU2VuZFB0eUlucHV0UmVzcG9uc2UiQgoQUmVzaXplUHR5UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEgwKBGNvbHMYAiABKAUSDAoEcm93cxgDIAEoBSITChFSZXNpemVQdHlSZXNwb25zZSIkCg5LaWxsUHR5UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIhEKD0tpbGxQdHlSZXNwb25zZSIjCg1HZXRQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiSwoOR2V0UHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvchINCgVmb3VuZBgCIAEoCCIxChtHZXRQdHlCdWZmZXJTbmFwc2hvdFJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSI7ChxHZXRQdHlCdWZmZXJTbmFwc2hvdFJlc3BvbnNlEg4KBmJ1ZmZlchgBIAEoCRILCgNzZXEYAiABKAMiPQoMUHR5RGF0YUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEZGF0YRgCIAEoDBILCgNzZXEYAyABKAMiRQoMUHR5RXhpdEV2ZW50EhIKCnNlc3Npb25faWQYASABKAkSEQoJZXhpdF9jb2RlGAIgASgFEg4KBnNpZ25hbBgDIAEoCSI8ChRTdHJlYW1QdHlEYXRhUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhAKCGZyb21fc2VxGAIgASgDIj0KFVN0cmVhbVB0eURhdGFSZXNwb25zZRIkCgVjaHVuaxgBIAEoCzIVLmNjc20udjEuUHR5RGF0YUNodW5rIhYKFFN0cmVhbVB0eUV4aXRSZXF1ZXN0Ij0KFVN0cmVhbVB0eUV4aXRSZXNwb25zZRIkCgVldmVudBgBIAEoCzIVLmNjc20udjEuUHR5RXhpdEV2ZW50YgZwcm90bzM");
+  fileDesc("ChFjY3NtL3YxL3B0eS5wcm90bxIHY2NzbS52MSJMCg1QdHlEZXNjcmlwdG9yEhIKCnNlc3Npb25faWQYASABKAkSDAoEY29scxgCIAEoBRIMCgRyb3dzGAMgASgFEgsKA2N3ZBgEIAEoCSIQCg5MaXN0UHR5UmVxdWVzdCI7Cg9MaXN0UHR5UmVzcG9uc2USKAoIc2Vzc2lvbnMYASADKAsyFi5jY3NtLnYxLlB0eURlc2NyaXB0b3IiMgoPU3Bhd25QdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkSCwoDY3dkGAIgASgJIj4KEFNwYXduUHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvciImChBBdHRhY2hQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiPwoRQXR0YWNoUHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvciImChBEZXRhY2hQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiEwoRRGV0YWNoUHR5UmVzcG9uc2UiNwoTU2VuZFB0eUlucHV0UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEgwKBGRhdGEYAiABKAwiFgoUU2VuZFB0eUlucHV0UmVzcG9uc2UiQgoQUmVzaXplUHR5UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEgwKBGNvbHMYAiABKAUSDAoEcm93cxgDIAEoBSITChFSZXNpemVQdHlSZXNwb25zZSIkCg5LaWxsUHR5UmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIhEKD0tpbGxQdHlSZXNwb25zZSIjCg1HZXRQdHlSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiSwoOR2V0UHR5UmVzcG9uc2USKgoKZGVzY3JpcHRvchgBIAEoCzIWLmNjc20udjEuUHR5RGVzY3JpcHRvchINCgVmb3VuZBgCIAEoCCIxChtHZXRQdHlCdWZmZXJTbmFwc2hvdFJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSI7ChxHZXRQdHlCdWZmZXJTbmFwc2hvdFJlc3BvbnNlEg4KBmJ1ZmZlchgBIAEoCRILCgNzZXEYAiABKAMiPQoMUHR5RGF0YUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEZGF0YRgCIAEoDBILCgNzZXEYAyABKAMiRQoMUHR5RXhpdEV2ZW50EhIKCnNlc3Npb25faWQYASABKAkSEQoJZXhpdF9jb2RlGAIgASgFEg4KBnNpZ25hbBgDIAEoCSJrChRTdHJlYW1QdHlEYXRhUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJEhAKCGZyb21fc2VxGAIgASgDEhcKD2Zyb21fYm9vdF9ub25jZRgDIAEoCRIUCgxoZWFydGJlYXRfbXMYBCABKAUirQEKFVN0cmVhbVB0eURhdGFSZXNwb25zZRIkCgVjaHVuaxgBIAEoCzIVLmNjc20udjEuUHR5RGF0YUNodW5rEi0KCWhlYXJ0YmVhdBgCIAEoCzIaLmNjc20udjEuUHR5SGVhcnRiZWF0RXZlbnQSMgoMYm9vdF9jaGFuZ2VkGAMgASgLMhwuY2NzbS52MS5QdHlCb290Q2hhbmdlZEV2ZW50EgsKA2dhcBgEIAEoCCIWChRTdHJlYW1QdHlFeGl0UmVxdWVzdCI9ChVTdHJlYW1QdHlFeGl0UmVzcG9uc2USJAoFZXZlbnQYASABKAsyFS5jY3NtLnYxLlB0eUV4aXRFdmVudCJcChFQdHlIZWFydGJlYXRFdmVudBISCgpzZXNzaW9uX2lkGAEgASgJEg0KBXRzX21zGAIgASgDEhAKCGxhc3Rfc2VxGAMgASgDEhIKCmJvb3Rfbm9uY2UYBCABKAkiVwoTUHR5Qm9vdENoYW5nZWRFdmVudBISCgpzZXNzaW9uX2lkGAEgASgJEhIKCmJvb3Rfbm9uY2UYAiABKAkSGAoQc25hcHNob3RfcGVuZGluZxgDIAEoCCIVChNHZXRCb290Tm9uY2VSZXF1ZXN0Ij4KFEdldEJvb3ROb25jZVJlc3BvbnNlEiYKCmJvb3Rfbm9uY2UYASABKAsyEi5jY3NtLnYxLkJvb3ROb25jZWIGcHJvdG8z", [file_ccsm_v1_common]);
 
 /**
  * @generated from message ccsm.v1.PtyDescriptor
@@ -429,6 +431,30 @@ export type StreamPtyDataRequest = Message<"ccsm.v1.StreamPtyDataRequest"> & {
    * @generated from field: int64 from_seq = 2;
    */
   fromSeq: bigint;
+
+  /**
+   * ADDED (Task #102, frag-3.5.1 §3.5.1.4 fwdcompat-P1-1).
+   * Last `boot_nonce` the client observed on this daemon. Empty / unset =
+   * "client has never observed this daemon" → server treats as fresh
+   * subscribe and ignores `from_seq`. On mismatch, server emits a
+   * `PtyBootChangedEvent` then replays snapshot from seq 0. Wire-equivalent
+   * to the envelope-era `headers["x-ccsm-boot-nonce"]` carriage; the
+   * proto-param form is the canonical one going forward (frag-3.4.1
+   * r9 manager lock — header wins on dual carriage during the v0.3 lift).
+   *
+   * @generated from field: string from_boot_nonce = 3;
+   */
+  fromBootNonce: string;
+
+  /**
+   * ADDED (Task #102, frag-3.5.1 §3.5.1.4 lockin-P1-4 + fwdcompat-P1-2).
+   * Requested server-stream keepalive cadence. Server clamps to
+   * [5_000, 120_000]; default 30_000. Client dead-stream window is
+   * `2 * heartbeat_ms + 5_000` skew. 0 = "use server default".
+   *
+   * @generated from field: int32 heartbeat_ms = 4;
+   */
+  heartbeatMs: number;
 };
 
 /**
@@ -446,6 +472,31 @@ export type StreamPtyDataResponse = Message<"ccsm.v1.StreamPtyDataResponse"> & {
    * @generated from field: ccsm.v1.PtyDataChunk chunk = 1;
    */
   chunk?: PtyDataChunk | undefined;
+
+  /**
+   * ADDED (Task #102). Exactly one of `chunk` / `heartbeat` / `boot_changed`
+   * is populated per response. Modeled as flat optional fields rather than
+   * a `oneof` to keep the change wire-additive (introducing a `oneof`
+   * around an existing field is a `buf breaking` violation).
+   *
+   * @generated from field: ccsm.v1.PtyHeartbeatEvent heartbeat = 2;
+   */
+  heartbeat?: PtyHeartbeatEvent | undefined;
+
+  /**
+   * @generated from field: ccsm.v1.PtyBootChangedEvent boot_changed = 3;
+   */
+  bootChanged?: PtyBootChangedEvent | undefined;
+
+  /**
+   * ADDED (Task #102, frag-3.5.1 §3.5.1.5 acceptance unit). True on the
+   * first chunk after a `from_seq` that fell outside the 256 KiB replay
+   * budget — client renders a `─── stream gap ───` divider analogous to
+   * boot-changed.
+   *
+   * @generated from field: bool gap = 4;
+   */
+  gap: boolean;
 };
 
 /**
@@ -484,4 +535,117 @@ export type StreamPtyExitResponse = Message<"ccsm.v1.StreamPtyExitResponse"> & {
  */
 export const StreamPtyExitResponseSchema: GenMessage<StreamPtyExitResponse> = /*@__PURE__*/
   messageDesc(file_ccsm_v1_pty, 24);
+
+/**
+ * ADDED (Task #102) — server-stream keepalive payload. Cadence is set
+ * per-stream by the request's `heartbeat_ms` (clamped server-side).
+ *
+ * @generated from message ccsm.v1.PtyHeartbeatEvent
+ */
+export type PtyHeartbeatEvent = Message<"ccsm.v1.PtyHeartbeatEvent"> & {
+  /**
+   * @generated from field: string session_id = 1;
+   */
+  sessionId: string;
+
+  /**
+   * @generated from field: int64 ts_ms = 2;
+   */
+  tsMs: bigint;
+
+  /**
+   * Last `seq` the server has emitted on this stream as of the heartbeat.
+   * Lets clients sanity-check `from_seq` after a silent gap.
+   *
+   * @generated from field: int64 last_seq = 3;
+   */
+  lastSeq: bigint;
+
+  /**
+   * Current daemon boot nonce — clients re-observe this on every
+   * heartbeat in case they missed the initial chunk.
+   *
+   * @generated from field: string boot_nonce = 4;
+   */
+  bootNonce: string;
+};
+
+/**
+ * Describes the message ccsm.v1.PtyHeartbeatEvent.
+ * Use `create(PtyHeartbeatEventSchema)` to create a new message.
+ */
+export const PtyHeartbeatEventSchema: GenMessage<PtyHeartbeatEvent> = /*@__PURE__*/
+  messageDesc(file_ccsm_v1_pty, 25);
+
+/**
+ * ADDED (Task #102, frag-3.5.1 §3.5.1.4 fwdcompat-P1-1). Emitted exactly
+ * once when the server detects `from_boot_nonce != current boot_nonce`.
+ * Followed by snapshot replay from seq 0. Client renders the
+ * `─── daemon restarted ───` divider.
+ *
+ * @generated from message ccsm.v1.PtyBootChangedEvent
+ */
+export type PtyBootChangedEvent = Message<"ccsm.v1.PtyBootChangedEvent"> & {
+  /**
+   * @generated from field: string session_id = 1;
+   */
+  sessionId: string;
+
+  /**
+   * @generated from field: string boot_nonce = 2;
+   */
+  bootNonce: string;
+
+  /**
+   * True if the server is about to send the snapshot stream (always true
+   * in v0.3; the field is reserved for v0.5 web clients that may opt out
+   * of automatic replay on boot change).
+   *
+   * @generated from field: bool snapshot_pending = 3;
+   */
+  snapshotPending: boolean;
+};
+
+/**
+ * Describes the message ccsm.v1.PtyBootChangedEvent.
+ * Use `create(PtyBootChangedEventSchema)` to create a new message.
+ */
+export const PtyBootChangedEventSchema: GenMessage<PtyBootChangedEvent> = /*@__PURE__*/
+  messageDesc(file_ccsm_v1_pty, 26);
+
+/**
+ * ADDED (Task #102) — boot-nonce probe. Lets a client (Connect-Node /
+ * Connect-Web / connect-swift) read the current daemon boot nonce
+ * without subscribing to a stream. Mirrors the envelope-era `daemon.hello`
+ * reply field. Cheap unary RPC; clients call on connect + on each
+ * reconnect to populate `from_boot_nonce` for subsequent subscribes.
+ *
+ * @generated from message ccsm.v1.GetBootNonceRequest
+ */
+export type GetBootNonceRequest = Message<"ccsm.v1.GetBootNonceRequest"> & {
+};
+
+/**
+ * Describes the message ccsm.v1.GetBootNonceRequest.
+ * Use `create(GetBootNonceRequestSchema)` to create a new message.
+ */
+export const GetBootNonceRequestSchema: GenMessage<GetBootNonceRequest> = /*@__PURE__*/
+  messageDesc(file_ccsm_v1_pty, 27);
+
+/**
+ * @generated from message ccsm.v1.GetBootNonceResponse
+ */
+export type GetBootNonceResponse = Message<"ccsm.v1.GetBootNonceResponse"> & {
+  /**
+   * @generated from field: ccsm.v1.BootNonce boot_nonce = 1;
+   */
+  bootNonce?: BootNonce | undefined;
+};
+
+/**
+ * Describes the message ccsm.v1.GetBootNonceResponse.
+ * Use `create(GetBootNonceResponseSchema)` to create a new message.
+ */
+export const GetBootNonceResponseSchema: GenMessage<GetBootNonceResponse> = /*@__PURE__*/
+  messageDesc(file_ccsm_v1_pty, 28);
 

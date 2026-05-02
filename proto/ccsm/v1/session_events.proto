@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// session_events.proto — snapshot + delta event payloads for the
+// backend-authoritative session model (final-arch §2.7 + reconciliation
+// §N7 "snapshot + delta + last-writer-wins").
+//
+// Wire shape: a single server-stream `SubscribeSessionEvents` (declared
+// in sessions.proto + bound on CcsmService in service.proto) emits a
+// sequence of `SessionEvent` envelopes. Exactly one inner field is
+// populated per envelope; modeled as flat optional fields rather than a
+// `oneof` to keep future schema evolution wire-additive.
+//
+// Catch-up contract (final-arch §2.7):
+//   1. Client subscribes with `from_seq` + `from_boot_nonce`.
+//   2. Server emits `SessionSnapshotEvent` (single message, full state).
+//   3. Server emits `SessionDeltaEvent` ... for every state mutation
+//      after the snapshot, in `seq` order.
+//   4. Server interleaves `SessionHeartbeatEvent` at `heartbeat_ms`
+//      cadence (same negotiation rule as pty.proto §StreamPtyDataRequest).
+//   5. On daemon restart between subscribes, server emits
+//      `SessionBootChangedEvent` then re-snapshots from seq 0.
+//
+// Replay budget (frag-3.5.1 res-P0-1, generalized): server caps delta
+// replay at the same 256 KiB / N-event budget used by the PTY stream.
+// Past the cap, server emits a fresh `SessionSnapshotEvent` with
+// `gap = true` instead of replaying.
+
+// SessionSnapshot — full state of one session at a point in time.
+// Authoritative on the daemon; clients are pure subscribers.
+message SessionSnapshot {
+  string session_id = 1;
+  // Daemon-assigned monotonic sequence; every state mutation increments
+  // exactly once. Snapshot's `seq` = the seq of the last delta folded in.
+  int64 seq = 2;
+  // Lifecycle state — same vocabulary as the legacy session.proto
+  // `SessionStateEvent.state` field ("idle" | "running" | "exited" | ...).
+  string state = 3;
+  // SDK-derived display title (mirrors session_titles.proto).
+  string title = 4;
+  // Effective cwd (after any `SessionCwdRedirected` events).
+  string cwd = 5;
+  // Original cwd at spawn time (for "redirected from" diagnostics).
+  string spawn_cwd = 6;
+  int64 spawned_at_ms = 7;
+  // Process identity for diagnostics; absent / 0 if not yet spawned.
+  int32 pid = 8;
+  // Optional per-session metadata blob (model name, env labels, ...).
+  // Reserved for v0.5; v0.3 emits empty.
+  bytes metadata = 9;
+}
+
+// SessionSnapshotEvent — emitted as the first event on a fresh
+// subscribe and again any time the server falls back to a snapshot
+// (boot change, replay-budget overflow).
+message SessionSnapshotEvent {
+  SessionSnapshot snapshot = 1;
+  int64 ts_ms = 2;
+  // True when this snapshot is the server's response to a `from_seq`
+  // that fell outside the replay budget. Client renders a
+  // `─── stream gap ───` divider.
+  bool gap = 3;
+}
+
+// SessionDeltaEvent — one state mutation. Exactly one of the inner
+// `*_changed` fields is populated.
+message SessionDeltaEvent {
+  string session_id = 1;
+  int64 seq = 2;
+  int64 ts_ms = 3;
+
+  // Mutation payloads (mutually exclusive — see file header).
+  SessionStateChange state_changed = 10;
+  SessionTitleChange title_changed = 11;
+  SessionCwdChange cwd_changed = 12;
+  SessionPidChange pid_changed = 13;
+  SessionExited exited = 14;
+}
+
+message SessionStateChange {
+  string state = 1;
+}
+
+message SessionTitleChange {
+  string title = 1;
+}
+
+message SessionCwdChange {
+  string from_cwd = 1;
+  string to_cwd = 2;
+}
+
+message SessionPidChange {
+  int32 pid = 1;
+}
+
+message SessionExited {
+  int32 exit_code = 1;
+  string signal = 2;
+}
+
+// SessionHeartbeatEvent — server-stream keepalive (same contract as
+// PtyHeartbeatEvent in pty.proto). Lets clients detect dead streams
+// when no real session activity has occurred for `heartbeat_ms`.
+message SessionHeartbeatEvent {
+  string session_id = 1;
+  int64 ts_ms = 2;
+  int64 last_seq = 3;
+  string boot_nonce = 4;
+}
+
+// SessionBootChangedEvent — emitted when the server detects
+// `from_boot_nonce != current boot_nonce`. Followed by a fresh
+// SessionSnapshotEvent from seq 0 (frag-3.5.1 §3.5.1.4 fwdcompat-P1-1).
+message SessionBootChangedEvent {
+  string session_id = 1;
+  string boot_nonce = 2;
+  bool snapshot_pending = 3;
+}
+
+// SessionEvent — top-level envelope on the SubscribeSessionEvents
+// server-stream. Exactly one inner field is populated.
+message SessionEvent {
+  SessionSnapshotEvent snapshot = 1;
+  SessionDeltaEvent delta = 2;
+  SessionHeartbeatEvent heartbeat = 3;
+  SessionBootChangedEvent boot_changed = 4;
+}

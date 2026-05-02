@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+// common.proto — shared value types referenced by multiple domains.
+//
+// Spec sources:
+//   - frag-6-7 §6.5  : `bootNonce` is a ULID (NOT `Date.now()`); two crashes
+//                      within 1 ms still produce distinct ids (r2-obs OPEN-4).
+//   - frag-3.4.1 §3.4.1.b + frag-3.5.1 §3.5.1.4 : `bootNonce` carriage on
+//                      stream subscribe RPCs (camelCase JSON; proto field
+//                      `boot_nonce` serializes to `bootNonce` by default).
+//   - 2026-05-02-final-architecture.md §1 + 2026-05-02-v0.3-reconciliation.md
+//                      §2 (single dataRoot per machine).
+//
+// Fields use snake_case in proto (per buf STANDARD lint); the wire / JSON
+// form is camelCase (`bootNonce`, `dataRoot`) which matches the canonical
+// camelCase lock from r3-fwdcompat CF-2.
+
+// BootNonce — daemon boot identifier (ULID per frag-6-7 §6.5).
+//
+// Clients capture this from `Hello` reply (or `/healthz` on the supervisor
+// control plane) and echo it back as `from_boot_nonce` on stream subscribe
+// to detect daemon restarts. Mismatch ⇒ daemon ignores `from_seq` and sends
+// a fresh snapshot (frag-3.5.1 §3.5.1.4 boot-nonce-on-subscribe rule).
+message BootNonce {
+  // ULID string (Crockford base32, 26 chars). Empty string is reserved for
+  // "client has never observed a daemon yet" — the daemon will never emit
+  // an empty value.
+  string value = 1;
+}
+
+// DataRoot — single per-machine on-disk root (e.g. `~/.ccsm`).
+// Pinned by the v0.3 reconciliation §2 single-source-of-truth rule.
+message DataRoot {
+  // Absolute path. Daemon owns lifetime; clients are read-only consumers
+  // and use this for diagnostics / "open log dir" affordances.
+  string path = 1;
+}
