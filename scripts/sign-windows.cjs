@@ -110,6 +110,38 @@ function runSign({ certPath, certPassword, timestampUrl, file, spawnImpl }) {
   return result;
 }
 
+// Post-sign verification (Task #116). `signtool verify /pa <file>` runs
+// the standard Authenticode verification policy (the same one Defender
+// + SmartScreen apply at runtime). Fails the build on any unsigned /
+// invalid PE — load-bearing safety net for the daemon binary which is
+// the focus of Task #116. /q quiets success output.
+function buildVerifyArgs({ file }) {
+  if (!file) throw new Error('buildVerifyArgs: file required');
+  return ['verify', '/pa', '/q', file];
+}
+
+function runVerify({ file, spawnImpl }) {
+  const spawn = spawnImpl || childProcess.spawnSync;
+  const argv = buildVerifyArgs({ file });
+  const result = spawn('signtool.exe', argv, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  if (result.error) {
+    throw new Error(
+      `signtool verify spawn failed for ${file}: ${result.error.message}`,
+    );
+  }
+  if (result.status !== 0) {
+    const stderr = (result.stderr && result.stderr.toString()) || '';
+    const stdout = (result.stdout && result.stdout.toString()) || '';
+    throw new Error(
+      `signtool verify exited ${result.status} for ${file}\nstdout: ${stdout}\nstderr: ${stderr}`,
+    );
+  }
+  return result;
+}
+
 async function signWindowsHook(context) {
   // electron-builder afterSign context shape: { appOutDir, packager, ... }.
   // On non-Windows targets this hook is a no-op.
@@ -162,6 +194,18 @@ async function signWindowsHook(context) {
     runSign({ certPath, certPassword, timestampUrl, file });
     console.log(`[sign-windows] OK ${file}`);
   }
+
+  // Task #116 — post-sign verification pass. Runs `signtool verify /pa`
+  // on every signed artifact; fails the build on any invalid signature.
+  // Load-bearing for the daemon binary (`daemon\ccsm-daemon.exe`) which
+  // before Task #116 was already collected by extension but never
+  // verified — a corrupt timestamp server response or expired cert chain
+  // would otherwise ship a "signed but invalid" installer.
+  console.log(`[sign-windows] verifying ${targets.length} target(s) (signtool verify /pa)`);
+  for (const file of targets) {
+    runVerify({ file });
+    console.log(`[sign-windows] verify OK ${file}`);
+  }
 }
 
 module.exports = signWindowsHook;
@@ -169,4 +213,6 @@ module.exports.default = signWindowsHook;
 module.exports.buildSignArgs = buildSignArgs;
 module.exports.collectTargets = collectTargets;
 module.exports.runSign = runSign;
+module.exports.buildVerifyArgs = buildVerifyArgs;
+module.exports.runVerify = runVerify;
 module.exports.DEFAULT_TIMESTAMP_URL = DEFAULT_TIMESTAMP_URL;

@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const signMod = require('../scripts/sign-windows.cjs');
 const signWindowsHook = signMod.default || signMod;
-const { buildSignArgs, collectTargets, runSign, DEFAULT_TIMESTAMP_URL } = signMod;
+const { buildSignArgs, collectTargets, runSign, buildVerifyArgs, runVerify, DEFAULT_TIMESTAMP_URL } = signMod;
 
 function withTmp(): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'ccsm-sign-test-'));
@@ -186,6 +186,52 @@ describe('sign-windows.cjs', () => {
       await expect(
         signWindowsHook({ electronPlatformName: 'win32', appOutDir: tmpdir() }),
       ).rejects.toThrow(/CCSM_WIN_REQUIRE_SIGN=1.*not set/);
+    });
+  });
+
+  // Task #116 — post-sign verification pass via `signtool verify /pa`.
+  describe('buildVerifyArgs / runVerify (Task #116)', () => {
+    it('builds Authenticode policy verify argv', () => {
+      expect(buildVerifyArgs({ file: 'C:\\out\\daemon.exe' })).toEqual([
+        'verify', '/pa', '/q', 'C:\\out\\daemon.exe',
+      ]);
+    });
+
+    it('throws on missing file', () => {
+      expect(() => buildVerifyArgs({} as any)).toThrow(/file/);
+    });
+
+    it('runVerify resolves on status 0', () => {
+      const spawnImpl = vi.fn().mockReturnValue({
+        status: 0,
+        stdout: Buffer.from('Successfully verified'),
+        stderr: Buffer.from(''),
+      });
+      runVerify({ file: 'a.exe', spawnImpl });
+      const [bin, argv] = spawnImpl.mock.calls[0];
+      expect(bin).toBe('signtool.exe');
+      expect(argv).toEqual(['verify', '/pa', '/q', 'a.exe']);
+    });
+
+    it('runVerify throws with stderr on non-zero exit', () => {
+      const spawnImpl = vi.fn().mockReturnValue({
+        status: 1,
+        stdout: Buffer.from('out'),
+        stderr: Buffer.from('SignerVerify() failed: 0x80092009'),
+      });
+      expect(() => runVerify({ file: 'bad.exe', spawnImpl })).toThrow(
+        /verify exited 1.*0x80092009/s,
+      );
+    });
+
+    it('runVerify wraps spawn errors with file context', () => {
+      const spawnImpl = vi.fn().mockReturnValue({
+        status: null,
+        error: new Error('ENOENT'),
+      });
+      expect(() => runVerify({ file: 'a.exe', spawnImpl })).toThrow(
+        /verify spawn failed for a\.exe.*ENOENT/,
+      );
     });
   });
 });
