@@ -25,11 +25,6 @@ export default defineConfig({
     ],
     globals: true,
     setupFiles: ['tests/setup.ts'],
-    // Task #164 diagnostic — dumps lingering async handles 5s after
-    // vitest finishes so we can capture a stack trace per retained
-    // resource in CI logs when the test step hangs on Linux/macOS.
-    // Remove once root cause is identified.
-    globalTeardown: ['tests/global-teardown.mts'],
     // v8 coverage instrumentation roughly doubles test wall-clock under
     // jsdom, so the default 5s testTimeout starts to flake on slower
     // suites (e.g. shortcut-overlay-platform with multiple act/render
