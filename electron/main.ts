@@ -35,7 +35,9 @@ import { createTray, type TrayController } from './tray/createTray';
 import { startCrashCollector } from './crash/collector';
 import { resolveCrashRoot } from './crash/incident-dir';
 import { wireCrashHandlers } from './main-crash-wiring';
-import { bootDaemon } from './daemon/bootDaemon';
+import { bootDaemon, resolveControlSocketPath } from './daemon/bootDaemon';
+import { createControlClient, type ControlClient } from './daemonClient/controlClient';
+import { setUpgradeShutdownRpc } from './updater';
 
 // Phase 1 crash observability (spec §5.1, plan Task 2):
 //   * crashReporter.start with empty submitURL + uploadToServer:false enables
@@ -151,6 +153,12 @@ acquireSingleInstanceLock();
 // (selectSession etc.). Main mirrors it so the notify bridge can suppress
 // toasts for the session the user is already looking at without a
 // synchronous round-trip to read renderer state.
+// Task #27 / B7b — control-socket RPC client. Constructed in `app.whenReady`
+// after `bootDaemon` and closed on `before-quit` so the underlying socket
+// releases cleanly. Module-scope so the `app.on('will-quit')` hook below
+// can reach it without threading another bag.
+let controlClient: ControlClient | null = null;
+
 let activeSidFromRenderer: string | null = null;
 
 // Same pattern as activeSidFromRenderer: the renderer pushes its session-name
@@ -249,6 +257,28 @@ app.whenReady().then(() => {
   void bootDaemon({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
+  });
+
+  // Task #27 / B7b — wire the Electron-side socket-RPC client into the
+  // existing `setUpgradeShutdownRpc` injection seam (frag-11 §11.6.5 step 3).
+  // The client lazy-connects on first call, so constructing it here is cheap
+  // even when the daemon isn't bound yet (`bootDaemon` runs fire-and-forget
+  // above; the daemon may still be spawning when we reach this line). The
+  // updater path is the only v0.3 caller; future supervisor RPCs (healthz,
+  // shutdown, hello) plug into this same client.
+  controlClient = createControlClient({
+    socketPath: resolveControlSocketPath(process.platform, process.env),
+  });
+  setUpgradeShutdownRpc(controlClient.callShutdownForUpgrade);
+
+  // Close the control socket cleanly on quit so the daemon doesn't see a
+  // half-closed peer pile up across user-driven Electron quits. before-quit
+  // is emitted before window-all-closed → app.quit() in
+  // `electron/lifecycle/appLifecycle.ts`, so this fires once per real quit.
+  app.on('before-quit', () => {
+    try { controlClient?.rpc.close(); } catch { /* best-effort */ }
+    setUpgradeShutdownRpc(null);
+    controlClient = null;
   });
 
   // ─────────────────────────── IPC registration ──────────────────────────
