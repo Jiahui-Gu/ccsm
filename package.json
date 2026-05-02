@@ -48,7 +48,8 @@
     "build:ccsm-native": "node scripts/build-ccsm-native.cjs",
     "build:uninstall-helper": "cd installer/uninstall-helper && pkg . --target node22-win-x64 --output ../../daemon/dist/ccsm-uninstall-helper.exe --compress GZip",
     "postinstall": "node scripts/postinstall.mjs",
-    "proto:gen": "cd proto && buf generate"
+    "proto:gen": "cd proto && buf generate",
+    "setup": "node scripts/setup.cjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
