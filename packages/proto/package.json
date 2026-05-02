@@ -1,0 +1,6 @@
+{
+  "name": "@ccsm/proto",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CCSM proto definitions and generated Connect-RPC code. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11."
+}

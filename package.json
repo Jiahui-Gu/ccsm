@@ -14,7 +14,12 @@
     "url": "https://github.com/Jiahui-Gu/ccsm.git"
   },
   "main": "dist/electron/main.js",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
+    "ws:install": "pnpm install",
+    "ws:build": "pnpm -r run build",
+    "ws:test": "pnpm -r run test",
+    "ws:lint": "pnpm -r run lint",
     "dev": "concurrently -k -n web,app -c blue,magenta \"npm:dev:web\" \"npm:dev:app\"",
     "dev:web": "webpack serve --config webpack.config.js --mode development",
     "dev:app": "wait-on http://localhost:4100 && tsc -p tsconfig.electron.json && electron .",
