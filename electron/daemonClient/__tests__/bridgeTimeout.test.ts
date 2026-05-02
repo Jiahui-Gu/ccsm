@@ -1,5 +1,15 @@
 // Tests for the bridge timeout primitives (Task #103).
 //
+// @vitest-environment node
+//
+// Force the Node environment for this file. Task #175 migrated the default
+// vitest environment from jsdom to happy-dom; happy-dom installs its own
+// AbortController/AbortSignal whose `.any()` polyfill does not interop with
+// Node-native AbortSignal instances. This file exercises Node's native
+// AbortSignal.any (added in Node 20.3) directly, so we opt out of the DOM
+// shim entirely. The code under test (`bridgeTimeout.ts`) runs in the
+// Electron main process where there is no DOM anyway.
+//
 // Covers:
 //   - BridgeTimeoutError shape (code/method/timeoutMs/traceId).
 //   - anyAbortSignal merge semantics on Node 20.3+ AND on the polyfill
