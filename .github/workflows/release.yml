@@ -150,6 +150,155 @@ jobs:
       - name: Verify daemon binary integrity
         run: node scripts/verify-staged-daemon.cjs
 
+      # Task #130 — frag-11 §11.3: sign the standalone daemon binary
+      # BEFORE electron-builder consumes it. The same scripts/sign-windows.cjs
+      # and scripts/sign-macos.cjs (PR #116) also re-run via package.json's
+      # `afterSign` hook on the EB output to cover the .exe / .app inner
+      # nested binaries; this pre-pack pass guarantees the standalone
+      # daemon binary that ships under `extraResources` is itself signed
+      # and verified, so the daemon-only update channel (frag-11 §11.5(7))
+      # gets a Gatekeeper / SmartScreen-clean artifact.
+      #
+      # Placeholder-safe: if the platform's signing secrets are not
+      # configured (steps.secrets.outputs.signed != 'true') we skip with
+      # a warning so PR / fork builds keep producing artifacts unsigned
+      # (frag-11 §11.5(5)). When secrets ARE configured, any sign /
+      # verify / notarize failure fails the job (fail-fast).
+      - name: Materialize Windows signing cert from CSC_LINK
+        if: matrix.platform == 'win' && steps.secrets.outputs.signed == 'true'
+        id: wincert
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "::error title=Daemon signing wiring::CSC_LINK secret missing — daemon will not be signed for v0.3 ship (DAEMON_SIGNING_CERT_PFX equivalent)."
+            exit 1
+          fi
+          CERT_PATH="${RUNNER_TEMP}/ccsm-codesign.pfx"
+          # CSC_LINK is base64-encoded .pfx (electron-builder convention).
+          printf '%s' "$CSC_LINK" | base64 -d > "$CERT_PATH"
+          if [ ! -s "$CERT_PATH" ]; then
+            echo "::error title=Daemon signing wiring::Decoded CSC_LINK is empty — bad base64 payload."
+            exit 1
+          fi
+          echo "cert_path=$CERT_PATH" >> "$GITHUB_OUTPUT"
+          echo "[wincert] materialized $(wc -c < "$CERT_PATH") byte cert at $CERT_PATH"
+
+      # Sign the standalone daemon .exe via signtool (sign-windows.cjs's
+      # buildSignArgs shape, kept inline here because the script itself is
+      # an electron-builder afterSign hook and walks $appOutDir — not a
+      # CLI). signtool sign + signtool verify /pa /v are the exact pair
+      # called out in frag-11 §11.3.1. Verify exit code MUST be 0; any
+      # nonzero (Authenticode policy fail) fails the job.
+      - name: Sign + verify daemon binary (Windows, signtool /pa /v)
+        if: matrix.platform == 'win' && steps.secrets.outputs.signed == 'true'
+        shell: pwsh
+        env:
+          CCSM_WIN_CERT_PATH: ${{ steps.wincert.outputs.cert_path }}
+          CCSM_WIN_CERT_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = $env:RUNNER_ARCH.ToLower()
+          if ($arch -eq 'x64')   { $arch = 'x64' }
+          elseif ($arch -eq 'arm64') { $arch = 'arm64' }
+          else { Write-Error "[sign-daemon-win] unsupported RUNNER_ARCH=$env:RUNNER_ARCH"; exit 1 }
+          $bin = "daemon/dist/ccsm-daemon-win-$arch.exe"
+          if (-not (Test-Path $bin)) {
+            Write-Error "[sign-daemon-win] daemon binary not found at $bin"
+            exit 1
+          }
+          if (-not $env:CCSM_WIN_CERT_PATH) {
+            Write-Error "::error title=Daemon signing wiring::CCSM_WIN_CERT_PATH missing — daemon will not be signed for v0.3 ship"
+            exit 1
+          }
+          # Locate signtool (Windows runner ships it under the Windows SDK).
+          $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue)?.Source
+          if (-not $signtool) {
+            $candidates = Get-ChildItem -Path 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+              Sort-Object FullName -Descending
+            if ($candidates.Count -gt 0) { $signtool = $candidates[0].FullName }
+          }
+          if (-not $signtool) { Write-Error '[sign-daemon-win] signtool.exe not found'; exit 1 }
+          Write-Host "[sign-daemon-win] using $signtool"
+          $ts = if ($env:CCSM_WIN_TIMESTAMP_URL) { $env:CCSM_WIN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }
+          $signArgs = @('sign', '/f', $env:CCSM_WIN_CERT_PATH, '/p', $env:CCSM_WIN_CERT_PASSWORD,
+                       '/tr', $ts, '/td', 'sha256', '/fd', 'sha256', $bin)
+          & $signtool @signArgs
+          if ($LASTEXITCODE -ne 0) { Write-Error "[sign-daemon-win] signtool sign exited $LASTEXITCODE"; exit $LASTEXITCODE }
+          # frag-11 §11.3 verify pass — `signtool verify /pa /v` exits 0
+          # iff the file passes Authenticode default policy.
+          $verifyArgs = @('verify', '/pa', '/v', $bin)
+          & $signtool @verifyArgs
+          if ($LASTEXITCODE -ne 0) { Write-Error "[sign-daemon-win] signtool verify /pa /v exited $LASTEXITCODE"; exit $LASTEXITCODE }
+          Write-Host "[sign-daemon-win] OK signed + verified $bin"
+
+      - name: Sign + verify daemon binary (macOS, codesign --verify --strict)
+        if: matrix.platform == 'mac' && steps.secrets.outputs.signed == 'true'
+        shell: bash
+        env:
+          CCSM_MAC_IDENTITY: ${{ secrets.CCSM_MAC_IDENTITY }}
+          CCSM_MAC_ENTITLEMENTS: ${{ secrets.CCSM_MAC_ENTITLEMENTS }}
+        run: |
+          set -euo pipefail
+          ARCH=$(node -p "process.arch")
+          BIN="daemon/dist/ccsm-daemon-macos-${ARCH}"
+          if [ ! -f "$BIN" ]; then
+            echo "::error title=Daemon signing wiring::daemon binary not found at $BIN"
+            exit 1
+          fi
+          if [ -z "${CCSM_MAC_IDENTITY:-}" ]; then
+            echo "::error title=Daemon signing wiring::CCSM_MAC_IDENTITY missing — daemon will not be signed for v0.3 ship. Set the CCSM_MAC_IDENTITY secret to the codesign identity (e.g. 'Developer ID Application: Acme (TEAMID)')."
+            exit 1
+          fi
+          ENTITLEMENTS="${CCSM_MAC_ENTITLEMENTS:-build/entitlements.mac.plist}"
+          if [ ! -f "$ENTITLEMENTS" ]; then
+            echo "::warning title=Daemon signing entitlements::entitlements file missing at $ENTITLEMENTS — codesigning daemon without --entitlements"
+            ENT_ARGS=()
+          else
+            ENT_ARGS=(--entitlements "$ENTITLEMENTS")
+          fi
+          echo "[sign-daemon-mac] codesign $BIN with identity '$CCSM_MAC_IDENTITY'"
+          codesign --force --sign "$CCSM_MAC_IDENTITY" --timestamp --options runtime "${ENT_ARGS[@]}" "$BIN"
+          # frag-11 §11.3 verify pass — codesign --verify --strict catches
+          # any unsigned / corrupt regression on the standalone daemon.
+          codesign --verify --strict --verbose=2 "$BIN"
+          echo "[sign-daemon-mac] OK signed + verified $BIN"
+
+      # frag-11 §11.3.2 — standalone daemon notarytool submission. Apple
+      # requires every Mach-O distributed outside a notarized .app bundle
+      # to itself be notarized for Gatekeeper to pass on first launch
+      # (the daemon-only update channel ships the bare binary). Submit
+      # the freshly-signed daemon as a .zip, wait for Apple, and staple
+      # nothing (binaries can't be stapled — runtime online check). Apple
+      # SLA on `notarytool submit --wait` is typically ~2-15 minutes.
+      - name: Notarize standalone daemon (macOS, notarytool submit --wait)
+        if: matrix.platform == 'mac' && steps.secrets.outputs.signed == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_ID_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "::error title=Daemon notarize wiring::APPLE_ID / APPLE_ID_PASSWORD / APPLE_TEAM_ID missing — standalone daemon will not be notarized for v0.3 ship (frag-11 §11.3.2)."
+            exit 1
+          fi
+          ARCH=$(node -p "process.arch")
+          BIN="daemon/dist/ccsm-daemon-macos-${ARCH}"
+          ZIP="${RUNNER_TEMP}/ccsm-daemon-macos-${ARCH}.zip"
+          /usr/bin/ditto -c -k --keepParent "$BIN" "$ZIP"
+          echo "[notarize-daemon] submitting $ZIP via xcrun notarytool (wait, ~2-15 min)"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          echo "[notarize-daemon] OK notarized $BIN"
+
       # electron-builder invocation per OS. `--publish never` because we
       # upload via softprops/action-gh-release below — that gives us a
       # single source of release metadata and keeps `publish: github` in
@@ -173,6 +322,11 @@ jobs:
           # Skip notarization if Apple creds missing — electron-builder
           # reads these env vars and falls back to unsigned when empty.
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ steps.secrets.outputs.signed == 'true' && 'true' || 'false' }}
+          # Task #130 — feed PR #116's afterSign hook (sign-macos.cjs) so
+          # nested Mach-O / .node / daemon-inside-bundle copies get signed
+          # + verified (codesign --verify --strict + --deep --strict).
+          CCSM_MAC_IDENTITY: ${{ secrets.CCSM_MAC_IDENTITY }}
+          CCSM_MAC_ENTITLEMENTS: ${{ secrets.CCSM_MAC_ENTITLEMENTS }}
 
       - name: Warn on unsigned Windows build
         if: matrix.platform == 'win' && steps.secrets.outputs.signed != 'true'
@@ -187,6 +341,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Task #130 — feed PR #116's afterSign hook (sign-windows.cjs) so
+          # every .exe / .dll inside the NSIS payload (incl. nested daemon
+          # copy) is signed via signtool and verified via signtool verify /pa.
+          CCSM_WIN_CERT_PATH: ${{ steps.wincert.outputs.cert_path }}
+          CCSM_WIN_CERT_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
       # Phase 3 crash observability (spec §5.4 / §6, plan Task 10).
       # Symbol upload to the per-surface Sentry projects. The
