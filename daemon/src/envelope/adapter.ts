@@ -54,6 +54,13 @@ import type { Duplex } from 'node:stream';
 
 import { decodeFrame, encodeFrame, EnvelopeError, ENVELOPE_LIMITS } from './envelope.js';
 import type { Dispatcher, DispatchContext } from '../dispatcher.js';
+import {
+  buildReplyHeaders,
+  dispatchWithInterceptors,
+  type ChainConnectionState,
+  type ChainWiring,
+} from './interceptor-chain.js';
+import { createHelloState } from './hello-interceptor.js';
 
 // ---------------------------------------------------------------------------
 // Inbound header shape (minimum routing fields — §3.4.1.c subset)
@@ -94,9 +101,19 @@ function isWellFormedHeader(v: unknown): v is InboundHeader {
 // Reply envelope helpers
 // ---------------------------------------------------------------------------
 
-/** Build a `{ id, ok: true, value }` reply. Pure-JSON header, empty trailer. */
-function encodeOkReply(id: number, value: unknown, ackSource: 'handler' | 'dispatcher'): Buffer {
-  const header = {
+/** Build a `{ id, ok: true, value }` reply. Pure-JSON header, empty trailer.
+ *
+ *  When `headers` is supplied (#153 N13-fix), the reserved-header block is
+ *  spliced into the reply envelope so the client can read the
+ *  `x-ccsm-daemon-trace-id` join id. Empty `headers` is omitted to keep
+ *  legacy reply bytes identical for callers that don't care. */
+function encodeOkReply(
+  id: number,
+  value: unknown,
+  ackSource: 'handler' | 'dispatcher',
+  headers?: Record<string, string>,
+): Buffer {
+  const header: Record<string, unknown> = {
     id,
     ok: true as const,
     value,
@@ -104,6 +121,9 @@ function encodeOkReply(id: number, value: unknown, ackSource: 'handler' | 'dispa
     payloadType: 'json' as const,
     payloadLen: 0,
   };
+  if (headers && Object.keys(headers).length > 0) {
+    header['headers'] = headers;
+  }
   return encodeFrame({
     headerJson: Buffer.from(JSON.stringify(header), 'utf8'),
   });
@@ -115,18 +135,22 @@ function encodeErrorReply(
   code: string,
   message: string,
   extras?: Record<string, unknown>,
+  headers?: Record<string, string>,
 ): Buffer {
   const error: Record<string, unknown> = { code, message };
   if (extras) {
     for (const [k, v] of Object.entries(extras)) error[k] = v;
   }
-  const header = {
+  const header: Record<string, unknown> = {
     id,
     ok: false as const,
     error,
     payloadType: 'json' as const,
     payloadLen: 0,
   };
+  if (headers && Object.keys(headers).length > 0) {
+    header['headers'] = headers;
+  }
   return encodeFrame({
     headerJson: Buffer.from(JSON.stringify(header), 'utf8'),
   });
@@ -163,6 +187,20 @@ export interface MountEnvelopeAdapterOptions {
   /** Optional forensic peer label (e.g. `'control-socket'` / `'data-socket'`)
    *  for log correlation. */
   readonly peer?: string;
+  /**
+   * Interceptor-chain wiring (#153 N13-fix). Optional: when omitted, the
+   * adapter constructs a minimal chain that still mints `daemonTraceId` and
+   * echoes it on the reply, but skips hello / deadline / migrationGate /
+   * metrics. This preserves backward compatibility with existing callers
+   * that pass only `{ socket, dispatcher }` while making the dual-id
+   * correlation property unconditional.
+   *
+   * Pass `chainWiring: { ...wiring }` (without `dispatcher`, which the
+   * adapter splices in from `opts.dispatcher`) to engage the full pipeline.
+   * Per-connection state (`helloState`) is constructed by the adapter at
+   * mount time; callers do NOT manage it directly.
+   */
+  readonly chainWiring?: Omit<ChainWiring, 'dispatcher'>;
 }
 
 /**
@@ -187,6 +225,17 @@ export interface MountEnvelopeAdapterOptions {
 export function mountEnvelopeAdapter(opts: MountEnvelopeAdapterOptions): void {
   const { socket, dispatcher, peerPid, peer } = opts;
   const logger = opts.logger ?? defaultLogger();
+
+  // Per-connection interceptor-chain state (#153 N13-fix). Always constructed
+  // so the chain has somewhere to mutate; when the caller did not supply a
+  // helloConfig the hello slot is a no-op pass-through and this state stays
+  // unused. Constructing it unconditionally avoids a branch in the hot path.
+  const chainState: ChainConnectionState = { helloState: createHelloState() };
+  // Splice the dispatcher into the wiring (caller passes it via `opts.dispatcher`,
+  // not via `chainWiring`, so the two surfaces stay decoupled).
+  const chainWiring: ChainWiring | undefined = opts.chainWiring
+    ? { ...opts.chainWiring, dispatcher }
+    : undefined;
 
   // Per-connection buffer accumulator. We use Buffer.concat over a small array
   // so a slow trickle of 1-byte writes does not become quadratic; for v0.3
@@ -319,6 +368,51 @@ export function mountEnvelopeAdapter(opts: MountEnvelopeAdapterOptions): void {
       const id = headerObj.id;
       const method = headerObj.method;
 
+      // ---- Chain path (#153 N13-fix) ----
+      // When the caller wired a chain, route every envelope through the
+      // 5-interceptor pipeline (hello → trace → deadline → migrationGate →
+      // dispatcher → metrics). The chain itself NEVER throws and always
+      // surfaces a daemonTraceId for the reply trailer. socketFatal codes
+      // (`hello_required`, `hello_replay`, etc.) trigger destroy-after-write
+      // per spec §3.4.1.g.
+      if (chainWiring) {
+        const headersForChain: Record<string, string | number> = {};
+        const rawHeaders = (headerObj as { headers?: unknown }).headers;
+        if (rawHeaders && typeof rawHeaders === 'object') {
+          for (const [k, v] of Object.entries(rawHeaders as Record<string, unknown>)) {
+            if (typeof v === 'string' || typeof v === 'number') {
+              headersForChain[k.toLowerCase()] = v;
+            }
+          }
+        }
+        void dispatchWithInterceptors(
+          {
+            id,
+            method,
+            traceId: headerObj.traceId,
+            headers: headersForChain,
+            payload: requestValue,
+          },
+          chainState,
+          chainWiring,
+        ).then((reply) => {
+          if (destroyed) return;
+          const replyHeaders = buildReplyHeaders(reply);
+          if (reply.kind === 'ok') {
+            tryWrite(encodeOkReply(reply.id, reply.value, reply.ackSource, replyHeaders));
+          } else {
+            tryWrite(
+              encodeErrorReply(reply.id, reply.code, reply.message, reply.extras, replyHeaders),
+            );
+            if (reply.socketFatal) {
+              destroy(reply.code, { method });
+            }
+          }
+        });
+        continue;
+      }
+
+      // ---- Legacy direct-dispatch path (no chain wired) ----
       // Fire-and-forget — handlers may take time. Per spec §3.4.1.b unary
       // frames may interleave between sub-chunks, so per-connection FIFO is
       // NOT required for correctness. Dispatch async and let promises race.

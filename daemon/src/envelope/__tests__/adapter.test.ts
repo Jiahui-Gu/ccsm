@@ -350,3 +350,79 @@ describe('mountEnvelopeAdapter — handler exceptions', () => {
     expect(destroyed()).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 7. chainWiring path (#153 N13-fix) — daemonTraceId echoed in reply trailer.
+// ---------------------------------------------------------------------------
+
+describe('mountEnvelopeAdapter — chainWiring path (#153)', () => {
+  it('routes through dispatchWithInterceptors and echoes daemonTraceId in the reply', async () => {
+    const { socket, feed, outbound } = makeFakeSocket();
+    const { dispatcher } = makeStubDispatcher(okResult);
+    const traceLog: { traceId: string; daemonTraceId: string }[] = [];
+
+    mountEnvelopeAdapter({
+      socket,
+      dispatcher,
+      logger: silentLogger,
+      chainWiring: {
+        traceLogSink: (r) => traceLog.push({ traceId: r.traceId, daemonTraceId: r.daemonTraceId }),
+        mintDaemonTraceId: () => 'daemon-id-FROM-CHAIN',
+      },
+    });
+
+    feed(buildJsonFrame({
+      id: 33,
+      method: 'ccsm.v1/healthz',
+      payloadType: 'json',
+      payloadLen: 0,
+      traceId: 'client-supplied-id',
+    }));
+    await new Promise((r) => setImmediate(r));
+
+    expect(outbound.length).toBe(1);
+    const reply = decodeJsonHeader(outbound[0]!);
+    expect(reply.id).toBe(33);
+    expect(reply.ok).toBe(true);
+    // Reserved-header block carries the daemon-side join id.
+    expect((reply.headers as Record<string, string>)['x-ccsm-daemon-trace-id']).toBe(
+      'daemon-id-FROM-CHAIN',
+    );
+    // Trace sink saw both ids on the same line — the join property holds.
+    expect(traceLog).toHaveLength(1);
+    expect(traceLog[0]?.traceId).toBe('client-supplied-id');
+    expect(traceLog[0]?.daemonTraceId).toBe('daemon-id-FROM-CHAIN');
+  });
+
+  it('chain-rejected reply still carries the daemonTraceId trailer', async () => {
+    const { socket, feed, outbound } = makeFakeSocket();
+    const { dispatcher } = makeStubDispatcher(okResult);
+
+    mountEnvelopeAdapter({
+      socket,
+      dispatcher,
+      logger: silentLogger,
+      chainWiring: {
+        // Migration pending forces MIGRATION_PENDING for non-allowlisted methods.
+        isMigrationPending: () => true,
+        mintDaemonTraceId: () => 'daemon-id-REJECTED',
+      },
+    });
+
+    feed(buildJsonFrame({
+      id: 44,
+      method: 'ccsm.v1/session.list',
+      payloadType: 'json',
+      payloadLen: 0,
+    }));
+    await new Promise((r) => setImmediate(r));
+
+    expect(outbound.length).toBe(1);
+    const reply = decodeJsonHeader(outbound[0]!);
+    expect(reply.ok).toBe(false);
+    expect((reply.error as { code: string }).code).toBe('MIGRATION_PENDING');
+    expect((reply.headers as Record<string, string>)['x-ccsm-daemon-trace-id']).toBe(
+      'daemon-id-REJECTED',
+    );
+  });
+});

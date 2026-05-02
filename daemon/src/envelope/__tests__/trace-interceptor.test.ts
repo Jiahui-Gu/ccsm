@@ -63,56 +63,81 @@ describe('resolveTraceId', () => {
 
 describe('startTrace + formatCompletionLog', () => {
   it('records start time from the injected clock', () => {
-    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 1000);
-    expect(span).toEqual({ method: 'ccsm.v1/healthz', traceId: 'trace-a', startedMs: 1000 });
+    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 1000, () => 'daemon-id-1');
+    expect(span).toEqual({
+      method: 'ccsm.v1/healthz',
+      traceId: 'trace-a',
+      daemonTraceId: 'daemon-id-1',
+      startedMs: 1000,
+    });
+  });
+
+  it('mints a daemon-side join id distinct from traceId (#153 N13-fix)', () => {
+    const span = startTrace('ccsm.v1/healthz', 'caller-trace', () => 0, () => 'daemon-side-id');
+    expect(span.traceId).toBe('caller-trace');
+    expect(span.daemonTraceId).toBe('daemon-side-id');
+    expect(span.daemonTraceId).not.toBe(span.traceId);
+  });
+
+  it('default daemon minter produces a fresh hex id per call', () => {
+    const a = startTrace('m', 't', () => 0);
+    const b = startTrace('m', 't', () => 0);
+    expect(a.daemonTraceId).not.toBe(b.daemonTraceId);
+    expect(a.daemonTraceId).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it('computes durationMs from start to completion clock reading', () => {
-    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 1000);
+    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 1000, () => 'd-1');
     const log = formatCompletionLog(span, 'ok', () => 1042);
     expect(log).toEqual<TraceCompletionLog>({
       event: TRACE_LOG_EVENT,
       method: 'ccsm.v1/healthz',
       traceId: 'trace-a',
+      daemonTraceId: 'd-1',
       durationMs: 42,
       code: 'ok',
     });
   });
 
   it('clamps negative duration to 0 (non-monotonic clock guard)', () => {
-    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 5000);
+    const span = startTrace('ccsm.v1/healthz', 'trace-a', () => 5000, () => 'd');
     const log = formatCompletionLog(span, 'ok', () => 4000);
     expect(log.durationMs).toBe(0);
   });
 
   it('passes through arbitrary error code strings', () => {
-    const span = startTrace('ccsm.v1/x', 'trace-z', () => 0);
+    const span = startTrace('ccsm.v1/x', 'trace-z', () => 0, () => 'd');
     const log = formatCompletionLog(span, 'MIGRATION_PENDING', () => 7);
     expect(log.code).toBe('MIGRATION_PENDING');
   });
 });
 
 describe('runWithTrace — round-trip', () => {
-  it('propagates the resolved traceId into the handler context', async () => {
+  it('propagates the resolved traceId AND daemonTraceId into the handler context', async () => {
     const sink: TraceCompletionLog[] = [];
     let seenTraceId = '';
+    let seenDaemonTraceId = '';
     const out = await runWithTrace<string>({
       envelope: { traceId: 'caller-trace-1' },
       method: 'ccsm.v1/daemon.hello',
       handler: async (ctx) => {
         seenTraceId = ctx.traceId;
+        seenDaemonTraceId = ctx.daemonTraceId;
         return { value: 'hello-reply' };
       },
       sink: (r) => sink.push(r),
       clock: stepClock([100, 105]),
+      mintDaemonTraceId: () => 'daemon-id-A',
     });
     expect(out).toBe('hello-reply');
     expect(seenTraceId).toBe('caller-trace-1');
+    expect(seenDaemonTraceId).toBe('daemon-id-A');
     expect(sink).toEqual([
       {
         event: TRACE_LOG_EVENT,
         method: 'ccsm.v1/daemon.hello',
         traceId: 'caller-trace-1',
+        daemonTraceId: 'daemon-id-A',
         durationMs: 5,
         code: 'ok',
       },
@@ -122,20 +147,25 @@ describe('runWithTrace — round-trip', () => {
   it('mints a traceId when the envelope omits one and propagates the same id to the log', async () => {
     const sink: TraceCompletionLog[] = [];
     let seenTraceId = '';
+    let seenDaemonTraceId = '';
     await runWithTrace<number>({
       envelope: {},
       method: 'ccsm.v1/healthz',
       handler: async (ctx) => {
         seenTraceId = ctx.traceId;
+        seenDaemonTraceId = ctx.daemonTraceId;
         return { value: 1 };
       },
       sink: (r) => sink.push(r),
       mintTraceId: () => 'minted-xyz',
+      mintDaemonTraceId: () => 'daemon-id-B',
       clock: stepClock([10, 20]),
     });
     expect(seenTraceId).toBe('minted-xyz');
+    expect(seenDaemonTraceId).toBe('daemon-id-B');
     expect(sink).toHaveLength(1);
     expect(sink[0]?.traceId).toBe('minted-xyz');
+    expect(sink[0]?.daemonTraceId).toBe('daemon-id-B');
   });
 
   it('records completion log THEN rethrows on handler failure with code=INTERNAL', async () => {
@@ -150,6 +180,7 @@ describe('runWithTrace — round-trip', () => {
         },
         sink: (r) => sink.push(r),
         clock: stepClock([200, 250]),
+        mintDaemonTraceId: () => 'daemon-id-C',
       }),
     ).rejects.toBe(boom);
     expect(sink).toEqual([
@@ -157,6 +188,7 @@ describe('runWithTrace — round-trip', () => {
         event: TRACE_LOG_EVENT,
         method: 'ccsm.v1/daemon.shutdown',
         traceId: 'caller-trace-2',
+        daemonTraceId: 'daemon-id-C',
         durationMs: 50,
         code: 'INTERNAL',
       },
@@ -171,8 +203,10 @@ describe('runWithTrace — round-trip', () => {
       handler: async () => ({ value: null, code: 'NOT_IMPLEMENTED' }),
       sink: (r) => sink.push(r),
       clock: stepClock([0, 1]),
+      mintDaemonTraceId: () => 'daemon-id-D',
     });
     expect(sink[0]?.code).toBe('NOT_IMPLEMENTED');
+    expect(sink[0]?.daemonTraceId).toBe('daemon-id-D');
   });
 });
 

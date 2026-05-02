@@ -48,6 +48,17 @@ export const TRACE_ID_BYTES = 16;
  */
 export const TRACE_LOG_EVENT = 'envelope_trace';
 
+/**
+ * Reserved reply-envelope header that carries the daemon-minted id back to
+ * the caller (#153 N13-fix). Mirrors the lower-cased `x-ccsm-*` family used
+ * by other reserved headers (`x-ccsm-deadline-ms`, `x-ccsm-trace-id`).
+ *
+ * The envelope adapter copies this from the trace span into the reply
+ * envelope's reserved-header slot so the client can log the join id without
+ * having to grep daemon logs first.
+ */
+export const DAEMON_TRACE_ID_HEADER = 'x-ccsm-daemon-trace-id';
+
 /** Minimum envelope shape this interceptor reads. Header field per §3.4.1.c. */
 export interface TraceEnvelopeView {
   /** Optional caller-supplied traceId. Empty string treated as absent. */
@@ -60,15 +71,36 @@ export type ClockMs = () => number;
 /** In-flight span returned by {@link startTrace}. Opaque to callers. */
 export interface TraceSpan {
   readonly method: string;
+  /** Client-supplied or fallback-minted id (back-compat with #809). */
   readonly traceId: string;
+  /** Daemon-always-minted join id (#153 N13-fix). */
+  readonly daemonTraceId: string;
   readonly startedMs: number;
 }
 
-/** Canonical completion log record (spec §3.4.1.f). */
+/** Canonical completion log record (spec §3.4.1.f).
+ *
+ *  Dual-id (#153 N13-fix, this PR): the legacy `traceId` field continues to
+ *  carry the **client-supplied or minted** id (back-compat with #809); the
+ *  new `daemonTraceId` field carries an additional id that the DAEMON always
+ *  mints itself, regardless of whether the client supplied a `traceId`. The
+ *  two-id design lets log joins work both ways:
+ *    - Client log → daemon log: grep by `traceId` (client knows this value).
+ *    - Daemon log → client log: pin by `daemonTraceId` echoed back to the
+ *      client in the reply envelope (`x-ccsm-daemon-trace-id` reserved
+ *      header), so a daemon-side bug report can ask the user for that id and
+ *      pull their client-side line. */
 export interface TraceCompletionLog {
   readonly event: typeof TRACE_LOG_EVENT;
   readonly method: string;
+  /** Client-supplied trace id, OR — when the client omitted one — the value
+   *  the daemon minted as the `traceId` fallback (back-compat with #809). */
   readonly traceId: string;
+  /** Daemon-minted id, ALWAYS present, ALWAYS distinct from `traceId` even
+   *  when the client did not supply one (the daemon mints two separate ids
+   *  in that case). Echoed to the client in the reply trailer so logs from
+   *  both sides can be joined when the client did NOT supply a `traceId`. */
+  readonly daemonTraceId: string;
   readonly durationMs: number;
   /**
    * Wire-level outcome code:
@@ -114,13 +146,27 @@ export function defaultMintTraceId(): string {
  * Open a per-call span. Records the start time via the injected clock so
  * `formatCompletionLog` can compute `durationMs` without re-reading the clock
  * inconsistently across paths.
+ *
+ * Mints a daemon-side join id (`daemonTraceId`) regardless of whether the
+ * caller supplied a `traceId` (#153 N13-fix). The daemon id is ALWAYS a fresh
+ * 16-byte hex string from {@link defaultMintTraceId} (or the injected
+ * `mintDaemonTraceId` for tests) — it never reuses `traceId`, even when the
+ * client omits the field. This guarantees the dual-id correlation property:
+ * even when the client did not name the request, the daemon's own logs
+ * carry a stable id the user can quote in a bug report.
  */
 export function startTrace(
   method: string,
   traceId: string,
   now: ClockMs = Date.now,
+  mintDaemonTraceId: () => string = defaultMintTraceId,
 ): TraceSpan {
-  return { method, traceId, startedMs: now() };
+  return {
+    method,
+    traceId,
+    daemonTraceId: mintDaemonTraceId(),
+    startedMs: now(),
+  };
 }
 
 /**
@@ -140,6 +186,7 @@ export function formatCompletionLog(
     event: TRACE_LOG_EVENT,
     method: span.method,
     traceId: span.traceId,
+    daemonTraceId: span.daemonTraceId,
     durationMs,
     code,
   };
@@ -167,23 +214,26 @@ export function formatCompletionLog(
 export interface RunWithTraceArgs<T> {
   readonly envelope: TraceEnvelopeView;
   readonly method: string;
-  readonly handler: (ctx: { readonly traceId: string }) => Promise<{
+  readonly handler: (ctx: { readonly traceId: string; readonly daemonTraceId: string }) => Promise<{
     readonly value: T;
     readonly code?: string;
   }>;
   readonly sink: TraceLogSink;
   readonly clock?: ClockMs;
   readonly mintTraceId?: () => string;
+  /** Optional override for the daemon-side join id minter (#153 N13-fix).
+   *  Defaults to {@link defaultMintTraceId}; tests pass a deterministic stub. */
+  readonly mintDaemonTraceId?: () => string;
 }
 
 export async function runWithTrace<T>(args: RunWithTraceArgs<T>): Promise<T> {
   const { envelope, method, handler, sink } = args;
   const clock = args.clock ?? Date.now;
   const traceId = resolveTraceId(envelope, args.mintTraceId);
-  const span = startTrace(method, traceId, clock);
+  const span = startTrace(method, traceId, clock, args.mintDaemonTraceId);
 
   try {
-    const result = await handler({ traceId });
+    const result = await handler({ traceId, daemonTraceId: span.daemonTraceId });
     sink(formatCompletionLog(span, result.code ?? 'ok', clock));
     return result.value;
   } catch (err) {
