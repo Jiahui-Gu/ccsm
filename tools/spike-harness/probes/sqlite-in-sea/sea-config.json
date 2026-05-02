@@ -1,0 +1,6 @@
+{
+  "main": "probe.bundle.cjs",
+  "output": "probe.blob",
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": false
+}
