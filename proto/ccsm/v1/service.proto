@@ -4,6 +4,7 @@ package ccsm.v1;
 
 import "ccsm/v1/core.proto";
 import "ccsm/v1/session.proto";
+import "ccsm/v1/sessions.proto";
 import "ccsm/v1/session_titles.proto";
 import "ccsm/v1/pty.proto";
 import "ccsm/v1/notify.proto";
@@ -61,7 +62,23 @@ service CcsmService {
   // server-stream (paired-signal: beforeHide + afterShow)
   rpc StreamWindowVisibility(StreamWindowVisibilityRequest) returns (stream StreamWindowVisibilityResponse) {}
 
+  // ADDED (Task #102, frag-6-7 §6.5 + frag-3.5.1 §3.5.1.4). Boot-nonce
+  // probe for the Connect data plane — clients call this on connect
+  // and on every reconnect to populate `from_boot_nonce` on subsequent
+  // stream subscribes. Mirrors the envelope-era `daemon.hello` reply.
+  // idempotency: naturally idempotent
+  rpc GetBootNonce(GetBootNonceRequest) returns (GetBootNonceResponse) {}
+
   // ===== session (0 unary + 2 fire-and-forget + 4 streams) =====
+  //
+  // DEPRECATION NOTE (final-arch §2.7 + reconciliation §N7 cleanup):
+  // The four singular `StreamSession{State,Title,CwdRedirected,Activate}`
+  // server-streams below are obsoleted by `SubscribeSessionEvents` (in the
+  // sessions block) once the v0.3 → v0.4 Connect cutover completes. They
+  // are kept in this PR to stay additive-only; the §N7 cleanup task will
+  // remove them mechanically (no client-visible behavior change — every
+  // event delivered here also flows through `SubscribeSessionEvents` as a
+  // `SessionDeltaEvent`).
 
   // idempotency: naturally idempotent
   // fire-and-forget; last-write-wins active-session setter.
@@ -189,6 +206,35 @@ service CcsmService {
   // idempotency: naturally idempotent
   // server-stream
   rpc StreamUpdateDownloaded(StreamUpdateDownloadedRequest) returns (stream StreamUpdateDownloadedResponse) {}
+
+  // ===== sessions — v0.4 multi-client surface (4 unary + 1 server-stream)
+  // ADDED (Task #102, final-arch §2.7 + reconciliation §N7). Plural
+  // `sessions` is the backend-authoritative model that replaces the
+  // singular `session.proto` per-event streams once Connect cutover
+  // completes. Both surfaces coexist during the v0.3 lift; the legacy
+  // singular RPCs are not removed in this PR (additive-only).
+
+  // idempotency: naturally idempotent
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse) {}
+
+  // idempotency: non-idempotent
+  // each call creates a new PTY + session_id; client MUST NOT auto-retry.
+  rpc SpawnSession(SpawnSessionRequest) returns (SpawnSessionResponse) {}
+
+  // idempotency: naturally idempotent
+  // killing an already-dead session is a no-op (existed=false).
+  rpc KillSession(KillSessionRequest) returns (KillSessionResponse) {}
+
+  // idempotency: naturally idempotent
+  rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse) {}
+
+  // idempotency: naturally idempotent
+  // server-stream — snapshot+delta semantics (frag-3.5.1 §3.5.1.4 +
+  // session_events.proto). Resume contract:
+  //   (from_seq, from_boot_nonce, heartbeat_ms) — boot-nonce mismatch
+  //   ⇒ snapshot from seq 0; from_seq past 256 KiB replay budget
+  //   ⇒ snapshot with gap=true.
+  rpc SubscribeSessionEvents(SubscribeSessionEventsRequest) returns (stream SubscribeSessionEventsResponse) {}
 
   // ===== import (2 unary) =====
 

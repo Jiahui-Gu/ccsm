@@ -3,6 +3,20 @@ syntax = "proto3";
 package ccsm.v1;
 
 // pty.proto — terminal lifecycle + IO.
+//
+// v0.3 Connect data plane additions (Task #102, additive only):
+//   - `boot_nonce` carriage on stream subscribe (frag-3.5.1 §3.5.1.4 +
+//     frag-3.4.1 §3.4.1.b canonical owner) — client echoes the last
+//     observed daemon boot nonce; mismatch ⇒ snapshot replay from seq 0.
+//   - `heartbeat_ms` negotiation per subscribe stream (frag-3.5.1 §3.5.1.4
+//     lockin-P1-4 + fwdcompat-P1-2). Server clamps to [5_000, 120_000]
+//     and uses the value for that stream's heartbeat cadence.
+//   - Replay budget: server MUST cap delta replay at 256 KiB from the
+//     resume point (frag-3.5.1 res-P0-1 + frag-3.5.1 acceptance unit
+//     test "fromSeq past the 256 KB clamp receives gap: true"). The
+//     server-side cap is contractual, not a request parameter.
+//   - `PtyHeartbeatEvent` and `PtyBootChangedEvent` for the
+//     server-stream keepalive + boot-restart divider.
 
 message PtyDescriptor {
   string session_id = 1;
@@ -86,12 +100,80 @@ message PtyExitEvent {
 message StreamPtyDataRequest {
   string session_id = 1;
   int64 from_seq = 2;
+
+  // ADDED (Task #102, frag-3.5.1 §3.5.1.4 fwdcompat-P1-1).
+  // Last `boot_nonce` the client observed on this daemon. Empty / unset =
+  // "client has never observed this daemon" → server treats as fresh
+  // subscribe and ignores `from_seq`. On mismatch, server emits a
+  // `PtyBootChangedEvent` then replays snapshot from seq 0. Wire-equivalent
+  // to the envelope-era `headers["x-ccsm-boot-nonce"]` carriage; the
+  // proto-param form is the canonical one going forward (frag-3.4.1
+  // r9 manager lock — header wins on dual carriage during the v0.3 lift).
+  string from_boot_nonce = 3;
+
+  // ADDED (Task #102, frag-3.5.1 §3.5.1.4 lockin-P1-4 + fwdcompat-P1-2).
+  // Requested server-stream keepalive cadence. Server clamps to
+  // [5_000, 120_000]; default 30_000. Client dead-stream window is
+  // `2 * heartbeat_ms + 5_000` skew. 0 = "use server default".
+  int32 heartbeat_ms = 4;
 }
 message StreamPtyDataResponse {
   PtyDataChunk chunk = 1;
+
+  // ADDED (Task #102). Exactly one of `chunk` / `heartbeat` / `boot_changed`
+  // is populated per response. Modeled as flat optional fields rather than
+  // a `oneof` to keep the change wire-additive (introducing a `oneof`
+  // around an existing field is a `buf breaking` violation).
+  PtyHeartbeatEvent heartbeat = 2;
+  PtyBootChangedEvent boot_changed = 3;
+
+  // ADDED (Task #102, frag-3.5.1 §3.5.1.5 acceptance unit). True on the
+  // first chunk after a `from_seq` that fell outside the 256 KiB replay
+  // budget — client renders a `─── stream gap ───` divider analogous to
+  // boot-changed.
+  bool gap = 4;
 }
 
 message StreamPtyExitRequest {}
 message StreamPtyExitResponse {
   PtyExitEvent event = 1;
+}
+
+// ADDED (Task #102) — server-stream keepalive payload. Cadence is set
+// per-stream by the request's `heartbeat_ms` (clamped server-side).
+message PtyHeartbeatEvent {
+  string session_id = 1;
+  int64 ts_ms = 2;
+  // Last `seq` the server has emitted on this stream as of the heartbeat.
+  // Lets clients sanity-check `from_seq` after a silent gap.
+  int64 last_seq = 3;
+  // Current daemon boot nonce — clients re-observe this on every
+  // heartbeat in case they missed the initial chunk.
+  string boot_nonce = 4;
+}
+
+// ADDED (Task #102, frag-3.5.1 §3.5.1.4 fwdcompat-P1-1). Emitted exactly
+// once when the server detects `from_boot_nonce != current boot_nonce`.
+// Followed by snapshot replay from seq 0. Client renders the
+// `─── daemon restarted ───` divider.
+message PtyBootChangedEvent {
+  string session_id = 1;
+  string boot_nonce = 2;
+  // True if the server is about to send the snapshot stream (always true
+  // in v0.3; the field is reserved for v0.5 web clients that may opt out
+  // of automatic replay on boot change).
+  bool snapshot_pending = 3;
+}
+
+// ADDED (Task #102) — boot-nonce probe. Lets a client (Connect-Node /
+// Connect-Web / connect-swift) read the current daemon boot nonce
+// without subscribing to a stream. Mirrors the envelope-era `daemon.hello`
+// reply field. Cheap unary RPC; clients call on connect + on each
+// reconnect to populate `from_boot_nonce` for subsequent subscribes.
+message GetBootNonceRequest {}
+message GetBootNonceResponse {
+  // ULID string (Crockford base32, 26 chars; frag-6-7 §6.5). Empty string
+  // is reserved for "client has never observed a daemon yet" — the daemon
+  // will never emit an empty value.
+  string boot_nonce = 1;
 }

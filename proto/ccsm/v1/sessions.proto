@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package ccsm.v1;
+
+import "ccsm/v1/common.proto";
+import "ccsm/v1/session_events.proto";
+
+// sessions.proto — multi-client session lifecycle (final-arch §2.7 +
+// reconciliation §N7). Plural-`sessions` is the v0.4 backend-authoritative
+// surface; the legacy singular `session.proto` (active-session +
+// per-event server streams) stays in place for the v0.3 Electron lift
+// and will be retired by the §N7 cleanup task once Connect cutover
+// completes.
+//
+// Why a NEW file instead of extending session.proto:
+//   1. Different model: session.proto is "the renderer's view of the one
+//      currently-active session"; sessions.proto is "the daemon's
+//      enumeration of all live sessions, multi-subscriber, broadcast +
+//      LWW writes". Mixing them would conflate the v0.3 single-renderer
+//      and v0.4 N-client semantics in one file.
+//   2. Wire-additive: session.proto field numbers and RPCs are unchanged
+//      (verified via `buf breaking`).
+//
+// All RPC bindings live in service.proto's umbrella `CcsmService`
+// (spec ch02 §3 — single umbrella). This file only owns the message
+// definitions; service.proto §sessions block consumes them.
+
+// SessionInfo — compact per-session row for `ListSessions`. Heavier
+// state (full snapshot) is fetched via `GetSessionState` /
+// `SubscribeSessionEvents`.
+message SessionInfo {
+  string session_id = 1;
+  string title = 2;
+  string cwd = 3;
+  SessionState state = 4;
+  int64 spawned_at_ms = 5;
+  int32 pid = 6;
+  // Daemon-assigned monotonic seq of the latest mutation; clients can
+  // diff against their last-seen value to know if a re-fetch is worth it.
+  int64 latest_seq = 7;
+}
+
+message ListSessionsRequest {}
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+  // Echoed so clients can validate "did the daemon restart since my
+  // last list" without an extra GetBootNonce roundtrip. ULID per
+  // frag-6-7 §6.5 (raw string, not wrapped — see common.proto header).
+  string boot_nonce = 2;
+}
+
+// SpawnSessionRequest — non-idempotent (each call creates a new PTY
+// + new session_id). Clients MUST NOT auto-retry on transport error.
+// Pairs with pty.proto §SpawnPty (the PTY half) but adds the
+// session-level metadata that the new authoritative session model owns.
+message SpawnSessionRequest {
+  // Requested cwd; daemon may redirect (emits `SessionCwdChange` delta).
+  string cwd = 1;
+  // Optional human-supplied title (else daemon derives from SDK output).
+  string title = 2;
+  // Optional explicit session_id — empty = daemon assigns. Non-empty
+  // values MUST be unique; collision returns ALREADY_EXISTS.
+  string session_id = 3;
+}
+message SpawnSessionResponse {
+  SessionInfo session = 1;
+}
+
+// KillSessionRequest — naturally idempotent: killing an already-killed
+// session is a no-op (returns existed=false).
+message KillSessionRequest {
+  string session_id = 1;
+  // Optional graceful-shutdown timeout. 0 = daemon default (5_000 ms).
+  // After timeout, daemon escalates to SIGKILL.
+  int32 graceful_timeout_ms = 2;
+}
+message KillSessionResponse {
+  // True if the session existed at call time. False ⇒ no-op (already
+  // gone or never existed).
+  bool existed = 1;
+}
+
+// GetSessionStateRequest — naturally idempotent point-in-time read.
+// Cheaper than `SubscribeSessionEvents` for "render once, no live
+// updates" callers (e.g. server-rendered status pages).
+message GetSessionStateRequest {
+  string session_id = 1;
+}
+message GetSessionStateResponse {
+  SessionSnapshot snapshot = 1;
+  // False ⇒ session_id unknown. Snapshot is zero-valued.
+  bool found = 2;
+  // Echoed for the same reason as ListSessionsResponse.boot_nonce.
+  string boot_nonce = 3;
+}
+
+// SubscribeSessionEventsRequest — server-stream entry point for the
+// snapshot+delta model. Same `(from_seq, from_boot_nonce, heartbeat_ms)`
+// contract as pty.proto §StreamPtyDataRequest (frag-3.5.1 §3.5.1.4 is
+// the canonical owner; field semantics are identical).
+//
+// session_id == "" ⇒ subscribe to ALL sessions (firehose mode for
+// session-list views). Per-session subscribe MUST set session_id.
+message SubscribeSessionEventsRequest {
+  string session_id = 1;
+  int64 from_seq = 2;
+  string from_boot_nonce = 3;
+  int32 heartbeat_ms = 4;
+}
+message SubscribeSessionEventsResponse {
+  SessionEvent event = 1;
+}
