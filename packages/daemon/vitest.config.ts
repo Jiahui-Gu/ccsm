@@ -11,15 +11,15 @@ export default defineConfig({
     // RuleTester suite (e.g. T1.9 ccsm/no-listener-slot-mutation). They
     // are not under `src/` because they are tooling, not daemon runtime.
     // `build/**` holds the SEA build pipeline tooling + tests (T7.1).
+    // `test/**` holds out-of-tree integration / harness specs that
+    // cannot be co-located with src (they instantiate cross-module
+    // fixtures and read from packaged migrations / fixtures). Examples:
+    // T10.1 migration lock self-check (`test/db/migration-lock.spec.ts`);
+    // T8.4 PTY soak ship-gate (`test/integration/pty-soak-{1h,10m}.spec.ts`).
     include: [
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
-      // `test/**` is the home for forever-stable invariants specs that watch
-      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
-      // state-dir paths, etc.). They live outside `src/` so they cannot be
-      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
-      // is `src`).
       'test/**/*.spec.ts',
     ],
     globals: false,
