@@ -79,9 +79,13 @@ root.render(
 if (typeof requestAnimationFrame === 'function') {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      void hydrateStore();
+      hydrateStore().finally(() => {
+        (window as unknown as { __ccsm_hydrated?: boolean }).__ccsm_hydrated = true;
+      });
     });
   });
 } else {
-  void hydrateStore();
+  hydrateStore().finally(() => {
+    (window as unknown as { __ccsm_hydrated?: boolean }).__ccsm_hydrated = true;
+  });
 }

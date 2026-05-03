@@ -479,6 +479,13 @@ export async function runHarness(spec) {
     win = await appWindowWithDiag(app);
     await win.waitForLoadState('domcontentloaded');
     await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+    // Task #311: gate per-case work on hydrateStore() resolving. After
+    // PR #976 (Wave 0e persist.ts cutover) hydration finishes far faster
+    // than probes can race in, so cases that read persisted state (theme,
+    // groups, sessions) immediately after launch saw stale values. The
+    // `__ccsm_hydrated` flag is set by `src/index.tsx` after the boot-time
+    // hydrateStore() promise settles.
+    await win.waitForFunction(() => window.__ccsm_hydrated === true, null, { timeout: 5_000 });
     if (spec.setup) {
       await spec.setup({ app, win });
     }
@@ -572,6 +579,8 @@ export async function runHarness(spec) {
         win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        // Task #311: see boot-time gate above for rationale.
+        await win.waitForFunction(() => window.__ccsm_hydrated === true, null, { timeout: 5_000 });
         if (spec.setup) {
           await spec.setup({ app, win });
         }
@@ -586,6 +595,8 @@ export async function runHarness(spec) {
         win = await appWindowWithDiag(app);
         await win.waitForLoadState('domcontentloaded');
         await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        // Task #311: see boot-time gate above for rationale.
+        await win.waitForFunction(() => window.__ccsm_hydrated === true, null, { timeout: 5_000 });
         if (spec.setup) {
           await spec.setup({ app, win });
         }

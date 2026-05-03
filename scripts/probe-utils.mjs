@@ -353,12 +353,21 @@ export async function setTheme(win, mode, { verify = false, timeoutMs = 5000 } =
 // Then forcibly replace state with the fixture and yield long enough for
 // React to flush. Use this instead of raw setState — the store is async-
 // hydrated and a bare setState can race the persisted-state apply.
+//
+// Task #311: post-PR #976 (Wave 0e persist.ts cutover) hydrateStore resolves
+// far faster than the old IPC-based path, so probes can race in before the
+// store has applied persisted state (theme, groups, etc.). Gate on the
+// `window.__ccsm_hydrated` flag set by `src/index.tsx` after `hydrateStore()`
+// settles to make the wait deterministic.
 export async function seedStore(win, state) {
   await win.waitForFunction(
     () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
+  await win.waitForFunction(() => window.__ccsm_hydrated === true, null, {
+    timeout: 5_000,
+  });
   await win.evaluate((s) => {
     const store = window.__ccsmStore;
     if (!store) throw new Error('__ccsmStore missing on window — App.tsx no longer exposes it?');
