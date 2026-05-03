@@ -45,7 +45,13 @@
     "changeset": "changeset",
     "version-packages": "changeset version && node scripts/sync-version.mjs",
     "release": "turbo run build && changeset publish",
-    "proto-version-check": "pnpm --filter @ccsm/proto run version-drift-check"
+    "proto-version-check": "pnpm --filter @ccsm/proto run version-drift-check",
+    "check:engines": "node -e \"if(!process.version.startsWith('v22.'))console.warn('[warn] CI uses Node 22, you have '+process.version+'; native modules may need rebuild')\"",
+    "check:native": "cd packages/daemon && node -e \"require('better-sqlite3')(':memory:').exec('select 1')\"",
+    "rebuild:native": "npm rebuild better-sqlite3"
+  },
+  "engines": {
+    "node": ">=22.0.0 <23"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
