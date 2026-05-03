@@ -22,6 +22,8 @@
 //
 // Layer 1: node: stdlib only (`node:net`-derived `address()` parsing).
 
+import type { ServerHttp2Session } from 'node:http2';
+
 import type {
   BoundAddress,
   BoundTransport,
@@ -48,6 +50,23 @@ export async function bindH2cLoopback(
   if (!Number.isInteger(spec.port) || spec.port < 0 || spec.port > 65535) {
     throw new Error(`h2c-loopback port out of range: ${spec.port}`);
   }
+
+  // Track active h2 sessions so `close()` can force-destroy them.
+  // `Http2Server.close()` does NOT have an `http.Server.closeAllConnections`
+  // analogue (verified against the Node 22 http2 docs); it waits for all
+  // sessions to drain. Connect-node clients (used in our integration
+  // suite + future renderer / electron clients) keep h2 sessions alive,
+  // so without an explicit destroy the close callback never fires.
+  // Surfaced by T0.8 matrix on Linux/macOS where tcp keep-alive timing
+  // differs from Windows. Spec ch03 §3.2: bound-transport stop is
+  // near-immediate, not a graceful drain — the renderer reconnects on
+  // its own retry policy.
+  const sessions = new Set<ServerHttp2Session>();
+  const trackSession = (session: ServerHttp2Session): void => {
+    sessions.add(session);
+    session.once('close', () => sessions.delete(session));
+  };
+  server.on('session', trackSession);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error): void => {
@@ -85,6 +104,17 @@ export async function bindH2cLoopback(
     if (closed) return closePromise ?? Promise.resolve();
     closed = true;
     closePromise = new Promise<void>((resolve, reject) => {
+      server.removeListener('session', trackSession);
+      // Force-destroy any sessions still alive. `session.destroy()` ends
+      // the underlying socket synchronously (next tick) so `close()`'s
+      // drain wait completes promptly. We drop the result/error from
+      // each destroy because a half-closed session may already be
+      // emitting `close` — the only correctness contract is that
+      // server.close() resolves.
+      for (const session of sessions) {
+        session.destroy();
+      }
+      sessions.clear();
       server.close((err) => {
         if (err) reject(err);
         else resolve();

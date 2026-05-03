@@ -32,6 +32,7 @@
 // Layer 1: node: stdlib only (`node:fs`, `node:net`).
 
 import { existsSync, lstatSync, unlinkSync } from 'node:fs';
+import type { ServerHttp2Session } from 'node:http2';
 import { platform } from 'node:os';
 
 import type {
@@ -83,6 +84,21 @@ export async function bindH2cUds(
     server.listen(spec.path);
   });
 
+  // Track active h2 sessions so `close()` can force-destroy them.
+  // `Http2Server.close()` does NOT have an `http.Server.closeAllConnections`
+  // analogue (verified against the Node 22 http2 docs); it waits for all
+  // sessions to drain. Connect-node clients keep h2 sessions alive, so
+  // without an explicit destroy the close callback never fires — surfaced
+  // by T0.8 matrix on Linux/macOS where uds keep-alive timing differs
+  // from Windows. Spec ch03 §3.2: bound-transport stop is near-immediate,
+  // not a graceful drain — the renderer reconnects on its own retry policy.
+  const sessions = new Set<ServerHttp2Session>();
+  const trackSession = (session: ServerHttp2Session): void => {
+    sessions.add(session);
+    session.once('close', () => sessions.delete(session));
+  };
+  server.on('session', trackSession);
+
   let closed = false;
   let closePromise: Promise<void> | null = null;
 
@@ -92,6 +108,13 @@ export async function bindH2cUds(
     if (closed) return closePromise ?? Promise.resolve();
     closed = true;
     closePromise = new Promise<void>((resolve, reject) => {
+      server.removeListener('session', trackSession);
+      // Force-destroy any sessions still alive so `server.close()`'s
+      // drain wait completes promptly.
+      for (const session of sessions) {
+        session.destroy();
+      }
+      sessions.clear();
       server.close((err) => {
         // Best-effort socket file cleanup. Spec ch03 §3.1 says orphan
         // descriptor FILES between boots are normal; that rule is
