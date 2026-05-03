@@ -7,23 +7,14 @@ import type { Theme, FontSize, FontSizePx } from './slices/types';
 export const STATE_KEY = 'main';
 
 /**
- * Single source of truth for the set of store fields that flow into the
- * persisted JSON snapshot. Both the write path (subscriber in
- * `hydrateStore`) and the reference-equality early-bail comparator
- * (perf optimisation from PR #166) iterate this list, so adding a new
- * persisted field only requires editing this array (plus `PersistedState`
- * for the on-disk type).
+ * Single source of truth for store fields that flow into the persisted JSON
+ * snapshot. Both the write subscriber in `hydrateStore` and the
+ * reference-equality early-bail comparator (PR #166) iterate this list, so
+ * adding a persisted field only requires editing this array (+ `PersistedState`).
  *
- * `version` is intentionally NOT included — it's a fixed literal stamped
- * onto every snapshot, not a store field.
- *
- * `sidebarWidthPct` is also NOT included — it's a legacy on-disk-only
- * field consumed by `resolvePersistedSidebarWidth` during hydration. New
- * writes always populate `sidebarWidth` (px) instead.
- *
- * Runtime-only fields (installerCorrupt, etc.) are
- * intentionally NOT persisted — they're tied to the current process and
- * restoring them would block recovery on next launch. See PR #156.
+ * Excluded: `version` (literal); `sidebarWidthPct` (legacy on-disk-only,
+ * read by `resolvePersistedSidebarWidth` — new writes use `sidebarWidth` px);
+ * runtime-only fields like `installerCorrupt` (PR #156).
  */
 export const PERSISTED_KEYS = [
   'sessions',
@@ -44,11 +35,8 @@ export interface PersistedState {
   activeId: string;
   /** Sidebar width in pixels. See State.sidebarWidth. */
   sidebarWidth?: number;
-  /**
-   * Legacy: sidebar width as a fraction of window width. Migrated to px
-   * (`sidebarWidth`) on hydrate via `resolvePersistedSidebarWidth`. Read-only
-   * — new writes always populate `sidebarWidth`.
-   */
+  /** Legacy fraction-of-window width; migrated to px on hydrate via
+   * `resolvePersistedSidebarWidth`. Read-only — new writes use `sidebarWidth`. */
   sidebarWidthPct?: number;
   theme?: Theme;
   fontSize?: FontSize;
@@ -82,12 +70,23 @@ export function setPersistErrorHandler(handler: (err: unknown) => void): void {
   onPersistError = handler;
 }
 
-function commitSnapshot(snap: PersistedState): void {
+/**
+ * Write `value` to `localStorage[key]`, routing any throw (e.g. quota
+ * exceeded) through `onPersistError` so callers share the single toast
+ * sink installed by `usePersistErrorBridge`. Exported for sibling Wave 0e
+ * modules cutting from removed `window.ccsm.{loadState,saveState}` IPCs.
+ */
+export function commitItem(key: string, value: string): void {
+  if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(STATE_KEY, JSON.stringify(snap));
+    localStorage.setItem(key, value);
   } catch (err) {
     if (onPersistError) onPersistError(err);
   }
+}
+
+function commitSnapshot(snap: PersistedState): void {
+  commitItem(STATE_KEY, JSON.stringify(snap));
 }
 
 export function schedulePersist(state: PersistedState): void {
@@ -104,8 +103,7 @@ export function schedulePersist(state: PersistedState): void {
 
 /**
  * Synchronously dispatch any pending debounced write. Call from `beforeunload`
- * (renderer) so a quick quit doesn't lose the last 250 ms of changes.
- * localStorage.setItem is synchronous so the write completes before unload.
+ * so a quick quit doesn't lose the last 250 ms; setItem is sync.
  */
 export function flushNow(): void {
   if (typeof localStorage === 'undefined') return;
