@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTitleState } from '../titleStateClassifier';
+import { classifyTitleState } from '../titleStateClassifier.js';
 
 describe('classifyTitleState', () => {
   it('classifies the sparkle leading glyph as idle', () => {

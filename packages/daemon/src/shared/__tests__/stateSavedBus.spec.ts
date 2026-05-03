@@ -3,7 +3,7 @@ import {
   emitStateSaved,
   onStateSaved,
   _resetStateSavedBusForTests,
-} from '../stateSavedBus';
+} from '../stateSavedBus.js';
 
 beforeEach(() => {
   _resetStateSavedBusForTests();

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { badgeLabel } from '../badgeLabel';
+import { badgeLabel } from '../badgeLabel.js';
 
 // Pure decider: input -> output, no side effects. The display rule is
 // load-bearing for the tray badge UX (Task #722 Phase A spec):

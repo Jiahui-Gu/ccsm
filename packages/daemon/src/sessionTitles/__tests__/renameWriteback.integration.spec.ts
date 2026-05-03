@@ -25,7 +25,7 @@ import {
   renameSessionTitle,
   __resetForTests,
   __setSdkForTests,
-} from '../index';
+} from '../index.js';
 
 // SDK projectKey encoder (mirrors `_1` in sdk.mjs:285668): replace every
 // non-alphanumeric with `-`. We use it here ONLY to construct the canonical

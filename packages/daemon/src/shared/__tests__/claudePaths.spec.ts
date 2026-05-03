@@ -10,7 +10,7 @@ import {
   getClaudeConfigDir,
   getClaudeProjectsDir,
   getClaudeSettingsPath,
-} from '../claudePaths';
+} from '../claudePaths.js';
 
 let originalConfigDir: string | undefined;
 

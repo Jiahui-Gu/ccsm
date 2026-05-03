@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { badgeLabel } from '../electron/notify/badgeLabel';
+import { badgeLabel } from '../badgeLabel.js';
 
 describe('badgeLabel', () => {
   it.each([

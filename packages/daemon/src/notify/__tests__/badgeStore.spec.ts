@@ -5,7 +5,7 @@
 // out / change events emitted. No OS calls.
 
 import { describe, it, expect, vi } from 'vitest';
-import { BadgeManager } from '../badgeStore';
+import { BadgeManager } from '../badgeStore.js';
 
 describe('BadgeManager (badgeStore)', () => {
   it('starts with total 0', () => {
