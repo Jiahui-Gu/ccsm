@@ -1,3 +1,4 @@
+/* eslint-disable no-undef -- intentional fixture for backstop test; root config lacks node globals here */
 // T8.2 ESLint backstop fixture (e/f) — CJS require() evasion.
 // Both the bare `require('electron')` call and the `.ipcMain` member
 // access on its return value trip distinct selectors. We assert the
