@@ -1,9 +1,8 @@
+// v0.3 transitional: localStorage direct (Wave 0e-1, #289). When SettingsService
+// RPC ships (audit #228 sub-task 9), this module re-cuts to daemon RPC. See
+// docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md.
 import type { Group, Session } from '../types';
-import type {
-  Theme,
-  FontSize,
-  FontSizePx,
-} from './slices/types';
+import type { Theme, FontSize, FontSizePx } from './slices/types';
 
 export const STATE_KEY = 'main';
 
@@ -58,9 +57,9 @@ export interface PersistedState {
 }
 
 export async function loadPersisted(): Promise<PersistedState | null> {
-  if (!window.ccsm) return null;
+  if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = await window.ccsm.loadState(STATE_KEY);
+    const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedState;
     if (parsed.version !== 1) return null;
@@ -83,38 +82,38 @@ export function setPersistErrorHandler(handler: (err: unknown) => void): void {
   onPersistError = handler;
 }
 
+function commitSnapshot(snap: PersistedState): void {
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify(snap));
+  } catch (err) {
+    if (onPersistError) onPersistError(err);
+  }
+}
+
 export function schedulePersist(state: PersistedState): void {
-  if (!window.ccsm) return;
+  if (typeof localStorage === 'undefined') return;
   pendingSnapshot = state;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
     const snap = pendingSnapshot;
     pendingSnapshot = null;
-    if (!snap) return;
-    window.ccsm!.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
-      if (onPersistError) onPersistError(err);
-    });
+    if (snap) commitSnapshot(snap);
   }, WRITE_DEBOUNCE_MS);
 }
 
 /**
  * Synchronously dispatch any pending debounced write. Call from `beforeunload`
- * (renderer) so a quick quit doesn't lose the last 250 ms of changes. The
- * actual saveState IPC is fire-and-forget — Electron lets the in-flight IPC
- * complete during teardown, but we don't await it here because beforeunload
- * handlers can't reliably hold the page open across async work.
+ * (renderer) so a quick quit doesn't lose the last 250 ms of changes.
+ * localStorage.setItem is synchronous so the write completes before unload.
  */
 export function flushNow(): void {
-  if (!window.ccsm) return;
+  if (typeof localStorage === 'undefined') return;
   if (writeTimer) {
     clearTimeout(writeTimer);
     writeTimer = null;
   }
   const snap = pendingSnapshot;
   pendingSnapshot = null;
-  if (!snap) return;
-  window.ccsm.saveState(STATE_KEY, JSON.stringify(snap)).catch((err) => {
-    if (onPersistError) onPersistError(err);
-  });
+  if (snap) commitSnapshot(snap);
 }
