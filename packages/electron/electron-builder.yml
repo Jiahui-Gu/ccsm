@@ -1,0 +1,93 @@
+# electron-builder config for the @ccsm/electron thin client (v0.3).
+#
+# Spec ref: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+# chapter 10 §4 ("Electron build"), RESCOPED per Task #114 / PR #903 finding:
+#
+#   * Win MSI is NOT built by electron-builder. It is authored directly with
+#     WiX 4 (see PR #903 decision: electron-builder bundles a WiX 3.x
+#     toolchain via `electron-builder-binaries`, has no `<ServiceInstall>`
+#     hook, and `additionalWixArgs` cannot inject service authoring).
+#   * Therefore this config intentionally OMITS a `win:` target. Future
+#     Win packaging work happens in a dedicated WiX 4 task, separately.
+#
+# Targets shipped here:
+#   * macOS  -> pkg + dmg (per ch10 §5.2 — pkg is the LaunchDaemon installer,
+#              dmg is the drag-to-Applications surface)
+#   * Linux  -> deb + rpm (per ch10 §5.3 — fpm-equivalent via electron-builder)
+#
+# Renderer is purely UI + Connect-RPC client (ch10 §4 "Electron does NOT
+# bundle native modules at runtime in v0.3"). No node-pty, no
+# better-sqlite3, no electron-rebuild step.
+
+appId: com.ccsm.app
+productName: CCSM
+copyright: Copyright (c) 2026 Jiahui Gu
+
+# v0.3: no native modules in the renderer process. Disable npmRebuild so
+# electron-builder doesn't try to rebuild dependencies that aren't there.
+npmRebuild: false
+asar: true
+
+# Pin the Electron version explicitly so electron-builder doesn't try to
+# resolve `electron` from this package's node_modules (it isn't a direct
+# dep of @ccsm/electron yet — the binary lives in the workspace root for
+# now). Bump in lockstep with the root devDep.
+electronVersion: "41.5.0"
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+  - "!**/*.ts"
+  - "!**/__tests__/**"
+  - "!**/tests/**"
+  - "!test/**"
+
+# NOTE: no `win:` block. Windows MSI is authored directly with WiX 4 in
+# a separate pipeline (PR #903 decision). Do not re-add a `win:` target
+# here without revisiting that spike.
+
+mac:
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  target:
+    - target: pkg
+      arch:
+        - x64
+        - arm64
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+pkg:
+  # Installer-level bits owned by the daemon pkg are out of scope here;
+  # this pkg installs only the Electron .app bundle. Daemon/LaunchDaemon
+  # registration ships in a separate pkg per ch10 §5.2.
+  allowAnywhere: false
+  allowCurrentUserHome: false
+  allowRootDirectory: true
+
+dmg:
+  writeUpdateInfo: false
+
+linux:
+  category: Development
+  maintainer: Jiahui Gu <noreply@ccsm.dev>
+  synopsis: CCSM (Claude Code Session Manager) — group-first manager for many Claude Code sessions
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  target:
+    - target: deb
+      arch:
+        - x64
+        - arm64
+    - target: rpm
+      arch:
+        - x64
+        - arm64
