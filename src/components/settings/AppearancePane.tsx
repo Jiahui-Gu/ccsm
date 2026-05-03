@@ -66,13 +66,49 @@ export function AppearancePane() {
   );
 }
 
-// Close-button behaviour preference. Persisted via the existing `db:save` /
-// `db:load` IPC under the `closeAction` app_state key — main reads the same
-// key on every win.on('close') so the choice takes effect without a restart.
-// Default is platform-derived inside main (win/linux=ask, mac=tray); the
-// renderer mirrors that fallback so the segmented control reflects the
-// current effective value before the user ever picks a row.
+// Close-button behaviour preference. v0.3 transitional: persisted to
+// localStorage directly (Wave 0e, Task #300), mirroring the cutover applied
+// to src/stores/persist.ts in PR #976 (#289). The SettingsService RPC that
+// will own this key in v0.4 is still a stub (rpc-stub-gap audit #228
+// sub-task 9), so we stage on localStorage in the meantime. When
+// SettingsService ships, this re-cuts to daemon RPC.
+//
+// Wave 0b (PR #948) deleted the renderer load/save IPC pair this used to call.
+//
+// Note: the main process previously read the same `closeAction` app_state key
+// on every win.on('close'). Until SettingsService is wired the renderer is the
+// sole writer; main falls back to its platform default at startup.
+//
+// Default is platform-derived (win/linux=ask, mac=tray); the renderer mirrors
+// that fallback so the segmented control reflects the current effective value
+// before the user ever picks a row.
 type CloseBehavior = 'ask' | 'tray' | 'quit';
+
+const CLOSE_ACTION_KEY = 'closeAction';
+
+function loadCloseAction(): CloseBehavior | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(CLOSE_ACTION_KEY);
+    if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function commitCloseAction(value: CloseBehavior, onError?: (err: unknown) => void): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(CLOSE_ACTION_KEY, value);
+  } catch (err) {
+    // Quota / disabled-storage path — mirror persist.ts's onPersistError seam
+    // so a full disk doesn't silently drop the user's choice.
+    if (onError) onError(err);
+    else console.error('[closeAction] saveState failed:', err);
+  }
+}
+
 function CloseBehaviorField() {
   const { t } = useTranslation('settings');
   const platformDefault: CloseBehavior =
@@ -81,24 +117,14 @@ function CloseBehaviorField() {
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const raw = await window.ccsm?.loadState('closeAction');
-        if (cancelled) return;
-        if (raw === 'ask' || raw === 'tray' || raw === 'quit') setValue(raw);
-      } finally {
-        if (!cancelled) setHydrated(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const raw = loadCloseAction();
+    if (raw) setValue(raw);
+    setHydrated(true);
   }, []);
 
   const onChange = (next: CloseBehavior) => {
     setValue(next);
-    void window.ccsm?.saveState('closeAction', next);
+    commitCloseAction(next);
   };
 
   return (
