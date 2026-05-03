@@ -107,6 +107,27 @@ function rowCount(db: SqliteDatabase): number {
 // ---------------------------------------------------------------------------
 
 describe('crash-raw appender + replay', () => {
+  // Per-test timeout: 30s. Justification (Windows CI I/O cost):
+  //
+  //   The child below performs 100 sequential open-write-fsync-close
+  //   cycles. `fsyncSync` on Windows maps to `FlushFileBuffers`, which on
+  //   GitHub-hosted `windows-latest` runners (Hyper-V virtualised storage)
+  //   measures ~50 ms per call. 100 iterations × 50 ms ≈ 5 s — right at
+  //   vitest's 5 s default test timeout. PR #906's matrix observed this
+  //   test taking 5416 ms on `windows-latest` and timing out, while local
+  //   Windows hosts finish the same loop in ~150 ms (~1.5 ms per fsync on
+  //   real NVMe). Linux/mac CI also pass comfortably in <2 s.
+  //
+  //   We MUST NOT reduce the iteration count: the spec acceptance criterion
+  //   is literally "100 entries → kill before flush → all 100 appear in
+  //   crash table once" (see the file-header docstring). We MUST NOT remove
+  //   the per-line `fsyncSync`: the durability invariant under test is that
+  //   each line is on stable storage before the next call returns, so
+  //   sibling cases (a) (d) (e) below — which exercise `appendCrashRaw`
+  //   directly with fsync per call — remain meaningful. The 100-fsync
+  //   wall-clock cost on slow virtualised storage is therefore inherent,
+  //   not a code defect; the timeout is widened to give 5x headroom over
+  //   the observed worst case.
   it('100 entries appended in a child SIGKILLed before normal exit replay into crash_log exactly once', () => {
     // The child writes 100 entries via the same `appendCrashRaw` we ship.
     // After write 100 it raises SIGKILL on itself — no `process.exit`,
@@ -173,7 +194,7 @@ describe('crash-raw appender + replay', () => {
     const r2 = replayCrashRawOnBoot({ path: fx.ndjsonPath, db: fx.db });
     expect(r2.inserted).toBe(0);
     expect(rowCount(fx.db)).toBe(100);
-  });
+  }, 30_000);
 
   // -------------------------------------------------------------------------
   // ch09 §6.2 case (a): partial line at EOF.
