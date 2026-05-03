@@ -1,9 +1,20 @@
 import Database from 'better-sqlite3';
-import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 
+// Wave 0d.3 (#249): this module no longer imports `electron`. Callers MUST
+// pass the data dir to `initDb(dataDir)` once at boot — `electron/main.ts`
+// invokes it inside `app.whenReady()` with `app.getPath('userData')`. The
+// path is then cached so `getDb()` / `loadState()` / `saveState()` continue
+// to work without an explicit arg from prefs/* and the IPC handlers.
+//
+// Rationale: keeping the `app.getPath('userData')` call inside this module
+// pinned the file to the Electron main process. Headless-ready shape (no
+// `electron` import) is a prerequisite for any future move into a non-
+// Electron process; the move itself is deferred (see PR body for #249).
+
 let db: Database.Database | null = null;
+let dataDirCached: string | null = null;
 
 // Schema version for the on-disk SQLite layout. Bumped only when the table
 // shapes change in a way readers care about. Use `PRAGMA user_version` so
@@ -119,9 +130,23 @@ function ensureHealthyDb(file: string, current: Database.Database): Database.Dat
   return new Database(file);
 }
 
-export function initDb(): Database.Database {
+export function initDb(dataDir?: string): Database.Database {
   if (db) return db;
-  const dir = app.getPath('userData');
+  // Cache the dir on the first call so later getDb()/loadState()/saveState()
+  // calls (which don't carry the dir) can re-open if the singleton is dropped
+  // by a test. If the caller never injected one, fail loudly — silently
+  // falling back to cwd or os.homedir() would corrupt user data on a
+  // misconfigured boot.
+  if (dataDir !== undefined) {
+    dataDirCached = dataDir;
+  }
+  if (dataDirCached === null) {
+    throw new Error(
+      '[db] initDb() called without a dataDir before the singleton was primed. ' +
+        'electron/main.ts must call initDb(app.getPath("userData")) once during boot.',
+    );
+  }
+  const dir = dataDirCached;
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'ccsm.db');
 
@@ -179,6 +204,13 @@ export function __setDbForTests(instance: Database.Database | null): void {
     instance.pragma('foreign_keys = ON');
     instance.exec(SCHEMA_SQL);
   }
+}
+
+// Test-only: forget the cached dataDir so the next `initDb()` requires an
+// explicit dir argument again. Pairs with `closeDb()` in test setup so each
+// test can point the singleton at a fresh tmp directory.
+export function __resetDataDirForTests(): void {
+  dataDirCached = null;
 }
 
 export function getDb(): Database.Database {
