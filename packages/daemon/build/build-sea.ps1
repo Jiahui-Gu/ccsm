@@ -79,8 +79,15 @@ try {
   & (Join-Path $Here 'stage-native.ps1') -OutDir $NativeDir
   if ($LASTEXITCODE -ne 0) { throw "stage-native.ps1 exited $LASTEXITCODE" }
 
+  # Step 7: code signing (T7.3 / task #82). Placeholder-safe: missing
+  # WIN_CERT_PFX / WIN_CERT_PASSWORD env vars -> WARN + exit 0, no hard
+  # fail for local dogfood builds. Release CI is responsible for providing
+  # the env (see scripts/sign/README.md).
+  Step 'sign-win.ps1 (T7.3)'
+  & (Join-Path $Here 'sign-win.ps1') -BinaryPath $Target -NativeDir $NativeDir
+  if ($LASTEXITCODE -ne 0) { throw "sign-win.ps1 exited $LASTEXITCODE" }
+
   Step "done -> $Target"
-  Step '(code-signing handled by T7.3 / task #82, not invoked here)'
 }
 finally {
   Pop-Location

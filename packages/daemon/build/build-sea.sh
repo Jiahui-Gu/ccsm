@@ -97,6 +97,10 @@ PLIST
   echo "[build-sea] stage native addons -> $APP/Contents/MacOS/native/"
   bash "$HERE/stage-native.sh" "$APP/Contents/MacOS/native"
   echo "[build-sea] mac .app-wrapped layout written to $APP"
+  # T7.3: sign the .app-wrapped daemon binary + native modules. Same
+  # placeholder-safe rules as the sea-binary path apply.
+  echo "[build-sea] sign-mac.sh (T7.3, .app-wrapped)"
+  bash "$HERE/sign-mac.sh" "$APP/Contents/MacOS/ccsm-daemon" "$APP/Contents/MacOS/native"
   exit 0
 fi
 
@@ -136,5 +140,19 @@ fi
 echo "[build-sea] stage native addons -> $DIST_DIR/native/"
 ( cd "$PKG_DIR" && bash "$HERE/stage-native.sh" "$DIST_DIR/native" )
 
+# Step 7: code signing (T7.3 / task #82). Per-OS scaffolding scripts are
+# placeholder-safe: missing env vars / non-target host -> WARN + exit 0,
+# never hard-fail dogfood builds. Release CI is responsible for providing
+# the env (see scripts/sign/README.md).
+case "$PLATFORM" in
+  mac)
+    echo "[build-sea] sign-mac.sh (T7.3)"
+    bash "$HERE/sign-mac.sh" "$TARGET" "$DIST_DIR/native"
+    ;;
+  linux)
+    echo "[build-sea] sign-linux.sh (T7.3)"
+    bash "$HERE/sign-linux.sh" "$TARGET"
+    ;;
+esac
+
 echo "[build-sea] done -> $TARGET"
-echo "[build-sea] (code-signing handled by T7.3 / task #82, not invoked here)"
