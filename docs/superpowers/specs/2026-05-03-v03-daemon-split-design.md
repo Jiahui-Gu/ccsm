@@ -1999,7 +1999,7 @@ v0.3 has **no automated backup**. Recovery posture:
    - `fsync` the NDJSON file's directory.
    - **Set the daemon's `recovery_modal_pending` flag** (in-memory boolean exposed via `Supervisor /healthz` JSON `{ ..., "recovery_modal": { "pending": true, "ts_ms": <now>, "corrupt_path": "..." } }`). Electron polls `/healthz` on attach; if `recovery_modal.pending`, it shows a **blocking modal** (NOT a toast) on launch with copy: "ccsm detected database corruption at \<ts\>. Your sessions and crash history could not be recovered. The corrupted database has been preserved at \<path\> for diagnostics. A fresh database has been initialized." with an Acknowledge button that POSTs to Supervisor `/ack-recovery` to clear the flag.
 5. **Open** a fresh `state/ccsm.db` read-write; run `001_initial.sql`; record `schema_migrations.version = 1`.
-6. **Replay** any NDJSON lines from `state/crash-raw.ndjson` into the new `crash_log` table ([Chapter 09](#chapter-09--crash-collector) §3); leave the NDJSON file in place (it's append-only; the daemon tracks a `crash_raw_offset` in a sidecar `state/crash-raw.offset` file to avoid re-replaying on restart).
+6. **Replay** any NDJSON lines from `state/crash-raw.ndjson` into the new `crash_log` table ([Chapter 09](#chapter-09--crash-collector) §3); the file is truncated to 0 bytes after successful replay (see [Chapter 09](#chapter-09--crash-collector) §2 for the recovery side) so the next boot starts from an empty file and cannot re-replay already-imported entries.
 7. **Continue boot**.
 
 This ordering ensures that even if the new DB fails to open (e.g., disk full immediately after recovery), the corruption event is on disk in a human-readable text file. Step 6 is best-effort; if it fails, the NDJSON line stays unread and is retried on next successful boot.
@@ -2394,7 +2394,7 @@ For fatal sources where the daemon cannot guarantee a successful SQLite write be
 
 Session-attributable crashes that take the NDJSON path (rare — typically only `worker_exit` if SQLite is also down) carry the session's `principalKey` in `owner_id`. v0.4 may add principal-attributed sources additively without changing the line shape.
 
-On next successful daemon boot, the daemon scans `crash-raw.ndjson`, imports any entries not already in `crash_log` (by id), then truncates the file. This ensures fatal events that prevented SQLite writes still surface to the user post-recovery.
+On next successful daemon boot, the daemon scans `crash-raw.ndjson`, imports any entries not already in `crash_log` (by id), then truncates the file. This ensures fatal events that prevented SQLite writes still surface to the user post-recovery. See [Chapter 07](#chapter-07--data-and-state) §6 for the appender side (corrupt-DB recovery boot ordering that calls into this replay).
 
 #### 3. Rotation and capping
 
