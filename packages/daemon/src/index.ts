@@ -8,7 +8,6 @@
 //   - SQLite open + migrations             → T5.1
 //   - Session restore + orphan-uid check   → T3.4
 //   - Supervisor /healthz                  → T1.7
-//   - Graceful shutdown                    → T1.8
 //
 // Wired-in:
 //   - Listener A bind                      → T1.4 (`makeListenerA`)
@@ -17,6 +16,18 @@
 //                                                  `makeRouterBindHook`)
 //   - Descriptor file write                → T1.6 (separate concern; not
 //                                                  yet called from here)
+//   - systemd watchdog (main thread)       → T5.13 (`startSystemdWatchdog`)
+//   - Graceful shutdown                    → T1.8 (this file installs the
+//                                                  SIGTERM/SIGINT handlers
+//                                                  that call `Shutdown.run`)
+//
+// In scope (T1.8): SIGTERM / SIGINT handler installation. The actual
+// shutdown sequence is `Shutdown.run(...)` (./shutdown.ts); this file
+// only wires (a) the signal trap that calls it, and (b) the empty
+// `ShutdownContext` we can populate today (no listeners / no db / no
+// pty children are constructed by the T1.1 startup stub yet — later
+// tasks register their handles with `register*OnEntrypoint` helpers
+// when they land).
 
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -30,6 +41,13 @@ import { makeListenerA } from './listeners/factory.js';
 import type { Listener } from './listeners/types.js';
 import { makeRouterBindHook } from './rpc/bind.js';
 import { statePaths } from './state-dir/paths.js';
+import {
+  Shutdown,
+  installShutdownHandlers,
+  noopInFlightTracker,
+  type ShutdownContext,
+  type ShutdownResult,
+} from './shutdown.js';
 import {
   startSystemdWatchdog,
   type SystemdWatchdogHandle,
@@ -168,9 +186,53 @@ async function main(): Promise<void> {
   const lifecycle = new Lifecycle();
   let listenerA: Listener | null = null;
   let watchdog: SystemdWatchdogHandle | null = null;
+
+  // Build the shutdown orchestrator + a mutable context the future
+  // T1.4 / T1.7 / T5.1 / T4.x wiring can populate as they land. We
+  // capture refs by reading from a single `ctxRef` object so that an
+  // early SIGTERM (before phase READY) still gets the partial state
+  // (e.g. a half-bound listener or open db) torn down. Only known-safe
+  // members are exposed; the rest stay null until their owning task
+  // wires them in.
+  const ctxRef: { -readonly [K in keyof ShutdownContext]: ShutdownContext[K] } = {
+    listeners: [],
+    supervisor: null,
+    ptyHostChildren: [],
+    db: null,
+    inFlightTracker: noopInFlightTracker,
+    log: {
+      step: (name, detail) => log(`shutdown step=${name}${detail ? ' ' + JSON.stringify(detail) : ''}`),
+      warn: (name, err) => log(`shutdown WARN step=${name}: ${err instanceof Error ? err.message : String(err)}`),
+    },
+  };
+
+  const shutdown = new Shutdown();
+  const triggerShutdown = async (): Promise<ShutdownResult> => {
+    // Stop the watchdog first so its keepalive timer doesn't pin the
+    // event loop while shutdown.run drains in-flight RPCs.
+    watchdog?.stop();
+    const r = await shutdown.run(ctxRef);
+    // Exit code: clean drain + zero step errors → 0; otherwise 1.
+    const exitCode = r.errors.length === 0 && r.inFlightAtBudgetExpiry <= 0 ? 0 : 1;
+    process.exit(exitCode);
+  };
+
+  // Install signal handlers LAST in main() — but we install them BEFORE
+  // runStartup so an early SIGTERM during boot still triggers a clean
+  // teardown of whatever partial state we managed to build.
+  installShutdownHandlers(triggerShutdown, (sig, kind) => {
+    log(`signal ${sig} (${kind}) — initiating graceful shutdown`);
+  });
+
   try {
     const result = await runStartup(lifecycle);
     listenerA = result.listenerA;
+    // Register the bound listener with the shutdown context so SIGTERM
+    // closes it during step 1 (stop accepting). T5.1 will register the
+    // db handle here too once it lands.
+    if (listenerA !== null) {
+      ctxRef.listeners.push(listenerA);
+    }
     // Watchdog after READY — there is no point telling systemd we're alive
     // until the daemon is actually serving. systemd's `WatchdogSec=30s`
     // gives ~30s of boot slack before the first WATCHDOG=1 is required.
@@ -203,6 +265,13 @@ async function main(): Promise<void> {
         /* swallow — process is exiting */
       });
     }
+    // Best-effort partial-state teardown via the shutdown orchestrator
+    // (covers the spec's "checkpoint WAL on every termination path"
+    // contract — once T5.1 wires `ctxRef.db`, a startup failure between
+    // OPENING_DB and READY will still flush the WAL).
+    await shutdown.run(ctxRef).catch(() => {
+      /* shutdown.run captures its own errors; no need to log twice */
+    });
     process.exit(1);
   }
 }
