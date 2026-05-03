@@ -1,0 +1,36 @@
+{
+  "$comment": "Ship-gate file lock for v0.3 daemon split spec. Locks the canonical paths of the 4 ship gates against accidental rename/deletion. Verified by tools/check-spec-code-lock.sh in CI on every PR. Hashes are SHA256 of file content with line endings normalized to LF (\\r stripped) so they are platform-stable on Linux / macOS / Windows regardless of git's autocrlf setting. To intentionally rotate a path or update file contents, update both this file and the spec in the same PR.",
+  "version": 1,
+  "spec": "docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md",
+  "hash_algorithm": "sha256",
+  "hash_source": "working_tree_lf_normalized",
+  "gates": {
+    "a": {
+      "title": "Gate A — no IPC drift",
+      "files": [
+        { "path": "tools/lint-no-ipc.sh", "sha256": "ee1113824aa2d011dbc2f44b590c36aa9a023847eec86c83b9b9ce3a2a5178d4" },
+        { "path": "tools/.no-ipc-allowlist", "sha256": "507a12b31fb9ff7a26d878fe7334e579c47e1b80e3aa0e729f21794fef7a626c" }
+      ]
+    },
+    "b": {
+      "title": "Gate B — snapshot codec",
+      "files": [
+        { "path": "packages/snapshot-codec/src/index.ts", "sha256": "e7d7e9a3283328c282a133cbad39dbab5c6d206c3c4e2752429540d3f3e71bd1" }
+      ]
+    },
+    "c": {
+      "title": "Gate C — pty soak harness",
+      "files": [
+        { "path": "packages/daemon/test/integration/pty-soak-shared.ts", "sha256": "a004ffe545815aa0e256c0efc3b0dd703852d611f7a9d15705c3211533ce08fe" },
+        { "path": "tools/claude-sim/main.go", "sha256": "21b5808e35922cbd36e6de58339c72f129a91956da6fcb7450a51af38664ddee" }
+      ]
+    },
+    "d": {
+      "title": "Gate D — installer roundtrip",
+      "files": [
+        { "path": "tools/installer-roundtrip.ps1", "sha256": "41d93bb1352bc727fc056e0a52b083099b645dc88d25abddf307d07f2c6ed142" },
+        { "path": "test/installer-residue-allowlist.txt", "sha256": "72808c598815046972b5c451df2c3f9233fc336d09f5143ebf8ed04543d48bf2" }
+      ]
+    }
+  }
+}
