@@ -4,9 +4,19 @@
   "private": true,
   "type": "module",
   "description": "CCSM Electron thin client. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
+  "author": {
+    "name": "Jiahui Gu",
+    "email": "noreply@ccsm.dev"
+  },
+  "main": "dist/main/protocol-app.js",
   "scripts": {
     "lint": "eslint \"test/**/*.ts\"",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:mac": "electron-builder --mac --config electron-builder.yml",
+    "build:linux": "electron-builder --linux --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.8.1"
   }
 }
