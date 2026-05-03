@@ -89,6 +89,8 @@ export default [
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly',
         ResizeObserver: 'readonly',
+        localStorage: 'readonly',
+        sessionStorage: 'readonly',
         // Web platform globals available in Node 22+ (used by daemon
         // RPC code, e.g. T1.3 auth interceptor) and the Electron main
         // process. Browser code already has these via the DOM lib.

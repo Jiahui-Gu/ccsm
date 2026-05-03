@@ -11,9 +11,16 @@ import { schedulePersist, type PersistedState } from '../src/stores/persist';
 
 describe('persist: curated snapshot payload', () => {
   it('only includes the curated subset of state when serialized', () => {
-    const saveState = vi.fn().mockResolvedValue(undefined);
-    (globalThis as unknown as { window?: unknown }).window = {
-      ccsm: { saveState }
+    // v0.3 transitional: persist.ts writes to localStorage directly
+    // (Wave 0e-1, #289) until SettingsService RPC ships.
+    const setItem = vi.fn();
+    (globalThis as unknown as { localStorage?: unknown }).localStorage = {
+      setItem,
+      getItem: () => null,
+      removeItem: () => {},
+      clear: () => {},
+      key: () => null,
+      length: 0,
     };
     vi.useFakeTimers();
     try {
@@ -29,8 +36,8 @@ describe('persist: curated snapshot payload', () => {
       };
       schedulePersist(snap);
       vi.advanceTimersByTime(500);
-      expect(saveState).toHaveBeenCalledTimes(1);
-      const [, payload] = saveState.mock.calls[0] as [string, string];
+      expect(setItem).toHaveBeenCalledTimes(1);
+      const [, payload] = setItem.mock.calls[0] as [string, string];
       const parsed = JSON.parse(payload);
       // Allowed top-level keys — exhaustive list. New persisted fields should
       // be added here AND to PersistedState; high-churn runtime state must
