@@ -100,6 +100,13 @@ jobs:
       - name: Lint
         run: npm run lint:app
 
+      # Wave 0f (#214) — ship-gate (a): zero IPC residue under electron/ + src/.
+      # Forbidden symbols: ipcMain, ipcRenderer, contextBridge,
+      # additionalArguments, webContents.send. Allowlist at
+      # tools/.no-ipc-allowlist is forever-stable per chapter 15 §3 #29.
+      - name: Lint (no IPC residue)
+        run: npm run lint:no-ipc
+
       - name: Typecheck
         run: npm run typecheck
 
