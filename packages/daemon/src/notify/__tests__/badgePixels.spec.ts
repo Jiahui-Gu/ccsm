@@ -12,7 +12,7 @@ import {
   fillCircle,
   renderBadgeImage,
   type BgraBitmap,
-} from '../badgePixels';
+} from '../badgePixels.js';
 
 // Pure pixel renderer — tests assert real RGBA bytes, not mocks.
 // Buffer layout: row-major, 4 bytes/pixel (R,G,B,A), origin top-left.

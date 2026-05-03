@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { createRunStateTracker } from '../runStateTracker';
-import { decide, DEDUPE_MS, SHORT_TASK_MS } from '../notifyDecider';
+import { createRunStateTracker } from '../runStateTracker.js';
+import { decide, DEDUPE_MS, SHORT_TASK_MS } from '../notifyDecider.js';
 
 const NOW = 1_700_000_000_000;
 

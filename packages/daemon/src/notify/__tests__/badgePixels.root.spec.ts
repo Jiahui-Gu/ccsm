@@ -11,7 +11,7 @@ import {
   GLYPH_W,
   GLYPH_H,
   type BgraBitmap,
-} from '../electron/notify/badgePixels';
+} from '../badgePixels.js';
 
 const digest = (buf: Buffer): string =>
   createHash('sha256').update(buf).digest('hex').slice(0, 16);

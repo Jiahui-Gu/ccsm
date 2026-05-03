@@ -7,7 +7,7 @@ import {
   DEDUPE_MS,
   type Ctx,
   type Event,
-} from '../notifyDecider';
+} from '../notifyDecider.js';
 
 const NOW = 1_700_000_000_000;
 
