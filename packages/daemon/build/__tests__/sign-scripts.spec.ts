@@ -105,7 +105,12 @@ describe('packages/daemon/build/sign-*.{sh,ps1} (spec ch10 §3, T7.3)', () => {
   });
 
   describe('placeholder-safe — dry-run + missing env exits 0', () => {
-    it('sign-mac.sh exits 0 with no env (non-darwin host) and prints WARN', () => {
+    // Cross-host placeholder-safe gate (runs on every platform per PR #942
+    // review): each script must WARN and exit 0 when invoked without the
+    // right env / on the wrong host. This contract is what allows local
+    // dogfood `npm run build` to succeed on any developer machine, and is
+    // what every CI matrix runner exercises before its host-specific job.
+    it('sign-mac.sh exits 0 with no env (cross-host placeholder gate)', () => {
       // We test this on whatever host runs the suite. On non-darwin it
       // hits the gate; on darwin it hits the missing-env gate. Either path
       // exits 0 with a WARN line. WARN goes to stderr; capture both.
@@ -116,7 +121,7 @@ describe('packages/daemon/build/sign-*.{sh,ps1} (spec ch10 §3, T7.3)', () => {
       expect(typeof out.toString()).toBe('string');
     });
 
-    it('sign-linux.sh exits 0 with no env and prints WARN', () => {
+    it('sign-linux.sh exits 0 with no env and prints WARN (cross-host placeholder gate)', () => {
       // WARN goes to stderr; merge by spawning bash -c to redirect.
       const out = execFileSync('bash', ['-c', `bash "${LINUX_SH}" 2>&1`], {
         env: { ...process.env, GPG_SIGNING_KEY: '', CCSM_SIGN_DRY_RUN: '' },
@@ -125,34 +130,49 @@ describe('packages/daemon/build/sign-*.{sh,ps1} (spec ch10 §3, T7.3)', () => {
       expect(out.toString()).toMatch(/WARN: GPG_SIGNING_KEY not set/);
     });
 
-    it('sign-mac.sh dry-run prints codesign + xcrun notarytool traces', () => {
-      const out = execFileSync('bash', [MAC_SH], {
-        env: {
-          ...process.env,
-          APPLE_TEAM_ID: 'XXXXXXXXXX',
-          APPLE_SIGNING_IDENTITY: 'Developer ID Application: Test (XXXXXXXXXX)',
-          APPLE_NOTARY_PROFILE: 'test-profile',
-          CCSM_SIGN_DRY_RUN: '1',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const text = out.toString();
-      expect(text).toMatch(/DRY-RUN.*codesign/);
-      expect(text).toMatch(/DRY-RUN.*xcrun notarytool submit/);
-      expect(text).toMatch(/DRY-RUN.*stapler staple/);
-      expect(text).toMatch(/DRY-RUN.*spctl --assess/);
-    });
+    // Per-OS tool-output assertions: only meaningful on the matching host.
+    // The cross-host placeholder-safe contract is covered by the
+    // "exits 0 with no env" tests above, which run on every platform.
+    // Background: PR #906 (T0.8 CI matrix) surfaced a regression where
+    // these dry-run tests ran on darwin runners that lack debsigs/rpm/gpg
+    // (and on linux runners that lack the mac toolchain) — the scripts
+    // themselves are placeholder-safe (exit 0 + WARN on wrong host), but
+    // the tests assert tool-trace output that the wrong host can't emit.
+    // skipIf keeps the assertion on the matching host only.
+    it.skipIf(process.platform !== 'darwin')(
+      'sign-mac.sh dry-run prints codesign + xcrun notarytool traces (darwin only)',
+      () => {
+        const out = execFileSync('bash', [MAC_SH], {
+          env: {
+            ...process.env,
+            APPLE_TEAM_ID: 'XXXXXXXXXX',
+            APPLE_SIGNING_IDENTITY: 'Developer ID Application: Test (XXXXXXXXXX)',
+            APPLE_NOTARY_PROFILE: 'test-profile',
+            CCSM_SIGN_DRY_RUN: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const text = out.toString();
+        expect(text).toMatch(/DRY-RUN.*codesign/);
+        expect(text).toMatch(/DRY-RUN.*xcrun notarytool submit/);
+        expect(text).toMatch(/DRY-RUN.*stapler staple/);
+        expect(text).toMatch(/DRY-RUN.*spctl --assess/);
+      },
+    );
 
-    it('sign-linux.sh dry-run prints debsigs + rpm --addsign + gpg --detach-sign traces', () => {
-      const out = execFileSync('bash', [LINUX_SH, '/tmp/fake-binary', '/tmp/fake.deb', '/tmp/fake.rpm'], {
-        env: { ...process.env, GPG_SIGNING_KEY: '0xDEADBEEF', CCSM_SIGN_DRY_RUN: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const text = out.toString();
-      expect(text).toMatch(/DRY-RUN.*gpg.*--detach-sign/);
-      expect(text).toMatch(/DRY-RUN.*debsigs --sign=origin/);
-      expect(text).toMatch(/DRY-RUN.*rpm.*--addsign/);
-    });
+    it.skipIf(process.platform !== 'linux')(
+      'sign-linux.sh dry-run prints debsigs + rpm --addsign + gpg --detach-sign traces (linux only)',
+      () => {
+        const out = execFileSync('bash', [LINUX_SH, '/tmp/fake-binary', '/tmp/fake.deb', '/tmp/fake.rpm'], {
+          env: { ...process.env, GPG_SIGNING_KEY: '0xDEADBEEF', CCSM_SIGN_DRY_RUN: '1' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const text = out.toString();
+        expect(text).toMatch(/DRY-RUN.*gpg.*--detach-sign/);
+        expect(text).toMatch(/DRY-RUN.*debsigs --sign=origin/);
+        expect(text).toMatch(/DRY-RUN.*rpm.*--addsign/);
+      },
+    );
   });
 
   describe('build-sea pipeline hook (T7.1 -> T7.3)', () => {
