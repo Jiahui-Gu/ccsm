@@ -59,6 +59,8 @@ import {
   SupervisorService,
 } from '@ccsm/proto';
 
+import { requestMetaInterceptor } from './middleware/request-meta.js';
+
 /**
  * Stable enumeration of every v0.3 Connect service from `@ccsm/proto`.
  *
@@ -136,12 +138,31 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
  * function shape works for both — connect-node abstracts the
  * difference internally). Listener A wires this into its
  * `http2.createServer({ ... }, handler)` call.
+ *
+ * Interceptor wiring: T2.4 (#37) — `requestMetaInterceptor` is prepended
+ * to whatever interceptor list the caller supplies, so it runs FIRST in
+ * the chain and rejects empty / whitespace-only `RequestMeta.request_id`
+ * before any handler sees the call. Caller-supplied interceptors run
+ * AFTER (e.g. T1.3 `peerCredAuthInterceptor` deposited by `makeListenerA`,
+ * which prepends auth in front of meta-validation when it builds its own
+ * interceptor list — see `bind.ts`). Order is enforced here rather than
+ * in `makeListenerA` so any future call site that reaches
+ * `createDaemonNodeAdapter` directly still inherits the meta-validation
+ * (the alternative — relying on every caller to remember to push the
+ * interceptor — is a documentation-only invariant the F7 spec rule
+ * forbids).
  */
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
+  const { interceptors: callerInterceptors, ...rest } = options;
+  const interceptors = [
+    requestMetaInterceptor,
+    ...(callerInterceptors ?? []),
+  ];
   return connectNodeAdapter({
-    ...options,
+    ...rest,
+    interceptors,
     routes: stubRoutes,
   });
 }

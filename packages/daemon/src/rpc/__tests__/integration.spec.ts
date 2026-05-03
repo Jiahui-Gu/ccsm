@@ -16,6 +16,14 @@
 // Connect protocol is being served (route path
 // `/ccsm.v1.SessionService/Hello`). Any other unary would do; Hello
 // is documented as forever-stable in spec ch04 §3.
+//
+// Note on RequestMeta: every call below supplies a valid
+// `meta.requestId` because T2.4 (#37) wires the
+// `requestMetaInterceptor` into `createDaemonNodeAdapter` — an empty
+// meta would now be rejected with `InvalidArgument` BEFORE the router
+// reaches its `Unimplemented` stub. The integration test asserts the
+// downstream Unimplemented behavior, so it intentionally clears the
+// meta-validation gate first.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { Code, ConnectError, createClient } from '@connectrpc/connect';
@@ -31,6 +39,12 @@ import { makeRouterBindHook } from '../bind.js';
 import type { BindDescriptor } from '../../listeners/types.js';
 
 const isWin = platform() === 'win32';
+
+/** A canonical UUIDv4 used for the integration calls — passes
+ * `requestMetaInterceptor` so the test can assert the next ring
+ * (Unimplemented) rather than tripping on missing meta. */
+const VALID_REQUEST_ID = '7f3c1d8e-2b94-4f01-a5c6-d9e8b2a107c4';
+const validHello = { meta: { requestId: VALID_REQUEST_ID } } as const;
 
 interface Cleanup {
   closeServer?: () => Promise<void>;
@@ -78,7 +92,7 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
 
     let captured: unknown = null;
     try {
-      await client.hello({});
+      await client.hello(validHello);
     } catch (err) {
       captured = err;
     }
@@ -105,7 +119,7 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
 
     let captured: unknown = null;
     try {
-      await client.hello({});
+      await client.hello(validHello);
     } catch (err) {
       captured = err;
     }
