@@ -17,6 +17,12 @@ export default defineConfig({
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
+      // Cross-cutting integration tests that don't fit neatly under a
+      // single `src/<sub>/__tests__/` directory live in `test/<topic>/`
+      // (e.g. test/supervisor/, test/pty-host/). Picked up broadly.
+      // Note: forward-compat placeholder specs (e.g. test/db/migration-lock)
+      // may hard-fail until their dependencies land — re-include those in
+      // the same PR that lands the dep, or move under `src/<sub>/__tests__/`.
       'test/**/*.spec.ts',
     ],
     globals: false,
