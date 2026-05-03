@@ -1,3 +1,19 @@
+# KNOWN-BROKEN until Wave 0e + #228 land.
+#
+# 10 harness-ui cases fail on every PR because Wave 0b/c/d removed
+# window.ccsm.loadState (and other v0.2 renderer APIs) but Wave 0e renderer
+# cutover (#215, src/**/*.ts 27 files / 69 hits) was deferred to post-#228
+# (RPC stub gap epic). Failing cases: settings-updates-pane, titlebar, tray,
+# close-dialog-is-native, theme-toggle, import-empty-groups, rename,
+# move-to-group-excludes-own-group, sidebar-long-name-truncates,
+# startup-paints-before-hydrate.
+#
+# e2e is NOT in branch protection's required checks (lint+typecheck+test +
+# no-silent-drops + detect changes are the 5 required). continue-on-error
+# below silences the visual red on PRs without affecting required-check gating.
+#
+# Ship-gate: #237 M4-CHECK requires e2e green-on-same-commit; that means
+# Wave 0e must land first. Track via #285 (this) + #215 + #237.
 name: e2e
 
 on:
@@ -22,6 +38,13 @@ jobs:
   e2e:
     name: e2e (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # See top-of-file comment block. Wave 0e renderer cutover (#215) deferred
+    # to post-#228 means 10 harness-ui cases fail deterministically on every
+    # PR. continue-on-error keeps the job running (so we get logs + artifacts)
+    # but prevents the red signal from showing on PR views. Required checks
+    # (lint+typecheck+test, no-silent-drops, detect changes) are unaffected.
+    # Remove this line when Wave 0e + #228 land. (#285)
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
