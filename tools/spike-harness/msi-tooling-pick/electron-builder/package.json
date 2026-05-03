@@ -1,0 +1,40 @@
+{
+  "name": "ccsm-msi-tooling-pick-eb",
+  "version": "0.0.1",
+  "description": "Minimal electron-builder MSI target attempt for T9.14",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "build:msi": "electron-builder --win msi --x64 --publish never"
+  },
+  "build": {
+    "appId": "com.ccsm.toolingpick",
+    "productName": "CcsmToolingPickEb",
+    "asar": true,
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        { "target": "msi", "arch": ["x64"] }
+      ]
+    },
+    "msi": {
+      "oneClick": false,
+      "perMachine": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": false,
+      "warningsAsErrors": true,
+      "upgradeCode": "8d2f3a64-1e9b-4c13-bf8a-2b4a7c11d030",
+      "additionalLightArgs": ["-sval"]
+    }
+  },
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}

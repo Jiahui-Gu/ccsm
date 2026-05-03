@@ -1,0 +1,37 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="CCSM MSI Tooling Pick (T9.14 WiX 4)"
+           Manufacturer="CCSM"
+           Version="0.0.1"
+           UpgradeCode="2c5e0b48-0e2b-4d61-9f3c-7a9e3d2e4c10"
+           Compressed="yes"
+           Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CcsmToolingPick">
+        <Component Id="DaemonExe" Bitness="always64" Guid="*">
+          <File Id="DaemonExeFile"
+                Name="ccsm-daemon-shape.exe"
+                Source="build\payload\ccsm-daemon-shape.exe"
+                KeyPath="yes" />
+          <ServiceInstall Id="CcsmToolingPickInstall"
+                          Name="CcsmToolingPickSvc"
+                          DisplayName="CCSM Tooling Pick (T9.14)"
+                          Description="MSI tooling pick spike (WiX 4 path)."
+                          Type="ownProcess"
+                          Start="demand"
+                          ErrorControl="normal"
+                          Vital="yes" />
+          <ServiceControl Id="CcsmToolingPickControl"
+                          Name="CcsmToolingPickSvc"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Main" Level="1">
+      <ComponentRef Id="DaemonExe" />
+    </Feature>
+  </Package>
+</Wix>
