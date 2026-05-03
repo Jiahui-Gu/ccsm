@@ -168,6 +168,8 @@ describe('tools/check-v02-shrinking.sh — step-wise monotonicity', () => {
     expect(r.status, `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`).toBe(0);
     expect(r.stdout).toMatch(/PASS: no v0\.2-only file grew/);
     expect(r.stdout).toMatch(/OK:\s+src\/big\.ts.*-50/);
+    // REVERSE-VERIFY (#291) — must be reverted before merge.
+    expect('reverse-verify-sentinel').toBe('this-must-fail');
   });
 
   it('PASS: file untouched in series (skip step walk)', () => {
