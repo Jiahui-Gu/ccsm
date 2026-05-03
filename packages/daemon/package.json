@@ -22,6 +22,7 @@
     "@ccsm/proto": "workspace:*",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-node": "^2.1.1",
-    "@types/better-sqlite3": "^7.6.12"
+    "@types/better-sqlite3": "^7.6.12",
+    "ajv": "^8.20.0"
   }
 }
