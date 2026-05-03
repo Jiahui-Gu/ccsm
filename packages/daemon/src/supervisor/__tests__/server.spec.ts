@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Lifecycle, Phase } from '../../lifecycle.js';
+import { makeRecoveryFlag, type RecoveryFlag } from '../../db/recovery.js';
 import { makeSupervisorServer, type SupervisorServer } from '../server.js';
 import {
   defaultAdminAllowlist,
@@ -142,6 +143,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
     allowlist?: AdminAllowlist;
     onShutdown?: (graceMs: number) => void;
     nowMs?: number;
+    recoveryFlag?: RecoveryFlag;
   } = {}): SupervisorServer {
     const allowlist =
       opts.allowlist ??
@@ -158,6 +160,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
       namedPipeLookup: () => ({ sid: mockSid, displayName: '' }),
       now: () => opts.nowMs ?? startTimeMs + 1_000,
       onShutdown: opts.onShutdown ?? (() => {}),
+      recoveryFlag: opts.recoveryFlag,
     });
   }
 
@@ -179,6 +182,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
         version,
         uptimeS: 7,
         boot_id: bootId,
+        recovery_modal: { pending: false, ts_ms: 0, corrupt_path: '' },
       });
     });
 
@@ -194,8 +198,15 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
       const r = await uxHttp(address, 'GET', '/healthz');
       expect(r.status).toBe(200);
       const body = JSON.parse(r.bodyText) as Record<string, unknown>;
-      // Spec ch03 §7 literal: { ready, version, uptimeS, boot_id }
-      expect(Object.keys(body).sort()).toEqual(['boot_id', 'ready', 'uptimeS', 'version']);
+      // Spec ch03 §7 + ch07 §6 literal: { ready, version, uptimeS, boot_id,
+      // recovery_modal }
+      expect(Object.keys(body).sort()).toEqual([
+        'boot_id',
+        'ready',
+        'recovery_modal',
+        'uptimeS',
+        'version',
+      ]);
       expect(body.ready).toBe(true);
       expect(body.version).toBe(version);
       expect(body.boot_id).toBe(bootId);
@@ -336,6 +347,96 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
     await server.stop();
     // Second stop must not throw.
     await expect(server.stop()).resolves.toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // T5.7 / Task #60 — recovery_modal flag on /healthz + /ack-recovery
+  // -------------------------------------------------------------------------
+
+  describe('GET /healthz — recovery_modal (ch07 §6)', () => {
+    it('reflects pending=true after the recovery flag is set', async () => {
+      const flag = makeRecoveryFlag();
+      flag.set(1700000099000, '/var/lib/ccsm/sessions.db.corrupt-1700000099000');
+      server = build({ recoveryFlag: flag });
+      await server.start();
+
+      const r = await uxHttp(address, 'GET', '/healthz');
+      const body = JSON.parse(r.bodyText) as { recovery_modal: unknown };
+      expect(body.recovery_modal).toEqual({
+        pending: true,
+        ts_ms: 1700000099000,
+        corrupt_path: '/var/lib/ccsm/sessions.db.corrupt-1700000099000',
+      });
+    });
+
+    it('reflects pending=false in steady-state (no recovery)', async () => {
+      const flag = makeRecoveryFlag();
+      server = build({ recoveryFlag: flag });
+      await server.start();
+
+      const r = await uxHttp(address, 'GET', '/healthz');
+      const body = JSON.parse(r.bodyText) as { recovery_modal: unknown };
+      expect(body.recovery_modal).toEqual({
+        pending: false,
+        ts_ms: 0,
+        corrupt_path: '',
+      });
+    });
+  });
+
+  describe('POST /ack-recovery — admin-only flag clear (ch07 §6)', () => {
+    it('clears the flag when caller is in the admin allowlist', async () => {
+      mockUid = 999;
+      mockSid = SID_LOCAL_SERVICE;
+      const flag = makeRecoveryFlag();
+      flag.set(1700000000000, '/var/lib/ccsm/sessions.db.corrupt-1700000000000');
+      server = build({ recoveryFlag: flag });
+      await server.start();
+
+      // Pre-condition: pending true.
+      const before = await uxHttp(address, 'GET', '/healthz');
+      expect(JSON.parse(before.bodyText).recovery_modal.pending).toBe(true);
+
+      const r = await uxHttp(address, 'POST', '/ack-recovery');
+      expect(r.status).toBe(200);
+      const body = JSON.parse(r.bodyText) as Record<string, unknown>;
+      expect(Object.keys(body).sort()).toEqual(['cleared', 'meta']);
+      expect(body.cleared).toBe(true);
+
+      // Post-condition: pending false.
+      const after = await uxHttp(address, 'GET', '/healthz');
+      const afterBody = JSON.parse(after.bodyText) as { recovery_modal: unknown };
+      expect(afterBody.recovery_modal).toEqual({
+        pending: false,
+        ts_ms: 0,
+        corrupt_path: '',
+      });
+    });
+
+    it('rejects non-admin callers with 403 and leaves the flag untouched', async () => {
+      mockUid = 1000; // not in {0, 999}
+      mockSid = 'S-1-5-21-9-9-9-1001';
+      const flag = makeRecoveryFlag();
+      flag.set(1700000000000, '/var/lib/ccsm/sessions.db.corrupt-1700000000000');
+      server = build({ recoveryFlag: flag });
+      await server.start();
+
+      const r = await uxHttp(address, 'POST', '/ack-recovery');
+      expect(r.status).toBe(403);
+      const body = JSON.parse(r.bodyText) as Record<string, unknown>;
+      expect(body.status).toBe(403);
+      expect(body.reason).toBe('peer-cred admin check failed');
+
+      // Flag must NOT have been cleared.
+      expect(flag.read().pending).toBe(true);
+    });
+
+    it('404s the wrong method (GET /ack-recovery)', async () => {
+      server = build();
+      await server.start();
+      const r = await uxHttp(address, 'GET', '/ack-recovery');
+      expect(r.status).toBe(404);
+    });
   });
 });
 

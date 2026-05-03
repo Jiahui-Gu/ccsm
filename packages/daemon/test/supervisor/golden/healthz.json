@@ -2,5 +2,10 @@
   "ready": true,
   "version": "0.3.x",
   "uptimeS": 0,
-  "boot_id": "00000000-0000-0000-0000-000000000000"
+  "boot_id": "00000000-0000-0000-0000-000000000000",
+  "recovery_modal": {
+    "pending": false,
+    "ts_ms": 0,
+    "corrupt_path": ""
+  }
 }

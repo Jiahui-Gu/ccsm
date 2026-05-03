@@ -50,11 +50,13 @@ import {
 } from '../auth/peer-cred.js';
 import type { NamedPipePeerCred, UdsPeerCred } from '../auth/peer-info.js';
 import type { Lifecycle } from '../lifecycle.js';
+import type { RecoveryFlag, RecoveryModalState } from '../db/recovery.js';
 import {
   defaultAdminAllowlist,
   isAllowed,
   type AdminAllowlist,
 } from './admin-allowlist.js';
+import { makeRecoveryFlag } from '../db/recovery.js';
 
 // Re-export the URL/method constants from the contract spec so the server
 // and the forever-stable contract test agree on a single source of truth
@@ -66,12 +68,14 @@ export const SUPERVISOR_URLS = {
   healthz: '/healthz',
   hello: '/hello',
   shutdown: '/shutdown',
+  ackRecovery: '/ack-recovery',
 } as const;
 
 export const SUPERVISOR_METHODS = {
   healthz: 'GET',
   hello: 'POST',
   shutdown: 'POST',
+  ackRecovery: 'POST',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -80,12 +84,21 @@ export const SUPERVISOR_METHODS = {
 // is a spec ch15 §3 #9 violation and the contract test catches it.
 // ---------------------------------------------------------------------------
 
-/** GET /healthz body — spec ch03 §7 literal `{ ready, version, uptimeS, boot_id }`. */
+/**
+ * GET /healthz body — spec ch03 §7 literal `{ ready, version, uptimeS,
+ * boot_id }` extended by ch07 §6 with `recovery_modal: { pending, ts_ms,
+ * corrupt_path }` for the corrupt-DB recovery flow (T5.7 / Task #60).
+ *
+ * The Electron client polls `/healthz` on attach; if `recovery_modal.pending`
+ * is true, it shows a blocking modal and POSTs `/ack-recovery` to clear it
+ * (ch07 §6 step 4(e)).
+ */
 export interface HealthzBody {
   readonly ready: boolean;
   readonly version: string;
   readonly uptimeS: number;
   readonly boot_id: string;
+  readonly recovery_modal: RecoveryModalState;
 }
 
 /** POST /hello body — proto-mirrored shape (`SupervisorHelloResponse`). */
@@ -182,6 +195,17 @@ export interface SupervisorConfig {
   readonly shutdownGraceMs?: number;
   /** Address to bind: UDS path on POSIX, `\\.\pipe\<name>` on Windows. */
   readonly address: string;
+  /**
+   * Recovery flag (T5.7 / Task #60 — ch07 §6). Read on every `/healthz`
+   * to surface `recovery_modal` to Electron; cleared by `/ack-recovery`
+   * (admin-only).
+   *
+   * Optional so existing tests / smoke runs that don't care about
+   * recovery still work — defaulting here to a fresh cleared flag means
+   * `/healthz.recovery_modal.pending = false` and `/ack-recovery` is a
+   * no-op admin endpoint.
+   */
+  readonly recoveryFlag?: RecoveryFlag;
 }
 
 /**
@@ -220,7 +244,8 @@ export function makeSupervisorServer(config: SupervisorConfig): SupervisorServer
   if (
     SUPERVISOR_URLS.healthz !== '/healthz' ||
     SUPERVISOR_URLS.hello !== '/hello' ||
-    SUPERVISOR_URLS.shutdown !== '/shutdown'
+    SUPERVISOR_URLS.shutdown !== '/shutdown' ||
+    SUPERVISOR_URLS.ackRecovery !== '/ack-recovery'
   ) {
     throw new Error('SUPERVISOR_URLS drift — see ch15 §3 #9 + test/supervisor/contract.spec.ts');
   }
@@ -228,6 +253,7 @@ export function makeSupervisorServer(config: SupervisorConfig): SupervisorServer
   const allowlist = config.adminAllowlist ?? defaultAdminAllowlist();
   const now = config.now ?? Date.now;
   const graceMs = config.shutdownGraceMs ?? 5000;
+  const recoveryFlag = config.recoveryFlag ?? makeRecoveryFlag();
 
   const server = createServer((req, res) => {
     handleRequest(req, res, {
@@ -235,6 +261,7 @@ export function makeSupervisorServer(config: SupervisorConfig): SupervisorServer
       adminAllowlist: allowlist,
       now,
       shutdownGraceMs: graceMs,
+      recoveryFlag,
     }).catch((err) => {
       // Defensive: `handleRequest` never throws in the happy path. If a
       // syscall in peer-cred extraction throws AFTER headers are sent,
@@ -292,6 +319,7 @@ interface DispatchConfig extends SupervisorConfig {
   readonly adminAllowlist: AdminAllowlist;
   readonly now: () => number;
   readonly shutdownGraceMs: number;
+  readonly recoveryFlag: RecoveryFlag;
 }
 
 async function handleRequest(
@@ -315,6 +343,12 @@ async function handleRequest(
   if (method === SUPERVISOR_METHODS.shutdown && url === SUPERVISOR_URLS.shutdown) {
     return handleAdminEndpoint(req, res, cfg, 'shutdown');
   }
+  if (
+    method === SUPERVISOR_METHODS.ackRecovery &&
+    url === SUPERVISOR_URLS.ackRecovery
+  ) {
+    return handleAdminEndpoint(req, res, cfg, 'ackRecovery');
+  }
 
   res.statusCode = 404;
   res.end();
@@ -326,23 +360,35 @@ async function handleRequest(
 
 function handleHealthz(res: ServerResponse, cfg: DispatchConfig): void {
   // Spec ch03 §7: 200 only after phase READY; 503 before. The body shape
-  // is identical in both cases (the golden pins `ready: true`, but the
-  // contract spec asserts the SHAPE, not the value — `ready` reflects
-  // lifecycle state at request time).
+  // is identical in both cases. Spec ch07 §6 (T5.7) extends the body with
+  // `recovery_modal: { pending, ts_ms, corrupt_path }` so Electron can
+  // surface the corrupt-DB recovery modal on attach without a separate
+  // RPC.
   const body: HealthzBody = {
     ready: cfg.lifecycle.isReady(),
     version: cfg.version,
     uptimeS: Math.max(0, Math.floor((cfg.now() - cfg.startTimeMs) / 1000)),
     boot_id: cfg.bootId,
+    recovery_modal: cfg.recoveryFlag.read(),
   };
   writeJson(res, body.ready ? 200 : 503, body);
+}
+
+/** POST /ack-recovery body — spec ch07 §6 step 4(e). Empty success shape. */
+export interface AckRecoveryBody {
+  readonly meta: {
+    readonly request_id: string;
+    readonly client_version: string;
+    readonly client_send_unix_ms: number;
+  };
+  readonly cleared: boolean;
 }
 
 async function handleAdminEndpoint(
   req: IncomingMessage,
   res: ServerResponse,
   cfg: DispatchConfig,
-  kind: 'hello' | 'shutdown',
+  kind: 'hello' | 'shutdown' | 'ackRecovery',
 ): Promise<void> {
   // Drain the request body — POST endpoints accept no payload in v0.3 but
   // we MUST consume the bytes so keep-alive connections behave. (curl POST
@@ -384,6 +430,19 @@ async function handleAdminEndpoint(
       daemon_version: cfg.version,
       boot_id: cfg.bootId,
     };
+    writeJson(res, 200, body);
+    return;
+  }
+
+  if (kind === 'ackRecovery') {
+    // Spec ch07 §6 step 4(e): clears the in-memory recovery_modal flag.
+    // Admin-only via the same peer-cred allowlist that gates /hello and
+    // /shutdown — the corruption path is high-trust because the
+    // operator/installer is the one who needs to sign off after a
+    // diagnostics review (ch07 §6: "the corrupted database has been
+    // preserved at <path> for diagnostics").
+    cfg.recoveryFlag.clear();
+    const body: AckRecoveryBody = { meta, cleared: true };
     writeJson(res, 200, body);
     return;
   }

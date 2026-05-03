@@ -54,6 +54,7 @@ export const SUPERVISOR_URLS = {
   healthz: '/healthz',
   hello: '/hello',
   shutdown: '/shutdown',
+  ackRecovery: '/ack-recovery',
 } as const;
 
 // Locked HTTP method per endpoint (chapter 03 §7).
@@ -61,6 +62,7 @@ export const SUPERVISOR_METHODS = {
   healthz: 'GET',
   hello: 'POST',
   shutdown: 'POST',
+  ackRecovery: 'POST',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -99,13 +101,18 @@ const CASES: readonly ContractCase[] = [
     method: SUPERVISOR_METHODS.healthz,
     golden: 'healthz',
     // chapter 03 §7 literal text:
-    //   {"ready": true, "version": "0.3.x", "uptimeS": N, "boot_id": "<uuid>"}
-    requiredFields: ['ready', 'version', 'uptimeS', 'boot_id'],
+    //   {"ready": true, "version": "0.3.x", "uptimeS": N, "boot_id": "<uuid>",
+    //    "recovery_modal": { "pending": ..., "ts_ms": ..., "corrupt_path": ... }}
+    // The `recovery_modal` field was added by chapter 07 §6 (T5.7 / Task #60
+    // — corrupt-DB recovery). Electron polls /healthz on attach; if
+    // `recovery_modal.pending` is true it shows a blocking modal.
+    requiredFields: ['ready', 'version', 'uptimeS', 'boot_id', 'recovery_modal'],
     fieldTypes: {
       ready: 'boolean',
       version: 'string',
       uptimeS: 'number',
       boot_id: 'string',
+      recovery_modal: 'object',
     },
   },
   {
@@ -215,17 +222,20 @@ describe('Supervisor HTTP contract (forever-stable per ch15 §3 #9)', () => {
     });
   });
 
-  describe('healthz golden — literal spec body (chapter 03 §7)', () => {
+  describe('healthz golden — literal spec body (chapter 03 §7 + chapter 07 §6)', () => {
     // Spec literal:
-    //   {"ready": true, "version": "0.3.x", "uptimeS": N, "boot_id": "<uuid>"}
+    //   {"ready": true, "version": "0.3.x", "uptimeS": N, "boot_id": "<uuid>",
+    //    "recovery_modal": { "pending": false, "ts_ms": 0, "corrupt_path": "" }}
     // The golden encodes N=0 and a zero-UUID as canonical placeholder values
     // so the contract is byte-stable; the daemon impl substitutes real values
-    // at runtime, but the SHAPE pinned here is forever-stable.
+    // at runtime, but the SHAPE pinned here is forever-stable. The
+    // recovery_modal sub-shape is the steady-state (pending=false) per ch07 §6.
     const healthz = loadGolden<{
       ready: boolean;
       version: string;
       uptimeS: number;
       boot_id: string;
+      recovery_modal: { pending: boolean; ts_ms: number; corrupt_path: string };
     }>('healthz');
 
     it('ready === true (the spec literal pins true; impl flips to true at READY phase)', () => {
@@ -245,6 +255,18 @@ describe('Supervisor HTTP contract (forever-stable per ch15 §3 #9)', () => {
     it('uptimeS is a non-negative integer', () => {
       expect(Number.isInteger(healthz.uptimeS)).toBe(true);
       expect(healthz.uptimeS).toBeGreaterThanOrEqual(0);
+    });
+
+    it('recovery_modal has the locked sub-shape (chapter 07 §6)', () => {
+      expect(healthz.recovery_modal).toBeTypeOf('object');
+      expect(Object.keys(healthz.recovery_modal).sort()).toEqual([
+        'corrupt_path',
+        'pending',
+        'ts_ms',
+      ]);
+      expect(typeof healthz.recovery_modal.pending).toBe('boolean');
+      expect(typeof healthz.recovery_modal.ts_ms).toBe('number');
+      expect(typeof healthz.recovery_modal.corrupt_path).toBe('string');
     });
   });
 
