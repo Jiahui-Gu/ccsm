@@ -39,3 +39,5 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `install-residue-diff.ps1`       | §1.16             | stub (TODO: Get-ChildItem + reg diff) |
 | `rtt-histogram.mjs`              | §1.3, §1.4, §1.5  | runnable (JSONL → p50/p95/p99)      |
 | `stream-truncation-detector.mjs` | §1.3, §1.4, §1.5  | runnable (seq-gap detector)         |
+| `probes/uds-h2c/{server,client}.mjs` | §1.4 (T9.4)   | runnable on darwin/linux; win32 skip |
+| `probes/uds-h2c/run.sh`          | §1.4 (T9.4)       | smoke (60s) + 1h soak driver        |

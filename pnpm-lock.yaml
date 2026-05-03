@@ -223,7 +223,15 @@ importers:
         specifier: ^5.2.0
         version: 5.2.3(tslib@2.8.1)(webpack-cli@6.0.1)(webpack@5.106.2)
 
-  packages/daemon: {}
+  packages/daemon:
+    dependencies:
+      better-sqlite3:
+        specifier: ^12.9.0
+        version: 12.9.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.12
+        version: 7.6.13
 
   packages/electron: {}
 
