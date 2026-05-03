@@ -2145,11 +2145,15 @@ The legacy `app:open-external` channel from older v0.3 drafts is **explicitly cu
 
 <!-- F6: closes R1 P0.3 / P0.6 / P1.5 (chapter 08) + R4 P0 ch 08 lint allowlist mechanism. Wave 0e (#247) finalized the v0.3 allowlist as the cwd:pick + updates:* clusters; the window:* cluster was deleted in favour of native OS chrome (Wave 0c #953 disabled frameless). The allowlist is path-based (one repo-relative path per line) — the actual lint script (tools/lint-no-ipc.sh) reads file paths and skips them from the forbidden-symbol grep. -->
 
-The `tools/.no-ipc-allowlist` file enumerates the **finite, frozen** set of repo-relative source paths that are exempt from the `lint:no-ipc` rule's forbidden-symbol grep ([Chapter 12](#chapter-12--testing-strategy) §3 implements; §5h.1 below specifies). v0.3 contents are exactly:
+The `tools/.no-ipc-allowlist` file enumerates the **finite, frozen** set of repo-relative source paths that are exempt from the `lint:no-ipc` rule's forbidden-symbol grep ([Chapter 12](#chapter-12--testing-strategy) §3 implements; §5h.1 below specifies). v0.3 contents are exactly five paths grouped into two clusters (test mocks + shell-fire production):
 
 ```
-# Renderer-side descriptor preload (per §4.1 — bootstrap mechanism).
-packages/electron/src/preload/preload-descriptor.ts
+# Test mocks of removed v0.2 IPC surface — these files mock `ipcMain` /
+# `webContents.send` to assert that the v0.2 code path no longer exists or
+# to exercise legacy behaviour during the daemon-split transition. They
+# carry no production IPC and never will.
+electron/__tests__/updater.test.ts
+electron/notify/sinks/__tests__/toastSink.test.ts
 
 # Native folder picker (cwd:pick) — no daemon home, no browser equivalent.
 electron/ipc-allowlisted/folder-picker.ts
@@ -2158,10 +2162,12 @@ electron/ipc-allowlisted/folder-picker.ts
 # is Electron-process-bound; v0.4 web/iOS use service-worker / App Store.
 electron/ipc-allowlisted/updater-ipc.ts
 
-# Renderer-side preload bridge for the two channel clusters above.
+# Renderer-side preload bridge for the two production channel clusters above.
 # contextBridge.exposeInMainWorld lives ONLY here per rule 4 below.
 electron/ipc-allowlisted/preload-allowlisted.ts
 ```
+
+Note: the renderer-side descriptor preload (`packages/electron/src/preload/preload-descriptor.ts`) was previously listed as a placeholder but was removed in Wave 0f (#214) as a phantom — the file does not yet exist (Wave 0b deleted `electron/preload/` wholesale). When the descriptor preload lands, re-add the path with an R4 sign-off row in the chapter 15 audit table.
 
 **Channel inventory (the only `ipcMain.handle` / `webContents.send` call sites permitted under the allowlist)**:
 
@@ -3079,7 +3085,7 @@ fi
 echo "PASS: zero IPC residue"
 ```
 
-**v0.3 `tools/.no-ipc-allowlist` contents** are exactly: `packages/electron/src/preload/preload-descriptor.ts`, `electron/ipc-allowlisted/folder-picker.ts`, `electron/ipc-allowlisted/updater-ipc.ts`, `electron/ipc-allowlisted/preload-allowlisted.ts` (four lines plus comments — see chapter 08 §3.1 for the full file body and channel inventory). Any addition is a [Chapter 15](#chapter-15--zero-rework-audit) forever-stable touch and requires R4 sign-off.
+**v0.3 `tools/.no-ipc-allowlist` contents** are exactly five paths: `electron/__tests__/updater.test.ts`, `electron/notify/sinks/__tests__/toastSink.test.ts` (test mocks of removed v0.2 surface), plus `electron/ipc-allowlisted/folder-picker.ts`, `electron/ipc-allowlisted/updater-ipc.ts`, `electron/ipc-allowlisted/preload-allowlisted.ts` (shell-fire production — see chapter 08 §3.1 for the full file body and channel inventory). The phantom `packages/electron/src/preload/preload-descriptor.ts` placeholder was removed in Wave 0f (#214); when the descriptor preload lands, re-add it via R4 sign-off + chapter-15 audit-table-revalidate row. Any other addition is a [Chapter 15](#chapter-15--zero-rework-audit) forever-stable touch and requires R4 sign-off.
 
 ESLint backstop in `packages/electron/eslint.config.js` (flat-config v9, matching [Chapter 11](#chapter-11--monorepo-layout) §5; enforced in `electron-test` job per [Chapter 11](#chapter-11--monorepo-layout) §6):
 
