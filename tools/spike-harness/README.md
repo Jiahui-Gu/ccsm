@@ -43,3 +43,4 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/uds-h2c/run.sh`          | §1.4 (T9.4)       | smoke (60s) + 1h soak driver        |
 | `probes/win-h2-named-pipe/{server,client}.mjs` | §1.5 (T9.5) | runnable on win32; non-win32 skip |
 | `probes/win-h2-named-pipe/run.sh` | §1.5 (T9.5)      | smoke (60s) + 1h soak driver        |
+| `probes/better-sqlite3-22-arm64/probe.mjs` | §1.12 (T9.11) | runnable (GitHub manifest check + opt. live load) |
