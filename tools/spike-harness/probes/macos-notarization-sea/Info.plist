@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist — sample bundle metadata for the macOS notarization spike (T9.12).
+
+  Spike-harness fixture pinned by spec ch14 §1.13 (forever-stable contract).
+  Used by `notarize.sh` as the embedded `__info_plist` section that Apple's
+  `codesign --options runtime` + `notarytool submit` pipeline requires on a
+  Mach-O Node SEA binary that runs *outside* a `.app` bundle.
+
+  Why a flat Mach-O (not an .app):
+    The v0.3 daemon (T7.1) ships as a single SEA Node binary launched by the
+    Electron app via `child_process.spawn`. There is no `.app` wrapper around
+    the daemon. Apple still requires Info.plist data for notarization of the
+    Mach-O — the recipe is to inject this plist as a `__TEXT,__info_plist`
+    section at codesign time using `--identifier`, `--info-plist`, or via
+    `ld -sectcreate` at link time. We use the codesign route because we do
+    not control Node's link.
+
+  Required keys (per Apple TN3147 + notarytool 2025 reqs):
+    CFBundleIdentifier         — must match the codesign identifier and be
+                                 reverse-DNS scoped to a domain you control.
+    CFBundleName               — short display name (used in console.app).
+    CFBundleVersion            — monotonic build number string.
+    CFBundleShortVersionString — semver-ish marketing version.
+    CFBundleExecutable         — the Mach-O binary's basename on disk.
+    CFBundlePackageType        — APPL for executables; required for stapling.
+    LSMinimumSystemVersion     — min macOS; matches Node 22's minimum (11.0).
+
+  Forever-stable: v0.4 may bump CFBundleVersion / CFBundleShortVersionString
+  or ADD keys (e.g. NSHumanReadableCopyright). Never remove the seven keys
+  above or notarization regresses.
+
+  Placeholder values (`<TEAM_ID>`, `<VERSION>`) are substituted by the build
+  pipeline; this file is the SAMPLE / contract, not the shipped artifact.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.ccsm.daemon</string>
+
+  <key>CFBundleName</key>
+  <string>ccsm-daemon</string>
+
+  <key>CFBundleExecutable</key>
+  <string>ccsm-daemon</string>
+
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+
+  <key>CFBundleShortVersionString</key>
+  <string>0.3.0</string>
+
+  <key>CFBundleVersion</key>
+  <string>1</string>
+
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+</dict>
+</plist>

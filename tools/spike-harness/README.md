@@ -43,3 +43,5 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/uds-h2c/run.sh`          | §1.4 (T9.4)       | smoke (60s) + 1h soak driver        |
 | `probes/win-h2-named-pipe/{server,client}.mjs` | §1.5 (T9.5) | runnable on win32; non-win32 skip |
 | `probes/win-h2-named-pipe/run.sh` | §1.5 (T9.5)      | smoke (60s) + 1h soak driver        |
+| `probes/macos-notarization-sea/notarize.sh` | §1.13 (T9.12) | gated on Apple Dev ID cert (ops prereq) |
+| `probes/macos-notarization-sea/Info.plist`  | §1.13 (T9.12) | sample bundle metadata for Mach-O notarization |
