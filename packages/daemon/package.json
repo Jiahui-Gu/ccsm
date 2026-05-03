@@ -5,7 +5,7 @@
   "type": "module",
   "description": "CCSM daemon (headless RPC server). Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
   "scripts": {
-    "lint": "eslint src --ext .ts",
+    "lint": "eslint \"src/**/*.ts\" \"eslint-plugins/**/*.{js,ts}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
