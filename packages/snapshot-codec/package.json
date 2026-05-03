@@ -1,0 +1,31 @@
+{
+  "name": "@ccsm/snapshot-codec",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "CCSM SnapshotV1 codec layer (Task #207, T4.5). Provides synchronous encode/decode that prefixes a single codec byte (1 = zstd, 2 = gzip) to a compressed payload, per design spec ch06 §2 'Codec rules'. The full SnapshotV1Wire framing (CSS1 magic, reserved bytes, inner_len) is layered on top by the daemon snapshot serializer (T4.6/T4.7) — this package is intentionally the inner compression-dispatch primitive, nothing more.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.15.0 <23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  }
+}
