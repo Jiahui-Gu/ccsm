@@ -62,6 +62,7 @@ import {
   type ShutdownContext,
   type ShutdownResult,
 } from './shutdown.js';
+import { assertWired } from './runStartup.lock.js';
 import {
   makeSupervisorServer,
   type SupervisorServer,
@@ -107,6 +108,14 @@ export interface RunStartupResult {
     readonly malformed: number;
     readonly fileMissing: boolean;
   };
+  /**
+   * Names of components actually wired by this `runStartup` invocation.
+   * Compared against `REQUIRED_COMPONENTS` (see `runStartup.lock.ts`)
+   * by the boot-time `assertWired` call AND by the daemon-boot e2e
+   * test (Task #208 / #225 rolling-extension contract). Order matches
+   * the canonical list so spec tests can deep-equal it.
+   */
+  readonly wired: ReadonlyArray<string>;
 }
 
 /**
@@ -369,6 +378,37 @@ export async function runStartup(
     log(`supervisor bound: ${supervisor.address()}`);
   }
 
+  // Collect canonical wire-up component names actually present on this
+  // boot, then assert against `REQUIRED_COMPONENTS` (see
+  // `runStartup.lock.ts`). Throws if any required-and-not-WARN_ONLY
+  // component is missing — failing boot is the right behavior because
+  // the daemon would otherwise silently ship a stub (the exact "library
+  // shipped but never wired" regression Wave 0/1 + Task #221 exist to
+  // catch). The two skip-env paths (`CCSM_DAEMON_SKIP_LISTENER`,
+  // `CCSM_DAEMON_SKIP_SUPERVISOR`, `CCSM_DAEMON_SKIP_CRASH_CAPTURE`)
+  // are smoke / unit-test seams; in those modes the corresponding
+  // component name is correctly absent from `wired` and `assertWired`
+  // throws. Smoke / unit tests that intentionally skip MUST handle the
+  // throw (the existing daemon-boot e2e leaves all skips off — it tests
+  // the production boot path).
+  const wired: string[] = [];
+  if (listenerA !== null) wired.push('listener-a');
+  if (supervisor !== null) wired.push('supervisor');
+  if (captureSourcesInstalled) wired.push('capture-sources');
+  // `replayCrashRawOnBoot` always returns a result (even on first boot
+  // it returns `{ fileMissing: true, ... }`) — its presence in the
+  // outer scope proves the wire-up fired, regardless of whether the
+  // file existed.
+  if (crashReplayResult !== null && crashReplayResult !== undefined) {
+    wired.push('crash-replayer');
+  }
+  // `write-coalescer`: NOT pushed yet — module exists at
+  // `src/sqlite/coalescer.ts` but the per-session pty-host bridge
+  // wires in T6.x. `assertWired` treats this name as WARN_ONLY for now
+  // (see `runStartup.lock.ts` `WARN_ONLY`), so this is a soft-fail
+  // until that task lands.
+  assertWired(wired, { warn: log });
+
   return {
     env,
     listenerA,
@@ -379,6 +419,7 @@ export async function runStartup(
     captureSourcesInstalled,
     captureSourcesUnsubscribe,
     crashReplayResult,
+    wired,
   };
 }
 
