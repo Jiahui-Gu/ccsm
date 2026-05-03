@@ -164,15 +164,29 @@ jobs:
           # first install when the Electron binary cache is cold.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      # Rebuild better-sqlite3 against the current Node ABI (tests run under
-      # node, not electron). The electron-builder `postinstall` above builds
-      # for the electron ABI; we overwrite with the node ABI for CI tests
-      # here. After the rebuild we verify by loading the native module
-      # through packages/daemon's resolution path (#192) — fail fast on ABI
-      # mismatch instead of waiting for the test step to dlopen-fail with a
-      # confusing trace.
+      # Rebuild better-sqlite3 against Node (tests run under node, not
+      # electron). The repo's `postinstall` script (scripts/postinstall.mjs)
+      # invokes `@electron/rebuild` which compiles better-sqlite3 against the
+      # Electron ABI (NODE_MODULE_VERSION 130 for electron 41); vitest under
+      # the active Node then fails to load the binding with `coalescer.spec.ts`
+      # reporting all 13 tests failed at import time.
+      #
+      # Why not `pnpm rebuild better-sqlite3`: pnpm 10 silently skips build
+      # scripts unless the package is on the workspace `pnpm.onlyBuiltDeps`
+      # allowlist (we don't have one). We saw this in PR #906's first run:
+      # the step exited in <1s with no output. `npm rebuild` (bundled with
+      # `actions/setup-node`) ignores pnpm's allowlist and rebuilds against
+      # the active node ABI deterministically. We don't switch the project
+      # to npm for install (pnpm workspaces are required by turbo); only the
+      # one-shot ABI re-alignment crosses tools.
+      #
+      # After the rebuild we verify by loading the native module through
+      # packages/daemon's resolution path (#192) — fail fast on ABI mismatch
+      # instead of waiting for the test step to dlopen-fail with a confusing
+      # trace. `check:native` is just a `node -e require('better-sqlite3')`
+      # probe so it's tool-agnostic (npm or pnpm both invoke node the same).
       - name: Rebuild better-sqlite3 for Node
-        run: pnpm rebuild better-sqlite3
+        run: npm rebuild better-sqlite3 --build-from-source
       - name: Verify native ABI
         run: pnpm run check:native
 

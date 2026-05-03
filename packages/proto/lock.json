@@ -1,13 +1,13 @@
 {
   "version": 1,
   "files": {
-    "src/ccsm/v1/common.proto": "7e06b7b67fe1f4a75852392238e565bb6ba8081964cba3656cedaaaad2ee5102",
-    "src/ccsm/v1/crash.proto": "d7133746b30daaa20041d0309a196e08ba87f4ab68ee5ffc0a3175a0dc041ce9",
-    "src/ccsm/v1/draft.proto": "895e426a34ea4d9f1743049149c64214a5d4af866f4381f98b998a49acac7946",
-    "src/ccsm/v1/notify.proto": "2332a47efa90c6b3e982964c7bda4489aff16b599ea6da59a85e4f4f408d878d",
-    "src/ccsm/v1/pty.proto": "430658cf93fecac7e53e49b63735aa9962b0fe7ff03a4c2398a681167e828d60",
-    "src/ccsm/v1/session.proto": "ab3e9a70f20fdfadb7c64ef7aa37b89d324d14aaa150a7d7938e30de9ca68467",
-    "src/ccsm/v1/settings.proto": "2894f3dc91a912f269994686dc58596229fed359e63f4389d10c9840a328e173",
-    "src/ccsm/v1/supervisor.proto": "d6018cc763f8097ce2df097865ee59b7fdecee84f9fe8b784a563b4709b9f1d5"
+    "src/ccsm/v1/common.proto": "4acceb57528b2b244d3e1b1770e6099c5ff04e1f8d4e2133f8553761c172e024",
+    "src/ccsm/v1/crash.proto": "3d7bef19d3527b65612279f1a61e289bc38c87f91bfef0b3ab93cef618cc5bd1",
+    "src/ccsm/v1/draft.proto": "7bbd947b122589ff6adf7a66928338beeff350147342a092d463aca1213da043",
+    "src/ccsm/v1/notify.proto": "371bc70e2aa2c55051d43c240585bb48eb946c01c807173f64ea9e6257cf814a",
+    "src/ccsm/v1/pty.proto": "eb23ef740d22f7bec1dc6532d3ff98503dc8cdbadd694cc31f007aa9f69be61c",
+    "src/ccsm/v1/session.proto": "46a8b5171e3d1164b481aa4fa2786c0e6a9678d494ae5933b9c8d593f4cf1c0d",
+    "src/ccsm/v1/settings.proto": "de1a8292ad3068228f1eb6acd856e6f594aaa2e1c9f4e737ba616711e3cf5d85",
+    "src/ccsm/v1/supervisor.proto": "1608271a3d43f28e2e799c4a7f2f349b5228208451767beccc61c0e4f9de3f8a"
   }
 }
