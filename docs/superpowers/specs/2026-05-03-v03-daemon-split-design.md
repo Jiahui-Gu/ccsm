@@ -305,7 +305,7 @@ export function makeListenerA(env: DaemonEnv): Listener {
   return {
     id: "A",
     bind: env.platform === "win32"
-      ? { kind: "KIND_NAMED_PIPE", path: `\\\\.\\pipe\\ccsm-${env.userSid}` }
+      ? { kind: "KIND_NAMED_PIPE", pipeName: `\\\\.\\pipe\\ccsm-${env.userSid}` }
       : { kind: "KIND_UDS", path: env.platform === "darwin"
           ? "/var/run/com.ccsm.daemon/daemon.sock"
           : "/run/ccsm/daemon.sock" },
