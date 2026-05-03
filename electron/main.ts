@@ -79,6 +79,16 @@ import {
 } from './lifecycle/appLifecycle';
 import { acquireSingleInstanceLock } from './lifecycle/singleInstance';
 import { installEarlyTestHooks, installLateTestHooks } from './testHooks';
+// Wave 0e (#247): the spec ch08 §3.1 allowlisted IPC channels — folder
+// picker + in-app updater. Both surfaces are FROZEN at v0.3 ship; adding
+// channels requires a §3.1 amendment. See electron/ipc-allowlisted/.
+import { registerFolderPickerIpc } from './ipc-allowlisted/folder-picker';
+import {
+  registerUpdaterIpc,
+  broadcastUpdateStatus,
+  broadcastUpdateDownloaded,
+} from './ipc-allowlisted/updater-ipc';
+import { installUpdater, setUpdaterBroadcastHooks } from './updater';
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `CCSM_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -174,6 +184,20 @@ app.whenReady().then(() => {
   }
 
   initDb();
+
+  // Wave 0e (#247): wire the spec ch08 §3.1 allowlisted IPC surfaces.
+  // ORDER MATTERS — the broadcast hooks must be registered BEFORE
+  // installUpdater() so the autoUpdater event listeners installed by
+  // installUpdater can push status to the renderer via the hooks. The
+  // folder-picker handler has no main-side producer side; one
+  // `ipcMain.handle` registration is enough.
+  registerFolderPickerIpc();
+  registerUpdaterIpc();
+  setUpdaterBroadcastHooks({
+    onStatusChanged: broadcastUpdateStatus,
+    onUpdateDownloaded: broadcastUpdateDownloaded,
+  });
+  installUpdater();
 
   // Wire prefs cache invalidation to the stateSavedBus. With v0.2 db:save
   // IPC gone (Wave 0b), no producer currently fires the bus — but the

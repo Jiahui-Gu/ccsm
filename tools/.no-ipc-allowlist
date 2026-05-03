@@ -22,3 +22,15 @@
 # carry no production IPC and never will.
 electron/__tests__/updater.test.ts
 electron/notify/sinks/__tests__/toastSink.test.ts
+
+# spec ch08 §3.1 allowlist — shell-fire, not data
+# Native folder picker (cwd:pick) — no daemon home, no browser equivalent.
+electron/ipc-allowlisted/folder-picker.ts
+# In-app updater (updates:* + update:downloaded push) — electron-updater
+# is Electron-process-bound; v0.4 web/iOS get updates via service-worker /
+# App Store and don't need this surface.
+electron/ipc-allowlisted/updater-ipc.ts
+# Renderer-side preload bridge for the two channel clusters above.
+# `contextBridge.exposeInMainWorld` lives ONLY here per spec ch08 §3.1
+# rule 4 (descriptor injection uses protocol.handle, not contextBridge).
+electron/ipc-allowlisted/preload-allowlisted.ts

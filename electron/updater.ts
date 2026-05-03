@@ -1,12 +1,19 @@
 import { app } from 'electron';
 import { autoUpdater } from 'electron-updater';
 
-// Wave 0c (#217): renderer surface removed. The shell-only auto-update
-// mechanism still runs (periodic check + autoDownload + install on quit),
-// but no IPC handlers, no `webContents.send` broadcasts, no renderer
-// status channel. v0.4 will reintroduce a renderer-facing surface via the
-// daemon-driven RPC layer; until then the updater is a self-contained
-// background module that writes its state to `lastStatus` for diagnostics.
+// Wave 0c (#217): renderer surface removed (the ipcMain.handle layer + the
+// `webContents.send` broadcasts in this file were deleted).
+//
+// Wave 0e (#247): the renderer surface is BACK, but split out per spec
+// ch08 §3.1 — the `ipcMain.handle('updates:*', ...)` registrations and
+// the `webContents.send('updates:status' / 'update:downloaded', ...)`
+// broadcasts now live in `electron/ipc-allowlisted/updater-ipc.ts` (an
+// allowlisted file under `tools/.no-ipc-allowlist`). This file remains
+// IPC-free; it owns the autoUpdater event wiring + status state machine,
+// exposes hooks (`getUpdaterStatus`, `triggerUpdaterCheck`,
+// `{is,set}AutoUpdaterCheckEnabled`) the IPC layer calls, and invokes
+// the `broadcast*` callbacks supplied by the IPC layer to push status
+// changes to the renderer.
 export type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
@@ -21,6 +28,12 @@ let installed = false;
 let autoCheckEnabled = true;
 let periodicHandle: ReturnType<typeof setInterval> | null = null;
 
+// Optional broadcast hooks — wired by `electron/ipc-allowlisted/updater-ipc.ts`
+// when the IPC layer is registered. Kept as nullable callbacks so this
+// module stays runnable in unit tests that don't install the IPC half.
+let onStatusChanged: ((s: UpdateStatus) => void) | null = null;
+let onUpdateDownloadedHook: ((info: { version: string }) => void) | null = null;
+
 // 4 hours. Electron-updater recommends not checking more often than hourly;
 // 4h is a reasonable default that keeps users on the latest signed build
 // without hammering GitHub releases.
@@ -28,6 +41,24 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 function record(status: UpdateStatus): void {
   lastStatus = status;
+  // Push to renderer when the IPC layer has wired its broadcast hook.
+  // Keeping the hook nullable lets unit tests run without the IPC half.
+  onStatusChanged?.(status);
+}
+
+/**
+ * Wave 0e (#247): the IPC-allowlisted layer calls this to inject its
+ * `broadcastUpdateStatus` / `broadcastUpdateDownloaded` callbacks so the
+ * autoUpdater event listeners installed below can push status changes
+ * to the renderer without this file importing `webContents` (forbidden
+ * outside the allowlisted set per spec ch08 §5h.1 rule 4).
+ */
+export function setUpdaterBroadcastHooks(hooks: {
+  onStatusChanged: (s: UpdateStatus) => void;
+  onUpdateDownloaded: (info: { version: string }) => void;
+}): void {
+  onStatusChanged = hooks.onStatusChanged;
+  onUpdateDownloadedHook = hooks.onUpdateDownloaded;
 }
 
 /**
@@ -109,9 +140,10 @@ export function installUpdater(): void {
       total: p.total
     })
   );
-  autoUpdater.on('update-downloaded', (info) =>
-    record({ kind: 'downloaded', version: info.version })
-  );
+  autoUpdater.on('update-downloaded', (info) => {
+    record({ kind: 'downloaded', version: info.version });
+    onUpdateDownloadedHook?.({ version: info.version });
+  });
   autoUpdater.on('error', (err) =>
     record({ kind: 'error', message: err?.message ?? String(err) })
   );
@@ -127,10 +159,42 @@ export function getUpdaterStatus(): UpdateStatus {
   return lastStatus;
 }
 
+/**
+ * Trigger a one-shot update check on demand (drives the renderer's
+ * "Check for updates" button via `electron/ipc-allowlisted/updater-ipc.ts`).
+ * Resolves once `autoUpdater.checkForUpdates()` settles; the real status
+ * lands via the autoUpdater event listeners and reaches the renderer
+ * through the broadcast hook above.
+ */
+export async function triggerUpdaterCheck(): Promise<void> {
+  await safeCheck();
+}
+
+/** Read the current periodic-auto-check enable flag (renderer Settings). */
+export function isAutoUpdaterCheckEnabled(): boolean {
+  return autoCheckEnabled;
+}
+
+/**
+ * Toggle the periodic auto-check loop. Persistence lives in the renderer
+ * (Settings store) for v0.3 and is replayed at boot via the IPC layer; this
+ * module just owns the setInterval lifecycle.
+ */
+export function setAutoUpdaterCheckEnabled(enabled: boolean): void {
+  autoCheckEnabled = enabled;
+  if (enabled) {
+    startPeriodicChecks();
+  } else {
+    stopPeriodicChecks();
+  }
+}
+
 // Exposed for tests — lets them reset module state between cases.
 export function __resetUpdaterForTests(): void {
   installed = false;
   autoCheckEnabled = true;
   lastStatus = { kind: 'idle' };
+  onStatusChanged = null;
+  onUpdateDownloadedHook = null;
   stopPeriodicChecks();
 }

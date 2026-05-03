@@ -162,8 +162,20 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     webPreferences: {
       // sandbox:true is the recommended Electron baseline. Wave 0b (#216)
       // removed the preload, so there is no longer a sandboxed-require
-      // mismatch to worry about — flip it on.
+      // mismatch to worry about — flip it on. Wave 0e (#247) re-introduces
+      // a TINY preload (`electron/ipc-allowlisted/preload-allowlisted.ts`)
+      // exposing only the spec ch08 §3.1 channels — folder picker +
+      // updater UI. The preload is sandbox-compatible (only uses
+      // `contextBridge` + `ipcRenderer.invoke/on`).
       sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(
+        __dirname,
+        '..',
+        'ipc-allowlisted',
+        'preload-allowlisted.js',
+      ),
       // Hidden-mode animation correctness: Chromium throttles rAF
       // for offscreen / hidden windows down to ~1Hz. dnd-kit's
       // dropAnimation (150ms) and other CSS transitions then never
