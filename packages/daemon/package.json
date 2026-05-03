@@ -10,7 +10,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "build:sea:posix": "bash build/build-sea.sh",
-    "build:sea:win": "powershell -ExecutionPolicy Bypass -File build/build-sea.ps1"
+    "build:sea:win": "powershell -ExecutionPolicy Bypass -File build/build-sea.ps1",
+    "stage:native:posix": "bash build/stage-native.sh dist/native",
+    "stage:native:win": "powershell -ExecutionPolicy Bypass -File build/stage-native.ps1 -OutDir dist/native",
+    "prebuildify:better-sqlite3": "prebuildify --napi --strip --target node@22.0.0 --cwd node_modules/better-sqlite3",
+    "prebuildify:node-pty": "prebuildify --napi --strip --target node@22.0.0 --cwd node_modules/node-pty"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.0",
@@ -23,6 +27,7 @@
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-node": "^2.1.1",
     "@types/better-sqlite3": "^7.6.12",
-    "ajv": "^8.20.0"
+    "ajv": "^8.20.0",
+    "prebuildify": "^6.0.1"
   }
 }

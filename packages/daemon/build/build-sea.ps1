@@ -3,8 +3,10 @@
 # on Windows (counterpart to build-sea.sh).
 #
 # Pipeline mirrors build-sea.sh: tsc -> esbuild bundle -> node sea-config ->
-# copy node.exe -> postject NODE_SEA_BLOB. Code-signing (T7.3 / task #82) is
-# OUT OF SCOPE; native (.node) modules are external (T7.2 / task #83).
+# copy node.exe -> postject NODE_SEA_BLOB -> stage native (.node) addons.
+# Code-signing (T7.3 / task #82) is OUT OF SCOPE; native (.node) modules are
+# resolved at runtime via packages/daemon/src/native-loader.ts (T7.2 / task
+# #83) which calls `createRequire(process.execPath + '/native/')`.
 
 [CmdletBinding()]
 param()
@@ -67,6 +69,15 @@ try {
     --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 `
     --overwrite
   if ($LASTEXITCODE -ne 0) { throw "postject exited $LASTEXITCODE" }
+
+  # Step 6: stage native (.node) addons next to the sea binary so
+  # `createRequire(process.execPath + '/native/')` finds them at runtime
+  # (spec ch10 §2). The stage-native.ps1 helper picks the right prebuilt
+  # for the current OS+arch+Node-ABI from node_modules.
+  $NativeDir = Join-Path $DistDir 'native'
+  Step "stage native addons -> $NativeDir"
+  & (Join-Path $Here 'stage-native.ps1') -OutDir $NativeDir
+  if ($LASTEXITCODE -ne 0) { throw "stage-native.ps1 exited $LASTEXITCODE" }
 
   Step "done -> $Target"
   Step '(code-signing handled by T7.3 / task #82, not invoked here)'

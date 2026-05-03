@@ -54,7 +54,11 @@ import {
 } from 'node:fs';
 import * as path from 'node:path';
 
-import Database from 'better-sqlite3';
+import { loadNative } from '../native-loader.js';
+
+// Sea binaries cannot embed `.node`; resolve the native addon through the
+// shared loader (spec ch10 §2). Dev/test path is unchanged.
+const Database = loadNative('better_sqlite3');
 
 import { appendCrashRaw, type CrashRawEntry } from '../crash/raw-appender.js';
 
