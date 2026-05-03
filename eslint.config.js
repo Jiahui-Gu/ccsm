@@ -6,6 +6,15 @@ import tseslint from '@typescript-eslint/eslint-plugin';
 import tsparser from '@typescript-eslint/parser';
 import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
+// Register the daemon-local `ccsm` plugin at the root so that root-level
+// `lint:app` (eslint . --ext .ts,.tsx) can resolve `ccsm/no-listener-slot-mutation`
+// when it sweeps `packages/daemon/**`. The rule definition still lives in
+// `packages/daemon/eslint-plugins/`; the per-package config (packages/daemon/
+// eslint.config.js) is what sets it to `error`. At the root layer we only
+// need the plugin loaded so that inline `eslint-disable ccsm/...` comments
+// in daemon source/test files do not produce "Definition for rule was not
+// found" errors. Spec ch03 §1 / ch11 §5 / Task #29 (PR #873) context.
+import ccsmDaemonPlugin from './packages/daemon/eslint-plugins/ccsm-no-listener-slot-mutation.js';
 
 export default [
   {
@@ -166,5 +175,19 @@ export default [
         URLSearchParams: 'readonly'
       }
     }
+  },
+  {
+    // Register the daemon-local `ccsm` plugin for files under
+    // packages/daemon/** so root-level `lint:app` can resolve
+    // `ccsm/no-listener-slot-mutation` references in inline
+    // eslint-disable comments. The rule remains gated to `error`
+    // by the per-package config (packages/daemon/eslint.config.js);
+    // here we register the plugin only (rules block intentionally
+    // empty — root sweep does NOT enforce the daemon-internal rule,
+    // it just needs the name to resolve).
+    files: ['packages/daemon/**/*.{ts,tsx}'],
+    plugins: {
+      ccsm: ccsmDaemonPlugin,
+    },
   }
 ];
