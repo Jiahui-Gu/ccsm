@@ -133,7 +133,21 @@ describe('checkAndRecover (T5.7 — ch07 §6)', () => {
     const labels = line.labels as Record<string, unknown>;
     expect(labels.corrupt_path).toBe(`${dbPath}.corrupt-${fixedNow}`);
     expect(labels.db_path).toBe(dbPath);
-  });
+  }, 30_000);
+  // Per-test timeout bumped to 30s (vitest default 5s) for this case
+  // specifically. The Windows CI runner hits a 12+s wall here while
+  // Linux/macOS finish in ~50 ms locally; Windows local also passes in
+  // under 200 ms. Diagnosis (T0.8 matrix bring-up): the cost is in the
+  // post-write `new Database(dbPath, {readonly:true})` step right after
+  // we scribble bytes via `openSync(..., 'r+')` + `closeSync` — Defender
+  // real-time scanning kicks in on file modification on the GitHub-hosted
+  // windows-2022 image and blocks the next open until the scan releases
+  // the file (observed 5–15s on hot runners). Not a product bug:
+  // production daemon boots once, hits the integrity check once, and is
+  // not racing antivirus scans on the boot path. Ship code unchanged.
+  // Bumping testTimeout (third arg to `it`) is the surgical fix —
+  // a global testTimeout bump in vitest.config.ts would mask real hangs
+  // in unrelated suites. See PR #906 / Task #17 for the full trace.
 
   // --------------------------------------------------------------------- //
   // unrecoverable file — PRAGMA throws                                    //

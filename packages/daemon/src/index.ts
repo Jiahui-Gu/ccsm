@@ -256,8 +256,17 @@ async function main(): Promise<void> {
     // Register the bound listener with the shutdown context so SIGTERM
     // closes it during step 1 (stop accepting). Register the db handle
     // so the WAL checkpoint (step 6) + close (step 7) actually fire.
+    //
+    // NOTE: we REASSIGN `listeners` rather than calling `.push()` on it.
+    // Spec ch03 §1 / forbidden-pattern #18: the listener tuple is a
+    // closed 2-slot shape (slot 0 = Listener A; slot 1 = the typed
+    // RESERVED_FOR_LISTENER_B sentinel until v0.4). `.push()` would
+    // grow that shape and is statically forbidden by the ESLint rule
+    // `ccsm/no-listener-slot-mutation`. The shutdown step iterates only
+    // real listeners, so we hand it a fresh single-element view rather
+    // than mutating the existing tuple in place.
     if (listenerA !== null) {
-      ctxRef.listeners.push(listenerA);
+      ctxRef.listeners = [listenerA];
     }
     ctxRef.db = result.db;
     // Start the crash retention pruner AFTER shutdown handlers are

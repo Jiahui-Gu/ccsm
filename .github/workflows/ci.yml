@@ -31,24 +31,64 @@ jobs:
               - '!LICENSE'
               - '!.gitignore'
 
+  # T0.8 — proto codegen + buf lint precheck. Runs before the test matrix
+  # so any drift in generated TS or buf-lint violations fails fast on a
+  # single ubuntu runner instead of fanning out to 3 OS matrix slots.
+  # The verify-clean step (`git diff --exit-code packages/proto/gen`) is
+  # the hard gate: if a contributor edited .proto files but forgot to
+  # commit regenerated TS, this catches it deterministically.
+  proto-gen-lint:
+    name: proto gen + lint
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      # Workspace-only install (`--filter @ccsm/proto...`) skips the heavy
+      # root deps (electron, webpack, native modules) — proto-gen needs
+      # only buf + protoc-gen-es.
+      - name: Install proto workspace deps
+        run: pnpm install --frozen-lockfile --filter @ccsm/proto...
+
+      - name: Generate proto TS
+        run: pnpm --filter @ccsm/proto run gen
+
+      - name: Verify proto gen is up to date
+        run: |
+          if ! git diff --exit-code packages/proto/gen; then
+            echo "::error::packages/proto/gen is stale. Run 'pnpm --filter @ccsm/proto run gen' and commit the result."
+            exit 1
+          fi
+
+      - name: Buf lint
+        run: pnpm --filter @ccsm/proto exec buf lint
+
   lint-typecheck-test:
     name: lint + typecheck + test (${{ matrix.os }})
-    needs: changes
+    needs: [changes, proto-gen-lint]
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'npm'
 
       # Linux native builds for better-sqlite3 need python + build tools; the
       # GitHub-hosted ubuntu image already has them, but setup-python makes
@@ -61,56 +101,129 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Cache node_modules directly (not ~/.npm) — `npm ci --legacy-peer-deps`
-      # on Windows is the dominant CI cost (~178s = 49% of total wall-clock,
-      # eval #877). Restoring node_modules verbatim skips install + native
-      # rebuilds (better-sqlite3, node-pty) baked into the cached tree.
-      # Key includes os/arch/node major + lockfile hash so any dep change
-      # busts the cache. Native ABI for Node-side tests is re-aligned by the
-      # `npm rebuild better-sqlite3` step below, which always runs.
+      # T0.8 — switched from npm to pnpm. The repo's packageManager field
+      # pins pnpm@10.33.2 (T0.2) and turbo + workspaces (`pnpm-workspace.yaml`)
+      # require pnpm at install time. Setup pnpm BEFORE setup-node so the
+      # `cache: 'pnpm'` strategy below can locate the pnpm store.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+          run_install: false
+
+      # Node version pinned via .nvmrc (#192 / Task #192) so local + CI agree
+      # — node22 baseline. Cache key downstream also bumped to node22 to
+      # avoid restoring Node-20-ABI native binaries into a Node-22 runtime.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      # Cache node_modules verbatim, same rationale as the previous npm-era
+      # config: `pnpm install` on Windows is the dominant CI cost. Restoring
+      # the node_modules tree (pnpm symlink farm + .pnpm content-addressable
+      # store layout) skips install + native rebuilds. Native ABI re-alignment
+      # for Node-side tests is handled by the `pnpm rebuild better-sqlite3`
+      # step below, which always runs.
+      #
+      # Key includes os/arch/node major + pnpm-lock hash so any dep change
+      # busts the cache. node22 suffix prevents Node-20-ABI .node files from
+      # being restored into a Node-22 runtime (#192). Distinct prefix from
+      # e2e.yml (`nm-e2e-...`) keeps the two workflows from poisoning each
+      # other's caches — see e2e.yml for the full incident history.
       - name: Cache node_modules
         id: nm_cache
         uses: actions/cache@v4
         with:
-          path: node_modules
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: nm-pnpm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # Cache turbo's local task graph + per-task outputs. Key busts on any
+      # source/proto/lockfile change — turbo.json's per-task `inputs` (which
+      # include `ccsm/**/*.proto` and `lock.json` for the gen task) handle
+      # fine-grained invalidation; this CI key just keeps the cache scoped
+      # per-OS so a Windows .turbo doesn't get restored on Linux.
+      - name: Cache turbo
+        uses: actions/cache@v4
+        with:
+          path: |
+            .turbo
+            packages/*/.turbo
+          key: turbo-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'turbo.json', 'packages/proto/lock.json', 'packages/proto/src/**/*.proto') }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
-        run: npm ci --legacy-peer-deps
+        run: pnpm install --frozen-lockfile
         env:
           # electron-builder's postinstall needs this env to not fail on
           # first install when the Electron binary cache is cold.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      # Rebuild better-sqlite3 against the current Node ABI (tests run under
-      # node, not electron). The electron-builder `postinstall` above builds
-      # for the electron ABI; we overwrite with the node ABI for CI tests
-      # here. better-sqlite3 is hoisted to the root node_modules under npm
-      # workspaces, so `npm rebuild` runs from the root (a `--prefix
-      # packages/daemon` invocation no-ops because the daemon workspace has
-      # no local copy). After the rebuild we verify by loading the native
-      # module through packages/daemon's resolution path — fail fast on ABI
-      # mismatch instead of waiting for the test step to dlopen-fail.
-      - name: Rebuild native modules for current Node ABI
-        run: npm rebuild better-sqlite3
+      # Rebuild better-sqlite3 against Node (tests run under node, not
+      # electron). The repo's `postinstall` script (scripts/postinstall.mjs)
+      # invokes `@electron/rebuild` which compiles better-sqlite3 against the
+      # Electron ABI (NODE_MODULE_VERSION 130 for electron 41); vitest under
+      # the active Node then fails to load the binding with `coalescer.spec.ts`
+      # reporting all 13 tests failed at import time.
+      #
+      # Why not `pnpm rebuild better-sqlite3`: pnpm 10 silently skips build
+      # scripts unless the package is on the workspace `pnpm.onlyBuiltDeps`
+      # allowlist (we don't have one). We saw this in PR #906's first run:
+      # the step exited in <1s with no output. `npm rebuild` (bundled with
+      # `actions/setup-node`) ignores pnpm's allowlist and rebuilds against
+      # the active node ABI deterministically. We don't switch the project
+      # to npm for install (pnpm workspaces are required by turbo); only the
+      # one-shot ABI re-alignment crosses tools.
+      #
+      # After the rebuild we verify by loading the native module through
+      # packages/daemon's resolution path (#192) — fail fast on ABI mismatch
+      # instead of waiting for the test step to dlopen-fail with a confusing
+      # trace. `check:native` is just a `node -e require('better-sqlite3')`
+      # probe so it's tool-agnostic (npm or pnpm both invoke node the same).
+      - name: Rebuild better-sqlite3 for Node
+        run: npm rebuild better-sqlite3 --build-from-source
       - name: Verify native ABI
-        run: npm run check:native
+        run: pnpm run check:native
 
-      - name: Lint
+      # Generate proto TS before any workspace task touches @ccsm/proto
+      # consumers. turbo handles caching + skips when inputs unchanged.
+      - name: Proto codegen (turbo)
+        run: pnpm run gen
+
+      # Workspace tasks (matrix os × {lint, typecheck, test}) — turbo fans
+      # out across packages/* and respects per-task inputs from turbo.json.
+      - name: Lint (workspace)
+        run: pnpm run lint
+
+      - name: Typecheck (workspace)
+        run: pnpm exec turbo run typecheck
+
+      - name: Test (workspace)
+        run: pnpm run test
+
+      # Root-app legacy steps — until T0.2's monorepo migration absorbs the
+      # root `ccsm` package into a workspace member, the electron main /
+      # renderer / root tests still ship under root scripts and need their
+      # own lint/typecheck/build/test cycle.
+      - name: Lint (root app)
         run: npm run lint:app
 
-      - name: Typecheck
+      - name: Typecheck (root app)
         run: npm run typecheck
 
-      # Build is required before `npm test` because the load-smoke harness
-      # (tests/electron-load-smoke.test.ts) require()s dist/electron/*.js
-      # to verify CJS load cleanliness. Without dist present, those tests
-      # fail loud — see Task #764.
-      - name: Build
+      # Build is required before `npm run test:app` because the load-smoke
+      # harness (tests/electron-load-smoke.test.ts) require()s
+      # dist/electron/*.js to verify CJS load cleanliness. Without dist
+      # present, those tests fail loud — see Task #764.
+      - name: Build (root app)
         run: npm run build:app
 
-      - name: Test
+      - name: Test (root app)
         run: npm run test:app
 
       # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
