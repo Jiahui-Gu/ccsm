@@ -15,12 +15,15 @@ export default defineConfig({
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
-      // `test/**` is the home for forever-stable invariants specs that watch
-      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
-      // state-dir paths, etc.). They live outside `src/` so they cannot be
-      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
-      // is `src`).
-      'test/**/*.spec.ts',
+      // Cross-cutting integration tests that don't fit neatly under a
+      // single `src/<sub>/__tests__/` directory live in `test/<topic>/`.
+      // Currently: `test/pty-host/` (T4.1 child_process.fork lifecycle).
+      // The forward-compat `test/db/migration-lock.spec.ts` placeholder
+      // is intentionally NOT picked up yet — its top-level readFileSync
+      // hard-fails until Task #56 lands `src/db/locked.ts`. That spec
+      // wires itself in once locked.ts exists (it can be re-included
+      // here in the same PR, or moved under `src/db/__tests__/`).
+      'test/pty-host/**/*.spec.ts',
     ],
     globals: false,
   },
