@@ -27,5 +27,12 @@ export default defineConfig({
     // Keep this file FOREVER-MINIMAL. Tools specs must not need globals,
     // setup files, or coverage instrumentation.
     globals: false,
+    // Tools specs spawn many `git` invocations against tmp-dir fixtures
+    // (e.g. tools/test/check-v02-shrinking.spec.ts builds 4-6-commit
+    // branch histories per case). On Windows runners each `git` shell
+    // out costs 100-300ms; the default 5s testTimeout flakes the
+    // step-wise cases. 30s leaves comfortable headroom on every OS in
+    // the CI matrix while staying well under the 10-minute job cap.
+    testTimeout: 30000,
   },
 });

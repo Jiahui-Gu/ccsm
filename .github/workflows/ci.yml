@@ -155,6 +155,23 @@ jobs:
       - name: Test
         run: npm run test:app
 
+      # Task #291 — pick up tools/**/*.spec.ts. The root vitest config
+      # restricts `include` to `tests/**` + `electron/**/__tests__/**`,
+      # so specs under tools/ (e.g. tools/test/check-v02-shrinking.spec.ts
+      # added by Task #279, tools/test/installer-roundtrip-allowlist.spec.ts
+      # added by Task T8.6, tools/spike-harness/snapshot-roundtrip.spec.ts
+      # pinned by ch14 §1.B) were never executed in CI. They live outside
+      # the root include on purpose (pure-node, no jsdom, no setup file)
+      # and ship their own minimal config at tools/vitest.config.ts.
+      # Wire-up extends the existing required `lint + typecheck + test`
+      # job rather than adding a new required check (branch protection
+      # is frozen). Linux-only because the assertions are git/fs/process
+      # behaviour with no platform-specific paths — running on the matrix
+      # would triple wall-clock with no signal gain.
+      - name: Test (tools/**/*.spec.ts)
+        if: matrix.os == 'ubuntu-latest'
+        run: npx vitest run --config tools/vitest.config.ts
+
       # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
       # keep the matrix lean (coverage instrumentation roughly doubles
       # wall-clock; one OS is enough for the lcov artifact). Threshold
