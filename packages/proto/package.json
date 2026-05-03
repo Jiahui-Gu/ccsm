@@ -7,6 +7,8 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('gen/ts',{recursive:true,force:true})\"",
     "gen": "buf generate",
+    "lock": "node scripts/lock.mjs",
+    "lock-check": "node scripts/lock-check.mjs",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
