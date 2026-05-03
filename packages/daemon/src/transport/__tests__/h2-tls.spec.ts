@@ -91,8 +91,8 @@ describe('bindH2Tls', () => {
         key: TEST_KEY_PEM,
       });
       const addr = bound.address();
-      expect(addr.kind).toBe('tls');
-      if (addr.kind !== 'tls') throw new Error('unreachable');
+      expect(addr.kind).toBe('KIND_TCP_LOOPBACK_H2_TLS');
+      if (addr.kind !== 'KIND_TCP_LOOPBACK_H2_TLS') throw new Error('unreachable');
       expect(addr.host).toBe('127.0.0.1');
       expect(addr.port).toBeGreaterThan(0);
       expect(addr.certFingerprintSha256).toBe(TEST_CERT_FINGERPRINT);
@@ -123,7 +123,7 @@ describe('bindH2Tls', () => {
         key: TEST_KEY_PEM,
       });
       const addr = bound.address();
-      if (addr.kind !== 'tls') throw new Error('unreachable');
+      if (addr.kind !== 'KIND_TCP_LOOPBACK_H2_TLS') throw new Error('unreachable');
 
       h2client = h2connect(`https://127.0.0.1:${addr.port}`, {
         ca: TEST_CERT_PEM,

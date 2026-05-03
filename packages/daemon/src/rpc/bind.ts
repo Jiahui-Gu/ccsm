@@ -28,11 +28,11 @@
 //     `http2.createServer({}, handler)` accepts it directly — the
 //     handler signature `(req, res) => void` is the same for `http` and
 //     `http2` (per Node docs).
-//   - `tls` BindDescriptor variant is reserved for v0.4 Listener B
-//     (ch03 §1a). v0.3 Listener A NEVER picks `tls` (ch03 §4 transport
-//     pick). We throw if asked to bind tls so a misrouting bug fails
-//     loud at start() time, matching the policy in
-//     `listeners/factory.ts`'s `defaultBindHook`.
+//   - `tls` BindDescriptor variant (`KIND_TCP_LOOPBACK_H2_TLS`) is
+//     reserved for v0.4 Listener B (ch03 §1a). v0.3 Listener A NEVER
+//     picks it (ch03 §4 transport pick). We throw if asked to bind it
+//     so a misrouting bug fails loud at start() time, matching the
+//     policy in `listeners/factory.ts`'s `defaultBindHook`.
 
 import { createServer as createH2cServer, type Http2Server } from 'node:http2';
 import { platform } from 'node:os';
@@ -97,17 +97,17 @@ async function bindByKind(
   planned: BindDescriptor,
 ): Promise<TransportBoundTransport> {
   switch (planned.kind) {
-    case 'uds':
+    case 'KIND_UDS':
       return bindH2cUds(server, { path: planned.path });
-    case 'namedPipe':
+    case 'KIND_NAMED_PIPE':
       if (platform() !== 'win32') {
         throw new Error(
-          `namedPipe transport requested on non-Windows platform (${platform()}); ` +
+          `KIND_NAMED_PIPE transport requested on non-Windows platform (${platform()}); ` +
             'spec ch03 §4 A4 — named pipes are Windows-only.',
         );
       }
       return bindH2NamedPipe(server, { pipeName: planned.pipeName });
-    case 'loopbackTcp':
+    case 'KIND_TCP_LOOPBACK_H2C':
       // T1.5's loopback adapter currently constrains host to 127.0.0.1
       // (the closed-enum spec value). v0.4 may add `::1`; until then
       // reject with a clear message rather than passing through and
@@ -115,15 +115,15 @@ async function bindByKind(
       // 127.0.0.1" message.
       if (planned.host !== '127.0.0.1') {
         throw new Error(
-          `loopbackTcp host '${planned.host}' is reserved for v0.4 ` +
+          `KIND_TCP_LOOPBACK_H2C host '${planned.host}' is reserved for v0.4 ` +
             '(spec ch03 §1a closed enum); v0.3 only binds 127.0.0.1.',
         );
       }
       return bindH2cLoopback(server, { host: '127.0.0.1', port: planned.port });
-    case 'tls':
+    case 'KIND_TCP_LOOPBACK_H2_TLS':
       throw new Error(
-        'tls bind not supported by Listener A in v0.3 (reserved for v0.4 ' +
-          'Listener B per spec ch03 §1a / §4).',
+        'KIND_TCP_LOOPBACK_H2_TLS bind not supported by Listener A in v0.3 ' +
+          '(reserved for v0.4 Listener B per spec ch03 §1a / §4).',
       );
   }
 }
@@ -137,10 +137,11 @@ async function bindByKind(
  * shapes are deliberately separate (per the SRP comment in
  * `transport/types.ts`) and require an explicit translation here.
  *
- * For `uds` / `namedPipe`, the path is unchanged; for `loopback`, the
- * resolved port may differ from the planned port (kernel-assigned when
- * input is `0`) so we read from the bound address. The `tls` variant is
- * unreachable in v0.3 (rejected upstream).
+ * For `KIND_UDS` / `KIND_NAMED_PIPE`, the path is unchanged; for
+ * `KIND_TCP_LOOPBACK_H2C`, the resolved port may differ from the planned
+ * port (kernel-assigned when input is `0`) so we read from the bound
+ * address. The `KIND_TCP_LOOPBACK_H2_TLS` variant is unreachable in v0.3
+ * (rejected upstream).
  */
 function resolveDescriptor(
   planned: BindDescriptor,
@@ -148,13 +149,13 @@ function resolveDescriptor(
 ): BindDescriptor {
   const addr = bound.address();
   switch (addr.kind) {
-    case 'uds':
-      return { kind: 'uds', path: addr.path };
-    case 'namedPipe':
-      return { kind: 'namedPipe', pipeName: addr.pipeName };
-    case 'loopback':
-      return { kind: 'loopbackTcp', host: addr.host, port: addr.port };
-    case 'tls':
+    case 'KIND_UDS':
+      return { kind: 'KIND_UDS', path: addr.path };
+    case 'KIND_NAMED_PIPE':
+      return { kind: 'KIND_NAMED_PIPE', pipeName: addr.pipeName };
+    case 'KIND_TCP_LOOPBACK_H2C':
+      return { kind: 'KIND_TCP_LOOPBACK_H2C', host: addr.host, port: addr.port };
+    case 'KIND_TCP_LOOPBACK_H2_TLS':
       // Should never happen — v0.3 doesn't construct TLS for Listener A.
       // If it does, surface the planned descriptor unchanged so the
       // caller sees the (still-wrong) shape rather than a partial.

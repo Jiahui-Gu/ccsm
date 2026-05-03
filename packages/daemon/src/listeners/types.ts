@@ -16,18 +16,24 @@
  * closed shape lets `switch (d.kind)` typecheck exhaustively in
  * downstream consumers (descriptor writer T1.4, ops tooling).
  *
- * Variants:
- *   - `uds`        : POSIX Unix Domain Socket (Linux / macOS).
- *   - `namedPipe`  : Windows named pipe (`\\.\pipe\<name>`).
- *   - `loopbackTcp`: 127.0.0.1 / ::1 TCP — dev / debug only.
- *   - `tls`        : TLS-over-TCP — reserved for v0.4 Listener B.
+ * Variants (vocabulary unified with spec ch03 §1a / §3.2 enum and the
+ * on-disk `listener-a.json.transport` field — `descriptor.ts`
+ * `DescriptorTransport`):
+ *   - `KIND_UDS`                : POSIX Unix Domain Socket (Linux / macOS).
+ *   - `KIND_NAMED_PIPE`         : Windows named pipe (`\\.\pipe\<name>`).
+ *   - `KIND_TCP_LOOPBACK_H2C`   : 127.0.0.1 / ::1 TCP h2c — dev / debug only.
+ *   - `KIND_TCP_LOOPBACK_H2_TLS`: TLS-over-loopback-TCP — reserved for v0.4 Listener B.
  */
 export type BindDescriptor =
-  | { readonly kind: 'uds'; readonly path: string }
-  | { readonly kind: 'namedPipe'; readonly pipeName: string }
-  | { readonly kind: 'loopbackTcp'; readonly host: '127.0.0.1' | '::1'; readonly port: number }
+  | { readonly kind: 'KIND_UDS'; readonly path: string }
+  | { readonly kind: 'KIND_NAMED_PIPE'; readonly pipeName: string }
   | {
-      readonly kind: 'tls';
+      readonly kind: 'KIND_TCP_LOOPBACK_H2C';
+      readonly host: '127.0.0.1' | '::1';
+      readonly port: number;
+    }
+  | {
+      readonly kind: 'KIND_TCP_LOOPBACK_H2_TLS';
       readonly host: string;
       readonly port: number;
       /** PEM-encoded server certificate path. */

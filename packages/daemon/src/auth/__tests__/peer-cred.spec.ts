@@ -21,7 +21,7 @@ const FAKE_SOCKET = {} as unknown as Parameters<typeof extractUdsPeerCred>[0];
 describe('extractUdsPeerCred', () => {
   it('returns a uds-tagged PeerInfo from the lookup callback', () => {
     const result = extractUdsPeerCred(FAKE_SOCKET, () => ({ uid: 1000, gid: 100, pid: 4321 }));
-    expect(result).toEqual({ transport: 'uds', uid: 1000, gid: 100, pid: 4321 });
+    expect(result).toEqual({ transport: 'KIND_UDS', uid: 1000, gid: 100, pid: 4321 });
   });
 
   it('passes through a null pid (macOS LOCAL_PEERPID may be unavailable)', () => {
@@ -50,7 +50,7 @@ describe('extractNamedPipePeerCred', () => {
       sid,
       displayName: 'JDOE',
     }));
-    expect(result).toEqual({ transport: 'namedPipe', sid, displayName: 'JDOE' });
+    expect(result).toEqual({ transport: 'KIND_NAMED_PIPE', sid, displayName: 'JDOE' });
   });
 
   it('allows an empty display name (best-effort lookup, spec ch05 §2)', () => {
@@ -78,7 +78,7 @@ describe('extractLoopbackTcpPeer', () => {
     const headers = new Headers({ Authorization: 'Bearer test-token' });
     const result = extractLoopbackTcpPeer(headers, '127.0.0.1', 54871);
     expect(result).toEqual({
-      transport: 'loopbackTcp',
+      transport: 'KIND_TCP_LOOPBACK_H2C',
       bearerToken: 'test-token',
       remoteAddress: '127.0.0.1',
       remotePort: 54871,

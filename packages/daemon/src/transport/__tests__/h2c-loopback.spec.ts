@@ -27,8 +27,8 @@ describe('bindH2cLoopback', () => {
     const server = createServer();
     bound = await bindH2cLoopback(server, { host: '127.0.0.1', port: 0 });
     const addr = bound.address();
-    expect(addr.kind).toBe('loopback');
-    if (addr.kind !== 'loopback') throw new Error('unreachable');
+    expect(addr.kind).toBe('KIND_TCP_LOOPBACK_H2C');
+    if (addr.kind !== 'KIND_TCP_LOOPBACK_H2C') throw new Error('unreachable');
     expect(addr.host).toBe('127.0.0.1');
     expect(addr.port).toBeGreaterThan(0);
     expect(addr.port).toBeLessThan(65536);
@@ -48,7 +48,7 @@ describe('bindH2cLoopback', () => {
     });
     bound = await bindH2cLoopback(server, { host: '127.0.0.1', port: 0 });
     const addr = bound.address();
-    if (addr.kind !== 'loopback') throw new Error('unreachable');
+    if (addr.kind !== 'KIND_TCP_LOOPBACK_H2C') throw new Error('unreachable');
 
     h2client = h2connect(`http://127.0.0.1:${addr.port}`);
     const body = await new Promise<string>((resolve, reject) => {

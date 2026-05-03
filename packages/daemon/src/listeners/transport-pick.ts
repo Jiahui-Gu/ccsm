@@ -5,11 +5,11 @@
 // Pick rules (matches spec §4 + spike outcomes from
 // `tools/spike-harness/probes/{uds-h2c, win-h2-named-pipe,
 // loopback-h2c-on-25h2}/RESULT.md`):
-//   - linux / darwin:  default A1 (UDS h2c) — `kind: 'uds'`
-//   - win32:           default A4 (named pipe h2) — `kind: 'namedPipe'`
+//   - linux / darwin:  default A1 (UDS h2c) — `kind: 'KIND_UDS'`
+//   - win32:           default A4 (named pipe h2) — `kind: 'KIND_NAMED_PIPE'`
 //   - any platform with `CCSM_LISTENER_A_FORCE_LOOPBACK=1`:
-//                      A2 (loopback h2c) — `kind: 'loopbackTcp'` — for
-//                      dev / smoke runs that cannot use a UDS (CI Docker
+//                      A2 (loopback h2c) — `kind: 'KIND_TCP_LOOPBACK_H2C'` —
+//                      for dev / smoke runs that cannot use a UDS (CI Docker
 //                      with no /run mount, IDE remote dev container, etc.).
 //
 // SRP: this module is a *decider* — pure function `(env, platform) →
@@ -24,8 +24,8 @@
 //     through env.ts and is picked up here transparently.
 //   - The closed-enum `BindDescriptor` from `./types.ts` (T1.2) is the
 //     contract; this module returns one of its four variants. The
-//     `'tls'` variant (A3 fallback) is reserved for v0.4 Listener B per
-//     ch03 §1a — v0.3 picks never produce it.
+//     `'KIND_TCP_LOOPBACK_H2_TLS'` variant (A3 fallback) is reserved for
+//     v0.4 Listener B per ch03 §1a — v0.3 picks never produce it.
 
 import type { DaemonEnv } from '../env.js';
 import type { BindDescriptor } from './types.js';
@@ -71,8 +71,9 @@ function forceLoopback(): boolean {
  *
  * @param env       The daemon env (provides `paths.listenerAddr`).
  * @param platform  NodeJS platform string (`process.platform`).
- * @returns         A `BindDescriptor` whose `kind` is `'uds'` |
- *                  `'namedPipe'` | `'loopbackTcp'` per spec ch03 §1a.
+ * @returns         A `BindDescriptor` whose `kind` is `'KIND_UDS'` |
+ *                  `'KIND_NAMED_PIPE'` | `'KIND_TCP_LOOPBACK_H2C'` per
+ *                  spec ch03 §1a.
  *
  * Spec ch03 §4 maps:
  *   - A1 (UDS h2c)            → linux / darwin default
@@ -81,8 +82,9 @@ function forceLoopback(): boolean {
  *   - A4 (named-pipe h2)      → win32 default
  *
  * The factory consumes this descriptor unchanged; the descriptor writer
- * (T1.6) maps the lowercase `kind` to the uppercase `transport` enum
- * stringified into `listener-a.json`.
+ * (T1.6) writes `kind` directly into the `transport` field of
+ * `listener-a.json` — they share one canonical vocabulary (spec ch03
+ * §1a / §3.2).
  */
 export function pickTransportForListenerA(
   env: DaemonEnv,
@@ -93,7 +95,7 @@ export function pickTransportForListenerA(
   // daemon inside a container without a writable `/run`).
   if (forceLoopback()) {
     return {
-      kind: 'loopbackTcp',
+      kind: 'KIND_TCP_LOOPBACK_H2C',
       host: LOOPBACK_HOST,
       port: EPHEMERAL_PORT,
     };
@@ -106,7 +108,7 @@ export function pickTransportForListenerA(
     // (`\\.\pipe\ccsm-<sid>`) is a v0.3.x hardening item; the env-var
     // override path covers it today.
     return {
-      kind: 'namedPipe',
+      kind: 'KIND_NAMED_PIPE',
       pipeName: env.paths.listenerAddr,
     };
   }
@@ -115,7 +117,7 @@ export function pickTransportForListenerA(
   // (e.g. `/var/run/com.ccsm.daemon/daemon.sock` on darwin,
   // `/run/ccsm/daemon.sock` on linux).
   return {
-    kind: 'uds',
+    kind: 'KIND_UDS',
     path: env.paths.listenerAddr,
   };
 }

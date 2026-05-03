@@ -41,14 +41,14 @@ describe('pickTransportForListenerA', () => {
   it('picks UDS on linux (A1 default)', () => {
     const env = envWith('/run/ccsm/daemon.sock');
     const desc = pickTransportForListenerA(env, 'linux');
-    expect(desc).toEqual({ kind: 'uds', path: '/run/ccsm/daemon.sock' });
+    expect(desc).toEqual({ kind: 'KIND_UDS', path: '/run/ccsm/daemon.sock' });
   });
 
   it('picks UDS on darwin (A1 default)', () => {
     const env = envWith('/var/run/com.ccsm.daemon/daemon.sock');
     const desc = pickTransportForListenerA(env, 'darwin');
     expect(desc).toEqual({
-      kind: 'uds',
+      kind: 'KIND_UDS',
       path: '/var/run/com.ccsm.daemon/daemon.sock',
     });
   });
@@ -57,7 +57,7 @@ describe('pickTransportForListenerA', () => {
     const env = envWith('\\\\.\\pipe\\ccsm-daemon');
     const desc = pickTransportForListenerA(env, 'win32');
     expect(desc).toEqual({
-      kind: 'namedPipe',
+      kind: 'KIND_NAMED_PIPE',
       pipeName: '\\\\.\\pipe\\ccsm-daemon',
     });
   });
@@ -67,7 +67,7 @@ describe('pickTransportForListenerA', () => {
     const env = envWith('/run/ccsm/daemon.sock');
     for (const platform of ['linux', 'darwin', 'win32'] as const) {
       const desc = pickTransportForListenerA(env, platform);
-      expect(desc).toEqual({ kind: 'loopbackTcp', host: '127.0.0.1', port: 0 });
+      expect(desc).toEqual({ kind: 'KIND_TCP_LOOPBACK_H2C', host: '127.0.0.1', port: 0 });
     }
   });
 
@@ -76,7 +76,7 @@ describe('pickTransportForListenerA', () => {
     for (const v of ['true', 'yes', '0', '', 'TRUE']) {
       process.env.CCSM_LISTENER_A_FORCE_LOOPBACK = v;
       const desc = pickTransportForListenerA(env, 'linux');
-      expect(desc.kind).toBe('uds');
+      expect(desc.kind).toBe('KIND_UDS');
     }
   });
 
@@ -84,16 +84,16 @@ describe('pickTransportForListenerA', () => {
     const custom = '/tmp/ccsm-test-override.sock';
     const env = envWith(custom);
     const desc = pickTransportForListenerA(env, 'linux');
-    expect(desc).toEqual({ kind: 'uds', path: custom });
+    expect(desc).toEqual({ kind: 'KIND_UDS', path: custom });
   });
 
   it('never returns the tls variant in v0.3 (reserved for v0.4 Listener B)', () => {
     const env = envWith('/run/ccsm/daemon.sock');
     for (const platform of ['linux', 'darwin', 'win32'] as const) {
       const desc = pickTransportForListenerA(env, platform);
-      expect(desc.kind).not.toBe('tls');
+      expect(desc.kind).not.toBe('KIND_TCP_LOOPBACK_H2_TLS');
     }
     process.env.CCSM_LISTENER_A_FORCE_LOOPBACK = '1';
-    expect(pickTransportForListenerA(env, 'linux').kind).not.toBe('tls');
+    expect(pickTransportForListenerA(env, 'linux').kind).not.toBe('KIND_TCP_LOOPBACK_H2_TLS');
   });
 });

@@ -8,6 +8,10 @@
 //
 // The envelope is a closed discriminated union via the `transport` tag.
 // One field is populated per accepted connection; the others are absent.
+// The `transport` vocabulary is unified with `BindDescriptor.kind` (spec
+// ch03 §1a / §3.2): `KIND_UDS` / `KIND_NAMED_PIPE` /
+// `KIND_TCP_LOOPBACK_H2C` (TLS variant is reserved for v0.4 Listener B
+// and never reaches this envelope on v0.3).
 // The HTTP/2 server adapter (T1.5) inspects the underlying socket on each
 // connection and writes a `PeerInfo` into the Connect `contextValues` under
 // `PEER_INFO_KEY`. The interceptor reads it back, derives a `Principal`,
@@ -34,7 +38,7 @@ import { createContextKey } from '@connectrpc/connect';
  * authorization — only `uid` is the security principal (spec ch03 §5).
  */
 export interface UdsPeerCred {
-  readonly transport: 'uds';
+  readonly transport: 'KIND_UDS';
   readonly uid: number;
   readonly gid: number;
   readonly pid: number | null;
@@ -54,7 +58,7 @@ export interface UdsPeerCred {
  * field on the `Principal` type, by design (spec ch03 §5 commentary).
  */
 export interface NamedPipePeerCred {
-  readonly transport: 'namedPipe';
+  readonly transport: 'KIND_NAMED_PIPE';
   readonly sid: string;
   readonly displayName: string;
 }
@@ -77,7 +81,7 @@ export interface NamedPipePeerCred {
  * as any other caller — no special-case in handlers.
  */
 export interface LoopbackTcpPeer {
-  readonly transport: 'loopbackTcp';
+  readonly transport: 'KIND_TCP_LOOPBACK_H2C';
   readonly bearerToken: string | null;
   /** Useful for diagnostics only; not authoritative. */
   readonly remoteAddress: string;
@@ -95,7 +99,7 @@ export type PeerInfo = UdsPeerCred | NamedPipePeerCred | LoopbackTcpPeer;
  * `undefined` to thread silently into a handler that forgot to check.
  */
 export const NO_PEER_INFO: PeerInfo = {
-  transport: 'loopbackTcp',
+  transport: 'KIND_TCP_LOOPBACK_H2C',
   bearerToken: null,
   remoteAddress: '',
   remotePort: 0,

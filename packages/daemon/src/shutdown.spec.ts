@@ -47,7 +47,7 @@ function makeListener(id: string, opts: { stopThrows?: boolean } = {}): Listener
     stop: vi.fn(async () => {
       if (opts.stopThrows) throw new Error(`${id} stop boom`);
     }),
-    descriptor: (): BindDescriptor => ({ kind: 'loopbackTcp', host: '127.0.0.1', port: 0 }),
+    descriptor: (): BindDescriptor => ({ kind: 'KIND_TCP_LOOPBACK_H2C', host: '127.0.0.1', port: 0 }),
   };
 }
 

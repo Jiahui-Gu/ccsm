@@ -61,11 +61,11 @@ afterEach(async () => {
 
 function planUds(): BindDescriptor {
   const dir = mkdtempSync(join(tmpdir(), 'ccsm-router-int-'));
-  return { kind: 'uds', path: join(dir, 'daemon.sock') };
+  return { kind: 'KIND_UDS', path: join(dir, 'daemon.sock') };
 }
 
 function planLoopback(): BindDescriptor {
-  return { kind: 'loopbackTcp', host: '127.0.0.1', port: 0 };
+  return { kind: 'KIND_TCP_LOOPBACK_H2C', host: '127.0.0.1', port: 0 };
 }
 
 describe('router bind hook — over-the-wire Unimplemented', () => {
@@ -75,8 +75,8 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
     const bound = await hook(planned);
     cleanup.closeServer = () => bound.stop();
 
-    expect(bound.descriptor.kind).toBe('uds');
-    if (bound.descriptor.kind !== 'uds') return; // type narrow
+    expect(bound.descriptor.kind).toBe('KIND_UDS');
+    if (bound.descriptor.kind !== 'KIND_UDS') return; // type narrow
 
     const transport = createConnectTransport({
       httpVersion: '2',
@@ -85,7 +85,7 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
         // Connect over UDS by overriding the socket factory — same
         // pattern used by the daemon's own integration tests
         // (transport/__tests__/h2c-uds.spec.ts).
-        createConnection: () => netConnect(bound.descriptor.kind === 'uds' ? bound.descriptor.path : ''),
+        createConnection: () => netConnect(bound.descriptor.kind === 'KIND_UDS' ? bound.descriptor.path : ''),
       },
     });
     const client = createClient(SessionService, transport);
@@ -106,8 +106,8 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
     const bound = await hook(planned);
     cleanup.closeServer = () => bound.stop();
 
-    expect(bound.descriptor.kind).toBe('loopbackTcp');
-    if (bound.descriptor.kind !== 'loopbackTcp') return; // type narrow
+    expect(bound.descriptor.kind).toBe('KIND_TCP_LOOPBACK_H2C');
+    if (bound.descriptor.kind !== 'KIND_TCP_LOOPBACK_H2C') return; // type narrow
     const port = bound.descriptor.port;
     expect(port).toBeGreaterThan(0);
 
@@ -130,7 +130,7 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
   it('rejects loopback host other than 127.0.0.1 with a clear error', async () => {
     const hook = makeRouterBindHook();
     const planned: BindDescriptor = {
-      kind: 'loopbackTcp',
+      kind: 'KIND_TCP_LOOPBACK_H2C',
       host: '::1',
       port: 0,
     };
@@ -140,12 +140,12 @@ describe('router bind hook — over-the-wire Unimplemented', () => {
   it('rejects tls bind on Listener A (v0.4 reserved)', async () => {
     const hook = makeRouterBindHook();
     const planned: BindDescriptor = {
-      kind: 'tls',
+      kind: 'KIND_TCP_LOOPBACK_H2_TLS',
       host: '127.0.0.1',
       port: 0,
       certPath: '/nonexistent.crt',
       keyPath: '/nonexistent.key',
     };
-    await expect(hook(planned)).rejects.toThrow(/tls bind not supported/);
+    await expect(hook(planned)).rejects.toThrow(/KIND_TCP_LOOPBACK_H2_TLS bind not supported/);
   });
 });

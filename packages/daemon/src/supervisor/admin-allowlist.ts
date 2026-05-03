@@ -129,10 +129,10 @@ export function isAllowed(
   peer: UdsPeerCred | NamedPipePeerCred,
   isMemberOfAdministrators?: (sid: string) => boolean,
 ): boolean {
-  if (peer.transport === 'uds') {
+  if (peer.transport === 'KIND_UDS') {
     return allowlist.uids.has(peer.uid);
   }
-  // namedPipe
+  // KIND_NAMED_PIPE
   if (allowlist.sids.has(peer.sid)) return true;
   if (isMemberOfAdministrators && isMemberOfAdministrators(peer.sid)) return true;
   return false;
