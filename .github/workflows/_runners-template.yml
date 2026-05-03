@@ -1,0 +1,44 @@
+# Self-hosted runner reference template (T0.10).
+#
+# This file is INTENTIONALLY INERT — it exists only as a reference for workflow
+# authors targeting the v0.3 self-hosted runner labels documented in
+# `tools/runners/README.md`. It is NOT an active workflow:
+#
+#   * The only trigger is `workflow_dispatch`, so it never runs automatically.
+#   * Every job is gated by `if: false`, so a stray manual dispatch is a no-op.
+#
+# Downstream tasks (T8.4 #92 for soak, T7.4 / T9.13 for installer) MUST copy
+# the relevant `runs-on:` line into their real workflow file rather than
+# editing this template. See `tools/runners/README.md` for the runner contract
+# and provisioning checklist.
+
+name: _runners-template (inert reference)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Reference: 1 hour pty soak runner (T8.4 #92).
+  # Real workflow lands as `.github/workflows/soak.yml` in T8.4.
+  e2e-soak-1h:
+    if: false   # inert — see file header
+    runs-on: [self-hosted, ccsm-soak]
+    timeout-minutes: 75   # 1 h soak + 15 min slack
+    steps:
+      - uses: actions/checkout@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run test:pty-soak   # ship-gate (c) — see spec ch11 §6 / ch12 §3
+
+  # Reference: Win 11 25H2 installer roundtrip runner (T7.4 / T9.13).
+  # Real workflow lands as `.github/workflows/installer-win.yml` in T7.4.
+  e2e-installer-win:
+    if: false   # inert — see file header
+    runs-on: [self-hosted, win11-25h2-vm]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pwsh tools/installer-roundtrip.ps1   # ship-gate (d) — spec ch11 §6 / ch12 §3
