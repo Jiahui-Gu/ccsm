@@ -3,25 +3,43 @@ import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import React from 'react';
 import { NotificationsPane } from '../../src/components/settings/NotificationsPane';
 
-// Stand-in for the preload bridge. Holds an in-memory record of saved keys
-// so the toggle's persistence path can be observed without a real DB.
-function makeCcsm(initial: Record<string, string | undefined> = {}) {
-  const store: Record<string, string | undefined> = { ...initial };
+// In-memory localStorage stand-in. Wave 0e cutover (#297) shifted the toggle
+// from window.ccsm.{loadState,saveState} to direct localStorage, mirroring
+// src/stores/persist.ts (#289) — same shape, same key.
+function makeStorage(initial: Record<string, string> = {}) {
+  const store: Record<string, string> = { ...initial };
   return {
-    loadState: vi.fn(async (key: string) => store[key]),
-    saveState: vi.fn(async (key: string, val: string) => {
-      store[key] = val;
+    getItem: vi.fn((key: string) => (key in store ? store[key] : null)),
+    setItem: vi.fn((key: string, value: string) => {
+      store[key] = value;
     }),
+    removeItem: vi.fn((key: string) => {
+      delete store[key];
+    }),
+    clear: vi.fn(() => {
+      for (const k of Object.keys(store)) delete store[k];
+    }),
+    key: vi.fn(),
+    get length() {
+      return Object.keys(store).length;
+    },
     __store: store,
-  };
+  } as unknown as Storage & { __store: Record<string, string>; setItem: ReturnType<typeof vi.fn> };
 }
 
+let storage: ReturnType<typeof makeStorage>;
+
 beforeEach(() => {
-  (window as { ccsm?: unknown }).ccsm = makeCcsm() as unknown as Window['ccsm'];
+  storage = makeStorage();
+  Object.defineProperty(window, 'localStorage', {
+    value: storage,
+    configurable: true,
+    writable: true,
+  });
 });
 
 afterEach(() => {
-  delete (window as { ccsm?: unknown }).ccsm;
+  vi.restoreAllMocks();
 });
 
 describe('NotificationsPane', () => {
@@ -34,16 +52,13 @@ describe('NotificationsPane', () => {
       name: /show desktop notifications/i,
     });
     expect(toggle).toBeInTheDocument();
-    // Default is ON — empty store row → toggle reads checked=true after hydrate.
+    // Default is ON — empty store → toggle reads checked=true after hydrate.
     await waitFor(() => {
       expect(toggle.getAttribute('aria-checked')).toBe('true');
     });
   });
 
   it('persists notifyEnabled=false when the user turns the toggle off', async () => {
-    const ccsm = makeCcsm();
-    (window as { ccsm?: unknown }).ccsm = ccsm as unknown as Window['ccsm'];
-
     await act(async () => {
       render(<NotificationsPane />);
     });
@@ -51,20 +66,22 @@ describe('NotificationsPane', () => {
     const toggle = await screen.findByRole('switch', {
       name: /show desktop notifications/i,
     });
-    // Wait for hydration so the click is enabled.
     await waitFor(() => expect(toggle).not.toBeDisabled());
 
     await act(async () => {
       fireEvent.click(toggle);
     });
-    expect(ccsm.saveState).toHaveBeenCalledWith('notifyEnabled', 'false');
+    expect(storage.setItem).toHaveBeenCalledWith('notifyEnabled', 'false');
     expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('reflects a persisted "false" row by hydrating to OFF', async () => {
-    (window as { ccsm?: unknown }).ccsm = makeCcsm({
-      notifyEnabled: 'false',
-    }) as unknown as Window['ccsm'];
+    storage = makeStorage({ notifyEnabled: 'false' });
+    Object.defineProperty(window, 'localStorage', {
+      value: storage,
+      configurable: true,
+      writable: true,
+    });
 
     await act(async () => {
       render(<NotificationsPane />);
