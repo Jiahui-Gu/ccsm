@@ -1,10 +1,13 @@
-// IPC security guards extracted from electron/main.ts (Task #730 Phase A1).
+// Path safety guards extracted from electron/main.ts (Task #730 Phase A1).
 //
-// Pure deciders/validators with no I/O — they take a value (path, IPC event)
-// and return a boolean / normalized form. Owning these in a dedicated module
-// makes the security contract independently auditable and trivially unit-
-// testable, and prevents accidental drift if a future handler forgets to
-// re-implement the same checks inline.
+// Pure deciders/validators with no I/O — they take a path value and return a
+// boolean / normalized form. Owning these in a dedicated module makes the
+// safety contract independently auditable and trivially unit-testable.
+//
+// History: previously named `ipcGuards.ts` and also exported `fromMainFrame`
+// for v0.2's defense-in-depth on ipcMain.handle callers. Wave 0b (#216)
+// purged the v0.2 IPC layer, so the IPC-frame check is gone; what remains is
+// the path safety contract. Wave 0d will move this module to the daemon.
 
 import * as path from 'path';
 import * as os from 'os';
@@ -29,22 +32,10 @@ export function isSafePath(p: unknown): p is string {
 }
 
 // Expand a leading `~` / `~/` / `~\` to the user's home directory. Used by
-// `paths:exist` to normalize persisted cwds before the safety check. Inlined
-// here after the `electron/agent/sessions.ts` deletion (W3.5c) — it was the
-// only non-deleted consumer of the old `resolveCwd` helper.
+// callers that normalize persisted cwds before the safety check.
 export function resolveCwd(cwd: string): string {
   if (cwd === '~') return os.homedir();
   if (cwd.startsWith('~/') || cwd.startsWith('~\\'))
     return path.join(os.homedir(), cwd.slice(2));
   return cwd;
-}
-
-// Defense-in-depth: every IPC handler that takes a privileged action should
-// first confirm the message originated from our top-level renderer frame. A
-// compromised iframe (e.g. via a future webview, or a misconfigured CSP)
-// can otherwise call into ipcMain with the same `e.sender`. Pairs with the
-// `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
-// installed in createWindow().
-export function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
-  return e.senderFrame === e.sender.mainFrame;
 }

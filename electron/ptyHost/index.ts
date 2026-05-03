@@ -24,18 +24,17 @@
 //   - cwdResolver.ts    pure decider for the spawn cwd fallback
 //   - processKiller.ts  single sink (taskkill / kill -SIGTERM/SIGKILL)
 //   - dataFanout.ts     module-level pty:data subscriber registry
-//   - ipcRegistrar.ts   the eight `pty:*` IPC handlers + watcher bridge
 //   - entryFactory.ts   per-session Entry construction + pty/headless wiring
 //   - lifecycle.ts      pure spawn/attach/detach/input/resize/kill ops over
 //                       a registry Map
 //
 // This file is the lifecycle-singleton: it owns the one `sessions` Map,
-// binds the lifecycle ops to it, exposes the public API, and wires IPC.
+// binds the lifecycle ops to it, and exposes the public API. Wave 0b (#216)
+// removed the legacy `ipcRegistrar.ts` + `registerPtyHostIpc` export — the
+// daemon takes ownership of the pty IPC surface in Wave 1.
 
-import type { BrowserWindow, IpcMain } from 'electron';
 import type { Entry } from './entryFactory';
 import * as L from './lifecycle';
-import { registerPtyIpc } from './ipcRegistrar';
 
 // Re-export the helpers callers historically imported from `ptyHost/index`.
 // The unit tests under `__tests__/` import `resolveSpawnCwd` and
@@ -96,27 +95,11 @@ export const getBufferSnapshot = (sid: string): Promise<L.BufferSnapshot> =>
   L.getBufferSnapshot(sessions, sid);
 
 // --- IPC registration --------------------------------------------------------
-
-// Register all `pty:*` IPC handlers. Thin wrapper around `registerPtyIpc`
-// in ipcRegistrar.ts that wires the registrar's deps to this module's
-// lifecycle functions. Kept on this surface so main.ts wires up via a
-// single call (`registerPtyHostIpc(ipcMain, getMainWindow)`).
-export function registerPtyHostIpc(
-  ipcMain: IpcMain,
-  getMainWindow: () => BrowserWindow | null,
-): void {
-  registerPtyIpc(ipcMain, {
-    getMainWindow,
-    getEntry: (sid) => sessions.get(sid),
-    listPtySessions,
-    spawnPtySession,
-    inputPtySession,
-    resizePtySession,
-    killPtySession,
-    getPtySession,
-    getBufferSnapshot,
-  });
-}
+//
+// The legacy `registerPtyHostIpc(ipcMain, getMainWindow)` entrypoint was
+// deleted in Wave 0b (#216) along with `ipcRegistrar.ts`. Wave 1 will wire
+// pty lifecycle through the daemon's Connect-RPC surface instead of
+// Electron's ipcMain.
 
 // --- Test seam ---------------------------------------------------------------
 
