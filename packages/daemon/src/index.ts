@@ -23,6 +23,10 @@ import { Lifecycle, Phase } from './lifecycle.js';
 import { makeListenerA } from './listeners/factory.js';
 import type { Listener } from './listeners/types.js';
 import { makeRouterBindHook } from './rpc/bind.js';
+import {
+  startSystemdWatchdog,
+  type SystemdWatchdogHandle,
+} from './watchdog/systemd.js';
 
 function log(line: string): void {
   // Plain stdout for now. T9 brings structured logging; until then a
@@ -85,12 +89,35 @@ export async function runStartup(lifecycle: Lifecycle): Promise<{
   return { env, listenerA };
 }
 
+/**
+ * Start the systemd watchdog keepalive on the main thread (T5.13). No-op on
+ * non-Linux, when `NOTIFY_SOCKET` is unset, or when `systemd-notify` is not
+ * installed. The handle's `stop()` MUST be called during graceful shutdown
+ * (T1.8) so the keepalive timer does not pin the event loop.
+ *
+ * Spec ch09 §6: emitted on the MAIN thread because the main thread is what
+ * blocks on coalesced SQLite writes; if it hangs, the entire RPC surface
+ * is dead, and systemd's `WatchdogSec=30s` reaps it via SIGABRT.
+ */
+function startMainThreadWatchdog(): SystemdWatchdogHandle {
+  const handle = startSystemdWatchdog();
+  if (handle.isActive()) {
+    log('systemd watchdog: emitting WATCHDOG=1 every 10s on main thread');
+  }
+  return handle;
+}
+
 async function main(): Promise<void> {
   const lifecycle = new Lifecycle();
   let listenerA: Listener | null = null;
+  let watchdog: SystemdWatchdogHandle | null = null;
   try {
     const result = await runStartup(lifecycle);
     listenerA = result.listenerA;
+    // Watchdog after READY — there is no point telling systemd we're alive
+    // until the daemon is actually serving. systemd's `WatchdogSec=30s`
+    // gives ~30s of boot slack before the first WATCHDOG=1 is required.
+    watchdog = startMainThreadWatchdog();
     log(`startup complete: phase=${lifecycle.currentPhase()}`);
     // T1.1 stub: the daemon would normally hold the event loop open via
     // its bound listeners. The bound Listener A keeps the loop alive on
@@ -99,8 +126,15 @@ async function main(): Promise<void> {
       // Keep alive forever — used when listener bind is skipped (smoke
       // run) but caller still wants the process to stay up.
       setInterval(() => {}, 1 << 30);
+    } else {
+      // T5.13 cleanup: in the smoke-run path we exit immediately after
+      // startup, so stop the watchdog now to release its timer (the
+      // .unref() inside makes this redundant for event-loop liveness, but
+      // explicit shutdown matches the contract T1.8 will enforce).
+      watchdog.stop();
     }
   } catch (err) {
+    watchdog?.stop();
     const error = err instanceof Error ? err : new Error(String(err));
     lifecycle.fail(error);
     log(`STARTUP FAILED at phase ${lifecycle.currentPhase()}: ${error.message}`);
