@@ -48,6 +48,8 @@ export default [
         crypto: 'readonly',
         URL: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        DOMException: 'readonly',
         KeyboardEvent: 'readonly',
         CustomEvent: 'readonly',
         Event: 'readonly',
