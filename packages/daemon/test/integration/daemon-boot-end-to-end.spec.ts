@@ -74,6 +74,7 @@ import * as AjvNs from 'ajv';
 
 import { runStartup, type RunStartupResult } from '../../src/index.js';
 import { Lifecycle, Phase } from '../../src/lifecycle.js';
+import { REQUIRED_COMPONENTS } from '../../src/runStartup.lock.js';
 import { TEST_BEARER_TOKEN } from '../../src/auth/index.js';
 
 const Ajv =
@@ -379,6 +380,34 @@ describe('daemon-boot end-to-end (Task #208)', () => {
       const sp = statePaths();
       const st = await stat(sp.crashRaw);
       expect(st.size).toBe(0); // truncate-after-replay (ch09 §6.2)
+    }
+  });
+
+  // Task #221 — assertWired contract. `runStartup` now collects a
+  // `wired: string[]` of canonical component names actually wired by
+  // this boot and calls `assertWired` against `REQUIRED_COMPONENTS`. A
+  // successful boot here means every hard-required component reported
+  // present; the e2e then locks the array shape so a future regression
+  // that drops a wire-up (and silently absents the name) fails this
+  // file BEFORE it can ship.
+  it('runStartup probe: result.wired covers every REQUIRED_COMPONENTS entry that is hard-required on this boot', () => {
+    expect(result).not.toBeNull();
+    const wired = result!.wired;
+    // The production e2e never sets any `CCSM_DAEMON_SKIP_*` envs, so
+    // every hard-required component (REQUIRED_COMPONENTS minus the
+    // current WARN_ONLY set in runStartup.lock.ts) MUST be present.
+    // We assert the strict superset relationship rather than deep
+    // equality so the test does not need to be edited each time a
+    // WARN_ONLY entry graduates to hard-required (it auto-tightens).
+    const WARN_ONLY = new Set(['write-coalescer']);
+    for (const name of REQUIRED_COMPONENTS) {
+      if (WARN_ONLY.has(name)) continue;
+      expect(wired, `missing wired entry: ${name}`).toContain(name);
+    }
+    // No surprise extras either — the daemon should not be reporting
+    // names that aren't in the canonical list.
+    for (const name of wired) {
+      expect(REQUIRED_COMPONENTS).toContain(name);
     }
   });
 });
