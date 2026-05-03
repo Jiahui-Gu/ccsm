@@ -1,4 +1,5 @@
 // packages/daemon/test/integration/pty-soak-shared.ts
+/* global AbortSignal */
 //
 // Shared driver for the two PTY soak harnesses:
 //   - pty-soak-1h.spec.ts   — ship-gate (c) per chapter 12 §4.3 (60 min, nightly).
