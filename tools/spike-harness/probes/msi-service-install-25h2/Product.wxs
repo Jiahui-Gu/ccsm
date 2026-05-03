@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  T9.13 spike: WiX 4+ ServiceInstall on Windows 11 25H2.
+
+  Goal: prove the modern WiX 4 / 5 (`http://wixtoolset.org/schemas/v4/wxs`)
+  schema's <ServiceInstall> + <ServiceControl> elements register, start, stop
+  and uninstall a Windows service cleanly on build 26200 (25H2).
+
+  Schema notes:
+    - WiX 4 dropped the v3 `Wix` namespace and unified everything under
+      `http://wixtoolset.org/schemas/v4/wxs`.
+    - <ServiceInstall> + <ServiceControl> are children of <Component>; the
+      service exe is identified by the <File> with KeyPath="yes" inside the
+      same component (WiX 4/5 confirmed via `wix build` schema validation).
+    - Compressed="yes" + Package/Compressed="yes" gives a single-file MSI
+      with embedded .cab (no external sources to track).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package Name="CCSM Spike Service (T9.13)"
+           Manufacturer="ccsm-spike"
+           Version="0.0.1"
+           UpgradeCode="6c0e6f10-9b0a-4d4e-8d3a-3a2cf7c2b5b1"
+           Compressed="yes"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+    <!--
+      ProgramFiles64Folder = %ProgramFiles%, automatically per arch
+      because the package is built x64 (-arch x64 on `wix build`).
+    -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="CcsmSpikeSvc">
+
+        <Component Id="SvcExe" Bitness="always64" Guid="*">
+          <File Id="SvcExeFile"
+                Name="ccsm-spike-svc.exe"
+                Source="build\svc\ccsm-spike-svc.exe"
+                KeyPath="yes" />
+
+          <!--
+            ServiceInstall — registers with SCM at install time.
+              Type="ownProcess"     : standalone exe service
+              Start="demand"        : manual start (no auto-start during spike)
+              ErrorControl="normal" : SCM logs and continues if start fails
+              Vital="yes"           : install fails if registration fails
+              Account omitted       => LocalSystem (default)
+          -->
+          <ServiceInstall Id="CcsmSpikeSvcInstall"
+                          Name="CcsmSpikeSvc"
+                          DisplayName="CCSM Spike Service (T9.13)"
+                          Description="MSI ServiceInstall probe for Windows 11 25H2 (WiX 4+ schema)."
+                          Type="ownProcess"
+                          Start="demand"
+                          ErrorControl="normal"
+                          Vital="yes" />
+
+          <!--
+            ServiceControl — drives SCM start/stop on (un)install.
+              Start="install"            : start during MSI install
+              Stop="both"                : stop on install AND uninstall
+              Remove="uninstall"         : delete from SCM on uninstall
+              Wait="yes"                 : block MSI on each transition
+          -->
+          <ServiceControl Id="CcsmSpikeSvcControl"
+                          Name="CcsmSpikeSvc"
+                          Start="install"
+                          Stop="both"
+                          Remove="uninstall"
+                          Wait="yes" />
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="CCSM Spike Service" Level="1">
+      <ComponentRef Id="SvcExe" />
+    </Feature>
+
+  </Package>
+</Wix>
