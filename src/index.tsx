@@ -48,6 +48,13 @@ const root = createRoot(document.getElementById('root')!);
 // IPC of the boot sequence. Components that read persisted state subscribe
 // to `useStore(s => s.hydrated)` and show skeleton/empty UI for the
 // sub-frame window before hydration lands.
+//
+// The `requestAnimationFrame` wrapper below preserves this contract after
+// PR #976 (Wave 0e persist.ts cutover) made `loadPersisted()` resolve on the
+// next microtask (sync `localStorage.getItem` inside an async wrapper) — so
+// hydration would otherwise complete in the same task as `root.render()` and
+// the skeleton frame would never paint. rAF defers `hydrateStore()` past the
+// next paint, restoring the pre-#976 paint-gate behavior. See Task #311 / #306.
 const trace = ((window as unknown as {
   __ccsmHydrationTrace?: HydrationTrace;
 }).__ccsmHydrationTrace ??= {} as HydrationTrace);
@@ -65,4 +72,6 @@ root.render(
     </RendererBoot>
   </ErrorBoundary>
 );
-void hydrateStore();
+void (typeof requestAnimationFrame === 'function'
+  ? requestAnimationFrame(() => void hydrateStore())
+  : void hydrateStore());
