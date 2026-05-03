@@ -11,15 +11,12 @@ export default defineConfig({
     // RuleTester suite (e.g. T1.9 ccsm/no-listener-slot-mutation). They
     // are not under `src/` because they are tooling, not daemon runtime.
     // `build/**` holds the SEA build pipeline tooling + tests (T7.1).
+    // `test/**` holds integration + forever-stable contract specs per
+    // design spec ch12 §3 (e.g. test/supervisor/contract.spec.ts).
     include: [
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
-      // `test/**` is the home for forever-stable invariants specs that watch
-      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
-      // state-dir paths, etc.). They live outside `src/` so they cannot be
-      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
-      // is `src`).
       'test/**/*.spec.ts',
     ],
     globals: false,
