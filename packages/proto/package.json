@@ -15,6 +15,7 @@
     "gen": "buf generate",
     "lock": "node scripts/lock.mjs",
     "lock-check": "node scripts/lock-check.mjs",
+    "version-drift-check": "node scripts/version-drift-check.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
