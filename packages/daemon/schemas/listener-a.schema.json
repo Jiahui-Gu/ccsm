@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ListenerAConnectionDescriptorV1",
+  "description": "Forever-stable v1 JSON Schema for the listener-A connection descriptor written by the daemon at boot. Spec ch03 §3.2. v0.4+ additions land in a NEW descriptor file, never as enum widenings or shape changes here (ch15 §3 forbidden-pattern 8).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "transport",
+    "address",
+    "tlsCertFingerprintSha256",
+    "supervisorAddress",
+    "boot_id",
+    "daemon_pid",
+    "listener_addr",
+    "protocol_version",
+    "bind_unix_ms"
+  ],
+  "properties": {
+    "version": {
+      "description": "Schema version literal. v1 is forever-stable; bumps only on wire-incompatible breaks (ch03 §3.2).",
+      "type": "integer",
+      "const": 1
+    },
+    "transport": {
+      "description": "Closed transport enum (ch03 §1a). Additions ship under a NEW descriptor file, never as new values here.",
+      "type": "string",
+      "enum": [
+        "KIND_UDS",
+        "KIND_NAMED_PIPE",
+        "KIND_TCP_LOOPBACK_H2C",
+        "KIND_TCP_LOOPBACK_H2_TLS"
+      ]
+    },
+    "address": {
+      "description": "Listener bind address; format depends on transport (UDS path / named-pipe name / 127.0.0.1:port).",
+      "type": "string",
+      "minLength": 1
+    },
+    "tlsCertFingerprintSha256": {
+      "description": "Lowercase hex SHA-256 of the listener self-signed cert when transport === 'KIND_TCP_LOOPBACK_H2_TLS'; null otherwise.",
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "supervisorAddress": {
+      "description": "Supervisor UDS / named-pipe path (UDS-only — spec ch03 §7).",
+      "type": "string",
+      "minLength": 1
+    },
+    "boot_id": {
+      "description": "Per-boot UUIDv4 (freshness witness; ch02 §3 step 5).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "daemon_pid": {
+      "description": "Daemon process pid; observability only — Electron MUST NOT auth on this.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "listener_addr": {
+      "description": "Duplicate of `address` for grep-friendly logs.",
+      "type": "string",
+      "minLength": 1
+    },
+    "protocol_version": {
+      "description": "Wire protocol version literal. `1` for v0.3; bumps only on wire-incompatible change.",
+      "type": "integer",
+      "const": 1
+    },
+    "bind_unix_ms": {
+      "description": "Daemon process start time (ms since epoch); observability only.",
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

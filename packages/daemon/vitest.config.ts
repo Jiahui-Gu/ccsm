@@ -15,11 +15,11 @@ export default defineConfig({
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
-      // `test/**` is the home for forever-stable invariants specs that watch
-      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
-      // state-dir paths, etc.). They live outside `src/` so they cannot be
-      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
-      // is `src`).
+      // Cross-cutting specs that exercise multiple src/ modules + frozen
+      // wire artefacts (schemas, golden files) live under `test/**` rather
+      // than co-located beside one source file. Example: T10.4 descriptor
+      // schema spec validates the writer's bytes against the v1 JSON
+      // Schema and a checked-in golden.
       'test/**/*.spec.ts',
     ],
     globals: false,

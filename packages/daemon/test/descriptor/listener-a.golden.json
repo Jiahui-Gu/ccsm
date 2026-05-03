@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "transport": "KIND_TCP_LOOPBACK_H2_TLS",
+  "address": "127.0.0.1:51820",
+  "tlsCertFingerprintSha256": "a3b1c2d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+  "supervisorAddress": "/run/ccsm/supervisor.sock",
+  "boot_id": "550e8400-e29b-41d4-a716-446655440000",
+  "daemon_pid": 4242,
+  "listener_addr": "127.0.0.1:51820",
+  "protocol_version": 1,
+  "bind_unix_ms": 1714600000000
+}

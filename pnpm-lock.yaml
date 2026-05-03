@@ -238,6 +238,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
 
   packages/electron: {}
 
