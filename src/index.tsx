@@ -8,6 +8,11 @@ import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
 import './styles/global.css';
+// T6.6 — Renderer boot wiring (Wave 0e prerequisite). Mounts the Connect-RPC
+// provider chain so the hook layer in `@ccsm/electron/rpc/queries.js` can be
+// used by `<App/>` once #215 cuts call sites over from `window.ccsm*` to RPC.
+// See docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md ch08 §6.2.
+import { RendererBoot } from '@ccsm/electron/renderer/boot';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
 // init. The renderer SDK auto-discovers them via the IPC bridge that
@@ -55,7 +60,9 @@ root.render(
       </div>
     }
   >
-    <App />
+    <RendererBoot>
+      <App />
+    </RendererBoot>
   </ErrorBoundary>
 );
 void hydrateStore();

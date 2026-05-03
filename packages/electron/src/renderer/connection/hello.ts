@@ -271,9 +271,15 @@ function extractDaemonProtoVersion(err: ConnectError): number | null {
  * path, while unit tests of `performHello` inject a fake.
  */
 export async function defaultFetchDescriptor(): Promise<DescriptorV1> {
-  // Imported lazily so this module loads without a window in pure-Node unit
-  // tests that never reach the default path.
-  const { DESCRIPTOR_URL } = await import('../../main/protocol-app.js');
+  // Locked URL per spec ch08 §4.1 step 3 (mirrors `DESCRIPTOR_URL` in
+  // `../../main/protocol-app.ts`). Duplicated as a literal here rather
+  // than dynamically imported because `protocol-app.ts` pulls in
+  // `node:fs/promises` + `node:path` for the main-process descriptor
+  // path helpers — modules a renderer bundle (webpack target: web)
+  // cannot resolve. Drift between the two literals is impossible to
+  // ship: the descriptor handler in main keys against the same string,
+  // so a typo here surfaces as a 404 in the renderer's first fetch.
+  const DESCRIPTOR_URL = 'app://ccsm/listener-descriptor.json';
   const res = await fetch(DESCRIPTOR_URL);
   if (!res.ok) {
     throw new DescriptorFetchError(
@@ -300,7 +306,7 @@ export async function defaultFetchDescriptor(): Promise<DescriptorV1> {
     typeof (parsed as { address?: unknown }).address !== 'string'
   ) {
     throw new DescriptorFetchError(
-      'descriptor URL returned malformed payload (missing boot_id/address)',
+      `descriptor URL ${DESCRIPTOR_URL} returned malformed payload (missing boot_id/address)`,
     );
   }
   return parsed as DescriptorV1;

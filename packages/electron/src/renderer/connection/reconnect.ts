@@ -38,9 +38,9 @@ export const RECONNECT_CAP_MS = 5000 as const;
  * `attempt < 0` is treated as 0; large `attempt` values clamp to the cap.
  */
 export function nextDelayMs(attempt: number): number {
-  if (attempt <= 0) return RECONNECT_SCHEDULE_MS[0];
+  if (attempt <= 0) return RECONNECT_SCHEDULE_MS[0] ?? RECONNECT_CAP_MS;
   if (attempt >= RECONNECT_SCHEDULE_MS.length) return RECONNECT_CAP_MS;
-  return RECONNECT_SCHEDULE_MS[attempt];
+  return RECONNECT_SCHEDULE_MS[attempt] ?? RECONNECT_CAP_MS;
 }
 
 /** Promise-based sleep. Honors AbortSignal so callers can cancel cleanly. */
