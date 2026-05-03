@@ -8,10 +8,15 @@
 //   decider   : notifyDecider.decide(event, ctx) (#687) → Decision | null
 //   sinks     : toastSink (this file) + flashSink (renderer push)
 //
+// Wave 0c (#217): the click handler used to fan out to the renderer via
+// `webContents.send('session:activate', { sid })`. That IPC channel is
+// gone — Wave 0d will let the daemon push session-activate via Connect-RPC.
+// For now the click handler still focuses the OS window so the user lands
+// in the app, just without renderer-side activation.
+//
 // The sink does NOT decide. It only:
 //   1. Builds the user-visible toast copy (title/body) via `getNameFn`.
-//   2. Calls `notifyImpl.show` with a click handler that focuses the window
-//      + sends 'session:activate' to the renderer.
+//   2. Calls `notifyImpl.show` with a click handler that focuses the window.
 //   3. Bumps the unread badge via the optional `onNotified` hook.
 //   4. Pushes a probe entry to `globalThis.__ccsmNotifyLog` when the
 //      `CCSM_NOTIFY_TEST_HOOK` env is set (e2e seam — the existing
@@ -65,7 +70,7 @@ function resolveName(name: string | null | undefined, sid: string): string {
   return trimmed;
 }
 
-function focusAndActivate(win: BrowserWindow | null, sid: string): void {
+function focusAndActivate(win: BrowserWindow | null, _sid: string): void {
   if (!win || win.isDestroyed()) return;
   try {
     if (!win.isVisible()) win.show();
@@ -74,13 +79,8 @@ function focusAndActivate(win: BrowserWindow | null, sid: string): void {
   } catch (err) {
     console.warn('[toastSink] focus failed', err);
   }
-  try {
-    if (!win.webContents.isDestroyed()) {
-      win.webContents.send('session:activate', { sid });
-    }
-  } catch (err) {
-    console.warn('[toastSink] session:activate send failed', err);
-  }
+  // Wave 0c (#217): renderer 'session:activate' IPC removed. Wave 0d will
+  // route this through the daemon RPC layer.
 }
 
 function makeElectronToastImpl(): ToastImpl {

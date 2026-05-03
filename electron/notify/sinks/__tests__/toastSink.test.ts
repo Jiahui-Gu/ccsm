@@ -3,8 +3,12 @@
 //   1. Resolves the user-visible name via getNameFn (placeholder/empty
 //      collapse to short sid prefix).
 //   2. Calls toastImpl.show with the i18n title/body + a click handler that
-//      focuses the window + sends 'session:activate'.
+//      focuses the window.
 //   3. Bumps the unread badge via onNotified.
+//
+// Wave 0c (#217): the click handler used to also fire a 'session:activate'
+// IPC message; that channel is gone, so the test only asserts focus side
+// effects now.
 //
 // We assert real behavior by injecting a recording toastImpl (no real
 // Notification spawn) and a stub BrowserWindow.
@@ -153,7 +157,7 @@ describe('createToastSink', () => {
     expect(calls[0]!.payload.body).not.toContain('  Trimmed');
   });
 
-  it('click handler focuses, restores when minimized, shows when hidden, and sends session:activate', () => {
+  it('click handler focuses, restores when minimized, shows when hidden (no IPC fan-out post-Wave-0c)', () => {
     const { impl, calls } = makeRecordingImpl();
     const win = makeStubWin({ visible: false, minimized: true });
     const sink = createToastSink({
@@ -166,7 +170,7 @@ describe('createToastSink', () => {
     expect(win.show).toHaveBeenCalledTimes(1);
     expect(win.restore).toHaveBeenCalledTimes(1);
     expect(win.focus).toHaveBeenCalledTimes(1);
-    expect(win.webContents.send).toHaveBeenCalledWith('session:activate', { sid: 's1' });
+    expect(win.webContents.send).not.toHaveBeenCalled();
   });
 
   it('click handler skips show/restore when window already visible+not-minimized', () => {

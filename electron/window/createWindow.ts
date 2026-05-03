@@ -146,15 +146,13 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     // not via Mica/transparency. The user explicitly does not want to see
     // the desktop through the window.
     backgroundColor: '#0B0B0C',
-    // macOS: hiddenInset titlebar with native traffic lights.
-    // Windows: fully frameless — we self-draw the three controls inside
-    //   the right pane (see WindowControls).
-    ...(process.platform === 'darwin'
-      ? {
-          titleBarStyle: 'hiddenInset' as const,
-          trafficLightPosition: { x: 16, y: 14 },
-        }
-      : { titleBarStyle: 'hidden' as const, frame: false }),
+    // Wave 0c (#217): frameless DISABLED for v0.3 — use the OS-default
+    // window chrome (title bar, resize handles, traffic lights / minimize-
+    // maximize-close controls). v0.2's self-drawn title bar relied on the
+    // preload IPC bridge to read maximize state and dispatch window
+    // commands; with the bridge gone we revert to native chrome rather
+    // than ship a half-wired custom one. Custom chrome may return in v0.4
+    // once the daemon-driven RPC layer can carry window-control intents.
     // Windows 11: ask DWM to round the outer corners so the window edge
     //   matches the radii of our internal panels. Without this the window
     //   is a sharp rectangle and rounded interior surfaces look clipped
@@ -162,8 +160,10 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     roundedCorners: true,
     autoHideMenuBar: true,
     webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
+      // sandbox:true is the recommended Electron baseline. Wave 0b (#216)
+      // removed the preload, so there is no longer a sandboxed-require
+      // mismatch to worry about — flip it on.
+      sandbox: true,
       // Hidden-mode animation correctness: Chromium throttles rAF
       // for offscreen / hidden windows down to ~1Hz. dnd-kit's
       // dropAnimation (150ms) and other CSS transitions then never
@@ -177,21 +177,6 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
       // probes cannot accidentally pop a DevTools window (any explicit
       // openDevTools() call below is a no-op once this is false).
       devTools: !hiddenForE2E,
-      // sandbox:true is the recommended Electron baseline (forces the
-      // preload into a Chromium sandbox where Node built-ins are
-      // unavailable), but our preload's `require('@sentry/electron/preload')`
-      // can't be resolved by the sandboxed preload's restricted require —
-      // it only follows relative paths and a small whitelist. Enabling it
-      // results in: "Error: module not found: @sentry/electron/preload"
-      // and `window.ccsm` is never installed.
-      //
-      // Followup: bundle preload through webpack (or vendor the sentry
-      // preload into electron/) so the require resolves at build time, then
-      // flip this back to true. Tracked separately to keep this PR scoped
-      // to the IPC hardening fixes that don't require a build-pipeline
-      // change.
-      sandbox: false,
-      preload: path.join(__dirname, '..', 'preload', 'index.js'),
     },
   });
 
@@ -247,27 +232,22 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   // bound a renderer here via `bindCliBridgeSender`; ptyHost now reaches
   // attached webContents directly through their per-session attach map,
   // so no explicit binding step is needed.)
-  win.on('show', () => {
-    // Reset the renderer's fade-opacity in case the window was just
-    // restored after a fade-to-hide (see `window:beforeHide` below).
-    if (!win.webContents.isDestroyed()) {
-      win.webContents.send('window:afterShow');
-    }
-  });
+  //
+  // Wave 0c (#217): the `window:afterShow` and `window:maximizedChanged`
+  // renderer broadcasts are gone — there is no preload bridge to receive
+  // them. Native chrome means the renderer doesn't need to draw its own
+  // maximize affordance, and the fade-on-restore animation is dropped
+  // alongside the fade-on-hide (see fadeThenHide below).
 
   win.on('focus', () => {
     deps.onFocusChange({ focused: true, activeSid: deps.getActiveSid() });
   });
 
-  const emitMax = () =>
-    win.webContents.send('window:maximizedChanged', win.isMaximized());
-  win.on('maximize', emitMax);
-  win.on('unmaximize', emitMax);
-
   // Close-button behaviour. Three modes — see getCloseAction() above:
   //   'quit' → don't preventDefault; let the window close, fall through to
   //            window-all-closed → before-quit → app exit.
-  //   'tray' → preventDefault + fade-to-hide (the original behaviour).
+  //   'tray' → preventDefault + hide (the original behaviour, minus the
+  //            fade now that we can no longer cue the renderer).
   //   'ask'  → preventDefault + native dialog with a "Don't ask again"
   //            checkbox; on confirm we persist the choice via setCloseAction
   //            so the next click goes straight to that branch.
@@ -275,29 +255,9 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   // (tray menu Quit, app.before-quit safety net, electron-builder updater)
   // bypass everything.
   //
-  // Fade-to-hide: before actually calling `win.hide()` we send a
-  // `window:beforeHide` event so the renderer can run a short opacity
-  // fade-out. `HIDE_FADE_MS` matches `DURATION.standard` (180ms) from the
-  // shared motion tokens — kept short so closing still feels responsive.
-  // Guarded by `fadePending` so repeated Ctrl+W presses don't stack timers.
-  const HIDE_FADE_MS = 180;
-  let fadePending = false;
-  const fadeThenHide = () => {
-    if (fadePending) return;
-    fadePending = true;
-    try {
-      if (!win.webContents.isDestroyed()) {
-        win.webContents.send('window:beforeHide', { durationMs: HIDE_FADE_MS });
-      }
-    } catch {
-      /* renderer unreachable — fall through to immediate hide */
-    }
-    setTimeout(() => {
-      fadePending = false;
-      if (win.isDestroyed()) return;
-      win.hide();
-    }, HIDE_FADE_MS);
-  };
+  // Wave 0c (#217): the renderer-side fade-out animation is removed because
+  // we no longer have a `window:beforeHide` IPC channel to start it. We hide
+  // immediately instead. v0.4 will reintroduce the cue over the daemon RPC.
   win.on('close', (e) => {
     if (deps.getIsQuitting()) return;
     const pref = getCloseAction();
@@ -307,7 +267,7 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
     }
     e.preventDefault();
     if (pref === 'tray') {
-      fadeThenHide();
+      win.hide();
       return;
     }
     // pref === 'ask': prompt once. Showing the dialog is async, but
@@ -333,24 +293,19 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
           '[main] close-action dialog failed; falling back to tray',
           err,
         );
-        fadeThenHide();
+        win.hide();
         return;
       }
       const choice: CloseAction = result.response === 0 ? 'tray' : 'quit';
       if (result.checkboxChecked) setCloseAction(choice);
       if (choice === 'tray') {
-        fadeThenHide();
+        win.hide();
       } else {
         deps.setIsQuitting(true);
         app.quit();
       }
     })();
   });
-
-  // After the window is shown again (tray click, dock click on macOS) the
-  // renderer's opacity may still be 0 from the previous fade-out. The
-  // existing `win.on('show')` handler above dispatches `window:afterShow`
-  // to reset it.
 
   return win;
 }

@@ -1,8 +1,11 @@
 // Flash sink — single-responsibility executor that, given a Decision from
-// `notifyDecider.decide`, pushes a transient `flash` signal to the renderer
-// for the affected sid. AgentIcon ORs this against `state === 'waiting'` to
-// breathe an amber halo even on rules where the decider said "flash but no
-// toast" (Rule 2: foreground + active sid + short task).
+// `notifyDecider.decide`, records a transient `flash` signal for the
+// affected sid in an in-memory map (mirrored onto globalThis for e2e probes).
+//
+// Wave 0c (#217): the renderer-IPC half (`webContents.send('notify:flash', ...)`)
+// is removed. Wave 0d will let the daemon push this signal over its RPC
+// channel; until then the sink is in-process bookkeeping only — AgentIcon
+// in the renderer no longer receives flash events from the shell.
 //
 // Why a separate sink (vs. piggybacking on the existing 'session:state' IPC):
 //   * The existing state stream is sourced from the JSONL watcher and runs
@@ -16,13 +19,8 @@
 //     toast pipeline or require a new code path inside the watcher.
 //
 // Auto-clear: a flash is transient — we set `flashStates[sid] = true`,
-// then schedule a clear after FLASH_DURATION_MS so the halo doesn't stick
-// indefinitely. Repeated flashes reset the timer (debounce-style).
-//
-// IPC contract: main → renderer over channel `notify:flash` with payload
-// `{ sid: string, on: boolean }`. Renderer (App.tsx) subscribes via the
-// preload bridge `window.ccsmNotify.onFlash` and writes the zustand store
-// field `flashStates: Record<sid, boolean>`.
+// then schedule a clear after FLASH_DURATION_MS so the in-memory map doesn't
+// grow unbounded. Repeated flashes reset the timer (debounce-style).
 
 import type { BrowserWindow } from 'electron';
 import type { Decision } from '../notifyDecider';
@@ -65,15 +63,13 @@ export function createFlashSink(opts: FlashSinkOptions): FlashSink {
   (globalThis as unknown as { __ccsmFlashStates?: Record<string, boolean> }).__ccsmFlashStates =
     flashStates;
 
-  function send(sid: string, on: boolean): void {
-    const win = opts.getMainWindow();
-    if (!win || win.isDestroyed()) return;
-    if (win.webContents.isDestroyed()) return;
-    try {
-      win.webContents.send('notify:flash', { sid, on });
-    } catch (err) {
-      console.warn('[flashSink] send failed', err);
-    }
+  function send(_sid: string, _on: boolean): void {
+    // Wave 0c (#217): renderer 'notify:flash' IPC removed. Flash state
+    // remains tracked in `flashStates` (mirrored to globalThis for e2e
+    // probes) so the in-process pipeline + tests still observe it; the
+    // renderer no longer receives push events. Wave 0d will route this
+    // through the daemon RPC channel.
+    void opts.getMainWindow; // keep deps referenced for the future wire-up
   }
 
   function clear(sid: string): void {
