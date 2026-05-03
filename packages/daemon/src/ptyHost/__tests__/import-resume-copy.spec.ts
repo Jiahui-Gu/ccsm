@@ -17,21 +17,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
 vi.mock('@xterm/headless', () => ({ Terminal: class {} }));
 vi.mock('@xterm/addon-serialize', () => ({ SerializeAddon: class {} }));
-vi.mock('electron', () => ({}));
-vi.mock('../claudeResolver', () => ({ resolveClaude: () => null }));
-vi.mock('../../sessionWatcher', () => ({
+vi.mock('../claudeResolver.js', () => ({ resolveClaude: () => null }));
+vi.mock('../../sessionWatcher/index.js', () => ({
   sessionWatcher: { on: vi.fn(), startWatching: vi.fn(), stopWatching: vi.fn() },
 }));
 // Real projectKey encoding — the helper depends on the round-trip between
 // the spawn cwd and the projectDir name, so a stub would defeat the test.
-vi.mock('../../sessionWatcher/projectKey', async () => {
+vi.mock('../../sessionWatcher/projectKey.js', async () => {
   return {
     cwdToProjectKey: (cwd: string) =>
       typeof cwd === 'string' && cwd.length > 0 ? cwd.replace(/[\\/:]/g, '-') : '',
   };
 });
 
-import { ensureResumeJsonlAtSpawnCwd } from '../index';
+import { ensureResumeJsonlAtSpawnCwd } from '../index.js';
 
 describe('ensureResumeJsonlAtSpawnCwd (#603)', () => {
   let tmp: string;

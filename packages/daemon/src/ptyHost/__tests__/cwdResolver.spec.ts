@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveSpawnCwd } from '../cwdResolver';
+import { resolveSpawnCwd } from '../cwdResolver.js';
 
 let tmp: string;
 

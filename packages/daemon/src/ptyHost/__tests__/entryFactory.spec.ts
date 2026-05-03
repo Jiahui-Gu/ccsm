@@ -12,18 +12,18 @@
 // are hoisted, so per-test state lives on globalThis (`__pf`) and the mocks
 // read it lazily.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
 interface PtyFakeBus {
   onData: ((chunk: string) => void) | null;
   onExit: ((evt: { exitCode: number | null; signal: number | null }) => void) | null;
-  ptySpawn: ReturnType<typeof vi.fn>;
-  headlessDispose: ReturnType<typeof vi.fn>;
-  headlessWrite: ReturnType<typeof vi.fn>;
-  watcherStart: ReturnType<typeof vi.fn>;
-  watcherStop: ReturnType<typeof vi.fn>;
-  ensureJsonl: ReturnType<typeof vi.fn>;
-  emitData: ReturnType<typeof vi.fn>;
+  ptySpawn: Mock<(...args: unknown[]) => unknown>;
+  headlessDispose: Mock<(...args: unknown[]) => unknown>;
+  headlessWrite: Mock<(...args: unknown[]) => unknown>;
+  watcherStart: Mock<(...args: unknown[]) => unknown>;
+  watcherStop: Mock<(...args: unknown[]) => unknown>;
+  ensureJsonl: Mock<(...args: unknown[]) => unknown>;
+  emitData: Mock<(...args: unknown[]) => unknown>;
   sourceJsonl: string | null;
   ensureCopied: boolean;
   deferHeadlessWrite: boolean;
@@ -73,9 +73,7 @@ vi.mock('@xterm/addon-serialize', () => ({
   },
 }));
 
-vi.mock('electron', () => ({}));
-
-vi.mock('../../sessionWatcher', () => ({
+vi.mock('../../sessionWatcher/index.js', () => ({
   sessionWatcher: {
     on: vi.fn(),
     startWatching: (...a: unknown[]) => bus().watcherStart(...a),
@@ -83,7 +81,7 @@ vi.mock('../../sessionWatcher', () => ({
   },
 }));
 
-vi.mock('../jsonlResolver', () => ({
+vi.mock('../jsonlResolver.js', () => ({
   toClaudeSid: (s: string) => s,
   findJsonlForSid: () => bus().sourceJsonl,
   resolveJsonlPath: () => '/tmp/live.jsonl',
@@ -93,15 +91,15 @@ vi.mock('../jsonlResolver', () => ({
   },
 }));
 
-vi.mock('../cwdResolver', () => ({
+vi.mock('../cwdResolver.js', () => ({
   resolveSpawnCwd: (cwd: string) => (cwd ? cwd : '/home/u'),
 }));
 
-vi.mock('../dataFanout', () => ({
+vi.mock('../dataFanout.js', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
 }));
 
-import { makeEntry } from '../entryFactory';
+import { makeEntry } from '../entryFactory.js';
 
 describe('entryFactory.makeEntry', () => {
   beforeEach(() => {
@@ -235,7 +233,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
   });
 
   it('double-writes each chunk to headless AND broadcasts pty:data with monotonic seq', async () => {
-    const mod = await import('../entryFactory');
+    const mod = await import('../entryFactory.js');
     const entry = mod.makeEntry('sid-DW', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
     const sent: Array<{ chunk: string; seq: number }> = [];
     const wc = {
@@ -266,7 +264,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
 
   it('warns once when pending headless writes cross BACKPRESSURE_WARN_THRESHOLD, no data dropped', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const mod = await import('../entryFactory');
+    const mod = await import('../entryFactory.js');
     const entry = mod.makeEntry('sid-BP', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
 
     // L4 PR-E (#864): backpressure warn is gated on `entry.attached.size > 0`
@@ -316,7 +314,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
   });
 
   it('skips destroyed webContents but still writes to headless and bumps seq', async () => {
-    const mod = await import('../entryFactory');
+    const mod = await import('../entryFactory.js');
     const entry = mod.makeEntry('sid-DEAD', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
     const aliveSent: Array<number> = [];
     const dead = { isDestroyed: () => true, send: vi.fn() };

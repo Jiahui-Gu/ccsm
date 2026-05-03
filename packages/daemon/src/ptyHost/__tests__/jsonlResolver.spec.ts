@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Real projectKey encoding — these helpers depend on the round-trip between
 // the spawn cwd and the projectDir name, so a stub would defeat the test.
-vi.mock('../../sessionWatcher/projectKey', () => {
+vi.mock('../../sessionWatcher/projectKey.js', () => {
   return {
     cwdToProjectKey: (cwd: string) =>
       typeof cwd === 'string' && cwd.length > 0 ? cwd.replace(/[\\/:]/g, '-') : '',
@@ -24,7 +24,7 @@ import {
   resolveJsonlPath,
   resolveProjectsRoot,
   toClaudeSid,
-} from '../jsonlResolver';
+} from '../jsonlResolver.js';
 
 let tmp: string;
 let originalCfg: string | undefined;

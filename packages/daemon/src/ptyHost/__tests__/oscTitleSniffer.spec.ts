@@ -4,7 +4,7 @@
 // behaviour for hostile streams.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { OscTitleSniffer, type OscTitleEvent } from '../oscTitleSniffer';
+import { OscTitleSniffer, type OscTitleEvent } from '../oscTitleSniffer.js';
 
 function collect(sniffer: OscTitleSniffer): OscTitleEvent[] {
   const events: OscTitleEvent[] = [];

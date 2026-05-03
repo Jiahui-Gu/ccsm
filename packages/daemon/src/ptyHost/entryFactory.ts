@@ -23,16 +23,26 @@
 import * as pty from 'node-pty';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import type { WebContents } from 'electron';
-import { sessionWatcher } from '../sessionWatcher';
+import { sessionWatcher } from '../sessionWatcher/index.js';
 import {
   ensureResumeJsonlAtSpawnCwd,
   findJsonlForSid,
   resolveJsonlPath,
   toClaudeSid,
-} from './jsonlResolver';
-import { resolveSpawnCwd } from './cwdResolver';
-import { emitPtyData } from './dataFanout';
+} from './jsonlResolver.js';
+import { resolveSpawnCwd } from './cwdResolver.js';
+import { emitPtyData } from './dataFanout.js';
+
+// Minimal WebContents shape used by the per-session attached map. Wave 0d.4
+// (#251) replaced `import type { WebContents } from 'electron'` with this
+// local interface so daemon code no longer carries an `electron` type
+// dependency. The fields are exactly those entryFactory + lifecycle +
+// dispatchPtyChunk read on attached senders. The electron-side preload that
+// owns the real WebContents instance still satisfies this shape structurally.
+export interface WebContentsLike {
+  isDestroyed(): boolean;
+  send(channel: string, ...args: unknown[]): void;
+}
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
@@ -59,7 +69,7 @@ export interface Entry {
   // Multiple webContents may attach (e.g. devtools/preview windows); broadcast
   // pty:data to all of them. Keyed by webContents id so detach cleanup is O(1)
   // and we don't pin destroyed senders.
-  attached: Map<number, WebContents>;
+  attached: Map<number, WebContentsLike>;
   cols: number;
   rows: number;
   /** Resolved spawn cwd (after `resolveSpawnCwd` fallback). Captured here

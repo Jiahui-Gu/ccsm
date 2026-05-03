@@ -9,7 +9,7 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join as pathJoin } from 'node:path';
 import { createHash } from 'node:crypto';
-import { cwdToProjectKey } from '../sessionWatcher/projectKey';
+import { cwdToProjectKey } from '../sessionWatcher/projectKey.js';
 
 // Project an arbitrary ccsm sid onto a deterministic UUID v4 string so claude
 // (which requires a valid UUID for --session-id / --resume) accepts it.

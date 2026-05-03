@@ -41,7 +41,7 @@ vi.mock('node:child_process', () => {
 });
 
 // Import AFTER vi.mock so the resolver picks up the mocked spawnSync.
-import { __resetClaudeResolverForTest, resolveClaude } from '../claudeResolver';
+import { __resetClaudeResolverForTest, resolveClaude } from '../claudeResolver.js';
 
 const ORIGINAL_PLATFORM = process.platform;
 

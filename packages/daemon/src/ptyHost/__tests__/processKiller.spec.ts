@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { killProcessSubtree } from '../processKiller';
+import { killProcessSubtree } from '../processKiller.js';
 
 describe('killProcessSubtree — guards', () => {
   // No spawn / no process.kill should be invoked for invalid pids.

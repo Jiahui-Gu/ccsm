@@ -5,13 +5,13 @@
 // processKiller.killProcessSubtree, sessionWatcher) are mocked — the
 // registry-mutation logic and the cap/guard branches are what's under test.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 interface FakePty {
   pid: number;
-  write: ReturnType<typeof vi.fn>;
-  resize: ReturnType<typeof vi.fn>;
-  kill: ReturnType<typeof vi.fn>;
+  write: Mock<(...args: unknown[]) => unknown>;
+  resize: Mock<(...args: unknown[]) => unknown>;
+  kill: Mock<(...args: unknown[]) => unknown>;
   killShouldThrow?: boolean;
   writeShouldThrow?: boolean;
   resizeShouldThrow?: boolean;
@@ -19,7 +19,7 @@ interface FakePty {
 
 interface FakeEntry {
   pty: FakePty;
-  headless: { resize: ReturnType<typeof vi.fn> };
+  headless: { resize: Mock<(...args: unknown[]) => unknown> };
   serialize: { serialize: () => string };
   attached: Map<number, unknown>;
   cols: number;
@@ -31,7 +31,7 @@ interface LifecycleBus {
   killCalls: Array<number | undefined>;
   watcherStopCalls: string[];
   watcherStopShouldThrow: boolean;
-  makeEntry: ReturnType<typeof vi.fn>;
+  makeEntry: Mock<(...args: unknown[]) => unknown>;
 }
 
 function bus(): LifecycleBus {
@@ -39,11 +39,11 @@ function bus(): LifecycleBus {
   return (globalThis as any).__lcBus as LifecycleBus;
 }
 
-vi.mock('../processKiller', () => ({
+vi.mock('../processKiller.js', () => ({
   killProcessSubtree: (pid: number | undefined) => bus().killCalls.push(pid),
 }));
 
-vi.mock('../../sessionWatcher', () => ({
+vi.mock('../../sessionWatcher/index.js', () => ({
   sessionWatcher: {
     on: vi.fn(),
     startWatching: vi.fn(),
@@ -54,13 +54,13 @@ vi.mock('../../sessionWatcher', () => ({
   },
 }));
 
-vi.mock('../entryFactory', () => ({
+vi.mock('../entryFactory.js', () => ({
   DEFAULT_COLS: 120,
   DEFAULT_ROWS: 30,
   makeEntry: (...args: unknown[]) => bus().makeEntry(...args),
 }));
 
-import * as L from '../lifecycle';
+import * as L from '../lifecycle.js';
 
 function makeFakeEntry(over: Partial<FakeEntry> = {}): FakeEntry {
   return {

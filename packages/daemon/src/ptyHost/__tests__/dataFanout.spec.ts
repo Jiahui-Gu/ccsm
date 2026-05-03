@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { emitPtyData, onPtyData, type PtyDataListener } from '../dataFanout';
+import { emitPtyData, onPtyData, type PtyDataListener } from '../dataFanout.js';
 
 // The registry is module-level. Each test must clean up its own
 // subscribers — we collect dispose handles and run them in afterEach.
