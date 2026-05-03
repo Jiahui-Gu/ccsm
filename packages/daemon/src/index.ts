@@ -54,6 +54,7 @@ import { writeDescriptor, type DescriptorV1 } from './listeners/descriptor.js';
 import type { Listener } from './listeners/types.js';
 import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
+import { SessionManager } from './sessions/SessionManager.js';
 import { statePaths } from './state-dir/paths.js';
 import {
   Shutdown,
@@ -304,9 +305,23 @@ export async function runStartup(
       protoVersion: PROTO_VERSION,
       listenerId: LISTENER_A_HELLO_ID,
     };
+    // Wave-3 #290 — wire SessionService.WatchSessions handler in
+    // production. `makeWatchSessionsHandler` (T3.3 / PR #939) is fully
+    // implemented but was never bound at boot, so the wire returned
+    // `Code.Unimplemented` despite the handler shipping. Construct the
+    // SessionManager off the same `db` handle the rest of startup uses
+    // (single owner of the sessions table; the T6.x pty-host bridge
+    // will reuse this same instance when it lands) and pass the deps
+    // through `makeRouterBindHook`. The bind hook in `rpc/router.ts`
+    // installs the combined Hello + WatchSessions registration on
+    // SessionService when both deps are present (see
+    // `registerSessionService` "twice replaces" caveat).
+    const sessionManager = new SessionManager(db);
+    const watchSessionsDeps = { manager: sessionManager };
     listenerA = makeListenerA(env, {
       bindHook: makeRouterBindHook({
         helloDeps,
+        watchSessionsDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by
