@@ -33,7 +33,6 @@
 //     state for the dependency bags.
 //   * The `app.whenReady()` body that wires every subsystem together
 //     (db init, notify pipeline construction, sessionWatcher, eager scans).
-
 import { app, BrowserWindow, session, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { installClipboardPermissionHandlers } from './security/clipboardPermission';
@@ -185,16 +184,7 @@ app.whenReady().then(() => {
   }
 
   initDb(app.getPath('userData'));
-
-  // Task #266: install clipboard-read permission policy on the default
-  // session BEFORE any BrowserWindow is created, so the very first renderer
-  // load already sees the gated handler. Without this, the renderer's
-  // `navigator.clipboard.read*` calls return NotAllowedError under
-  // sandbox:true + contextIsolation:true. Allowlist is `app://` only (the
-  // T6.1 protocol.handle scheme — see packages/electron/src/main/
-  // protocol-app.ts); every other origin + every other permission is denied.
   installClipboardPermissionHandlers(session.defaultSession);
-
   // Wave 0e (#247): wire the spec ch08 §3.1 allowlisted IPC surfaces.
   // ORDER MATTERS — the broadcast hooks must be registered BEFORE
   // installUpdater() so the autoUpdater event listeners installed by

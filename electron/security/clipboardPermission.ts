@@ -78,6 +78,14 @@ export interface ClipboardPermissionSession {
  * Install the permission request + check handlers on the supplied session.
  * Call once per session (typically `session.defaultSession`) at boot, after
  * `app.whenReady()` has resolved.
+ *
+ * Call this on the default session BEFORE any BrowserWindow is created, so
+ * the very first renderer load already sees the gated handler. Without this,
+ * the renderer's `navigator.clipboard.read*` calls return NotAllowedError
+ * under sandbox:true + contextIsolation:true. Allowlist is `app://` only
+ * (the T6.1 protocol.handle scheme — see
+ * packages/electron/src/main/protocol-app.ts); every other origin + every
+ * other permission is denied.
  */
 export function installClipboardPermissionHandlers(
   session: ClipboardPermissionSession,
