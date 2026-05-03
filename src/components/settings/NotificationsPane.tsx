@@ -4,37 +4,45 @@ import { Switch } from '../ui/Switch';
 import { useTranslation } from '../../i18n/useTranslation';
 import { Field } from './Field';
 
-// Desktop notifications mute toggle. Persisted via the existing
-// `db:save` / `db:load` IPC under the `notifyEnabled` app_state key — main
-// reads the same key on every sessionWatcher state event so the toggle
-// takes effect without a restart. Default is ON: a missing row means
-// notifications fire (the "fresh install ships with toasts on" experience).
+// Wave 0e (#297): localStorage cutover, mirrors src/stores/persist.ts (#289).
+// Default ON; missing key → on. Main-process gate still reads the DB row via
+// electron/prefs/notifyEnabled.ts (followup to cut that side too).
+export const NOTIFY_ENABLED_KEY = 'notifyEnabled';
+
+function loadNotifyEnabled(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  try {
+    const raw = localStorage.getItem(NOTIFY_ENABLED_KEY);
+    if (raw == null) return true;
+    return !(raw === 'false' || raw === '0');
+  } catch {
+    return true;
+  }
+}
+
+function commitSnapshot(value: boolean): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(NOTIFY_ENABLED_KEY, value ? 'true' : 'false');
+  } catch (err) {
+    // Quota/SecurityError: warn (mirrors persist.ts onPersistError, #289).
+    console.warn('[NotificationsPane] failed to persist notifyEnabled', err);
+  }
+}
+
 export function NotificationsPane() {
   const { t } = useTranslation('settings');
   const [enabled, setEnabled] = useState<boolean>(true);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const raw = await window.ccsm?.loadState('notifyEnabled');
-        if (cancelled) return;
-        // Missing row → default ON. Explicit 'false' / '0' → off.
-        if (raw == null) setEnabled(true);
-        else setEnabled(!(raw === 'false' || raw === '0'));
-      } finally {
-        if (!cancelled) setHydrated(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    setEnabled(loadNotifyEnabled());
+    setHydrated(true);
   }, []);
 
   const onChange = (next: boolean) => {
     setEnabled(next);
-    void window.ccsm?.saveState('notifyEnabled', next ? 'true' : 'false');
+    commitSnapshot(next);
   };
 
   return (
