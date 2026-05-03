@@ -6,8 +6,19 @@
 # FOREVER-STABLE per chapter 15 §3 #29 of the v0.3 daemon-split spec.
 # Adding or removing entries post-v0.3-ship requires R4 sign-off and a
 # chapter-15 audit-table-revalidate row (enforced by tools/audit-table-revalidate.sh
-# / Task #126). The only sanctioned v0.3 entry is the descriptor preload that
-# bridges the listener-descriptor URL into the renderer per chapter 08 §4.1.
+# / Task #126).
 #
-# v0.3 ship contents (chapter 12 §4.1 — descriptor preload only):
-packages/electron/src/preload/preload-descriptor.ts
+# Wave 0f (#214): the previous sole entry
+#   packages/electron/src/preload/preload-descriptor.ts
+# was a phantom — the file was never created (Wave 0b deleted electron/preload/
+# wholesale, and the descriptor preload has not yet been re-introduced under
+# packages/electron/src/preload/). Removed to keep the allowlist truthful.
+# When the descriptor preload lands, re-add the path with an R4 sign-off row
+# in the chapter-15 audit table (audit-table-revalidate / Task #126).
+
+# Test mocks of removed v0.2 IPC surface — these files mock `ipcMain` /
+# `webContents.send` to assert that the v0.2 code path no longer exists or
+# to exercise legacy behaviour during the daemon-split transition. They
+# carry no production IPC and never will.
+electron/__tests__/updater.test.ts
+electron/notify/sinks/__tests__/toastSink.test.ts
