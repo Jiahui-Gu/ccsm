@@ -58,6 +58,7 @@ export default [
         HTMLInputElement: 'readonly',
         HTMLTextAreaElement: 'readonly',
         HTMLButtonElement: 'readonly',
+        HTMLDialogElement: 'readonly',
         HTMLSpanElement: 'readonly',
         HTMLLIElement: 'readonly',
         Element: 'readonly',
