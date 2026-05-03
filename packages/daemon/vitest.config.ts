@@ -7,7 +7,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.spec.ts'],
+    // `eslint-plugins/**` holds the local ESLint plugin source + its
+    // RuleTester suite (e.g. T1.9 ccsm/no-listener-slot-mutation). They
+    // are not under `src/` because they are tooling, not daemon runtime.
+    include: ['src/**/*.spec.ts', 'eslint-plugins/**/*.spec.ts'],
     globals: false,
   },
 });
