@@ -90,7 +90,7 @@ jobs:
         run: npm rebuild better-sqlite3
 
       - name: Lint
-        run: npm run lint
+        run: npm run lint:app
 
       - name: Typecheck
         run: npm run typecheck
@@ -100,10 +100,10 @@ jobs:
       # to verify CJS load cleanliness. Without dist present, those tests
       # fail loud — see Task #764.
       - name: Build
-        run: npm run build
+        run: npm run build:app
 
       - name: Test
-        run: npm test
+        run: npm run test:app
 
       # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
       # keep the matrix lean (coverage instrumentation roughly doubles

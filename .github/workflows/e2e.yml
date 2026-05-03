@@ -98,7 +98,7 @@ jobs:
       - name: Ensure native modules built for Electron ABI
         run: npx electron-rebuild
       - name: Build
-        run: npm run build
+        run: npm run build:app
       - name: Run e2e (Linux with xvfb)
         if: runner.os == 'Linux'
         # E2E_SKIP=harness-real-cli — public CI runners have no `claude`
