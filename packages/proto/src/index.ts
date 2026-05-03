@@ -18,6 +18,11 @@
 // new message / enum / service added to a `.proto` file becomes available
 // at `@ccsm/proto` after `pnpm gen`, with no edits required here.
 
+// PROTO_VERSION — single source of truth for the v1 minor wire version
+// (see ch11 §7, ch04 §3). Re-exported so consumers can embed it at compile
+// time without reaching into the package's source layout.
+export { PROTO_VERSION } from './version.js';
+
 // Common shared types (no service): Principal, LocalUser, RequestMeta,
 // ErrorDetail, SessionState enum, ...
 export * from '../gen/ts/ccsm/v1/common_pb.js';
