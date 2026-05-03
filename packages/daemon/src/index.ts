@@ -18,6 +18,11 @@
 //   - Descriptor file write                → T1.6 (separate concern; not
 //                                                  yet called from here)
 
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+import { runMigrations } from './db/migrations/runner.js';
+import { openDatabase, type SqliteDatabase } from './db/sqlite.js';
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
 import { makeListenerA } from './listeners/factory.js';
@@ -43,9 +48,31 @@ export async function runStartup(lifecycle: Lifecycle): Promise<{
   const env = buildDaemonEnv();
   log(`env loaded: mode=${env.mode} bootId=${env.bootId} version=${env.version}`);
 
-  // Phase: OPENING_DB  (TODO Task #T5.1 — open SQLite + run migrations)
+  // Phase: OPENING_DB  (T5.1 sqlite wrapper + T5.4 migration runner)
   lifecycle.advanceTo(Phase.OPENING_DB);
-  log('TODO(T5.1): open SQLite, run migrations, replay WAL');
+  const dbPath = join(env.paths.stateDir, 'ccsm.db');
+  // Ensure parent dir exists — installer normally creates stateDir, but
+  // dev/smoke runs may point CCSM_STATE_DIR at a brand-new tmp dir.
+  mkdirSync(dirname(dbPath), { recursive: true });
+  const db: SqliteDatabase = openDatabase(dbPath);
+  try {
+    const migrationResult = runMigrations(db);
+    log(
+      `db opened at ${dbPath}: applied=${migrationResult.applied
+        .map((m) => m.version)
+        .join(',')} alreadyApplied=${migrationResult.alreadyApplied
+        .map((m) => m.version)
+        .join(',')}`,
+    );
+  } catch (err) {
+    // Close the handle so we don't leak it on a startup-abort path.
+    try {
+      db.close();
+    } catch {
+      // best-effort
+    }
+    throw err;
+  }
 
   // Phase: RESTORING_SESSIONS  (TODO Task #T3.4 — re-spawn sessions)
   lifecycle.advanceTo(Phase.RESTORING_SESSIONS);
