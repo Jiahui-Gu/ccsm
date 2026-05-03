@@ -3,12 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "CCSM proto definitions and generated Connect-RPC code. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
+  "description": "CCSM proto definitions and generated Connect-RPC code. T2.1 re-exports the seven v0.3 services + common types via src/index.ts so consumers can `import { SessionService } from '@ccsm/proto'`.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('gen/ts',{recursive:true,force:true})\"",
     "gen": "buf generate",
     "lock": "node scripts/lock.mjs",
     "lock-check": "node scripts/lock-check.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
@@ -16,6 +23,8 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.50.0",
-    "@bufbuild/protoc-gen-es": "^2.2.3"
+    "@bufbuild/protoc-gen-es": "^2.2.3",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1"
   }
 }
