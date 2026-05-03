@@ -7,10 +7,22 @@
 // Topology (FOREVER-STABLE per spec):
 //   - One pty-host child process per session `postMessage`s deltas to the
 //     daemon main thread (this module is the receiving end).
-//   - Per-session `BetterQueue` instance batches enqueued deltas with a
-//     16 ms tick (`batchDelay = batchDelayTimeout = 16`). All deltas that
-//     arrive inside the window are flushed as one prepared-statement loop
+//   - Per-session hand-rolled `setTimeout(tickMs)` batcher accumulates
+//     enqueued deltas inside a 16 ms window. All deltas that arrive
+//     inside the window are flushed as one prepared-statement loop
 //     wrapped in a single SQLite IMMEDIATE transaction.
+//
+//     Why hand-rolled (replaces `better-queue` per Task #184): on Windows
+//     `better-queue` schedules its worker via a cascade
+//     `push → setTimeout(0) → setTimeout(batchDelay) → setImmediate` that
+//     adds 24-31 ms minimum on top of the configured batch delay (15.625 ms
+//     timer granularity). Under CI load on `windows-latest` this exceeds
+//     the test margin (`coalescer.spec.ts` 56 ms slack). Spec ch07 §5
+//     mandates an exact 16 ms tick + IMMEDIATE txn — the simplest scheduler
+//     that honors that on every platform is one `setTimeout(tickMs)` per
+//     session. The FOREVER-STABLE invariants ((a) 16 ms tick, (b) batched
+//     IMMEDIATE txn per session, (c) 8 MiB per-session cap, (d) 3-strike
+//     DEGRADED) are preserved; only the scheduler implementation changed.
 //   - Per-session pending-byte cap of 8 MiB. On overflow the enqueue call
 //     throws a Connect `ResourceExhausted` error so the caller (the
 //     pty-host bridge) can drop the snapshot/delta and write a
@@ -40,7 +52,6 @@
 import { EventEmitter } from 'node:events';
 
 import { Code, ConnectError } from '@connectrpc/connect';
-import BetterQueue from 'better-queue';
 
 import type { SqliteDatabase } from '../db/sqlite.js';
 
@@ -113,10 +124,20 @@ export type SessionHealth = 'healthy' | 'degraded';
 // ---------------------------------------------------------------------------
 
 interface SessionState {
-  /** BetterQueue handle that batches deltas with a 16 ms window. */
-  readonly queue: BetterQueue<DeltaWrite, void>;
+  /** In-memory queue of pending writes awaiting the next tick flush. */
+  pendingWrites: DeltaWrite[];
   /** Pending bytes already accepted into the queue (for the 8 MiB cap). */
   pendingBytes: number;
+  /** Active flush-tick timer; null when no tick is scheduled. */
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  /** True while `flushBatch` is on the stack — gate against re-entry. */
+  flushing: boolean;
+  /**
+   * Resolvers waiting for the in-flight (or scheduled) flush to complete.
+   * Used by `destroy()` to await graceful drain. Cleared after each
+   * successful flush; `enqueueDelta` re-arms a new wait if needed.
+   */
+  drainWaiters: Array<() => void>;
   /** Consecutive disk-class failures for this session. */
   consecutiveFailures: number;
   /** Current health state — flipped on the 3rd consecutive failure. */
@@ -209,7 +230,7 @@ export class WriteCoalescer extends EventEmitter {
 
   /**
    * Enqueue a delta for batched write. Returns synchronously after the
-   * payload is accepted into the per-session BetterQueue; the actual
+   * payload is accepted into the per-session pending queue; the actual
    * SQLite write happens on the next 16 ms tick.
    *
    * Throws `ConnectError(RESOURCE_EXHAUSTED)` if the session's pending
@@ -229,7 +250,8 @@ export class WriteCoalescer extends EventEmitter {
       );
     }
     state.pendingBytes += size;
-    state.queue.push(write);
+    state.pendingWrites.push(write);
+    this.armFlushTimer(write.sessionId, state);
   }
 
   /**
@@ -291,12 +313,8 @@ export class WriteCoalescer extends EventEmitter {
     if (this.destroyed) return;
     this.destroyed = true;
     const drains: Promise<void>[] = [];
-    for (const state of this.sessions.values()) {
-      drains.push(
-        new Promise<void>((resolve) => {
-          state.queue.destroy(() => resolve());
-        }),
-      );
+    for (const [sessionId, state] of this.sessions) {
+      drains.push(this.drainSession(sessionId, state));
     }
     await Promise.all(drains);
     this.sessions.clear();
@@ -315,43 +333,12 @@ export class WriteCoalescer extends EventEmitter {
   private getOrCreateSession(sessionId: string): SessionState {
     let state = this.sessions.get(sessionId);
     if (state) return state;
-    const queue = new BetterQueue<DeltaWrite, void>(
-      (batch: DeltaWrite | DeltaWrite[], cb) => {
-        // BetterQueue's batching mode passes an array; non-batching mode
-        // would pass a single task. We always run in batching mode (size
-        // > 1) but normalize defensively.
-        const items = Array.isArray(batch) ? batch : [batch];
-        try {
-          this.flushBatch(sessionId, items);
-          cb(null);
-        } catch (err) {
-          cb(err);
-        }
-      },
-      {
-        // batchSize must be > 1 to enable batching mode. Set high enough
-        // that any realistic 16 ms window's worth of deltas batches into
-        // one transaction (chapter 06 §3: 16 KiB / 16 ms cap per delta;
-        // 8 MiB cap / smallest-realistic-delta is the upper bound on
-        // batch length but values >> than the cap-divided count never
-        // hurt — BetterQueue just flushes whatever's pending when the
-        // delay expires).
-        batchSize: 1_000_000,
-        // Both delays set to TICK_MS so the batch flushes on the tick
-        // regardless of whether more tasks arrive (`batchDelay`) or
-        // tasks stop arriving early (`batchDelayTimeout`).
-        batchDelay: this.tickMs,
-        batchDelayTimeout: this.tickMs,
-        // One worker — only the daemon main thread writes SQLite.
-        concurrent: 1,
-        // Surface processor exceptions as task failures (default false
-        // would swallow them).
-        failTaskOnProcessException: true,
-      },
-    );
     state = {
-      queue,
+      pendingWrites: [],
       pendingBytes: 0,
+      flushTimer: null,
+      flushing: false,
+      drainWaiters: [],
       consecutiveFailures: 0,
       health: 'healthy',
     };
@@ -359,10 +346,104 @@ export class WriteCoalescer extends EventEmitter {
     return state;
   }
 
-  private flushBatch(sessionId: string, batch: readonly DeltaWrite[]): void {
+  /**
+   * Arm a `setTimeout(tickMs)` for the session if one isn't already
+   * armed and a flush isn't currently in flight. The timer fires
+   * `runFlush` which drains every pending write into a single
+   * IMMEDIATE transaction (ch07 §5).
+   *
+   * No-op if a timer is already pending or `flushing` is true — in the
+   * latter case `runFlush` will reschedule itself if more writes
+   * arrived during the flush.
+   */
+  private armFlushTimer(sessionId: string, state: SessionState): void {
+    if (state.flushTimer !== null || state.flushing) return;
+    state.flushTimer = setTimeout(() => {
+      this.runFlush(sessionId, state);
+    }, this.tickMs);
+    // Do NOT call `.unref()` — graceful shutdown sequencing (T5.6) is
+    // responsible for keeping the daemon alive until destroy() drains.
+  }
+
+  /**
+   * Drain `state.pendingWrites` into one IMMEDIATE transaction. Called
+   * by the tick timer; safe re-entry is gated by `state.flushing`.
+   *
+   * Steps (per Task #184 design):
+   *  1. Clear `flushTimer`.
+   *  2. Capture pending into a local batch and zero the queue.
+   *  3. Run the transaction; on success/failure, decrement
+   *     `pendingBytes` by the captured total (drop semantics — spec
+   *     ch07 §5 does not retry).
+   *  4. Resolve any drain waiters.
+   *  5. If new writes arrived while the txn ran, re-arm a fresh tick.
+   */
+  private runFlush(sessionId: string, state: SessionState): void {
+    state.flushTimer = null;
+    if (state.pendingWrites.length === 0) {
+      this.resolveDrainWaiters(state);
+      return;
+    }
+    const batch = state.pendingWrites;
+    state.pendingWrites = [];
+    state.flushing = true;
+    try {
+      this.flushBatch(sessionId, state, batch);
+    } finally {
+      state.flushing = false;
+      this.resolveDrainWaiters(state);
+      // New writes that landed during the flush need their own tick.
+      if (state.pendingWrites.length > 0) {
+        this.armFlushTimer(sessionId, state);
+      }
+    }
+  }
+
+  private resolveDrainWaiters(state: SessionState): void {
+    if (state.drainWaiters.length === 0) return;
+    if (state.pendingWrites.length > 0 || state.flushing) return;
+    const waiters = state.drainWaiters;
+    state.drainWaiters = [];
+    for (const r of waiters) r();
+  }
+
+  /**
+   * Drive a session to fully drained state. If a tick is pending, fire
+   * it synchronously; if a flush is in-flight, wait for it. Iterates
+   * until no pending writes remain.
+   */
+  private drainSession(sessionId: string, state: SessionState): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const tryDrain = (): void => {
+        if (state.pendingWrites.length === 0 && !state.flushing) {
+          if (state.flushTimer !== null) {
+            clearTimeout(state.flushTimer);
+            state.flushTimer = null;
+          }
+          resolve();
+          return;
+        }
+        // Either a flush is in flight or a tick is scheduled. Register
+        // a waiter; runFlush() will resolve us, then we re-check.
+        state.drainWaiters.push(() => tryDrain());
+        // If nothing is in flight and the timer hasn't fired yet, run
+        // the flush synchronously now to skip the remaining wait.
+        if (!state.flushing && state.flushTimer !== null) {
+          clearTimeout(state.flushTimer);
+          state.flushTimer = null;
+          this.runFlush(sessionId, state);
+        }
+      };
+      tryDrain();
+    });
+  }
+
+  private flushBatch(
+    sessionId: string,
+    state: SessionState,
+    batch: readonly DeltaWrite[],
+  ): void {
     if (batch.length === 0) return;
-    const state = this.sessions.get(sessionId);
-    if (!state) return; // session was destroyed mid-flight; drop silently
 
     let totalBytes = 0;
     for (const d of batch) totalBytes += d.payload.byteLength;
@@ -383,13 +464,11 @@ export class WriteCoalescer extends EventEmitter {
       this.emit('write-failed', sessionId, 'pty_delta', error);
       if (isDiskClassError(error)) {
         this.recordFailure(state, sessionId, error);
-      } else {
-        // Non-disk errors are programmer bugs (e.g. PK collision). Still
-        // drop the batch — the daemon does not retry, the spec is
-        // explicit — but propagate via `write-failed` so tests notice.
-        // Do NOT throw further: BetterQueue's failTaskOnProcessException
-        // would route into task_failed which we've not subscribed to.
       }
+      // Non-disk errors (programmer bugs, e.g. PK collision) still drop
+      // the batch — the daemon does not retry and the spec is explicit.
+      // We surface them via `write-failed` (above) and swallow rather
+      // than rethrow: the tick callback has no caller to propagate to.
     } finally {
       // The bytes are out of the queue regardless of outcome — the spec
       // drops the batch on disk-class failure rather than retrying.
