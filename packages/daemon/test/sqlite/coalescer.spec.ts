@@ -80,7 +80,7 @@ function makeSnapshot(sessionId: string, baseSeq: number, bytes: number): Snapsh
   };
 }
 
-/** Wait for the BetterQueue tick + an extra micro-margin. */
+/** Wait for the coalescer's tick + an extra micro-margin. */
 async function tick(extraMs = 40): Promise<void> {
   await new Promise((r) => setTimeout(r, TICK_MS + extraMs));
 }
