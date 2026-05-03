@@ -31,8 +31,8 @@ function makeUpdaterCcsm(opts?: {
           pushCb = null;
         };
       },
-      // CrashReportingField mounts inside UpdatesPane and reads/writes
-      // crashReportingOptOut via these two keys.
+      // CrashReportingField now reads/writes localStorage directly (Wave 0e
+      // cutover #298); these stubs are kept harmless for any future re-add.
       loadState: vi.fn(async () => undefined),
       saveState: vi.fn(async () => {}),
     } as unknown as Window['ccsm'],

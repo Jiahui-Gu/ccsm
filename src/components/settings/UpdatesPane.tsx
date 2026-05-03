@@ -6,7 +6,10 @@ import { Button } from '../ui/Button';
 import { Switch } from '../ui/Switch';
 import { useTranslation } from '../../i18n/useTranslation';
 import type { UpdateStatus } from '../../global';
+import { commitItem } from '../../stores/persist';
 import { Field } from './Field';
+
+const CRASH_OPT_OUT_KEY = 'crashReportingOptOut';
 
 export function UpdatesPane() {
   const [version, setVersion] = useState<string>('…');
@@ -118,36 +121,33 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Persisted via the existing `db:save` / `db:load` IPC under the
-// `crashReportingOptOut` app_state key. We store the OPT-OUT flag (default
-// false → reporting ON) so a missing row means "send"; that matches the
-// reading logic in electron/main.ts so the two never disagree.
+// Persisted via localStorage under `crashReportingOptOut` (Wave 0e cutover
+// from removed `window.ccsm.{loadState,saveState}` IPCs; same transitional
+// posture as src/stores/persist.ts — re-cuts to SettingsService RPC when
+// #228 sub-task 9 ships). Stored value is the OPT-OUT flag (default false
+// → reporting ON); missing entry means "send", matching electron/main.ts.
 function CrashReportingField() {
   const { t } = useTranslation('settings');
   const [optOut, setOptOut] = useState<boolean>(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const raw = await window.ccsm?.loadState('crashReportingOptOut');
-        if (cancelled) return;
-        setOptOut(raw === 'true' || raw === '1');
-      } finally {
-        if (!cancelled) setHydrated(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const raw =
+        typeof localStorage !== 'undefined'
+          ? localStorage.getItem(CRASH_OPT_OUT_KEY)
+          : null;
+      setOptOut(raw === 'true' || raw === '1');
+    } finally {
+      setHydrated(true);
+    }
   }, []);
 
   const onChange = (sendReports: boolean) => {
     // UI is "Send crash reports" (positive). Persisted key is the inverse.
     const nextOptOut = !sendReports;
     setOptOut(nextOptOut);
-    void window.ccsm?.saveState('crashReportingOptOut', String(nextOptOut));
+    commitItem(CRASH_OPT_OUT_KEY, String(nextOptOut));
   };
 
   const checked = !optOut;
