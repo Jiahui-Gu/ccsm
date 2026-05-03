@@ -236,6 +236,10 @@ importers:
   packages/electron: {}
 
   packages/proto:
+    dependencies:
+      '@bufbuild/protobuf':
+        specifier: ^2.12.0
+        version: 2.12.0
     devDependencies:
       '@bufbuild/buf':
         specifier: ^1.50.0
