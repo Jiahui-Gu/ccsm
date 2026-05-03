@@ -42,10 +42,10 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
       - name: Rebuild better-sqlite3 for Node
         run: npm rebuild better-sqlite3
-      - run: npm run lint
+      - run: npm run lint:app
       - run: npm run typecheck
-      - run: npm run build
-      - run: npm test
+      - run: npm run build:app
+      - run: npm run test:app
 
   build:
     name: build (${{ matrix.os }})
@@ -124,7 +124,7 @@ jobs:
           fi
 
       - name: Build web + electron
-        run: npm run build
+        run: npm run build:app
 
       # electron-builder invocation per OS. `--publish never` because we
       # upload via softprops/action-gh-release below — that gives us a
