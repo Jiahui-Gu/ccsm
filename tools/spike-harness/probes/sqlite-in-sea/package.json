@@ -1,0 +1,12 @@
+{
+  "name": "sqlite-in-sea-probe",
+  "private": true,
+  "version": "0.0.0",
+  "description": "T9.8 spike — better-sqlite3 .node load from a Node 22 SEA",
+  "type": "module",
+  "devDependencies": {
+    "better-sqlite3": "^11.5.0",
+    "esbuild": "^0.24.0",
+    "postject": "^1.0.0-alpha.6"
+  }
+}
