@@ -67,6 +67,20 @@ jobs:
           node-version-file: '.nvmrc'
           cache: 'npm'
 
+      # Wave 2 §5.5 (Task #220) — mechanical guard: the 4 ship-gate files
+      # named in the v0.3 daemon-split spec must not be silently renamed
+      # or deleted. tools/check-spec-code-lock.sh reads
+      # docs/superpowers/specs/2026-05-03-v03-daemon-split.lock.json and
+      # verifies every locked path exists with the recorded SHA256
+      # (LF-normalized, so platform-stable). Linux-only because the check
+      # is git/sha256/node and the result is deterministic across OSes;
+      # running on the matrix would waste 2x runner time. Placed after
+      # Setup Node because the script uses `node -e` to parse the lock
+      # JSON (no jq dependency).
+      - name: Check spec-code lock (ship-gate paths)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash tools/check-spec-code-lock.sh
+
       # Linux native builds for better-sqlite3 need python + build tools; the
       # GitHub-hosted ubuntu image already has them, but setup-python makes
       # it explicit and pins the version so upstream image changes don't
