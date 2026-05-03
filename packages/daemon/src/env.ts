@@ -8,6 +8,7 @@
 // without changing the entrypoint shape.
 
 import { bootId } from './boot-id.js';
+import { statePaths } from './state-dir/paths.js';
 
 /** Runtime mode — `service` is the installed system service shape (ch02 §2);
  * `dev` is `npx tsx` / smoke runs from a dev tree. */
@@ -26,7 +27,9 @@ export const RESERVED_FOR_LISTENER_B = Symbol.for('ccsm.listener.reserved-b');
 export type ReservedForListenerB = typeof RESERVED_FOR_LISTENER_B;
 
 export interface DaemonEnvPaths {
-  /** Durable state root (e.g. `/var/lib/ccsm`, `%PROGRAMDATA%/ccsm/state`). */
+  /** Durable state root (e.g. `%PROGRAMDATA%\ccsm`, `/var/lib/ccsm`,
+   * `/Library/Application Support/ccsm`). Mirrors `statePaths().root` from
+   * `state-dir/paths.ts` — same on-disk directory per spec ch07 §2. */
   stateDir: string;
   /** Listener-A descriptor file (`listener-a.json`) — see ch03 §3. */
   descriptorPath: string;
@@ -56,16 +59,14 @@ export interface DaemonEnv {
   readonly buildCommit: string;
 }
 
-function defaultStateDir(): string {
-  if (process.platform === 'win32') {
-    const programData = process.env.PROGRAMDATA ?? 'C:/ProgramData';
-    return `${programData}/ccsm/state`;
-  }
-  if (process.platform === 'darwin') {
-    return '/Library/Application Support/ccsm/state';
-  }
-  return '/var/lib/ccsm';
-}
+// `defaultStateDir` and the default descriptor path BOTH delegate to
+// `state-dir/paths.ts` so the per-OS layout has exactly one source of truth
+// (spec ch07 §2; FROZEN by `test/state-dir/paths.spec.ts` per T10.7 / Task
+// #122). Before this delegation, `env.ts` had its own per-OS branch that
+// appended `/state` on win32+darwin but NOT on linux — a per-OS off-by-one
+// that drifted from `statePaths().root`. Diagnosed out-of-scope while
+// reviewing PR #931 / Task #182. The `state-dir/paths.ts` module owns the
+// canonical layout; everyone else routes through it.
 
 function defaultListenerAddr(): string {
   if (process.platform === 'win32') {
@@ -92,10 +93,18 @@ function defaultSupervisorAddr(): string {
  * T1.1 — every field has a sensible default). */
 export function buildDaemonEnv(): DaemonEnv {
   const mode: RuntimeMode = process.env.CCSM_DAEMON_MODE === 'service' ? 'service' : 'dev';
-  const stateDir = process.env.CCSM_STATE_DIR ?? defaultStateDir();
+  // Single source of truth for per-OS layout — see `state-dir/paths.ts`
+  // and the comment block above the deleted `defaultStateDir`.
+  const sp = statePaths();
+  const stateDir = process.env.CCSM_STATE_DIR ?? sp.root;
   const listenerAddr = process.env.CCSM_LISTENER_A_ADDR ?? defaultListenerAddr();
   const supervisorAddr = process.env.CCSM_SUPERVISOR_ADDR ?? defaultSupervisorAddr();
-  const descriptorPath = process.env.CCSM_DESCRIPTOR_PATH ?? `${stateDir}/listener-a.json`;
+  // When CCSM_STATE_DIR overrides the root, derive the descriptor path
+  // under the override; otherwise reuse the canonical `sp.descriptor` so
+  // path-separator handling stays in one place (`path.win32.join` vs posix).
+  const descriptorPath =
+    process.env.CCSM_DESCRIPTOR_PATH ??
+    (stateDir === sp.root ? sp.descriptor : `${stateDir}/listener-a.json`);
   const version = process.env.CCSM_VERSION ?? '0.3.0-dev';
   const buildCommit = process.env.CCSM_BUILD_COMMIT ?? 'dev';
 
