@@ -47,7 +47,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'npm'
 
       # Linux native builds for better-sqlite3 need python + build tools; the
@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: nm-${{ runner.os }}-${{ runner.arch }}-node20-${{ hashFiles('package-lock.json') }}
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
@@ -83,11 +83,19 @@ jobs:
           # first install when the Electron binary cache is cold.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
-      # Rebuild better-sqlite3 against Node (tests run under node, not
-      # electron). The electron-builder `postinstall` above builds for the
-      # electron ABI; we overwrite with the node ABI for CI tests here.
-      - name: Rebuild better-sqlite3 for Node
+      # Rebuild better-sqlite3 against the current Node ABI (tests run under
+      # node, not electron). The electron-builder `postinstall` above builds
+      # for the electron ABI; we overwrite with the node ABI for CI tests
+      # here. better-sqlite3 is hoisted to the root node_modules under npm
+      # workspaces, so `npm rebuild` runs from the root (a `--prefix
+      # packages/daemon` invocation no-ops because the daemon workspace has
+      # no local copy). After the rebuild we verify by loading the native
+      # module through packages/daemon's resolution path — fail fast on ABI
+      # mismatch instead of waiting for the test step to dlopen-fail.
+      - name: Rebuild native modules for current Node ABI
         run: npm rebuild better-sqlite3
+      - name: Verify native ABI
+        run: npm run check:native
 
       - name: Lint
         run: npm run lint:app
