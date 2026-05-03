@@ -59,6 +59,7 @@ import {
   SupervisorService,
 } from '@ccsm/proto';
 
+import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
 
 /**
@@ -108,15 +109,74 @@ export const stubRoutes = (router: ConnectRouter): void => {
 };
 
 /**
+ * Opt-in registration of the real T2.3 SessionService.Hello handler on
+ * top of the T2.2 stub baseline. Other services remain stub
+ * (`Unimplemented`) — those handlers land in their respective tasks
+ * (T3.x session, T4.x pty, etc.) and will follow the same pattern of an
+ * additive registration over the stubs.
+ *
+ * Why "register on top" instead of editing `STUB_SERVICES`: the T2.2
+ * stub coverage spec (`__tests__/router.spec.ts`) iterates EVERY method
+ * on EVERY service expecting `Unimplemented`. Removing SessionService
+ * from `STUB_SERVICES` would also strip the stub for the eight other
+ * SessionService RPCs (ListSessions / GetSession / ...) that have NOT
+ * yet landed, regressing them from `Unimplemented` to `404 Not Found`.
+ * The Connect router's `service(desc, impl)` accepts a partial impl
+ * and falls back to `Unimplemented` for absent methods — so
+ * registering `{ hello }` alongside the prior empty `{}` is the
+ * documented additive path.
+ *
+ * Per Connect-ES `ConnectRouter.service` semantics, calling `service`
+ * twice for the same descriptor REPLACES the prior registration (the
+ * router is a path-keyed map keyed on `service.typeName + method.name`).
+ * Order therefore matters: `registerStubServices(router)` first, then
+ * the real-handler overlay so the partial `{ hello }` impl supplants
+ * the stub `{}` for SessionService while every other service keeps the
+ * stub.
+ */
+export function registerHelloHandler(
+  router: ConnectRouter,
+  deps: HelloDeps,
+): ConnectRouter {
+  router.service(SessionService, { hello: makeHelloHandler(deps) });
+  return router;
+}
+
+/**
+ * Bundled routes callback that installs stubs for every service AND the
+ * real T2.3 Hello handler on SessionService. Use this from the daemon's
+ * production startup wiring (T1.7) — pass through to
+ * `createDaemonNodeAdapter({ helloDeps: ... })`. Unit tests that want
+ * pure stubs (no real handlers) keep using `stubRoutes`.
+ */
+export function makeDaemonRoutes(
+  helloDeps: HelloDeps,
+): (router: ConnectRouter) => void {
+  return (router: ConnectRouter): void => {
+    registerStubServices(router);
+    registerHelloHandler(router, helloDeps);
+  };
+}
+
+/**
  * Adapter-construction options. We accept the same shape as
  * `ConnectRouterOptions` (gRPC / gRPC-Web / Connect protocol toggles)
  * plus an optional `requestPathPrefix` that the listener layer may
  * supply if it wants to mount the router under a sub-path (the v0.3
  * Listener A serves the router at the root, so the default is empty).
+ *
+ * `helloDeps` (T2.3) — when provided, the adapter installs the real
+ * `SessionService.Hello` handler in addition to the stub baseline. When
+ * omitted (the default), every service responds with `Unimplemented`
+ * exactly like the T2.2 baseline. The omit-default keeps the T2.2
+ * `__tests__/router.spec.ts` and `__tests__/integration.spec.ts`
+ * over-the-wire Unimplemented assertions intact.
  */
 export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
   /** Optional URL prefix; default `""` (mount at root). */
   readonly requestPathPrefix?: string;
+  /** When set, installs the T2.3 Hello handler on top of the stubs. */
+  readonly helloDeps?: HelloDeps;
 }
 
 /**
@@ -155,7 +215,9 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { interceptors: callerInterceptors, ...rest } = options;
+  const { helloDeps, interceptors: callerInterceptors, ...rest } = options;
+  const routes =
+    helloDeps !== undefined ? makeDaemonRoutes(helloDeps) : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),
@@ -163,6 +225,6 @@ export function createDaemonNodeAdapter(
   return connectNodeAdapter({
     ...rest,
     interceptors,
-    routes: stubRoutes,
+    routes,
   });
 }

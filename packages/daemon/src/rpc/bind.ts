@@ -55,7 +55,9 @@ import {
  * Build a `BindHook` that:
  *   1. Constructs a Node http2 server whose request listener is the
  *      Connect-router stub handler (every v0.3 service registered with
- *      `Unimplemented`-by-default).
+ *      `Unimplemented`-by-default). When `routerOptions.helloDeps` is
+ *      supplied (T2.3), the real `SessionService.Hello` handler is
+ *      installed on top of the stub baseline.
  *   2. Delegates the OS-level bind to the right T1.5 adapter for the
  *      planned `BindDescriptor.kind`.
  *   3. Returns a `BoundTransport` whose `descriptor` reflects the
