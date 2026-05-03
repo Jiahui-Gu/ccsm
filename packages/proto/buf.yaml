@@ -2,8 +2,24 @@
 # `buf generate` can discover .proto files and resolve `ccsm/v1/*.proto`
 # imports.
 #
-# Lint / breaking-change rules are intentionally NOT configured here yet —
-# they land in T0.7 (`buf breaking` CI gate). buf.lock lands in T0.6.
+# Lint config (added in T0.8 CI matrix): the v0.3 wire is FROZEN by
+# T0.11 #856 + T0.6 #870 lock + T10.2 #901 spec. Renaming RPC response
+# messages would change PROTO_VERSION + lock.json SHA256 and break the
+# lock check. We therefore grandfather the existing offenders via
+# `ignore_only` (per-rule, per-file) so `buf lint` keeps gating FUTURE
+# protos against RPC_RESPONSE_STANDARD_NAME / RPC_REQUEST_RESPONSE_UNIQUE
+# while accepting the frozen v0.3 set unchanged.
 version: v2
 modules:
   - path: src
+    lint:
+      use:
+        - STANDARD
+      ignore_only:
+        RPC_RESPONSE_STANDARD_NAME:
+          - src/ccsm/v1/crash.proto
+          - src/ccsm/v1/notify.proto
+          - src/ccsm/v1/pty.proto
+          - src/ccsm/v1/session.proto
+        RPC_REQUEST_RESPONSE_UNIQUE:
+          - src/ccsm/v1/session.proto
