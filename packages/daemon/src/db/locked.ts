@@ -50,7 +50,7 @@ export interface MigrationLock {
  * reshape into multi-line object literals — that would break both consumers.
  */
 const MIGRATION_HASHES = {
-  '001_initial.sql': '70838422d5fdc82e39818e8722f365ee789f340951485547545c9de5200a128d',
+  '001_initial.sql': 'f76859d5ad478a54f78754b6bd2874495452826a6430ab102534275979e0b06c',
 } as const;
 
 /**
