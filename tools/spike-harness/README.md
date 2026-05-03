@@ -46,3 +46,4 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/macos-notarization-sea/notarize.sh` | §1.13 (T9.12) | gated on Apple Dev ID cert (ops prereq) |
 | `probes/macos-notarization-sea/Info.plist`  | §1.13 (T9.12) | sample bundle metadata for Mach-O notarization |
 | `probes/better-sqlite3-22-arm64/probe.mjs` | §1.12 (T9.11) | runnable (GitHub manifest check + opt. live load) |
+| `probes/snapshot-roundtrip-fidelity/probe.mjs` | §1.8 phase 4.5 (T9.7) | runnable (reference codec + corpus + canonical cross-check) |
