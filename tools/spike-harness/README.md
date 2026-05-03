@@ -41,3 +41,5 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `stream-truncation-detector.mjs` | §1.3, §1.4, §1.5  | runnable (seq-gap detector)         |
 | `probes/uds-h2c/{server,client}.mjs` | §1.4 (T9.4)   | runnable on darwin/linux; win32 skip |
 | `probes/uds-h2c/run.sh`          | §1.4 (T9.4)       | smoke (60s) + 1h soak driver        |
+| `probes/win-h2-named-pipe/{server,client}.mjs` | §1.5 (T9.5) | runnable on win32; non-win32 skip |
+| `probes/win-h2-named-pipe/run.sh` | §1.5 (T9.5)      | smoke (60s) + 1h soak driver        |
