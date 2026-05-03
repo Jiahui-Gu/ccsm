@@ -28,7 +28,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "lint": "turbo run lint",
-    "build:app": "npm run clean && tsc -p tsconfig.electron.json && webpack --mode production && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
+    "build:app": "npm run clean && npm run prebuild:app && tsc -p tsconfig.electron.json && webpack --mode production && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
+    "prebuild:app": "node scripts/gen-proto.mjs",
     "test:app": "vitest run",
     "lint:app": "eslint . --ext .ts,.tsx",
     "lint:no-ipc": "bash tools/lint-no-ipc.sh",
@@ -57,7 +58,6 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
     "@bufbuild/protobuf": "^2.12.0",
-    "@ccsm/proto": "workspace:*",
     "@connectrpc/connect": "^2.1.1",
     "@connectrpc/connect-web": "^2.1.1",
     "@tanstack/react-query": "^5.62.0",
@@ -97,6 +97,8 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@bufbuild/buf": "^1.50.0",
+    "@bufbuild/protoc-gen-es": "^2.2.3",
     "@changesets/cli": "^2.27.10",
     "@electron/rebuild": "^4.0.4",
     "@eslint/js": "^9.39.4",

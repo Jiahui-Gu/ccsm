@@ -31,6 +31,12 @@ module.exports = (_env, argv = {}) => ({
       // alias the renderer/rpc subpath directly to source. ts-loader picks
       // the .tsx files up via the `extensions` list above.
       '@ccsm/electron': path.resolve(__dirname, 'packages/electron/src'),
+      // @ccsm/electron source imports `@ccsm/proto` (proto descriptors +
+      // generated message schemas). Root `npm ci` doesn't link workspace
+      // packages, so we alias to the package's `src/index.ts` entry — the
+      // package's own `exports` map already points there for pnpm
+      // consumers and we mirror it for the webpack/npm path.
+      '@ccsm/proto': path.resolve(__dirname, 'packages/proto/src/index.ts'),
     },
   },
   module: {
