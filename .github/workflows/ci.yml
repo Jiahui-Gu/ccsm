@@ -43,6 +43,23 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 is required for tools/check-v02-shrinking.sh —
+          # it needs `git merge-base HEAD origin/main` (or merge-base with
+          # GITHUB_BASE_REF) to compare line counts of v0.2-only files
+          # against the base. A shallow checkout would leave merge-base
+          # unresolvable and the guard would no-op.
+          fetch-depth: 0
+
+      # Wave 2 §5.6 (Task #222) — mechanical guard: files listed in
+      # .v0.2-only-files are slated for deletion/shrinkage during the v0.3
+      # cutover. CI enforces line counts may shrink but not grow vs the
+      # merge-base. Linux-only because the check is git/wc/bash and the
+      # result is deterministic across OSes; running on the matrix would
+      # waste 2x runner time.
+      - name: Check v0.2-only files don't grow
+        if: matrix.os == 'ubuntu-latest'
+        run: bash tools/check-v02-shrinking.sh
 
       - name: Setup Node
         uses: actions/setup-node@v4
