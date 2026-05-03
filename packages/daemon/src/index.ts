@@ -22,12 +22,14 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { runMigrations } from './db/migrations/runner.js';
+import { checkAndRecover, makeRecoveryFlag, type RecoveryFlag } from './db/recovery.js';
 import { openDatabase, type SqliteDatabase } from './db/sqlite.js';
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
 import { makeListenerA } from './listeners/factory.js';
 import type { Listener } from './listeners/types.js';
 import { makeRouterBindHook } from './rpc/bind.js';
+import { statePaths } from './state-dir/paths.js';
 import {
   startSystemdWatchdog,
   type SystemdWatchdogHandle,
@@ -40,8 +42,18 @@ function log(line: string): void {
   process.stdout.write(`[ccsm-daemon] ${line}\n`);
 }
 
-/** Run startup phases 1–5. Throws on any phase failure; caller exits 1. */
-export async function runStartup(lifecycle: Lifecycle): Promise<{
+/**
+ * Run startup phases 1–5. Throws on any phase failure; caller exits 1.
+ *
+ * The optional `recoveryFlag` is shared with the supervisor server (T1.7 +
+ * T5.7 / Task #60). The entrypoint constructs one if not supplied so the
+ * /healthz `recovery_modal` field always reflects this boot's recovery
+ * outcome — never a stale flag from a previous process.
+ */
+export async function runStartup(
+  lifecycle: Lifecycle,
+  recoveryFlag: RecoveryFlag = makeRecoveryFlag(),
+): Promise<{
   readonly env: DaemonEnv;
   readonly listenerA: Listener | null;
 }> {
@@ -54,6 +66,24 @@ export async function runStartup(lifecycle: Lifecycle): Promise<{
 
   // Phase: OPENING_DB  (T5.1 sqlite wrapper + T5.4 migration runner)
   lifecycle.advanceTo(Phase.OPENING_DB);
+
+  // T5.7 / Task #60 — corrupt-DB recovery (ch07 §6). MUST run BEFORE any
+  // other code opens the SQLite file. We resolve the canonical state paths
+  // here (not from `env.paths`) because the entrypoint env shape predates
+  // T5.3's `statePaths()` and only carries a `stateDir` string; the spec
+  // pins the DB and crash-raw filenames to this module's constants.
+  const sp = statePaths();
+  const recovery = checkAndRecover({
+    dbPath: sp.sessionsDb,
+    crashRawPath: sp.crashRaw,
+    flag: recoveryFlag,
+  });
+  if (recovery.recovered) {
+    log(
+      `corrupt-DB recovery: integrity_check failed; renamed to ${recovery.corruptPath}`,
+    );
+  }
+
   const dbPath = join(env.paths.stateDir, 'ccsm.db');
   // Ensure parent dir exists — installer normally creates stateDir, but
   // dev/smoke runs may point CCSM_STATE_DIR at a brand-new tmp dir.
