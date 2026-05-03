@@ -1,9 +1,9 @@
 // Per-session composer drafts persisted across app restarts.
-//
-// Drafts live in the same `app_state` table as the main store snapshot but
-// under their own key (`drafts`) so they evolve independently and don't bloat
-// the main snapshot's debounced write path. Stored shape is just a flat
-// Record<sessionId, string>.
+// v0.3 transitional: localStorage direct (Wave 0e, #299), mirroring
+// persist.ts (#289). Drafts live under their own localStorage key
+// (`drafts`) so they evolve independently and don't bloat the main
+// snapshot's debounced write path. Stored shape is a flat
+// Record<sessionId, string>. Re-cuts to RPC when SettingsService ships (#228).
 //
 // Lifecycle:
 //   - hydrateDrafts() on app boot, before the InputBar mounts.
@@ -23,9 +23,9 @@ let writeTimer: ReturnType<typeof setTimeout> | null = null;
 export async function hydrateDrafts(): Promise<void> {
   if (hydrated) return;
   hydrated = true;
-  if (!window.ccsm) return;
+  if (typeof localStorage === 'undefined') return;
   try {
-    const raw = await window.ccsm.loadState(STATE_KEY);
+    const raw = localStorage.getItem(STATE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as { version: 1; drafts: Record<string, string> };
     if (parsed.version !== 1 || !parsed.drafts) return;
@@ -75,17 +75,17 @@ export function deleteDrafts(sessionIds: string[]): void {
 }
 
 function schedulePersist(): void {
-  if (!window.ccsm) return;
+  if (typeof localStorage === 'undefined') return;
   if (writeTimer) clearTimeout(writeTimer);
   writeTimer = setTimeout(() => {
     writeTimer = null;
     const drafts: Record<string, string> = {};
     for (const [k, v] of cache.entries()) drafts[k] = v;
-    void window.ccsm!.saveState(STATE_KEY, JSON.stringify({ version: 1, drafts })).catch(
-      () => {
-        /* persist failures are non-fatal; we'll retry on the next edit */
-      }
-    );
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify({ version: 1, drafts }));
+    } catch {
+      /* persist failures are non-fatal; we'll retry on the next edit */
+    }
   }, WRITE_DEBOUNCE_MS);
 }
 
