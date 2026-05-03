@@ -2,10 +2,15 @@
   "name": "@ccsm/proto",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "description": "CCSM proto definitions and generated Connect-RPC code. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('gen/ts',{recursive:true,force:true})\"",
-    "gen": "buf generate"
+    "gen": "buf generate",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.50.0",
