@@ -173,7 +173,7 @@ There is **no** intermediate broker, no shared-memory layer, no file-watcher IPC
 3. Daemon: start Supervisor UDS / named pipe (UDS-only on every OS — see [Chapter 03](#chapter-03--listeners-and-transport) §7; `/healthz` returns 503 until step 5).
 4. Daemon: re-spawn `claude` CLI subprocesses for sessions marked `should-be-running` in SQLite (cwd, env restored; PTY host re-attaches; see [Chapter 06](#chapter-06--pty-snapshot--delta) §7). **Orphan-uid validation (closes R0 02-P1.3)**: before re-spawn, daemon resolves each session's `owner_uid` against the current host (Win: `LookupAccountSid`; mac/linux: `getpwuid`). Sessions whose `owner_uid` no longer maps to a live account are NOT re-spawned; they are marked `state=ORPHANED` and a `crash_log` entry with `source = "session_restore"` is written. This prevents a deleted-and-recreated user (same name, different SID/uid) from inheriting the previous user's claude CLI processes.
 <!-- F2: closes R0 03-P0.1 / R2 P0-02-3 / R2 P0-03-4 — startup writes the typed sentinel into slot 1 and writes the descriptor atomically before /healthz returns 200. -->
-5. Daemon: generate a fresh `boot_id` (UUIDv4) and pin it in memory; bind Listener A; instantiate the Listener trait array (slot 0 = `makeListenerA(env)`; slot 1 = typed sentinel `RESERVED_FOR_LISTENER_B` from [Chapter 03](#chapter-03--listeners-and-transport) §1); assert `listeners[1] === RESERVED_FOR_LISTENER_B` and abort startup if not (the assert + ESLint rule together close R0 03-P0.1 — see [Chapter 03](#chapter-03--listeners-and-transport) §1); atomically write `listener-a.json` (temp + fsync + rename, per [Chapter 03](#chapter-03--listeners-and-transport) §3.1) carrying `boot_id` / `daemon_pid` / `listener_addr` / `protocol_version`; THEN flip Supervisor `/healthz` to return 200. Order matters — Electron's startup handshake ([Chapter 03](#chapter-03--listeners-and-transport) §3.3) relies on the descriptor being readable before `/healthz` 200 so the `Hello`-echo `boot_id` round-trip succeeds on the first attempt.
+5. Daemon: generate a fresh `boot_id` (UUIDv4) and pin it in memory; bind Listener A; instantiate the Listener trait array (slot 0 = `makeListenerA(env)`; slot 1 = typed sentinel `RESERVED_FOR_LISTENER_B` from [Chapter 03](#chapter-03--listeners-and-transport) §1); assert `listeners[1] === RESERVED_FOR_LISTENER_B` and abort startup if not (the assert + ESLint rule together close R0 03-P0.1 — see [Chapter 03](#chapter-03--listeners-and-transport) §1); atomically write `listener-a.json` (temp + fsync + rename, per [Chapter 03](#chapter-03--listeners-and-transport) §3.1) carrying `boot_id` / `daemon_pid` / `listener_addr` / `protocol_version`; THEN flip Supervisor `/healthz` to return 200. Order matters — Electron's startup handshake ([Chapter 03](#chapter-03--listeners-and-transport) §3.3) reads `boot_id` from the descriptor file (it is NOT echoed in `HelloResponse` — proto fields are pinned to `meta` / `daemon_version` / `proto_version` / `principal` / `listener_id`; see [Chapter 04](#chapter-04--proto-and-rpc-surface) §3), so the descriptor MUST be on disk before `/healthz` 200 or the renderer's first connect attempt sees a stale or missing file.
 6. **User login** (any time later): user launches Electron from Start menu / Dock.
 7. Electron: read connection descriptor (UDS path or loopback port — see [Chapter 03](#chapter-03--listeners-and-transport) §3); connect; `Hello` RPC; subscribe to session-list stream.
 
@@ -324,7 +324,7 @@ Auth chain order matters: peer-cred MUST run first to set `ctx.principal`. v0.3 
 
 #### 3. Connection descriptor handed to Electron
 
-<!-- F2: closes R0 03-P0.3 / R2 P0-02-3 / R2 P0-03-4 / R2 P0-08-2 — Windows descriptor path locked unconditionally; atomic write; per-boot nonce; Hello-echo verification. -->
+<!-- F2: closes R0 03-P0.3 / R2 P0-02-3 / R2 P0-03-4 / R2 P0-08-2 — Windows descriptor path locked unconditionally; atomic write; per-boot nonce; descriptor-based boot_id verification (file is the witness; HelloResponse does NOT carry boot_id — see ch04 §3 / proto session.proto). -->
 
 Daemon writes a JSON file at a known per-OS path on every successful Listener A bind. Paths are locked unconditionally (no per-install MUST-SPIKE outcome); the spike validates only that an interactive Electron can read this path:
 
@@ -381,21 +381,21 @@ Electron MUST follow this exact sequence on every connect (cold start AND every 
 
 1. Read `listener-a.json` from the locked per-OS path (§3 table). If the file is missing or unparseable, surface "Daemon not running" and retry with backoff.
 2. Construct a Connect transport keyed on `transport`, address `address`, plus `tlsCertFingerprintSha256` pin if applicable.
-3. Open a connection and **immediately** call `Hello` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §3) before any other RPC. The daemon's `Hello` response includes its in-memory `boot_id`.
-4. If the descriptor's `boot_id` does NOT equal the `Hello` response's `boot_id`, Electron MUST close the connection, discard the in-memory descriptor, re-read the file from disk, and retry. Two scenarios trigger this mismatch:
+3. Open a connection and **immediately** call `Hello` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §3) before any other RPC. `HelloResponse` carries `meta` / `daemon_version` / `proto_version` / `principal` / `listener_id` (forever-stable; see proto `session.proto`). It does NOT echo `boot_id` — the descriptor file is the boot_id witness, not the RPC response. Electron uses `Hello` to confirm the listener is reachable and protocol-compatible; the `boot_id` check is descriptor-driven (step 4).
+4. Compare the descriptor's `boot_id` (read in step 1) against the `boot_id` Electron has cached from the prior successful connect (if any). On the very first connect of the renderer's lifetime, Electron pins this `boot_id`. On every subsequent reconnect, Electron MUST re-read `listener-a.json` from disk (NOT reuse the in-memory copy from the prior connect) and verify the freshly-read `descriptor.boot_id` equals the cached value. Mismatch means the daemon restarted (new boot, new UUIDv4); Electron MUST close the connection, discard cached state, treat the freshly-read `boot_id` as the new pin, and continue. Two scenarios this catches:
    - Stale orphan file from a previous daemon boot the OS didn't clean (the new daemon hasn't yet rewritten the file at the moment Electron read it). Re-reading after backoff catches the new file.
-   - Foreign process bound to the recorded address (e.g., a non-CCSM process recycled the same loopback port between daemon crash and Electron read). The `Hello` reaches the foreign process; its response either fails to parse OR returns a different `boot_id` — either way Electron rejects it and never sends `CreateSession.env` / `SendInput` / etc.
-5. Once `boot_id` matches, Electron pins the descriptor for this connection's lifetime. If the connection drops (UNAVAILABLE), Electron returns to step 1 (re-reading the file rather than reusing the in-memory copy) so a daemon restart with a new `boot_id` is detected on the very first reconnect attempt.
+   - Foreign process bound to the recorded address (e.g., a non-CCSM process recycled the same loopback port between daemon crash and Electron read). The `Hello` reaches the foreign process; its response either fails to parse OR returns an incompatible `proto_version` / unexpected `listener_id` — Electron rejects it and never sends `CreateSession.env` / `SendInput` / etc.
+5. Once `Hello` succeeds and the descriptor `boot_id` matches the cached pin (or no prior pin exists), Electron pins the descriptor for this connection's lifetime. If the connection drops (UNAVAILABLE), Electron returns to step 1 (re-reading the file rather than reusing the in-memory copy) so a daemon restart with a new `boot_id` is detected on the very first reconnect attempt by the descriptor compare.
 
-The daemon side: on every boot, regenerate `boot_id` (never re-use a prior boot's value), rewrite the descriptor before Supervisor `/healthz` returns 200, hold `boot_id` in memory for `Hello` responses. The daemon NEVER trusts the file as input; it is write-once-per-boot from the daemon's POV.
+The daemon side: on every boot, regenerate `boot_id` (never re-use a prior boot's value), rewrite the descriptor before Supervisor `/healthz` returns 200, hold `boot_id` in memory for observability (`/healthz` body, logs). The daemon NEVER trusts the file as input; it is write-once-per-boot from the daemon's POV. Note: a future proto v2 minor MAY add `HelloResponse.boot_id` as field 6 (additive, [Chapter 15](#chapter-15--zero-rework-audit) §3) for in-band verification, at which point Electron may cross-check Hello-echoed `boot_id` against the descriptor; v0.3 does NOT ship that field — descriptor is the sole witness.
 
 ##### 3.4 Why this closes the rendezvous race
 
 - **Atomic write** — Electron cannot observe a torn file (rename is atomic).
-- **`boot_id` per boot** — Electron cannot send RPCs to a stale descriptor's address; the `Hello` echo is the witness.
+- **`boot_id` per boot** — Electron cannot send RPCs to a stale descriptor's address; the descriptor file IS the witness (re-read on every reconnect attempt; cached value compared to freshly-read value).
 - **Descriptor written before `/healthz` 200** — [Chapter 02](#chapter-02--process-topology) §3 step 5 ordering means `Hello` will succeed iff the descriptor Electron just read describes the daemon currently listening.
 - **No re-write within a boot** — eliminates the "Electron read mid-write" hazard entirely; the only inter-boot transition is daemon-restart, and that's exactly what `boot_id` mismatch detects.
-- **Orphan files between boots are NORMAL** — no installer / shutdown-hook cleanup is required; the `boot_id` mismatch handles them on the next Electron connect attempt.
+- **Orphan files between boots are NORMAL** — no installer / shutdown-hook cleanup is required; the `boot_id` mismatch (new daemon's descriptor vs cached value) handles them on the next Electron connect attempt.
 
 #### 4. Transport — loopback HTTP/2 pick (MUST-SPIKE)
 
@@ -2219,7 +2219,7 @@ The renderer's "open external link" affordance accepts `https?://` only; every o
 
 #### 4. Electron process model post-migration
 
-<!-- F2: closes R0 08-P0.2 / R0 08-P0.3 / R2 P0-08-1 / R2 P0-08-2 — bootstrap mechanism is descriptor-handshake-by-fetch (no contextBridge); transport bridge ships unconditionally; DNS rebinding mitigated by bridge bound to UDS / named pipe (no loopback TCP for bridge↔daemon); descriptor authenticity via Hello-echo of boot_id. -->
+<!-- F2: closes R0 08-P0.2 / R0 08-P0.3 / R2 P0-08-1 / R2 P0-08-2 — bootstrap mechanism is descriptor-handshake-by-fetch (no contextBridge); transport bridge ships unconditionally; DNS rebinding mitigated by bridge bound to UDS / named pipe (no loopback TCP for bridge↔daemon); descriptor authenticity via descriptor-file boot_id verification (HelloResponse does NOT echo boot_id — proto fields are pinned to meta/daemon_version/proto_version/principal/listener_id; see ch04 §3). -->
 
 ```
 electron main process (minimal):
@@ -2243,8 +2243,10 @@ electron preload (minimal — no contextBridge):
 electron renderer:
   - on boot, fetch("app://ccsm/listener-descriptor.json") → parse → construct Connect
     transport pointed at the bridge (see §4.2)
-  - immediately calls Hello and verifies boot_id echoes the descriptor's boot_id
-    ([Chapter 03](#chapter-03--listeners-and-transport) §3.3); rejects + retries on mismatch
+  - immediately calls Hello to confirm reachability + protocol compatibility, and
+    verifies the descriptor's boot_id matches the cached pin from the prior connect
+    (descriptor file is the boot_id witness — HelloResponse does NOT echo boot_id;
+    see [Chapter 03](#chapter-03--listeners-and-transport) §3.3 + ch04 §3); rejects + retries on mismatch
   - wraps the proto-generated SessionService/PtyService/... clients in React Query / TanStack Query hooks
   - all UI state comes from RPC results
 ```
@@ -2257,7 +2259,7 @@ R0 08-P0.2 flagged that `webPreferences.additionalArguments` does NOT inject ont
 2. Electron main rewrites the descriptor's `address` field to point at the bridge's loopback endpoint (§4.2) — the renderer never sees the daemon's UDS / named pipe path because the renderer never speaks to it directly.
 3. Electron main registers a custom scheme handler via `protocol.handle("app", ...)` that serves the rewritten descriptor at `app://ccsm/listener-descriptor.json` (read-only; `Content-Type: application/json`).
 4. Renderer at boot calls `await fetch("app://ccsm/listener-descriptor.json")` and parses the result. No `contextBridge`, no `additionalArguments`, no preload-injected globals — `lint:no-ipc` (§5h.1) passes mechanically.
-5. Renderer constructs the Connect transport from the descriptor and runs the `Hello`-echo `boot_id` verification ([Chapter 03](#chapter-03--listeners-and-transport) §3.3) before any other RPC. The bridge forwards `Hello` to the daemon and the daemon's in-memory `boot_id` reaches the renderer untouched.
+5. Renderer constructs the Connect transport from the descriptor, calls `Hello` to confirm reachability + protocol compatibility, and verifies the freshly-read `descriptor.boot_id` matches its cached pin per [Chapter 03](#chapter-03--listeners-and-transport) §3.3 before any other RPC. The descriptor file (served via `app://`) is the `boot_id` witness; `HelloResponse` carries `meta` / `daemon_version` / `proto_version` / `principal` / `listener_id` only and does NOT echo `boot_id` (proto is forever-stable; ch04 §3 / proto `session.proto`).
 
 ##### 4.2 Renderer transport bridge — ships unconditionally in v0.3
 
@@ -3826,7 +3828,7 @@ Acceptable answers: **none** / **purely additive** (specify what is added). Unac
 | [Chapter 14 §1](#chapter-14--risks-and-spikes) | MUST-SPIKE register | v0.4 ADDS new entries; existing entries' outcomes baked into v0.3 chapters | **additive** |
 <!-- F2: closes R0 03-P0.1 / R0 03-P0.3 / R0 08-P0.3 / R0 15-P1.3 / R5 P0-03-2 / R5 P0-08-1 — three audit rows for listener slot 1 reservation, descriptor boot_id semantics, and renderer transport bridge decision. -->
 | [Chapter 03 §1](#chapter-03--listeners-and-transport) | Listener slot 1 reservation pattern (typed `RESERVED_FOR_LISTENER_B` sentinel + ESLint rule + startup assert) | v0.4 instantiates slot 1 with JWT middleware: brand-new `listener-b.ts` module is added (purely additive new file); ESLint rule whitelists that one file as the only writer of `listeners[1]`; the startup-site sentinel write becomes a `makeListenerB(env)` call. Sentinel symbol stays exported (still referenced by tests); slot-1-reservation lint rule stays in force as the v0.4 backstop. | **additive** |
-| [Chapter 03 §3](#chapter-03--listeners-and-transport) / [Chapter 07 §2.1](#chapter-07--data-and-state) | Descriptor file `boot_id` semantics (per-boot UUIDv4; atomic write; `Hello`-echo verification; orphan files between boots are normal) | v0.4 web/iOS clients DO NOT read `listener-a.json` — they reach Listener B via cloudflared with a separate descriptor file (`listener-b.json`, additive new file). Only Electron uses `listener-a.json` and the `boot_id` mechanism. Schema additions go in NEW top-level fields. | **additive** |
+| [Chapter 03 §3](#chapter-03--listeners-and-transport) / [Chapter 07 §2.1](#chapter-07--data-and-state) | Descriptor file `boot_id` semantics (per-boot UUIDv4; atomic write; descriptor-driven verification — file is the witness, `HelloResponse` does NOT echo `boot_id`; orphan files between boots are normal) | v0.4 web/iOS clients DO NOT read `listener-a.json` — they reach Listener B via cloudflared with a separate descriptor file (`listener-b.json`, additive new file). Only Electron uses `listener-a.json` and the `boot_id` mechanism. Schema additions go in NEW top-level fields. A future proto v2 minor MAY add `HelloResponse.boot_id` as additive field 6 for in-band cross-check; v0.3 ships descriptor-only. | **additive** |
 | [Chapter 08 §4.2](#chapter-08--electron-client-migration) / [Chapter 14 §1.6](#chapter-14--risks-and-spikes) | Renderer transport bridge in Electron main (ships unconditionally in v0.3) | unchanged (Electron-only); v0.4 web/iOS use connect-web/connect-swift directly without a bridge. Bridge code is forever Electron-internal; chapter 15 §3 forbidden-pattern (item 15 below) forbids modifying it for web/iOS reasons. | **none** |
 | [Chapter 03 §7](#chapter-03--listeners-and-transport) | Supervisor UDS-only on every OS (`\\.\pipe\ccsm-supervisor` on Windows; `/var/run/com.ccsm.daemon/supervisor.sock` on macOS; `/run/ccsm/supervisor.sock` on Linux); peer-cred uid/SID is the sole authn | v0.4 cf-access principals MUST NOT reach Supervisor; equivalent functionality for remote callers MUST be a NEW Connect RPC on Listener B with explicit principal authorization. Supervisor surface stays UDS-only forever. | **none** |
 | [Chapter 03 §1a](#chapter-03--listeners-and-transport) | `BindDescriptor.kind` and `listener-a.json.transport` unified vocabulary (closed 4-value enum) | v0.4 transport variants ship under NEW descriptor file (`listener-b.json`) with their own enum domain; never as new values in the v0.3 enum. | **additive** |
