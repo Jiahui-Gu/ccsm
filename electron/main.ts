@@ -1,31 +1,40 @@
-// Main process entry point. Thin orchestrator: imports + register*Ipc()
-// + lifecycle hookups + the cross-cutting glue (notify pipeline, ptyHost,
-// sessionWatcher) that doesn't fit any single SRP module.
+// Main process entry point. Thin orchestrator: lifecycle hookups + the
+// cross-cutting glue (notify pipeline, ptyHost lifecycle, sessionWatcher)
+// that doesn't fit any single SRP module.
 //
 // SRP map (Task #731 / #742 refactor):
 //   * electron/prefs/*           — closeAction / crashReporting / notifyEnabled
 //                                  / userCwds preference modules.
-//   * electron/security/*        — IPC sender + path safety guards.
+//   * electron/security/*        — path safety guards.
 //   * electron/sentry/*          — crash reporting init + opt-out.
 //   * electron/window/*          — BrowserWindow factory + close choreography.
 //   * electron/tray/*            — Tray icon + locale-aware menu.
-//   * electron/ipc/*             — register*Ipc handlers, one per domain.
 //   * electron/lifecycle/*       — applyAppMenuLocale + app.on(...) glue
 //                                  + single-instance lock.
 //   * electron/notify/bootstrap/ — notify pipeline construction + producer
 //                                  subscriptions (PTY, focus/blur, unwatched).
 //   * electron/testHooks         — CCSM_NOTIFY_TEST_HOOK-gated probe seams.
 //
+// Wave 0b (#216) state:
+//   * The v0.2 `electron/ipc/*` register*Ipc handlers, the preload bridges,
+//     and the renderer-pushed sid/name mirrors are gone (pure delete; no
+//     replacement on this surface). Wave 0c will rewire the renderer to talk
+//     to the daemon over Connect-RPC; Wave 1 will move the ptyHost / notify
+//     producers to the daemon. Until then THIS ELECTRON APP IS NOT RUNNABLE
+//     end-to-end — it boots, opens a window, and the renderer has no IPC
+//     surface to call. The notify pipeline is still constructed so its
+//     focus/blur + unwatched producers continue to fire (badge + dispose
+//     are kept live so Wave 0c can drop the daemon-sourced name/active-sid
+//     wiring straight in without a refactor).
+//
 // What still lives here:
-//   * Cross-module shared state (isQuitting, badgeManager, notifyPipeline,
-//     activeSidFromRenderer, sessionNamesFromRenderer).
+//   * Cross-module shared state (isQuitting, badgeManager, notifyPipeline).
 //   * The createWindow / ensureTray thin wrappers that close over that
 //     state for the dependency bags.
 //   * The `app.whenReady()` body that wires every subsystem together
-//     (db init, register*Ipc calls, notify pipeline construction, ptyHost,
-//     sessionWatcher, eager scans).
+//     (db init, notify pipeline construction, sessionWatcher, eager scans).
 
-import { app, BrowserWindow, ipcMain, type Tray } from 'electron';
+import { app, BrowserWindow, type Tray } from 'electron';
 import { initDb, closeDb } from './db';
 import { buildTrayIcon } from './branding/icon';
 import { initSentry } from './sentry/init';
@@ -34,12 +43,11 @@ import { createTray, type TrayController } from './tray/createTray';
 
 // safety net — escaped main-proc rejections kill app on Node 20+ default
 // (audit tech-debt-03-errors.md risk #2). Registered BEFORE app.whenReady so
-// any throw during bootstrap (initSentry, IPC registration, db open) lands
-// in the logger instead of silently terminating the process. We deliberately
-// do NOT call app.exit() — preserves current default-throw behavior in tests
-// and mirrors the renderer's "log + degrade" stance. TODO: forward to Sentry
-// once main-process Sentry transport is wired (currently renderer-only per
-// audit).
+// any throw during bootstrap (initSentry, db open) lands in the logger
+// instead of silently terminating the process. We deliberately do NOT call
+// app.exit() — preserves current default-throw behavior in tests and mirrors
+// the renderer's "log + degrade" stance. TODO: forward to Sentry once
+// main-process Sentry transport is wired (currently renderer-only per audit).
 process.on('unhandledRejection', (reason, _promise) => {
   console.error('[main] unhandledRejection:', reason);
 });
@@ -51,8 +59,7 @@ process.on('uncaughtException', (err) => {
 // init is idempotent and a no-op when no DSN is set.
 initSentry();
 
-import { installUpdaterIpc } from './updater';
-import { registerPtyHostIpc, killAllPtySessions } from './ptyHost';
+import { killAllPtySessions } from './ptyHost';
 import { configureSessionWatcher } from './sessionWatcher';
 import { BadgeManager } from './notify/badge';
 import {
@@ -66,14 +73,6 @@ import {
 import { loadNotifyEnabled, subscribeNotifyEnabledInvalidation } from './prefs/notifyEnabled';
 import { subscribeCrashReportingInvalidation } from './prefs/crashReporting';
 import { BadgeController } from './badgeController';
-import { registerDbIpc } from './ipc/dbIpc';
-import { registerSystemIpc } from './ipc/systemIpc';
-import { registerSessionIpc } from './ipc/sessionIpc';
-import { registerWindowIpc } from './ipc/windowIpc';
-import {
-  registerUtilityIpc,
-  primeImportableCache,
-} from './ipc/utilityIpc';
 import {
   applyAppMenuLocale,
   registerLifecycleHandlers,
@@ -91,23 +90,13 @@ const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 // handler. See electron/lifecycle/singleInstance for the rationale.
 acquireSingleInstanceLock();
 
-// Renderer pushes its current `activeId` here over IPC whenever it changes
-// (selectSession etc.). Main mirrors it so the notify bridge can suppress
-// toasts for the session the user is already looking at without a
-// synchronous round-trip to read renderer state.
-let activeSidFromRenderer: string | null = null;
-
-// Same pattern as activeSidFromRenderer: the renderer pushes its session-name
-// map here so the notify bridge can label toasts with the user-visible name
-// (custom rename or SDK auto-summary) instead of the bare sid UUID.
-const sessionNamesFromRenderer = new Map<string, string>();
-
-// Test seam: when CCSM_NOTIFY_TEST_HOOK is set, expose the names map +
+// Test seam: when CCSM_NOTIFY_TEST_HOOK is set, expose an empty names map +
 // pipeline diag flag on globalThis so harness e2e probes can inspect them
-// without an extra IPC surface. Off by default; production never reads
-// CCSM_NOTIFY_TEST_HOOK. Late-binding seams that depend on the notify
-// pipeline are installed inside app.whenReady via installLateTestHooks.
-installEarlyTestHooks(sessionNamesFromRenderer);
+// without an extra IPC surface. The map is kept as a placeholder that Wave
+// 0c will repopulate from a daemon-sourced name stream; until then it stays
+// empty (probes already tolerate missing entries).
+const sessionNamesPlaceholder = new Map<string, string>();
+installEarlyTestHooks(sessionNamesPlaceholder);
 
 // Install the hidden Edit-role accelerator menu at module load so
 // copy/paste etc. work before app.whenReady. Re-run on locale change.
@@ -116,7 +105,7 @@ applyAppMenuLocale();
 // Window + tray construction live in dedicated SRP modules
 // (electron/window/createWindow, electron/tray/createTray). Both take a
 // small dependency bag so main.ts retains ownership of the cross-module
-// shared state (isQuitting, the active-sid mirror, the badgeController).
+// shared state (isQuitting, the badgeController).
 let trayController: TrayController | null = null;
 let isQuitting = false;
 let badgeManager: BadgeManager | null = null;
@@ -136,7 +125,9 @@ function isMainWindowFocused(): boolean {
 function createWindow(): BrowserWindow {
   return createMainWindowFactory({
     isDev,
-    getActiveSid: () => activeSidFromRenderer,
+    // Wave 0b: the v0.2 IPC layer is gone, so main no longer mirrors the
+    // renderer's active sid. Wave 0c will source this from the daemon.
+    getActiveSid: () => null,
     onFocusChange: (info) => badgeController.onFocusChange(info),
     getIsQuitting: () => isQuitting,
     setIsQuitting: (v) => {
@@ -166,6 +157,10 @@ function getTray(): Tray | null {
   return trayController?.tray ?? null;
 }
 
+// Suppress unused-warning until Wave 0c wires applyTrayLocale into the
+// daemon-driven locale stream.
+void applyTrayLocale;
+
 app.whenReady().then(() => {
   // On Windows, set a stable AppUserModelID so the OS attributes the app to
   // its taskbar / Start Menu entry instead of generic "electron.exe".
@@ -180,67 +175,21 @@ app.whenReady().then(() => {
 
   initDb();
 
-  // ─────────────────────────── IPC registration ──────────────────────────
-  // Wire prefs cache invalidation to the stateSavedBus BEFORE registering
-  // the db:save handler so the very first renderer-driven save (e.g. an
-  // auto-persisted setting on first paint) reaches the cache subscribers.
-  // See `tech-debt-12-functional-core.md` leak #5 / Task #818.
+  // Wire prefs cache invalidation to the stateSavedBus. With v0.2 db:save
+  // IPC gone (Wave 0b), no producer currently fires the bus — but the
+  // subscriptions are cheap and Wave 0c will re-attach a daemon-driven
+  // producer, so leaving the wiring live avoids a churn revert later.
   subscribeCrashReportingInvalidation();
   subscribeNotifyEnabledInvalidation();
-  // Order is significant for systemIpc: it seeds the active i18n language
-  // from the OS locale, so any subsequent producer that calls i18n.t()
-  // sees the correct active language.
-  registerDbIpc({ ipcMain });
-  registerSystemIpc({
-    ipcMain,
-    app,
-    applyAppMenuLocale,
-    applyTrayLocale,
-  });
-  registerSessionIpc({
-    ipcMain,
-    setActiveSid: (sid) => {
-      activeSidFromRenderer = sid;
-    },
-    onActiveSidChanged: (sid) => {
-      badgeController.onFocusChange({
-        focused: isMainWindowFocused(),
-        activeSid: sid,
-      });
-      // Notify pipeline (Phase C, #689) — keep ctx.activeSid in sync.
-      notifyPipeline?.setActiveSid(sid);
-    },
-    setSessionName: (sid, name) => {
-      if (name) sessionNamesFromRenderer.set(sid, name);
-      else sessionNamesFromRenderer.delete(sid);
-    },
-    markUserInput: (sid) => {
-      notifyPipeline?.markUserInput(sid);
-    },
-  });
-  registerWindowIpc({ ipcMain });
-  registerUtilityIpc({ ipcMain });
-
-  installUpdaterIpc();
 
   // Wire the sessionWatcher singleton's production callbacks. The watcher
   // module-graph stays free of any reverse import to sessionTitles (#690
   // follow-up to #536) — it boots with noop defaults and main.ts injects
-  // the real getSessionTitle / flushPendingRename here, before ptyHost
-  // (the only production caller of startWatching) is registered.
+  // the real getSessionTitle / flushPendingRename here.
   configureSessionWatcher({
     fetchTitle: getSessionTitle,
     flushRename: flushPendingRename,
   });
-
-  // Register ptyHost IPC (in-process node-pty path that replaced ttyd).
-  // Owns per-session pty lifecycle, attach/detach, snapshot serialization,
-  // and the `claude` CLI availability probe (folded in from the deleted
-  // cliBridge module — see ptyHost/index.ts pty:checkClaudeAvailable).
-  registerPtyHostIpc(
-    ipcMain,
-    () => BrowserWindow.getAllWindows()[0] ?? null,
-  );
 
   // ─────────────────────── notify pipeline (Phase C, #689) ───────────────
   // BadgeManager is bumped via `onNotified` to update the tray/dock badge.
@@ -261,7 +210,9 @@ app.whenReady().then(() => {
 
   const installed = installNotifyPipelineWithProducers({
     isGlobalMutedFn: () => !loadNotifyEnabled(),
-    getNameFn: (sid) => sessionNamesFromRenderer.get(sid) ?? null,
+    // Wave 0b: no renderer-pushed name mirror anymore. Wave 0c will swap
+    // this out for a daemon-sourced lookup.
+    getNameFn: (_sid) => null,
     onNotified: (sid) => {
       badgeManager?.incrementSid(sid);
     },
@@ -271,18 +222,11 @@ app.whenReady().then(() => {
     // the app lifetime even after the session was deleted.
     onUnwatchedSid: (sid) => {
       badgeManager?.clearSid(sid);
-      // audit #876 Item 5: drop the renderer-pushed name mirror too. Without
-      // this, every renamed session leaks its entry forever — the map only
-      // grew, never shrank, since the IPC handler is the only producer.
-      sessionNamesFromRenderer.delete(sid);
     },
   });
   const pipelineInstance = installed.pipeline;
-  // Hoist into the module-level holder so the IPC handlers above (registered
-  // earlier in app.whenReady) can reach the pipeline. The handlers run later
-  // (on actual IPC dispatch), so the forward reference is safe — they use
-  // the optional-chained `notifyPipeline?.` form because the holder is null
-  // until this assignment lands.
+  // Hoist into the module-level holder so future producers (Wave 0c daemon
+  // wire-up) can reach the pipeline.
   notifyPipeline = pipelineInstance;
   // Tear down the pipeline + its app-level listeners on real quit. Without
   // this, the focus/blur + sessionWatcher 'unwatched' subscriptions plus
@@ -298,10 +242,10 @@ app.whenReady().then(() => {
   createWindow();
   ensureTray();
 
-  // Eager-load CLI transcripts so ImportDialog has data the moment the user
-  // opens it. Fire-and-forget; primeImportableCache logs its own errors and
-  // stores [] on failure so the dialog gracefully degrades.
-  primeImportableCache();
+  // Touch the badge controller + active-window focus check so the unused
+  // bindings don't fail strict typecheck while Wave 0c is pending.
+  void isMainWindowFocused;
+  void notifyPipeline;
 });
 
 registerLifecycleHandlers({
