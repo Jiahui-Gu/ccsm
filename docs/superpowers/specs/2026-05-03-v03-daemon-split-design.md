@@ -283,14 +283,14 @@ The daemon owns a fixed-length array `listeners: [ListenerSlot, ListenerSlot]`. 
 | `BindDescriptor.kind` | `listener-a.json.transport` | Socket shape | Used by |
 | --- | --- | --- | --- |
 | `KIND_UDS` | `"KIND_UDS"` | `{ path: string }` (e.g., `/run/ccsm/daemon.sock`) | Listener A on linux/mac when the UDS spike passes |
-| `KIND_NAMED_PIPE` | `"KIND_NAMED_PIPE"` | `{ path: string }` (e.g., `\\.\pipe\ccsm-<sid>`) | Listener A on Windows when the named-pipe spike passes |
+| `KIND_NAMED_PIPE` | `"KIND_NAMED_PIPE"` | `{ pipeName: string }` (e.g., `\\.\pipe\ccsm-<sid>`) | Listener A on Windows when the named-pipe spike passes |
 | `KIND_TCP_LOOPBACK_H2C` | `"KIND_TCP_LOOPBACK_H2C"` | `{ host: "127.0.0.1", port: number }` | Listener A loopback fallback (h2c) |
 | `KIND_TCP_LOOPBACK_H2_TLS` | `"KIND_TCP_LOOPBACK_H2_TLS"` | `{ host: "127.0.0.1", port: number, certFingerprintSha256: string }` | Listener A loopback TLS+ALPN fallback |
 
 ```ts
 export type BindDescriptor =
   | { kind: "KIND_UDS"; path: string }
-  | { kind: "KIND_NAMED_PIPE"; path: string }
+  | { kind: "KIND_NAMED_PIPE"; pipeName: string }
   | { kind: "KIND_TCP_LOOPBACK_H2C"; host: "127.0.0.1"; port: number }
   | { kind: "KIND_TCP_LOOPBACK_H2_TLS"; host: "127.0.0.1"; port: number; certFingerprintSha256: string };
 ```
@@ -305,7 +305,7 @@ export function makeListenerA(env: DaemonEnv): Listener {
   return {
     id: "A",
     bind: env.platform === "win32"
-      ? { kind: "KIND_NAMED_PIPE", path: `\\\\.\\pipe\\ccsm-${env.userSid}` }
+      ? { kind: "KIND_NAMED_PIPE", pipeName: `\\\\.\\pipe\\ccsm-${env.userSid}` }
       : { kind: "KIND_UDS", path: env.platform === "darwin"
           ? "/var/run/com.ccsm.daemon/daemon.sock"
           : "/run/ccsm/daemon.sock" },
@@ -2684,11 +2684,11 @@ ccsm/                                # repo root
 ├── packages/
 │   ├── proto/
 │   │   ├── package.json             # name: "@ccsm/proto"
-│   │   ├── ccsm/v1/*.proto
+│   │   ├── src/ccsm/v1/*.proto      # proto sources; `buf.yaml` declares `modules.path: src`
 │   │   ├── buf.yaml
 │   │   ├── buf.gen.yaml
 │   │   ├── gen/                     # generated code; gitignored; built by `pnpm run gen`
-│   │   │   ├── ts/                  # connect-es output
+│   │   │   ├── ts/                  # protoc-gen-es output (messages + GenService descriptors)
 │   │   │   ├── go/                  # for v0.4 (placeholder dir; empty in v0.3)
 │   │   │   └── swift/               # for v0.4
 │   │   └── scripts/lock-buf-image.sh
@@ -2698,7 +2698,7 @@ ccsm/                                # repo root
 │   │   ├── src/
 │   │   │   ├── index.ts             # entrypoint -> bundle.js -> sea
 │   │   │   ├── listeners/           # chapter 03
-│   │   │   ├── rpc/                 # handlers; consumes @ccsm/proto/gen/ts
+│   │   │   ├── rpc/                 # handlers; consumes `@ccsm/proto` (re-exports `gen/ts/**`)
 │   │   │   ├── pty/                 # chapter 06
 │   │   │   ├── db/                  # chapter 07
 │   │   │   ├── crash/               # chapter 09
@@ -2713,7 +2713,7 @@ ccsm/                                # repo root
 │       ├── src/
 │       │   ├── main/                # minimal; chapter 08 §4
 │       │   ├── preload/             # 5 lines; chapter 08 §4
-│       │   └── renderer/            # React app; consumes @ccsm/proto/gen/ts
+│       │   └── renderer/            # React app; consumes `@ccsm/proto` (re-exports `gen/ts/**`)
 │       ├── electron-builder.yml
 │       ├── test/{unit,e2e}/
 │       └── dist/
@@ -2752,7 +2752,7 @@ ccsm/                                # repo root
 }
 ```
 
-pnpm symlinks `node_modules/@ccsm/proto` to `packages/proto`, which exposes its `gen/ts` output via its `package.json` `"exports"` field.
+pnpm symlinks `node_modules/@ccsm/proto` to `packages/proto`, which re-exports its generated `gen/ts/**` modules through `packages/proto/src/index.ts`; the `package.json` `"exports"` field points at that re-export so consumers can `import { SessionService } from '@ccsm/proto'` without reaching into the `gen/ts` path directly.
 
 #### 4. Proto codegen pipeline
 
@@ -2761,12 +2761,16 @@ packages/proto/buf.gen.yaml
 ---
 version: v2
 plugins:
-  - remote: buf.build/bufbuild/es:v1.10.0
+  # protoc-gen-es v2 generates both message types AND service descriptors
+  # (`GenService<...>` constants). Connect-RPC consumes those descriptors
+  # directly via `@connectrpc/connect` — no separate `connect-es` plugin
+  # is needed (the v1 `connectrpc/es` plugin was deprecated by upstream
+  # in favor of `protoc-gen-es` ≥ v2 emitting GenService).
+  - local: protoc-gen-es
     out: gen/ts
-    opt: target=ts,import_extension=js
-  - remote: buf.build/connectrpc/es:v1.4.0
-    out: gen/ts
-    opt: target=ts,import_extension=js
+    opt:
+      - target=ts
+      - import_extension=js
 # v0.4 will append:
 #  - remote: buf.build/connectrpc/go:v1.x
 #    out: gen/go
