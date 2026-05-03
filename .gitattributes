@@ -1,0 +1,18 @@
+* text=auto eol=lf
+*.bat eol=crlf
+*.cmd eol=crlf
+*.ps1 eol=lf
+*.sh eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.sqlite binary
+*.sqlite3 binary
+*.node binary
+*.tgz binary
+*.bin binary
+package-lock.json text eol=lf linguist-generated
+pnpm-lock.yaml text eol=lf linguist-generated
+**/dist/** linguist-generated
+packages/daemon/src/db/migrations/*.sql text eol=lf
+packages/proto/**/*.proto text eol=lf
