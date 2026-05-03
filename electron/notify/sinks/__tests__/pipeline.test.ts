@@ -79,10 +79,10 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
     expect(log![0]!.sid).toBe('s1');
     expect(onNotified).toHaveBeenCalledWith('s1');
 
-    // Flash sink fired notify:flash IPC.
-    const flashSends = sends.filter((s) => s.channel === 'notify:flash');
-    expect(flashSends.length).toBe(1);
-    expect(flashSends[0]!.payload).toEqual({ sid: 's1', on: true });
+    // Wave 0c (#217): flash sink no longer pushes IPC. Assert via the
+    // in-memory map instead.
+    expect(sends.filter((s) => s.channel === 'notify:flash')).toEqual([]);
+    expect(pipeline._internals().flash._peek()['s1']).toBe(true);
 
     pipeline.dispose();
   });
@@ -108,7 +108,7 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   });
 
   it('markUserInput sticky-mutes the sid (no toast on subsequent run)', () => {
-    const { win, sends } = makeStubWin();
+    const { win } = makeStubWin();
     const onNotified = vi.fn();
     const pipeline = installNotifyPipeline({
       getMainWindow: () => win as never,
@@ -122,8 +122,8 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
     pipeline.feedChunk('s1', osc(IDLE_TITLE));
 
     expect(onNotified).not.toHaveBeenCalled();
-    // Mute (Rule 7) suppresses toast but still fires flash.
-    expect(sends.some((s) => s.channel === 'notify:flash')).toBe(true);
+    // Mute (Rule 7) suppresses toast but still records flash state in the map.
+    expect(pipeline._internals().flash._peek()['s1']).toBe(true);
     pipeline.dispose();
   });
 
@@ -219,6 +219,8 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
   // every still-flashing sid leaks its setTimeout closure past disposal.
   // Reverse-verify: drop the `flash.dispose()` call in pipeline.ts and
   // the `_peek()` empty assertion below fails.
+  // Wave 0c (#217): IPC send assertions removed — flash sink no longer
+  // pushes to webContents.
   it('dispose clears flash sink state (no leaked timers)', () => {
     vi.useFakeTimers();
     try {
@@ -237,16 +239,12 @@ describe('installNotifyPipeline (Task #743 orchestrator)', () => {
 
       pipeline.dispose();
 
-      // Flash map cleared; on=false IPC sent for both sids.
+      // Flash map cleared.
       expect(flash._peek()).toEqual({});
-      const offSends = sends.filter(
-        (s) =>
-          s.channel === 'notify:flash' &&
-          (s.payload as { on: boolean }).on === false,
-      );
-      expect(offSends.length).toBe(2);
 
-      // Advance well past FLASH_DURATION_MS — no late timer fires.
+      // Advance well past FLASH_DURATION_MS — no late timer fires anything
+      // observable through the IPC channel either (which has nothing to fire
+      // post-Wave-0c, but still: zero new sends).
       const sendsAfterDispose = sends.length;
       vi.advanceTimersByTime(10_000);
       expect(sends.length).toBe(sendsAfterDispose);

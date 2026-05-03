@@ -1,9 +1,12 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app } from 'electron';
 import { autoUpdater } from 'electron-updater';
 
-// All status updates flow through one channel so the renderer doesn't have to
-// subscribe to N separate event names. The shape mirrors electron-updater's
-// own emitter so future fields land naturally.
+// Wave 0c (#217): renderer surface removed. The shell-only auto-update
+// mechanism still runs (periodic check + autoDownload + install on quit),
+// but no IPC handlers, no `webContents.send` broadcasts, no renderer
+// status channel. v0.4 will reintroduce a renderer-facing surface via the
+// daemon-driven RPC layer; until then the updater is a self-contained
+// background module that writes its state to `lastStatus` for diagnostics.
 export type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
@@ -23,32 +26,8 @@ let periodicHandle: ReturnType<typeof setInterval> | null = null;
 // without hammering GitHub releases.
 const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
-// Named event channels — requested in the release infra spec in addition to
-// the aggregated `updates:status` channel. Keeping both channels is cheap and
-// makes renderer code (e.g. "show a toast on downloaded") trivial.
-const CHAN_AVAILABLE = 'update:available';
-const CHAN_DOWNLOADED = 'update:downloaded';
-const CHAN_ERROR = 'update:error';
-const CHAN_STATUS = 'updates:status';
-
-function sendAll(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(channel, payload);
-  }
-}
-
-function broadcast(status: UpdateStatus): void {
+function record(status: UpdateStatus): void {
   lastStatus = status;
-  sendAll(CHAN_STATUS, status);
-  // Fan out to the specific channels too so renderer listeners that only
-  // care about one transition don't have to switch on kind themselves.
-  if (status.kind === 'available') {
-    sendAll(CHAN_AVAILABLE, { version: status.version, releaseDate: status.releaseDate });
-  } else if (status.kind === 'downloaded') {
-    sendAll(CHAN_DOWNLOADED, { version: status.version });
-  } else if (status.kind === 'error') {
-    sendAll(CHAN_ERROR, { message: status.message });
-  }
 }
 
 /**
@@ -58,13 +37,13 @@ function broadcast(status: UpdateStatus): void {
  */
 async function safeCheck(): Promise<void> {
   if (!app.isPackaged) {
-    broadcast({ kind: 'not-available', version: app.getVersion() });
+    record({ kind: 'not-available', version: app.getVersion() });
     return;
   }
   try {
     await autoUpdater.checkForUpdates();
   } catch (e) {
-    broadcast({ kind: 'error', message: (e as Error).message });
+    record({ kind: 'error', message: (e as Error).message });
   }
 }
 
@@ -88,12 +67,17 @@ function stopPeriodicChecks(): void {
   }
 }
 
-export function installUpdaterIpc(): void {
+/**
+ * Initialize the shell-only auto-updater. Wires `electron-updater` event
+ * listeners + kicks off the periodic check loop. No renderer surface — the
+ * updater downloads in the background and applies on quit.
+ */
+export function installUpdater(): void {
   if (installed) return;
   installed = true;
 
-  // electron-updater is noisy by default; quiet it down — we surface state
-  // through our own channel.
+  // electron-updater is noisy by default; quiet it down — we keep its state
+  // in `lastStatus` for in-process diagnostics only.
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.logger = null;
@@ -106,19 +90,19 @@ export function installUpdaterIpc(): void {
     autoUpdater.allowPrerelease = true;
   }
 
-  autoUpdater.on('checking-for-update', () => broadcast({ kind: 'checking' }));
+  autoUpdater.on('checking-for-update', () => record({ kind: 'checking' }));
   autoUpdater.on('update-available', (info) =>
-    broadcast({
+    record({
       kind: 'available',
       version: info.version,
       releaseDate: info.releaseDate
     })
   );
   autoUpdater.on('update-not-available', (info) =>
-    broadcast({ kind: 'not-available', version: info.version })
+    record({ kind: 'not-available', version: info.version })
   );
   autoUpdater.on('download-progress', (p) =>
-    broadcast({
+    record({
       kind: 'downloading',
       percent: p.percent,
       transferred: p.transferred,
@@ -126,75 +110,21 @@ export function installUpdaterIpc(): void {
     })
   );
   autoUpdater.on('update-downloaded', (info) =>
-    broadcast({ kind: 'downloaded', version: info.version })
+    record({ kind: 'downloaded', version: info.version })
   );
   autoUpdater.on('error', (err) =>
-    broadcast({ kind: 'error', message: err?.message ?? String(err) })
+    record({ kind: 'error', message: err?.message ?? String(err) })
   );
-
-  ipcMain.handle('updates:status', () => lastStatus);
-
-  ipcMain.handle('updates:check', async () => {
-    if (!app.isPackaged) {
-      const status: UpdateStatus = { kind: 'not-available', version: app.getVersion() };
-      broadcast(status);
-      return status;
-    }
-    try {
-      const res = await autoUpdater.checkForUpdates();
-      void res;
-      return lastStatus;
-    } catch (e) {
-      const status: UpdateStatus = { kind: 'error', message: (e as Error).message };
-      broadcast(status);
-      return status;
-    }
-  });
-
-  ipcMain.handle('updates:download', async () => {
-    if (!app.isPackaged) return { ok: false, reason: 'not-packaged' as const };
-    try {
-      await autoUpdater.downloadUpdate();
-      return { ok: true as const };
-    } catch (e) {
-      return { ok: false as const, reason: (e as Error).message };
-    }
-  });
-
-  ipcMain.handle('updates:install', () => {
-    if (!app.isPackaged) return { ok: false as const, reason: 'not-packaged' as const };
-    // Defense-in-depth: refuse to call quitAndInstall unless we've
-    // actually broadcast a `downloaded` event. Without this guard a
-    // misbehaving renderer (e.g. the user clicking the persistent toast
-    // after a stale state, or a future bug that wires the install button
-    // to a non-downloaded state) can trigger autoUpdater.quitAndInstall()
-    // mid-download — electron-updater handles that by force-killing the
-    // app, which the user reads as a crash. Returning `not-ready` lets
-    // the renderer surface a sane "still downloading" message instead.
-    if (lastStatus.kind !== 'downloaded') {
-      return { ok: false as const, reason: 'not-ready' as const };
-    }
-    // quitAndInstall: (isSilent, isForceRunAfter). We want a visible installer
-    // on Windows (isSilent=false) and to relaunch after install on all OSes.
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
-    return { ok: true as const };
-  });
-
-  ipcMain.handle('updates:getAutoCheck', () => autoCheckEnabled);
-  ipcMain.handle('updates:setAutoCheck', (_e, enabled: boolean) => {
-    autoCheckEnabled = !!enabled;
-    if (autoCheckEnabled) {
-      startPeriodicChecks();
-      void safeCheck();
-    } else {
-      stopPeriodicChecks();
-    }
-    return autoCheckEnabled;
-  });
 
   // Check once on ready + every 4h thereafter.
   void safeCheck();
   startPeriodicChecks();
+}
+
+// Exposed for tests + diagnostics — lets callers read the latest known state
+// without subscribing to events.
+export function getUpdaterStatus(): UpdateStatus {
+  return lastStatus;
 }
 
 // Exposed for tests — lets them reset module state between cases.
