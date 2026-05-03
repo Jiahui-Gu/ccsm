@@ -1,0 +1,4 @@
+# T9.13 build artifacts (large, locally regeneratable).
+build/
+svc/bin/
+svc/obj/
