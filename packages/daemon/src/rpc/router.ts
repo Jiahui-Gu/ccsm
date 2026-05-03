@@ -59,6 +59,11 @@ import {
   SupervisorService,
 } from '@ccsm/proto';
 
+import {
+  makeWatchSessionsHandler,
+  type WatchSessionsDeps,
+} from '../sessions/watch-sessions.js';
+
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
 
@@ -143,6 +148,36 @@ export function registerHelloHandler(
 }
 
 /**
+ * Register the v0.3 SessionService handlers that have landed so far —
+ * Hello (T2.3) and WatchSessions (T3.3) — under a SINGLE
+ * `router.service(SessionService, ...)` call.
+ *
+ * Why a combined registration (not two `service()` calls): per Connect-ES
+ * `ConnectRouter.service` semantics, calling `service(desc, impl)` twice
+ * for the same descriptor REPLACES the prior registration (the router
+ * is a path-keyed map). Registering Hello and then WatchSessions
+ * separately would silently drop Hello. The Hello-only path
+ * (`registerHelloHandler` above) is preserved for callers that have not
+ * yet wired a SessionManager (existing test fixtures); production
+ * startup wiring (T1.7) uses this combined form.
+ *
+ * Methods not yet implemented (ListSessions, GetSession, CreateSession,
+ * DestroySession, RenameSession, ...) remain `Unimplemented` per the
+ * Connect router's "absent method → Unimplemented" rule, exactly as in
+ * the stub-only path.
+ */
+export function registerSessionService(
+  router: ConnectRouter,
+  deps: { readonly helloDeps: HelloDeps; readonly watchSessionsDeps: WatchSessionsDeps },
+): ConnectRouter {
+  router.service(SessionService, {
+    hello: makeHelloHandler(deps.helloDeps),
+    watchSessions: makeWatchSessionsHandler(deps.watchSessionsDeps),
+  });
+  return router;
+}
+
+/**
  * Bundled routes callback that installs stubs for every service AND the
  * real T2.3 Hello handler on SessionService. Use this from the daemon's
  * production startup wiring (T1.7) — pass through to
@@ -151,10 +186,15 @@ export function registerHelloHandler(
  */
 export function makeDaemonRoutes(
   helloDeps: HelloDeps,
+  watchSessionsDeps?: WatchSessionsDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
-    registerHelloHandler(router, helloDeps);
+    if (watchSessionsDeps !== undefined) {
+      registerSessionService(router, { helloDeps, watchSessionsDeps });
+    } else {
+      registerHelloHandler(router, helloDeps);
+    }
   };
 }
 
@@ -177,6 +217,16 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
   readonly requestPathPrefix?: string;
   /** When set, installs the T2.3 Hello handler on top of the stubs. */
   readonly helloDeps?: HelloDeps;
+  /**
+   * When set (and `helloDeps` is also set), installs the T3.3
+   * WatchSessions streaming handler in the same SessionService
+   * registration as Hello — see `registerSessionService` for the
+   * "registering a single descriptor twice replaces" caveat that forces
+   * the combined registration. v0.3 ships this when the daemon startup
+   * wiring (T1.7) constructs a `SessionManager`; tests that don't need
+   * a manager simply omit it (Hello-only path stays).
+   */
+  readonly watchSessionsDeps?: WatchSessionsDeps;
 }
 
 /**
@@ -215,9 +265,9 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { helloDeps, interceptors: callerInterceptors, ...rest } = options;
+  const { helloDeps, watchSessionsDeps, interceptors: callerInterceptors, ...rest } = options;
   const routes =
-    helloDeps !== undefined ? makeDaemonRoutes(helloDeps) : stubRoutes;
+    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps) : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),
