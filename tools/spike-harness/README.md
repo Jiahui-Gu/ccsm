@@ -49,3 +49,5 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/snapshot-roundtrip-fidelity/probe.mjs` | §1.8 phase 4.5 (T9.7) | runnable (reference codec + corpus + canonical cross-check) |
 | `probes/loopback-h2c-on-25h2/{server,client}.mjs` | §1.3 (T9.3) | runnable on win32; non-win32 skip |
 | `probes/loopback-h2c-on-25h2/run.sh` | §1.3 (T9.3)   | smoke (60s) + 1h soak driver (Win 11 25H2) |
+| `probes/macos-uds-cross-user/{server,client}.mjs` | §1.2 (T9.2) | runnable on darwin; linux/win32 skip |
+| `probes/macos-uds-cross-user/run.sh` | §1.2 (T9.2)   | bind-path × cross-user matrix driver |
