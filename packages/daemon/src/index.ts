@@ -35,6 +35,7 @@ import { dirname } from 'node:path';
 import { runMigrations } from './db/migrations/runner.js';
 import { checkAndRecover, makeRecoveryFlag, type RecoveryFlag } from './db/recovery.js';
 import { openDatabase, type SqliteDatabase } from './db/sqlite.js';
+import { CrashPruner } from './crash/pruner.js';
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
 import { makeListenerA } from './listeners/factory.js';
@@ -74,6 +75,8 @@ export async function runStartup(
 ): Promise<{
   readonly env: DaemonEnv;
   readonly listenerA: Listener | null;
+  readonly db: SqliteDatabase;
+  readonly crashPruner: CrashPruner;
 }> {
   lifecycle.onTransition((p) => log(`phase -> ${p}`));
 
@@ -130,6 +133,23 @@ export async function runStartup(
   lifecycle.advanceTo(Phase.RESTORING_SESSIONS);
   log('TODO(T3.4): re-spawn should-be-running sessions, orphan-uid check');
 
+  // T5.12 / Task #64 — crash retention pruner. Constructed AFTER
+  // openDatabase + runMigrations + recoveryFlag so the pruner's first
+  // (post-warmup) IMMEDIATE transaction can never race the migration
+  // runner. Caller (main / tests) calls `crashPruner.start()` after
+  // shutdown handlers are installed; `stop()` is invoked from the
+  // shutdown context in the entrypoint.
+  const crashPruner = new CrashPruner({
+    db,
+    log: {
+      info: (line) => log(line),
+      warn: (line) => log(line),
+    },
+    // Settings reader wires in with T5-Settings (later task); until
+    // then `() => ({})` collapses to the spec defaults (10000 / 90).
+    readSettings: () => ({}),
+  });
+
   // Phase: STARTING_LISTENERS  (T1.4 listener + T2.2 router)
   lifecycle.advanceTo(Phase.STARTING_LISTENERS);
   // The listener-slot assert (ch03 §1) is a one-liner we can do today even
@@ -161,7 +181,7 @@ export async function runStartup(
   lifecycle.advanceTo(Phase.READY);
   log('TODO(T1.7): flip Supervisor /healthz to 200');
 
-  return { env, listenerA };
+  return { env, listenerA, db, crashPruner };
 }
 
 /**
@@ -186,6 +206,7 @@ async function main(): Promise<void> {
   const lifecycle = new Lifecycle();
   let listenerA: Listener | null = null;
   let watchdog: SystemdWatchdogHandle | null = null;
+  let crashPruner: CrashPruner | null = null;
 
   // Build the shutdown orchestrator + a mutable context the future
   // T1.4 / T1.7 / T5.1 / T4.x wiring can populate as they land. We
@@ -211,6 +232,10 @@ async function main(): Promise<void> {
     // Stop the watchdog first so its keepalive timer doesn't pin the
     // event loop while shutdown.run drains in-flight RPCs.
     watchdog?.stop();
+    // Cancel the crash pruner timer BEFORE shutdown.run so its 6h
+    // tick can't sneak in a stray IMMEDIATE write between the WAL
+    // checkpoint (step 6) and db.close (step 7).
+    crashPruner?.stop();
     const r = await shutdown.run(ctxRef);
     // Exit code: clean drain + zero step errors → 0; otherwise 1.
     const exitCode = r.errors.length === 0 && r.inFlightAtBudgetExpiry <= 0 ? 0 : 1;
@@ -227,12 +252,19 @@ async function main(): Promise<void> {
   try {
     const result = await runStartup(lifecycle);
     listenerA = result.listenerA;
+    crashPruner = result.crashPruner;
     // Register the bound listener with the shutdown context so SIGTERM
-    // closes it during step 1 (stop accepting). T5.1 will register the
-    // db handle here too once it lands.
+    // closes it during step 1 (stop accepting). Register the db handle
+    // so the WAL checkpoint (step 6) + close (step 7) actually fire.
     if (listenerA !== null) {
       ctxRef.listeners.push(listenerA);
     }
+    ctxRef.db = result.db;
+    // Start the crash retention pruner AFTER shutdown handlers are
+    // installed (above) — a SIGTERM during the 30s warmup must still
+    // cancel the pending timer cleanly.
+    crashPruner.start();
+    log('crash-pruner: scheduled (30s warmup, then every 6h)');
     // Watchdog after READY — there is no point telling systemd we're alive
     // until the daemon is actually serving. systemd's `WatchdogSec=30s`
     // gives ~30s of boot slack before the first WATCHDOG=1 is required.
@@ -254,6 +286,7 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     watchdog?.stop();
+    crashPruner?.stop();
     const error = err instanceof Error ? err : new Error(String(err));
     lifecycle.fail(error);
     log(`STARTUP FAILED at phase ${lifecycle.currentPhase()}: ${error.message}`);
