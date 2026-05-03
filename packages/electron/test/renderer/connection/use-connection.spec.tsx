@@ -72,8 +72,8 @@ function wrapper(queryClient: QueryClient, props: {
           fetchDescriptor: props.fetchDescriptor,
           buildTransport: props.buildTransport,
           events: props.events,
-          children,
         },
+        children,
       ),
     );
   };
