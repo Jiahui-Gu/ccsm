@@ -45,19 +45,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # fetch-depth: 0 is required for tools/check-v02-shrinking.sh —
-          # it needs `git merge-base HEAD origin/main` (or merge-base with
-          # GITHUB_BASE_REF) to compare line counts of v0.2-only files
-          # against the base. A shallow checkout would leave merge-base
-          # unresolvable and the guard would no-op.
+          # it needs `git merge-base HEAD origin/<base>` (or merge-base with
+          # GITHUB_BASE_REF) AND a full first-parent walk of base..HEAD to
+          # enforce step-wise monotonic shrinking (Task #279). A shallow
+          # checkout would leave merge-base unresolvable AND truncate the
+          # commit chain, silently weakening the guard.
           fetch-depth: 0
 
-      # Wave 2 §5.6 (Task #222) — mechanical guard: files listed in
-      # .v0.2-only-files are slated for deletion/shrinkage during the v0.3
-      # cutover. CI enforces line counts may shrink but not grow vs the
-      # merge-base. Linux-only because the check is git/wc/bash and the
-      # result is deterministic across OSes; running on the matrix would
-      # waste 2x runner time.
-      - name: Check v0.2-only files don't grow
+      # Wave 2 §5.6 (Task #222) + step-wise FOLLOWUP (Task #279) —
+      # mechanical guard: files listed in .v0.2-only-files are slated for
+      # deletion/shrinkage during the v0.3 cutover. CI enforces line counts
+      # may shrink but never grow vs the merge-base AND must be step-wise
+      # monotonic across every first-parent commit in this branch series
+      # (so a file can't shrink in commit N then re-grow in commit N+1).
+      # Linux-only because the check is git/wc/bash and the result is
+      # deterministic across OSes; running on the matrix would waste 2x
+      # runner time.
+      - name: Check v0.2-only files don't grow (incl. step-wise)
         if: matrix.os == 'ubuntu-latest'
         run: bash tools/check-v02-shrinking.sh
 
