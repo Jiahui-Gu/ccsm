@@ -1,45 +1,58 @@
 // Daemon entrypoint. Spec ch02 §3 startup order: this file walks phases
 // 1–5 in sequence, logs each transition, and exits non-zero on any phase
-// failure. The actual step bodies (DB open, session restore, listener
-// bind, descriptor write, /healthz flip) live in later tasks — T1.1 just
-// wires the lifecycle skeleton with TODO stubs.
+// failure. Wave 1 wire-up (Task #208) plumbed the Listener-A descriptor
+// write, the SessionService.Hello handler, the Supervisor UDS server,
+// and the crash-raw boot replay + capture-sources install — i.e. the
+// previously-stubbed `runStartup` is now end-to-end.
 //
-// Out of scope (per task brief):
-//   - SQLite open + migrations             → T5.1
-//   - Session restore + orphan-uid check   → T3.4
-//   - Supervisor /healthz                  → T1.7
+// Out of scope (per task brief / future tasks):
+//   - Session restore + orphan-uid check       → T3.4
+//   - PtyHost / SessionManager wiring          → T6.x
 //
-// Wired-in:
-//   - Listener A bind                      → T1.4 (`makeListenerA`)
-//   - HTTP/2 transport adapters            → T1.5 (h2c-uds / h2c-loopback / h2-named-pipe)
-//   - ConnectRouter + stub services        → T2.2 (this file consumes
-//                                                  `makeRouterBindHook`)
-//   - Descriptor file write                → T1.6 (separate concern; not
-//                                                  yet called from here)
-//   - systemd watchdog (main thread)       → T5.13 (`startSystemdWatchdog`)
-//   - Graceful shutdown                    → T1.8 (this file installs the
-//                                                  SIGTERM/SIGINT handlers
-//                                                  that call `Shutdown.run`)
-//
-// In scope (T1.8): SIGTERM / SIGINT handler installation. The actual
-// shutdown sequence is `Shutdown.run(...)` (./shutdown.ts); this file
-// only wires (a) the signal trap that calls it, and (b) the empty
-// `ShutdownContext` we can populate today (no listeners / no db / no
-// pty children are constructed by the T1.1 startup stub yet — later
-// tasks register their handles with `register*OnEntrypoint` helpers
-// when they land).
+// Wired here:
+//   - DaemonEnv build                          → env.ts
+//   - SQLite open + migrations + recovery      → T5.1 / T5.7
+//   - Crash boot replay (ch09 §6)              → crash/raw-appender.replayCrashRawOnBoot
+//   - Crash capture-sources install (ch09 §1)  → crash/sources.installCaptureSources
+//   - Listener A bind                          → T1.4 (`makeListenerA`)
+//   - HTTP/2 transport adapters                → T1.5 (h2c-uds / h2c-loopback / h2-named-pipe)
+//   - ConnectRouter + real Hello handler       → T2.2 + T2.3 (`makeRouterBindHook({ helloDeps })`)
+//   - bearer-token → PeerInfo bridge for       → this file (`bearerToPeerInfoInterceptor`)
+//     loopback transport
+//   - Listener-A descriptor file write         → T1.6 (`writeDescriptor`)
+//   - Supervisor UDS HTTP server (/healthz,    → T1.7 (`makeSupervisorServer`)
+//     /hello, /shutdown, /ack-recovery)
+//   - systemd watchdog (main thread)           → T5.13 (`startSystemdWatchdog`)
+//   - Graceful shutdown                        → T1.8 (`Shutdown.run` + signal handlers)
 
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import type { Interceptor } from '@connectrpc/connect';
+
+import { PROTO_VERSION } from '@ccsm/proto';
+
+import {
+  PEER_INFO_KEY,
+  peerCredAuthInterceptor,
+  type PeerInfo,
+} from './auth/index.js';
 import { runMigrations } from './db/migrations/runner.js';
 import { checkAndRecover, makeRecoveryFlag, type RecoveryFlag } from './db/recovery.js';
 import { openDatabase, type SqliteDatabase } from './db/sqlite.js';
 import { CrashPruner } from './crash/pruner.js';
+import {
+  fileSink,
+  installCaptureSources,
+  type Unsubscribe,
+} from './crash/sources.js';
+import { replayCrashRawOnBoot } from './crash/raw-appender.js';
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
 import { makeListenerA } from './listeners/factory.js';
+import { writeDescriptor, type DescriptorV1 } from './listeners/descriptor.js';
 import type { Listener } from './listeners/types.js';
+import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
 import { statePaths } from './state-dir/paths.js';
 import {
@@ -49,6 +62,10 @@ import {
   type ShutdownContext,
   type ShutdownResult,
 } from './shutdown.js';
+import {
+  makeSupervisorServer,
+  type SupervisorServer,
+} from './supervisor/index.js';
 import {
   startSystemdWatchdog,
   type SystemdWatchdogHandle,
@@ -62,6 +79,69 @@ function log(line: string): void {
 }
 
 /**
+ * Result shape returned by `runStartup`. Probes (`captureSourcesInstalled`,
+ * `crashReplayResult`) are surfaced so the daemon-boot end-to-end test
+ * (Task #208) can assert that the boot path actually wired the production
+ * subsystems — without the probes, a regression in wire-up would silently
+ * ship `Unimplemented` / never-written descriptors with no test signal.
+ */
+export interface RunStartupResult {
+  readonly env: DaemonEnv;
+  readonly listenerA: Listener | null;
+  readonly db: SqliteDatabase;
+  readonly crashPruner: CrashPruner;
+  readonly supervisor: SupervisorServer | null;
+  readonly descriptorPath: string | null;
+  /** `true` iff `installCaptureSources` ran successfully on this boot. */
+  readonly captureSourcesInstalled: boolean;
+  /** Detach hook for the capture sources; null when install was skipped. */
+  readonly captureSourcesUnsubscribe: Unsubscribe | null;
+  /**
+   * Crash-raw NDJSON replay outcome (ch09 §6 boot replay). Always present
+   * — `fileMissing` covers the first-boot case where the file does not
+   * exist yet.
+   */
+  readonly crashReplayResult: {
+    readonly linesRead: number;
+    readonly inserted: number;
+    readonly malformed: number;
+    readonly fileMissing: boolean;
+  };
+}
+
+/**
+ * Build the per-call `Interceptor` that translates an `Authorization:
+ * Bearer <token>` header into a `LoopbackTcpPeer` `PeerInfo` so the
+ * downstream `peerCredAuthInterceptor` can derive a `Principal`. v0.3
+ * Listener A only relies on this on the loopback transport (UDS /
+ * named-pipe peer-cred extraction is wired into the transport adapter
+ * layer in a separate hardening task); for loopback this is the documented
+ * test-bearer path (see `auth/peer-info.ts` `LoopbackTcpPeer` comment +
+ * `auth/interceptor.ts` `TEST_BEARER_TOKEN`).
+ *
+ * Exported so the daemon-boot e2e test (Task #208) can assert the wire is
+ * present.
+ */
+export const bearerToPeerInfoInterceptor: Interceptor = (next) => async (req) => {
+  const authz = req.header.get('authorization');
+  let bearerToken: string | null = null;
+  if (authz !== null) {
+    const match = /^Bearer\s+(.+)$/i.exec(authz);
+    if (match !== null) {
+      bearerToken = match[1] ?? null;
+    }
+  }
+  const peer: PeerInfo = {
+    transport: 'KIND_TCP_LOOPBACK_H2C',
+    bearerToken,
+    remoteAddress: '127.0.0.1',
+    remotePort: 0,
+  };
+  req.contextValues.set(PEER_INFO_KEY, peer);
+  return next(req);
+};
+
+/**
  * Run startup phases 1–5. Throws on any phase failure; caller exits 1.
  *
  * The optional `recoveryFlag` is shared with the supervisor server (T1.7 +
@@ -72,12 +152,7 @@ function log(line: string): void {
 export async function runStartup(
   lifecycle: Lifecycle,
   recoveryFlag: RecoveryFlag = makeRecoveryFlag(),
-): Promise<{
-  readonly env: DaemonEnv;
-  readonly listenerA: Listener | null;
-  readonly db: SqliteDatabase;
-  readonly crashPruner: CrashPruner;
-}> {
+): Promise<RunStartupResult> {
   lifecycle.onTransition((p) => log(`phase -> ${p}`));
 
   // Phase: LOADING_CONFIG  (build DaemonEnv from process.env)
@@ -133,6 +208,18 @@ export async function runStartup(
   lifecycle.advanceTo(Phase.RESTORING_SESSIONS);
   log('TODO(T3.4): re-spawn should-be-running sessions, orphan-uid check');
 
+  // Crash boot-replay (ch09 §6.2). Drains any crash-raw NDJSON lines a
+  // previous boot wrote during a fatal exit into the `crash_log` SQLite
+  // table, then truncates the file. Idempotent — safe to call on every
+  // boot, including first-ever boot (returns `fileMissing: true`).
+  const crashReplayResult = replayCrashRawOnBoot({ path: sp.crashRaw, db });
+  log(
+    `crash-replay: linesRead=${crashReplayResult.linesRead} ` +
+      `inserted=${crashReplayResult.inserted} ` +
+      `malformed=${crashReplayResult.malformed} ` +
+      `fileMissing=${crashReplayResult.fileMissing}`,
+  );
+
   // T5.12 / Task #64 — crash retention pruner. Constructed AFTER
   // openDatabase + runMigrations + recoveryFlag so the pruner's first
   // (post-warmup) IMMEDIATE transaction can never race the migration
@@ -150,6 +237,34 @@ export async function runStartup(
     readSettings: () => ({}),
   });
 
+  // Install crash-capture sources (ch09 §1 + §6.2). `installCaptureSources`
+  // wires every CAPTURE_SOURCES row (uncaughtException, claudeExit,
+  // sqliteOp, listenerBind, watchdogMiss) into a single sink that appends
+  // a JSON line per crash event to `crash-raw.ndjson`. Sources whose
+  // dependency hooks (claudeChildren / sqliteErrors / etc.) are absent
+  // install no-ops — boot-order tolerance per ch09 §1 commentary. The
+  // unsubscribe is captured into the shutdown context below so SIGTERM
+  // detaches every source cleanly.
+  let captureSourcesUnsubscribe: Unsubscribe | null = null;
+  let captureSourcesInstalled = false;
+  if (process.env.CCSM_DAEMON_SKIP_CRASH_CAPTURE === '1') {
+    log('CCSM_DAEMON_SKIP_CRASH_CAPTURE=1: skipping installCaptureSources (test mode)');
+  } else {
+    captureSourcesUnsubscribe = installCaptureSources({
+      hooks: {
+        // Claude child / sqlite error / watchdog signal hooks land with
+        // their owning subsystems (T6.x sessions, T5.x sqlite error bus,
+        // T5.13 watchdog). Until they wire here, the matching capture
+        // sources install no-ops by design (ch09 §1 boot-order
+        // tolerance). The `uncaughtException` source binds to `process`
+        // unconditionally and is the boot-day floor.
+      },
+      sink: fileSink(sp.crashRaw),
+    });
+    captureSourcesInstalled = true;
+    log(`crash-capture: installed sink=${sp.crashRaw}`);
+  }
+
   // Phase: STARTING_LISTENERS  (T1.4 listener + T2.2 router)
   lifecycle.advanceTo(Phase.STARTING_LISTENERS);
   // The listener-slot assert (ch03 §1) is a one-liner we can do today even
@@ -160,28 +275,134 @@ export async function runStartup(
     // ESLint `no-listener-slot-mutation` rule (added with T1.4) honest.
     throw new Error('listeners[1] mutated away from RESERVED_FOR_LISTENER_B');
   }
-  // Bind Listener A with the Connect-router-aware HTTP/2 hook (T2.2).
-  // The hook builds an http2 server whose request handler is the
-  // Connect router with every v0.3 service registered as
-  // `Unimplemented` stubs (per spec ch04 §3-§6.2). L3+ tasks (T3.x /
-  // T4.x / T5.x / T6.x) swap the empty service impls in
-  // `rpc/router.ts` for concrete handlers without touching this wiring.
-  // TODO(T1.6): write `listener-a.json` descriptor after bind succeeds.
+
+  // Bind Listener A with the Connect-router-aware HTTP/2 hook (T2.2 +
+  // T2.3). `helloDeps` flips the SessionService.Hello handler from the
+  // T2.2 `Unimplemented` stub to the real T2.3 handler — every other
+  // service stays `Unimplemented` until its owning task lands. The
+  // `bearerToPeerInfoInterceptor` deposits a `LoopbackTcpPeer` PeerInfo
+  // from the Authorization header so the downstream auth interceptor can
+  // derive a Principal on loopback (the dev / test transport per spec
+  // ch03 §4 — UDS / named-pipe peer-cred extraction is wired into the
+  // transport adapter directly in its own hardening pass).
   let listenerA: Listener | null = null;
+  let descriptorPath: string | null = null;
   if (process.env.CCSM_DAEMON_SKIP_LISTENER === '1') {
     log('CCSM_DAEMON_SKIP_LISTENER=1: skipping listener bind (smoke / unit-test mode)');
   } else {
-    listenerA = makeListenerA(env, { bindHook: makeRouterBindHook() });
+    const helloDeps = {
+      daemonVersion: env.version,
+      protoVersion: PROTO_VERSION,
+      listenerId: LISTENER_A_HELLO_ID,
+    };
+    listenerA = makeListenerA(env, {
+      bindHook: makeRouterBindHook({
+        helloDeps,
+        // Order matters: bearer→PeerInfo deposit MUST run before
+        // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
+        // derives Principal). `requestMetaInterceptor` is prepended by
+        // `makeRouterBindHook` itself so it always sees an unmolested
+        // RequestMeta first.
+        interceptors: [bearerToPeerInfoInterceptor, peerCredAuthInterceptor],
+      }),
+    });
     await listenerA.start();
     const desc = listenerA.descriptor();
     log(`listener-a bound: kind=${desc.kind}`);
+
+    // Atomic descriptor write (ch03 §3.1 / §3.2). Spec ordering: write
+    // BEFORE Supervisor /healthz flips to 200 so Electron observing
+    // `ready=true` is guaranteed to find a fresh descriptor.
+    const payload: DescriptorV1 = {
+      version: 1,
+      transport: desc.kind,
+      address: addressFromDescriptor(desc),
+      tlsCertFingerprintSha256: null,
+      supervisorAddress: env.paths.supervisorAddr,
+      boot_id: env.bootId,
+      daemon_pid: process.pid,
+      listener_addr: addressFromDescriptor(desc),
+      protocol_version: 1,
+      bind_unix_ms: Date.now(),
+    };
+    mkdirSync(dirname(env.paths.descriptorPath), { recursive: true });
+    await writeDescriptor(env.paths.descriptorPath, payload);
+    descriptorPath = env.paths.descriptorPath;
+    log(`descriptor written: ${descriptorPath}`);
   }
 
-  // Phase: READY  (Supervisor /healthz flips to 200 in T1.7)
+  // Phase: READY  (Supervisor /healthz flips to 200 once we're here)
   lifecycle.advanceTo(Phase.READY);
-  log('TODO(T1.7): flip Supervisor /healthz to 200');
 
-  return { env, listenerA, db, crashPruner };
+  // Bring up the Supervisor UDS HTTP server (ch03 §7). Separate from
+  // Listener A — admin-only, peer-cred guarded, exposes `/healthz`,
+  // `/hello`, `/shutdown`, `/ack-recovery`. `/healthz` reads
+  // `lifecycle.isReady()`, which is `true` from this point onwards.
+  let supervisor: SupervisorServer | null = null;
+  if (process.env.CCSM_DAEMON_SKIP_SUPERVISOR === '1') {
+    log('CCSM_DAEMON_SKIP_SUPERVISOR=1: skipping supervisor bind (test mode)');
+  } else {
+    // The actual triggerShutdown closure lives in `main()`; for the
+    // runStartup-only path (unit tests / e2e) callers can trigger
+    // graceful shutdown by stopping the returned server directly. We
+    // surface `process.kill(process.pid, 'SIGTERM')` here so a real
+    // production /shutdown call wakes up the same SIGTERM handler the
+    // entrypoint installs — keeps a single shutdown path.
+    supervisor = makeSupervisorServer({
+      lifecycle,
+      bootId: env.bootId,
+      version: env.version,
+      startTimeMs: Date.now(),
+      address: env.paths.supervisorAddr,
+      recoveryFlag,
+      onShutdown: () => {
+        try {
+          process.kill(process.pid, 'SIGTERM');
+        } catch {
+          // best-effort — the entrypoint also responds to direct
+          // `triggerShutdown` calls when not run via `main()`.
+        }
+      },
+    });
+    mkdirSync(dirname(env.paths.supervisorAddr), { recursive: true });
+    await supervisor.start();
+    log(`supervisor bound: ${supervisor.address()}`);
+  }
+
+  return {
+    env,
+    listenerA,
+    db,
+    crashPruner,
+    supervisor,
+    descriptorPath,
+    captureSourcesInstalled,
+    captureSourcesUnsubscribe,
+    crashReplayResult,
+  };
+}
+
+/**
+ * Render the bound `BindDescriptor` into the `address` string field of
+ * the listener-a.json descriptor (spec ch03 §3.2). One canonical formatter
+ * per transport; symmetric with `auth/peer-info.ts`'s transport vocabulary.
+ */
+function addressFromDescriptor(
+  desc:
+    | { readonly kind: 'KIND_UDS'; readonly path: string }
+    | { readonly kind: 'KIND_NAMED_PIPE'; readonly pipeName: string }
+    | { readonly kind: 'KIND_TCP_LOOPBACK_H2C'; readonly host: string; readonly port: number }
+    | { readonly kind: 'KIND_TCP_LOOPBACK_H2_TLS'; readonly host: string; readonly port: number },
+): string {
+  switch (desc.kind) {
+    case 'KIND_UDS':
+      return desc.path;
+    case 'KIND_NAMED_PIPE':
+      return desc.pipeName;
+    case 'KIND_TCP_LOOPBACK_H2C':
+    case 'KIND_TCP_LOOPBACK_H2_TLS':
+      return `${desc.host}:${desc.port}`;
+  }
 }
 
 /**
@@ -207,6 +428,7 @@ async function main(): Promise<void> {
   let listenerA: Listener | null = null;
   let watchdog: SystemdWatchdogHandle | null = null;
   let crashPruner: CrashPruner | null = null;
+  let captureSourcesUnsubscribe: Unsubscribe | null = null;
 
   // Build the shutdown orchestrator + a mutable context the future
   // T1.4 / T1.7 / T5.1 / T4.x wiring can populate as they land. We
@@ -236,6 +458,10 @@ async function main(): Promise<void> {
     // tick can't sneak in a stray IMMEDIATE write between the WAL
     // checkpoint (step 6) and db.close (step 7).
     crashPruner?.stop();
+    // Detach crash-capture sources before shutdown so an
+    // `uncaughtException` raised during the drain does not race the WAL
+    // checkpoint with a stray crash-raw append.
+    captureSourcesUnsubscribe?.();
     const r = await shutdown.run(ctxRef);
     // Exit code: clean drain + zero step errors → 0; otherwise 1.
     const exitCode = r.errors.length === 0 && r.inFlightAtBudgetExpiry <= 0 ? 0 : 1;
@@ -253,6 +479,7 @@ async function main(): Promise<void> {
     const result = await runStartup(lifecycle);
     listenerA = result.listenerA;
     crashPruner = result.crashPruner;
+    captureSourcesUnsubscribe = result.captureSourcesUnsubscribe;
     // Register the bound listener with the shutdown context so SIGTERM
     // closes it during step 1 (stop accepting). Register the db handle
     // so the WAL checkpoint (step 6) + close (step 7) actually fire.
@@ -264,6 +491,7 @@ async function main(): Promise<void> {
       ctxRef.listeners = [...ctxRef.listeners, listenerA];
     }
     ctxRef.db = result.db;
+    ctxRef.supervisor = result.supervisor;
     // Start the crash retention pruner AFTER shutdown handlers are
     // installed (above) — a SIGTERM during the 30s warmup must still
     // cancel the pending timer cleanly.
@@ -291,6 +519,7 @@ async function main(): Promise<void> {
   } catch (err) {
     watchdog?.stop();
     crashPruner?.stop();
+    captureSourcesUnsubscribe?.();
     const error = err instanceof Error ? err : new Error(String(err));
     lifecycle.fail(error);
     log(`STARTUP FAILED at phase ${lifecycle.currentPhase()}: ${error.message}`);
