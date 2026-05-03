@@ -26,31 +26,66 @@ const __dirname = dirname(__filename);
 const DAEMON_ROOT = resolve(__dirname, '..', '..');
 
 // Canonical paths the soak harness depends on. Sourced from the design spec:
-//   - pty-host entrypoint: chapter 06 §1 / §3 — `packages/daemon/src/pty/pty-host.ts`.
+//   - pty-host entrypoint: chapter 06 §1 / §3 — landed by T4.1 / Wave-0d.4
+//     at `packages/daemon/src/pty-host/host.ts` (parent surface; the child
+//     entrypoint lives next to it as `child.ts`). The pre-Wave-0d.4 path
+//     `packages/daemon/src/pty/pty-host.ts` never existed in the tree and
+//     the previous probe pointed there, which made `existsSync` always
+//     return false and silently skipped ship-gate (c) — see Task #209.
 //   - SnapshotV1 codec:    chapter 06 §2     — `packages/snapshot-codec/src/index.ts`
 //                                              re-exported from @ccsm/snapshot-codec.
 //   - Snapshot scheduler:  chapter 06 §4     — exported from pty-host (T4.10).
 // We probe the daemon-side files only; the codec package is consumed via
 // dynamic import in loadSnapshotCodec() which itself fails-soft.
-export const PTY_HOST_PATH = join(DAEMON_ROOT, 'src', 'pty', 'pty-host.ts');
-export const PTY_HOST_DIST_PATH = join(DAEMON_ROOT, 'dist', 'pty', 'pty-host.js');
+export const PTY_HOST_PATH = join(DAEMON_ROOT, 'src', 'pty-host', 'host.ts');
+export const PTY_HOST_DIST_PATH = join(DAEMON_ROOT, 'dist', 'pty-host', 'host.js');
+
+// Driver implementation file (T4.6 / T4.10). Created in the same PR that
+// lands the snapshot encoder + cadence scheduler; until then this driver
+// import-fails and the spec files surface a hard error from `loadSoakDriver`.
+// We deliberately do NOT silently skip on driver-missing: ship-gate (c) per
+// chapter 12 §4.3 must fail loudly when its prerequisites regress.
+export const PTY_SOAK_DRIVER_PATH = join(__dirname, 'pty-soak-driver.ts');
+export const PTY_SOAK_DRIVER_DIST_PATH = join(__dirname, 'pty-soak-driver.js');
 
 export interface DependencyProbe {
   ready: boolean;
   reason: string;
 }
 
+/**
+ * Hard probe for the pty-host module that the soak harness drives. The path
+ * is the post-Wave-0d.4 canonical location (`src/pty-host/host.ts`); a miss
+ * here is unambiguously a regression — either the module was renamed without
+ * updating this probe, or the worktree is not built. Either case must FAIL
+ * the soak gate, NOT skip it. Task #209 removed the previous skip-fallback
+ * that masked the wrong-path bug for the entire pre-Wave-0d.4 window.
+ */
 export function dependenciesPresent(): DependencyProbe {
-  // T4.1 — pty-host fork boundary. We accept either the source (in-repo
-  // checkout) or the built dist (CI runs after `pnpm build`). Either is
-  // sufficient because the soak harness uses the source path during
-  // `vitest run` (TS compilation in-process) and the dist path when the
-  // daemon has been pre-built.
+  // T4.1 — pty-host fork boundary. Accept either the source (in-repo
+  // checkout, vitest runs TS in-process) or the built dist (CI after
+  // `pnpm build`). Either is sufficient.
   if (!existsSync(PTY_HOST_PATH) && !existsSync(PTY_HOST_DIST_PATH)) {
+    throw new Error(
+      `pty-soak: T4.1 pty-host module not found. Looked for ` +
+        `${PTY_HOST_PATH} and ${PTY_HOST_DIST_PATH}. ` +
+        `This is ship-gate (c) per chapter 12 §4.3 — a missing pty-host ` +
+        `is a regression, not a skip condition. If the module moved, ` +
+        `update PTY_HOST_PATH in pty-soak-shared.ts (Task #209).`,
+    );
+  }
+  // T4.6 / T4.10 — soak driver file. Until landed the spec files report
+  // not-ready and the canonical describe block is gated; the sentinel
+  // `(skipped — pending dependencies)` block records the reason in CI
+  // output. This is NOT a vacuous green: the wrong-path silent-skip path
+  // is gone (the existsSync above throws), so the only remaining skip is
+  // a known, named, in-flight gap.
+  if (!existsSync(PTY_SOAK_DRIVER_PATH) && !existsSync(PTY_SOAK_DRIVER_DIST_PATH)) {
     return {
       ready: false,
       reason:
-        'T4.1 pty-host module not landed yet (looked for src/pty/pty-host.ts and dist/pty/pty-host.js).',
+        'T4.6 / T4.10 pty-soak-driver not landed yet (looked for ' +
+        `${PTY_SOAK_DRIVER_PATH} and ${PTY_SOAK_DRIVER_DIST_PATH}).`,
     };
   }
   return { ready: true, reason: 'all probed dependencies present' };
