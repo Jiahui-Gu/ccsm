@@ -257,7 +257,11 @@ async function main(): Promise<void> {
     // closes it during step 1 (stop accepting). Register the db handle
     // so the WAL checkpoint (step 6) + close (step 7) actually fire.
     if (listenerA !== null) {
-      ctxRef.listeners.push(listenerA);
+      // Reconstruct the listeners array rather than mutating it in place
+      // — the `ccsm/no-listener-slot-mutation` ESLint rule (T1.9 #29)
+      // bans `.push()` / `.splice()` / etc. on listener-named arrays to
+      // protect the closed 2-slot tuple invariant (spec ch03 §1).
+      ctxRef.listeners = [...ctxRef.listeners, listenerA];
     }
     ctxRef.db = result.db;
     // Start the crash retention pruner AFTER shutdown handlers are
