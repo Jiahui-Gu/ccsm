@@ -15,6 +15,12 @@ export default defineConfig({
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
+      // `test/**` is the home for forever-stable invariants specs that watch
+      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
+      // state-dir paths, etc.). They live outside `src/` so they cannot be
+      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
+      // is `src`).
+      'test/**/*.spec.ts',
     ],
     globals: false,
   },
