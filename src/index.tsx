@@ -49,12 +49,16 @@ const root = createRoot(document.getElementById('root')!);
 // to `useStore(s => s.hydrated)` and show skeleton/empty UI for the
 // sub-frame window before hydration lands.
 //
-// The `requestAnimationFrame` wrapper below preserves this contract after
-// PR #976 (Wave 0e persist.ts cutover) made `loadPersisted()` resolve on the
-// next microtask (sync `localStorage.getItem` inside an async wrapper) — so
-// hydration would otherwise complete in the same task as `root.render()` and
-// the skeleton frame would never paint. rAF defers `hydrateStore()` past the
-// next paint, restoring the pre-#976 paint-gate behavior. See Task #311 / #306.
+// The double `requestAnimationFrame` wrapper below preserves this contract
+// after PR #976 (Wave 0e persist.ts cutover) made `loadPersisted()` resolve
+// on the next microtask (sync `localStorage.getItem` inside an async wrapper)
+// — so hydration would otherwise complete in the same task as `root.render()`
+// and the skeleton frame would never paint. A single rAF is insufficient: the
+// callback runs *right before* the next paint, so React's hydration commit +
+// DOM mutation lands in the same frame and the compositor never sees the
+// skeleton. Double rAF: the first schedules the skeleton paint, the second
+// fires AFTER that paint commits, guaranteeing one skeleton frame lands
+// before hydration mutates the DOM. See Task #311 / #306.
 const trace = ((window as unknown as {
   __ccsmHydrationTrace?: HydrationTrace;
 }).__ccsmHydrationTrace ??= {} as HydrationTrace);
@@ -72,6 +76,12 @@ root.render(
     </RendererBoot>
   </ErrorBoundary>
 );
-void (typeof requestAnimationFrame === 'function'
-  ? requestAnimationFrame(() => void hydrateStore())
-  : void hydrateStore());
+if (typeof requestAnimationFrame === 'function') {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      void hydrateStore();
+    });
+  });
+} else {
+  void hydrateStore();
+}
