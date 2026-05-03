@@ -20,7 +20,7 @@ import {
   __resetForTests,
   __setSdkForTests,
   __hasSidStateForTests,
-} from '../index';
+} from '../index.js';
 
 beforeEach(() => {
   __resetForTests();

@@ -2,7 +2,7 @@
 // per #677 SRP cleanup. These functions are pure: no I/O, no mocks needed.
 import { describe, it, expect } from 'vitest';
 
-import { classifyError, decideRetry, decideRequeue } from '../deciders';
+import { classifyError, decideRetry, decideRequeue } from '../deciders.js';
 
 describe('classifyError', () => {
   it('returns no_jsonl when err.code === ENOENT', () => {

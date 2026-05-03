@@ -20,7 +20,7 @@ import {
   flushPendingRename,
   __resetForTests,
   __setSdkForTests,
-} from '../index';
+} from '../index.js';
 
 beforeEach(() => {
   __resetForTests();
