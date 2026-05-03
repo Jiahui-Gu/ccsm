@@ -49,29 +49,40 @@ describe.skipIf(!lockedTsExists)('migration-lock (runtime self-check)', () => {
   // with the same string pair shape. Source-text parsing avoids pinning this
   // spec to one particular export style — Task #56 picks the shape; this
   // spec just needs (filename, sha256) pairs.
-  const lockedSrc = readFileSync(LOCKED_TS_PATH, 'utf8');
-  // Strip `//` line comments so a stale commented-out hash (e.g. left during
-  // a migration rename) does not produce a false-positive match below.
-  const lockedSrcStripped = lockedSrc.replace(/\/\/.*$/gm, '');
-  const entryRe = /['"]([0-9]{3}_[A-Za-z0-9_-]+\.sql)['"]\s*[:,]\s*['"]([0-9a-fA-F]{64})['"]/g;
-  const recorded = new Map<string, string>();
-  for (const m of lockedSrcStripped.matchAll(entryRe)) {
-    recorded.set(m[1], m[2].toLowerCase());
+  //
+  // The read is deferred into a getter so vitest's eager describe-callback
+  // evaluation does NOT hit the missing file (skipIf only gates the `it`
+  // bodies, not statements at describe-callback top level — discovered when
+  // T8.4 widened the vitest `include` to `test/**` and exposed this).
+  let recordedCache: Map<string, string> | null = null;
+  function recorded(): Map<string, string> {
+    if (recordedCache) return recordedCache;
+    const lockedSrc = readFileSync(LOCKED_TS_PATH, 'utf8');
+    // Strip `//` line comments so a stale commented-out hash (e.g. left during
+    // a migration rename) does not produce a false-positive match below.
+    const lockedSrcStripped = lockedSrc.replace(/\/\/.*$/gm, '');
+    const entryRe = /['"]([0-9]{3}_[A-Za-z0-9_-]+\.sql)['"]\s*[:,]\s*['"]([0-9a-fA-F]{64})['"]/g;
+    const r = new Map<string, string>();
+    for (const m of lockedSrcStripped.matchAll(entryRe)) {
+      r.set(m[1], m[2].toLowerCase());
+    }
+    recordedCache = r;
+    return r;
   }
 
   it('locked.ts declares at least one MIGRATION_LOCKS entry', () => {
-    expect(recorded.size).toBeGreaterThan(0);
+    expect(recorded().size).toBeGreaterThan(0);
   });
 
   it('every recorded migration file exists on disk', () => {
-    for (const filename of recorded.keys()) {
+    for (const filename of recorded().keys()) {
       const path = join(MIGRATIONS_DIR, filename);
       expect(existsSync(path), `${filename} missing at ${path}`).toBe(true);
     }
   });
 
   it('every recorded SHA256 matches the on-disk file', () => {
-    for (const [filename, expected] of recorded) {
+    for (const [filename, expected] of recorded()) {
       const path = join(MIGRATIONS_DIR, filename);
       const actual = sha256OfFile(path);
       expect(actual, `SHA256 mismatch for ${filename}`).toBe(expected);
@@ -85,7 +96,7 @@ describe.skipIf(!lockedTsExists)('migration-lock (runtime self-check)', () => {
     if (!existsSync(MIGRATIONS_DIR)) return;
     const onDisk = readdirSync(MIGRATIONS_DIR).filter((f) => /^[0-9]{3}_.+\.sql$/.test(f));
     for (const filename of onDisk) {
-      expect(recorded.has(filename), `${filename} on disk but not in MIGRATION_LOCKS`).toBe(true);
+      expect(recorded().has(filename), `${filename} on disk but not in MIGRATION_LOCKS`).toBe(true);
     }
   });
 });

@@ -45,3 +45,9 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/win-h2-named-pipe/run.sh` | §1.5 (T9.5)      | smoke (60s) + 1h soak driver        |
 | `probes/macos-notarization-sea/notarize.sh` | §1.13 (T9.12) | gated on Apple Dev ID cert (ops prereq) |
 | `probes/macos-notarization-sea/Info.plist`  | §1.13 (T9.12) | sample bundle metadata for Mach-O notarization |
+| `probes/better-sqlite3-22-arm64/probe.mjs` | §1.12 (T9.11) | runnable (GitHub manifest check + opt. live load) |
+| `probes/snapshot-roundtrip-fidelity/probe.mjs` | §1.8 phase 4.5 (T9.7) | runnable (reference codec + corpus + canonical cross-check) |
+| `probes/loopback-h2c-on-25h2/{server,client}.mjs` | §1.3 (T9.3) | runnable on win32; non-win32 skip |
+| `probes/loopback-h2c-on-25h2/run.sh` | §1.3 (T9.3)   | smoke (60s) + 1h soak driver (Win 11 25H2) |
+| `probes/macos-uds-cross-user/{server,client}.mjs` | §1.2 (T9.2) | runnable on darwin; linux/win32 skip |
+| `probes/macos-uds-cross-user/run.sh` | §1.2 (T9.2)   | bind-path × cross-user matrix driver |
