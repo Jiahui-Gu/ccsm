@@ -1,0 +1,41 @@
+# .v0.2-only-files — Wave 2 §5.6 mechanical guard (Task #222)
+#
+# Files listed here are slated for deletion / shrinkage during Wave 0d /
+# Wave 3 cutover. CI enforces: line count may DECREASE but never INCREASE
+# vs the merge-base. This is a mechanical guard that complements reviewer
+# self-check ("does this PR add v0.2 cruft?").
+#
+# Format:
+#   - One path per line.
+#   - Lines starting with `#` are comments.
+#   - Blank lines are ignored.
+#   - Globs are supported (e.g. `electron/sessionWatcher/*`).
+#   - Missing files are skipped (file moved is OK).
+#
+# What does NOT belong here:
+#   - electron/db.ts — staying for v0.3 (per #249 deferred prefs decision).
+#   - electron/tray/*, electron/lifecycle/*, electron/branding/*,
+#     electron/sentry/* — KEEP-shell, not v0.2-only.
+#   - electron/window/closeAction.ts — stays in shell per design plan.
+#
+# When you legitimately need to grow a listed file (intermediate refactor,
+# file moved into shell), explain in the PR body. The Wire-up evidence
+# checklist has a checkbox for this.
+
+# Tier 2 — REWIRE / MOVE pending (must shrink, not grow)
+electron/main.ts
+electron/updater.ts
+electron/window/createWindow.ts
+electron/notify/sinks/toastSink.ts
+electron/notify/sinks/flashSink.ts
+electron/agent/read-default-model.ts
+electron/prefs/userCwds.ts
+electron/prefs/notifyEnabled.ts
+electron/prefs/crashReporting.ts
+src/components/settings/UpdatesPane.tsx
+src/terminal/xtermSingleton.ts
+src/stores/persist.ts
+src/terminal/usePtyAttach.ts
+src/stores/drafts.ts
+src/stores/slices/sessionCrudSlice.ts
+src/agent/lifecycle.ts
