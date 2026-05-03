@@ -1,0 +1,89 @@
+# installer-residue-allowlist.txt
+#
+# FOREVER-STABLE per spec ch15 (additive only — entries may be added with R4
+# sign-off; entries SHOULD NOT be removed without bumping ship-gate (d) version).
+#
+# Source of truth: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+#   chapter 12 §4.4 — Ship-gate (d): clean installer round-trip on Win 11 25H2.
+#
+# PURPOSE
+#   The ship-gate (d) round-trip diffs the full file-tree + registry state of a
+#   clean Win 11 25H2 VM before-install vs. after-uninstall. Anything still
+#   present after uninstall that did NOT exist before is "residue". Most residue
+#   is OS-induced churn during the test window (Windows Update tracking, ETW
+#   session logs, Defender scan history) — NOT something the CCSM installer
+#   left behind. Such churn is enumerated here so the diff can subtract it and
+#   fail closed on real CCSM residue.
+#
+# FORMAT
+#   - One PowerShell-compatible regex per line (matched against full residue
+#     entry strings via `-match` — case-insensitive by default).
+#   - Lines starting with `#` are comments and are ignored.
+#   - Blank lines are ignored.
+#   - Whitespace at the start / end of a line is trimmed before use.
+#   - Patterns SHOULD be as specific as possible — broad patterns mask real
+#     residue. Prefer `\\Windows\\SoftwareDistribution\\DataStore\\Logs\\` over
+#     `SoftwareDistribution`.
+#
+# REVIEW POLICY
+#   Any new entry needs a one-line justification in this file (a comment line
+#   immediately above the pattern explaining WHY it is OS churn rather than
+#   CCSM residue). Reviewer rejects unjustified additions.
+#
+# EXPLICITLY NOT ALLOWED in this file
+#   - Patterns that match `ccsm` / `CCSM` in any path. Real CCSM residue is the
+#     entire point of the gate — masking it defeats the test.
+#   - Patterns that match HKLM\\SYSTEM\\CurrentControlSet\\Services\\ccsm-daemon
+#     or any HKLM Uninstall key for the CCSM product.
+#
+# VARIANT-SPECIFIC ALLOWLIST
+#   When REMOVEUSERDATA=0 the user opted to KEEP user data; the additional
+#   patterns in `test/installer-residue-allowlist.removeuserdata-0.txt` are
+#   layered on top of this file by `tools/installer-roundtrip.ps1`. They MUST
+#   NOT be applied when REMOVEUSERDATA=1 (a real bug in the uninstaller's
+#   user-data-removal path is exactly what the variant=1 run is meant to catch).
+
+# --- Windows Update tracking files churned during the install window ---
+# WU service writes datastore logs every few minutes regardless of activity.
+\\Windows\\SoftwareDistribution\\DataStore\\Logs\\
+
+# WU plugin assembly cache rotates on patch-download polling.
+\\Windows\\SoftwareDistribution\\PostRebootEventCache\\
+
+# --- ETW session logs (auto-rolled by the OS during boot / login / install) ---
+# Kernel-Logger and DiagTrack ETW sessions write to this path on every login.
+\\Windows\\System32\\LogFiles\\WMI\\
+
+# Autologger sessions roll their own .etl files at login regardless of what the
+# user is doing.
+\\Windows\\System32\\LogFiles\\WMI\\Autologger\\
+
+# --- Microsoft Defender scan history / quick-scan signatures ---
+# Defender writes scan history entries on real-time scan triggers — installing
+# any MSI triggers at least one. Path is per-machine, not per-product.
+\\ProgramData\\Microsoft\\Windows Defender\\Scans\\History\\
+
+# Defender platform updates are downloaded on a separate cadence; the temp
+# extraction dir reappears between snapshots.
+\\ProgramData\\Microsoft\\Windows Defender\\Platform\\
+
+# --- Windows event log rotation during the test window ---
+# Application / System / Security event logs rotate by size — installing an MSI
+# guarantees enough event volume to trigger rotation on a fresh VM.
+\\Windows\\System32\\winevt\\Logs\\
+
+# --- Per-user shell churn from launching electron once during smoke ---
+# Jump-lists / recent items are touched by any GUI app launch. Per-user only.
+\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\
+\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\
+
+# Icon cache is rebuilt by explorer when new shortcuts are placed and removed.
+\\AppData\\Local\\IconCache\\.*
+\\AppData\\Local\\Microsoft\\Windows\\Explorer\\iconcache_
+
+# --- Registry: MUI cache populated when explorer renders new shortcuts ---
+# Per-user MUI cache entries appear when explorer indexes the Start menu shortcut
+# CCSM installs; MSI uninstall removes the shortcut but the MUI cache row
+# persists until the next explorer refresh. NOT product-specific data.
+^HKCU\\\\Software\\\\Classes\\\\Local Settings\\\\Software\\\\Microsoft\\\\Windows\\\\Shell\\\\MuiCache\\\\
+

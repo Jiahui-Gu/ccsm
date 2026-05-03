@@ -1,0 +1,25 @@
+# installer-residue-allowlist.removeuserdata-0.txt
+#
+# FOREVER-STABLE per spec ch15 (additive only).
+#
+# Layered ON TOP OF `test/installer-residue-allowlist.txt` by
+# `tools/installer-roundtrip.ps1` ONLY when running the `REMOVEUSERDATA=0`
+# variant (i.e., user opted to KEEP user data on uninstall).
+#
+# DO NOT apply these patterns when `REMOVEUSERDATA=1` — the variant=1 run
+# exists precisely to catch bugs where the uninstaller's user-data removal
+# path leaves CCSM data behind.
+#
+# Source: spec ch12 §4.4 ("(e.g., crash logs path)") + ch10 §5 step 4.
+
+# --- Crash collector path (spec ch09) ---
+# When the user opts to KEEP user data, the crash collector directory is
+# intentionally preserved.
+\\ProgramData\\ccsm\\crash\\
+
+# --- User configuration / sessions database ---
+# State directory persists across uninstall when the user keeps data.
+\\ProgramData\\ccsm\\state\\
+
+# --- Per-user Electron preferences (renderer settings, window geometry) ---
+\\AppData\\Roaming\\ccsm\\
