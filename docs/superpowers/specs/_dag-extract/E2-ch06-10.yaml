@@ -1,0 +1,309 @@
+# Stage-6 DAG extract: E2 chapters 06-10
+# Source: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+# Scope: PTY snapshot+delta (06), Data+state/SQLite (07), Electron client migration (08),
+#        Crash collector (09), Build+package+installer (10)
+# Levels: L4 = PTY host; L5 = SQLite/state/crash; L6 = Electron client; L7 = build/package/installer
+
+# ===== Chapter 06 — PTY: Snapshot + Delta (L4) =====
+
+- subject: "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+  level: 4
+  blockedBy:
+    - "[T1.1] daemon: bootstrap entrypoint and supervisor loop"
+    - "[T2.1] proto: PtyService definitions"
+  notes: "ch06 §1; per-session OS process (NOT worker_threads); F3-locked; closes forbidden-pattern 25; spawn UTF-8 env contract"
+
+- subject: "[T4.2] pty-host: spawn env UTF-8 contract per-OS"
+  level: 4
+  blockedBy:
+    - "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+  notes: "ch06 §1; LANG/LC_ALL=C.UTF-8 linux/mac with en_US.UTF-8 fallback; chcp 65001 + PYTHONIOENCODING win; ship-gate (c) prerequisite"
+
+- subject: "[T4.3] pty-host: SendInput backpressure 1 MiB cap + RESOURCE_EXHAUSTED"
+  level: 4
+  blockedBy:
+    - "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+  notes: "ch06 §1; per-session pendingWriteBytes tracker; emits crash_log source=pty_input_overflow"
+
+- subject: "[T4.4] daemon: pty-host child crash semantics (CRASHED state, no respawn)"
+  level: 4
+  blockedBy:
+    - "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+  notes: "ch06 §1; child.on('exit') handler SIGKILLs claude/-pgid; flips should_be_running=0; emits session_ended(CRASHED)"
+
+- subject: "[T4.5] pty-host: CCSM_PTY_TEST_CRASH_ON test-only crash branch"
+  level: 4
+  blockedBy:
+    - "[T4.4] daemon: pty-host child crash semantics (CRASHED state, no respawn)"
+  notes: "ch06 §1; gated by NODE_ENV !== production AND env presence; for pty-host-crash.spec.ts"
+
+- subject: "[T4.6] codec pkg: SnapshotV1 encoder (xterm-headless → bytes, deterministic)"
+  level: 4
+  blockedBy:
+    - "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+  notes: "ch06 §2; packages/snapshot-codec/; outer/inner CSS1 magic; zstd codec=1; palette ordering, modes_bitmap mapping, grapheme combiners FOREVER-STABLE"
+
+- subject: "[T4.7] codec pkg: SnapshotV1 decoder (bytes → xterm.js Terminal buffer)"
+  level: 4
+  blockedBy:
+    - "[T4.6] codec pkg: SnapshotV1 encoder (xterm-headless → bytes, deterministic)"
+  notes: "ch06 §2; packages/electron/src/renderer/pty/snapshot-decoder.ts; rejects SerializeAddon; mode bytes via Terminal.write(CSI)"
+
+- subject: "[T4.8] codec pkg: zstd + gzip codec wrappers (codec byte 1 + 2)"
+  level: 4
+  blockedBy:
+    - "[T4.6] codec pkg: SnapshotV1 encoder (xterm-headless → bytes, deterministic)"
+  notes: "ch06 §2; daemon emits codec=1 default; reads both; gzip via DecompressionStream for v0.4 web fallback"
+
+- subject: "[T4.9] pty-host: delta accumulator (raw VT, 16ms / 16 KiB segmentation)"
+  level: 4
+  blockedBy:
+    - "[T4.1] daemon: pty-host child_process.fork per-session boundary"
+  notes: "ch06 §3; per-session segmentation BEFORE multi-subscriber broadcast; monotonic seq per session"
+
+- subject: "[T4.10] pty-host: snapshot scheduler (K_TIME/M_DELTAS/B_BYTES/Resize)"
+  level: 4
+  blockedBy:
+    - "[T4.6] codec pkg: SnapshotV1 encoder (xterm-headless → bytes, deterministic)"
+    - "[T4.9] pty-host: delta accumulator (raw VT, 16ms / 16 KiB segmentation)"
+  notes: "ch06 §4; 30s / 256 deltas / 1 MiB / Resize; Resize coalescing 500ms cap"
+
+- subject: "[T4.11] pty-host: in-memory delta ring N=4096 + DEGRADED on 3 snapshot fails"
+  level: 4
+  blockedBy:
+    - "[T4.10] pty-host: snapshot scheduler (K_TIME/M_DELTAS/B_BYTES/Resize)"
+    - "[T5.5] daemon: write coalescer (16ms tick, IMMEDIATE txn)"
+  notes: "ch06 §4; consecutiveSnapshotWriteFailures; 60s cooldown; emits PtyFrame.session_state_changed(DEGRADED)"
+
+- subject: "[T4.12] daemon: PtyService.Attach reconnect/replay decision tree"
+  level: 4
+  blockedBy:
+    - "[T2.1] proto: PtyService definitions"
+    - "[T4.10] pty-host: snapshot scheduler (K_TIME/M_DELTAS/B_BYTES/Resize)"
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+  notes: "ch06 §5; since_seq=0 → snapshot; in-window → delta replay; out-of-window → snapshot fallback; 10s heartbeat"
+
+- subject: "[T4.13] daemon: per-session subscriber fanout + AckPty per-subscriber backlog"
+  level: 4
+  blockedBy:
+    - "[T4.12] daemon: PtyService.Attach reconnect/replay decision tree"
+  notes: "ch06 §5-6; requires_ack flag tracks last_acked_seq; closes RESOURCE_EXHAUSTED when backlog > N=4096; ships in v0.3 for v0.4 zero-rework"
+
+- subject: "[T4.14] daemon: post-restart pty-host replay (snapshot + post-snap deltas)"
+  level: 4
+  blockedBy:
+    - "[T4.7] codec pkg: SnapshotV1 decoder (bytes → xterm.js Terminal buffer)"
+    - "[T4.12] daemon: PtyService.Attach reconnect/replay decision tree"
+  notes: "ch06 §7; restored pty-host hydrates xterm-headless from snapshot then replays deltas"
+
+# ===== Chapter 07 — Data and State (L5) =====
+
+- subject: "[T5.1] daemon: better-sqlite3 wrapper + PRAGMA boot-time config"
+  level: 5
+  blockedBy: []
+  notes: "ch07 §1, §3; WAL, synchronous=NORMAL (Settings-driven), foreign_keys=ON, busy_timeout=5000, journal_size_limit=64 MiB"
+
+- subject: "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+  level: 5
+  blockedBy:
+    - "[T5.1] daemon: better-sqlite3 wrapper + PRAGMA boot-time config"
+  notes: "ch07 §3; principals, sessions, pty_snapshot, pty_delta, crash_log(owner_id), settings(scope,key,value), principal_aliases, cwd_state"
+
+- subject: "[T5.3] daemon: per-OS state directory layout + descriptor lifecycle"
+  level: 5
+  blockedBy: []
+  notes: "ch07 §2 / §2.1; %PROGRAMDATA% / /Library/Application Support / /var/lib; atomic descriptor write per boot; new boot_id; no GC required"
+
+- subject: "[T5.4] daemon: migration runner + SHA256 lock self-check + CI script"
+  level: 5
+  blockedBy:
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+  notes: "ch07 §4; locked.ts MIGRATION_LOCKS const; tools/check-migration-locks.sh; gh release view v0.3.0 cross-check"
+
+- subject: "[T5.5] daemon: write coalescer (16ms tick, IMMEDIATE txn)"
+  level: 5
+  blockedBy:
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+  notes: "ch07 §5; per-session BetterQueue; pty-host postMessage entry point; 8 MiB queue cap → RESOURCE_EXHAUSTED; DEGRADED on 3 disk failures"
+
+- subject: "[T5.6] daemon: WAL discipline (autocheckpoint + TRUNCATE on shutdown)"
+  level: 5
+  blockedBy:
+    - "[T5.1] daemon: better-sqlite3 wrapper + PRAGMA boot-time config"
+  notes: "ch07 §5; wal_autocheckpoint=1000; PASSIVE during operation; TRUNCATE on graceful shutdown only"
+
+- subject: "[T5.7] daemon: corrupt-DB recovery (rename + NDJSON sidecar + healthz modal)"
+  level: 5
+  blockedBy:
+    - "[T5.1] daemon: better-sqlite3 wrapper + PRAGMA boot-time config"
+    - "[T5.10] daemon: crash-raw.ndjson appender + boot replay"
+  notes: "ch07 §6; PRAGMA integrity_check at boot; rename to .corrupt-<ms>; recovery_modal_pending in /healthz; /ack-recovery clears flag"
+
+- subject: "[T5.8] daemon: cwd_state OSC 7 parser in pty-host"
+  level: 5
+  blockedBy:
+    - "[T4.9] pty-host: delta accumulator (raw VT, 16ms / 16 KiB segmentation)"
+    - "[T5.5] daemon: write coalescer (16ms tick, IMMEDIATE txn)"
+  notes: "ch07 §3 cwd_state; ESC ] 7 ; file://host/path BEL → UPSERT; restored sessions read this row; fallback to sessions.cwd"
+
+- subject: "[T5.9] installer migrator: v0.2 user-data → v0.3 sessions one-shot"
+  level: 5
+  blockedBy:
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+    - "[T7.4] installer: per-OS service registration + state dir creation"
+  notes: "ch07 §4.5; installer copies v0.2 ccsm.db to migration-staging; daemon imports on first boot; first-launch banner; v0.4 deletes the migrator"
+
+# ===== Chapter 09 — Crash Collector (L5) =====
+
+- subject: "[T5.10] daemon: crash-raw.ndjson appender + boot replay"
+  level: 5
+  blockedBy:
+    - "[T5.3] daemon: per-OS state directory layout + descriptor lifecycle"
+  notes: "ch09 §2; line shape locked with owner_id; replay on boot, dedup by id, then truncate; recovery silent-loss safe"
+
+- subject: "[T5.11] daemon: crash capture handlers + table-driven CAPTURE_SOURCES"
+  level: 5
+  blockedBy:
+    - "[T5.2] sqlite: 001_initial.sql schema (sessions, pty, crash, settings)"
+    - "[T5.10] daemon: crash-raw.ndjson appender + boot replay"
+  notes: "ch09 §1, §6.2; packages/daemon/src/crash/sources.ts; uncaughtException, claude_exit, sqlite_*, listener_bind, watchdog_miss; sqlite_op rate-limit 60s/code-class"
+
+- subject: "[T5.12] daemon: crash retention pruner (10000 rows, 90 days, 6h cycle)"
+  level: 5
+  blockedBy:
+    - "[T5.11] daemon: crash capture handlers + table-driven CAPTURE_SOURCES"
+  notes: "ch09 §3; Settings.crash_retention; hard caps max_entries≤10000, max_age_days≤90"
+
+- subject: "[T5.13] daemon: linux systemd watchdog WATCHDOG=1 every 10s on main thread"
+  level: 5
+  blockedBy:
+    - "[T5.11] daemon: crash capture handlers + table-driven CAPTURE_SOURCES"
+  notes: "ch09 §6; main-thread heartbeat (blocks on sqlite); WatchdogSec=30s in unit; mac/win deferred to v0.4"
+
+# ===== Chapter 08 — Electron Client Migration (L6) =====
+
+- subject: "[T6.1] electron: protocol.handle('app', ...) descriptor server in main"
+  level: 6
+  blockedBy:
+    - "[T5.3] daemon: per-OS state directory layout + descriptor lifecycle"
+  notes: "ch08 §4.1; main reads listener-a.json, rewrites address to bridge endpoint, serves at app://ccsm/listener-descriptor.json; no contextBridge, no additionalArguments"
+
+- subject: "[T6.2] electron: transport bridge (renderer ↔ daemon, ships unconditionally)"
+  level: 6
+  blockedBy:
+    - "[T6.1] electron: protocol.handle('app', ...) descriptor server in main"
+  notes: "ch08 §4.2; packages/electron/src/main/transport-bridge.ts; http2 on 127.0.0.1 ephemeral, Host: enforcement → 421; bridge → daemon over UDS/named-pipe/TCP; v0.4 web/iOS do NOT use it"
+
+- subject: "[T6.3] electron: typed Connect clients factory + React Query hook layer"
+  level: 6
+  blockedBy:
+    - "[T6.1] electron: protocol.handle('app', ...) descriptor server in main"
+    - "[T2.1] proto: PtyService definitions"
+  notes: "ch08 §5, §6.2; packages/electron/src/rpc/{clients.ts, queries.ts}; useFoo / useWatchFoo abstraction shape FOREVER-STABLE"
+
+- subject: "[T6.4] electron: replace every ipcRenderer.invoke/on with RPC hook (1:1)"
+  level: 6
+  blockedBy:
+    - "[T6.3] electron: typed Connect clients factory + React Query hook layer"
+  notes: "ch08 §3, §5; mechanical mapping table for db:*, sessionTitles:*, session:*, pty:*, import:*, app:*, ccsm:*, notify:*, settings:* → SessionService/PtyService/SettingsService/NotifyService/DraftService/CrashService"
+
+- subject: "[T6.5] electron: delete ipc/ + contextBridge.ts (big-bang cutover)"
+  level: 6
+  blockedBy:
+    - "[T6.4] electron: replace every ipcRenderer.invoke/on with RPC hook (1:1)"
+  notes: "ch08 §5 step d-e; rm packages/electron/src/main/ipc/ and preload/contextBridge.ts; preload becomes empty/omitted"
+
+- subject: "[T6.6] electron: ipc-allowlisted/ files + .no-ipc-allowlist + lint:no-ipc rule"
+  level: 6
+  blockedBy:
+    - "[T6.5] electron: delete ipc/ + contextBridge.ts (big-bang cutover)"
+  notes: "ch08 §3.1, §5h.1; window-controls.ts, folder-picker.ts, updater.ts; ESLint custom ccsm/no-electron-ipc-call; allowlist FROZEN at v0.3 ship; ship-gate (a)"
+
+- subject: "[T6.7] electron: renderer Hello + boot_id verification + reconnect backoff"
+  level: 6
+  blockedBy:
+    - "[T6.3] electron: typed Connect clients factory + React Query hook layer"
+  notes: "ch08 §4.1, §6; first-Hello within 8s or modal; min(30s, 500ms*2^n + jitter); UNAVAILABLE → reconnect banner; FAILED_PRECONDITION → version modal"
+
+- subject: "[T6.8] electron: daemon cold-start blocking modal (8s timeout + retry)"
+  level: 6
+  blockedBy:
+    - "[T6.7] electron: renderer Hello + boot_id verification + reconnect backoff"
+  notes: "ch08 §6.1; 'ccsm daemon is not running' modal with per-OS troubleshooting page; dismissible only on successful Hello"
+
+- subject: "[T6.9] electron: safe-open-url scheme allowlist (https?:// only)"
+  level: 6
+  blockedBy: []
+  notes: "ch08 §3.2; packages/electron/src/renderer/lib/safe-open-url.ts; rejects file://, javascript:, data:, chrome://, app://"
+
+- subject: "[T6.10] electron: CCSM_TRANSPORT=ipc|connect feature flag (one-release escape)"
+  level: 6
+  blockedBy:
+    - "[T6.5] electron: delete ipc/ + contextBridge.ts (big-bang cutover)"
+  notes: "ch08 §7; default flips to connect; ipc retained as fast-revert; removed in v0.3.1 cleanup"
+
+# ===== Chapter 10 — Build, Package, Installer (L7) =====
+
+- subject: "[T7.1] build: Node 22 sea pipeline (esbuild bundle + postject + per-OS)"
+  level: 7
+  blockedBy:
+    - "[T1.1] daemon: bootstrap entrypoint and supervisor loop"
+  notes: "ch10 §1; sea-config.json useCodeCache=true useSnapshot=false; build-sea.sh + .ps1; mac fallback .app-wrapped node bundle if notarization rejects"
+
+- subject: "[T7.2] build: native-loader (createRequire from process.execPath/native/)"
+  level: 7
+  blockedBy:
+    - "[T7.1] build: Node 22 sea pipeline (esbuild bundle + postject + per-OS)"
+  notes: "ch10 §2; better_sqlite3.node + pty.node sidecar; prebuildify in CI for 6 OS×arch combos"
+
+- subject: "[T7.3] build: code signing per OS (signtool/codesign+notarize/debsigs+rpm)"
+  level: 7
+  blockedBy:
+    - "[T7.1] build: Node 22 sea pipeline (esbuild bundle + postject + per-OS)"
+    - "[T7.2] build: native-loader (createRequire from process.execPath/native/)"
+  notes: "ch10 §3; both binary and .node files signed; macOS hardened runtime + allow-jit entitlement; xcrun notarytool + staple"
+
+- subject: "[T7.4] installer: per-OS service registration + state dir creation"
+  level: 7
+  blockedBy:
+    - "[T7.3] build: code signing per OS (signtool/codesign+notarize/debsigs+rpm)"
+    - "[T5.3] daemon: per-OS state directory layout + descriptor lifecycle"
+  notes: "ch10 §5; WiX 4 <ServiceInstall> win; LaunchDaemon plist + launchctl mac; fpm + systemd unit linux; service account _ccsm/ccsm/LocalService"
+
+- subject: "[T7.5] installer: post-install /healthz wait + 10s failure rollback"
+  level: 7
+  blockedBy:
+    - "[T7.4] installer: per-OS service registration + state dir creation"
+  notes: "ch10 §5 step 7; capture last 200 lines journalctl/log show/Get-WinEvent on failure; MSI ERROR_INSTALL_FAILURE 1603 rollback; state dir untouched"
+
+- subject: "[T7.6] uninstaller: REMOVEUSERDATA matrix + service unregister + cleanup"
+  level: 7
+  blockedBy:
+    - "[T7.4] installer: per-OS service registration + state dir creation"
+  notes: "ch10 §5; MSI public REMOVEUSERDATA property; CCSM_REMOVE_USER_DATA env mac/linux; ship-gate (d) interactive + silent variants"
+
+- subject: "[T7.7] electron: electron-builder config (MSI win, pkg+dmg mac, deb+rpm linux)"
+  level: 7
+  blockedBy: []
+  notes: "ch10 §4; MSI primary on win for GPO; renderer is purely UI/Connect (no native module rebuild)"
+
+- subject: "[T7.8] tools/sea-smoke/: post-install daemon end-to-end smoke"
+  level: 7
+  blockedBy:
+    - "[T7.4] installer: per-OS service registration + state dir creation"
+    - "[T4.12] daemon: PtyService.Attach reconnect/replay decision tree"
+  notes: "ch10 §7; service start → /healthz 200 in 10s → Hello → CreateSession echo ok → Attach delta contains 'ok' → Stop within 5s; per-OS service-manager log on failure"
+
+- subject: "[T7.9] tools/verify-signing.{sh,ps1}: per-OS signature verification"
+  level: 7
+  blockedBy:
+    - "[T7.3] build: code signing per OS (signtool/codesign+notarize/debsigs+rpm)"
+  notes: "ch10 §7; Get-AuthenticodeSignature/codesign --verify+spctl --assess/dpkg-sig+rpm --checksig+gpg; runs in package-* CI jobs before artifact upload"
+
+- subject: "[T7.10] tools/update-flow.spec.{ps1,sh}: in-place update with rollback"
+  level: 7
+  blockedBy:
+    - "[T7.5] installer: post-install /healthz wait + 10s failure rollback"
+    - "[T7.8] tools/sea-smoke/: post-install daemon end-to-end smoke"
+  notes: "ch10 §8; stop with 10s+SIGKILL escalation; rename to .prev; restart; /healthz 10s; rollback on fail with crash_log source=update_rollback; manual pre-release smoke v0.3, CI in v0.4"
