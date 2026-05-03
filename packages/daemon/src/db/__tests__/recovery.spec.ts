@@ -14,10 +14,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { loadNative } from '../../native-loader.js';
 import { checkAndRecover, makeRecoveryFlag } from '../recovery.js';
+
+const Database = loadNative('better_sqlite3');
 
 describe('checkAndRecover (T5.7 — ch07 §6)', () => {
   let tmpDir: string;

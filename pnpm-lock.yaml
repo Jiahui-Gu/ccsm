@@ -253,6 +253,9 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+      prebuildify:
+        specifier: ^6.0.1
+        version: 6.0.1
 
   packages/electron:
     dependencies:
@@ -4446,6 +4449,10 @@ packages:
     resolution: {integrity: sha512-DlL+XwOy3NxAQ8xuC0okPgK46iuVNAK01YN7RueYBqqFeGsBjV9XmCAzAdgt+667bCl5kPh9EqKKDwnaPG1I7A==}
     engines: {node: '>=10'}
 
+  npm-run-path@3.1.0:
+    resolution: {integrity: sha512-Dbl4A/VfiVGLgQv29URL9xshU8XDY1GeLy+fsaZ1AA8JDSfjvr5P5+pzRbWqRSBxk6/DW7MIh8lTM/PaGnP2kg==}
+    engines: {node: '>=8'}
+
   nth-check@2.1.1:
     resolution: {integrity: sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w==}
 
@@ -4737,6 +4744,10 @@ packages:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
     engines: {node: '>=10'}
     deprecated: No longer maintained. Please contact the author of the relevant native addon; alternatives are available.
+    hasBin: true
+
+  prebuildify@6.0.1:
+    resolution: {integrity: sha512-8Y2oOOateom/s8dNBsGIcnm6AxPmLH4/nanQzL5lQMU+sC0CMhzARZHizwr36pUPLdvBnOkCNQzxg4djuFSgIw==}
     hasBin: true
 
   prelude-ls@1.2.1:
@@ -10603,6 +10614,10 @@ snapshots:
 
   normalize-url@6.1.0: {}
 
+  npm-run-path@3.1.0:
+    dependencies:
+      path-key: 3.1.1
+
   nth-check@2.1.1:
     dependencies:
       boolbase: 1.0.0
@@ -10896,6 +10911,15 @@ snapshots:
       simple-get: 4.0.1
       tar-fs: 2.1.4
       tunnel-agent: 0.6.0
+
+  prebuildify@6.0.1:
+    dependencies:
+      minimist: 1.2.8
+      mkdirp-classic: 0.5.3
+      node-abi: 3.90.0
+      npm-run-path: 3.1.0
+      pump: 3.0.4
+      tar-fs: 2.1.4
 
   prelude-ls@1.2.1: {}
 

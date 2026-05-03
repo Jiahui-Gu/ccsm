@@ -7,12 +7,13 @@
 #   2. esbuild bundles dist/index.js + pure-JS deps into a single CJS file
 #      (dist/bundle.cjs). Native (.node) modules are intentionally NOT bundled
 #      — sea cannot embed them; T7.2 (task #83) wires the sibling-dir
-#      native-loader. For T7.1 we mark them as `external` and expect
-#      build-time absence to surface as a runtime ERR_MODULE_NOT_FOUND
-#      until #83 lands.
+#      native-loader and this script copies the prebuilt addons into
+#      dist/native/ next to the sea binary so `createRequire(execPath +
+#      '/native/')` resolves them at runtime (spec ch10 §2).
 #   3. node --experimental-sea-config sea-config.json -> dist/sea-prep.blob
 #   4. copy current node binary -> dist/ccsm-daemon
 #   5. npx postject ... NODE_SEA_BLOB ... -> single executable
+#   6. stage native (.node) addons into dist/native/ — T7.2 hook point.
 #
 # Code-signing (T7.3 / task #82) is OUT OF SCOPE here.
 #
@@ -92,6 +93,9 @@ if [[ "$PLATFORM" == "mac" && "$APP_WRAPPED" -eq 1 ]]; then
 </dict>
 </plist>
 PLIST
+  # Stage native addons next to the .app's executable (spec ch10 §2 layout).
+  echo "[build-sea] stage native addons -> $APP/Contents/MacOS/native/"
+  bash "$HERE/stage-native.sh" "$APP/Contents/MacOS/native"
   echo "[build-sea] mac .app-wrapped layout written to $APP"
   exit 0
 fi
@@ -123,6 +127,14 @@ if [[ "$PLATFORM" == "mac" ]]; then
   POSTJECT_ARGS+=(--macho-segment-name NODE_SEA)
 fi
 ( cd "$PKG_DIR" && npx --yes postject "${POSTJECT_ARGS[@]}" )
+
+# Step 6: stage native (.node) addons into dist/native/ next to the sea
+# binary. Spec ch10 §2: `createRequire(process.execPath + '/native/')`
+# resolves these at runtime. The build-native-dir helper script knows
+# how to find prebuilt addons (prebuildify output in node_modules) for
+# the current OS+arch+Node-ABI; CI cross-builds the matrix separately.
+echo "[build-sea] stage native addons -> $DIST_DIR/native/"
+( cd "$PKG_DIR" && bash "$HERE/stage-native.sh" "$DIST_DIR/native" )
 
 echo "[build-sea] done -> $TARGET"
 echo "[build-sea] (code-signing handled by T7.3 / task #82, not invoked here)"

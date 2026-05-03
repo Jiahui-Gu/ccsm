@@ -17,7 +17,14 @@
 // and crash/ recovery (#59) all live in separate tasks and MUST NOT land
 // here.
 
-import Database, { type Database as BetterSqlite3Database } from 'better-sqlite3';
+import type { Database as BetterSqlite3Database } from 'better-sqlite3';
+
+import { loadNative } from '../native-loader.js';
+
+// Sea binaries cannot embed `.node`; resolve the native addon through the
+// shared loader (spec ch10 §2). In dev/test this falls back to the regular
+// `node_modules/better-sqlite3` install — no behaviour change.
+const Database = loadNative('better_sqlite3');
 
 /**
  * Re-exported `better-sqlite3` Database type. Callers should import this
