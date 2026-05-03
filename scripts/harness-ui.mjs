@@ -306,20 +306,24 @@ async function caseTitlebar({ app, win, log }) {
 // Post-#561 (close-to-tray ask/tray/quit dialog): the win32 default for
 // `closeAction` is `'ask'`, which surfaces a modal dialog instead of
 // hiding. The probe asserts the hide-on-close branch specifically, so we
-// pin `closeAction='tray'` via the same `db:save` IPC the Settings dialog
-// uses before triggering close. We restore the prior value in dispose so
-// later cases (and the persisted user preference, if running outside the
-// harness) aren't perturbed.
+// pin `closeAction='tray'` by writing directly to sqlite from the main
+// process (the same store `getCloseAction()` reads in `win.on('close')`).
+// Pre-#289 we routed through `window.ccsm.saveState` renderer→IPC, but
+// the v0.3 ipc-allowlisted preload (Wave 0c) removed that bridge entirely
+// — `window.ccsm.{loadState,saveState}` no longer exist. We now poke the
+// closeAction module directly from main where the source of truth lives.
+// We restore the prior value in dispose so later cases (and the persisted
+// user preference, if running outside the harness) aren't perturbed.
 async function caseTray({ app, win, log, registerDispose }) {
-  // Post-Wave-0e cutover (PR #976 / #980): renderer persistence moved from
-  // the deleted `window.ccsm.loadState/saveState` IPC to `localStorage`.
-  // The `closeAction` key keeps the same name; AppearancePane.tsx reads/writes
-  // it via `localStorage` directly. Mirror that here.
-  const prevCloseAction = await win.evaluate(() => {
-    return window.localStorage.getItem('closeAction');
+  const prevCloseAction = await app.evaluate(({ app: ea }) => {
+    const path = process.mainModule.require('node:path');
+    const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
+    try { return m.getCloseAction(); } catch { return null; }
   });
-  await win.evaluate(() => {
-    window.localStorage.setItem('closeAction', 'tray');
+  await app.evaluate(({ app: ea }) => {
+    const path = process.mainModule.require('node:path');
+    const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
+    m.setCloseAction('tray');
   });
   // Belt-and-suspenders: ensure the window is visible after we're done so
   // subsequent cases can interact with it (the harness window is shared).
@@ -329,14 +333,15 @@ async function caseTray({ app, win, log, registerDispose }) {
       try { w?.show(); } catch {}
     });
     try {
-      await win.evaluate((prev) => {
+      await app.evaluate(({ app: ea }, prev) => {
         if (prev == null) {
-          // Leave 'tray' (matches mac default and was the pre-#561 implicit
-          // behaviour). We could removeItem here, but persisting 'tray' keeps
-          // subsequent cases deterministic regardless of the prior baseline.
+          // Nothing to restore; leave 'tray' (matches mac default and was
+          // the pre-#561 implicit behaviour).
           return;
         }
-        window.localStorage.setItem('closeAction', prev);
+        const path = process.mainModule.require('node:path');
+        const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
+        m.setCloseAction(prev);
       }, prevCloseAction);
     } catch {}
   });
@@ -386,12 +391,15 @@ async function caseTray({ app, win, log, registerDispose }) {
 // and re-run — Playwright auto-dismisses the renderer-side confirm and the
 // spy records zero invocations, so the probe fails.
 async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
-  // See caseTray for the localStorage rationale (Wave 0e cutover).
-  const prevCloseAction = await win.evaluate(() => {
-    return window.localStorage.getItem('closeAction');
+  const prevCloseAction = await app.evaluate(({ app: ea }) => {
+    const path = process.mainModule.require('node:path');
+    const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
+    try { return m.getCloseAction(); } catch { return null; }
   });
-  await win.evaluate(() => {
-    window.localStorage.setItem('closeAction', 'ask');
+  await app.evaluate(({ app: ea }) => {
+    const path = process.mainModule.require('node:path');
+    const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
+    m.setCloseAction('ask');
   });
   registerDispose(async () => {
     await app.evaluate(({ BrowserWindow }) => {
@@ -399,14 +407,16 @@ async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
       try { w?.show(); } catch {}
     });
     try {
-      await win.evaluate((prev) => {
+      await app.evaluate(({ app: ea }, prev) => {
+        const path = process.mainModule.require('node:path');
+        const m = process.mainModule.require(path.join(ea.getAppPath(), 'dist', 'electron', 'prefs', 'closeAction.js'));
         if (prev == null) {
           // Restore to the win32/linux default to keep the harness baseline
           // sane (mac default is 'tray'). The next case can rely on this.
-          window.localStorage.setItem('closeAction', 'ask');
+          m.setCloseAction('ask');
           return;
         }
-        window.localStorage.setItem('closeAction', prev);
+        m.setCloseAction(prev);
       }, prevCloseAction);
     } catch {}
     // Pop the spy off so subsequent cases see the real dialog API.
@@ -1135,16 +1145,16 @@ async function caseSidebarLongNameTruncates({ win, log }) {
 // exist (the field is new) AND if it did, it would be > hydrateDoneAt.
 // On the fixed branch, `renderedAt` exists and is <= hydrateDoneAt.
 //
-  // We additionally inject a slow `localStorage.getItem('main')` (800ms busy-
-  // wait) via addInitScript before reload to extend the hydrated=false window
-  // long enough for the MutationObserver below to capture the sidebar skeleton.
-  // Pre-Wave-0e this wrapped `window.ccsm.loadState`; post-cutover (PR #976)
-  // persist.ts hydrates from `localStorage` directly, so we wrap the synchronous
-  // Storage API instead.
+// We additionally inject a slow `localStorage.getItem('main')` (800ms
+// busy-wait) via addInitScript before reload to extend the hydrated=false
+// window long enough for the MutationObserver below to capture the
+// sidebar skeleton. (Pre-#289 cutover this wrapped `window.ccsm.loadState`;
+// persist.ts now reads localStorage directly so we hook there instead.)
 async function caseStartupPaintsBeforeHydrate({ win, log }) {
-  // Inject a delay around loadState BEFORE the renderer bundle re-evaluates.
-  // The init script runs on every navigation including win.reload(). Wrap in
-  // a guard so prior cases that may have already wrapped don't double-wrap.
+  // Inject a delay around localStorage.getItem('main') BEFORE the renderer
+  // bundle re-evaluates. The init script runs on every navigation including
+  // win.reload(). Wrap in a guard so prior cases that may have already
+  // wrapped don't double-wrap.
   //
   // We ALSO install a MutationObserver that captures the first
   // [data-testid="sidebar-skeleton"] element it sees and snapshots its
@@ -1155,28 +1165,30 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // Install everything via context().addInitScript so it survives reload.
   await win.context().addInitScript(() => {
     window.__ccsm584InitRan = (window.__ccsm584InitRan || 0) + 1;
-    // Wrap Storage.prototype.getItem so the persist.ts STATE_KEY ('main')
-    // load — invoked synchronously from `loadPersisted()` inside the awaited
-    // hydrate chain — blocks for ~800ms. The renderer's initial React render
-    // runs BEFORE `void hydrateStore()` is dispatched (index.tsx synchronous
-    // render path, PR #976), so the skeleton paints first, then the busy-wait
-    // freezes the thread long enough for our MutationObserver-driven snapshot
-    // below to fire on the painted skeleton. Guarded so multiple init-script
-    // evaluations (each navigation) don't compound the delay.
+    // #584: delay localStorage.getItem('main') (the persisted store snapshot
+    // key from src/stores/persist.ts STATE_KEY). Hydration sequence is fast
+    // (~30ms) because localStorage reads are sync; the skeleton would
+    // otherwise paint for one frame and be gone before any test thread can
+    // observe it. Busy-waiting inside getItem extends the hydrated=false
+    // window long enough for the MutationObserver below to fire. We swap
+    // getItem only for the 'main' key so unrelated reads remain fast.
     try {
-      const proto = window.Storage && window.Storage.prototype;
-      if (proto && !proto.__ccsm584DelayedGetItem) {
+      if (!window.__ccsm584DelayedGetItem) {
+        const proto = Storage.prototype;
         const originalGetItem = proto.getItem;
         proto.getItem = function (key) {
-          if (key === 'main') {
-            const until = Date.now() + 800;
-            // Synchronous busy-wait — blocks the renderer thread, which is
-            // exactly what the original async ccsm.loadState wrap simulated.
-            while (Date.now() < until) { /* spin */ }
+          if (this === window.localStorage && key === 'main') {
+            // localStorage.getItem is synchronous, so we cannot `await` —
+            // and an async wrap would resolve in a microtask, defeating the
+            // whole point. A spin-loop blocks the renderer thread for the
+            // window we want to widen, which is exactly what the original
+            // ccsm.loadState delay achieved.
+            const deadline = Date.now() + 800;
+            while (Date.now() < deadline) { /* spin */ }
           }
           return originalGetItem.call(this, key);
         };
-        proto.__ccsm584DelayedGetItem = true;
+        window.__ccsm584DelayedGetItem = true;
       }
     } catch {
       /* swallow — case will fail loudly below if wrap didn't take */
@@ -1321,7 +1333,7 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
       observerInstalled: window.__ccsm584ObserverInstalled,
       observerError: window.__ccsm584ObserverError,
       hydrated: window.__ccsmStore?.getState?.().hydrated,
-      loadStateWrapped: !!(window.Storage && window.Storage.prototype.__ccsm584DelayedGetItem),
+      loadStateWrapped: !!window.__ccsm584DelayedGetItem,
       hasSidebarSkeleton: !!document.querySelector(
         '[data-testid="sidebar-skeleton"]'
       ),
