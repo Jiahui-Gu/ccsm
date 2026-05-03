@@ -77,6 +77,13 @@ export default [
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly',
         ResizeObserver: 'readonly',
+        // Web platform globals available in Node 22+ (used by daemon
+        // RPC code, e.g. T1.3 auth interceptor) and the Electron main
+        // process. Browser code already has these via the DOM lib.
+        Headers: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        fetch: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.
@@ -148,6 +155,11 @@ export default [
         global: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
+        // `Headers` and `Request` are Node 22+ web-platform globals on
+        // par with `fetch` / `Response`; daemon RPC code uses `Headers`
+        // for Connect-RPC interop (T1.3 auth interceptor).
+        Headers: 'readonly',
+        Request: 'readonly',
         URLSearchParams: 'readonly'
       }
     }
