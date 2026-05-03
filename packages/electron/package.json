@@ -2,5 +2,11 @@
   "name": "@ccsm/electron",
   "version": "0.0.0",
   "private": true,
-  "description": "CCSM Electron thin client. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11."
+  "type": "module",
+  "description": "CCSM Electron thin client. Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
+  "scripts": {
+    "lint": "eslint \"test/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  }
 }
