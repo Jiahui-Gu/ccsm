@@ -1,5 +1,4 @@
 import React from 'react';
-import { DragRegion, WindowControls } from './WindowControls';
 import { AppShell } from './AppShell';
 
 // Pre-hydrate skeleton (#584). The previous implementation rendered an
@@ -39,12 +38,15 @@ export const AppSkeleton: React.FC = () => {
           className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full animate-pulse"
           style={{ width: 260 }}
         >
-          <DragRegion
+          {/* Wave 0e (#247): native OS chrome owns the title bar (frame:true
+              since #953); the self-drawn DragRegion + WindowControls are
+              gone. Reserve a small spacer here only so the macOS traffic
+              lights don't overlap the new-session CTA when this skeleton
+              renders on darwin. */}
+          <div
+            aria-hidden
             className="shrink-0 w-full"
-            style={{
-              height:
-                window.ccsm?.window.platform === 'darwin' ? 40 : 8,
-            }}
+            style={{ height: 8 }}
           />
           <div className="flex flex-col gap-3 px-3 pt-2 pb-3">
             {/* "New session" CTA stub */}
@@ -83,12 +85,8 @@ export const AppSkeleton: React.FC = () => {
           data-testid="main-skeleton"
           aria-busy="true"
         >
-          <DragRegion
-            className="relative flex items-center justify-end shrink-0"
-            style={{ height: 32 }}
-          >
-            <WindowControls />
-          </DragRegion>
+          {/* Wave 0e (#247): native OS chrome owns the title bar; no
+              self-drawn DragRegion / WindowControls strip. */}
           <div className="flex-1 flex items-center justify-center">
             <div
               data-testid="main-skeleton-loading"

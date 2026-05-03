@@ -85,17 +85,6 @@ declare global {
       updatesSetAutoCheck: (enabled: boolean) => Promise<boolean>;
       onUpdateStatus: (handler: (s: UpdateStatus) => void) => () => void;
       onUpdateDownloaded: (handler: (info: { version: string }) => void) => () => void;
-
-      window: {
-        minimize: () => Promise<void>;
-        toggleMaximize: () => Promise<boolean>;
-        close: () => Promise<void>;
-        isMaximized: () => Promise<boolean>;
-        onMaximizedChanged: (handler: (max: boolean) => void) => () => void;
-        onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
-        onAfterShow: (handler: () => void) => () => void;
-        platform: 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku' | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
-      };
     };
   }
 }

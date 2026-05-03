@@ -10,7 +10,6 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { CommandPalette } from './components/CommandPalette';
 import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
-import { DragRegion, WindowControls } from './components/WindowControls';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
 import { useStore } from './stores/store';
 import { initI18n } from './i18n';
@@ -31,7 +30,6 @@ import { useSessionTitleBridge } from './app-effects/useSessionTitleBridge';
 import { useNotifyFlashBridge } from './app-effects/useNotifyFlashBridge';
 import { useCwdRedirectedBridge } from './app-effects/useCwdRedirectedBridge';
 import { useHydrateSystemLocale } from './app-effects/useHydrateSystemLocale';
-import { useExitAnimation } from './app-effects/useExitAnimation';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -163,9 +161,12 @@ export default function App() {
   // back to navigator.
   useHydrateSystemLocale(hydrateSystemLocale);
 
-  // Window hide-to-tray exit animation: fade <html> opacity in/out on
-  // `window:beforeHide` / `window:afterShow`.
-  useExitAnimation();
+  // Wave 0e (#247): the previous useExitAnimation hook fired on
+  // `window:beforeHide` / `window:afterShow` IPC pushes from main. Wave 0c
+  // (#953) disabled frameless and removed the preload bridge, so the OS
+  // chrome handles minimize/maximize/close natively and there's no main →
+  // renderer signal left to drive a fade. Native chrome hides immediately;
+  // a daemon-driven RPC alternative is deferred to v0.4.
 
   // -----------------------------------------------------------------------
   // Remaining inline effects (intentionally NOT extracted — couple to
@@ -368,9 +369,10 @@ export default function App() {
           }
           main={
             <main className="flex-1 flex flex-col min-w-0 right-pane-frame relative">
-              <DragRegion className="relative flex items-center justify-end shrink-0" style={{ height: 32 }}>
-                <WindowControls />
-              </DragRegion>
+              {/* Wave 0e (#247): native OS chrome owns the title bar / window
+                  controls now (frame:true since #953); the self-drawn
+                  WindowControls + DragRegion strip is removed. The native
+                  title bar provides drag + min/max/close. */}
               <InstallerCorruptBanner />
               {mainBody}
             </main>
