@@ -26,9 +26,9 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | Script                           | Used by spike     | Status                              |
 | -------------------------------- | ----------------- | ----------------------------------- |
 | `wrap-as-localservice.ps1`       | §1.1              | runnable (sc.exe wrapper)           |
-| `set-pipe-dacl.ps1`              | §1.1              | stub (TODO: P/Invoke SetSecurityInfo) |
+| `set-pipe-dacl.ps1`              | §1.1              | runnable (P/Invoke SetSecurityInfo on pipe handle; T9.1) |
 | `connect-and-peercred.sh`        | §1.1, §1.4, §1.5  | runnable (UDS getsockopt)           |
-| `connect-and-peercred.ps1`       | §1.1, §1.4, §1.5  | stub (TODO: GetNamedPipeClientProcessId) |
+| `connect-and-peercred.ps1`       | §1.1, §1.4, §1.5  | runnable (P/Invoke GetNamedPipe{Server,Client}ProcessId + token SID; T9.1) |
 | `pty-emitter.mjs`                | §1.7              | stub (TODO: node-pty when T9.7)     |
 | `delta-collector.mjs`            | §1.7              | runnable (NDJSON tail + seq check)  |
 | `vt-grammar.mjs`                 | §1.8              | runnable (weighted CSI/OSC/DCS gen) |
@@ -51,3 +51,5 @@ Cross-link: chapter 11 §2 / §6 pins this path; chapter 12 §3 reuses
 | `probes/loopback-h2c-on-25h2/run.sh` | §1.3 (T9.3)   | smoke (60s) + 1h soak driver (Win 11 25H2) |
 | `probes/macos-uds-cross-user/{server,client}.mjs` | §1.2 (T9.2) | runnable on darwin; linux/win32 skip |
 | `probes/macos-uds-cross-user/run.sh` | §1.2 (T9.2)   | bind-path × cross-user matrix driver |
+| `probes/win-localservice-uds/{server,client}.mjs` | §1.1 (T9.1) | runnable on win32; non-win32 skip |
+| `probes/win-localservice-uds/probe.ps1` | §1.1 (T9.1) | same-user (no admin) + localservice (admin) modes |
