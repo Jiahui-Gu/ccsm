@@ -5,14 +5,24 @@
 // wires the lifecycle skeleton with TODO stubs.
 //
 // Out of scope (per task brief):
-//   - Listener A bind + descriptor write   → T1.4
 //   - SQLite open + migrations             → T5.1
 //   - Session restore + orphan-uid check   → T3.4
 //   - Supervisor /healthz                  → T1.7
 //   - Graceful shutdown                    → T1.8
+//
+// Wired-in:
+//   - Listener A bind                      → T1.4 (`makeListenerA`)
+//   - HTTP/2 transport adapters            → T1.5 (h2c-uds / h2c-loopback / h2-named-pipe)
+//   - ConnectRouter + stub services        → T2.2 (this file consumes
+//                                                  `makeRouterBindHook`)
+//   - Descriptor file write                → T1.6 (separate concern; not
+//                                                  yet called from here)
 
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
+import { makeListenerA } from './listeners/factory.js';
+import type { Listener } from './listeners/types.js';
+import { makeRouterBindHook } from './rpc/bind.js';
 
 function log(line: string): void {
   // Plain stdout for now. T9 brings structured logging; until then a
@@ -22,7 +32,10 @@ function log(line: string): void {
 }
 
 /** Run startup phases 1–5. Throws on any phase failure; caller exits 1. */
-export async function runStartup(lifecycle: Lifecycle): Promise<DaemonEnv> {
+export async function runStartup(lifecycle: Lifecycle): Promise<{
+  readonly env: DaemonEnv;
+  readonly listenerA: Listener | null;
+}> {
   lifecycle.onTransition((p) => log(`phase -> ${p}`));
 
   // Phase: LOADING_CONFIG  (build DaemonEnv from process.env)
@@ -38,9 +51,8 @@ export async function runStartup(lifecycle: Lifecycle): Promise<DaemonEnv> {
   lifecycle.advanceTo(Phase.RESTORING_SESSIONS);
   log('TODO(T3.4): re-spawn should-be-running sessions, orphan-uid check');
 
-  // Phase: STARTING_LISTENERS  (TODO Task #T1.4 — bind Listener A + descriptor)
+  // Phase: STARTING_LISTENERS  (T1.4 listener + T2.2 router)
   lifecycle.advanceTo(Phase.STARTING_LISTENERS);
-  log('TODO(T1.4): bind Listener A, write listener-a.json atomically');
   // The listener-slot assert (ch03 §1) is a one-liner we can do today even
   // without makeListenerA — it proves slot 1 is the typed sentinel.
   const slot1 = env.listeners[1];
@@ -49,25 +61,43 @@ export async function runStartup(lifecycle: Lifecycle): Promise<DaemonEnv> {
     // ESLint `no-listener-slot-mutation` rule (added with T1.4) honest.
     throw new Error('listeners[1] mutated away from RESERVED_FOR_LISTENER_B');
   }
+  // Bind Listener A with the Connect-router-aware HTTP/2 hook (T2.2).
+  // The hook builds an http2 server whose request handler is the
+  // Connect router with every v0.3 service registered as
+  // `Unimplemented` stubs (per spec ch04 §3-§6.2). L3+ tasks (T3.x /
+  // T4.x / T5.x / T6.x) swap the empty service impls in
+  // `rpc/router.ts` for concrete handlers without touching this wiring.
+  // TODO(T1.6): write `listener-a.json` descriptor after bind succeeds.
+  let listenerA: Listener | null = null;
+  if (process.env.CCSM_DAEMON_SKIP_LISTENER === '1') {
+    log('CCSM_DAEMON_SKIP_LISTENER=1: skipping listener bind (smoke / unit-test mode)');
+  } else {
+    listenerA = makeListenerA(env, { bindHook: makeRouterBindHook() });
+    await listenerA.start();
+    const desc = listenerA.descriptor();
+    log(`listener-a bound: kind=${desc.kind}`);
+  }
 
   // Phase: READY  (Supervisor /healthz flips to 200 in T1.7)
   lifecycle.advanceTo(Phase.READY);
   log('TODO(T1.7): flip Supervisor /healthz to 200');
 
-  return env;
+  return { env, listenerA };
 }
 
 async function main(): Promise<void> {
   const lifecycle = new Lifecycle();
+  let listenerA: Listener | null = null;
   try {
-    await runStartup(lifecycle);
+    const result = await runStartup(lifecycle);
+    listenerA = result.listenerA;
     log(`startup complete: phase=${lifecycle.currentPhase()}`);
     // T1.1 stub: the daemon would normally hold the event loop open via
-    // its bound listeners. Since T1.4 hasn't landed, exit cleanly so the
-    // smoke command terminates instead of hanging.
-    if (process.env.CCSM_DAEMON_HOLD_OPEN === '1') {
-      // Keep alive forever (used once T1.4 lands so a real daemon doesn't
-      // exit on its own — until then default is exit-0 for smoke runs).
+    // its bound listeners. The bound Listener A keeps the loop alive on
+    // its own; the env-flag escape hatch remains for the smoke command.
+    if (listenerA === null && process.env.CCSM_DAEMON_HOLD_OPEN === '1') {
+      // Keep alive forever — used when listener bind is skipped (smoke
+      // run) but caller still wants the process to stay up.
       setInterval(() => {}, 1 << 30);
     }
   } catch (err) {
@@ -76,6 +106,11 @@ async function main(): Promise<void> {
     log(`STARTUP FAILED at phase ${lifecycle.currentPhase()}: ${error.message}`);
     if (error.stack) {
       log(error.stack);
+    }
+    if (listenerA !== null) {
+      await listenerA.stop().catch(() => {
+        /* swallow — process is exiting */
+      });
     }
     process.exit(1);
   }
