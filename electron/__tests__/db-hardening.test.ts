@@ -3,19 +3,17 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Mirror db.test.ts: redirect electron's userData to a per-test tmp dir so
-// (a) we never touch the real app data and (b) each test gets a clean slate.
+// Wave 0d.3 (#249): db.ts no longer imports `electron`. Tests inject the
+// data dir directly via `initDb(dataDir)` instead of mocking `app.getPath`.
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-db-hardening-'));
 let tmpDir = tmpRoot;
-
-vi.mock('electron', () => ({
-  app: { getPath: () => tmpDir }
-}));
 
 async function freshDb() {
   const mod = await import('../db');
   mod.closeDb();
+  mod.__resetDataDirForTests();
   tmpDir = fs.mkdtempSync(path.join(tmpRoot, 'run-'));
+  mod.initDb(tmpDir);
   return mod;
 }
 
@@ -36,7 +34,7 @@ describe('db hardening: startup integrity check', () => {
 
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { initDb, saveState, loadState } = mod;
-    expect(() => initDb()).not.toThrow();
+    expect(() => initDb(tmpDir)).not.toThrow();
 
     // Original file got renamed aside.
     const siblings = fs.readdirSync(tmpDir);
@@ -56,7 +54,7 @@ describe('db hardening: startup integrity check', () => {
 describe('db hardening: schema versioning', () => {
   it('stamps user_version=1 on a freshly-created database', async () => {
     const { initDb } = await freshDb();
-    const handle = initDb();
+    const handle = initDb(tmpDir);
     const v = handle.pragma('user_version', { simple: true }) as number;
     expect(v).toBe(1);
   });
@@ -84,6 +82,33 @@ describe('db hardening: prepared statement cache', () => {
     expect(spy.mock.calls.length).toBe(callsAfterFirst);
 
     spy.mockRestore();
+  });
+});
+
+describe('db hardening: dataDir injection (Wave 0d.3 / #249)', () => {
+  // Reverse-verifies the headless-ready refactor: db.ts no longer imports
+  // `electron`. Without an injected dataDir the singleton must refuse to
+  // boot loudly rather than silently writing somewhere wrong (cwd, $HOME,
+  // etc.). Pairs with `electron/main.ts` calling
+  // `initDb(app.getPath('userData'))` exactly once during boot.
+  it('opens the database under the injected dataDir, not app.getPath', async () => {
+    const mod = await import('../db');
+    mod.closeDb();
+    mod.__resetDataDirForTests();
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'inject-'));
+    mod.initDb(dir);
+    // Marker write so we can assert the file landed where we asked.
+    mod.saveState('marker', '1');
+    expect(fs.existsSync(path.join(dir, 'ccsm.db'))).toBe(true);
+  });
+
+  it('throws a clear error when no dataDir was ever injected', async () => {
+    // Force the worst-case shape: singleton dropped AND cache cleared, so
+    // the next initDb() with no arg has nothing to fall back to.
+    const mod = await import('../db');
+    mod.closeDb();
+    mod.__resetDataDirForTests();
+    expect(() => mod.initDb()).toThrow(/initDb\(\) called without a dataDir/);
   });
 });
 

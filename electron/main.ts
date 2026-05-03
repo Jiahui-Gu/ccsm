@@ -183,7 +183,7 @@ app.whenReady().then(() => {
     app.setAppUserModelId(aumid);
   }
 
-  initDb();
+  initDb(app.getPath('userData'));
 
   // Wave 0e (#247): wire the spec ch08 §3.1 allowlisted IPC surfaces.
   // ORDER MATTERS — the broadcast hooks must be registered BEFORE

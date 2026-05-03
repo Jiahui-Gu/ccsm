@@ -1,22 +1,21 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// `initDb` asks electron for the userData dir. Point it at a per-test tmp dir
-// so real app data isn't touched and each test gets a fresh database.
+// Wave 0d.3 (#249): db.ts no longer imports `electron`. Tests inject the
+// data dir directly via `initDb(dataDir)` instead of mocking `app.getPath`.
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-db-test-'));
 let tmpDir = tmpRoot;
 
-vi.mock('electron', () => ({
-  app: { getPath: () => tmpDir }
-}));
-
 async function freshDb() {
-  // Reset the module-local singleton between tests.
+  // Reset the module-local singleton AND the cached dataDir between tests
+  // so the next initDb() call binds to a brand-new tmp directory.
   const mod = await import('../db');
   mod.closeDb();
+  mod.__resetDataDirForTests();
   tmpDir = fs.mkdtempSync(path.join(tmpRoot, 'run-'));
+  mod.initDb(tmpDir);
   return mod;
 }
 
