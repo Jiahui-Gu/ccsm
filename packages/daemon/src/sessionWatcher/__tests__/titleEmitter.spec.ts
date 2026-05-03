@@ -5,8 +5,8 @@
 // touching the title bridge or fs.
 
 import { describe, it, expect, vi } from 'vitest';
-import { TitleEmitterSink, type TitleChangedPayload, type TitleFetcher } from '../titleEmitter';
-import type { FileTick } from '../fileSource';
+import { TitleEmitterSink, type TitleChangedPayload, type TitleFetcher } from '../titleEmitter.js';
+import type { FileTick } from '../fileSource.js';
 
 function presentTick(sid: string): FileTick {
   return { sid, text: '{"type":"user"}\n', fileExists: true, ts: Date.now() };

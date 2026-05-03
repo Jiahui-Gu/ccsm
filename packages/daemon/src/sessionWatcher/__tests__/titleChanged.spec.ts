@@ -26,14 +26,14 @@ const getSessionInfoMock = vi.fn(async () => {
   return summaryReturns.shift() ?? null;
 });
 
-import { __createForTest, type TitleChangedEvent } from '../index';
+import { __createForTest, type TitleChangedEvent } from '../index.js';
 import {
   __resetForTests as __resetTitleBridge,
   __setSdkForTests as __setTitleBridgeSdk,
   enqueuePendingRename,
   getSessionTitle,
   flushPendingRename,
-} from '../../sessionTitles';
+} from '../../sessionTitles/index.js';
 
 let tmpRoot: string;
 
@@ -72,7 +72,7 @@ describe('SessionWatcher title-changed', () => {
       getSessionInfo: getSessionInfoMock,
       renameSession: renameSessionMock,
       listSessions: listSessionsMock,
-    } as Parameters<typeof __setTitleBridgeSdk>[0]);
+    } as unknown as Parameters<typeof __setTitleBridgeSdk>[0]);
   }
 
   // Wrap reset+re-install for in-test cache flushes.

@@ -18,8 +18,8 @@
 //     title subsystem to flush a queue. Now it's a separate sink that
 //     main.ts wires explicitly.
 
-import { decideFlushPending } from './emitDecider';
-import type { FileTick } from './fileSource';
+import { decideFlushPending } from './emitDecider.js';
+import type { FileTick } from './fileSource.js';
 
 export type PendingFlusher = (sid: string) => void | Promise<void>;
 

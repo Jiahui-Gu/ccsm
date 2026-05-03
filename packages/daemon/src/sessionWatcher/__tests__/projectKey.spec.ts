@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cwdToProjectKey } from '../projectKey';
+import { cwdToProjectKey } from '../projectKey.js';
 
 describe('cwdToProjectKey', () => {
   it.each([

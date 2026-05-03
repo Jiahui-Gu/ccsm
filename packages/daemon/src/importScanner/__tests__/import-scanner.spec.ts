@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
-import { parseHead, deriveRecentCwds, isSidechainFrame, isCCSMTempCwd } from '../electron/import-scanner';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { parseHead, deriveRecentCwds, isSidechainFrame, isCCSMTempCwd } from '../import-scanner.js';
 
 const j = (o: unknown) => JSON.stringify(o);
 

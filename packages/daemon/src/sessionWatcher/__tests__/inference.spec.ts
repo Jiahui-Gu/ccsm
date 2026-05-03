@@ -1,6 +1,6 @@
 // Pure inference tests. No fs/process — just JSONL strings → classified state.
 import { describe, it, expect } from 'vitest';
-import { classifyJsonlText, classifyFrames, type WatcherState } from '../inference';
+import { classifyJsonlText, classifyFrames, type WatcherState } from '../inference.js';
 
 // Helper: build a minimal assistant frame.
 function assistantFrame(opts: {

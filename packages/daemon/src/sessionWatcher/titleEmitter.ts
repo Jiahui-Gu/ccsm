@@ -9,8 +9,8 @@
 // from the watcher subsystem to the title subsystem on the title path —
 // pendingRename has its own sink).
 
-import { decideTitleEmit } from './emitDecider';
-import type { FileTick } from './fileSource';
+import { decideTitleEmit } from './emitDecider.js';
+import type { FileTick } from './fileSource.js';
 
 export interface TitleChangedPayload {
   sid: string;

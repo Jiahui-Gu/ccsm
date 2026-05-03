@@ -17,7 +17,7 @@
 // Companion to `inference.ts` (also pure, classifies JSONL → state).
 // Together these cover every decision the watcher subsystem makes.
 
-import type { WatcherState } from './inference';
+import type { WatcherState } from './inference.js';
 
 /** True when the new state differs from the last emitted state (or no
  *  prior state was emitted). One-line dedupe, extracted so the call site
