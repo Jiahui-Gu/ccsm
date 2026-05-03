@@ -1,0 +1,15 @@
+{
+  "name": "spike-child-process-pty-throughput",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Probe-only package for T9.6 child_process + node-pty + @xterm/headless throughput spike. Not part of root deps.",
+  "type": "module",
+  "scripts": {
+    "probe": "node probe.mjs",
+    "probe:child": "node child.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "5.5.0",
+    "node-pty": "1.1.0"
+  }
+}
