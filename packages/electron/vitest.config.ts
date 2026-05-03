@@ -21,7 +21,9 @@ export default defineConfig({
     environment: 'node',
     include: [
       'src/**/*.spec.ts',
+      'src/**/*.spec.tsx',
       'test/**/*.spec.ts',
+      'test/**/*.spec.tsx',
     ],
     globals: false,
     // E2E specs spawn real Electron + daemon subprocesses (per-PR variant
