@@ -1,0 +1,4 @@
+# Build artifacts — never committed.
+dist/
+.cache/
+sea-prep.blob
