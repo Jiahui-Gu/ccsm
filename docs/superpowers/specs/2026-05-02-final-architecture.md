@@ -10,6 +10,45 @@
 
 ---
 
+## §0 v0.3 SHIP GOAL (frozen — no intermediate state, zero v0.4 rework)
+
+> Re-landed from closed PR #841 (host file `v0.3-design.md` was purged by #843 as "poisoned, superseded by from-diagram"). Reviewer pre-approval: https://github.com/Jiahui-Gu/ccsm/pull/841#issuecomment-4365659854. Content verbatim from commit `58a92e5`.
+
+**口径**: v0.3 落地的每一行代码, 在 v0.4 加 web/iOS/远程时**一行不删一行不改**。v0.3 = 本文件 (`2026-05-02-final-architecture.md`) 的**真子集**, 不是过渡形态。任何 "v0.4 再切 / v0.4 再扩 / v0.4 替换" 的做法在 v0.3 PR review 阶段直接 REQUEST-CHANGES。
+
+### v0.3 必须做 (做完 v0.4 不返工)
+
+1. **`proto/` schema 一次到位** — 含 v0.4 全部 service (`pty` / `sessions` / `db` / `crash` / `daemon`) + server-streaming 签名。`buf breaking` 上 CI。v0.4 不改 schema, 只多生成 web/swift 客户端。
+2. **Connect-RPC over HTTP/2 数据面** — `daemon/src/connect/` Connect-Node server, 所有数据面 RPC 走它。零 envelope 数据面代码。
+3. **Listener A** (peer-cred UDS / 命名管道) — desktop 直连。peer-cred 信任绑 transport, 不绑 header。
+4. **Listener B** (`127.0.0.1:PORT_TUNNEL`) **物理 bind + JWT interceptor 完整实现** — 即使 v0.3 没人连它, listener 必须存在, JWT 校验代码 + UT 必须写完。v0.4 接 cloudflared = 打开开关, 不是加代码。
+5. **Supervisor 控制面保留 envelope** — `/healthz` / `daemon.hello` / `shutdown*` 不动。但 `daemon.hello` 的 hello-HMAC 摘掉 (auth 改走 peer-cred + JWT)。
+6. **Daemon 不是 Electron 子进程** — daemon OS-lifecycle 从 day 1 立住, 即使 v0.3 只有 desktop 用, daemon 也必须能脱离 Electron 活。
+7. **Session 模型 backend-authoritative + snapshot+delta + broadcast+LWW** — PTY host 一上来就按 N≥3 客户端 fan-out 写, 不是 "先 N=1 后扩"。RAM-only scrollback。
+8. **Electron = 纯 thin client** — `@connectrpc/connect-node` 打 Listener A, 零业务逻辑, 零本地状态 (除渲染缓存)。
+
+### v0.3 不做 (但留接口/留位置, 不是留 TODO)
+
+| 不做 | 留什么 |
+|---|---|
+| cloudflared sidecar 进程管理 | Listener B 已 bind, 等 sidecar 来连 |
+| Web 客户端 `web/` | proto schema 已含全部 service |
+| iOS 客户端 | 同上 |
+| OS supervisor (headless mode) | daemon 已 detach Electron, 加 launchd/service 是外挂 |
+| Scrollback 持久化 | session 模型已 authoritative, 加持久化是 PTY host 内部加层 |
+| Multi-machine | — |
+
+### 反模式 (PR review REQUEST-CHANGES 触发器)
+
+- ❌ "先用 envelope 做数据面, v0.4 再切 Connect" — 直接上 Connect。
+- ❌ "Listener B 先不 bind, v0.4 再加" — 必须 bind, JWT interceptor 必须完整 + UT。
+- ❌ "PTY host 先 N=1, v0.4 扩 fan-out" — 一上来就 broadcast+LWW。
+- ❌ "Electron 主进程暂留点业务逻辑" — 全下沉 daemon。
+- ❌ "hello-HMAC 先留着兼容旧客户端" — 直接删, 旧客户端不存在。
+- ❌ 任何 `// TODO v0.4` / `// will be replaced` / `// temporary` 注释。
+
+---
+
 ## §1 The diagram
 
 ```
