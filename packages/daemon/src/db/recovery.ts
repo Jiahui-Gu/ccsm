@@ -128,7 +128,7 @@ export function makeRecoveryFlag(): RecoveryFlag {
 
 export interface CheckAndRecoverOpts {
   /**
-   * Absolute path to the SQLite DB file (typically `statePaths().sessionsDb`).
+   * Absolute path to the SQLite DB file (typically `statePaths().db`).
    */
   readonly dbPath: string;
   /**

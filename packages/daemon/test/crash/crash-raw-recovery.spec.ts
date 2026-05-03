@@ -61,7 +61,7 @@ interface Fixture {
 function setup(): Fixture {
   const dir = mkdtempSync(path.join(tmpdir(), 'ccsm-crashraw-'));
   const ndjsonPath = path.join(dir, 'crash-raw.ndjson');
-  const dbPath = path.join(dir, 'sessions.db');
+  const dbPath = path.join(dir, 'ccsm.db');
   const db = openDatabase(dbPath);
   db.exec(CRASH_LOG_DDL);
   return { dir, ndjsonPath, dbPath, db };

@@ -356,7 +356,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
   describe('GET /healthz — recovery_modal (ch07 §6)', () => {
     it('reflects pending=true after the recovery flag is set', async () => {
       const flag = makeRecoveryFlag();
-      flag.set(1700000099000, '/var/lib/ccsm/sessions.db.corrupt-1700000099000');
+      flag.set(1700000099000, '/var/lib/ccsm/ccsm.db.corrupt-1700000099000');
       server = build({ recoveryFlag: flag });
       await server.start();
 
@@ -365,7 +365,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
       expect(body.recovery_modal).toEqual({
         pending: true,
         ts_ms: 1700000099000,
-        corrupt_path: '/var/lib/ccsm/sessions.db.corrupt-1700000099000',
+        corrupt_path: '/var/lib/ccsm/ccsm.db.corrupt-1700000099000',
       });
     });
 
@@ -389,7 +389,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
       mockUid = 999;
       mockSid = SID_LOCAL_SERVICE;
       const flag = makeRecoveryFlag();
-      flag.set(1700000000000, '/var/lib/ccsm/sessions.db.corrupt-1700000000000');
+      flag.set(1700000000000, '/var/lib/ccsm/ccsm.db.corrupt-1700000000000');
       server = build({ recoveryFlag: flag });
       await server.start();
 
@@ -417,7 +417,7 @@ describe('SupervisorServer — UDS / named-pipe bind + endpoints', () => {
       mockUid = 1000; // not in {0, 999}
       mockSid = 'S-1-5-21-9-9-9-1001';
       const flag = makeRecoveryFlag();
-      flag.set(1700000000000, '/var/lib/ccsm/sessions.db.corrupt-1700000000000');
+      flag.set(1700000000000, '/var/lib/ccsm/ccsm.db.corrupt-1700000000000');
       server = build({ recoveryFlag: flag });
       await server.start();
 

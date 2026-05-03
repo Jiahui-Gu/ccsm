@@ -42,7 +42,7 @@ import { STATE_DIR_MODE, statePaths } from '../../src/state-dir/paths.js';
 //
 // These are the EXACT bytes daemon callers receive from `statePaths()` for
 // the corresponding `process.platform` value. If a future change alters any
-// path (e.g. moves descriptor under a subdir, renames `sessions.db`, switches
+// path (e.g. moves descriptor under a subdir, renames `ccsm.db`, switches
 // linux root off /var/lib/ccsm), this test fails — that is the contract.
 //
 // Note on win32: %PROGRAMDATA% is the OS-defined location of the per-machine
@@ -59,7 +59,7 @@ const LOCKED = {
       root: 'C:\\ProgramData\\ccsm',
       descriptor: 'C:\\ProgramData\\ccsm\\listener-a.json',
       descriptorsDir: 'C:\\ProgramData\\ccsm\\descriptors',
-      sessionsDb: 'C:\\ProgramData\\ccsm\\sessions.db',
+      db: 'C:\\ProgramData\\ccsm\\ccsm.db',
       crashRaw: 'C:\\ProgramData\\ccsm\\crash-raw.ndjson',
     },
   },
@@ -69,7 +69,7 @@ const LOCKED = {
       root: 'D:\\ProgramData\\ccsm',
       descriptor: 'D:\\ProgramData\\ccsm\\listener-a.json',
       descriptorsDir: 'D:\\ProgramData\\ccsm\\descriptors',
-      sessionsDb: 'D:\\ProgramData\\ccsm\\sessions.db',
+      db: 'D:\\ProgramData\\ccsm\\ccsm.db',
       crashRaw: 'D:\\ProgramData\\ccsm\\crash-raw.ndjson',
     },
   },
@@ -79,7 +79,7 @@ const LOCKED = {
       root: 'C:\\ProgramData\\ccsm',
       descriptor: 'C:\\ProgramData\\ccsm\\listener-a.json',
       descriptorsDir: 'C:\\ProgramData\\ccsm\\descriptors',
-      sessionsDb: 'C:\\ProgramData\\ccsm\\sessions.db',
+      db: 'C:\\ProgramData\\ccsm\\ccsm.db',
       crashRaw: 'C:\\ProgramData\\ccsm\\crash-raw.ndjson',
     },
   },
@@ -89,7 +89,7 @@ const LOCKED = {
       root: '/Library/Application Support/ccsm',
       descriptor: '/Library/Application Support/ccsm/listener-a.json',
       descriptorsDir: '/Library/Application Support/ccsm/descriptors',
-      sessionsDb: '/Library/Application Support/ccsm/sessions.db',
+      db: '/Library/Application Support/ccsm/ccsm.db',
       crashRaw: '/Library/Application Support/ccsm/crash-raw.ndjson',
     },
   },
@@ -99,7 +99,7 @@ const LOCKED = {
       root: '/var/lib/ccsm',
       descriptor: '/var/lib/ccsm/listener-a.json',
       descriptorsDir: '/var/lib/ccsm/descriptors',
-      sessionsDb: '/var/lib/ccsm/sessions.db',
+      db: '/var/lib/ccsm/ccsm.db',
       crashRaw: '/var/lib/ccsm/crash-raw.ndjson',
     },
   },

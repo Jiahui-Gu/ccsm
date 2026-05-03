@@ -31,7 +31,7 @@ describe('statePaths — per-OS layout (ch07 §2)', () => {
     expect(p.root).toBe('D:\\ProgramData\\ccsm');
     expect(p.descriptor).toBe('D:\\ProgramData\\ccsm\\listener-a.json');
     expect(p.descriptorsDir).toBe('D:\\ProgramData\\ccsm\\descriptors');
-    expect(p.sessionsDb).toBe('D:\\ProgramData\\ccsm\\sessions.db');
+    expect(p.db).toBe('D:\\ProgramData\\ccsm\\ccsm.db');
     expect(p.crashRaw).toBe('D:\\ProgramData\\ccsm\\crash-raw.ndjson');
   });
 
@@ -46,7 +46,7 @@ describe('statePaths — per-OS layout (ch07 §2)', () => {
     const env = {} as NodeJS.ProcessEnv;
     const p = statePaths('win32', env);
     expect(p.root).toBe('C:\\ProgramData\\ccsm');
-    expect(p.sessionsDb).toBe('C:\\ProgramData\\ccsm\\sessions.db');
+    expect(p.db).toBe('C:\\ProgramData\\ccsm\\ccsm.db');
     expect(p.crashRaw).toBe('C:\\ProgramData\\ccsm\\crash-raw.ndjson');
   });
 
@@ -55,7 +55,7 @@ describe('statePaths — per-OS layout (ch07 §2)', () => {
     expect(p.root).toBe('/Library/Application Support/ccsm');
     expect(p.descriptor).toBe('/Library/Application Support/ccsm/listener-a.json');
     expect(p.descriptorsDir).toBe('/Library/Application Support/ccsm/descriptors');
-    expect(p.sessionsDb).toBe('/Library/Application Support/ccsm/sessions.db');
+    expect(p.db).toBe('/Library/Application Support/ccsm/ccsm.db');
     expect(p.crashRaw).toBe('/Library/Application Support/ccsm/crash-raw.ndjson');
   });
 
@@ -65,7 +65,7 @@ describe('statePaths — per-OS layout (ch07 §2)', () => {
     expect(p.root).toBe('/var/lib/ccsm');
     expect(p.descriptor).toBe('/var/lib/ccsm/listener-a.json');
     expect(p.descriptorsDir).toBe('/var/lib/ccsm/descriptors');
-    expect(p.sessionsDb).toBe('/var/lib/ccsm/sessions.db');
+    expect(p.db).toBe('/var/lib/ccsm/ccsm.db');
     expect(p.crashRaw).toBe('/var/lib/ccsm/crash-raw.ndjson');
   });
 
