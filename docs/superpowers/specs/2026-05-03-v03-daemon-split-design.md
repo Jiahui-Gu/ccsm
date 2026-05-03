@@ -2116,15 +2116,15 @@ The dispositions per §2:
 | `import:scan` | (a) Connect RPC | `SessionService.ListImportableSessions` |
 | `import:recentCwds`, `app:userCwds:get`, `app:userCwds:push` | (a) Connect RPC | LRU stored in `Settings.ui_prefs["recent_cwds"]` (JSON array, max 20); daemon trims server-side on update |
 | `app:userHome` | (a) Connect RPC | `Settings.user_home_path` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6) |
-| `cwd:pick` | (c) electron-main-only | Electron native folder picker has no daemon home and no browser equivalent. Kept as `ipcMain.handle("cwd:pick", ...)`; added to `.no-ipc-allowlist`. v0.4 web client substitutes a typed text field with autocomplete (additive net-new package; not a regression of v0.3 ship). |
+| `window:minimize`, `window:toggleMaximize`, `window:close`, `window:isMaximized` | (b) renderer-only — DELETED | Wave 0e (#247) reverted to native OS chrome (Wave 0c #953 disabled `frameless`); the OS title bar provides min/max/close + window drag without IPC. The self-drawn `WindowControls` + `DragRegion` components and the `useExitAnimation` hook were deleted from the renderer. v0.4 web/iOS already use OS-native window chrome. |
+| `window:maximizedChanged`, `window:beforeHide`, `window:afterShow` | (b) renderer-only — DELETED | Same rationale; the main → renderer push variants were the wire under the deleted titlebar UI. No allowlist entry. |
+| `cwd:pick` | (c) electron-main-only | Electron native folder picker has no daemon home and no browser equivalent. Kept as `ipcMain.handle("cwd:pick", ...)` in `electron/ipc-allowlisted/folder-picker.ts`; that file is on `tools/.no-ipc-allowlist`. v0.4 web client substitutes a typed text field with autocomplete (additive net-new package; not a regression of v0.3 ship). |
 | `paths:exist` | (a) Connect RPC | Daemon-side existence check piggybacked on session hydration: daemon already knows session cwd; existence flag added to `Session` in v0.4 if needed (additive). v0.3: client lazily marks a session "stale-cwd" on first attach failure (no batched-stat RPC needed at v0.3 freeze). |
 | `ccsm:get-system-locale` | (a) Connect RPC | `Settings.locale` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6); daemon resolves at boot from OS APIs |
 | `ccsm:set-language` | (a) Connect RPC | `SettingsService.UpdateSettings` writing `Settings.locale`; daemon picks up for OS notification language |
 | `app:getVersion` | (b) renderer-only | Electron version is bundled at build time as `import.meta.env.APP_VERSION` (Vite); no IPC, no RPC. v0.4 web/iOS get the same from their own bundles. Daemon version is separate (`Hello.daemon_version` from [Chapter 04](#chapter-04--proto-and-rpc-surface) §3). |
 | `settings:defaultModel` | (a) Connect RPC | `Settings.detected_claude_default_model` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6); daemon reads `~/.claude/settings.json` |
-| `window:minimize`, `window:toggleMaximize`, `window:close`, `window:isMaximized` | (c) electron-main-only | Custom titlebar (frameless window) has no daemon home; native frame would be a UX regression (visible chrome change). Kept as `ipcMain.handle` channels; added to `.no-ipc-allowlist`. **Trade-off**: ship-gate (a) admits a small allowlist for OS-chrome concerns to preserve frameless UX. v0.4 web/iOS use OS-native window chrome and don't need the channels. See §3.1 below for the full allowlist contract. |
-| `window:maximizedChanged`, `window:beforeHide`, `window:afterShow` | (c) electron-main-only | Same rationale; main → renderer push variants of the titlebar channels. Allowlisted. |
-| `updates:status`, `updates:check`, `updates:download`, `updates:install`, `updates:getAutoCheck`, `updates:setAutoCheck`, `update:downloaded` | (c) electron-main-only | `electron-updater` is Electron-process-bound (autoUpdater APIs require Electron main); no daemon equivalent. Kept as `ipcMain.handle` channels; added to `.no-ipc-allowlist`. v0.4 web client gets updates via service-worker / browser refresh; v0.4 iOS via App Store. Updater UI in renderer Settings stays. |
+| `updates:status`, `updates:check`, `updates:download`, `updates:install`, `updates:getAutoCheck`, `updates:setAutoCheck`, `update:downloaded` | (c) electron-main-only | `electron-updater` is Electron-process-bound (autoUpdater APIs require Electron main); no daemon equivalent. Kept as `ipcMain.handle` channels (request/response) + the two `webContents.send` push channels in `electron/ipc-allowlisted/updater-ipc.ts`; that file is on `tools/.no-ipc-allowlist`. The renderer-side bridge lives in `electron/ipc-allowlisted/preload-allowlisted.ts` (also allowlisted). v0.4 web client gets updates via service-worker / browser refresh; v0.4 iOS via App Store. Updater UI in renderer Settings stays. |
 | `pty:list`, `pty:spawn`, `pty:get` | (a) Connect RPC | `SessionService.ListSessions` / `CreateSession` / `GetSession` (PTY lifecycle is session lifecycle in v0.3) |
 | `pty:attach`, `pty:detach`, `pty:data` | (a) Connect RPC | `PtyService.Attach` (server-stream); detach by closing the stream |
 | `pty:input` | (a) Connect RPC | `PtyService.SendInput` |
@@ -2143,42 +2143,46 @@ The legacy `app:open-external` channel from older v0.3 drafts is **explicitly cu
 
 ##### 3.1 `.no-ipc-allowlist` contract (electron-main-only channels)
 
-<!-- F6: closes R1 P0.3 / P0.6 / P1.5 (chapter 08) + R4 P0 ch 08 lint allowlist mechanism. The window:* + cwd:pick + updates:* channels are the explicit, finite, frozen allowlist for v0.3 ship. Kept as `ipcMain.handle` channels; ship-gate (a) `lint:no-ipc` reads `.no-ipc-allowlist` to skip these. -->
+<!-- F6: closes R1 P0.3 / P0.6 / P1.5 (chapter 08) + R4 P0 ch 08 lint allowlist mechanism. Wave 0e (#247) finalized the v0.3 allowlist as the cwd:pick + updates:* clusters; the window:* cluster was deleted in favour of native OS chrome (Wave 0c #953 disabled frameless). The allowlist is path-based (one repo-relative path per line) — the actual lint script (tools/lint-no-ipc.sh) reads file paths and skips them from the forbidden-symbol grep. -->
 
-The `.no-ipc-allowlist` file at `packages/electron/.no-ipc-allowlist` enumerates the **finite, frozen** set of `ipcMain.handle` channel names that are exempt from the `lint:no-ipc` rule ([Chapter 12](#chapter-12--testing-strategy) §3 implements; §5h.1 below specifies). v0.3 contents are exactly:
+The `tools/.no-ipc-allowlist` file enumerates the **finite, frozen** set of repo-relative source paths that are exempt from the `lint:no-ipc` rule's forbidden-symbol grep ([Chapter 12](#chapter-12--testing-strategy) §3 implements; §5h.1 below specifies). v0.3 contents are exactly five paths grouped into two clusters (test mocks + shell-fire production):
 
 ```
-# OS-chrome: custom titlebar (frameless window). No daemon home; native
-# frame would be a visible UX regression. v0.4 web/iOS use OS-native chrome.
-window:minimize
-window:toggleMaximize
-window:close
-window:isMaximized
-window:maximizedChanged
-window:beforeHide
-window:afterShow
+# Test mocks of removed v0.2 IPC surface — these files mock `ipcMain` /
+# `webContents.send` to assert that the v0.2 code path no longer exists or
+# to exercise legacy behaviour during the daemon-split transition. They
+# carry no production IPC and never will.
+electron/__tests__/updater.test.ts
+electron/notify/sinks/__tests__/toastSink.test.ts
 
-# OS-shell: native folder picker. No browser equivalent; v0.4 web client
-# substitutes typed text field (additive net-new).
-cwd:pick
+# Native folder picker (cwd:pick) — no daemon home, no browser equivalent.
+electron/ipc-allowlisted/folder-picker.ts
 
-# In-app updater: electron-updater is Electron-process-bound. v0.4 web
-# updates via service-worker; v0.4 iOS via App Store.
-updates:status
-updates:check
-updates:download
-updates:install
-updates:getAutoCheck
-updates:setAutoCheck
-update:downloaded
+# In-app updater (updates:* + update:downloaded push) — electron-updater
+# is Electron-process-bound; v0.4 web/iOS use service-worker / App Store.
+electron/ipc-allowlisted/updater-ipc.ts
+
+# Renderer-side preload bridge for the two production channel clusters above.
+# contextBridge.exposeInMainWorld lives ONLY here per rule 4 below.
+electron/ipc-allowlisted/preload-allowlisted.ts
 ```
+
+Note: the renderer-side descriptor preload (`packages/electron/src/preload/preload-descriptor.ts`) was previously listed as a placeholder but was removed in Wave 0f (#214) as a phantom — the file does not yet exist (Wave 0b deleted `electron/preload/` wholesale). When the descriptor preload lands, re-add the path with an R4 sign-off row in the chapter 15 audit table.
+
+**Channel inventory (the only `ipcMain.handle` / `webContents.send` call sites permitted under the allowlist)**:
+
+- `cwd:pick` (renderer → main, request/response) — `electron/ipc-allowlisted/folder-picker.ts`.
+- `updates:status`, `updates:check`, `updates:download`, `updates:install`, `updates:getAutoCheck`, `updates:setAutoCheck` (renderer → main, request/response) — `electron/ipc-allowlisted/updater-ipc.ts`.
+- `updates:status`, `update:downloaded` (main → renderer, push via `webContents.send`) — `electron/ipc-allowlisted/updater-ipc.ts`. These are the ONLY `webContents.send` call sites outside the transport bridge per §5h.1 rule 4.
+
+The `window:*` cluster (`window:minimize` / `window:toggleMaximize` / `window:close` / `window:isMaximized` / `window:maximizedChanged` / `window:beforeHide` / `window:afterShow`) is **NOT allowlisted** — Wave 0e (#247) deleted the renderer-side `WindowControls` + `DragRegion` components and the `useExitAnimation` hook, and the BrowserWindow runs with native OS chrome (`frame: true`, since #953). v0.4 web/iOS also use OS-native chrome.
 
 **Rules**:
 
-1. Every entry in this file is a `string` matching an `ipcMain.handle` channel name. Comments start with `#`. Blank lines ignored.
+1. Every entry in this file is a **repo-relative source path** (one per line). Comments start with `#`. Blank lines ignored.
 2. The file is FROZEN at v0.3 ship. Adding a new entry post-ship is a brief amendment + chapter 15 §3 forbidden-pattern review (the only legitimate path is a NEW OS-chrome / OS-shell concern that has no daemon home AND no browser equivalent).
-3. The corresponding `ipcMain.handle` registrations live in named files under `packages/electron/src/main/ipc-allowlisted/` (one file per channel cluster: `window-controls.ts`, `folder-picker.ts`, `updater.ts`). The `lint:no-ipc` rule scopes the allowlist file-by-file: only files under `ipc-allowlisted/` may import `ipcMain`, and only for the channel names in `.no-ipc-allowlist`.
-4. `contextBridge.exposeInMainWorld` is NOT allowlisted under any circumstance — the descriptor injection mechanism uses `protocol.handle` (§4.1) and OS-chrome / OS-shell channels expose their renderer-side wrappers via a separate `packages/electron/src/preload/allowlisted-bridges.ts` that uses `electron`'s `ipcRenderer` directly (in a single file also enumerated in `.no-ipc-allowlist` as a special `__preload__` token).
+3. The corresponding `ipcMain.handle` registrations live in named files under `electron/ipc-allowlisted/` (one file per channel cluster: `folder-picker.ts`, `updater-ipc.ts`). The `lint:no-ipc` rule scopes the allowlist file-by-file: only files on the allowlist may import `ipcMain` / `ipcRenderer` / `contextBridge` or call `webContents.send`, and the lint script enforces this by skipping listed paths from the forbidden-symbol grep.
+4. `contextBridge.exposeInMainWorld` is NOT allowlisted under any circumstance — the descriptor injection mechanism uses `protocol.handle` (§4.1) and OS-chrome / OS-shell channels expose their renderer-side wrappers via a separate `electron/ipc-allowlisted/preload-allowlisted.ts` (also enumerated in `.no-ipc-allowlist`).
 
 ##### 3.2 Renderer-only `window.open` URL safety
 
@@ -2256,7 +2260,7 @@ R0 08-P0.2 flagged that `webPreferences.additionalArguments` does NOT inject ont
    c. Replace every existing `ipcRenderer.invoke(...)` and `ipcRenderer.on(...)` site with the corresponding hook (mechanical 1:1).
    d. Delete `packages/electron/src/main/ipc/` directory.
    e. Delete `packages/electron/src/preload/contextBridge.ts`.
-   e2. Re-create the allowlisted `ipcMain.handle` registrations under `packages/electron/src/main/ipc-allowlisted/{window-controls.ts, folder-picker.ts, updater.ts}` (per §3.1) and the matching renderer-side wrappers in `packages/electron/src/preload/allowlisted-bridges.ts`. Both surfaces use `electron`'s `ipcMain` / `ipcRenderer` directly — only these files may, and only for the channel names in `.no-ipc-allowlist`.
+   e2. Re-create the allowlisted `ipcMain.handle` registrations under `electron/ipc-allowlisted/{folder-picker.ts, updater-ipc.ts}` (per §3.1) and the matching renderer-side wrappers in `electron/ipc-allowlisted/preload-allowlisted.ts`. Both surfaces use `electron`'s `ipcMain` / `ipcRenderer` directly — only these files may. The `window:*` cluster is NOT re-created (Wave 0e #247: native OS chrome owns window controls).
    f. Replace preload with an empty (or omitted) file; the descriptor reaches the renderer via `protocol.handle("app", ...)` per §4.1, NOT via injection.
    g. Update `packages/electron/src/main/index.ts` to remove all `ipcMain.handle` registrations, register `protocol.handle("app", ...)` for the descriptor (§4.1), spin up the transport bridge (§4.2), and spawn a tray menu only.
    h. Add the `npm run lint:no-ipc` script per §5h.1 (canonical specification below).
@@ -2274,9 +2278,9 @@ This chapter specifies the v0.3 canonical form of the `lint:no-ipc` ship-gate. A
 1. `import { ipcMain | ipcRenderer | contextBridge } from "electron"` — any named import of these three symbols from the `electron` package, in any source file under `packages/electron/src/`.
 2. `require("electron").ipcMain` / `require("electron").ipcRenderer` / `require("electron").contextBridge` — destructuring or property access on the dynamically-required `electron` module.
 3. Any method call shaped `.send(` / `.handle(` / `.on(` / `.invoke(` / `.handleOnce(` invoked on a symbol whose value flows from one of the forbidden Electron imports above (caught by ESLint `no-restricted-properties` + a custom rule `ccsm/no-electron-ipc-call` that performs intra-file constant-tracking; full rule body lives in [Chapter 11](#chapter-11--monorepo-layout) §5).
-4. Any usage of `webContents.send`, `webContents.executeJavaScript`, `MessageChannelMain`, `MessagePortMain`, or `process.parentPort` outside `packages/electron/src/main/transport-bridge.ts` AND outside `packages/electron/src/main/ipc-allowlisted/` (the only sanctioned non-Connect main↔renderer surfaces). The bridge is exempt because it speaks Connect framing; the allowlisted IPC files use `webContents.send` only for the push variants of allowlisted channels (e.g., `window:maximizedChanged`).
+4. Any usage of `webContents.send`, `webContents.executeJavaScript`, `MessageChannelMain`, `MessagePortMain`, or `process.parentPort` outside `packages/electron/src/main/transport-bridge.ts` AND outside `electron/ipc-allowlisted/` (the only sanctioned non-Connect main↔renderer surfaces). The bridge is exempt because it speaks Connect framing; the allowlisted IPC files use `webContents.send` only for the push variants of allowlisted channels (currently `updates:status` and `update:downloaded`).
 
-**Allowlist**: the FROZEN `.no-ipc-allowlist` file (§3.1) enumerates the finite set of `ipcMain.handle` channel names exempt from rule 3 above (window controls, native folder picker, in-app updater). The corresponding files live under `packages/electron/src/main/ipc-allowlisted/`; the lint rule scopes the allowlist file-by-file (only those files may import `ipcMain`, and only for the channel names in `.no-ipc-allowlist`). The descriptor injection mechanism uses `protocol.handle` (§4.1), which is NOT on the forbidden-pattern list — no allowlist entry is needed for it. `contextBridge.exposeInMainWorld` is NEVER allowlisted.
+**Allowlist**: the FROZEN `tools/.no-ipc-allowlist` file (§3.1) enumerates the finite set of repo-relative source paths exempt from the forbidden-symbol grep. The corresponding files live under `electron/ipc-allowlisted/` (and the descriptor preload under `packages/electron/src/preload/`); the lint script scopes the allowlist file-by-file (only those files may import `ipcMain` / `ipcRenderer` / `contextBridge` or call `webContents.send`). The descriptor injection mechanism uses `protocol.handle` (§4.1), which is NOT on the forbidden-pattern list — no allowlist entry is needed for it. `contextBridge.exposeInMainWorld` lives ONLY in `electron/ipc-allowlisted/preload-allowlisted.ts`.
 
 **Implementation reference**: [Chapter 12](#chapter-12--testing-strategy) §3 ships the actual ESLint config + the `tools/lint-no-ipc.sh` driver script + the CI wiring; chapter 08 §5h.1 is the spec.
 
@@ -3081,7 +3085,7 @@ fi
 echo "PASS: zero IPC residue"
 ```
 
-**v0.3 `tools/.no-ipc-allowlist` contents** are exactly: `packages/electron/src/preload/preload-descriptor.ts` (one line). Any addition is a [Chapter 15](#chapter-15--zero-rework-audit) forever-stable touch and requires R4 sign-off.
+**v0.3 `tools/.no-ipc-allowlist` contents** are exactly five paths: `electron/__tests__/updater.test.ts`, `electron/notify/sinks/__tests__/toastSink.test.ts` (test mocks of removed v0.2 surface), plus `electron/ipc-allowlisted/folder-picker.ts`, `electron/ipc-allowlisted/updater-ipc.ts`, `electron/ipc-allowlisted/preload-allowlisted.ts` (shell-fire production — see chapter 08 §3.1 for the full file body and channel inventory). The phantom `packages/electron/src/preload/preload-descriptor.ts` placeholder was removed in Wave 0f (#214); when the descriptor preload lands, re-add it via R4 sign-off + chapter-15 audit-table-revalidate row. Any other addition is a [Chapter 15](#chapter-15--zero-rework-audit) forever-stable touch and requires R4 sign-off.
 
 ESLint backstop in `packages/electron/eslint.config.js` (flat-config v9, matching [Chapter 11](#chapter-11--monorepo-layout) §5; enforced in `electron-test` job per [Chapter 11](#chapter-11--monorepo-layout) §6):
 

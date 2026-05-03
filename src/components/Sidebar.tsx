@@ -8,7 +8,6 @@ import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
 import { AgentIcon } from './AgentIcon';
 import { CwdPopover } from './CwdPopover';
-import { DragRegion } from './WindowControls';
 import { useTranslation } from '../i18n/useTranslation';
 import { DURATION_RAW, EASING } from '../lib/motion';
 import type { Session } from '../types';
@@ -129,13 +128,12 @@ export function Sidebar({ onCreateSession, onCreateSessionWithCwd, onOpenSetting
       transition={{ duration: DURATION_RAW.ms220, ease: EASING.standard }}
       className="relative flex flex-col shrink-0 bg-bg-sidebar/80 backdrop-blur-xl sidebar-edge overflow-hidden h-full"
     >
-      {/* Top drag strip — Windows-only build, so we only need a thin
-          drag-to-move band (8px) to preserve OS window-drag affordance.
-          The right pane keeps its 32px band because it must host
-          WindowControls (min/max/close buttons). The slight misalignment
-          is intentional: dogfood flagged the 32px gap above "new session"
-          as visually empty. */}
-      <DragRegion className="shrink-0 w-full" style={{ height: window.ccsm?.window.platform === 'darwin' ? 40 : 8 }} />
+      {/* Wave 0e (#247): native OS chrome owns the title bar / window drag
+          (frame:true since #953); the previous self-drawn DragRegion strip
+          is removed. Keep an 8px spacer so the New Session row still has
+          breathing room from the OS title bar — the 24px total top gap
+          (8px spacer + pt-4) was tuned in #606 against user feedback. */}
+      <div aria-hidden className="shrink-0 w-full" style={{ height: 8 }} />
       <div className="flex flex-col w-full h-full">
           {/* Top: action zone — Search + New Session in one row.
               CodePilot-spec: h-8, bg-white/[0.06] semi-transparent on the

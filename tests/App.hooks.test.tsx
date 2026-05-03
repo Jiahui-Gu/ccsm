@@ -60,9 +60,6 @@ vi.mock('../src/app-effects/useCwdRedirectedBridge', () => ({
 vi.mock('../src/app-effects/useHydrateSystemLocale', () => ({
   useHydrateSystemLocale: vi.fn(),
 }));
-vi.mock('../src/app-effects/useExitAnimation', () => ({
-  useExitAnimation: vi.fn(),
-}));
 
 // Imports MUST come after vi.mock calls (vi.mock is hoisted, but explicit
 // ordering keeps the read order obvious to humans).
@@ -82,7 +79,6 @@ import { useSessionTitleBridge } from '../src/app-effects/useSessionTitleBridge'
 import { useNotifyFlashBridge } from '../src/app-effects/useNotifyFlashBridge';
 import { useCwdRedirectedBridge } from '../src/app-effects/useCwdRedirectedBridge';
 import { useHydrateSystemLocale } from '../src/app-effects/useHydrateSystemLocale';
-import { useExitAnimation } from '../src/app-effects/useExitAnimation';
 
 function stubCCSM() {
   const api = {
@@ -198,7 +194,7 @@ describe('App composition root wires extracted effect hooks (Task #732)', () => 
 });
 
 describe('App composition root wires Phase C effect hooks (Task #758)', () => {
-  it('calls each of the 8 Phase C app-effects hooks during render', () => {
+  it('calls each of the 7 Phase C app-effects hooks during render', () => {
     render(<App />);
     expect(useSessionActiveBridge).toHaveBeenCalled();
     expect(useSessionNameBridge).toHaveBeenCalled();
@@ -207,7 +203,6 @@ describe('App composition root wires Phase C effect hooks (Task #758)', () => {
     expect(useNotifyFlashBridge).toHaveBeenCalled();
     expect(useCwdRedirectedBridge).toHaveBeenCalled();
     expect(useHydrateSystemLocale).toHaveBeenCalled();
-    expect(useExitAnimation).toHaveBeenCalled();
   });
 
   it('passes activeId (string or null/empty) to useSessionActiveBridge', () => {
@@ -238,13 +233,10 @@ describe('App composition root wires Phase C effect hooks (Task #758)', () => {
     expect(typeof hydrateCalls[0][0]).toBe('function');
   });
 
-  it('useNotifyFlashBridge and useExitAnimation take no args (zero-arg subscriptions)', () => {
+  it('useNotifyFlashBridge takes no args (zero-arg subscription)', () => {
     render(<App />);
     const flashCalls = (useNotifyFlashBridge as unknown as { mock: { calls: unknown[][] } }).mock.calls;
-    const exitCalls = (useExitAnimation as unknown as { mock: { calls: unknown[][] } }).mock.calls;
     expect(flashCalls.length).toBeGreaterThan(0);
-    expect(exitCalls.length).toBeGreaterThan(0);
     expect(flashCalls[0].length).toBe(0);
-    expect(exitCalls[0].length).toBe(0);
   });
 });
