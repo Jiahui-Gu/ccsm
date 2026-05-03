@@ -11,6 +11,18 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.119
         version: 0.2.126(zod@4.4.2)
+      '@bufbuild/protobuf':
+        specifier: ^2.12.0
+        version: 2.12.0
+      '@ccsm/proto':
+        specifier: workspace:*
+        version: link:packages/proto
+      '@connectrpc/connect':
+        specifier: ^2.1.1
+        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+      '@connectrpc/connect-web':
+        specifier: ^2.1.1
+        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
       '@dnd-kit/core':
         specifier: ^6.1.0
         version: 6.3.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -47,6 +59,9 @@ importers:
       '@sentry/react':
         specifier: 10.49.0
         version: 10.49.0(react@18.3.1)
+      '@tanstack/react-query':
+        specifier: ^5.62.0
+        version: 5.100.8(react@18.3.1)
       '@xterm/addon-canvas':
         specifier: ^0.7.0
         version: 0.7.0(@xterm/xterm@5.5.0)
