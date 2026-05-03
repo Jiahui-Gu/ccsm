@@ -22,22 +22,22 @@
 // Out of scope (other PRs / dogfood): real Electron IPC roundtrip,
 // renderer-side xterm.write, multi-window fanout collisions.
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
 interface PtyFakeBus {
   onData: ((chunk: string) => void) | null;
   onExit: ((evt: { exitCode: number | null; signal: number | null }) => void) | null;
-  ptySpawn: ReturnType<typeof vi.fn>;
-  ptyWrite: ReturnType<typeof vi.fn>;
-  headlessDispose: ReturnType<typeof vi.fn>;
+  ptySpawn: Mock<(...args: unknown[]) => unknown>;
+  ptyWrite: Mock<(...args: unknown[]) => unknown>;
+  headlessDispose: Mock<(...args: unknown[]) => unknown>;
   // We model the headless buffer as a plain string accumulator so the
   // test can compare "what was written into the buffer" to "what a
   // reattach snapshot replays" — full L4 contract.
   headlessBuffer: string;
-  watcherStart: ReturnType<typeof vi.fn>;
-  watcherStop: ReturnType<typeof vi.fn>;
-  ensureJsonl: ReturnType<typeof vi.fn>;
-  emitData: ReturnType<typeof vi.fn>;
+  watcherStart: Mock<(...args: unknown[]) => unknown>;
+  watcherStop: Mock<(...args: unknown[]) => unknown>;
+  ensureJsonl: Mock<(...args: unknown[]) => unknown>;
+  emitData: Mock<(...args: unknown[]) => unknown>;
   sourceJsonl: string | null;
   ensureCopied: boolean;
   // When true, headless.write defers its callback so tests can simulate
@@ -94,9 +94,7 @@ vi.mock('@xterm/addon-serialize', () => ({
   },
 }));
 
-vi.mock('electron', () => ({}));
-
-vi.mock('../../sessionWatcher', () => ({
+vi.mock('../../sessionWatcher/index.js', () => ({
   sessionWatcher: {
     on: vi.fn(),
     startWatching: (...a: unknown[]) => bus().watcherStart(...a),
@@ -104,7 +102,7 @@ vi.mock('../../sessionWatcher', () => ({
   },
 }));
 
-vi.mock('../jsonlResolver', () => ({
+vi.mock('../jsonlResolver.js', () => ({
   toClaudeSid: (s: string) => s,
   findJsonlForSid: () => bus().sourceJsonl,
   resolveJsonlPath: () => '/tmp/live.jsonl',
@@ -114,17 +112,17 @@ vi.mock('../jsonlResolver', () => ({
   },
 }));
 
-vi.mock('../cwdResolver', () => ({
+vi.mock('../cwdResolver.js', () => ({
   resolveSpawnCwd: (cwd: string) => (cwd ? cwd : '/home/u'),
 }));
 
-vi.mock('../dataFanout', () => ({
+vi.mock('../dataFanout.js', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
 }));
 
-import { makeEntry, dispatchPtyChunk, BACKPRESSURE_WARN_THRESHOLD } from '../entryFactory';
-import { getBufferSnapshot } from '../lifecycle';
-import type { Entry } from '../entryFactory';
+import { makeEntry, dispatchPtyChunk, BACKPRESSURE_WARN_THRESHOLD } from '../entryFactory.js';
+import { getBufferSnapshot } from '../lifecycle.js';
+import type { Entry } from '../entryFactory.js';
 
 // Models a "visible xterm" attached webContents. Records every chunk it
 // receives so we can compare to what the headless buffer accumulated

@@ -11,10 +11,10 @@
 // rest are direct map / pty.* operations. Process-tree cleanup on `kill`
 // goes through processKiller (Phase A helper).
 
-import { sessionWatcher } from '../sessionWatcher';
-import { killProcessSubtree } from './processKiller';
-import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory';
-import type { Entry } from './entryFactory';
+import { sessionWatcher } from '../sessionWatcher/index.js';
+import { killProcessSubtree } from './processKiller.js';
+import { DEFAULT_COLS, DEFAULT_ROWS, makeEntry } from './entryFactory.js';
+import type { Entry } from './entryFactory.js';
 
 export interface PtySessionInfo {
   sid: string;

@@ -86,11 +86,15 @@ const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
   // packages/daemon/src/sessionWatcher/__tests__/*.spec.ts.
   ['sessionWatcher/index', 'sessionWatcher/index.js'],
 
-  // ptyHost runtime/sink layer
-  ['ptyHost/dataFanout', 'ptyHost/dataFanout.js'],
-  // entryFactory + ipcRegistrar + lifecycle + index pull native node-pty;
-  // covered by harness-real-cli e2e. Excluded from load-smoke to avoid
-  // hard dependence on local native build.
+  // ptyHost moved to packages/daemon/src/ptyHost/* in Wave 0d.4 (Task
+  // #251). The electron-side shims at electron/ptyHost/{index,
+  // oscTitleSniffer}.ts are bare `export *` re-exports — any ESM/CJS
+  // regression in the daemon-side originals surfaces in
+  // packages/daemon/src/ptyHost/__tests__/*.spec.ts (vitest-only) and
+  // in the `pnpm --filter @ccsm/electron build` step. The previous
+  // `ptyHost/dataFanout` entry pinned a CJS-load gate on a dataFanout
+  // module that no longer lives in the electron tree.
+
 
   // sentry init — load-smoke critical (PR #501 ESM regression risk)
   ['sentry/init', 'sentry/init.js'],

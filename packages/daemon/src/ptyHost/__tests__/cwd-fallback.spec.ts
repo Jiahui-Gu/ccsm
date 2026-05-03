@@ -11,20 +11,19 @@ import { homedir, tmpdir } from 'node:os';
 import { join as pathJoin } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// node-pty + @xterm/headless + electron pull native deps that aren't
-// available in the vitest jsdom env. The function under test has none of
-// those dependencies — stub the heavy imports so just the helper loads.
+// node-pty + @xterm/headless pull native deps that aren't available in the
+// vitest env. The function under test has none of those dependencies — stub
+// the heavy imports so just the helper loads.
 vi.mock('node-pty', () => ({ spawn: vi.fn() }));
 vi.mock('@xterm/headless', () => ({ Terminal: class {} }));
 vi.mock('@xterm/addon-serialize', () => ({ SerializeAddon: class {} }));
-vi.mock('electron', () => ({}));
-vi.mock('../claudeResolver', () => ({ resolveClaude: () => null }));
-vi.mock('../../sessionWatcher', () => ({
+vi.mock('../claudeResolver.js', () => ({ resolveClaude: () => null }));
+vi.mock('../../sessionWatcher/index.js', () => ({
   sessionWatcher: { on: vi.fn(), startWatching: vi.fn(), stopWatching: vi.fn() },
 }));
-vi.mock('../../sessionWatcher/projectKey', () => ({ cwdToProjectKey: () => null }));
+vi.mock('../../sessionWatcher/projectKey.js', () => ({ cwdToProjectKey: () => null }));
 
-import { resolveSpawnCwd } from '../index';
+import { resolveSpawnCwd } from '../index.js';
 
 describe('resolveSpawnCwd', () => {
   let tmp: string;

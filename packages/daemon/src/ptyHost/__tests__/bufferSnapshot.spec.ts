@@ -14,12 +14,12 @@
 import { describe, it, expect } from 'vitest';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import { SCROLLBACK } from '../entryFactory';
+import { SCROLLBACK } from '../entryFactory.js';
 import {
   getBufferSnapshot,
   SNAPSHOT_CHUNK_LINES,
-} from '../lifecycle';
-import type { Entry } from '../entryFactory';
+} from '../lifecycle.js';
+import type { Entry } from '../entryFactory.js';
 
 function makeRealHeadless(): { term: HeadlessTerminal; serialize: SerializeAddon } {
   const term = new HeadlessTerminal({
@@ -46,6 +46,8 @@ function fakeEntry(snapshot: string, seq: number = 0): Entry {
     rows: 24,
     cwd: '/tmp',
     seq,
+    pendingHeadlessWrites: 0,
+    backpressureWarned: false,
   };
 }
 

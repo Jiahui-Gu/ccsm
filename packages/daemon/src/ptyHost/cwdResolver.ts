@@ -10,7 +10,7 @@
 
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isSafePath } from '../security/pathGuards';
+import { isSafePath } from '../shared/pathGuards.js';
 
 export function resolveSpawnCwd(requested: string | null | undefined): string {
   const fallback = homedir();
