@@ -311,11 +311,15 @@ async function caseTitlebar({ app, win, log }) {
 // later cases (and the persisted user preference, if running outside the
 // harness) aren't perturbed.
 async function caseTray({ app, win, log, registerDispose }) {
-  const prevCloseAction = await win.evaluate(async () => {
-    return await window.ccsm.loadState('closeAction');
+  // Post-Wave-0e cutover (PR #976 / #980): renderer persistence moved from
+  // the deleted `window.ccsm.loadState/saveState` IPC to `localStorage`.
+  // The `closeAction` key keeps the same name; AppearancePane.tsx reads/writes
+  // it via `localStorage` directly. Mirror that here.
+  const prevCloseAction = await win.evaluate(() => {
+    return window.localStorage.getItem('closeAction');
   });
-  await win.evaluate(async () => {
-    await window.ccsm.saveState('closeAction', 'tray');
+  await win.evaluate(() => {
+    window.localStorage.setItem('closeAction', 'tray');
   });
   // Belt-and-suspenders: ensure the window is visible after we're done so
   // subsequent cases can interact with it (the harness window is shared).
@@ -325,13 +329,14 @@ async function caseTray({ app, win, log, registerDispose }) {
       try { w?.show(); } catch {}
     });
     try {
-      await win.evaluate(async (prev) => {
+      await win.evaluate((prev) => {
         if (prev == null) {
-          // No way to delete via the IPC; leave 'tray' (matches mac default
-          // and was the pre-#561 implicit behaviour).
+          // Leave 'tray' (matches mac default and was the pre-#561 implicit
+          // behaviour). We could removeItem here, but persisting 'tray' keeps
+          // subsequent cases deterministic regardless of the prior baseline.
           return;
         }
-        await window.ccsm.saveState('closeAction', prev);
+        window.localStorage.setItem('closeAction', prev);
       }, prevCloseAction);
     } catch {}
   });
@@ -381,11 +386,12 @@ async function caseTray({ app, win, log, registerDispose }) {
 // and re-run — Playwright auto-dismisses the renderer-side confirm and the
 // spy records zero invocations, so the probe fails.
 async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
-  const prevCloseAction = await win.evaluate(async () => {
-    return await window.ccsm.loadState('closeAction');
+  // See caseTray for the localStorage rationale (Wave 0e cutover).
+  const prevCloseAction = await win.evaluate(() => {
+    return window.localStorage.getItem('closeAction');
   });
-  await win.evaluate(async () => {
-    await window.ccsm.saveState('closeAction', 'ask');
+  await win.evaluate(() => {
+    window.localStorage.setItem('closeAction', 'ask');
   });
   registerDispose(async () => {
     await app.evaluate(({ BrowserWindow }) => {
@@ -393,14 +399,14 @@ async function caseCloseDialogIsNative({ app, win, log, registerDispose }) {
       try { w?.show(); } catch {}
     });
     try {
-      await win.evaluate(async (prev) => {
+      await win.evaluate((prev) => {
         if (prev == null) {
           // Restore to the win32/linux default to keep the harness baseline
           // sane (mac default is 'tray'). The next case can rely on this.
-          await window.ccsm.saveState('closeAction', 'ask');
+          window.localStorage.setItem('closeAction', 'ask');
           return;
         }
-        await window.ccsm.saveState('closeAction', prev);
+        window.localStorage.setItem('closeAction', prev);
       }, prevCloseAction);
     } catch {}
     // Pop the spy off so subsequent cases see the real dialog API.
@@ -1129,9 +1135,12 @@ async function caseSidebarLongNameTruncates({ win, log }) {
 // exist (the field is new) AND if it did, it would be > hydrateDoneAt.
 // On the fixed branch, `renderedAt` exists and is <= hydrateDoneAt.
 //
-// We additionally inject a slow `window.ccsm.loadState` (800ms delay) via
-// addInitScript before reload to extend the hydrated=false window long
-// enough for the MutationObserver below to capture the sidebar skeleton.
+  // We additionally inject a slow `localStorage.getItem('main')` (800ms busy-
+  // wait) via addInitScript before reload to extend the hydrated=false window
+  // long enough for the MutationObserver below to capture the sidebar skeleton.
+  // Pre-Wave-0e this wrapped `window.ccsm.loadState`; post-cutover (PR #976)
+  // persist.ts hydrates from `localStorage` directly, so we wrap the synchronous
+  // Storage API instead.
 async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // Inject a delay around loadState BEFORE the renderer bundle re-evaluates.
   // The init script runs on every navigation including win.reload(). Wrap in
@@ -1146,35 +1155,32 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // Install everything via context().addInitScript so it survives reload.
   await win.context().addInitScript(() => {
     window.__ccsm584InitRan = (window.__ccsm584InitRan || 0) + 1;
-    // Init scripts run at document_start — BEFORE preload finishes attaching
-    // `window.ccsm`. Poll briefly so we can wrap the IPC surfaces once they
-    // appear. Bail after ~2s to avoid leaking timers if something is wrong.
-    const deadline = Date.now() + 2000;
-    const tryWrap = () => {
-      try {
-        const ccsm = window.ccsm;
-        if (!ccsm) {
-          if (Date.now() < deadline) setTimeout(tryWrap, 5);
-          return;
-        }
-        // #584: delay loadState. Hydration sequence is fast (~30ms) because
-        // sqlite reads are local; the skeleton would otherwise paint for one
-        // frame and be gone before any test thread can observe it. Wrapping
-        // loadState extends the hydrated=false window long enough for the
-        // MutationObserver above to fire.
-        const originalLoad = ccsm.loadState;
-        if (originalLoad && !ccsm.__delayedLoadStateForStartupCase) {
-          ccsm.loadState = async (...args) => {
-            await new Promise((r) => setTimeout(r, 800));
-            return originalLoad.apply(ccsm, args);
-          };
-          ccsm.__delayedLoadStateForStartupCase = true;
-        }
-      } catch {
-        /* swallow — case will fail loudly below if wrap didn't take */
+    // Wrap Storage.prototype.getItem so the persist.ts STATE_KEY ('main')
+    // load — invoked synchronously from `loadPersisted()` inside the awaited
+    // hydrate chain — blocks for ~800ms. The renderer's initial React render
+    // runs BEFORE `void hydrateStore()` is dispatched (index.tsx synchronous
+    // render path, PR #976), so the skeleton paints first, then the busy-wait
+    // freezes the thread long enough for our MutationObserver-driven snapshot
+    // below to fire on the painted skeleton. Guarded so multiple init-script
+    // evaluations (each navigation) don't compound the delay.
+    try {
+      const proto = window.Storage && window.Storage.prototype;
+      if (proto && !proto.__ccsm584DelayedGetItem) {
+        const originalGetItem = proto.getItem;
+        proto.getItem = function (key) {
+          if (key === 'main') {
+            const until = Date.now() + 800;
+            // Synchronous busy-wait — blocks the renderer thread, which is
+            // exactly what the original async ccsm.loadState wrap simulated.
+            while (Date.now() < until) { /* spin */ }
+          }
+          return originalGetItem.call(this, key);
+        };
+        proto.__ccsm584DelayedGetItem = true;
       }
-    };
-    tryWrap();
+    } catch {
+      /* swallow — case will fail loudly below if wrap didn't take */
+    }
 
     // #584: observer that snapshots the sidebar skeleton the first time it
     // appears in the DOM. Survives the skeleton-to-loaded React handoff.
@@ -1315,7 +1321,7 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
       observerInstalled: window.__ccsm584ObserverInstalled,
       observerError: window.__ccsm584ObserverError,
       hydrated: window.__ccsmStore?.getState?.().hydrated,
-      loadStateWrapped: !!window.ccsm?.__delayedLoadStateForStartupCase,
+      loadStateWrapped: !!(window.Storage && window.Storage.prototype.__ccsm584DelayedGetItem),
       hasSidebarSkeleton: !!document.querySelector(
         '[data-testid="sidebar-skeleton"]'
       ),
