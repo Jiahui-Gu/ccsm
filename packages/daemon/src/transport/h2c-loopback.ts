@@ -74,7 +74,7 @@ export async function bindH2cLoopback(
   const boundPort = addr.port;
 
   const address = (): BoundAddress => ({
-    kind: 'loopback',
+    kind: 'KIND_TCP_LOOPBACK_H2C',
     host: '127.0.0.1',
     port: boundPort,
   });

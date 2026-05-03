@@ -51,7 +51,7 @@ describeWin('bindH2NamedPipe (win32)', () => {
     const pipe = freshPipeName();
     bound = await bindH2NamedPipe(server, { pipeName: pipe });
     const addr = bound.address();
-    expect(addr).toEqual({ kind: 'namedPipe', pipeName: `\\\\?\\pipe\\${pipe}` });
+    expect(addr).toEqual({ kind: 'KIND_NAMED_PIPE', pipeName: `\\\\?\\pipe\\${pipe}` });
   });
 
   it('serves an end-to-end h2 request over the pipe', async () => {

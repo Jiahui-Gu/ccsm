@@ -51,8 +51,8 @@ function fakeHook(): BindHook & { calls: BindDescriptor[]; stops: number } {
     calls.push(descriptor);
     // For loopback, simulate the OS assigning a real port if input was 0.
     const resolved: BindDescriptor =
-      descriptor.kind === 'loopbackTcp' && descriptor.port === 0
-        ? { kind: 'loopbackTcp', host: descriptor.host, port: 49152 }
+      descriptor.kind === 'KIND_TCP_LOOPBACK_H2C' && descriptor.port === 0
+        ? { kind: 'KIND_TCP_LOOPBACK_H2C', host: descriptor.host, port: 49152 }
         : descriptor;
     return {
       descriptor: resolved,
@@ -86,7 +86,7 @@ describe('makeListenerA — trait shape (T1.2 contract)', () => {
     const hook = fakeHook();
     const listener = makeListenerA(env, { bindHook: hook, platform: 'linux' });
     await listener.start();
-    expect(listener.descriptor()).toEqual({ kind: 'uds', path: '/tmp/y.sock' });
+    expect(listener.descriptor()).toEqual({ kind: 'KIND_UDS', path: '/tmp/y.sock' });
     expect(hook.calls).toHaveLength(1);
     await listener.stop();
   });
@@ -135,7 +135,7 @@ describe('makeListenerA — transport pick wiring (per-OS)', () => {
     const env = envWith('/tmp/uds-linux.sock');
     const hook = fakeHook();
     await makeListenerA(env, { bindHook: hook, platform: 'linux' }).start();
-    expect(hook.calls[0]).toEqual({ kind: 'uds', path: '/tmp/uds-linux.sock' });
+    expect(hook.calls[0]).toEqual({ kind: 'KIND_UDS', path: '/tmp/uds-linux.sock' });
   });
 
   it('darwin: pick is forwarded to bindHook as kind=uds', async () => {
@@ -143,7 +143,7 @@ describe('makeListenerA — transport pick wiring (per-OS)', () => {
     const hook = fakeHook();
     await makeListenerA(env, { bindHook: hook, platform: 'darwin' }).start();
     expect(hook.calls[0]).toEqual({
-      kind: 'uds',
+      kind: 'KIND_UDS',
       path: '/var/run/com.ccsm.daemon/daemon.sock',
     });
   });
@@ -153,7 +153,7 @@ describe('makeListenerA — transport pick wiring (per-OS)', () => {
     const hook = fakeHook();
     await makeListenerA(env, { bindHook: hook, platform: 'win32' }).start();
     expect(hook.calls[0]).toEqual({
-      kind: 'namedPipe',
+      kind: 'KIND_NAMED_PIPE',
       pipeName: '\\\\.\\pipe\\ccsm-daemon',
     });
   });
@@ -166,7 +166,7 @@ describe('makeListenerA — transport pick wiring (per-OS)', () => {
       const hook = fakeHook();
       await makeListenerA(env, { bindHook: hook, platform: 'linux' }).start();
       expect(hook.calls[0]).toEqual({
-        kind: 'loopbackTcp',
+        kind: 'KIND_TCP_LOOPBACK_H2C',
         host: '127.0.0.1',
         port: 0,
       });
@@ -196,13 +196,13 @@ describe('makeListenerA — start() failure surfacing', () => {
 describe('defaultBindHook — loopbackTcp end-to-end', () => {
   it('binds an ephemeral port and resolves the descriptor with the real port', async () => {
     const bound = await defaultBindHook({
-      kind: 'loopbackTcp',
+      kind: 'KIND_TCP_LOOPBACK_H2C',
       host: '127.0.0.1',
       port: 0,
     });
     try {
-      expect(bound.descriptor.kind).toBe('loopbackTcp');
-      if (bound.descriptor.kind === 'loopbackTcp') {
+      expect(bound.descriptor.kind).toBe('KIND_TCP_LOOPBACK_H2C');
+      if (bound.descriptor.kind === 'KIND_TCP_LOOPBACK_H2C') {
         expect(bound.descriptor.host).toBe('127.0.0.1');
         expect(bound.descriptor.port).toBeGreaterThan(0);
         expect(bound.descriptor.port).not.toBe(0);
@@ -214,7 +214,7 @@ describe('defaultBindHook — loopbackTcp end-to-end', () => {
 
   it('stop() is idempotent', async () => {
     const bound = await defaultBindHook({
-      kind: 'loopbackTcp',
+      kind: 'KIND_TCP_LOOPBACK_H2C',
       host: '127.0.0.1',
       port: 0,
     });
@@ -237,9 +237,9 @@ describe.skipIf(!POSIX)('defaultBindHook — uds end-to-end (POSIX only)', () =>
   });
 
   it('binds a UDS at the given path', async () => {
-    const bound = await defaultBindHook({ kind: 'uds', path: sockPath });
+    const bound = await defaultBindHook({ kind: 'KIND_UDS', path: sockPath });
     try {
-      expect(bound.descriptor).toEqual({ kind: 'uds', path: sockPath });
+      expect(bound.descriptor).toEqual({ kind: 'KIND_UDS', path: sockPath });
       const st = await stat(sockPath);
       // Different OS / FS report `isSocket()` differently — what
       // matters is that something exists at the path post-bind.
@@ -254,9 +254,9 @@ describe.skipIf(!POSIX)('defaultBindHook — uds end-to-end (POSIX only)', () =>
     // path; a real UDS file or a regular file both block `bind(2)` with
     // EADDRINUSE on POSIX, so the cleanup must handle both.
     await writeFile(sockPath, 'leftover');
-    const bound = await defaultBindHook({ kind: 'uds', path: sockPath });
+    const bound = await defaultBindHook({ kind: 'KIND_UDS', path: sockPath });
     try {
-      expect(bound.descriptor).toEqual({ kind: 'uds', path: sockPath });
+      expect(bound.descriptor).toEqual({ kind: 'KIND_UDS', path: sockPath });
     } finally {
       await bound.stop();
     }

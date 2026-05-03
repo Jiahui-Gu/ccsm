@@ -49,8 +49,8 @@ export const LISTENER_A_ID = 'listener-a' as const;
 
 /**
  * Result of a successful bind. The factory's `descriptor()` reads from
- * this — for `loopbackTcp` the `port` may differ from the input pick
- * (the OS assigns when input is `0`).
+ * this — for `KIND_TCP_LOOPBACK_H2C` the `port` may differ from the
+ * input pick (the OS assigns when input is `0`).
  *
  * Plain shape (no `Listener` discriminator) so `BindHook` callers stay
  * unaware of the trait vocabulary; this is the *sink*'s output, not the
@@ -68,8 +68,8 @@ export interface BoundTransport {
  * plain `net.Server`; T1.5 injects an http2-aware variant when it
  * lands. Returning a `BoundTransport` (not just a `Server`) lets the
  * hook own the resolved descriptor — the http2 hook can promote
- * `kind: 'loopbackTcp'` to `kind: 'tls'` etc. without the factory
- * caring.
+ * `kind: 'KIND_TCP_LOOPBACK_H2C'` to `kind: 'KIND_TCP_LOOPBACK_H2_TLS'`
+ * etc. without the factory caring.
  *
  * Errors during bind MUST reject the returned promise; the factory
  * surfaces them as a `start()` rejection so phase STARTING_LISTENERS
@@ -97,7 +97,7 @@ export type BindHook = (descriptor: BindDescriptor) => Promise<BoundTransport>;
 export const defaultBindHook: BindHook = async (descriptor) => {
   const server = createServer();
 
-  if (descriptor.kind === 'uds') {
+  if (descriptor.kind === 'KIND_UDS') {
     await removeStaleUdsPath(descriptor.path);
   }
 
@@ -196,50 +196,55 @@ function listenOnce(server: Server, descriptor: BindDescriptor): Promise<void> {
     server.once('listening', onListening);
 
     switch (descriptor.kind) {
-      case 'uds':
+      case 'KIND_UDS':
         server.listen({ path: descriptor.path });
         return;
-      case 'namedPipe':
+      case 'KIND_NAMED_PIPE':
         // Node treats a Windows named-pipe path identically to a UDS
         // path: `server.listen({ path })` where `path` matches
         // `\\.\pipe\<name>`. Same `net.Server.listen` API; only the
         // string shape differs.
         server.listen({ path: descriptor.pipeName });
         return;
-      case 'loopbackTcp':
+      case 'KIND_TCP_LOOPBACK_H2C':
         server.listen({ host: descriptor.host, port: descriptor.port });
         return;
-      case 'tls':
+      case 'KIND_TCP_LOOPBACK_H2_TLS':
         // Reserved for v0.4 Listener B per ch03 §1a; the v0.3 picker
         // never returns this variant. Throwing here makes a future
         // mis-pick fail loud at start() time instead of silently
         // binding nothing.
-        reject(new Error(`${LISTENER_A_ID}: tls bind not supported in v0.3`));
+        reject(
+          new Error(
+            `${LISTENER_A_ID}: KIND_TCP_LOOPBACK_H2_TLS bind not supported in v0.3`,
+          ),
+        );
         return;
     }
   });
 }
 
-/** Resolve the post-bind descriptor. For `loopbackTcp` with `port: 0`,
- * substitute the OS-assigned port. For UDS / named pipe, the descriptor
- * is unchanged (the OS does not rewrite the path). */
+/** Resolve the post-bind descriptor. For `KIND_TCP_LOOPBACK_H2C` with
+ * `port: 0`, substitute the OS-assigned port. For UDS / named pipe, the
+ * descriptor is unchanged (the OS does not rewrite the path). */
 function resolveBoundDescriptor(
   server: Server,
   planned: BindDescriptor,
 ): BindDescriptor {
-  if (planned.kind !== 'loopbackTcp') {
+  if (planned.kind !== 'KIND_TCP_LOOPBACK_H2C') {
     return planned;
   }
   const addr = server.address();
   if (addr === null || typeof addr === 'string') {
     // `string` shape happens for UDS-bound servers; we are in the
-    // `loopbackTcp` branch so this is unreachable in practice. Fall
-    // back to the planned descriptor rather than throw — the bind
-    // already succeeded so callers should still get a usable shape.
+    // `KIND_TCP_LOOPBACK_H2C` branch so this is unreachable in
+    // practice. Fall back to the planned descriptor rather than throw —
+    // the bind already succeeded so callers should still get a usable
+    // shape.
     return planned;
   }
   return {
-    kind: 'loopbackTcp',
+    kind: 'KIND_TCP_LOOPBACK_H2C',
     host: planned.host,
     port: addr.port,
   };
@@ -258,7 +263,7 @@ function closeServer(server: Server, descriptor: BindDescriptor): Promise<void> 
       // a leftover socket file. We ignore errors — a missing file is
       // fine, and a permission error means an operator is responsible
       // for cleanup, not us.
-      if (descriptor.kind === 'uds') {
+      if (descriptor.kind === 'KIND_UDS') {
         unlink(descriptor.path).catch(() => {
           /* swallow — see comment above */
         });

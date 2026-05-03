@@ -99,7 +99,7 @@ export function extractUdsPeerCred(
   lookup: UdsLookup = unsupportedUdsLookup,
 ): UdsPeerCred {
   const { uid, gid, pid } = lookup(socket);
-  return { transport: 'uds', uid, gid, pid };
+  return { transport: 'KIND_UDS', uid, gid, pid };
 }
 
 /**
@@ -123,7 +123,7 @@ export function extractNamedPipePeerCred(
     // accepted as a valid principal — spec ch05 §3 `uid MUST resolve`).
     throw new Error('named-pipe lookup returned empty SID');
   }
-  return { transport: 'namedPipe', sid, displayName };
+  return { transport: 'KIND_NAMED_PIPE', sid, displayName };
 }
 
 /**
@@ -156,7 +156,7 @@ export function extractLoopbackTcpPeer(
     }
   }
   return {
-    transport: 'loopbackTcp',
+    transport: 'KIND_TCP_LOOPBACK_H2C',
     bearerToken,
     remoteAddress,
     remotePort,

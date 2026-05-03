@@ -93,7 +93,7 @@ export async function bindH2Tls(
   const boundPort = addr.port;
 
   const address = (): BoundAddress => ({
-    kind: 'tls',
+    kind: 'KIND_TCP_LOOPBACK_H2_TLS',
     host: '127.0.0.1',
     port: boundPort,
     certFingerprintSha256: fingerprint,

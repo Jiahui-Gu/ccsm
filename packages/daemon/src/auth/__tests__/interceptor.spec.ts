@@ -25,7 +25,7 @@ import { PEER_INFO_KEY, type PeerInfo } from '../peer-info.js';
 
 describe('derivePrincipal', () => {
   it('UDS uid → local-user:<uid> with empty displayName', () => {
-    const p = derivePrincipal({ transport: 'uds', uid: 1000, gid: 100, pid: 1 });
+    const p = derivePrincipal({ transport: 'KIND_UDS', uid: 1000, gid: 100, pid: 1 });
     expect(p).toEqual({ kind: 'local-user', uid: '1000', displayName: '' });
   });
 
@@ -33,31 +33,31 @@ describe('derivePrincipal', () => {
     // This module derives identity, NOT authorization. Spec ch05 §3 says
     // uid MUST resolve; root is a valid uid. The supervisor admin
     // allowlist (T1.7) is the place that restricts who may call /shutdown.
-    const p = derivePrincipal({ transport: 'uds', uid: 0, gid: 0, pid: 1 });
+    const p = derivePrincipal({ transport: 'KIND_UDS', uid: 0, gid: 0, pid: 1 });
     expect(p.uid).toBe('0');
   });
 
   it('UDS rejects negative uid (impossible from kernel; defensive)', () => {
-    expect(() => derivePrincipal({ transport: 'uds', uid: -1, gid: 0, pid: 1 })).toThrow(
+    expect(() => derivePrincipal({ transport: 'KIND_UDS', uid: -1, gid: 0, pid: 1 })).toThrow(
       ConnectError,
     );
   });
 
   it('UDS rejects non-integer uid (defensive against addon bugs)', () => {
     expect(() =>
-      derivePrincipal({ transport: 'uds', uid: 1.5, gid: 0, pid: 1 } as PeerInfo),
+      derivePrincipal({ transport: 'KIND_UDS', uid: 1.5, gid: 0, pid: 1 } as PeerInfo),
     ).toThrow(/invalid uid/);
   });
 
   it('namedPipe SID → local-user:<sid> with the looked-up displayName', () => {
     const sid = 'S-1-5-21-1111-2222-3333-1001';
-    const p = derivePrincipal({ transport: 'namedPipe', sid, displayName: 'JDOE' });
+    const p = derivePrincipal({ transport: 'KIND_NAMED_PIPE', sid, displayName: 'JDOE' });
     expect(p).toEqual({ kind: 'local-user', uid: sid, displayName: 'JDOE' });
   });
 
   it('namedPipe rejects empty SID with Unauthenticated', () => {
     try {
-      derivePrincipal({ transport: 'namedPipe', sid: '', displayName: '' });
+      derivePrincipal({ transport: 'KIND_NAMED_PIPE', sid: '', displayName: '' });
       expect.fail('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(ConnectError);
@@ -67,7 +67,7 @@ describe('derivePrincipal', () => {
 
   it('loopbackTcp with the canonical test bearer token → local-user:test', () => {
     const p = derivePrincipal({
-      transport: 'loopbackTcp',
+      transport: 'KIND_TCP_LOOPBACK_H2C',
       bearerToken: TEST_BEARER_TOKEN,
       remoteAddress: '127.0.0.1',
       remotePort: 12345,
@@ -78,7 +78,7 @@ describe('derivePrincipal', () => {
   it('loopbackTcp with a wrong bearer token → Unauthenticated', () => {
     try {
       derivePrincipal({
-        transport: 'loopbackTcp',
+        transport: 'KIND_TCP_LOOPBACK_H2C',
         bearerToken: 'not-the-token',
         remoteAddress: '127.0.0.1',
         remotePort: 1,
@@ -93,7 +93,7 @@ describe('derivePrincipal', () => {
   it('loopbackTcp with no bearer token → Unauthenticated (no anonymous loopback path)', () => {
     expect(() =>
       derivePrincipal({
-        transport: 'loopbackTcp',
+        transport: 'KIND_TCP_LOOPBACK_H2C',
         bearerToken: null,
         remoteAddress: '127.0.0.1',
         remotePort: 1,
@@ -146,7 +146,7 @@ function makeReq(peer: PeerInfo): UnaryRequest {
 
 describe('peerCredAuthInterceptor', () => {
   it('publishes a Principal under PRINCIPAL_KEY and continues the chain (UDS)', async () => {
-    const req = makeReq({ transport: 'uds', uid: 1000, gid: 100, pid: 42 });
+    const req = makeReq({ transport: 'KIND_UDS', uid: 1000, gid: 100, pid: 42 });
     const next = makeNext();
 
     await peerCredAuthInterceptor(next)(req);
@@ -158,7 +158,7 @@ describe('peerCredAuthInterceptor', () => {
 
   it('publishes a Principal for a Windows named-pipe peer', async () => {
     const sid = 'S-1-5-21-1004336348-1177238915-682003330-1001';
-    const req = makeReq({ transport: 'namedPipe', sid, displayName: 'jdoe' });
+    const req = makeReq({ transport: 'KIND_NAMED_PIPE', sid, displayName: 'jdoe' });
     const next = makeNext();
 
     await peerCredAuthInterceptor(next)(req);
@@ -172,7 +172,7 @@ describe('peerCredAuthInterceptor', () => {
 
   it('accepts the test bearer token over loopback TCP and emits the test principal', async () => {
     const req = makeReq({
-      transport: 'loopbackTcp',
+      transport: 'KIND_TCP_LOOPBACK_H2C',
       bearerToken: TEST_BEARER_TOKEN,
       remoteAddress: '127.0.0.1',
       remotePort: 33333,
@@ -190,7 +190,7 @@ describe('peerCredAuthInterceptor', () => {
 
   it('rejects a loopback request without the bearer token (Unauthenticated, no handler called)', async () => {
     const req = makeReq({
-      transport: 'loopbackTcp',
+      transport: 'KIND_TCP_LOOPBACK_H2C',
       bearerToken: null,
       remoteAddress: '127.0.0.1',
       remotePort: 1,
@@ -208,7 +208,7 @@ describe('peerCredAuthInterceptor', () => {
 
   it('rejects a loopback request with a wrong token', async () => {
     const req = makeReq({
-      transport: 'loopbackTcp',
+      transport: 'KIND_TCP_LOOPBACK_H2C',
       bearerToken: 'sneaky',
       remoteAddress: '127.0.0.1',
       remotePort: 1,
@@ -248,7 +248,7 @@ describe('peerCredAuthInterceptor', () => {
     // ConnectError. (Negative uid throws a ConnectError already; this
     // path covers the non-ConnectError wrap branch.)
     const req = makeReq({
-      transport: 'mystery' as 'uds',
+      transport: 'mystery' as 'KIND_UDS',
       uid: 1,
       gid: 1,
       pid: 1,

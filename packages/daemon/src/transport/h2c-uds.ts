@@ -10,7 +10,7 @@
 // Adapter contract: takes a pre-built `Http2Server` (the listener layer
 // owns server construction + `connectNodeAdapter` wiring), binds it to
 // the supplied UDS path, and returns a `BoundTransport` whose
-// `address()` returns the resolved `kind: 'uds'` shape. `close()` is
+// `address()` returns the resolved `kind: 'KIND_UDS'` shape. `close()` is
 // idempotent and unlinks the socket file on the way out (a stale
 // daemon.sock would block the next boot's bind).
 //
@@ -86,7 +86,7 @@ export async function bindH2cUds(
   let closed = false;
   let closePromise: Promise<void> | null = null;
 
-  const address = (): BoundAddress => ({ kind: 'uds', path: spec.path });
+  const address = (): BoundAddress => ({ kind: 'KIND_UDS', path: spec.path });
 
   const close = async (): Promise<void> => {
     if (closed) return closePromise ?? Promise.resolve();

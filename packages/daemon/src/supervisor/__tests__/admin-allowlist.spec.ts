@@ -11,14 +11,14 @@ import {
 import type { NamedPipePeerCred, UdsPeerCred } from '../../auth/peer-info.js';
 
 const udsPeer = (uid: number): UdsPeerCred => ({
-  transport: 'uds',
+  transport: 'KIND_UDS',
   uid,
   gid: 100,
   pid: 4242,
 });
 
 const npPeer = (sid: string): NamedPipePeerCred => ({
-  transport: 'namedPipe',
+  transport: 'KIND_NAMED_PIPE',
   sid,
   displayName: '',
 });

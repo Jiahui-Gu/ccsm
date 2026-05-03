@@ -69,11 +69,15 @@ export interface TlsBindSpec {
  * fingerprint for descriptor pinning per spec ch03 §3.2 / §4 A3).
  */
 export type BoundAddress =
-  | { readonly kind: 'uds'; readonly path: string }
-  | { readonly kind: 'namedPipe'; readonly pipeName: string }
-  | { readonly kind: 'loopback'; readonly host: '127.0.0.1'; readonly port: number }
+  | { readonly kind: 'KIND_UDS'; readonly path: string }
+  | { readonly kind: 'KIND_NAMED_PIPE'; readonly pipeName: string }
   | {
-      readonly kind: 'tls';
+      readonly kind: 'KIND_TCP_LOOPBACK_H2C';
+      readonly host: '127.0.0.1';
+      readonly port: number;
+    }
+  | {
+      readonly kind: 'KIND_TCP_LOOPBACK_H2_TLS';
       readonly host: '127.0.0.1';
       readonly port: number;
       /** SHA-256 hex fingerprint of the server cert (lowercase, no

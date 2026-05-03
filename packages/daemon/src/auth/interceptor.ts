@@ -87,7 +87,7 @@ export const PRINCIPAL_KEY = createContextKey<Principal | null>(null, {
  */
 export function derivePrincipal(peer: PeerInfo): Principal {
   switch (peer.transport) {
-    case 'uds': {
+    case 'KIND_UDS': {
       // Linux / macOS UDS: kernel-vouched uid via SO_PEERCRED /
       // LOCAL_PEERCRED. Numeric uid stringified per spec ch05 §3.
       // displayName lookup (getpwuid_r / dscl) is best-effort and lives
@@ -101,7 +101,7 @@ export function derivePrincipal(peer: PeerInfo): Principal {
       }
       return { kind: 'local-user', uid: String(peer.uid), displayName: '' };
     }
-    case 'namedPipe': {
+    case 'KIND_NAMED_PIPE': {
       // Windows: ImpersonateNamedPipeClient → SID. SID-as-string is the
       // canonical form for `LocalUser.uid` per spec ch05 §3 — no separate
       // `sid` field on the principal (spec ch03 §5 commentary).
@@ -113,7 +113,7 @@ export function derivePrincipal(peer: PeerInfo): Principal {
       }
       return { kind: 'local-user', uid: peer.sid, displayName: peer.displayName };
     }
-    case 'loopbackTcp': {
+    case 'KIND_TCP_LOOPBACK_H2C': {
       // Test-only path: spec ch03 §4 lists loopback as a MUST-SPIKE
       // fallback; v0.3 production is UDS / named-pipe. We accept exactly
       // one stable bearer token (TEST_BEARER_TOKEN) so unit tests + smoke
@@ -167,7 +167,7 @@ export const peerCredAuthInterceptor: Interceptor = (next) => async (req) => {
   // contextValues clones the default on each get in some Connect
   // versions (defensive — works regardless of the runtime's behavior).
   if (
-    peer.transport === 'loopbackTcp' &&
+    peer.transport === 'KIND_TCP_LOOPBACK_H2C' &&
     peer.bearerToken === null &&
     peer.remoteAddress === '' &&
     peer.remotePort === 0

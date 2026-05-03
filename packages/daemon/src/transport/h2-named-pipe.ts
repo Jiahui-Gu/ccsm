@@ -88,7 +88,7 @@ export async function bindH2NamedPipe(
     bridge.listen(pipePath);
   });
 
-  const address = (): BoundAddress => ({ kind: 'namedPipe', pipeName: pipePath });
+  const address = (): BoundAddress => ({ kind: 'KIND_NAMED_PIPE', pipeName: pipePath });
 
   let closed = false;
   let closePromise: Promise<void> | null = null;

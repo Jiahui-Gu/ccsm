@@ -155,7 +155,7 @@ const peerInfoFromHeaderInterceptor: Interceptor = (next) => async (req) => {
     }
   }
   const peer: PeerInfo = {
-    transport: 'loopbackTcp',
+    transport: 'KIND_TCP_LOOPBACK_H2C',
     bearerToken,
     remoteAddress: '127.0.0.1',
     remotePort: 0,

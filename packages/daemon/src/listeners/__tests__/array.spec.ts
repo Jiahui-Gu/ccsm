@@ -23,7 +23,7 @@ function makeFakeListener(id: string): Listener {
       if (!started) {
         throw new Error('descriptor() called before start()');
       }
-      return { kind: 'uds', path: `/tmp/${id}.sock` };
+      return { kind: 'KIND_UDS', path: `/tmp/${id}.sock` };
     },
   };
 }

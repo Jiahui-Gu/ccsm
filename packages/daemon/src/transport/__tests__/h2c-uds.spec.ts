@@ -40,7 +40,7 @@ describePosix('bindH2cUds (POSIX)', () => {
     const path = freshSocketPath();
     bound = await bindH2cUds(server, { path });
     const addr = bound.address();
-    expect(addr).toEqual({ kind: 'uds', path });
+    expect(addr).toEqual({ kind: 'KIND_UDS', path });
     expect(existsSync(path)).toBe(true);
   });
 
