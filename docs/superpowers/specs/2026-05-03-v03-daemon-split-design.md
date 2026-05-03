@@ -1949,37 +1949,6 @@ CREATE TABLE cwd_state (
 3. The script also enforces that `packages/daemon/src/db/migrations/locked.ts` exports a `MIGRATION_LOCKS` const matching the release-tag SHAs; a developer who edits `001_initial.sql` and updates `locked.ts` to match will still fail CI because the script compares against the GitHub release body, not against `locked.ts`. `locked.ts` is the runtime self-check (daemon at boot computes SHAs of bundled migrations and asserts against `MIGRATION_LOCKS`); the GitHub release body is the source-of-truth that CI cross-checks.
 4. v0.4 adds `002_*.sql` etc.; CI extends the release-notes block with new entries at v0.4 tag time. The v0.3 entries remain forever — any deletion/edit of v0.3 files breaks CI on every subsequent PR.
 
-#### 4.5 v0.2 → v0.3 user-data migration (one-shot, installer-driven)
-
-<!-- F6: closes R1 P1.1 (chapter 08) — v0.2 user data migration narrative. F5 owns the §3 schema and §4 migration story; F6 owns this §4.5 migration narrative. -->
-
-The daemon split moves authoritative state from per-user Electron paths (`%APPDATA%\ccsm\` win, `~/Library/Application Support/ccsm/` mac, `${XDG_CONFIG_HOME:-~/.config}/ccsm/` linux) to the system-service paths in §2 above. v0.2 users upgrading to v0.3 would otherwise see a fully-empty app (no sessions, no settings, no crash log). v0.3 ships a one-shot **hybrid migration**:
-
-**What migrates** (best-effort; failure does not block first-launch):
-
-1. **Sessions** — v0.2's session metadata (sessions table in v0.2's per-user `ccsm.db`) is copied into the daemon's v0.3 `sessions` table. Owner is set to the migrating OS user's `principalKey` (`local-user:<uid>`). Sessions whose `claude` CLI process is no longer running land in `state = EXITED`; sessions still attached to a live PTY are NOT migrated (v0.3 does not inherit live PTY state from a terminated v0.2 instance — out of scope, and the v0.2 process must be quit before v0.3 install per [Chapter 10](#chapter-10--build-package-installer) §6 update flow).
-2. **Crash log** — v0.2's `crash_log`-equivalent rows (if any; v0.2 had Sentry only and no local crash table) are not migrated. v0.3 starts with an empty crash log; v0.2 crash history lives only in Sentry.
-
-**What is dropped with first-launch banner** (UI prefs):
-
-- `theme`, `fontSize`, `fontSizePx`, sidebar width, drafts, recent CWDs LRU, closeAction, notifyEnabled, crashReporting opt-out, last-used model, auto-update preference, sessionTitles backfill state, and other v0.2 `app_state` keys.
-- These keys could in principle migrate into `Settings.ui_prefs` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6), but v0.2's keys are renderer-private and the v0.3 renderer's expected key shape may differ. Rather than ship a brittle key-rewriter, v0.3 drops these and surfaces a one-time **first-launch banner**:
-
-  > **Welcome back to ccsm v0.3.** Your sessions have been migrated. UI preferences (theme, font, drafts, etc.) reset to defaults — please reconfigure under Settings. [Dismiss] [Open Settings]
-
-  The banner reads/writes `Settings.ui_prefs["migration.v02_to_v03_banner_dismissed"] = "true"` to suppress on subsequent launches.
-
-**Mechanism (installer-driven, NOT runtime-detected)**:
-
-1. The v0.3 installer ([Chapter 10](#chapter-10--build-package-installer) §5) checks for the presence of a v0.2 user-data directory at the per-OS path enumerated above for the installing OS user.
-2. If found, the installer copies (does NOT move — v0.2 directory is preserved for rollback) v0.2's `ccsm.db` to a staging location under the daemon's state root (`<state>/migration-staging/v02-<uid>.db`).
-3. On first daemon boot post-install, the daemon detects staging files, runs a one-shot migrator that opens the staged DB, reads the sessions table, INSERTs into the v0.3 `sessions` table, and renames the staging file to `<state>/migration-staging/v02-<uid>.db.imported-<ts>`.
-4. The daemon writes a `migration` capture-source crash_log entry on success (severity `info` — extends the §1 source set with a positive-outcome row; honored as additive per [Chapter 09](#chapter-09--crash-collector) §1 open-set rule) so the user sees an audit trail in Settings → Crash Reporting.
-5. On migration failure (corrupt staged DB, schema-mismatch, etc.), the daemon emits a `migration` source crash_log entry with severity `warn` and the user lands at v0.3 with an empty session list. The first-launch banner is upgraded to mention the failure ("Sessions could not be migrated; see Crash Reporting for details").
-6. v0.2 user-data directory is NEVER deleted by v0.3 — uninstalling v0.3 leaves v0.2 data intact. The user manually removes v0.2's `%APPDATA%\ccsm\` once they're confident in v0.3.
-
-**v0.4 implication**: the migrator is one-shot and DELETED after v0.4 ships — by then v0.2 → v0.3 jumps are rare enough that maintenance cost outweighs benefit. v0.4 may add v0.3 → v0.4 migration if needed (additive new file under the same `migration-staging/` mechanism).
-
 #### 5. Write coalescing
 
 - pty-host workers `postMessage({ kind: "delta", sessionId, seq, payload, tsMs })` to main thread.
