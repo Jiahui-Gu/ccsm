@@ -129,36 +129,69 @@ export interface RendererBootProps {
    * spy on `invalidateQueries` etc.
    */
   readonly queryClient?: QueryClient;
+  /**
+   * Inject a pre-built `CcsmClients` bundle. When provided, the gate
+   * mounts `<ClientsProvider>` synchronously on first render — useful
+   * for tests that drive the hook layer with a stub Transport without
+   * waiting for the async descriptor-fetch effect to land. Production
+   * callers omit and let the gate build clients from the descriptor.
+   */
+  readonly clients?: CcsmClients;
 }
 
 /**
- * Tiny inner component: reads `useConnection()` to decide the boot phase.
+ * Tiny inner component: bridges connection state to the cold-start modal,
+ * AND eagerly builds the typed clients bundle from a fresh transport so
+ * the renderer tree always has a `<ClientsProvider>` available even
+ * before the first Hello succeeds.
  *
- * Phases:
- *   - `connecting` / `reconnecting` / `version-mismatch`: render the
- *     cold-start modal layered over a neutral placeholder. Children are
- *     NOT mounted — `useClients()` would throw without a provider.
- *   - `connected`: build clients from a fresh transport against the
- *     descriptor (we re-fetch the descriptor here because
- *     `<ConnectionProvider>` does not expose the one it used internally,
- *     and Electron main caches nothing — the second fetch is cheap and
- *     hits the same `protocol.handle` snapshot of `listener-a.json`).
- *     Mount `<ClientsProvider>` + children.
+ * Why "always render children" (rather than gating on `state.kind ===
+ * 'connected'`):
+ *   - `<App/>` contains UI that MUST be visible regardless of daemon
+ *     status (window chrome, settings, OS-native dialogs). Gating render
+ *     here would break every existing e2e harness that drives `<App/>`
+ *     without a daemon (the e2e harnesses still use `window.ccsm*`
+ *     stubs; the cutover to RPC hooks is task #215).
+ *   - `<ConnectionProvider>` itself documents "renders children
+ *     unconditionally"; this gate mirrors that contract.
+ *   - The cold-start modal is a layered overlay (`<dialog open>`), not a
+ *     tree replacement.
  *
- * SRP: producer = `useConnection()` state events; decider = the switch on
- * `state.kind`; sink = `<ClientsProvider>` + modal portal.
+ * Why eagerly build clients (don't wait for Hello):
+ *   - Once #215 cuts over, `useListSessions(...)` etc. inside `<App/>`
+ *     need a `<ClientsProvider>` mounted or `useClients()` throws. We
+ *     mount it as soon as the descriptor is reachable — Hello runs in
+ *     parallel via `<ConnectionProvider>`. If the daemon is down, the
+ *     hook calls fail with a transport error and React Query surfaces
+ *     `error`; the cold-start modal blocks the user from interacting
+ *     either way.
+ *   - If even the descriptor fetch fails (Electron main not ready /
+ *     `protocol.handle` not registered), `<ClientsProvider>` is NOT
+ *     mounted — calls to `useClients()` would throw, but pre-#215 there
+ *     are zero such call sites; post-#215 the same path runs after
+ *     descriptor success, so it's a non-issue in steady state.
+ *
+ * SRP: producer = `useConnection()` state events + descriptor-fetch
+ * effect; decider = the modal `open` flag (delegated to T6.8); sink =
+ * `<ClientsProvider>` mount + modal element.
  */
 function ColdStartGate(props: {
   readonly children: React.ReactNode;
   readonly fetchDescriptor: () => Promise<DescriptorV1>;
   readonly buildTransport: (d: DescriptorV1) => Transport;
+  readonly initialClients?: CcsmClients;
 }): React.ReactElement {
   const { state } = useConnection();
   const modal = useDaemonColdStartModal();
 
-  // Build the clients bundle exactly once per `connected` transition.
+  // Build the clients bundle as soon as the descriptor is reachable.
   // Identity-stable across re-renders so child queries do not re-key.
-  const [clients, setClients] = React.useState<CcsmClients | null>(null);
+  // When the caller pre-supplies `initialClients` (tests), use it
+  // synchronously on first render so the hook layer is reachable
+  // without waiting for the descriptor-fetch effect.
+  const [clients, setClients] = React.useState<CcsmClients | null>(
+    props.initialClients ?? null,
+  );
   // `bootId` of the descriptor the clients were built against. If the
   // connection flips to a NEW bootId (daemon restart, detected by T6.7),
   // we rebuild the bundle so all subsequent RPCs target the new daemon's
@@ -175,31 +208,43 @@ function ColdStartGate(props: {
   buildTransportRef.current = props.buildTransport;
 
   // Pluck the bootId out so the effect dep is a primitive (eslint
-  // exhaustive-deps refuses a complex expression in the array).
-  const connectedBootId = state.kind === 'connected' ? state.bootId : null;
+  // exhaustive-deps refuses a complex expression in the array). When
+  // the connection is not yet `connected`, attempt boot ONCE on mount
+  // (sentinel `__pending__`); on every successful Hello, rebuild against
+  // the descriptor's current bootId.
+  const connectedBootId = state.kind === 'connected' ? state.bootId : '__pending__';
 
   React.useEffect(() => {
-    if (connectedBootId === null) return undefined;
     if (builtForBootIdRef.current === connectedBootId) return undefined;
     let cancelled = false;
     void (async () => {
       try {
-        // Re-read the descriptor: it's the source of truth for the bridge
-        // URL the daemon is reachable through right now. `<ConnectionProvider>`
-        // already proved it's reachable, so this fetch is a near-certain
-        // hit against the same `protocol.handle` snapshot.
+        // Fetch the descriptor and build a fresh transport. Whether or
+        // not Hello has already run is irrelevant — the descriptor URL
+        // is the source of truth for the bridge address. If the daemon
+        // is down, the resulting clients will fail their RPC calls;
+        // React Query surfaces those as `error` and the cold-start
+        // modal stays up until `<ConnectionProvider>` succeeds.
         const descriptor = await fetchDescriptorRef.current();
         if (cancelled) return;
         const transport = buildTransportRef.current(descriptor);
         const next = createClients(transport);
-        builtForBootIdRef.current = descriptor.boot_id;
+        builtForBootIdRef.current = connectedBootId;
         setClients(next);
       } catch (err) {
-        // Descriptor fetch should not fail right after a successful Hello,
-        // but if it does we leave `clients === null` so the cold-start
-        // modal stays up + the connection driver retries.
-        // eslint-disable-next-line no-console
-        console.error('[ccsm/renderer/boot] failed to build clients:', err);
+        // Descriptor fetch failed (Electron main not ready / `app://`
+        // scheme not registered yet). Leave `clients === null` so the
+        // children render WITHOUT a `<ClientsProvider>` — pre-#215 no
+        // call site needs one. We do NOT log an error at the warn level
+        // because in development the renderer often outruns main's
+        // protocol registration; the connection driver retries.
+        if (!cancelled) {
+          // eslint-disable-next-line no-console
+          console.debug(
+            '[ccsm/renderer/boot] descriptor unreachable; deferring ClientsProvider mount:',
+            err,
+          );
+        }
       }
     })();
     return () => {
@@ -213,10 +258,17 @@ function ColdStartGate(props: {
     <DaemonNotRunningModal open={modal.open} onRetry={modal.onRetry} />
   );
 
-  // Children only mount after we have a clients bundle. Until then the
-  // user sees the (possibly still-closed) cold-start modal alone.
-  if (state.kind !== 'connected' || clients === null) {
-    return <>{overlay}</>;
+  // Children render UNCONDITIONALLY (see file header). When clients are
+  // available we wrap them in `<ClientsProvider>`; when not, they render
+  // bare — that's only legal pre-#215 (no call site uses `useClients()`
+  // yet) and during the brief descriptor-fetch race in v0.3.
+  if (clients === null) {
+    return (
+      <>
+        {props.children}
+        {overlay}
+      </>
+    );
   }
 
   return (
@@ -270,6 +322,7 @@ export function RendererBoot(props: RendererBootProps): React.ReactElement {
         <ColdStartGate
           fetchDescriptor={fetchDescriptor}
           buildTransport={buildTransport}
+          initialClients={props.clients}
         >
           {props.children}
         </ColdStartGate>

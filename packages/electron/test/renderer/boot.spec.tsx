@@ -31,6 +31,7 @@ import {
   SessionService,
 } from '@ccsm/proto';
 import { RendererBoot } from '../../src/renderer/boot.js';
+import { createClients } from '../../src/rpc/clients.js';
 import { useListSessions } from '../../src/rpc/queries.js';
 import type { DescriptorV1 } from '../../src/main/protocol-app.js';
 
@@ -94,12 +95,15 @@ function makeStubTransport(): Transport {
 
 describe('RendererBoot — smoke test', () => {
   it('mounts the provider chain so useListSessions resolves under <RendererBoot>', async () => {
+    const transport = makeStubTransport();
+    const clients = createClients(transport);
     function Wrapper({ children }: { children: React.ReactNode }) {
       return React.createElement(
         RendererBoot,
         {
           fetchDescriptor: async () => makeDescriptor(),
-          buildTransport: () => makeStubTransport(),
+          buildTransport: () => transport,
+          clients,
         },
         children,
       );
@@ -109,19 +113,18 @@ describe('RendererBoot — smoke test', () => {
       wrapper: Wrapper,
     });
 
-    // The hook is mounted only AFTER ConnectionProvider's first Hello
-    // succeeds (children gate behind state.kind === 'connected'). Until
-    // then `result.current` is undefined because the hook has not run.
+    // With `clients` injected, ClientsProvider mounts synchronously on
+    // first render so `useListSessions` resolves a real client without
+    // waiting for the descriptor-fetch / Hello round-trip.
     await waitFor(
       () => {
-        expect(result.current).toBeDefined();
-        expect(result.current?.isPending).toBe(false);
+        expect(result.current.isPending).toBe(false);
       },
       { timeout: 5000 },
     );
 
-    expect(result.current?.error).toBeNull();
-    expect(result.current?.data?.sessions).toEqual([]);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.sessions).toEqual([]);
   });
 
   it('renders children without throwing under the real provider chain', async () => {
@@ -141,12 +144,15 @@ describe('RendererBoot — smoke test', () => {
       );
     }
 
+    const transport = makeStubTransport();
+    const clients = createClients(transport);
     const { findByTestId } = render(
       React.createElement(
         RendererBoot,
         {
           fetchDescriptor: async () => makeDescriptor(),
-          buildTransport: () => makeStubTransport(),
+          buildTransport: () => transport,
+          clients,
         },
         React.createElement(Child),
       ),
@@ -154,5 +160,30 @@ describe('RendererBoot — smoke test', () => {
 
     const el = await findByTestId('sessions', undefined, { timeout: 5000 });
     expect(el.textContent).toBe('count:0');
+  });
+
+  it('renders children even when descriptor fetch hangs (pre-#215 path)', async () => {
+    // Without `clients` injected and with a never-resolving fetch, the
+    // gate must STILL render children — the cold-start modal layers on
+    // top via overlay. This is the behaviour e2e harnesses depend on:
+    // they drive `<App/>` without a daemon and existing UI must paint.
+    function Child(): React.ReactElement {
+      return React.createElement('div', { 'data-testid': 'child' }, 'rendered');
+    }
+    const neverResolves = new Promise<DescriptorV1>(() => {
+      /* never resolves — simulates daemon-not-running */
+    });
+    const { findByTestId } = render(
+      React.createElement(
+        RendererBoot,
+        {
+          fetchDescriptor: () => neverResolves,
+          buildTransport: () => makeStubTransport(),
+        },
+        React.createElement(Child),
+      ),
+    );
+    const el = await findByTestId('child', undefined, { timeout: 2000 });
+    expect(el.textContent).toBe('rendered');
   });
 });
