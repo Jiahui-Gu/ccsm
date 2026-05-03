@@ -1,3 +1,4 @@
+/* global process, setTimeout, setImmediate */
 // Test fixture: a minimal pty-host child stand-in. Mirrors the IPC
 // protocol of `src/pty-host/child.ts` (spawn → ready → close → exit 0)
 // but does not depend on any TS imports — this is pure ESM JS so it can
