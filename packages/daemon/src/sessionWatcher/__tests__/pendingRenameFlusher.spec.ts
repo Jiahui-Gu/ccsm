@@ -5,8 +5,8 @@
 // on the first fileExists=true tick per sid.
 
 import { describe, it, expect, vi } from 'vitest';
-import { PendingRenameFlusherSink } from '../pendingRenameFlusher';
-import type { FileTick } from '../fileSource';
+import { PendingRenameFlusherSink } from '../pendingRenameFlusher.js';
+import type { FileTick } from '../fileSource.js';
 
 function tick(sid: string, fileExists: boolean): FileTick {
   return { sid, text: fileExists ? '{}\n' : '', fileExists, ts: Date.now() };

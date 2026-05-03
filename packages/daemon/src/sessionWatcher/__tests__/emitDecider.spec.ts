@@ -9,7 +9,7 @@ import {
   decideStateEmit,
   decideTitleEmit,
   decideFlushPending,
-} from '../emitDecider';
+} from '../emitDecider.js';
 
 describe('decideStateEmit', () => {
   it('returns true on first emission (prev=null)', () => {

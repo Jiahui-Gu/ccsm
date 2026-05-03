@@ -1,8 +1,8 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import * as readline from 'readline';
-import { getClaudeProjectsDir } from './shared/claudePaths';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import * as readline from 'node:readline';
+import { getClaudeProjectsDir } from '../shared/claudePaths.js';
 
 export type ScannableSession = {
   sessionId: string;

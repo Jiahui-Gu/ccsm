@@ -75,11 +75,15 @@ const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
   // top-level main-process modules
   ['badgeController', 'badgeController.js'],
 
-  // sessionWatcher producer/sink layer
-  ['sessionWatcher/fileSource', 'sessionWatcher/fileSource.js'],
-  ['sessionWatcher/pendingRenameFlusher', 'sessionWatcher/pendingRenameFlusher.js'],
-  ['sessionWatcher/stateEmitter', 'sessionWatcher/stateEmitter.js'],
-  ['sessionWatcher/titleEmitter', 'sessionWatcher/titleEmitter.js'],
+  // sessionWatcher shim — real producer/sink modules (fileSource,
+  // pendingRenameFlusher, stateEmitter, titleEmitter) live under
+  // packages/daemon/src/sessionWatcher/* post-Wave-0d.2 (Task #250).
+  // The electron-side shim at electron/sessionWatcher/index.ts uses
+  // `export * from '../../packages/daemon/src/sessionWatcher/index'`,
+  // so loading the compiled shim transitively requires every real
+  // module — any ESM/CJS regression in them still surfaces here.
+  // The daemon package owns its own per-module load coverage via
+  // packages/daemon/src/sessionWatcher/__tests__/*.spec.ts.
   ['sessionWatcher/index', 'sessionWatcher/index.js'],
 
   // ptyHost runtime/sink layer

@@ -7,9 +7,9 @@
 // Knows nothing about: title derivation, pendingRename flush, IPC, notify,
 // or the EventEmitter surface. Whoever wires it up provides `emit`.
 
-import { classifyJsonlText, type WatcherState } from './inference';
-import { decideStateEmit } from './emitDecider';
-import type { FileTick } from './fileSource';
+import { classifyJsonlText, type WatcherState } from './inference.js';
+import { decideStateEmit } from './emitDecider.js';
+import type { FileTick } from './fileSource.js';
 
 export interface StateChangedPayload {
   sid: string;

@@ -35,7 +35,7 @@
 // Kept as `WatcherState` because every existing caller in this subtree
 // (emitDecider, stateEmitter, tests) imports it under that name. Tech-debt
 // audit #10 item #2: dedupe the 3-state union without churning callers.
-import type { SessionState } from '../../src/shared/sessionState';
+import type { SessionState } from '../shared/sessionState.js';
 export type WatcherState = SessionState;
 
 interface ToolUseRef { id: string }

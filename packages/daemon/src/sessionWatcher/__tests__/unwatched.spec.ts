@@ -4,7 +4,7 @@
 // state when a CLI session ends.
 
 import { describe, it, expect } from 'vitest';
-import { __createForTest, type UnwatchedEvent } from '../index';
+import { __createForTest, type UnwatchedEvent } from '../index.js';
 
 describe('sessionWatcher unwatched event', () => {
   it('fires when stopWatching drops an entry', () => {

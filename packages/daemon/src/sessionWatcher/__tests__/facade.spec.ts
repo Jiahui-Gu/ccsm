@@ -19,7 +19,7 @@ import {
   sessionWatcher,
   type UnwatchedEvent,
   type TitleChangedEvent,
-} from '../index';
+} from '../index.js';
 
 let tmpRoot: string | null = null;
 

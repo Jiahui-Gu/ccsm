@@ -9,8 +9,8 @@
 //     same state after forget should fire a fresh event.
 
 import { describe, it, expect, vi } from 'vitest';
-import { StateEmitterSink, type StateChangedPayload } from '../stateEmitter';
-import type { FileTick } from '../fileSource';
+import { StateEmitterSink, type StateChangedPayload } from '../stateEmitter.js';
+import type { FileTick } from '../fileSource.js';
 
 function tick(sid: string, frames: Array<Record<string, unknown>>): FileTick {
   const text = frames.map((f) => JSON.stringify(f)).join('\n') + (frames.length ? '\n' : '');
