@@ -15,11 +15,10 @@ export default defineConfig({
       'src/**/*.spec.ts',
       'build/**/*.spec.ts',
       'eslint-plugins/**/*.spec.ts',
-      // `test/**` is the home for forever-stable invariants specs that watch
-      // shipped constants for accidental drift (T10.1 migration-lock, T10.7
-      // state-dir paths, etc.). They live outside `src/` so they cannot be
-      // accidentally pulled into the runtime bundle (`tsconfig.json` rootDir
-      // is `src`).
+      // T8.11 + T8.x integration specs live under test/integration/. Spec
+      // ch12 §3 mandates the `.spec.ts` extension uniformly across all
+      // layers (no `.test.ts`). The legacy `test/db/migration-lock.spec.ts`
+      // unit-style placement is also covered by `test/**/*.spec.ts`.
       'test/**/*.spec.ts',
     ],
     globals: false,

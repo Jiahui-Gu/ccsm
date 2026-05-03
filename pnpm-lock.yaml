@@ -235,6 +235,18 @@ importers:
         specifier: ^12.9.0
         version: 12.9.0
     devDependencies:
+      '@bufbuild/protobuf':
+        specifier: ^2.12.0
+        version: 2.12.0
+      '@ccsm/proto':
+        specifier: workspace:*
+        version: link:../proto
+      '@connectrpc/connect':
+        specifier: ^2.1.1
+        version: 2.1.1(@bufbuild/protobuf@2.12.0)
+      '@connectrpc/connect-node':
+        specifier: ^2.1.1
+        version: 2.1.1(@bufbuild/protobuf@2.12.0)(@connectrpc/connect@2.1.1(@bufbuild/protobuf@2.12.0))
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
