@@ -30,7 +30,7 @@
 // when they land).
 
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 
 import { runMigrations } from './db/migrations/runner.js';
 import { checkAndRecover, makeRecoveryFlag, type RecoveryFlag } from './db/recovery.js';
@@ -92,7 +92,7 @@ export async function runStartup(
   // pins the DB and crash-raw filenames to this module's constants.
   const sp = statePaths();
   const recovery = checkAndRecover({
-    dbPath: sp.sessionsDb,
+    dbPath: sp.db,
     crashRawPath: sp.crashRaw,
     flag: recoveryFlag,
   });
@@ -102,7 +102,7 @@ export async function runStartup(
     );
   }
 
-  const dbPath = join(env.paths.stateDir, 'ccsm.db');
+  const dbPath = sp.db;
   // Ensure parent dir exists — installer normally creates stateDir, but
   // dev/smoke runs may point CCSM_STATE_DIR at a brand-new tmp dir.
   mkdirSync(dirname(dbPath), { recursive: true });

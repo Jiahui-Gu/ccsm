@@ -26,7 +26,7 @@ describe('checkAndRecover (T5.7 — ch07 §6)', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ccsm-daemon-recovery-'));
-    dbPath = join(tmpDir, 'sessions.db');
+    dbPath = join(tmpDir, 'ccsm.db');
     crashRawPath = join(tmpDir, 'crash-raw.ndjson');
   });
 

@@ -45,7 +45,7 @@ export interface StatePaths {
    */
   readonly descriptorsDir: string;
   /** SQLite database file (ch07 §2 — DB path column / §3 schema). */
-  readonly sessionsDb: string;
+  readonly db: string;
   /** Crash collector raw NDJSON file (ch07 §2 / ch09). */
   readonly crashRaw: string;
 }
@@ -81,7 +81,7 @@ export function statePaths(
     root,
     descriptor: join(root, 'listener-a.json'),
     descriptorsDir: join(root, 'descriptors'),
-    sessionsDb: join(root, 'sessions.db'),
+    db: join(root, 'ccsm.db'),
     crashRaw: join(root, 'crash-raw.ndjson'),
   });
 }
@@ -113,7 +113,7 @@ function stateRoot(platform: StateDirPlatform, env: NodeJS.ProcessEnv): string {
  * per ch10 §5 / ch07 §2). We still pass it for consistency.
  *
  * Returns the resolved StatePaths so callers can chain
- * `const paths = await ensureStateDir(); openDb(paths.sessionsDb);`.
+ * `const paths = await ensureStateDir(); openDb(paths.db);`.
  */
 export async function ensureStateDir(
   platform: StateDirPlatform = process.platform,
