@@ -5,9 +5,12 @@
   "type": "module",
   "description": "CCSM daemon (headless RPC server). Skeleton only; implementation lands in subsequent T0.x / T1.x tasks per design spec ch11.",
   "scripts": {
-    "lint": "eslint \"src/**/*.ts\" \"eslint-plugins/**/*.{js,ts}\"",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint \"src/**/*.ts\" \"eslint-plugins/**/*.{js,ts}\" \"build/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "build:sea:posix": "bash build/build-sea.sh",
+    "build:sea:win": "powershell -ExecutionPolicy Bypass -File build/build-sea.ps1"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0"
