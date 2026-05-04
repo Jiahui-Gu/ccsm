@@ -33,8 +33,10 @@ import type {
   ChildExit,
   ChildToHostMessage,
   HostToChildMessage,
+  SnapshotMessage,
   SpawnPayload,
 } from './types.js';
+import type { SnapshotWrite } from '../sqlite/coalescer.js';
 
 /**
  * Configuration for `spawnPtyHostChild`. All fields beyond `payload`
@@ -103,6 +105,39 @@ export interface SpawnPtyHostChildOptions {
         readonly register: (emitter: PtySessionEmitter) => void;
         readonly unregister: (sessionId: string) => boolean;
       };
+  /**
+   * Optional sink that receives every well-formed `'snapshot'` IPC the
+   * child sends, mapped from the IPC {@link SnapshotMessage} shape into a
+   * {@link SnapshotWrite} (the coalescer's narrow payload).
+   *
+   * T4.11a (Task #386) wire-up: spec ch07 §5 assumes a SQLite write path
+   * exists for snapshots so the 3-strike DEGRADED counter has something to
+   * count against. Before this wire-up, the snapshot IPC was only fanned
+   * out to the in-memory {@link PtySessionEmitter}; there was no caller of
+   * {@link import('../sqlite/coalescer.js').WriteCoalescer.enqueueSnapshot}
+   * anywhere in the daemon. Routing snapshots into both the emitter (live
+   * fan-out) and the coalescer (durable persistence) is non-mutually-
+   * exclusive: the emitter feeds Attach subscribers from RAM, the
+   * coalescer persists to `pty_snapshot` for cold-attach replay.
+   *
+   * Production: daemon main constructs the {@link import('../sqlite/coalescer.js').WriteCoalescer}
+   * once at boot (with the shared SQLite handle) and passes the same
+   * instance into every `spawnPtyHostChild` call. Tests may pass a stub
+   * implementing only `enqueueSnapshot` (duck-typed) to assert call
+   * shape without standing up a real DB.
+   *
+   * Unset (or explicitly `undefined`) opts the snapshot→SQLite path out
+   * entirely — useful for tests covering only the emitter / lifecycle
+   * surfaces and for the daemon-boot path before T5.x stitches the
+   * coalescer in. The emitter fan-out is unaffected by this option.
+   *
+   * The 60s DEGRADED cooldown + `session_state_changed` PtyFrame proto
+   * change are explicitly out of scope here — they ship in Task #385,
+   * which is blocked-by this wire-up.
+   */
+  readonly coalescer?: {
+    readonly enqueueSnapshot: (write: SnapshotWrite) => void;
+  };
 }
 
 /**
@@ -313,6 +348,51 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
         emitter.publishSnapshot(raw);
       } else if (raw.kind === 'delta') {
         emitter.publishDelta(raw);
+      }
+    }
+    // T4.11a (Task #386) — snapshot→WriteCoalescer wire-up. Runs in
+    // parallel with the emitter fan-out above (in-memory live stream)
+    // and writes a `pty_snapshot` row for cold-attach replay
+    // (spec ch07 §5). Skipped silently when no coalescer was injected
+    // (tests covering only emitter/lifecycle surfaces, or daemon-boot
+    // paths before T5.x stitches the coalescer in).
+    //
+    // Mapping IPC SnapshotMessage → SnapshotWrite: the IPC shape
+    // (pty-host/types.ts SnapshotMessage) is what the child posts; the
+    // coalescer's payload (sqlite/coalescer.ts SnapshotWrite) is the
+    // narrow column subset for `pty_snapshot`. We hold sessionId on the
+    // host (resolved at fork time from `opts.payload.sessionId`) — the
+    // child's IPC envelope intentionally does NOT carry sessionId
+    // because the daemon-side IPC channel is one-to-one with a session.
+    // `createdMs` uses Date.now() at receive time; the IPC payload does
+    // not carry a capture timestamp (spec §2.4 SnapshotMessage), and
+    // jitter at this layer is bounded by the IPC RTT (sub-ms locally).
+    if (opts.coalescer !== undefined && raw.kind === 'snapshot') {
+      const snap = raw satisfies SnapshotMessage;
+      try {
+        opts.coalescer.enqueueSnapshot({
+          kind: 'snapshot',
+          sessionId,
+          baseSeq: Number(snap.baseSeq),
+          schemaVersion: snap.schemaVersion,
+          geometryCols: snap.geometry.cols,
+          geometryRows: snap.geometry.rows,
+          payload: snap.screenState,
+          createdMs: Date.now(),
+        });
+      } catch (err) {
+        // The coalescer's documented throw paths are RESOURCE_EXHAUSTED
+        // (queue cap) and programmer-error rethrows. Both are session-
+        // scoped and must NOT crash the daemon main process — the
+        // session keeps running off the in-memory ring (emitter
+        // fan-out above). The DEGRADED state machine + `crash_log`
+        // wiring lives elsewhere (Task #385 / ch07 §5); here we only
+        // need to keep the IPC pump alive.
+        // eslint-disable-next-line no-console
+        console.error(
+          `[ccsm-daemon] spawnPtyHostChild(${sessionId}): coalescer.enqueueSnapshot threw`,
+          err,
+        );
       }
     }
     pushMessage(raw);
