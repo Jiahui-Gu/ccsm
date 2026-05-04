@@ -80,13 +80,19 @@ describe('assertWired (Task #221)', () => {
     expect(() => assertWired(HARD_REQUIRED)).not.toThrow();
   });
 
-  it('REQUIRED_COMPONENTS exposes the canonical 6-component list in stable order', () => {
+  it('REQUIRED_COMPONENTS exposes the canonical component list in stable order', () => {
+    // Order is load-bearing — daemon-boot-end-to-end.spec.ts relies on
+    // it for deep-equal assertions. New entries (crash-rpc Wave-3 #229,
+    // settings-service / draft-service Wave-3 #349) appended in the
+    // order their wire-up landed.
     expect(REQUIRED_COMPONENTS).toEqual([
       'listener-a',
       'supervisor',
       'capture-sources',
       'crash-replayer',
       'crash-rpc',
+      'settings-service',
+      'draft-service',
       'write-coalescer',
     ]);
   });

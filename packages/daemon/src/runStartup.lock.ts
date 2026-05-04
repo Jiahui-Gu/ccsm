@@ -34,6 +34,18 @@
  *   the `crash_log` table being populated; this name asserts the wire
  *   handler is in the production overlay so a regression that drops
  *   the `crashDeps` pass-through fails boot.
+ * - `settings-service` — `SettingsService.{GetSettings,UpdateSettings}`
+ *   Connect handlers installed on Listener A (Wave-3 #349 / audit #228
+ *   sub-task 9 / spec #337 §6.1 step 1). Pre-#349 the entire
+ *   SettingsService returned `Unimplemented` despite the `settings`
+ *   table being created by `001_initial.sql` from day one. This name
+ *   asserts the wire handler is in the production overlay AND that
+ *   the boot path UPSERT-ed the daemon-derived `user_home_path` /
+ *   `detected_claude_default_model` rows (spec §5).
+ * - `draft-service`  — `DraftService.{GetDraft,UpdateDraft}` Connect
+ *   handlers installed on Listener A (Wave-3 #349 / spec #337 §6.1
+ *   step 1). Drafts ride on the same `settings` table under key
+ *   `draft:<session_id>` (spec §2.2 + draft.proto line 8).
  * - `write-coalescer`— SQLite write coalescer is wired (ch07 §5).
  *   v0.3 status: the coalescer module exists at
  *   `src/sqlite/coalescer.ts` but the per-session bridge that hands it
@@ -50,6 +62,8 @@ export const REQUIRED_COMPONENTS: ReadonlyArray<string> = [
   'capture-sources',
   'crash-replayer',
   'crash-rpc',
+  'settings-service',
+  'draft-service',
   'write-coalescer',
 ] as const;
 
