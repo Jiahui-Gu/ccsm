@@ -293,6 +293,20 @@ jobs:
         working-directory: packages/daemon
         run: npx vitest run --coverage --config vitest.config.coverage.ts
 
+      # Same per-package devDeps gap as daemon above. Electron's renderer
+      # spec files use `@vitest-environment happy-dom` (declared in
+      # packages/electron/devDependencies, not in root). Without happy-dom
+      # vitest fails to start the worker for renderer .spec.tsx files with
+      # "Cannot find package 'happy-dom'" — those specs silently drop out
+      # of the coverage denominator (no 'failed' marker, just missing
+      # files), making the renderer coverage tank from ~78% to ~44%.
+      # Install the tagged version into root node_modules; node's resolver
+      # finds it via parent-walk from packages/electron/.
+      - name: Install missing electron devDeps for coverage gate
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps happy-dom@^15.11.7
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
       - name: Coverage (electron renderer — 60% gate)
         working-directory: packages/electron
         run: npx vitest run --coverage
