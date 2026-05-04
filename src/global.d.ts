@@ -12,6 +12,12 @@ export type UpdateStatus =
   | { kind: 'error'; message: string };
 
 declare global {
+  // Build-time constant injected by webpack DefinePlugin (see
+  // `webpack.config.js`). Sourced from `package.json#version`. Used by
+  // static version-display surfaces (Settings → Updates) after Wave 0b
+  // purged the `window.ccsm.getVersion` IPC bridge.
+  const __APP_VERSION__: string;
+
   interface Window {
     ccsm?: {
       loadState: (key: string) => Promise<string | null>;
@@ -25,7 +31,7 @@ declare global {
         getSystemLocale: () => Promise<string | undefined>;
         setLanguage: (l: 'en' | 'zh') => void;
       };
-      getVersion: () => Promise<string>;
+      getVersion?: () => Promise<string>;
 
       scanImportable: () => Promise<
         Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>

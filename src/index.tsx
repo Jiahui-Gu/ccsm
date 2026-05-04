@@ -48,6 +48,17 @@ const root = createRoot(document.getElementById('root')!);
 // IPC of the boot sequence. Components that read persisted state subscribe
 // to `useStore(s => s.hydrated)` and show skeleton/empty UI for the
 // sub-frame window before hydration lands.
+//
+// The double `requestAnimationFrame` wrapper below preserves this contract
+// after PR #976 (Wave 0e persist.ts cutover) made `loadPersisted()` resolve
+// on the next microtask (sync `localStorage.getItem` inside an async wrapper)
+// — so hydration would otherwise complete in the same task as `root.render()`
+// and the skeleton frame would never paint. A single rAF is insufficient: the
+// callback runs *right before* the next paint, so React's hydration commit +
+// DOM mutation lands in the same frame and the compositor never sees the
+// skeleton. Double rAF: the first schedules the skeleton paint, the second
+// fires AFTER that paint commits, guaranteeing one skeleton frame lands
+// before hydration mutates the DOM. See Task #311 / #306.
 const trace = ((window as unknown as {
   __ccsmHydrationTrace?: HydrationTrace;
 }).__ccsmHydrationTrace ??= {} as HydrationTrace);
@@ -59,10 +70,48 @@ root.render(
         Something went wrong. The error was reported to the developer.
       </div>
     }
+    onError={(error, componentStack) => {
+      // Task #311 round 6 observability: Sentry already reports to its
+      // backend, but probes (and CI logs) need an in-process handle so
+      // harness snapshots can dump the actual throw site. Pure write-only
+      // side-effect; remove after #311 resolves.
+      try {
+        (window as unknown as {
+          __ccsm_error?: {
+            message: string;
+            name: string;
+            stack: string | null;
+            componentStack: string | null;
+          };
+        }).__ccsm_error = {
+          message: (error as Error)?.message ?? String(error),
+          name: (error as Error)?.name ?? 'Error',
+          stack: (error as Error)?.stack?.slice(0, 2000) ?? null,
+          componentStack:
+            typeof componentStack === 'string'
+              ? componentStack.slice(0, 2000)
+              : null,
+        };
+      } catch {
+        /* swallow — observability must never throw */
+      }
+    }}
   >
     <RendererBoot>
       <App />
     </RendererBoot>
   </ErrorBoundary>
 );
-void hydrateStore();
+if (typeof requestAnimationFrame === 'function') {
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      hydrateStore().finally(() => {
+        (window as unknown as { __ccsm_hydrated?: boolean }).__ccsm_hydrated = true;
+      });
+    });
+  });
+} else {
+  hydrateStore().finally(() => {
+    (window as unknown as { __ccsm_hydrated?: boolean }).__ccsm_hydrated = true;
+  });
+}

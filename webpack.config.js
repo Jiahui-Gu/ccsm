@@ -1,5 +1,14 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+// Build-time injected app version, sourced from the root package.json.
+// Wave 0b purged `window.ccsm.getVersion` (the IPC bridge that previously
+// fed the Settings → Updates pane), so static version display now uses a
+// build-time constant instead of an IPC round-trip. Reading package.json
+// at config evaluation keeps the bundle free of a runtime fs.readFileSync
+// and matches the existing version-display semantics (bundle version, not
+// daemon-runtime version).
+const pkgVersion = require('./package.json').version;
 
 // `publicPath` differs between dev (served by webpack-dev-server at root)
 // and production (loaded by Electron via `file://` from dist/renderer/).
@@ -55,7 +64,12 @@ module.exports = (_env, argv = {}) => ({
       }
     ]
   },
-  plugins: [new HtmlWebpackPlugin({ template: './src/index.html' })],
+  plugins: [
+    new HtmlWebpackPlugin({ template: './src/index.html' }),
+    new webpack.DefinePlugin({
+      __APP_VERSION__: JSON.stringify(pkgVersion),
+    }),
+  ],
   devServer: {
     port: Number(process.env.CCSM_DEV_PORT) || 4100,
     hot: true,

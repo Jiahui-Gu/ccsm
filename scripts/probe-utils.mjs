@@ -353,12 +353,42 @@ export async function setTheme(win, mode, { verify = false, timeoutMs = 5000 } =
 // Then forcibly replace state with the fixture and yield long enough for
 // React to flush. Use this instead of raw setState — the store is async-
 // hydrated and a bare setState can race the persisted-state apply.
+//
+// Task #311: post-PR #976 (Wave 0e persist.ts cutover) hydrateStore resolves
+// far faster than the old IPC-based path, so probes can race in before the
+// store has applied persisted state (theme, groups, etc.). Gate on the
+// `window.__ccsm_hydrated` flag set by `src/index.tsx` after `hydrateStore()`
+// settles to make the wait deterministic.
 export async function seedStore(win, state) {
   await win.waitForFunction(
     () => !!window.__ccsmStore && document.querySelector('aside') !== null,
     null,
     { timeout: 20_000 }
   );
+  // Task #313 round 5: dump renderer state on hydration-gate timeout to
+  // discriminate root cause (missed store update / React unmounted / hydration
+  // race / persisted-shape regression / ErrorBoundary fallback). Remove after
+  // #311 resolves.
+  try {
+    await win.waitForFunction(() => window.__ccsm_hydrated === true, null, {
+      timeout: 5_000,
+    });
+  } catch (e) {
+    const dump = await win.evaluate(() => ({
+      hydratedFlag: window.__ccsm_hydrated,
+      storeRef: !!window.__ccsmStore,
+      storeTheme: window.__ccsmStore?.getState?.().theme,
+      persistedRaw: localStorage.getItem('main')?.slice(0, 200) ?? null,
+      appMounted: !!document.querySelector('aside'),
+      errorBoundaryShown: /Something went wrong/.test(document.body.innerText),
+      daemonModalOpen: !!document.querySelector('[data-testid="daemon-not-running-modal"]'),
+      htmlClasses: document.documentElement.className,
+      bodyTextHead: document.body.innerText.slice(0, 200),
+      ccsmError: window.__ccsm_error ?? null,
+    }));
+    console.error('[seedStore] hydration gate timeout — dump:', JSON.stringify(dump));
+    throw e;
+  }
   await win.evaluate((s) => {
     const store = window.__ccsmStore;
     if (!store) throw new Error('__ccsmStore missing on window — App.tsx no longer exposes it?');

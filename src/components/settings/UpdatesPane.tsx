@@ -18,7 +18,7 @@ export function UpdatesPane() {
   const { t } = useTranslation('settings');
 
   useEffect(() => {
-    window.ccsm?.getVersion().then(setVersion).catch(() => setVersion('unknown'));
+    const fb = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0', fn = window.ccsm?.getVersion; if (typeof fn === 'function') fn().then(setVersion).catch(() => setVersion(fb)); else setVersion(fb); // #311: Wave 0b purged getVersion.
     void window.ccsm?.updatesStatus().then(setStatus).catch(() => {});
     void window.ccsm?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
     const off = window.ccsm?.onUpdateStatus(setStatus);

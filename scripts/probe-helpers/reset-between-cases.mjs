@@ -99,6 +99,24 @@ export async function resetBetweenCases(app, win, opts = {}) {
   //    module-scope inside the renderer, so even after this delete an
   //    in-flight case will need to call `ta.fill('')` to scrub the live
   //    cache — DB cleanup only protects against next-launch hydration.
+  //
+  // Task #311: PR #976 (Wave 0e persist.ts cutover) moved persist storage
+  // from sqlite `app_state` rows to renderer-local `localStorage`. The DB
+  // wipe below still runs (defensive — schema may carry residue from
+  // pre-#976 builds), but the AUTHORITATIVE store is now localStorage.
+  // Without clearing it, persist writes from case N leak into case N+1's
+  // hydration, causing import-empty-groups / rename / move-to-group /
+  // sidebar-long-name-truncates / settings-updates-pane to see stale
+  // sessions/groups/drafts on launch even after step 3 reset the in-memory
+  // store. Clear both keys here.
+  await win.evaluate(() => {
+    try {
+      localStorage.removeItem('main');
+      localStorage.removeItem('drafts');
+    } catch {
+      // localStorage may be unavailable in degraded environments; not fatal
+    }
+  }).catch(() => {});
   await app.evaluate(async (_main, keepKeys) => {
     try {
       const path = require('node:path');

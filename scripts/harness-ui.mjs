@@ -547,7 +547,21 @@ async function caseThemeToggle({ win, log, registerDispose }) {
         dataTheme: html.dataset.theme,
         sidebarBg, fg: fgRaw,
         contrast: bgLum != null && fgLum != null ? Math.abs(bgLum - fgLum) : 0,
-        bgLum: bgLum ?? -1
+        bgLum: bgLum ?? -1,
+        // Task #313 round 5 observability dump — diagnose why theme-toggle
+        // fails after 4 speculative fix rounds. Discriminates: store update
+        // missed vs React unmounted vs hydration race vs persisted-shape
+        // regression vs ErrorBoundary fallback. Remove after #311 resolves.
+        hydratedFlag: window.__ccsm_hydrated,
+        storeRef: !!window.__ccsmStore,
+        storeTheme: window.__ccsmStore?.getState?.().theme,
+        persistedRaw: localStorage.getItem('main')?.slice(0, 200) ?? null,
+        appMounted: !!document.querySelector('aside'),
+        errorBoundaryShown: /Something went wrong/.test(document.body.innerText),
+        daemonModalOpen: !!document.querySelector('[data-testid="daemon-not-running-modal"]'),
+        htmlClasses: document.documentElement.className,
+        bodyTextHead: document.body.innerText.slice(0, 200),
+        ccsmError: window.__ccsm_error ?? null,
       };
     });
   }
