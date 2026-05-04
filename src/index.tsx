@@ -65,4 +65,18 @@ root.render(
     </RendererBoot>
   </ErrorBoundary>
 );
-void hydrateStore();
+// Defer hydration until after the browser has had a chance to paint the
+// pre-hydrate <AppSkeleton/> frame. React 18's `createRoot.render()` schedules
+// the initial commit through the concurrent scheduler — it is NOT guaranteed
+// to commit before `hydrateStore()` runs to its first real `await`. Pre-#289
+// this happened to work because `loadState` was a real IPC (truly async, the
+// renderer thread yielded long enough for React to commit + paint). Post-#289
+// `loadPersisted()` is `localStorage.getItem` (sync), and `hydrateDrafts()`
+// is the same — there is no real yield, so React would batch the skeleton
+// commit with the post-hydrate `setState({ hydrated: true })` and the
+// skeleton frame would never paint. `setTimeout(0)` queues a fresh macrotask;
+// by the time it fires, React's scheduler has already drained its initial
+// commit task and the skeleton is in the DOM. harness-ui
+// startup-paints-before-hydrate (and real users on cold launch) now actually
+// see the skeleton.
+setTimeout(() => void hydrateStore(), 0);
