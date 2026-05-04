@@ -110,6 +110,24 @@ if (-not (Test-Path $Template)) {
   throw "missing template: $Template"
 }
 
+$HealthzTemplate = Join-Path $WinDir 'HealthzCustomAction.wxs.template'
+if (-not (Test-Path $HealthzTemplate)) {
+  throw "missing template: $HealthzTemplate"
+}
+
+# T7.5: stage post-install-healthz.ps1 next to the daemon binary so the
+# WiX <Binary> element's SourceFile resolves at compile time.
+$HealthzPs1Src = Join-Path (Split-Path -Parent $WinDir) 'post-install-healthz.ps1'
+$HealthzPs1Dst = Join-Path $DaemonDir 'post-install-healthz.ps1'
+if (Test-Path $HealthzPs1Src) {
+  if (-not $DryRun) {
+    Copy-Item -Path $HealthzPs1Src -Destination $HealthzPs1Dst -Force
+  }
+  Write-Info "staged post-install-healthz.ps1 -> $HealthzPs1Dst"
+} else {
+  Write-Skip "post-install-healthz.ps1 missing at $HealthzPs1Src; healthz CA will be a stub"
+}
+
 $Wxs = Join-Path $OutputDir 'Product.wxs'
 $content = Get-Content $Template -Raw
 $content = $content -replace '@CCSM_VERSION@',      $Version
@@ -118,11 +136,18 @@ $content = $content -replace '@CCSM_DAEMON_DIR@',   ($DaemonDir -replace '\\','\
 $content = $content -replace '@CCSM_DAEMON_EXE@',   ($DaemonExe -replace '\\','\\')
 $content = $content -replace '@CCSM_MANUFACTURER@', $Manufacturer
 
+# Healthz CA fragment.
+$HealthzWxs = Join-Path $OutputDir 'HealthzCustomAction.wxs'
+$healthzContent = Get-Content $HealthzTemplate -Raw
+$healthzContent = $healthzContent -replace '@CCSM_HEALTHZ_PS1@', ($HealthzPs1Dst -replace '\\','\\')
+
 if (-not (Test-Path $OutputDir)) {
   New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 Set-Content -Path $Wxs -Value $content -Encoding UTF8
+Set-Content -Path $HealthzWxs -Value $healthzContent -Encoding UTF8
 Write-Info "wrote $Wxs (version=$Version)"
+Write-Info "wrote $HealthzWxs"
 
 # Stub README.txt next to native\ if a fresh staging dir was passed without
 # one — keeps the NativeStub component's File element resolvable.
@@ -149,6 +174,7 @@ $MsiPath = Join-Path $OutputDir $MsiName
 $wixArgs = @(
   'build',
   $Wxs,
+  $HealthzWxs,
   '-arch', 'x64',
   '-ext', 'WixToolset.Util.wixext',
   '-o', $MsiPath

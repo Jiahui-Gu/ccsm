@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  packages/daemon/build/install/win/HealthzCustomAction.wxs.template
+
+  Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+        chapter 10 §5 step 7 (post-install /healthz wait + 10s failure rollback).
+  Task: T7.5 (#78) — installer: post-install /healthz wait + 10s failure rollback.
+
+  WiX 4 CustomAction fragment that runs ../post-install-healthz.ps1 in
+  the deferred execution sequence AFTER the ServiceControl Start action,
+  before InstallFinalize. This is included into Product.wxs.template at
+  build time by build-msi.ps1; the indirection keeps the healthz wiring
+  reviewable as a single ~50-line file rather than buried in the 200+
+  line product manifest.
+
+  Token substitution (run by build-msi.ps1):
+    @CCSM_HEALTHZ_PS1@   absolute path to the staged post-install-healthz.ps1
+                         (build-msi.ps1 copies it next to ccsm-daemon.exe so
+                          the BinaryRef resolves at install time)
+
+  Why a CustomAction (not a built-in WiX action):
+    - The MSI engine does not natively probe an HTTP/named-pipe endpoint.
+    - We need a deferred (impersonated=no) action so the script runs
+      with elevated rights — the named pipe ACL grants BUILTIN\Users:Read,
+      but probing via the system context matches how the installer is
+      invoked (admin-only).
+    - Exit code 1603 (ERROR_INSTALL_FAILURE) is the documented signal
+      that triggers MSI's automatic rollback transaction; we propagate
+      the script's exit code as-is via Return="check".
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+
+    <!--
+      Embed the PowerShell script into the MSI so it is available during
+      installation regardless of where the installer was launched from.
+      The Source path is resolved at build time by build-msi.ps1.
+    -->
+    <Binary Id="HealthzPs1Bin" SourceFile="@CCSM_HEALTHZ_PS1@" />
+
+    <!--
+      Deferred CustomAction: invokes powershell.exe with the embedded
+      script at install time, with no elevation override (deferred CAs
+      run as SYSTEM by default during install).
+
+      ExeCommand wraps powershell.exe with -ExecutionPolicy Bypass so we
+      do not depend on the machine's signing policy.
+
+      Impersonate="no" — run as SYSTEM (the MSI install context).
+      Execute="deferred" — runs in the install transaction, eligible for
+                          rollback if any later action fails.
+      Return="check" — propagate non-zero exit (1603) to the engine.
+    -->
+    <CustomAction Id="CcsmHealthzCheck"
+                  BinaryRef="HealthzPs1Bin"
+                  ExeCommand='powershell.exe -NoProfile -ExecutionPolicy Bypass -File "[#HealthzPs1Bin]"'
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <!--
+      Sequence the CustomAction AFTER StartServices (which is what
+      ServiceControl Start="install" turns into) and BEFORE
+      InstallFinalize. If CcsmHealthzCheck returns 1603 the engine
+      rolls back the entire install transaction; the StateDir Component
+      under %PROGRAMDATA%\ccsm survives because it is the non-Removable
+      variant (REMOVEUSERDATA defaults to 0 — see Product.wxs.template).
+    -->
+    <InstallExecuteSequence>
+      <Custom Action="CcsmHealthzCheck" After="StartServices" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+
+  </Fragment>
+</Wix>
