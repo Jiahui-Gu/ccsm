@@ -179,6 +179,20 @@ describe('sessionRowToProto / sessionEventToProto', () => {
     if (ev.kind.case !== 'destroyed') return;
     expect(ev.kind.value).toBe('sess-001');
   });
+
+  it('renders an "ended" SessionEvent as the proto "updated" oneof case carrying the full row (T4.4)', () => {
+    const row = makeRow({
+      state: SessionState.CRASHED,
+      should_be_running: 0,
+      exit_code: 137,
+    });
+    const ev = sessionEventToProto({ kind: 'ended', session: row, reason: 'crashed' }, ALICE);
+    expect(ev.kind.case).toBe('updated');
+    if (ev.kind.case !== 'updated') return;
+    expect(ev.kind.value.id).toBe('sess-001');
+    expect(ev.kind.value.state).toBe(ProtoSessionState.CRASHED);
+    expect(ev.kind.value.exitCode).toBe(137);
+  });
 });
 
 // ---------------------------------------------------------------------------

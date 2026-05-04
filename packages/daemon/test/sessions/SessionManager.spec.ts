@@ -291,3 +291,129 @@ describe('SessionManager.subscribe', () => {
     expect(seen).not.toHaveBeenCalled();
   });
 });
+
+describe('SessionManager.markEnded (T4.4 — pty-host child crash semantics)', () => {
+  it('flips state=CRASHED + should_be_running=0 + writes exit_code, and emits SessionEvent.ended', () => {
+    const db = freshDb();
+    const events: SessionEvent[] = [];
+    const bus = new SessionEventBus();
+    bus.subscribe('local-user:1000', (e) => events.push(e));
+
+    let t = 100;
+    const mgr = new SessionManager(db, {
+      now: () => t,
+      newId: () => 'CRASHED1',
+      eventBus: bus,
+    });
+    const row = mgr.create(createInput(), ALICE);
+    expect(events.at(-1)?.kind).toBe('created');
+
+    t = 700;
+    const ended = mgr.markEnded(row.id, { reason: 'crashed', exit_code: 137 });
+    expect(ended.state).toBe(SessionState.CRASHED);
+    expect(ended.should_be_running).toBe(0);
+    expect(ended.exit_code).toBe(137);
+    expect(ended.last_active_ms).toBe(700);
+
+    const persisted = db
+      .prepare(
+        'SELECT state, should_be_running, exit_code, last_active_ms FROM sessions WHERE id = ?',
+      )
+      .get(row.id) as {
+      state: number;
+      should_be_running: number;
+      exit_code: number;
+      last_active_ms: number;
+    };
+    expect(persisted).toEqual({
+      state: SessionState.CRASHED,
+      should_be_running: 0,
+      exit_code: 137,
+      last_active_ms: 700,
+    });
+
+    const lastEvt = events.at(-1);
+    expect(lastEvt?.kind).toBe('ended');
+    if (lastEvt?.kind === 'ended') {
+      expect(lastEvt.reason).toBe('crashed');
+      expect(lastEvt.session.id).toBe(row.id);
+      expect(lastEvt.session.state).toBe(SessionState.CRASHED);
+      expect(lastEvt.session.exit_code).toBe(137);
+      expect(lastEvt.session.should_be_running).toBe(0);
+    }
+  });
+
+  it('graceful reason transitions to state=EXITED (matches DestroySession terminal state)', () => {
+    const db = freshDb();
+    const mgr = new SessionManager(db, { now: () => 10, newId: () => 'GRACE1' });
+    const row = mgr.create(createInput(), ALICE);
+
+    const ended = mgr.markEnded(row.id, { reason: 'graceful', exit_code: 0 });
+    expect(ended.state).toBe(SessionState.EXITED);
+    expect(ended.should_be_running).toBe(0);
+    expect(ended.exit_code).toBe(0);
+  });
+
+  it('null exit_code is persisted as -1 sentinel (signal-killed children)', () => {
+    const db = freshDb();
+    const mgr = new SessionManager(db, { now: () => 1, newId: () => 'SIGKILL1' });
+    const row = mgr.create(createInput(), ALICE);
+
+    const ended = mgr.markEnded(row.id, { reason: 'crashed', exit_code: null });
+    expect(ended.exit_code).toBe(-1);
+
+    const persisted = db
+      .prepare('SELECT exit_code FROM sessions WHERE id = ?')
+      .get(row.id) as { exit_code: number };
+    expect(persisted.exit_code).toBe(-1);
+  });
+
+  it('is idempotent — a second markEnded with the same (state, exit_code) does not double-publish', () => {
+    const db = freshDb();
+    const events: SessionEvent[] = [];
+    const bus = new SessionEventBus();
+    bus.subscribe('local-user:1000', (e) => events.push(e));
+
+    const mgr = new SessionManager(db, {
+      now: () => 1,
+      newId: () => 'IDEMP1',
+      eventBus: bus,
+    });
+    const row = mgr.create(createInput(), ALICE);
+
+    mgr.markEnded(row.id, { reason: 'crashed', exit_code: 1 });
+    mgr.markEnded(row.id, { reason: 'crashed', exit_code: 1 });
+
+    const endedEvents = events.filter((e) => e.kind === 'ended');
+    expect(endedEvents).toHaveLength(1);
+  });
+
+  it('throws (not a ConnectError) when the row does not exist — daemon-internal contract', () => {
+    const db = freshDb();
+    const mgr = new SessionManager(db);
+    expect(() =>
+      mgr.markEnded('does-not-exist', { reason: 'crashed', exit_code: 1 }),
+    ).toThrow(/no row for session id/);
+  });
+
+  it('does not require a Principal (caller-agnostic; bus still scopes by row owner)', () => {
+    const db = freshDb();
+    const aliceSeen: SessionEvent[] = [];
+    const bobSeen: SessionEvent[] = [];
+    const bus = new SessionEventBus();
+    bus.subscribe('local-user:1000', (e) => aliceSeen.push(e));
+    bus.subscribe('local-user:1001', (e) => bobSeen.push(e));
+
+    const mgr = new SessionManager(db, {
+      now: () => 1,
+      newId: () => 'SCOPE1',
+      eventBus: bus,
+    });
+    const row = mgr.create(createInput(), ALICE);
+
+    mgr.markEnded(row.id, { reason: 'crashed', exit_code: 9 });
+
+    expect(aliceSeen.some((e) => e.kind === 'ended')).toBe(true);
+    expect(bobSeen.some((e) => e.kind === 'ended')).toBe(false);
+  });
+});

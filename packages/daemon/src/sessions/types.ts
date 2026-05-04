@@ -109,4 +109,25 @@ export interface CreateSessionInput {
  */
 export type SessionEvent =
   | { readonly kind: 'created'; readonly session: SessionRow }
-  | { readonly kind: 'destroyed'; readonly session: SessionRow };
+  | { readonly kind: 'destroyed'; readonly session: SessionRow }
+  /**
+   * Lifecycle terminus for a session whose pty-host child exited
+   * (graceful close OR crash). Spec ch06 §1: emitted by the daemon's
+   * pty-host child-exit handler after it has killed any residual claude
+   * subtree and flipped `should_be_running = 0`. The carried `session`
+   * row reflects the post-update state (`state` ∈ {EXITED, CRASHED},
+   * `exit_code` set, `should_be_running = 0`). Distinct from `destroyed`
+   * (which is fired by an explicit DestroySession RPC, not a child exit)
+   * so subscribers can distinguish "user closed" from "child died";
+   * watch-sessions.ts maps both to the proto `updated` oneof case which
+   * carries the full Session row.
+   */
+  | { readonly kind: 'ended'; readonly session: SessionRow; readonly reason: SessionEndedReason };
+
+/**
+ * Reason a session terminated via the pty-host child-exit path. Mirrors
+ * `ChildExitReason` from `pty-host/types.ts` but is duplicated here so
+ * the sessions module does NOT depend on the pty-host module's types
+ * (the dependency direction is pty-host → sessions, never the reverse).
+ */
+export type SessionEndedReason = 'graceful' | 'crashed';

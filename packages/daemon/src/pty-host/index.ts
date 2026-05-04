@@ -19,3 +19,10 @@ export type {
   HostToChildMessage,
   SpawnPayload,
 } from './types.js';
+export { decideSessionEnd } from './exit-decider.js';
+export type { SessionEndDecision } from './exit-decider.js';
+export { watchPtyHostChildLifecycle } from './lifecycle-watcher.js';
+export type {
+  PtyHostChildWatcher,
+  WatchPtyHostChildLifecycleDeps,
+} from './lifecycle-watcher.js';

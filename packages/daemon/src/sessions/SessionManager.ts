@@ -52,6 +52,7 @@ import { SessionEventBus, type SessionEventListener, type Unsubscribe } from './
 import {
   SessionState,
   type CreateSessionInput,
+  type SessionEndedReason,
   type SessionRow,
   type SessionStateValue,
 } from './types.js';
@@ -203,7 +204,37 @@ export interface ISessionManager {
   get(id: string, caller: Principal): SessionRow;
   list(caller: Principal): readonly SessionRow[];
   destroy(id: string, caller: Principal): SessionRow;
+  markEnded(id: string, params: MarkEndedParams): SessionRow;
   subscribe(caller: Principal, listener: SessionEventListener): Unsubscribe;
+}
+
+/**
+ * Parameters for `SessionManager.markEnded`. Spec ch06 §1: the daemon's
+ * pty-host child-exit handler (see `pty-host/lifecycle-watcher.ts`)
+ * resolves `(reason, exit_code)` from the `ChildExit` record and calls
+ * this method to (a) flip `should_be_running = 0`, (b) write the new
+ * terminal `state` (CRASHED for `reason='crashed'`, EXITED for
+ * `reason='graceful'`), (c) record the `exit_code`, and (d) emit a
+ * `SessionEvent.ended` on the bus so WatchSessions subscribers see it.
+ *
+ * Unlike `destroy`, this method does NOT take a `caller` Principal —
+ * the caller is the daemon itself (a process-level event), not an RPC
+ * principal. Ownership is therefore not asserted; the row simply
+ * transitions through its terminal state regardless of the caller's
+ * identity. (A misrouted `markEnded` cannot leak data: the SessionRow
+ * lookup is by id and the emitted event is bus-filtered by the row's
+ * own `owner_id`.)
+ */
+export interface MarkEndedParams {
+  /** Why the child exited. Maps 1:1 to the new `state` value. */
+  readonly reason: SessionEndedReason;
+  /**
+   * Process exit code observed for the pty-host child. `null` is
+   * persisted as `-1` (the sentinel from `001_initial.sql`) — keeps the
+   * column NOT NULL and lets readers distinguish "exited cleanly with
+   * code 0" from "killed by signal / unknown".
+   */
+  readonly exit_code: number | null;
 }
 
 /**
@@ -233,6 +264,19 @@ const SQL_SELECT_BY_OWNER = `SELECT id, owner_id, state, cwd, env_json, claude_a
 
 const SQL_UPDATE_DESTROY = `UPDATE sessions
   SET state = @state, should_be_running = 0, last_active_ms = @last_active_ms
+  WHERE id = @id`;
+
+/**
+ * Used by `markEnded`. Same `should_be_running = 0` flip as Destroy,
+ * but ALSO writes `exit_code` and accepts an arbitrary terminal state
+ * (EXITED for graceful child close, CRASHED for the pty-host crash
+ * semantics in ch06 §1). Kept separate from `SQL_UPDATE_DESTROY` so
+ * the destroy path stays a 3-column write (its callers never have an
+ * exit code — Destroy is user-initiated before the child exits).
+ */
+const SQL_UPDATE_END = `UPDATE sessions
+  SET state = @state, should_be_running = 0,
+      exit_code = @exit_code, last_active_ms = @last_active_ms
   WHERE id = @id`;
 
 export class SessionManager implements ISessionManager {
@@ -330,6 +374,70 @@ export class SessionManager implements ISessionManager {
    */
   subscribe(caller: Principal, listener: SessionEventListener): Unsubscribe {
     return this.bus.subscribe(principalKey(caller), listener);
+  }
+
+  /**
+   * Transition a session to its terminal state because its pty-host
+   * child exited. Spec ch06 §1.
+   *
+   *   - `reason='crashed'`  → `state := CRASHED` (per spec: any non-`close`-
+   *     initiated child exit, including non-zero exit codes, signals, IPC
+   *     disconnect without a `kind:'exiting'` graceful notice)
+   *   - `reason='graceful'` → `state := EXITED` (matches the user-initiated
+   *     destroy path's terminal state, but reached via the child exit
+   *     observation rather than a `DestroySession` RPC)
+   *
+   * Always flips `should_be_running = 0` so the daemon's restore-on-boot
+   * loop (chapter 05 §7) skips the row regardless of why the child died.
+   * Always writes `exit_code`; a `null` input becomes the `-1` sentinel
+   * from `001_initial.sql` so the NOT NULL column stays satisfied.
+   *
+   * Emits `SessionEvent.ended` on the bus AFTER the UPDATE commits. The
+   * carried `session` row reflects the persisted post-update state.
+   *
+   * Idempotent: if the row is already `should_be_running=0` AND the
+   * incoming `state` matches, the UPDATE is still issued (better-sqlite3
+   * returns `changes=0`) and the event is suppressed. This protects
+   * against duplicate `child.on('exit')` deliveries (the lifecycle
+   * watcher de-dupes via its own `exited()` promise, but defending in
+   * the manager too keeps the event stream clean even if a future
+   * caller forgets the de-dupe).
+   *
+   * Throws `Error` (not a ConnectError — this is not an RPC path) if
+   * the row does not exist; an unknown session id at the daemon-internal
+   * boundary is a programmer error, not an enumeration risk.
+   */
+  markEnded(id: string, params: MarkEndedParams): SessionRow {
+    const row = this.db.prepare(SQL_SELECT_BY_ID).get(id) as SessionRow | undefined;
+    if (row === undefined) {
+      throw new Error(`SessionManager.markEnded: no row for session id ${id}`);
+    }
+    const newState: SessionStateValue =
+      params.reason === 'crashed' ? SessionState.CRASHED : SessionState.EXITED;
+    const exitCode = params.exit_code ?? -1;
+    const now = this.now();
+
+    const alreadyTerminal =
+      row.should_be_running === 0 && row.state === newState && row.exit_code === exitCode;
+    if (alreadyTerminal) {
+      return row;
+    }
+
+    this.db.prepare(SQL_UPDATE_END).run({
+      id: row.id,
+      state: newState,
+      exit_code: exitCode,
+      last_active_ms: now,
+    });
+    const ended: SessionRow = {
+      ...row,
+      state: newState,
+      should_be_running: 0,
+      exit_code: exitCode,
+      last_active_ms: now,
+    };
+    this.bus.publish({ kind: 'ended', session: ended, reason: params.reason });
+    return ended;
   }
 
   /**
