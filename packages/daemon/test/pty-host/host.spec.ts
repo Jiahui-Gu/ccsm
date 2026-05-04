@@ -13,15 +13,28 @@
 // T4.1 surface: it sends `ready`, accepts `close`, sends `exiting`, and
 // exits 0. T4.2+ tests will exercise the real child binary.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { spawnPtyHostChild } from '../../src/pty-host/host.js';
+import { resetEmitterRegistry } from '../../src/pty-host/pty-emitter.js';
 import type { SpawnPayload } from '../../src/pty-host/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(__dirname, 'fixtures', 'child-fixture.mjs');
+
+// T-PA-5: spawnPtyHostChild auto-constructs a PtySessionEmitter on the
+// child's `'ready'` IPC and registers it in the module-level registry.
+// These tests reuse the same hard-coded sessionId (e.g. 'sess-001')
+// across multiple `it` cases by design — the lifecycle skeleton's
+// concern is the IPC handshake, not the emitter wire-up. Reset the
+// registry between tests so the second `it` doesn't trip the duplicate-
+// id guard with a stale entry from the previous case. Production wiring
+// is exercised by the daemon-boot-e2e suite, not here.
+afterEach(() => {
+  resetEmitterRegistry();
+});
 
 function makePayload(overrides: Partial<SpawnPayload> = {}): SpawnPayload {
   return {
@@ -97,6 +110,11 @@ describe('spawnPtyHostChild — message stream', () => {
       payload: makePayload(),
       childEntrypoint: FIXTURE,
       forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'echo' },
+      // Echo fixture sends `{kind:'snapshot'}` without baseSeq/geometry
+      // (it predates T-PA-1). Disable the T-PA-5 emitter wire-up so the
+      // emitter doesn't log a malformed-snapshot warning to vitest stdout
+      // — this test only covers the messages async iterator surface.
+      emitterRegistry: 'disabled',
     });
 
     await handle.ready();

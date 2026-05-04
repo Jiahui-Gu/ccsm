@@ -24,6 +24,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { computeUtf8SpawnEnv } from './spawn-env.js';
+import {
+  PtySessionEmitter,
+  registerEmitter as registerEmitterDefault,
+  unregisterEmitter as unregisterEmitterDefault,
+} from './pty-emitter.js';
 import type {
   ChildExit,
   ChildToHostMessage,
@@ -67,6 +72,37 @@ export interface SpawnPtyHostChildOptions {
    * `C.UTF-8` is not registered. Forwarded into `computeUtf8SpawnEnv`.
    */
   readonly darwinFallbackLocale?: string;
+  /**
+   * Per-session in-memory emitter wiring (T-PA-5 / spec
+   * `2026-05-04-pty-attach-handler.md` §2.3, §9.2).
+   *
+   * When unset (the production default), `spawnPtyHostChild` constructs
+   * a {@link PtySessionEmitter} on the child's `'ready'` IPC, registers
+   * it in the module-level registry (so `getEmitter(sessionId)` from
+   * `pty-emitter.ts` returns it), routes every `'delta'` / `'snapshot'`
+   * IPC into the emitter, and tears it down (`emitter.close()` +
+   * `unregisterEmitter`) when the child exits. The Attach handler
+   * (T-PA-6, future PR) consumes the emitter via `getEmitter(sessionId)`.
+   *
+   * Tests that exercise the lifecycle skeleton without the emitter
+   * surface (e.g. host.spec.ts fixtures that reuse the same sessionId
+   * across `it` cases and would otherwise trip the registry's
+   * duplicate-id guard) pass `emitterRegistry: 'disabled'`. The IPC
+   * 'message' / 'exit' wiring then skips emitter publish/teardown
+   * entirely; the rest of the lifecycle (ready / exited / messages
+   * iterator) is unaffected.
+   *
+   * Tests that want to exercise the wire-up without polluting the
+   * module-level registry pass a throwaway `{ register, unregister }`
+   * pair — the emitter is still constructed, but the lookup path uses
+   * the injected registry instead of the module singleton.
+   */
+  readonly emitterRegistry?:
+    | 'disabled'
+    | {
+        readonly register: (emitter: PtySessionEmitter) => void;
+        readonly unregister: (sessionId: string) => boolean;
+      };
 }
 
 /**
@@ -172,6 +208,24 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
 
   const sessionId = opts.payload.sessionId;
 
+  // --- T-PA-5 emitter wiring ---------------------------------------------
+  // Resolve the registry seam (default: production module-level registry).
+  // 'disabled' opts the wire-up out entirely so unit tests that re-use a
+  // sessionId across `it` cases don't trip the registry's duplicate-id
+  // guard (see SpawnPtyHostChildOptions.emitterRegistry jsdoc).
+  const emitterRegistry =
+    opts.emitterRegistry === 'disabled'
+      ? null
+      : opts.emitterRegistry ?? {
+          register: registerEmitterDefault,
+          unregister: unregisterEmitterDefault,
+        };
+  // The emitter is constructed lazily on the child's `'ready'` IPC (per
+  // spec §2.3: "created when the pty-host child's `ready` IPC fires").
+  // Holding a let-binding here lets the `'message'` and `'exit'` handlers
+  // both reach it without reaching back into the registry on every IPC.
+  let emitter: PtySessionEmitter | null = null;
+
   // --- Lifecycle wiring ---------------------------------------------------
   let exitOutcome: ChildExit | null = null;
   let observedGracefulExitNotice = false;
@@ -219,9 +273,47 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
       readyResolve();
       readyResolve = null;
       readyReject = null;
+      // T-PA-5 / spec §2.3: construct the per-session emitter on `'ready'`
+      // and register it so the Attach handler (T-PA-6) can find it via
+      // `getEmitter(sessionId)`. We use the host-side `sessionId`
+      // (resolved at fork time from `opts.payload.sessionId`) rather than
+      // the IPC payload's sessionId field — the host always knows its own
+      // session id and the child currently sends an empty string in the
+      // T4.1 stub (see child.ts: `send({kind:'ready', sessionId:''})`).
+      if (emitterRegistry !== null && emitter === null) {
+        try {
+          emitter = new PtySessionEmitter(sessionId);
+          emitterRegistry.register(emitter);
+        } catch (err) {
+          // Registration failure (e.g. duplicate sessionId) is a daemon
+          // wire-up bug, not a per-session runtime error. Log and clear
+          // the local ref so the IPC route below doesn't try to publish
+          // into a half-initialized emitter; the lifecycle (ready /
+          // exited / messages iterator) is unaffected.
+          // eslint-disable-next-line no-console
+          console.error(
+            `[ccsm-daemon] spawnPtyHostChild(${sessionId}): emitter register failed`,
+            err,
+          );
+          emitter = null;
+        }
+      }
     }
     if (raw.kind === 'exiting' && raw.reason === 'graceful') {
       observedGracefulExitNotice = true;
+    }
+    // T-PA-5 / spec §2.3 IPC routing: fan delta + snapshot IPCs into the
+    // per-session emitter so subscribers (Attach handler in T-PA-6) see
+    // them. The emitter itself is null when wiring is disabled (tests)
+    // or when the child sent a delta/snapshot before `'ready'` (a child
+    // bug; the fan-out is skipped silently — the daemon's
+    // existing-message iterator still surfaces the IPC for diagnosis).
+    if (emitter !== null) {
+      if (raw.kind === 'snapshot') {
+        emitter.publishSnapshot(raw);
+      } else if (raw.kind === 'delta') {
+        emitter.publishDelta(raw);
+      }
     }
     pushMessage(raw);
   });
@@ -246,6 +338,36 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
       ));
       readyReject = null;
       readyResolve = null;
+    }
+    // T-PA-5 / spec §7.2 bullet 3: tear down the per-session emitter
+    // BEFORE we resolve `exitedPromise`. Order: close() broadcasts the
+    // 'closed' event to every Attach subscriber synchronously (the
+    // listener forwards it as Code.Canceled + ErrorDetail.code =
+    // 'pty.session_destroyed' on the wire — that mapping lives in
+    // T-PA-6's Attach handler), then we drop the registry entry so a
+    // late `getEmitter(sessionId)` returns undefined. Both steps are
+    // idempotent so the wrapping try/catch only guards against a
+    // listener throwing during broadcast.
+    if (emitter !== null && emitterRegistry !== null) {
+      try {
+        emitter.close();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[ccsm-daemon] spawnPtyHostChild(${sessionId}): emitter.close() threw`,
+          err,
+        );
+      }
+      try {
+        emitterRegistry.unregister(sessionId);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[ccsm-daemon] spawnPtyHostChild(${sessionId}): emitterRegistry.unregister() threw`,
+          err,
+        );
+      }
+      emitter = null;
     }
     exitedResolve?.(exitOutcome);
     closeIterator();
