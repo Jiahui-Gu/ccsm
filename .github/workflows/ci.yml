@@ -50,7 +50,12 @@ jobs:
         # Git-for-Windows on the windows runner.
         os: [windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Task #364 — bumped 10 → 15. CI eval showed avg 527s / p95 590s wall-clock,
+    # leaving only ~10s under the 10-min cap; flaky timeout-cancellations were
+    # masking real failures. Round-1 perf changes (cache restore-keys + coverage
+    # merge) target ≤350s but the cap is widened first so a single cold-cache
+    # PR doesn't redline.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,7 +82,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          cache: 'npm'
+          # Task #364 — removed `cache: 'npm'`. Conflicted with the explicit
+          # `actions/cache` step below that keys node_modules directly: the
+          # setup-node cache restores ~/.npm (which `npm ci` ignores when
+          # node_modules already exists from the explicit cache restore) and
+          # adds setup overhead with zero install-time benefit.
 
       # Wave 2 §5.5 (Task #220) — mechanical guard: the 4 ship-gate files
       # named in the v0.3 daemon-split spec must not be silently renamed
@@ -115,6 +124,15 @@ jobs:
         with:
           path: node_modules
           key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          # Task #364 — fallback to any prior node22 cache when lockfile hash
+          # changes. Cache hit rate was 1/8 over the last week because every
+          # dep bump invalidates the primary key. With restore-keys, a stale
+          # cache is restored and `npm ci` reconciles only the diff (much
+          # faster than cold install). Native bindings (better-sqlite3,
+          # node-pty) may carry old ABI from the stale cache; the
+          # `npm rebuild better-sqlite3` step below always runs to realign.
+          restore-keys: |
+            nm-${{ runner.os }}-${{ runner.arch }}-node22-
 
       - name: Install deps
         if: steps.nm_cache.outputs.cache-hit != 'true'
@@ -176,8 +194,24 @@ jobs:
       - name: Build
         run: npm run build:app
 
-      - name: Test
-        run: npm run test:app
+      # Task #364 — merged separate Test + Coverage steps into one. Previously
+      # `npm run test:app` (vitest run) and `npm run coverage` (vitest run
+      # --coverage) ran the entire vitest suite twice (~106s on the second
+      # pass). They use the same vitest config and same test set; --coverage
+      # only attaches the v8 coverage provider. Single-pass run produces both
+      # the test result AND the lcov artifact.
+      #
+      # Threshold enforcement: vitest.config.ts declares coverage.thresholds
+      # for local dev visibility, but the R6 roll-out (Task #802) explicitly
+      # says CI must not fail on threshold misses during the bake-in period.
+      # We disable the thresholds in CI via `--coverage.thresholds.*=0`
+      # overrides instead of `continue-on-error: true` — the latter would
+      # silently eat real test failures (regression we'd never see). With
+      # thresholds disabled, vitest only exits non-zero on actual test
+      # failure or coverage instrumentation crash, which is exactly the
+      # signal we want.
+      - name: Test (with coverage)
+        run: npm run test:app -- --coverage --coverage.thresholds.lines=0 --coverage.thresholds.functions=0 --coverage.thresholds.branches=0 --coverage.thresholds.statements=0
 
       # Task #291 — pick up tools/**/*.spec.ts. The root vitest config
       # restricts `include` to `tests/**` + `electron/**/__tests__/**`,
@@ -195,16 +229,12 @@ jobs:
       - name: Test (tools/**/*.spec.ts)
         run: npx vitest run --config tools/vitest.config.ts
 
-      # Tech-debt R6 (Task #802) — coverage roll-out. Threshold misses do
-      # NOT fail CI yet — this is the initial roll-out; we wrap with
-      # `continue-on-error: true` to keep CI green during the bake-in
-      # period. Bump and enforce in a follow-up once we've watched a few
-      # PRs. Was Linux-only pre-#322; runs on windows now (single matrix
-      # entry, lcov artifact still produced).
-      - name: Coverage
-        run: npm run coverage
-        continue-on-error: true
-
+      # Tech-debt R6 (Task #802) — coverage roll-out. Coverage is now produced
+      # by the Test step above (single vitest --coverage pass) instead of a
+      # separate `npm run coverage` invocation that re-ran the full suite.
+      # Thresholds are NOT enforced in CI — see Test step comments. This
+      # step only uploads the lcov.info artifact emitted by that single pass.
+      # (Task #364 merged the second vitest run.)
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
