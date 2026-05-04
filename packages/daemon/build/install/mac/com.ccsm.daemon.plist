@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CCSM macOS LaunchDaemon plist.
+
+  Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+        chapter 10 §5.2 (macOS pkg).
+  Task: T7.4 (#81) — installer: per-OS service registration + state dir creation.
+
+  Installed to /Library/LaunchDaemons/com.ccsm.daemon.plist by the .pkg
+  postinstall script (see build-pkg.sh).
+
+  Token substitution by build-pkg.sh:
+    @CCSM_DAEMON_PATH@   absolute install path of ccsm-daemon binary.
+                         Default: /usr/local/ccsm/ccsm-daemon
+
+  UserName=_ccsm: macOS service-account convention is a leading-underscore
+  short name in the 200-499 UID range. Created by preinstall.sh via dscl
+  if it doesn't exist (ch10 §5 step 4 "service account: _ccsm mac").
+
+  GroupName=_ccsm: same naming convention; gid 200-499 range.
+
+  KeepAlive=true: launchd restarts the daemon on unexpected exit. Combined
+  with the daemon's own watchdog (ch08), this is the macOS analog of
+  systemd Restart=on-failure.
+
+  RunAtLoad=true: daemon starts immediately on `launchctl bootstrap`. The
+  installer then polls Supervisor /healthz per ch10 §5 step 7.
+
+  StandardOutPath / StandardErrorPath: under /Library/Logs/ccsm/ so the
+  installer's "capture last 200 lines" path (ch10 §5 step 7 a) can read
+  via `log show --predicate 'subsystem == "com.ccsm.daemon"'` (the daemon
+  also writes structured logs there directly, T6.x).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ccsm.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@CCSM_DAEMON_PATH@</string>
+    <string>--service</string>
+  </array>
+
+  <key>UserName</key>
+  <string>_ccsm</string>
+
+  <key>GroupName</key>
+  <string>_ccsm</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/ccsm/ccsm-daemon.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/ccsm/ccsm-daemon.err.log</string>
+
+  <!--
+    EnvironmentVariables: PATH must include /usr/bin so the daemon can
+    spawn shells (PTY host, ch06). The daemon itself loads native .node
+    files via createRequire(process.execPath/native/) per ch10 §2 — no
+    DYLD_LIBRARY_PATH needed.
+  -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

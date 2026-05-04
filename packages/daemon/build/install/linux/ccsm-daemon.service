@@ -1,0 +1,56 @@
+# CCSM systemd service unit.
+#
+# Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+#       chapter 10 §5.3 (Linux deb + rpm) + ch07 §2 (Linux systemd
+#       directives — locked).
+# Task: T7.4 (#81) — installer: per-OS service registration + state dir creation.
+#
+# Installed to /lib/systemd/system/ccsm-daemon.service by the .deb / .rpm
+# postinst (see postinst.sh).
+#
+# The directives below (RuntimeDirectory, RuntimeDirectoryMode,
+# StateDirectory, StateDirectoryMode, User, Group) are LOCKED by spec ch07
+# §2 ("Linux systemd directives (locked)"). The daemon does NOT create
+# /run/ccsm/ or /var/lib/ccsm/ itself; systemd does it on service start
+# with correct ownership/mode.
+
+[Unit]
+Description=CCSM (Claude Code Session Manager) daemon
+Documentation=https://github.com/Jiahui-Gu/ccsm
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/ccsm/ccsm-daemon --service
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# ----- LOCKED BY SPEC ch07 §2 — DO NOT EDIT WITHOUT UPDATING SPEC -----
+RuntimeDirectory=ccsm
+RuntimeDirectoryMode=0750
+StateDirectory=ccsm
+StateDirectoryMode=0750
+User=ccsm
+Group=ccsm
+# ---------------------------------------------------------------------
+
+# Watchdog handshake (ch08): daemon emits sd_notify("WATCHDOG=1") at the
+# Supervisor /healthz interval. WatchdogSec=30 matches the §1770-area spec
+# locked watchdog cadence for v0.3 (see watchdog/systemd.spec.ts).
+WatchdogSec=30
+
+# sd_notify READY=1 is emitted by the daemon at startup ordering step 7
+# (ch02 §3) — once Supervisor /healthz returns 200.
+NotifyAccess=main
+
+# Hardening — minimal but defensible. Heavier sandbox (ProtectSystem=strict
+# etc.) is a v0.4 follow-up after we audit the daemon's actual fs writes.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+
+[Install]
+WantedBy=multi-user.target
