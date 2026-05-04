@@ -241,3 +241,72 @@ jobs:
           name: coverage-lcov
           path: coverage/lcov.info
           if-no-files-found: warn
+
+      # Task #98 (T8.14a) — per-package coverage enforcement (chapter 12 §6).
+      # Distinct from the root `coverage` step above (legacy renderer suite,
+      # advisory only). These two steps are LIVE gates: they fail the PR if
+      # the threshold drops.
+      #
+      # Daemon: 50% lines TEMPORARY (followup #350 raises to spec-mandated
+      # 80%). Local run measures ~55% so the gate is real, not vacuous.
+      # Uses a separate vitest config (vitest.config.coverage.ts) that
+      # narrows include to unit specs only — integration suites under
+      # packages/daemon/test/** must NOT count toward the unit gate per
+      # chapter 12 §6.
+      #
+      # Electron: 60% lines LIVE. Renderer measures ~85% so this gate is
+      # well-met today; threshold matches chapter 12 §6.
+      # Repo's monorepo glue is turbo + pnpm-workspace.yaml on disk, but CI
+      # installs with `npm ci` (see Install deps step) and the Windows runner
+      # has no pnpm shim — the original `pnpm --filter @ccsm/<pkg>` invocation
+      # fails with "pnpm: not recognized as a name of a cmdlet". The package
+      # also lacks a top-level `npm workspaces` declaration, so
+      # `npm test --workspace=...` errors with "No workspaces found". Cleanest
+      # cross-platform invocation: cd into the package and run the locally
+      # installed vitest via npx (resolves through the hoisted node_modules).
+      #
+      # Per-package devDeps not in the root install: the root `npm ci` only
+      # installs deps from the root package.json — it ignores
+      # `packages/*/package.json` because the root has no `workspaces` field
+      # (intentional: pnpm-workspace.yaml is the source of truth, npm is just
+      # CI's installer). Result: `cd packages/daemon && npx vitest` cannot
+      # resolve daemon-only devDeps like `@connectrpc/connect-node` (imported
+      # by src/rpc/router.ts → loaded by src/rpc/__tests__/router.spec.ts).
+      # Locally `pnpm install` populates packages/daemon/node_modules/ via
+      # symlink so the gap is invisible.
+      #
+      # Cannot `cd packages/daemon && npm install` — daemon's package.json
+      # references `@ccsm/proto: workspace:*` and npm errors with
+      # EUNSUPPORTEDPROTOCOL on the `workspace:` protocol. Instead, install
+      # only the third-party deps the per-package vitest run needs into the
+      # root node_modules tree (npm hoists single-package installs there;
+      # node's import resolver finds them via parent-walk from
+      # packages/daemon/). `--no-save` keeps the root package-lock.json
+      # untouched. Pin the version to match packages/daemon/package.json
+      # devDeps so the gate exercises the wire types the daemon ships with.
+      - name: Install missing daemon devDeps for coverage gate
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps @connectrpc/connect-node@^2.1.1
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Coverage (daemon, unit only — temp 50% gate, see #350)
+        working-directory: packages/daemon
+        run: npx vitest run --coverage --config vitest.config.coverage.ts
+
+      # Same per-package devDeps gap as daemon above. Electron's renderer
+      # spec files use `@vitest-environment happy-dom` (declared in
+      # packages/electron/devDependencies, not in root). Without happy-dom
+      # vitest fails to start the worker for renderer .spec.tsx files with
+      # "Cannot find package 'happy-dom'" — those specs silently drop out
+      # of the coverage denominator (no 'failed' marker, just missing
+      # files), making the renderer coverage tank from ~78% to ~44%.
+      # Install the tagged version into root node_modules; node's resolver
+      # finds it via parent-walk from packages/electron/.
+      - name: Install missing electron devDeps for coverage gate
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps happy-dom@^15.11.7
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Coverage (electron renderer — 60% gate)
+        working-directory: packages/electron
+        run: npx vitest run --coverage
