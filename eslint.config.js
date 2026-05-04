@@ -101,7 +101,12 @@ export default [
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.
-        NodeJS: 'readonly'
+        NodeJS: 'readonly',
+        // webpack DefinePlugin compile-time constant — see webpack.config.js.
+        // Replaced inline at build with the package.json version string.
+        // Used by src/components/settings/UpdatesPane.tsx as the no-IPC
+        // version source (Task #311 round 7 fallback for getVersion absence).
+        __APP_VERSION__: 'readonly'
       }
     },
     plugins: {

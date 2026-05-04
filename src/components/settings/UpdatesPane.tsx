@@ -18,27 +18,7 @@ export function UpdatesPane() {
   const { t } = useTranslation('settings');
 
   useEffect(() => {
-    // Wave 0b purged `window.ccsm.getVersion` (the IPC bridge); the
-    // version field is now sourced from a build-time webpack DefinePlugin
-    // constant (see `webpack.config.js`). The optional-chained call is
-    // kept as a defensive fallback so a hypothetical future re-introduction
-    // of the IPC bridge wins, and `typeof === 'function'` guards against
-    // a partial-bridge scenario where `window.ccsm` exists but does not
-    // expose `getVersion` (which is exactly what tripped #311 round 7 —
-    // the property access returned undefined and `.then(...)` on undefined
-    // threw a TypeError that the top-level ErrorBoundary swallowed,
-    // replacing the entire App with the fallback and breaking every e2e
-    // case that relied on a mounted store subscriber).
-    const fallbackVersion =
-      typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
-    if (typeof window.ccsm?.getVersion === 'function') {
-      window.ccsm
-        .getVersion()
-        .then(setVersion)
-        .catch(() => setVersion(fallbackVersion));
-    } else {
-      setVersion(fallbackVersion);
-    }
+    const fb = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0', fn = window.ccsm?.getVersion; if (typeof fn === 'function') fn().then(setVersion).catch(() => setVersion(fb)); else setVersion(fb); // #311: Wave 0b purged getVersion.
     void window.ccsm?.updatesStatus().then(setStatus).catch(() => {});
     void window.ccsm?.updatesGetAutoCheck().then(setAutoCheck).catch(() => {});
     const off = window.ccsm?.onUpdateStatus(setStatus);
