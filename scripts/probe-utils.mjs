@@ -365,9 +365,29 @@ export async function seedStore(win, state) {
     null,
     { timeout: 20_000 }
   );
-  await win.waitForFunction(() => window.__ccsm_hydrated === true, null, {
-    timeout: 5_000,
-  });
+  // Task #313 round 5: dump renderer state on hydration-gate timeout to
+  // discriminate root cause (missed store update / React unmounted / hydration
+  // race / persisted-shape regression / ErrorBoundary fallback). Remove after
+  // #311 resolves.
+  try {
+    await win.waitForFunction(() => window.__ccsm_hydrated === true, null, {
+      timeout: 5_000,
+    });
+  } catch (e) {
+    const dump = await win.evaluate(() => ({
+      hydratedFlag: window.__ccsm_hydrated,
+      storeRef: !!window.__ccsmStore,
+      storeTheme: window.__ccsmStore?.getState?.().theme,
+      persistedRaw: localStorage.getItem('main')?.slice(0, 200) ?? null,
+      appMounted: !!document.querySelector('aside'),
+      errorBoundaryShown: /Something went wrong/.test(document.body.innerText),
+      daemonModalOpen: !!document.querySelector('[data-testid="daemon-not-running-modal"]'),
+      htmlClasses: document.documentElement.className,
+      bodyTextHead: document.body.innerText.slice(0, 200),
+    }));
+    console.error('[seedStore] hydration gate timeout — dump:', JSON.stringify(dump));
+    throw e;
+  }
   await win.evaluate((s) => {
     const store = window.__ccsmStore;
     if (!store) throw new Error('__ccsmStore missing on window — App.tsx no longer exposes it?');
