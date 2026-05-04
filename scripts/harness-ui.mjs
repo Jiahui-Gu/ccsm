@@ -555,8 +555,39 @@ async function caseThemeToggle({ win, log, registerDispose }) {
     });
   }
 
+  // Force a state transition so the subsequent setTheme('dark') is
+  // guaranteed to be a primitive *change* — otherwise zustand's Object.is
+  // short-circuit skips fan-out, App doesn't re-render, useThemeEffect
+  // doesn't re-run, and the html classes stay whatever the previous case
+  // left them as (e.g. residual theme-light from settings-updates-pane,
+  // or a DOM mutation from another case that didn't touch the store).
+  // The two setTheme calls live in *separate* `win.evaluate` blocks with
+  // a `waitForFunction` between them, so React processes the 'light'
+  // commit fully (effect runs, dataset.theme='light') before we issue the
+  // 'dark' update — otherwise React 18 batching could merge both into one
+  // re-render with the final value, and if that final value matches the
+  // current store value the effect never fires.
+  // Then poll for the .dark class to actually appear instead of relying
+  // on a fixed waitForTimeout(150) which races with React's effect
+  // scheduler on Windows after the previous case hid+showed the
+  // BrowserWindow.
+  await win.evaluate(() => { window.__ccsmStore.getState().setTheme('light'); });
+  await win.waitForFunction(
+    () => document.documentElement.dataset.theme === 'light'
+      && document.documentElement.classList.contains('theme-light'),
+    null,
+    { timeout: 3000 }
+  );
   await win.evaluate(() => { window.__ccsmStore.getState().setTheme('dark'); });
-  await win.waitForTimeout(150);
+  await win.waitForFunction(
+    () => {
+      const c = document.documentElement.classList;
+      return c.contains('dark') && !c.contains('theme-light')
+        && document.documentElement.dataset.theme === 'dark';
+    },
+    null,
+    { timeout: 3000 }
+  );
   const dark1 = await snapshot();
   if (!dark1.themeClassDark || dark1.themeClassLight) throw new Error(`expected initial dark theme classes, got ${JSON.stringify(dark1)}`);
   if (dark1.dataTheme !== 'dark') throw new Error(`html[data-theme] should be 'dark', got ${dark1.dataTheme}`);
