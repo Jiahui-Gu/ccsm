@@ -38,7 +38,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Task #322 — windows-only matrix. Round 1-7 of the v0.3 ship-gate
+        # PRs failed because the matrix ran ubuntu+macos+windows but none
+        # were `required` in branch protection, letting devs alibi as
+        # "Linux only / mac only / can't repro locally" through 6 rounds
+        # of speculative fixes (history: PR #986). All current devs work
+        # on Windows hosts; demoting to windows-only means local green ==
+        # CI green with no platform escape hatch. Linux-conditional
+        # guard steps below are migrated to windows-latest because their
+        # tooling (bash, sha256sum, node, npx vitest) is available via
+        # Git-for-Windows on the windows runner.
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -58,11 +68,9 @@ jobs:
       # may shrink but never grow vs the merge-base AND must be step-wise
       # monotonic across every first-parent commit in this branch series
       # (so a file can't shrink in commit N then re-grow in commit N+1).
-      # Linux-only because the check is git/wc/bash and the result is
-      # deterministic across OSes; running on the matrix would waste 2x
-      # runner time.
+      # Was Linux-only pre-#322; runs on windows via Git-for-Windows bash
+      # since this is the only matrix entry now.
       - name: Check v0.2-only files don't grow (incl. step-wise)
-        if: matrix.os == 'ubuntu-latest'
         run: bash tools/check-v02-shrinking.sh
 
       - name: Setup Node
@@ -76,13 +84,11 @@ jobs:
       # or deleted. tools/check-spec-code-lock.sh reads
       # docs/superpowers/specs/2026-05-03-v03-daemon-split.lock.json and
       # verifies every locked path exists with the recorded SHA256
-      # (LF-normalized, so platform-stable). Linux-only because the check
-      # is git/sha256/node and the result is deterministic across OSes;
-      # running on the matrix would waste 2x runner time. Placed after
+      # (LF-normalized, so platform-stable). Was Linux-only pre-#322;
+      # runs on windows now via Git-for-Windows bash + node. Placed after
       # Setup Node because the script uses `node -e` to parse the lock
       # JSON (no jq dependency).
       - name: Check spec-code lock (ship-gate paths)
-        if: matrix.os == 'ubuntu-latest'
         run: bash tools/check-spec-code-lock.sh
 
       # Linux native builds for better-sqlite3 need python + build tools; the
@@ -165,27 +171,23 @@ jobs:
       # and ship their own minimal config at tools/vitest.config.ts.
       # Wire-up extends the existing required `lint + typecheck + test`
       # job rather than adding a new required check (branch protection
-      # is frozen). Linux-only because the assertions are git/fs/process
-      # behaviour with no platform-specific paths — running on the matrix
-      # would triple wall-clock with no signal gain.
+      # is frozen). Was Linux-only pre-#322; runs on windows now since
+      # the assertions are git/fs/process behaviour with no
+      # platform-specific paths.
       - name: Test (tools/**/*.spec.ts)
-        if: matrix.os == 'ubuntu-latest'
         run: npx vitest run --config tools/vitest.config.ts
 
-      # Tech-debt R6 (Task #802) — coverage roll-out. Run only on Linux to
-      # keep the matrix lean (coverage instrumentation roughly doubles
-      # wall-clock; one OS is enough for the lcov artifact). Threshold
-      # misses do NOT fail CI yet — this is the initial roll-out; we wrap
-      # with `continue-on-error: true` to keep CI green during the bake-in
+      # Tech-debt R6 (Task #802) — coverage roll-out. Threshold misses do
+      # NOT fail CI yet — this is the initial roll-out; we wrap with
+      # `continue-on-error: true` to keep CI green during the bake-in
       # period. Bump and enforce in a follow-up once we've watched a few
-      # PRs.
+      # PRs. Was Linux-only pre-#322; runs on windows now (single matrix
+      # entry, lcov artifact still produced).
       - name: Coverage
-        if: matrix.os == 'ubuntu-latest'
         run: npm run coverage
         continue-on-error: true
 
       - name: Upload coverage artifact
-        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
