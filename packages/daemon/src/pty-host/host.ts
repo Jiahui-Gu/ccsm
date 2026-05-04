@@ -337,11 +337,30 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
 function isChildToHostMessage(x: unknown): x is ChildToHostMessage {
   if (typeof x !== 'object' || x === null) return false;
   const k = (x as { kind?: unknown }).kind;
-  return (
-    k === 'ready' ||
-    k === 'exiting' ||
-    k === 'delta' ||
-    k === 'snapshot' ||
-    k === 'send-input-rejected'
-  );
+  if (
+    k !== 'ready' &&
+    k !== 'exiting' &&
+    k !== 'delta' &&
+    k !== 'snapshot' &&
+    k !== 'send-input-rejected'
+  ) {
+    return false;
+  }
+  if (k === 'send-input-rejected') {
+    // Flat shape per spec 2026-05-04-pty-attach-handler.md §2.2 —
+    // pendingWriteBytes + attemptedBytes are top-level fields on the
+    // message itself; no nested `payload`, no `sessionId` (the daemon
+    // main process knows which child sent it via the IPC channel).
+    const pwb = (x as { pendingWriteBytes?: unknown }).pendingWriteBytes;
+    const ab = (x as { attemptedBytes?: unknown }).attemptedBytes;
+    return (
+      typeof pwb === 'number' &&
+      Number.isFinite(pwb) &&
+      pwb >= 0 &&
+      typeof ab === 'number' &&
+      Number.isFinite(ab) &&
+      ab >= 0
+    );
+  }
+  return true;
 }

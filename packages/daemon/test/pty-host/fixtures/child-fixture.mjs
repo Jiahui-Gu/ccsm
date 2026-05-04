@@ -7,12 +7,25 @@
 // The fixture supports a few env-driven behaviors so the host.spec.ts
 // can exercise the lifecycle paths:
 //
-//   CCSM_FIXTURE_MODE=normal    (default) — ready, accept close, exit 0
-//   CCSM_FIXTURE_MODE=crash     — ready then process.exit(137) immediately
-//   CCSM_FIXTURE_MODE=no-ready  — never send ready (parent ready() should reject on exit)
-//   CCSM_FIXTURE_MODE=echo      — echo every spawn payload back as a 'snapshot' kind
+//   CCSM_FIXTURE_MODE=normal         (default) — ready, accept close, exit 0
+//   CCSM_FIXTURE_MODE=crash          — ready then process.exit(137) immediately
+//   CCSM_FIXTURE_MODE=no-ready       — never send ready (parent ready() should reject on exit)
+//   CCSM_FIXTURE_MODE=echo           — echo every spawn payload back as a 'snapshot' kind
+//   CCSM_FIXTURE_MODE=backpressure   — T4.3: enforce a small pending-write cap
+//                                       (CCSM_PTY_PENDING_CAP_BYTES) and emit
+//                                       'send-input-rejected' IPC matching the
+//                                       real child.ts shape. Stub writer is
+//                                       instant-drain (matches T4.3 default).
 
 const mode = process.env.CCSM_FIXTURE_MODE ?? 'normal';
+const capBytes = (() => {
+  const raw = process.env.CCSM_PTY_PENDING_CAP_BYTES;
+  if (!raw) return 1024 * 1024;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 1024 * 1024;
+})();
+
+let pendingWriteBytes = 0;
 
 function send(msg) {
   if (typeof process.send !== 'function') {
@@ -22,12 +35,37 @@ function send(msg) {
   process.send(msg);
 }
 
+function handleSendInput(bytes) {
+  if (mode !== 'backpressure') return; // other modes ignore send-input
+  const attempted = bytes.length;
+  if (pendingWriteBytes + attempted > capBytes) {
+    // Flat IPC shape per spec 2026-05-04-pty-attach-handler.md §2.2 —
+    // mirrors src/pty-host/child.ts's send() call.
+    send({
+      kind: 'send-input-rejected',
+      pendingWriteBytes,
+      attemptedBytes: attempted,
+    });
+    return;
+  }
+  // Stub writer: account + instant drain (mirrors T4.3 default in
+  // src/pty-host/child.ts).
+  pendingWriteBytes += attempted;
+  pendingWriteBytes = Math.max(0, pendingWriteBytes - attempted);
+}
+
 process.on('message', (raw) => {
   if (!raw || typeof raw !== 'object') return;
   const k = raw.kind;
   if (k === 'spawn') {
     if (mode === 'echo') {
       send({ kind: 'snapshot' });
+    }
+    return;
+  }
+  if (k === 'send-input') {
+    if (raw.bytes instanceof Uint8Array) {
+      handleSendInput(raw.bytes);
     }
     return;
   }
