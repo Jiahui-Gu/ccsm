@@ -384,6 +384,7 @@ export async function seedStore(win, state) {
       daemonModalOpen: !!document.querySelector('[data-testid="daemon-not-running-modal"]'),
       htmlClasses: document.documentElement.className,
       bodyTextHead: document.body.innerText.slice(0, 200),
+      ccsmError: window.__ccsm_error ?? null,
     }));
     console.error('[seedStore] hydration gate timeout — dump:', JSON.stringify(dump));
     throw e;

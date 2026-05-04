@@ -561,6 +561,7 @@ async function caseThemeToggle({ win, log, registerDispose }) {
         daemonModalOpen: !!document.querySelector('[data-testid="daemon-not-running-modal"]'),
         htmlClasses: document.documentElement.className,
         bodyTextHead: document.body.innerText.slice(0, 200),
+        ccsmError: window.__ccsm_error ?? null,
       };
     });
   }

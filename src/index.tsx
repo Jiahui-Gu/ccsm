@@ -70,6 +70,32 @@ root.render(
         Something went wrong. The error was reported to the developer.
       </div>
     }
+    onError={(error, componentStack) => {
+      // Task #311 round 6 observability: Sentry already reports to its
+      // backend, but probes (and CI logs) need an in-process handle so
+      // harness snapshots can dump the actual throw site. Pure write-only
+      // side-effect; remove after #311 resolves.
+      try {
+        (window as unknown as {
+          __ccsm_error?: {
+            message: string;
+            name: string;
+            stack: string | null;
+            componentStack: string | null;
+          };
+        }).__ccsm_error = {
+          message: (error as Error)?.message ?? String(error),
+          name: (error as Error)?.name ?? 'Error',
+          stack: (error as Error)?.stack?.slice(0, 2000) ?? null,
+          componentStack:
+            typeof componentStack === 'string'
+              ? componentStack.slice(0, 2000)
+              : null,
+        };
+      } catch {
+        /* swallow — observability must never throw */
+      }
+    }}
   >
     <RendererBoot>
       <App />
