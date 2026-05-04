@@ -47,6 +47,8 @@ import type {
   SpawnPayload,
 } from './types.js';
 import type { SnapshotWrite } from '../sqlite/coalescer.js';
+import type { SnapshotStore } from '../storage/snapshot-store.js';
+import { decideRestoreReplay } from './replay.js';
 
 /**
  * Configuration for `spawnPtyHostChild`. All fields beyond `payload`
@@ -176,6 +178,53 @@ export interface SpawnPtyHostChildOptions {
    * fixture). See `host.spec.ts` "DEGRADED cooldown" describe block.
    */
   readonly nowMs?: () => number;
+  /**
+   * Optional read-only SQLite resolver used to hydrate a freshly-spawned
+   * pty-host child from the most-recent persisted snapshot + post-snap
+   * deltas — Task #51 / T4.14, spec ch06 §7 ("Daemon restart replay").
+   *
+   * When set, after the child sends `'ready'` AND the per-session
+   * {@link PtySessionEmitter} is constructed, host.ts:
+   *   1. calls `priorState.getLatestSnapshot(sessionId)` + `getDeltasSince(...)`
+   *      to materialize any prior in-memory state from the previous
+   *      daemon process;
+   *   2. feeds the rows into the pure {@link decideRestoreReplay} decider
+   *      (`./replay.ts`) which validates monotonicity + builds the
+   *      hydration plan;
+   *   3. for the `hydrate` verdict, re-publishes the prior snapshot then
+   *      each post-snap delta through the emitter, in order. Subscribers
+   *      attaching after the restart see exactly the same in-memory
+   *      state the previous daemon had at the moment it died.
+   *
+   * The child's own synthetic baseSeq=0 snapshot (spec §3.3, fired on
+   * `'ready'`) is published FIRST (it lands during the same IPC
+   * `'message'` handler that triggers our hydration). Our hydrated
+   * snapshot then OVERWRITES `currentSnapshot` in the emitter — which
+   * is the desired effect: the restored state supersedes the cold-start
+   * empty buffer. New `Attach` calls with `since_seq=0` see the
+   * restored snapshot per the T-PA-2 attach decider.
+   *
+   * Unset (the production cold-boot path or first-ever-spawn path)
+   * skips the entire hydration block — the emitter starts empty and
+   * the child's synthetic snapshot is the only state subscribers see.
+   * Cold start is the {@link RestorePlanColdStart} verdict, which is
+   * also what the decider returns when `getLatestSnapshot` returns
+   * `null`.
+   *
+   * Spec coverage: see `./replay.ts` for the FOREVER-STABLE invariants
+   * the decider locks (snapshot is most-recent; deltas are contiguous
+   * from baseSeq+1; corrupt seq gap → snapshot-only fallback).
+   *
+   * Forward-compat note (T4.6): when xterm-headless lands inside the
+   * pty-host child, the hydration plan will additionally be sent over
+   * IPC to the child so its `xterm-headless.write()` replay matches
+   * the in-memory emitter state. The seq-anchor for the new child's
+   * accumulator (currently `firstSeq = 1` per child.ts) will move to
+   * `plan.nextEmitSeq`. Today, with node-pty + xterm-headless still
+   * stubbed in the child, the emitter-only hydration is sufficient
+   * to prove the wire-up against the daemon-boot e2e harness.
+   */
+  readonly priorState?: SnapshotStore;
 }
 
 /**
@@ -473,6 +522,108 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
           opts.coalescer.on('session-degraded', onCoalescerDegraded);
           opts.coalescer.on('session-recovered', onCoalescerRecovered);
         }
+      }
+      // T4.14 (Task #51) — post-restart hydration. Runs INSIDE the
+      // 'ready' handler AFTER the emitter is constructed AND after
+      // the coalescer event subscriptions are wired (so a
+      // mid-hydration degraded transition still flips state cleanly).
+      // Spec ch06 §7: "restored pty-host hydrates xterm-headless from
+      // snapshot then writes the post-snapshot deltas back". Today,
+      // with xterm-headless still stubbed inside the child, the
+      // hydration is emitter-only — subscribers see the prior snapshot
+      // + deltas via Attach, which is exactly what the daemon-boot
+      // e2e harness asserts (see daemon-boot-end-to-end.spec.ts §T4.14).
+      //
+      // The hydration intentionally fires AFTER the child's synthetic
+      // baseSeq=0 snapshot lands (which it does later in this same
+      // 'message' handler — see the `raw.kind === 'snapshot'` branch
+      // below). Order across IPC ticks: child's `'ready'` + synthetic
+      // 'snapshot' arrive in two consecutive 'message' callbacks; we
+      // schedule the hydration via `queueMicrotask` so it runs AFTER
+      // the synthetic snapshot has been published into the emitter
+      // (replacing the cold-start state) — the hydrated snapshot then
+      // OVERRIDES `currentSnapshot` which is the desired effect (the
+      // restored state supersedes the cold-start empty buffer).
+      if (emitter !== null && opts.priorState !== undefined) {
+        const store = opts.priorState;
+        const liveEmitter = emitter;
+        // Capture the sessionId in closure to avoid shadowing.
+        const sid = sessionId;
+        // queueMicrotask via Promise.resolve().then so we don't reach
+        // for the global (eslint env config doesn't list it). Same
+        // microtask-queue semantics: the callback runs after the
+        // current 'message' handler returns but before any I/O tick.
+        void Promise.resolve().then(() => {
+          // Re-check both refs — the child could exit between 'ready'
+          // and the microtask drain (rare but legal). publish* are
+          // no-ops on a closed emitter so this is defense in depth.
+          try {
+            const latest = store.getLatestSnapshot(sid);
+            const deltas =
+              latest === null
+                ? []
+                : store.getDeltasSince(sid, latest.baseSeq);
+            const plan = decideRestoreReplay({
+              latestSnapshot: latest,
+              postSnapDeltas: deltas,
+            });
+            if (plan.kind === 'no_prior_state') {
+              // Cold start — nothing to do; the synthetic baseSeq=0
+              // snapshot already published by the child stands.
+              return;
+            }
+            // Both 'hydrate' and 'corrupt_seq_gap' carry a snapshot to
+            // republish. publishSnapshot replaces `currentSnapshot` in
+            // the emitter (atomic per spec §2.4) — subscribers
+            // attaching after this point see the hydrated state via
+            // the T-PA-2 attach decider's `since_seq=0` branch.
+            liveEmitter.publishSnapshot({
+              kind: 'snapshot',
+              baseSeq: plan.snapshot.baseSeq,
+              schemaVersion: plan.snapshot.schemaVersion,
+              geometry: plan.snapshot.geometry,
+              screenState: plan.snapshot.screenState,
+            });
+            if (plan.kind === 'hydrate') {
+              for (const delta of plan.deltas) {
+                liveEmitter.publishDelta({
+                  kind: 'delta',
+                  seq: delta.seq,
+                  tsUnixMs: delta.tsUnixMs,
+                  payload: delta.payload,
+                });
+              }
+              // eslint-disable-next-line no-console
+              console.log(
+                `[ccsm-daemon] spawnPtyHostChild(${sid}): hydrated from ` +
+                  `prior snapshot baseSeq=${plan.snapshot.baseSeq} + ` +
+                  `${plan.deltas.length} post-snap deltas (lastReplayedSeq=${plan.lastReplayedSeq})`,
+              );
+            } else {
+              // corrupt_seq_gap — snapshot-only fallback. Logged as
+              // an error so ops can grep daemon stdout. No deltas
+              // published; the snapshot is recoverable on its own per
+              // spec §2.4.
+              // eslint-disable-next-line no-console
+              console.error(
+                `[ccsm-daemon] spawnPtyHostChild(${sid}): replay seq gap detected ` +
+                  `(expected=${plan.expectedSeq}, got=${plan.actualSeq}); ` +
+                  `falling back to snapshot-only hydration`,
+              );
+            }
+          } catch (err) {
+            // Replay failures (SQL errors, malformed rows) MUST NOT
+            // crash the daemon main process. The session keeps
+            // running off the empty cold-start state — degraded UX
+            // (the user sees an empty terminal until fresh deltas
+            // arrive) but no data loss in the live stream.
+            // eslint-disable-next-line no-console
+            console.error(
+              `[ccsm-daemon] spawnPtyHostChild(${sid}): replay hydration threw`,
+              err,
+            );
+          }
+        });
       }
     }
     if (raw.kind === 'exiting' && raw.reason === 'graceful') {

@@ -1452,4 +1452,114 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     const rerun = runMigrations(r.db);
     expect(rerun.applied).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // T4.14 / Task #51 — post-restart pty-host replay (spec ch06 §7).
+  // -------------------------------------------------------------------------
+  //
+  // Simulates "daemon was running, captured a snapshot + some deltas, then
+  // restarted" by pre-seeding pty_snapshot + pty_delta rows in the post-boot
+  // SQLite DB the daemon already opened, then spawning a fresh pty-host
+  // child with `priorState: SqliteSnapshotStore`. The hydration runs in a
+  // microtask after child 'ready' (per host.ts T4.14 wire-up); we drain
+  // microtasks then assert the per-session emitter's `currentSnapshot()`
+  // matches the seeded snapshot and `deltasSince(baseSeq)` returns the
+  // seeded post-snap deltas in order.
+  //
+  // This proves the wire-up end-to-end: SqliteSnapshotStore reads the rows,
+  // decideRestoreReplay validates them, host.ts publishes the hydrated
+  // state through the per-session PtySessionEmitter, and a future Attach
+  // call would see the hydrated buffer (the renderer side of attach is
+  // out-of-scope; the emitter contract is the wire-equivalent boundary).
+  it('§T4.14 — pty-host hydrates from prior snapshot + deltas (post-restart replay)', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+
+    const sessionId = `01J0RESTART${Date.now().toString(36).toUpperCase().padEnd(15, '0').slice(0, 15)}`;
+    // Seed principal + session so the pty_snapshot/pty_delta FKs hold.
+    const principalKey = `local-user:test-${process.pid}`;
+    r.db.prepare(
+      'INSERT OR IGNORE INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms) ' +
+        'VALUES (?, ?, ?, ?, ?)',
+    ).run(principalKey, 'local-user', 'restart-replay', Date.now(), Date.now());
+    r.db.prepare(
+      'INSERT INTO sessions (id, owner_id, state, cwd, env_json, claude_args_json, ' +
+        'geometry_cols, geometry_rows, created_ms, last_active_ms) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(sessionId, principalKey, 1, '/tmp', '{}', '[]', 80, 24, Date.now(), Date.now());
+
+    // Seed snapshot at baseSeq=42 + two post-snap deltas (43, 44).
+    const snapshotPayload = new Uint8Array([0xc5, 0x53, 0x53, 0x31, 0x01, 0x00]);
+    r.db.prepare(
+      'INSERT INTO pty_snapshot ' +
+        '(session_id, base_seq, schema_version, geometry_cols, geometry_rows, payload, created_ms) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(sessionId, 42, 1, 100, 30, Buffer.from(snapshotPayload), 1_700_000_000_000);
+    const insertDelta = r.db.prepare(
+      'INSERT INTO pty_delta (session_id, seq, payload, ts_ms) VALUES (?, ?, ?, ?)',
+    );
+    insertDelta.run(sessionId, 43, Buffer.from([0x48, 0x69]), 1_700_000_001_000); // "Hi"
+    insertDelta.run(sessionId, 44, Buffer.from([0x21]), 1_700_000_002_000); // "!"
+
+    // Spawn pty-host child with priorState wired. Use the test fixture
+    // (mode='normal') so we don't depend on node-pty / xterm-headless
+    // (those are T4.6+; not in scope for T4.14 per spec ch06 §7 — the
+    // hydration is emitter-only today and lifts to xterm-headless once
+    // T4.6 lands).
+    const { spawnPtyHostChild } = await import('../../src/pty-host/host.js');
+    const { SqliteSnapshotStore } = await import(
+      '../../src/storage/snapshot-store.js'
+    );
+    const { getEmitter, resetEmitterRegistry } = await import(
+      '../../src/pty-host/pty-emitter.js'
+    );
+    const FIXTURE = join(
+      HERE,
+      '..',
+      'pty-host',
+      'fixtures',
+      'child-fixture.mjs',
+    );
+    const store = new SqliteSnapshotStore(r.db);
+
+    const handle = spawnPtyHostChild({
+      payload: {
+        sessionId,
+        cwd: '/tmp',
+        claudeArgs: ['--print', 'restart'],
+        cols: 100,
+        rows: 30,
+      },
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      priorState: store,
+    });
+    try {
+      await handle.ready();
+      // Drain microtasks so the hydration queueMicrotask fires.
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const emitter = getEmitter(sessionId);
+      expect(emitter).not.toBeUndefined();
+      // Hydrated snapshot replaces any cold-start state.
+      const snap = emitter!.currentSnapshot();
+      expect(snap).not.toBeNull();
+      expect(snap!.baseSeq).toBe(42n);
+      expect(snap!.geometry).toEqual({ cols: 100, rows: 30 });
+      expect(snap!.schemaVersion).toBe(1);
+      expect(Array.from(snap!.screenState)).toEqual(Array.from(snapshotPayload));
+      // Post-snap deltas re-published via the emitter (a future Attach
+      // would replay them via deltasSince(snapshot.baseSeq)).
+      const since = emitter!.deltasSince(42n);
+      expect(since).not.toBe('out-of-window');
+      if (since !== 'out-of-window') {
+        expect(since.map((d) => d.seq)).toEqual([43n, 44n]);
+        expect(Array.from(since[0]!.payload)).toEqual([0x48, 0x69]);
+        expect(Array.from(since[1]!.payload)).toEqual([0x21]);
+      }
+    } finally {
+      await handle.closeAndWait();
+      resetEmitterRegistry();
+    }
+  });
 });

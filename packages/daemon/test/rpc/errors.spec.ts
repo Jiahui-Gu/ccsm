@@ -212,6 +212,7 @@ describe('rpc/errors — ts-only typecheck enforces the closed code enum', () =>
       | 'version.client_too_old'
       | 'request.missing_id'
       | 'session.not_owned'
+      | 'crash.raw_log_read_failed'
     >();
   });
 
