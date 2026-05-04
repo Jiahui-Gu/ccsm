@@ -1,0 +1,109 @@
+# Task #417 (T8.6 followup) — installer round-trip workflow.
+#
+# PR #902 (Task #95) shipped the orchestrator scripts and allowlist:
+#   tools/installer-roundtrip.ps1   (windows ship-gate (d), per spec ch12 §4.4)
+#   tools/installer-roundtrip.sh    (mac/linux non-gating draft, per ch12 §4.4)
+#   test/installer-residue-allowlist.txt           (global, FOREVER-STABLE)
+#   test/installer-residue-allowlist.removeuserdata-0.txt  (variant overlay)
+#
+# ...but did NOT ship a workflow yml. Without one there is no `gh workflow run`
+# entry-point and no place for tasks #235 (verifier) / #415 (real impl) to hook.
+# This file fills that gap.
+#
+# Trigger model: workflow_dispatch ONLY. Reasoning:
+#   - The scripts' real-MSI / real-pkg modes are blocked on tasks #82 (MSI
+#     artifact) / #81 (sea daemon binary). Today they fail-fast with a clear
+#     "blocked on #82/#81" throw — running them on every PR would only churn
+#     red CI without producing signal.
+#   - The DryRun / --dry-run mode IS exercised today and IS valuable: it
+#     drives the FOREVER-STABLE allowlist parser through the same code path
+#     the real gate will use. We surface it here so it can be invoked on
+#     demand (gh workflow run) and so #415 has a single place to flip the
+#     `--DryRun`/`--dry-run` switch off when the MSI lands.
+#   - Already covered by the unit suite: tools/test/installer-roundtrip-allowlist.spec.ts
+#     runs in CI's "Test (tools/**/*.spec.ts)" step, so the parser's
+#     correctness is gated on every PR. This workflow exercises the
+#     orchestrator wrapper end-to-end (arg parsing, exit codes, snapshot
+#     wiring), which a unit test cannot.
+#
+# Matrix shape mirrors .github/workflows/ci.yml `package` job and
+# `sea-smoke` job (windows-latest + macos-14 + ubuntu-22.04) per spec
+# ch10 §6 — same OS set the installer ships to.
+#
+# When tasks #82/#81 land, the future-MSI work (Task #415 owns the gate
+# promotion) will:
+#   1. Add an artifact-download step before "Run round-trip" to fetch the
+#      built MSI / pkg / deb from the `package` job in ci.yml.
+#   2. Drop --DryRun / --dry-run from the script invocation lines.
+#   3. Optionally promote the trigger from workflow_dispatch to a `pull_request`
+#      job (windows-latest only, since spec ch12 §4.4 keeps mac/linux
+#      non-gating in the foreseeable future).
+# The matrix shape, script paths, and allowlist references stay constant
+# across that promotion — no rename needed.
+
+name: installer-roundtrip
+
+on:
+  workflow_dispatch:
+    inputs:
+      variants:
+        description: 'REMOVEUSERDATA variants to run (comma-separated subset of 0,1)'
+        required: false
+        default: '0,1'
+        type: string
+
+concurrency:
+  group: installer-roundtrip-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  roundtrip:
+    name: round-trip (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # windows: real ship-gate (d) script. Today runs in -DryRun mode
+          # (parser surface only) until Task #82 ships the MSI artifact.
+          - os: windows-latest
+            script: pwsh tools/installer-roundtrip.ps1 -DryRun -VariantOverride ${{ inputs.variants || '0,1' }}
+            shell: pwsh
+          # macos: non-gating draft script (spec ch12 §4.4). DryRun exercises
+          # the parser only; real .pkg install lands with #82.
+          - os: macos-14
+            script: bash tools/installer-roundtrip.sh --dry-run --variants ${{ inputs.variants || '0,1' }}
+            shell: bash
+          # linux: non-gating draft script (spec ch12 §4.4). DryRun exercises
+          # the parser only; real .deb/.rpm install lands with #82.
+          - os: ubuntu-22.04
+            script: bash tools/installer-roundtrip.sh --dry-run --variants ${{ inputs.variants || '0,1' }}
+            shell: bash
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Capture script stdout to a file so we can both stream it live (for the
+      # job log UI) AND upload as an artifact for offline inspection. Failure
+      # surface intentionally goes through the script's exit code — no
+      # `continue-on-error`, no `|| true` swallowing.
+      - name: Run installer round-trip (${{ matrix.os }})
+        shell: ${{ matrix.shell }}
+        run: |
+          mkdir -p installer-roundtrip-out
+          ${{ matrix.script }} 2>&1 | tee installer-roundtrip-out/roundtrip-${{ matrix.os }}.log
+
+      # Always upload the residue / log artifact, even on failure, so the
+      # diff output is recoverable from the run page. Matches the pattern
+      # used by ci.yml `package` job's "Upload package artifacts" step.
+      - name: Upload round-trip artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-roundtrip-${{ matrix.os }}
+          path: installer-roundtrip-out/
+          if-no-files-found: warn
+          retention-days: 7
