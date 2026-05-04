@@ -26,6 +26,45 @@
 // Forward-compat (v0.4): adding `codec = 3` (e.g., zstd-with-dictionary)
 // only requires extending the `Codec` union and the dispatch tables here;
 // no change to callers, no `schema_version` bump (spec ch06 §2 / ch15 §3).
+//
+// The full SnapshotV1Wire encoder (xterm-headless Terminal -> wire bytes)
+// lives in `./encoder.ts` and is re-exported below; this `index.ts`
+// continues to own the inner compression-dispatch primitives so the two
+// concerns remain separable for the v0.4 web client (which will reuse
+// the codec dispatch but not the Node-only zstd path).
+
+export {
+  CURSOR_STYLE_BAR,
+  CURSOR_STYLE_BLOCK,
+  CURSOR_STYLE_UNDERLINE,
+  DEFAULT_COLOR_SENTINEL,
+  EMPTY_CODEPOINT,
+  FLAG_BLINK,
+  FLAG_BOLD,
+  FLAG_DIM,
+  FLAG_HIDDEN,
+  FLAG_ITALIC,
+  FLAG_REVERSE,
+  FLAG_STRIKE,
+  FLAG_UNDERLINE,
+  INNER_MAGIC,
+  MODES_BITMAP_LAYOUT,
+  OUTER_HEADER_LEN,
+  OUTER_MAGIC,
+  RESERVED_BYTES,
+  encodeInner,
+  encodeSnapshotV1,
+} from './encoder.js';
+export type {
+  BufferLike,
+  BufferNamespaceLike,
+  CellLike,
+  CursorStyle,
+  EncodeOptions,
+  LineLike,
+  ModesLike,
+  XtermHeadlessLike,
+} from './encoder.js';
 
 import {
   zstdCompressSync,
