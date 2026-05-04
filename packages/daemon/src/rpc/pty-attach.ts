@@ -81,6 +81,7 @@ import {
   type HandlerContext,
   type ServiceImpl,
 } from '@connectrpc/connect';
+import { randomUUID } from 'node:crypto';
 
 import {
   ErrorDetailSchema,
@@ -90,12 +91,15 @@ import {
   PtySessionStateChangedSchema,
   PtySnapshotSchema,
   SessionState,
+  type AckPtyRequest,
+  type AckPtyResponse,
   type AttachRequest,
   type PtyFrame,
   type PtyService,
 } from '@ccsm/proto';
+import { AckPtyResponseSchema, RequestMetaSchema } from '@ccsm/proto';
 
-import { PRINCIPAL_KEY } from '../auth/index.js';
+import { PRINCIPAL_KEY, principalKey as toPrincipalKey } from '../auth/index.js';
 import {
   decideAttachResume,
   type DeltaInMem,
@@ -104,7 +108,11 @@ import {
 } from '../pty-host/attach-decider.js';
 import {
   ACK_CHANNEL_CAPACITY,
+  AckSubscriberState,
   BoundedChannel,
+  findFirstAckSubscriber,
+  registerAckSubscriber,
+  unregisterAckSubscriber,
 } from '../pty-host/ack-state.js';
 
 // ---------------------------------------------------------------------------
@@ -235,7 +243,9 @@ export type PtyAttachErrorCode =
   | 'pty.attach_too_far_behind'
   | 'pty.attach_future_seq'
   | 'pty.session_destroyed'
-  | 'pty.subscriber_channel_full';
+  | 'pty.subscriber_channel_full'
+  | 'pty.ack_overrun'
+  | 'pty.ack_regress';
 
 const PTY_ERROR_CODE_TO_CONNECT: Record<PtyAttachErrorCode, Code> = {
   // §1 (this handler) — session id resolves to no live emitter. Map to
@@ -251,6 +261,11 @@ const PTY_ERROR_CODE_TO_CONNECT: Record<PtyAttachErrorCode, Code> = {
   'pty.session_destroyed': Code.Canceled,
   // §4.3 — `requires_ack=true` per-subscriber channel overflow.
   'pty.subscriber_channel_full': Code.ResourceExhausted,
+  // §6.1 — AckPty applied_seq > lastDeliveredSeq (client claimed to
+  // have applied a frame the daemon never sent).
+  'pty.ack_overrun': Code.InvalidArgument,
+  // §6.1 — AckPty applied_seq < lastAckedSeq (regressing ack).
+  'pty.ack_regress': Code.InvalidArgument,
 };
 
 function ptyError(
@@ -641,6 +656,34 @@ export function makeAttachHandler(
       ? 'pty.subscriber_channel_full'
       : 'pty.subscriber_channel_full';
 
+    // §4.2 / §6 — Task #49 / T4.13: per-subscriber ack-state. Constructed
+    // ONLY for `requires_ack=true` Attach streams. Registered under
+    // (principalKey, sessionId) so the AckPty companion handler can
+    // look it up by the same tuple (spec §6.1). The `requires_ack=false`
+    // fast path skips this entirely — AckPty for those subscribers is a
+    // no-op OK reply per §6.2 (covered by `findFirstAckSubscriber`
+    // returning undefined).
+    //
+    // `lastDeliveredSeq` advances via `subscriber.onDelivered(seq)` after
+    // every delta this generator yields onto the wire (both warm-up and
+    // steady-state). `lastAckedSeq` advances via the AckPty handler.
+    // `unackedBacklog = lastDeliveredSeq - lastAckedSeq` is the spec §4.3
+    // watchdog input; the producer-side overflow guard (channel.size at
+    // capacity) fires first in normal operation, but `unackedBacklog` is
+    // the load-bearing value AckPty queries on every tick.
+    const principalCanonicalKey = toPrincipalKey(principal);
+    const ackSubscriber: AckSubscriberState | null = requiresAck
+      ? new AckSubscriberState({
+          subscriberId: randomUUID(),
+          sessionId,
+          initialSeq: sinceSeq,
+          channelCapacity: ACK_CHANNEL_CAPACITY,
+        })
+      : null;
+    if (ackSubscriber !== null) {
+      registerAckSubscriber(principalCanonicalKey, ackSubscriber);
+    }
+
     // Producer→consumer rendezvous primitive. The emitter listener
     // resolves a pending `next()`; if no consumer is waiting it appends
     // to the channel. Mirrors the watch-sessions.ts adapter shape
@@ -712,6 +755,17 @@ export function makeAttachHandler(
       } else {
         // deltas_only — replay the (sinceSeq, currentMaxSeq] slice.
         for (const delta of verdict.deltas) {
+          // §4.2 onDelivered BEFORE the yield: at the moment the
+          // generator surrenders the frame to the Connect transport
+          // it is committed to deliver — even if the client cancels
+          // mid-await, no later delta is ever sent. Bumping the
+          // watermark first means an AckPty arriving in the same tick
+          // (e.g. the renderer pipelines acks aggressively) sees a
+          // consistent (lastDeliveredSeq, lastAckedSeq) snapshot and
+          // does not spuriously trip §6.1 ack_overrun.
+          if (ackSubscriber !== null) {
+            ackSubscriber.onDelivered(delta.seq);
+          }
           yield deltaToFrame(delta);
         }
       }
@@ -727,6 +781,9 @@ export function makeAttachHandler(
         while (true) {
           const delta = channel.dequeue();
           if (delta === undefined) break;
+          if (ackSubscriber !== null) {
+            ackSubscriber.onDelivered(delta.seq);
+          }
           yield deltaToFrame(delta);
         }
 
@@ -822,6 +879,13 @@ export function makeAttachHandler(
       detachAbort();
       unsubscribe();
       channel.clear();
+      // Task #49 / T4.13: drop the per-subscriber ack-state from the
+      // (principalKey, sessionId) registry so a late AckPty RPC for this
+      // closed stream falls through to the spec §6.2 no-op path. Safe to
+      // call when ackSubscriber is null (requires_ack=false fast path).
+      if (ackSubscriber !== null) {
+        unregisterAckSubscriber(principalCanonicalKey, ackSubscriber);
+      }
       // Wake any straggler resolver so a Promise we're not awaiting
       // does not pin GC. (Defensive — by construction we never `await`
       // after entering `finally`.)
@@ -831,5 +895,115 @@ export function makeAttachHandler(
         resolve(null);
       }
     }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// AckPty companion handler — Task #49 / T4.13 (spec §6).
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the `PtyService.AckPty` unary handler. Spec
+ * `2026-05-04-pty-attach-handler.md` §6.
+ *
+ * Lookup is by `(principalKey(principal), session_id)` against the
+ * module-level subscriber registry that the Attach handler populates on
+ * `requires_ack=true` streams. When no subscriber is registered (the
+ * three §6.2 cases — `requires_ack=false`, post-disconnect race,
+ * out-of-order client) the handler returns OK with
+ * `daemon_max_seq = emitter.currentMaxSeq` and does NOT touch any state.
+ *
+ * Validation failures (`pty.ack_overrun`, `pty.ack_regress`) become
+ * `Code.InvalidArgument` ConnectError responses with the same
+ * forever-stable error code strings the renderer instruments on. The
+ * pure decider lives on {@link AckSubscriberState.onAck}; this handler
+ * is the (sink) wire boundary that converts the decider verdict to
+ * Connect responses.
+ */
+export function makeAckPtyHandler(
+  deps: PtyAttachDeps,
+): ServiceImpl<typeof PtyService>['ackPty'] {
+  return async function ackPty(
+    req: AckPtyRequest,
+    handlerContext: HandlerContext,
+  ): Promise<AckPtyResponse> {
+    // Defensive: peerCredAuthInterceptor MUST have run. Mirrors the
+    // posture in `attach` above + hello.ts / watch-sessions.ts.
+    const principal = handlerContext.values.get(PRINCIPAL_KEY);
+    if (principal === null) {
+      throw new ConnectError(
+        'PtyService.AckPty handler invoked without peerCredAuthInterceptor in chain ' +
+          '(PRINCIPAL_KEY=null) — daemon wiring bug',
+        Code.Internal,
+      );
+    }
+
+    const sessionId = req.sessionId;
+    if (sessionId.length === 0) {
+      throw ptyError(
+        'pty.session_not_found',
+        'AckPtyRequest.session_id MUST be non-empty',
+      );
+    }
+
+    // §6.1 lookup: (principalKey, sessionId) → first matching ack
+    // subscriber. The emitter is consulted in BOTH §6.1 (advance
+    // watermark + return daemon_max_seq) and §6.2 (no-op return
+    // daemon_max_seq) so we resolve it up front.
+    const emitter = deps.getEmitter(sessionId);
+    if (emitter === undefined) {
+      // Spec §6.2 covers the "no live subscriber" case as a no-op OK,
+      // BUT a totally unknown session id is distinct from "session
+      // exists, no ack subscriber on this principal". The Attach
+      // handler maps unknown id to NotFound; mirroring that here keeps
+      // the two RPCs symmetric for the typo case while still allowing
+      // §6.2 no-op behavior when the session exists but the calling
+      // principal has no live `requires_ack=true` Attach.
+      throw ptyError(
+        'pty.session_not_found',
+        `no live pty session with id=${sessionId}`,
+        { session_id: sessionId },
+      );
+    }
+
+    const subscriber = findFirstAckSubscriber(
+      toPrincipalKey(principal),
+      sessionId,
+    );
+
+    if (subscriber === undefined) {
+      // §6.2 — no-op OK reply. Covers requires_ack=false subscriber,
+      // post-disconnect race, and out-of-order AckPty (RPC arrives
+      // before the matching Attach). All three return the same shape:
+      // OK with daemon_max_seq and no state mutation.
+      return create(AckPtyResponseSchema, {
+        meta: create(RequestMetaSchema, {}),
+        daemonMaxSeq: emitter.currentMaxSeq(),
+      });
+    }
+
+    // §6.1 — validated ack on a live `requires_ack=true` subscriber.
+    const verdict = subscriber.onAck(req.appliedSeq);
+    if (verdict.kind === 'rejected') {
+      throw ptyError(
+        verdict.reason,
+        verdict.reason === 'pty.ack_overrun'
+          ? `applied_seq=${verdict.appliedSeq} exceeds last_delivered_seq=${verdict.lastDeliveredSeq}; ` +
+              'client cannot ack a frame the daemon never sent'
+          : `applied_seq=${verdict.appliedSeq} regresses below last_acked_seq=${verdict.lastAckedSeq}; ` +
+              'acks must be monotonically non-decreasing',
+        {
+          session_id: sessionId,
+          applied_seq: String(verdict.appliedSeq),
+          last_delivered_seq: String(verdict.lastDeliveredSeq),
+          last_acked_seq: String(verdict.lastAckedSeq),
+        },
+      );
+    }
+
+    return create(AckPtyResponseSchema, {
+      meta: create(RequestMetaSchema, {}),
+      daemonMaxSeq: emitter.currentMaxSeq(),
+    });
   };
 }

@@ -361,3 +361,110 @@ export interface DeltaEnvelope {
   readonly tsUnixMs: bigint;
   readonly payload: Uint8Array;
 }
+
+// ---------------------------------------------------------------------------
+// Per-(principalKey, sessionId) subscriber registry — Task #49 / T4.13.
+// ---------------------------------------------------------------------------
+//
+// The Attach handler (`requires_ack=true` path) instantiates an
+// {@link AckSubscriberState} per server-streaming RPC, registers it under
+// the calling principal + session, and unregisters in `finally`. The
+// AckPty companion handler (spec §6.1) looks the subscriber up by the
+// SAME (principalKey, sessionId) tuple — `principalKey` because v0.4
+// multi-principal needs subscriber isolation; `sessionId` because every
+// AckPty RPC carries `session_id`.
+//
+// Multi-Attach overlap: spec §6.1 says "the AckPty handler looks it up
+// by (principalKey, session_id) returning the FIRST matching subscriber
+// whose channel has been awaiting an ack". Implementation-wise: each
+// (principalKey, sessionId) maps to an INSERTION-ORDERED set; FIRST
+// here means "earliest still-attached subscriber". Reattach overlap is
+// rare and the wrong-stream ack is benign per spec ("the right
+// subscriber will hit a stalled-ack watchdog within 30s").
+//
+// SRP (dev.md §2): this is pure data + pure mutators (Map insert /
+// delete / lookup). No I/O, no proto, no Connect imports. The
+// rpc/pty-attach.ts and rpc/ackpty.ts handlers compose this.
+
+/**
+ * Composite key string used as the registry Map key. Format:
+ * `${principalKey}\x1f${sessionId}` — a single ASCII US (0x1f) separator
+ * keeps the encoding unambiguous (neither principalKey nor sessionId
+ * may contain US per their respective format docs: principalKey is
+ * `<kind>:<uid|sid>`; sessionId is a ULID — both ASCII-safe).
+ */
+function registryKey(principalKey: string, sessionId: string): string {
+  return `${principalKey}\x1f${sessionId}`;
+}
+
+const SUBSCRIBER_REGISTRY = new Map<string, Set<AckSubscriberState>>();
+
+/**
+ * Register a subscriber under the (principalKey, sessionId) tuple.
+ * Insertion-ordered into a Set so {@link findFirstAckSubscriber} returns
+ * the earliest-attached overlap candidate per spec §6.1.
+ *
+ * Idempotent on re-registering the same instance (Set semantics).
+ */
+export function registerAckSubscriber(
+  principalKey: string,
+  subscriber: AckSubscriberState,
+): void {
+  const key = registryKey(principalKey, subscriber.sessionId);
+  let bucket = SUBSCRIBER_REGISTRY.get(key);
+  if (bucket === undefined) {
+    bucket = new Set<AckSubscriberState>();
+    SUBSCRIBER_REGISTRY.set(key, bucket);
+  }
+  bucket.add(subscriber);
+}
+
+/**
+ * Remove a subscriber from the registry. Called from the Attach
+ * handler's `finally` block on stream teardown. Returns `true` if the
+ * subscriber was registered (and is now removed); `false` if it was
+ * already gone (idempotent — safe to re-enter from a defensive cleanup
+ * path).
+ */
+export function unregisterAckSubscriber(
+  principalKey: string,
+  subscriber: AckSubscriberState,
+): boolean {
+  const key = registryKey(principalKey, subscriber.sessionId);
+  const bucket = SUBSCRIBER_REGISTRY.get(key);
+  if (bucket === undefined) return false;
+  const removed = bucket.delete(subscriber);
+  if (bucket.size === 0) {
+    SUBSCRIBER_REGISTRY.delete(key);
+  }
+  return removed;
+}
+
+/**
+ * Look up the FIRST (earliest-registered, still-attached) ack subscriber
+ * for a (principalKey, sessionId). Returns `undefined` if no subscriber
+ * is registered — the AckPty handler maps that to a no-op OK reply per
+ * spec §6.2 (covers `requires_ack=false` Attach, post-disconnect race,
+ * and badly-ordered clients uniformly).
+ *
+ * Set iteration order is insertion order in V8 / per ECMAScript spec —
+ * FIRST is well-defined.
+ */
+export function findFirstAckSubscriber(
+  principalKey: string,
+  sessionId: string,
+): AckSubscriberState | undefined {
+  const bucket = SUBSCRIBER_REGISTRY.get(registryKey(principalKey, sessionId));
+  if (bucket === undefined) return undefined;
+  for (const sub of bucket) return sub;
+  return undefined;
+}
+
+/**
+ * Test seam: clear the registry. NOT for production use. Unit tests
+ * call this in `afterEach` so subscribers from one `it` case do not
+ * leak into the next.
+ */
+export function resetAckSubscriberRegistry(): void {
+  SUBSCRIBER_REGISTRY.clear();
+}

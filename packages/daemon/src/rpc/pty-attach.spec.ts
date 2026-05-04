@@ -46,6 +46,7 @@ import {
   ATTACH_FAST_PATH_BUFFER_SIZE,
   awaitSnapshot,
   deltaToFrame,
+  makeAckPtyHandler,
   makeAttachHandler,
   sessionStateChangedToFrame,
   snapshotToFrame,
@@ -54,6 +55,10 @@ import {
   type PtyEmitterListener,
   type PtySessionEmitterLike,
 } from './pty-attach.js';
+import {
+  AckPtyRequestSchema,
+} from '@ccsm/proto';
+import { resetAckSubscriberRegistry } from '../pty-host/ack-state.js';
 
 // ---------------------------------------------------------------------------
 // Fake emitter — mirrors PR #1027 PtySessionEmitter contract for the
@@ -753,3 +758,233 @@ async function drainExpectError(iter: AsyncIterable<unknown>): Promise<ConnectEr
   }
   throw new Error('expected the stream to error, but it ended cleanly');
 }
+
+// ---------------------------------------------------------------------------
+// AckPty handler — Task #49 / T4.13 (spec §6).
+// ---------------------------------------------------------------------------
+
+function makeFullPtyTransport(
+  registry: Map<string, FakeEmitter>,
+): ReturnType<typeof createRouterTransport> {
+  const deps: PtyAttachDeps = {
+    getEmitter: (id) => registry.get(id),
+  };
+  return createRouterTransport(
+    (router) => {
+      router.service(PtyService, {
+        attach: makeAttachHandler(deps),
+        ackPty: makeAckPtyHandler(deps),
+      });
+    },
+    {
+      router: { interceptors: [depositPrincipal] },
+    },
+  );
+}
+
+describe('PtyService.AckPty handler — spec §6', () => {
+  afterEach(() => {
+    // The Attach handler registers subscribers in a module-level Map
+    // keyed by (principalKey, sessionId); resetting between cases keeps
+    // a stranded listener from one `it` from being found by the next.
+    resetAckSubscriberRegistry();
+  });
+
+  it('§6.2 — no live ack subscriber (requires_ack=false attach) ⇒ OK with daemon_max_seq', async () => {
+    const emitter = new FakeEmitter('sess-ack-1');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    emitter.publishDelta(makeDelta(1n));
+    emitter.publishDelta(makeDelta(2n));
+    const registry = new Map([['sess-ack-1', emitter]]);
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    const res = await client.ackPty(
+      create(AckPtyRequestSchema, {
+        meta: create(RequestMetaSchema, { requestId: 'req-1' }),
+        sessionId: 'sess-ack-1',
+        appliedSeq: 5n, // intentionally bogus — §6.2 path ignores it
+      }),
+    );
+    expect(res.daemonMaxSeq).toBe(2n);
+  });
+
+  it('unknown session id ⇒ Code.NotFound + pty.session_not_found', async () => {
+    const registry = new Map<string, FakeEmitter>();
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    await expect(
+      client.ackPty(
+        create(AckPtyRequestSchema, {
+          meta: create(RequestMetaSchema, { requestId: 'req-2' }),
+          sessionId: 'sess-missing',
+          appliedSeq: 0n,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: Code.NotFound,
+    });
+  });
+
+  it('§6.1 — happy path advances lastAckedSeq + returns daemon_max_seq', async () => {
+    const emitter = new FakeEmitter('sess-ack-2');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    const registry = new Map([['sess-ack-2', emitter]]);
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    // Open a requires_ack=true Attach, drain warm-up snapshot + 2
+    // deltas, then send AckPty.
+    const stream = client.attach(makeReq({ sessionId: 'sess-ack-2', requiresAck: true }));
+    const ai = stream[Symbol.asyncIterator]();
+    const fSnap = await ai.next();
+    expect(fSnap.value?.kind.case).toBe('snapshot');
+
+    emitter.publishDelta(makeDelta(1n));
+    emitter.publishDelta(makeDelta(2n));
+    const fD1 = await ai.next();
+    expect(fD1.value?.kind.case).toBe('delta');
+    const fD2 = await ai.next();
+    expect(fD2.value?.kind.case).toBe('delta');
+
+    const ack = await client.ackPty(
+      create(AckPtyRequestSchema, {
+        meta: create(RequestMetaSchema, { requestId: 'req-3' }),
+        sessionId: 'sess-ack-2',
+        appliedSeq: 2n,
+      }),
+    );
+    expect(ack.daemonMaxSeq).toBe(2n);
+
+    // Idempotent re-ack at the same seq is benign (spec §6.1 "applied_seq
+    // == lastAckedSeq is benign").
+    const ack2 = await client.ackPty(
+      create(AckPtyRequestSchema, {
+        meta: create(RequestMetaSchema, { requestId: 'req-3b' }),
+        sessionId: 'sess-ack-2',
+        appliedSeq: 2n,
+      }),
+    );
+    expect(ack2.daemonMaxSeq).toBe(2n);
+
+    await ai.return?.(undefined);
+  });
+
+  it('§6.1 overrun — applied_seq > lastDeliveredSeq ⇒ Code.InvalidArgument + pty.ack_overrun', async () => {
+    const emitter = new FakeEmitter('sess-ack-3');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    const registry = new Map([['sess-ack-3', emitter]]);
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    const stream = client.attach(makeReq({ sessionId: 'sess-ack-3', requiresAck: true }));
+    const ai = stream[Symbol.asyncIterator]();
+    await ai.next(); // warm-up snapshot
+    emitter.publishDelta(makeDelta(1n));
+    await ai.next(); // delta 1 (lastDeliveredSeq=1)
+
+    let caught: ConnectError | null = null;
+    try {
+      await client.ackPty(
+        create(AckPtyRequestSchema, {
+          meta: create(RequestMetaSchema, { requestId: 'req-4' }),
+          sessionId: 'sess-ack-3',
+          appliedSeq: 5n, // > lastDeliveredSeq (1n)
+        }),
+      );
+    } catch (err) {
+      if (err instanceof ConnectError) caught = err;
+      else throw err;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught?.code).toBe(Code.InvalidArgument);
+    expect(readErrorDetail(caught)?.code).toBe('pty.ack_overrun');
+
+    await ai.return?.(undefined);
+  });
+
+  it('§6.1 regress — applied_seq < lastAckedSeq ⇒ Code.InvalidArgument + pty.ack_regress', async () => {
+    const emitter = new FakeEmitter('sess-ack-4');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    const registry = new Map([['sess-ack-4', emitter]]);
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    const stream = client.attach(makeReq({ sessionId: 'sess-ack-4', requiresAck: true }));
+    const ai = stream[Symbol.asyncIterator]();
+    await ai.next(); // snapshot
+    emitter.publishDelta(makeDelta(1n));
+    emitter.publishDelta(makeDelta(2n));
+    await ai.next();
+    await ai.next(); // lastDeliveredSeq=2
+
+    // Advance lastAckedSeq to 2.
+    await client.ackPty(
+      create(AckPtyRequestSchema, {
+        meta: create(RequestMetaSchema, { requestId: 'req-5a' }),
+        sessionId: 'sess-ack-4',
+        appliedSeq: 2n,
+      }),
+    );
+
+    // Now try to regress to 1.
+    let caught: ConnectError | null = null;
+    try {
+      await client.ackPty(
+        create(AckPtyRequestSchema, {
+          meta: create(RequestMetaSchema, { requestId: 'req-5b' }),
+          sessionId: 'sess-ack-4',
+          appliedSeq: 1n,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof ConnectError) caught = err;
+      else throw err;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught?.code).toBe(Code.InvalidArgument);
+    expect(readErrorDetail(caught)?.code).toBe('pty.ack_regress');
+
+    await ai.return?.(undefined);
+  });
+
+  it('subscriber unregisters after Attach stream ends — late AckPty falls through to §6.2 no-op', async () => {
+    const emitter = new FakeEmitter('sess-ack-5');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    const registry = new Map([['sess-ack-5', emitter]]);
+    const transport = makeFullPtyTransport(registry);
+    const client = createClient(PtyService, transport);
+
+    const ac = new AbortController();
+    const stream = client.attach(makeReq({ sessionId: 'sess-ack-5', requiresAck: true }), {
+      signal: ac.signal,
+    });
+    const ai = stream[Symbol.asyncIterator]();
+    await ai.next(); // snapshot
+    ac.abort();
+    // Drain to terminal so the server-side finally block runs the
+    // registry unregister before we send the next AckPty.
+    try {
+      for (;;) {
+        const r = await ai.next();
+        if (r.done === true) break;
+      }
+    } catch {
+      // Aborted — expected.
+    }
+
+    // After teardown, AckPty for this principal+session must fall to
+    // §6.2 (OK with daemon_max_seq, no validation against the (now
+    // unregistered) subscriber). A garbage applied_seq must NOT trip
+    // overrun/regress.
+    const res = await client.ackPty(
+      create(AckPtyRequestSchema, {
+        meta: create(RequestMetaSchema, { requestId: 'req-6' }),
+        sessionId: 'sess-ack-5',
+        appliedSeq: 9999n,
+      }),
+    );
+    expect(res.daemonMaxSeq).toBe(0n);
+  });
+});

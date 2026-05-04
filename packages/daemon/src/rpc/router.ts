@@ -81,7 +81,7 @@ import { registerCrashService, type CrashServiceDeps } from './crash/register.js
 import { registerDraftService, type DraftServiceDeps } from './draft/register.js';
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
-import { makeAttachHandler, type PtyAttachDeps } from './pty-attach.js';
+import { makeAttachHandler, makeAckPtyHandler, type PtyAttachDeps } from './pty-attach.js';
 import {
   registerSettingsService,
   type SettingsServiceDeps,
@@ -230,10 +230,11 @@ export function registerSessionService(
 
 /**
  * Register the v0.3 PtyService.Attach handler (Wave 3 §6.9 sub-task 10 /
- * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6).
+ * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6) AND
+ * the AckPty companion handler (Task #49 / T4.13 / spec §6).
  *
- * REPLACES the stub `{}` registration for PtyService with `{ attach }`.
- * Other PtyService methods (SendInput / Resize / AckPty /
+ * REPLACES the stub `{}` registration for PtyService with
+ * `{ attach, ackPty }`. Other PtyService methods (SendInput / Resize /
  * CheckClaudeAvailable) stay `Code.Unimplemented` per the
  * "absent-method → unimplemented" Connect router rule until their
  * owning tasks land. The combined-registration caveat that applies to
@@ -248,6 +249,7 @@ export function registerPtyService(
 ): ConnectRouter {
   router.service(PtyService, {
     attach: makeAttachHandler(deps),
+    ackPty: makeAckPtyHandler(deps),
   });
   return router;
 }
