@@ -25,7 +25,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Task #322 — windows-only matrix. Round 1-7 of the v0.3 ship-gate
+        # PRs ran ubuntu+macos+windows e2e but none were `required` in
+        # branch protection, so devs alibied as "Linux only / mac only /
+        # can't repro locally" through 6 rounds of speculative fixes.
+        # All current devs are on Windows hosts; demoting e2e to
+        # windows-only means local `npm run probe:e2e` green == CI green
+        # with no platform escape hatch.
+        os: [windows-latest]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -99,8 +106,7 @@ jobs:
         run: npx electron-rebuild
       - name: Build
         run: npm run build:app
-      - name: Run e2e (Linux with xvfb)
-        if: runner.os == 'Linux'
+      - name: Run e2e
         # E2E_SKIP=harness-real-cli — public CI runners have no `claude`
         # CLI installed AND no Anthropic auth tokens, so every case in
         # harness-real-cli that calls waitForTerminalReady deterministically
@@ -109,11 +115,6 @@ jobs:
         # via `node scripts/harness-real-cli.mjs` (or `npm run probe:e2e`
         # without the env var) for the dev / dogfood loop, where the user's
         # ~/.claude is real. (#726)
-        run: xvfb-run -a npm run probe:e2e
-        env:
-          E2E_SKIP: harness-real-cli
-      - name: Run e2e (mac/win)
-        if: runner.os != 'Linux'
         run: npm run probe:e2e
         env:
           E2E_SKIP: harness-real-cli
