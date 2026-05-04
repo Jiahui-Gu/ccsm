@@ -16,8 +16,14 @@
 //
 // SRP: this module is a *producer* of child handles (lifecycle events).
 // It does NOT decide UTF-8 env (that is `spawn-env.ts`), it does NOT
-// touch SQLite (T5.x), and it does NOT fan delta bytes out to Connect
-// streams (T4.13). Each of those is a separate module.
+// touch SQLite (T5.x), and it does NOT own per-subscriber Connect-stream
+// fan-out (the per-session in-memory broadcast lives in
+// `pty-emitter.ts`'s `PtySessionEmitter`; per-subscriber backpressure +
+// AckPty watermark live in `rpc/pty-attach.ts` per Task #49 / T4.13).
+// host.ts only routes child→host IPC `delta` / `snapshot` IPCs into the
+// per-session emitter (and into the SQLite coalescer when one is
+// injected for T4.11a); the emitter itself fans them out to every
+// subscribed Attach stream.
 
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
