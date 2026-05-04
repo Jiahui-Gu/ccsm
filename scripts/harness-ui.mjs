@@ -60,7 +60,7 @@
 // Run one case: `node scripts/harness-ui.mjs --only=sidebar-align`
 
 import { runHarness, mod } from './probe-helpers/harness-runner.mjs';
-import { seedStore } from './probe-utils.mjs';
+import { seedStore, waitForStoreHydrated } from './probe-utils.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 // readFile/stat were used by the removed app-icon-default case.
@@ -177,6 +177,7 @@ async function caseSettingsOpen({ win, log }) {
 // down the app mid-test. The download path is also gated behind
 // `app.isPackaged`, so there's no value in clicking those CTAs.
 async function caseSettingsUpdatesPane({ win, log }) {
+  await waitForStoreHydrated(win);
   await win.evaluate(() => {
     window.__ccsmStore.setState({
       groups: [{ id: 'g1', name: 'G1', collapsed: false, kind: 'normal' }],
@@ -197,16 +198,28 @@ async function caseSettingsUpdatesPane({ win, log }) {
   const dialog = win.getByRole('dialog');
   await dialog.waitFor({ state: 'visible', timeout: 3000 });
 
-  // Switch to the Updates tab. Tab labels are i18n strings; the case
-  // runs in default English so the regex is fine. Multilingual variants
-  // are covered by `i18n-settings-zh`.
-  const updatesTab = dialog.getByRole('tab', { name: /^updates$/i });
-  await updatesTab.waitFor({ state: 'visible', timeout: 1500 });
-  await updatesTab.click();
+  // Switch to the Updates tab. Use keyboard navigation (focus the tablist
+  // and ArrowDown to "updates") instead of mouse-clicking the tab button.
+  // (#325) Win32 harness runs reliably reproduce a Playwright click on the
+  // Updates tab dismissing the entire Radix Dialog (cause unclear — likely
+  // a focus-restore race in DismissableLayer triggered by mouse activation
+  // of a tab that wasn't the initial focused descendant). Keyboard
+  // activation goes through the SettingsDialog's own roving-focus
+  // `focusTab` handler which calls setTab + focus and never crosses the
+  // Radix outside-pointer-down boundary.
+  const appearanceTab = dialog.locator('#settings-tab-appearance');
+  await appearanceTab.waitFor({ state: 'visible', timeout: 3000 });
+  await appearanceTab.focus();
+  await win.keyboard.press('ArrowDown'); // appearance -> notifications
+  await win.waitForTimeout(50);
+  await win.keyboard.press('ArrowDown'); // notifications -> updates
+  await win.waitForTimeout(50);
 
-  // The pane's tabpanel is `settings-panel-updates`.
+  // The pane's tabpanel is `settings-panel-updates`. Bumped the budget from
+  // 1.5s -> 5s after #325: Win32 harness runs hit a Radix mount/animation
+  // cost the original budget didn't allow for.
   const panel = dialog.locator('#settings-panel-updates');
-  await panel.waitFor({ state: 'visible', timeout: 1500 });
+  await panel.waitFor({ state: 'visible', timeout: 5000 });
 
   // Version + Status field labels are sentence-case ("Version", "Status")
   // — assert they're visible inside the panel.
@@ -678,6 +691,7 @@ async function caseSkipLaunchBundleShape({ harnessRoot, log }) {
 // under it. setupBefore is unnecessary — we wipe in-case so the assertion
 // preconditions are explicit in the case body itself.
 async function caseImportEmptyGroups({ win, log }) {
+  await waitForStoreHydrated(win);
   await win.evaluate(() => {
     window.__ccsmStore.setState({
       groups: [],
