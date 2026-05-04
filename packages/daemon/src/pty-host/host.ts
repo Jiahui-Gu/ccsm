@@ -29,6 +29,10 @@ import {
   registerEmitter as registerEmitterDefault,
   unregisterEmitter as unregisterEmitterDefault,
 } from './pty-emitter.js';
+import {
+  DEGRADED_COOLDOWN_MS,
+  decideDegraded,
+} from './degraded-state.js';
 import type {
   ChildExit,
   ChildToHostMessage,
@@ -132,12 +136,40 @@ export interface SpawnPtyHostChildOptions {
    * coalescer in. The emitter fan-out is unaffected by this option.
    *
    * The 60s DEGRADED cooldown + `session_state_changed` PtyFrame proto
-   * change are explicitly out of scope here — they ship in Task #385,
-   * which is blocked-by this wire-up.
+   * change land in Task #385 (this PR): when the coalescer emits
+   * `'session-degraded'` (3-strike disk-class failures, see
+   * `sqlite/coalescer.ts` `recordFailure`), host.ts flips the per-session
+   * gate CLOSED for {@link DEGRADED_COOLDOWN_MS} ms — subsequent snapshot
+   * IPCs land in the in-memory emitter ring (live attach unaffected) but
+   * are NOT forwarded to `enqueueSnapshot` until the cooldown elapses.
+   * On `'session-recovered'` (a successful write resets the counter) the
+   * gate reopens and a `RUNNING` transition is broadcast.
+   *
+   * The `on` field is OPTIONAL because most unit tests stub the
+   * coalescer with a duck-typed `enqueueSnapshot` only — without an
+   * event source those tests never fire a degraded transition and the
+   * gate stays open. Production wiring passes the real `WriteCoalescer`
+   * (which extends EventEmitter) so the wire-up is automatic.
    */
   readonly coalescer?: {
     readonly enqueueSnapshot: (write: SnapshotWrite) => void;
+    readonly on?: (
+      event: 'session-degraded' | 'session-recovered',
+      listener: (sessionId: string, lastError?: Error) => void,
+    ) => unknown;
+    readonly off?: (
+      event: 'session-degraded' | 'session-recovered',
+      listener: (sessionId: string, lastError?: Error) => void,
+    ) => unknown;
   };
+  /**
+   * Test seam for the DEGRADED cooldown clock. Defaults to `Date.now`
+   * in production. Tests pass a controllable clock so they can step
+   * across the 60s boundary without `vi.useFakeTimers()` (which would
+   * also stall the IPC pump's `setTimeout(20)` exit-defer in the
+   * fixture). See `host.spec.ts` "DEGRADED cooldown" describe block.
+   */
+  readonly nowMs?: () => number;
 }
 
 /**
@@ -261,6 +293,71 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
   // both reach it without reaching back into the registry on every IPC.
   let emitter: PtySessionEmitter | null = null;
 
+  // --- T4.11b DEGRADED state wire-up (Task #385) -------------------------
+  // Per-session bookkeeping for the 3-strike + 60 s cooldown decider in
+  // ./degraded-state.ts. The coalescer owns the *strike count* (it sees
+  // every disk-class failure on its own write paths); we mirror it here
+  // via the 'session-degraded' / 'session-recovered' events because
+  // `decideDegraded` needs the count + last-failure timestamp to
+  // determine the gate state for every snapshot enqueue attempt.
+  //
+  // Flow (spec ch06 §4):
+  //   1. coalescer.enqueueSnapshot fails with disk-class error.
+  //   2. coalescer increments its internal counter; on the 3rd consecutive
+  //      failure it emits 'session-degraded'. We bump our local
+  //      `degradedFailures` to the threshold and stamp `lastFailureMs`.
+  //   3. host.ts publishSessionStateChanged('DEGRADED') via the emitter
+  //      (subscribers see PtyFrame.session_state_changed on the wire).
+  //   4. For the next 60s, every snapshot IPC arriving from the child is
+  //      gated CLOSED — we skip the enqueueSnapshot call entirely (the
+  //      in-memory emitter fan-out still runs). This implements the spec
+  //      "stops attempting snapshot writes for this session for the next
+  //      60 seconds" exactly.
+  //   5. After the 60s mark, `decideDegraded` returns gateOpen=true and
+  //      we let the next snapshot through. If it fails again, the
+  //      coalescer re-emits 'session-degraded' and the cycle restarts; if
+  //      it succeeds, the coalescer emits 'session-recovered' and we
+  //      reset the counter + publish 'RUNNING'.
+  const nowMs = opts.nowMs ?? (() => Date.now());
+  let degradedFailures = 0;
+  let lastFailureMs: number | null = null;
+  let degradedReportedState: 'RUNNING' | 'DEGRADED' = 'RUNNING';
+  // Hold onto the bound listeners so we can unsubscribe in the exit
+  // handler (production WriteCoalescer is shared across many sessions;
+  // leaking listeners would accumulate over a daemon's uptime).
+  let onCoalescerDegraded: ((sid: string, err?: Error) => void) | null = null;
+  let onCoalescerRecovered: ((sid: string) => void) | null = null;
+
+  /**
+   * Re-evaluate the DEGRADED decider and, if the reported state changed
+   * since last call, publish a session-state-changed event through the
+   * emitter. Called after every coalescer event AND after every snapshot
+   * gate check (so a stale DEGRADED reported during cooldown promotes
+   * back to RUNNING speculatively at the t+60s mark, matching the
+   * decider's own "cooldown elapsed → RUNNING" semantics).
+   */
+  function reconcileDegradedState(reasonOverride?: string): void {
+    if (emitter === null) return;
+    const decision = decideDegraded({
+      consecutiveFailures: degradedFailures,
+      lastFailureAtMs: lastFailureMs,
+      nowMs: nowMs(),
+    });
+    if (decision.state !== degradedReportedState) {
+      const reason =
+        reasonOverride ??
+        (decision.state === 'DEGRADED'
+          ? `snapshot write failure x${degradedFailures}; cooldown ${DEGRADED_COOLDOWN_MS}ms`
+          : 'snapshot write cooldown elapsed; resuming writes');
+      emitter.publishSessionStateChanged({
+        state: decision.state,
+        reason,
+        sinceUnixMs: nowMs(),
+      });
+      degradedReportedState = decision.state;
+    }
+  }
+
   // --- Lifecycle wiring ---------------------------------------------------
   let exitOutcome: ChildExit | null = null;
   let observedGracefulExitNotice = false;
@@ -332,6 +429,44 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
           );
           emitter = null;
         }
+        // T4.11b (Task #385) — subscribe to the coalescer's degraded /
+        // recovered events so we can flip the per-session gate + publish
+        // PtyFrame.session_state_changed via the emitter. Filtered to
+        // OUR sessionId (the coalescer is shared across all sessions in
+        // production). Done here (not at construction time) because
+        // emitter is only valid after a successful 'ready'; subscribing
+        // earlier would let an out-of-order degraded event reach a null
+        // emitter.
+        if (
+          emitter !== null &&
+          opts.coalescer !== undefined &&
+          typeof opts.coalescer.on === 'function'
+        ) {
+          onCoalescerDegraded = (sid: string) => {
+            if (sid !== sessionId) return;
+            // Mirror the coalescer's threshold semantically — we don't
+            // need the exact count, just "at or above threshold".
+            // The decider treats >=THRESHOLD identically (see
+            // degraded-state.spec.ts "treats higher strike counts the
+            // same as the 3rd strike").
+            degradedFailures = Math.max(
+              degradedFailures + 1,
+              // bump to threshold on first observation so the gate
+              // closes immediately even if our counter started at 0
+              3,
+            );
+            lastFailureMs = nowMs();
+            reconcileDegradedState();
+          };
+          onCoalescerRecovered = (sid: string) => {
+            if (sid !== sessionId) return;
+            degradedFailures = 0;
+            lastFailureMs = null;
+            reconcileDegradedState('snapshot probe succeeded; resuming writes');
+          };
+          opts.coalescer.on('session-degraded', onCoalescerDegraded);
+          opts.coalescer.on('session-recovered', onCoalescerRecovered);
+        }
       }
     }
     if (raw.kind === 'exiting' && raw.reason === 'graceful') {
@@ -368,31 +503,58 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
     // not carry a capture timestamp (spec §2.4 SnapshotMessage), and
     // jitter at this layer is bounded by the IPC RTT (sub-ms locally).
     if (opts.coalescer !== undefined && raw.kind === 'snapshot') {
-      const snap = raw satisfies SnapshotMessage;
-      try {
-        opts.coalescer.enqueueSnapshot({
-          kind: 'snapshot',
-          sessionId,
-          baseSeq: Number(snap.baseSeq),
-          schemaVersion: snap.schemaVersion,
-          geometryCols: snap.geometry.cols,
-          geometryRows: snap.geometry.rows,
-          payload: snap.screenState,
-          createdMs: Date.now(),
-        });
-      } catch (err) {
-        // The coalescer's documented throw paths are RESOURCE_EXHAUSTED
-        // (queue cap) and programmer-error rethrows. Both are session-
-        // scoped and must NOT crash the daemon main process — the
-        // session keeps running off the in-memory ring (emitter
-        // fan-out above). The DEGRADED state machine + `crash_log`
-        // wiring lives elsewhere (Task #385 / ch07 §5); here we only
-        // need to keep the IPC pump alive.
+      // T4.11b (Task #385) cooldown gate. The coalescer's strike counter
+      // is the producer of "did we just hit the threshold"; the decider
+      // here is the per-IPC gate that turns a stale DEGRADED reported
+      // state into "stop calling enqueueSnapshot for the next 60s".
+      // Re-evaluating EVERY snapshot IPC means the gate auto-reopens at
+      // exactly t+60s without a wall-clock timer.
+      const decision = decideDegraded({
+        consecutiveFailures: degradedFailures,
+        lastFailureAtMs: lastFailureMs,
+        nowMs: nowMs(),
+      });
+      // Reconcile reported state in case the cooldown elapsed since the
+      // last event; this can promote DEGRADED → RUNNING speculatively
+      // and publish a session-state-changed event so subscribers see the
+      // recovery cleanly. Done BEFORE the gate check so a freshly-
+      // promoted RUNNING state is consistent with the enqueue we're
+      // about to attempt.
+      reconcileDegradedState();
+      if (!decision.gateOpen) {
+        // Gate closed (cooldown active): skip the enqueue. Emitter
+        // fan-out above already happened so live attach is unaffected.
         // eslint-disable-next-line no-console
-        console.error(
-          `[ccsm-daemon] spawnPtyHostChild(${sessionId}): coalescer.enqueueSnapshot threw`,
-          err,
+        console.warn(
+          `[ccsm-daemon] spawnPtyHostChild(${sessionId}): snapshot suppressed (DEGRADED cooldown active, ${degradedFailures} consecutive failures)`,
         );
+      } else {
+        const snap = raw satisfies SnapshotMessage;
+        try {
+          opts.coalescer.enqueueSnapshot({
+            kind: 'snapshot',
+            sessionId,
+            baseSeq: Number(snap.baseSeq),
+            schemaVersion: snap.schemaVersion,
+            geometryCols: snap.geometry.cols,
+            geometryRows: snap.geometry.rows,
+            payload: snap.screenState,
+            createdMs: Date.now(),
+          });
+        } catch (err) {
+          // The coalescer's documented throw paths are RESOURCE_EXHAUSTED
+          // (queue cap) and programmer-error rethrows. Both are session-
+          // scoped and must NOT crash the daemon main process — the
+          // session keeps running off the in-memory ring (emitter
+          // fan-out above). The DEGRADED transition itself fires via
+          // the coalescer's 'session-degraded' event after 3 strikes;
+          // we don't double-count here.
+          // eslint-disable-next-line no-console
+          console.error(
+            `[ccsm-daemon] spawnPtyHostChild(${sessionId}): coalescer.enqueueSnapshot threw`,
+            err,
+          );
+        }
       }
     }
     pushMessage(raw);
@@ -449,6 +611,31 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
       }
       emitter = null;
     }
+    // Unsubscribe coalescer listeners. The production WriteCoalescer is
+    // shared across all sessions for the lifetime of the daemon; leaking
+    // listeners would accumulate across spawns. Tests that pass an
+    // EventEmitter-based coalescer rely on this for clean teardown.
+    if (
+      opts.coalescer !== undefined &&
+      typeof opts.coalescer.off === 'function'
+    ) {
+      if (onCoalescerDegraded !== null) {
+        try {
+          opts.coalescer.off('session-degraded', onCoalescerDegraded);
+        } catch {
+          /* best-effort */
+        }
+      }
+      if (onCoalescerRecovered !== null) {
+        try {
+          opts.coalescer.off('session-recovered', onCoalescerRecovered);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+    onCoalescerDegraded = null;
+    onCoalescerRecovered = null;
     exitedResolve?.(exitOutcome);
     closeIterator();
   });

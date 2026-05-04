@@ -16,9 +16,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { EventEmitter } from 'node:events';
 
 import { spawnPtyHostChild } from '../../src/pty-host/host.js';
-import { resetEmitterRegistry } from '../../src/pty-host/pty-emitter.js';
+import {
+  getEmitter,
+  resetEmitterRegistry,
+} from '../../src/pty-host/pty-emitter.js';
+import { DEGRADED_COOLDOWN_MS } from '../../src/pty-host/degraded-state.js';
 import type { SpawnPayload } from '../../src/pty-host/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -418,5 +423,155 @@ describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => 
     } finally {
       await handle.closeAndWait();
     }
+  });
+});
+
+describe('spawnPtyHostChild — Task #385 DEGRADED state + 60 s cooldown gate', () => {
+  // Spec ch06 §4: after the coalescer emits `'session-degraded'` (3
+  // consecutive snapshot write failures), the host gates further
+  // snapshot enqueues for 60 s, broadcasts a session-state-changed
+  // event through the per-session emitter, and reopens the gate after
+  // the cooldown elapses. We exercise the host wire-up directly with a
+  // stub coalescer (real EventEmitter) + a controlled `nowMs` clock.
+  // The coalescer's own 3-strike counting is covered in
+  // src/sqlite/__tests__/coalescer.spec.ts; the decider's pure semantics
+  // are covered in src/pty-host/degraded-state.spec.ts. This suite is
+  // narrowly the wire-up between them.
+
+  function makeStubCoalescer(): {
+    enqueueSnapshot: (write: unknown) => void;
+    on: EventEmitter['on'];
+    off: EventEmitter['off'];
+    emitter: EventEmitter;
+    enqueueCount: () => number;
+  } {
+    const ev = new EventEmitter();
+    let count = 0;
+    return {
+      enqueueSnapshot: (_write: unknown) => {
+        count += 1;
+      },
+      on: ev.on.bind(ev),
+      off: ev.off.bind(ev),
+      emitter: ev,
+      enqueueCount: () => count,
+    };
+  }
+
+  it('gates snapshot enqueue + broadcasts session-state-changed when coalescer emits session-degraded; reopens after 60 s cooldown', async () => {
+    const stub = makeStubCoalescer();
+    let now = 1_000_000;
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId: 'sess-degraded' }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'snapshot-coalescer-multi' },
+      coalescer: stub,
+      nowMs: () => now,
+    });
+
+    try {
+      await handle.ready();
+
+      // Subscribe to the per-session emitter so we observe both the
+      // session-state-changed broadcasts the host issues AND the
+      // snapshot fan-outs (used to wait deterministically for each
+      // snapshot IPC to make it through the host's message handler
+      // before checking enqueueCount).
+      const emitter = getEmitter('sess-degraded');
+      expect(emitter, 'emitter should be registered after ready').toBeDefined();
+      const events: Array<{ kind: string; state?: string; sinceUnixMs?: number }> = [];
+      let snapshotCount = 0;
+      let snapshotResolve: (() => void) | null = null;
+      emitter!.subscribe((e) => {
+        if (e.kind === 'session-state-changed' || e.kind === 'closed') {
+          events.push({
+            kind: e.kind,
+            ...(e.kind === 'session-state-changed'
+              ? { state: e.state, sinceUnixMs: e.sinceUnixMs }
+              : {}),
+          });
+        }
+        if (e.kind === 'snapshot') {
+          snapshotCount += 1;
+          snapshotResolve?.();
+        }
+      });
+
+      async function triggerSnapshot(): Promise<void> {
+        const target = snapshotCount + 1;
+        const wait = new Promise<void>((resolve) => {
+          snapshotResolve = () => {
+            if (snapshotCount >= target) {
+              snapshotResolve = null;
+              resolve();
+            }
+          };
+        });
+        handle.send({
+          kind: 'spawn',
+          payload: makePayload({ sessionId: 'sess-degraded' }),
+        });
+        await wait;
+      }
+
+      // 1) Drive 3 snapshot IPCs through the host. The stub doesn't
+      // throw, so the coalescer would have observed 3 enqueue calls.
+      // We then simulate the coalescer crossing its 3-strike threshold
+      // by emitting `session-degraded` ourselves.
+      await triggerSnapshot();
+      await triggerSnapshot();
+      await triggerSnapshot();
+      expect(stub.enqueueCount()).toBe(3);
+
+      // 2) Coalescer fires `session-degraded`. Host advances the clock
+      // by zero (still at `now`); decider sees consecutiveFailures>=3
+      // + lastFailureAtMs==now → state DEGRADED, gate closed.
+      stub.emitter.emit('session-degraded', 'sess-degraded', new Error('disk full'));
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        kind: 'session-state-changed',
+        state: 'DEGRADED',
+        sinceUnixMs: now,
+      });
+
+      // 3) Within the 60 s cooldown window, the next snapshot IPC must
+      // NOT reach the coalescer.
+      now += 1_000; // 1 s elapsed
+      await triggerSnapshot();
+      expect(stub.enqueueCount()).toBe(3);
+
+      now += 30_000; // 31 s elapsed total
+      await triggerSnapshot();
+      expect(stub.enqueueCount()).toBe(3);
+
+      // 4) Cross the 60 s boundary. The next snapshot IPC must reach
+      // the coalescer AND a session-state-changed(RUNNING) event must
+      // fire (speculative recovery — see degraded-state.ts jsdoc).
+      now += DEGRADED_COOLDOWN_MS; // well past the boundary
+      await triggerSnapshot();
+      expect(stub.enqueueCount()).toBe(4);
+
+      const stateChanges = events.filter((e) => e.kind === 'session-state-changed');
+      expect(stateChanges.map((e) => e.state)).toEqual(['DEGRADED', 'RUNNING']);
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('detaches coalescer listeners on child exit (no leaks across sessions)', async () => {
+    const stub = makeStubCoalescer();
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId: 'sess-degraded-cleanup' }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      coalescer: stub,
+    });
+    await handle.ready();
+    expect(stub.emitter.listenerCount('session-degraded')).toBe(1);
+    expect(stub.emitter.listenerCount('session-recovered')).toBe(1);
+    await handle.closeAndWait();
+    expect(stub.emitter.listenerCount('session-degraded')).toBe(0);
+    expect(stub.emitter.listenerCount('session-recovered')).toBe(0);
   });
 });

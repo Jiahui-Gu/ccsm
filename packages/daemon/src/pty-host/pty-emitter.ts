@@ -118,6 +118,16 @@ export type PtyEmitterCloseReason = 'pty.session_destroyed';
  * - `delta` — published for every DeltaMessage IPC. Synchronous fan-out
  *   from the IPC 'message' handler.
  *
+ * - `session-state-changed` — published when the host wire-up flips the
+ *   per-session SessionState (Task #385 / spec ch06 §4: 3-strike DEGRADED
+ *   on snapshot write failures + 60s cooldown probe back to RUNNING).
+ *   The Attach handler (T-PA-6 sink) translates this to a PtyFrame with
+ *   the `session_state_changed` oneof variant on the wire. The `state`
+ *   field carries the proto SessionState string name (e.g. `'DEGRADED'`,
+ *   `'RUNNING'`) — kept as a string here so the emitter stays free of
+ *   proto/Connect imports per spec §2.3 ("no knowledge of proto, Connect,
+ *   or the wire").
+ *
  * - `closed` — published exactly once when {@link PtySessionEmitter.close}
  *   fires (host.ts calls this on child exit). After this event no more
  *   events will be published; subscribers receive the final 'closed'
@@ -126,6 +136,21 @@ export type PtyEmitterCloseReason = 'pty.session_destroyed';
 export type PtyEvent =
   | { readonly kind: 'snapshot'; readonly snapshot: PtySnapshotInMem }
   | { readonly kind: 'delta'; readonly delta: DeltaInMem }
+  | {
+      readonly kind: 'session-state-changed';
+      readonly state: 'RUNNING' | 'DEGRADED';
+      readonly reason: string;
+      readonly lastSeq: bigint;
+      /**
+       * Daemon wall-clock millis at which the transition was decided.
+       * Named `sinceUnixMs` (not `tsUnixMs`) because the field semantically
+       * marks the moment the new state began — UIs computing a "DEGRADED
+       * for 12s" timer subtract this from the current clock. Mapped to
+       * the `ts_unix_ms` proto field at the wire boundary by the Attach
+       * handler (T-PA-6 sink).
+       */
+      readonly sinceUnixMs: number;
+    }
   | { readonly kind: 'closed'; readonly reason: PtyEmitterCloseReason };
 
 /**
@@ -431,6 +456,41 @@ export class PtySessionEmitter {
     this.#ring.enqueueDroppingOldest(delta);
     this.#currentMaxSeq = msg.seq;
     this.#broadcast({ kind: 'delta', delta });
+  }
+
+  /**
+   * Broadcast a per-session SessionState transition. Task #385 / spec
+   * ch06 §4: the host wire-up calls this when the {@link decideDegraded}
+   * decider flips between RUNNING and DEGRADED (3-strike snapshot write
+   * failure → DEGRADED + 60s cooldown; cooldown elapsed + retry succeeds
+   * → RUNNING).
+   *
+   * Unlike `publishSnapshot` / `publishDelta` this method does NOT touch
+   * the in-memory ring or `currentSnapshot` — SessionState transitions
+   * are out-of-band signals that subscribers may surface in the UI but
+   * do NOT alter the per-session delta seq stream (deltas continue
+   * flowing from the in-memory ring throughout DEGRADED cooldown per
+   * spec ch06 §4). The Attach handler (T-PA-6 sink) translates this
+   * event into `PtyFrame.session_state_changed` on the wire.
+   *
+   * Idempotent on already-closed emitters: a stray transition arriving
+   * after `close()` is dropped silently.
+   */
+  publishSessionStateChanged(args: {
+    readonly state: 'RUNNING' | 'DEGRADED';
+    readonly reason: string;
+    readonly sinceUnixMs: number;
+  }): void {
+    if (this.#closed) return;
+    this.#broadcast({
+      kind: 'session-state-changed',
+      state: args.state,
+      reason: args.reason,
+      // Snapshot the current max seq at publish time so subscribers can
+      // correlate the transition with their applied-delta watermark.
+      lastSeq: this.#currentMaxSeq,
+      sinceUnixMs: args.sinceUnixMs,
+    });
   }
 
   /**

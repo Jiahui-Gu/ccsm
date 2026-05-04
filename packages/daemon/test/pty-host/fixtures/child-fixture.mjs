@@ -16,6 +16,11 @@
 //                                       Payload bytes are deterministic so the spec can
 //                                       byte-compare the SnapshotWrite the coalescer
 //                                       receives.
+//   CCSM_FIXTURE_MODE=snapshot-coalescer-multi — like snapshot-coalescer but emits one
+//                                       snapshot per `spawn` IPC the host sends (Task
+//                                       #385: drives multiple snapshots through the
+//                                       DEGRADED cooldown gate so the spec can assert
+//                                       gate-closed-during-cooldown vs gate-reopens-after).
 //   CCSM_FIXTURE_MODE=backpressure   — T4.3: enforce a small pending-write cap
 //                                       (CCSM_PTY_PENDING_CAP_BYTES) and emit
 //                                       'send-input-rejected' IPC matching the
@@ -65,11 +70,18 @@ process.on('message', (raw) => {
   if (k === 'spawn') {
     if (mode === 'echo') {
       send({ kind: 'snapshot' });
-    } else if (mode === 'snapshot-coalescer') {
+    } else if (mode === 'snapshot-coalescer' || mode === 'snapshot-coalescer-multi') {
       // Well-formed SnapshotMessage per pty-host/types.ts §2.4. bigint
       // fields survive the IPC because spawnPtyHostChild uses
       // serialization: 'advanced' (structured clone). Deterministic
       // payload so host.spec.ts can assert byte equality.
+      //
+      // `snapshot-coalescer-multi` mode (Task #385): emit one snapshot
+      // per `spawn` IPC the host sends. Tests drive multiple snapshot
+      // events by re-sending `{kind:'spawn', payload}` on the same
+      // session — each one fans through the host's IPC routing into
+      // the coalescer (or, while the DEGRADED cooldown gate is closed,
+      // is dropped at the host boundary without reaching the coalescer).
       send({
         kind: 'snapshot',
         baseSeq: 7n,
