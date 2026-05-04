@@ -264,9 +264,33 @@ jobs:
       # `npm test --workspace=...` errors with "No workspaces found". Cleanest
       # cross-platform invocation: cd into the package and run the locally
       # installed vitest via npx (resolves through the hoisted node_modules).
+      #
+      # Per-package devDeps install: the root `npm ci` only installs the root
+      # package.json's deps — it ignores `packages/*/package.json` because the
+      # root has no `workspaces` field (intentional: pnpm-workspace.yaml is the
+      # source of truth, npm is just CI's installer). Result: `cd
+      # packages/daemon && npx vitest` cannot resolve daemon-only devDeps like
+      # `@connectrpc/connect-node` (imported by src/rpc/router.ts → loaded by
+      # src/rpc/__tests__/router.spec.ts). Locally `pnpm install` populates
+      # packages/daemon/node_modules/ so the gap is invisible. We `npm install
+      # --no-save --no-audit --no-fund --legacy-peer-deps` per package right
+      # before its coverage gate so the package's own deps are present without
+      # touching the root lockfile.
+      - name: Install daemon package deps
+        working-directory: packages/daemon
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
       - name: Coverage (daemon, unit only — temp 50% gate, see #350)
         working-directory: packages/daemon
         run: npx vitest run --coverage --config vitest.config.coverage.ts
+
+      - name: Install electron package deps
+        working-directory: packages/electron
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       - name: Coverage (electron renderer — 60% gate)
         working-directory: packages/electron
