@@ -377,3 +377,157 @@ jobs:
           }).catch((e) => { console.error('import-fail', e); process.exit(98); });
           "
 
+  # Task #15 / T0.9 — per-OS package job.
+  # Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+  #       chapter 10 §6 (cross-OS build matrix), chapter 10 §7 (verify-signing),
+  #       chapter 11 §6 (CI matrix sketch).
+  #
+  # Per spec ch11 §6:
+  #
+  #   package:
+  #     needs: [daemon-test, electron-test]
+  #     strategy:
+  #       matrix:
+  #         include:
+  #           - { os: windows-latest, target: win-msi }
+  #           - { os: macos-14,        target: mac-pkg }
+  #           - { os: ubuntu-22.04,    target: linux-deb-rpm }
+  #     runs-on: ${{ matrix.os }}
+  #     steps:
+  #       - run: pnpm run package:${{ matrix.target }}
+  #       - run: bash tools/verify-signing.sh        # mac/linux
+  #         if: matrix.os != 'windows-latest'
+  #       - run: pwsh tools/verify-signing.ps1
+  #         if: matrix.os == 'windows-latest'
+  #
+  # Implementation notes:
+  #   * Per Task #322 the lint+typecheck+test job is windows-only by branch
+  #     protection design, but the package job MUST run all three OSes — the
+  #     installer artifacts ARE per-OS and there is no way to cross-build
+  #     pkgbuild/productbuild (mac) or fpm-via-system-libs (linux) from
+  #     windows. ubuntu-22.04 + macos-14 here are NOT a regression of #322;
+  #     they are required by spec ch10 §6 build matrix and only run for the
+  #     packaging stage, not the test stage.
+  #   * `pnpm run package:<target>` chains: sign-{os} -> build-pkg-{os} ->
+  #     verify-signing.{sh,ps1}. All three are placeholder-safe — missing
+  #     EV cert / wix.exe / pkgbuild / fpm logs WARN and exits 0 (per
+  #     project_v03_ship_intent: dogfood `npm run build` MUST NOT fail
+  #     without certs). CI release jobs (v0.4) flip CCSM_VERIFY_SIGNING_STRICT=1
+  #     to convert "missing tooling" into hard failure.
+  #   * verify-signing is invoked again as an explicit final step (matching the
+  #     spec sketch literally) so a regression where `package:<target>` stops
+  #     calling it surfaces here. The package script ALSO calls verify-signing
+  #     internally — running it twice is cheap (placeholder-safe scripts exit
+  #     in <1s when no artifacts found).
+  #   * Win MSI is authored with WiX 4 directly (PR #903 / Task #114 decision —
+  #     electron-builder bundles WiX 3.x with no <ServiceInstall> hook). The
+  #     wix.exe CLI is installed via `dotnet tool install --global wix` on the
+  #     windows runner; build-msi.ps1 logs WARN + exits 0 when wix.exe is
+  #     absent so non-CI hosts don't break.
+  #   * Daemon binary (sea) and native staging are NOT built here yet — that
+  #     wiring is owned by T9.x (build:sea + stage:native run before sign).
+  #     For v0.3 ship the package job exercises the full sign->build-pkg->
+  #     verify chain in placeholder-safe mode end-to-end. When sea+native
+  #     land their CI step, prepend it to this job.
+  package:
+    name: package (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win-msi }
+          - { os: macos-14,        target: mac-pkg }
+          - { os: ubuntu-22.04,    target: linux-deb-rpm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Generate proto bindings — daemon's tsc emit needs them present even
+      # when the package step is placeholder-safe (the WARN/exit-0 paths still
+      # import shared types).
+      - name: Generate proto
+        run: pnpm --filter @ccsm/proto run gen
+
+      # WiX 4 unified CLI for Windows MSI. dotnet is preinstalled on
+      # windows-latest GitHub-hosted runners. Skipped on non-windows.
+      - name: Install WiX 4 (windows only)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          # Ensure the dotnet tools dir is on PATH for subsequent steps.
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # fpm for Linux .deb / .rpm. Available as a ruby gem; ubuntu-22.04
+      # GitHub-hosted runners ship ruby + rpm + dpkg-dev preinstalled.
+      - name: Install fpm + rpm (linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm dpkg-sig
+          sudo gem install --no-document fpm
+
+      # macOS pkgbuild / productbuild ship with the macos-14 runner image
+      # (Xcode CLT preinstalled). No-op install step kept here as a marker.
+      - name: macOS toolchain probe (mac only)
+        if: matrix.os == 'macos-14'
+        run: |
+          command -v pkgbuild
+          command -v productbuild
+
+      # Run the per-OS package chain. Placeholder-safe: missing EV certs /
+      # wix / fpm / pkgbuild surfaces as WARN + exit 0 inside the per-OS
+      # scripts. CI release jobs (v0.4) override placeholder-safe by setting
+      # CCSM_VERIFY_SIGNING_STRICT=1 to hard-fail on missing tooling.
+      - name: Package (${{ matrix.target }})
+        shell: bash
+        run: pnpm run package:${{ matrix.target }}
+
+      # Per spec ch11 §6 — explicit verify-signing invocation as the final
+      # step so a regression where the package script stops calling it
+      # surfaces here.
+      - name: Verify signing (mac/linux)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: bash tools/verify-signing.sh
+
+      - name: Verify signing (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: pwsh tools/verify-signing.ps1
+
+      # Upload whatever artifacts the package step produced (typically empty
+      # in v0.3 placeholder-safe mode; populated once T9.x sea binary +
+      # native staging lands). `if-no-files-found: warn` keeps the job green
+      # in placeholder mode.
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-${{ matrix.target }}
+          path: |
+            packages/daemon/dist/*.msi
+            packages/daemon/dist/*.pkg
+            packages/daemon/dist/*.deb
+            packages/daemon/dist/*.rpm
+          if-no-files-found: warn
+          retention-days: 7
+
+
