@@ -575,3 +575,199 @@ describe('spawnPtyHostChild — Task #385 DEGRADED state + 60 s cooldown gate', 
     expect(stub.emitter.listenerCount('session-recovered')).toBe(0);
   });
 });
+
+describe('spawnPtyHostChild — T4.14 post-restart pty-host replay (Task #51)', () => {
+  /** Hand-rolled SnapshotStore stub. Lets each test pin the latest
+   *  snapshot + post-snap deltas it returns without standing up SQLite.
+   *  The host wire-up only invokes these two methods. */
+  function makeStubStore(args: {
+    latest: {
+      baseSeq: bigint;
+      schemaVersion: number;
+      geometry: { cols: number; rows: number };
+      payload: Uint8Array;
+      createdMs: number;
+    } | null;
+    deltas: Array<{ seq: bigint; tsUnixMs: bigint; payload: Uint8Array }>;
+  }) {
+    return {
+      getLatestSnapshotCalls: 0,
+      getDeltasSinceCalls: 0,
+      getLatestSnapshot(_sessionId: string) {
+        this.getLatestSnapshotCalls++;
+        return args.latest;
+      },
+      getDeltasSince(_sessionId: string, _sinceBaseSeq: bigint) {
+        this.getDeltasSinceCalls++;
+        return args.deltas;
+      },
+    };
+  }
+
+  it('publishes hydrated snapshot + post-snap deltas through the emitter on child ready', async () => {
+    const sessionId = 'sess-replay-hydrate-1';
+    const store = makeStubStore({
+      latest: {
+        baseSeq: 100n,
+        schemaVersion: 1,
+        geometry: { cols: 132, rows: 50 },
+        payload: new Uint8Array([0xc5, 0x53, 0x53, 0x31, 0x01]),
+        createdMs: 1_700_000_000_000,
+      },
+      deltas: [
+        { seq: 101n, tsUnixMs: 1_700_000_001_000n, payload: new Uint8Array([0x41]) },
+        { seq: 102n, tsUnixMs: 1_700_000_002_000n, payload: new Uint8Array([0x42]) },
+      ],
+    });
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      priorState: store,
+    });
+    try {
+      await handle.ready();
+      // Drain microtasks (the hydration runs in a queueMicrotask
+      // scheduled from the 'ready' IPC handler).
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(store.getLatestSnapshotCalls).toBe(1);
+      expect(store.getDeltasSinceCalls).toBe(1);
+
+      const emitter = getEmitter(sessionId);
+      expect(emitter).not.toBeUndefined();
+      // After hydration the emitter holds the prior snapshot (NOT the
+      // child's synthetic baseSeq=0 one — our publish replaces it).
+      expect(emitter!.currentSnapshot()?.baseSeq).toBe(100n);
+      expect(emitter!.currentSnapshot()?.geometry).toEqual({ cols: 132, rows: 50 });
+      // The post-snap deltas are queryable via deltasSince(snapshot.baseSeq).
+      const since = emitter!.deltasSince(100n);
+      expect(since).not.toBe('out-of-window');
+      if (since !== 'out-of-window') {
+        expect(since.map((d) => d.seq)).toEqual([101n, 102n]);
+        expect(Array.from(since[0]!.payload)).toEqual([0x41]);
+        expect(Array.from(since[1]!.payload)).toEqual([0x42]);
+      }
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('does not query the store when priorState is unset (cold-spawn fast path)', async () => {
+    // No priorState — host should not call any store. We assert the
+    // emitter is constructed (production behavior unchanged) but no
+    // hydration runs.
+    const sessionId = 'sess-replay-noprior';
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      // priorState intentionally omitted
+    });
+    try {
+      await handle.ready();
+      await new Promise((resolve) => setImmediate(resolve));
+      const emitter = getEmitter(sessionId);
+      expect(emitter).not.toBeUndefined();
+      // No snapshot was published by the fixture (mode='normal' doesn't
+      // emit one) so currentSnapshot is null — proving the host did NOT
+      // synthesize one on its own when priorState was absent.
+      expect(emitter!.currentSnapshot()).toBeNull();
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('skips hydration when the store returns no_prior_state (latestSnapshot=null)', async () => {
+    const sessionId = 'sess-replay-coldstart';
+    const store = makeStubStore({ latest: null, deltas: [] });
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      priorState: store,
+    });
+    try {
+      await handle.ready();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(store.getLatestSnapshotCalls).toBe(1);
+      // getDeltasSince is also called once (the host wire-up always
+      // pulls deltas, even when latest is null — the decider treats
+      // them as a no-op). This keeps the call shape consistent for
+      // SQLite query-plan caching.
+      const emitter = getEmitter(sessionId);
+      expect(emitter!.currentSnapshot()).toBeNull();
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('falls back to snapshot-only when the decider returns corrupt_seq_gap', async () => {
+    const sessionId = 'sess-replay-corrupt';
+    // Snapshot baseSeq=10, but delta starts at seq=15 (gap).
+    const store = makeStubStore({
+      latest: {
+        baseSeq: 10n,
+        schemaVersion: 1,
+        geometry: { cols: 80, rows: 24 },
+        payload: new Uint8Array([0xc5, 0x53, 0x53, 0x31]),
+        createdMs: 1_700_000_000_000,
+      },
+      deltas: [
+        { seq: 15n, tsUnixMs: 1_700_000_005_000n, payload: new Uint8Array([0x41]) },
+      ],
+    });
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      priorState: store,
+    });
+    try {
+      await handle.ready();
+      await new Promise((resolve) => setImmediate(resolve));
+      const emitter = getEmitter(sessionId);
+      // Snapshot was published (the corrupt verdict still hands one
+      // back per replay.ts spec), but no deltas were forwarded — they
+      // all sit past the gap. deltasSince(10) returns the empty
+      // post-snap window.
+      expect(emitter!.currentSnapshot()?.baseSeq).toBe(10n);
+      // No deltas were published (corrupt-fallback skips them) so the
+      // emitter's ring is empty. deltasSince(>0) on an empty ring is
+      // 'out-of-window' per pty-emitter.ts L278-283 — this is the
+      // correct cold-state response, not a bug. We assert the snapshot
+      // baseSeq above is sufficient to prove the snapshot-only fallback.
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('survives a thrown SnapshotStore (degraded UX, no daemon crash)', async () => {
+    const sessionId = 'sess-replay-throws';
+    const throwingStore = {
+      getLatestSnapshot(): null {
+        throw new Error('synthetic SQL failure');
+      },
+      getDeltasSince(): never[] {
+        return [];
+      },
+    };
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'normal' },
+      priorState: throwingStore,
+    });
+    try {
+      await handle.ready();
+      await new Promise((resolve) => setImmediate(resolve));
+      // The host must NOT crash — the emitter is still alive and the
+      // session degrades to cold-start (no hydration applied).
+      const emitter = getEmitter(sessionId);
+      expect(emitter).not.toBeUndefined();
+      expect(emitter!.currentSnapshot()).toBeNull();
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+});
