@@ -169,3 +169,117 @@ describe('spawnPtyHostChild — send() guards', () => {
     ).toThrow(/has exited/);
   });
 });
+
+describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => {
+  // The fixture mirrors src/pty-host/child.ts's send-input handling:
+  // small CCSM_PTY_PENDING_CAP_BYTES + the `send-input-rejected` IPC
+  // payload shape locked in pty-host/types.ts (sessionId,
+  // pendingWriteBytes, attemptedBytes). Spec ch06 §1 row F5.
+
+  async function collectFirstRejection(
+    handle: ReturnType<typeof spawnPtyHostChild>,
+  ): Promise<{
+    sessionId: string;
+    pendingWriteBytes: number;
+    attemptedBytes: number;
+  }> {
+    for await (const m of handle.messages()) {
+      if (m.kind === 'send-input-rejected') {
+        return m.payload;
+      }
+    }
+    throw new Error('child exited before sending send-input-rejected');
+  }
+
+  it('emits send-input-rejected when a single send-input exceeds the cap', async () => {
+    const sessionId = 'sess-bp-single';
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: {
+        ...process.env,
+        CCSM_FIXTURE_MODE: 'backpressure',
+        CCSM_PTY_PENDING_CAP_BYTES: '1024',
+      },
+    });
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId }) });
+
+      // Oversized single write: 2 KiB > 1 KiB cap → reject.
+      const oversized = new Uint8Array(2048);
+      handle.send({ kind: 'send-input', bytes: oversized });
+
+      const rej = await collectFirstRejection(handle);
+      expect(rej.sessionId).toBe(sessionId);
+      expect(rej.pendingWriteBytes).toBe(0);
+      expect(rej.attemptedBytes).toBe(2048);
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('accepts writes up to the cap; rejects only the over-cap one', async () => {
+    const sessionId = 'sess-bp-multi';
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: {
+        ...process.env,
+        CCSM_FIXTURE_MODE: 'backpressure',
+        CCSM_PTY_PENDING_CAP_BYTES: '1024',
+      },
+    });
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId }) });
+
+      // Buffer accounting: with the instant-drain stub writer, every
+      // accepted write nets to zero pending. Therefore each single
+      // write is admitted iff its size <= cap. The next over-cap
+      // write must be the first IPC message we observe.
+      handle.send({ kind: 'send-input', bytes: new Uint8Array(512) });
+      handle.send({ kind: 'send-input', bytes: new Uint8Array(1024) });
+      handle.send({ kind: 'send-input', bytes: new Uint8Array(2048) });
+
+      const rej = await collectFirstRejection(handle);
+      expect(rej.attemptedBytes).toBe(2048);
+      expect(rej.sessionId).toBe(sessionId);
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+
+  it('uses the full 1 MiB cap by default (no env override)', async () => {
+    const sessionId = 'sess-bp-default';
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId }),
+      childEntrypoint: FIXTURE,
+      forkEnv: {
+        ...process.env,
+        CCSM_FIXTURE_MODE: 'backpressure',
+        // no CCSM_PTY_PENDING_CAP_BYTES → 1 MiB default
+      },
+    });
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId }) });
+
+      // 1 MiB + 1 byte must reject; 1 MiB exactly must NOT.
+      handle.send({
+        kind: 'send-input',
+        bytes: new Uint8Array(1024 * 1024),
+      });
+      handle.send({
+        kind: 'send-input',
+        bytes: new Uint8Array(1024 * 1024 + 1),
+      });
+
+      const rej = await collectFirstRejection(handle);
+      expect(rej.attemptedBytes).toBe(1024 * 1024 + 1);
+      expect(rej.pendingWriteBytes).toBe(0);
+    } finally {
+      await handle.closeAndWait();
+    }
+  });
+});

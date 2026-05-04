@@ -337,11 +337,30 @@ export function spawnPtyHostChild(opts: SpawnPtyHostChildOptions): PtyHostChildH
 function isChildToHostMessage(x: unknown): x is ChildToHostMessage {
   if (typeof x !== 'object' || x === null) return false;
   const k = (x as { kind?: unknown }).kind;
-  return (
-    k === 'ready' ||
-    k === 'exiting' ||
-    k === 'delta' ||
-    k === 'snapshot' ||
-    k === 'send-input-rejected'
-  );
+  if (
+    k !== 'ready' &&
+    k !== 'exiting' &&
+    k !== 'delta' &&
+    k !== 'snapshot' &&
+    k !== 'send-input-rejected'
+  ) {
+    return false;
+  }
+  if (k === 'send-input-rejected') {
+    const p = (x as { payload?: unknown }).payload;
+    if (typeof p !== 'object' || p === null) return false;
+    const sid = (p as { sessionId?: unknown }).sessionId;
+    const pwb = (p as { pendingWriteBytes?: unknown }).pendingWriteBytes;
+    const ab = (p as { attemptedBytes?: unknown }).attemptedBytes;
+    return (
+      typeof sid === 'string' &&
+      typeof pwb === 'number' &&
+      Number.isFinite(pwb) &&
+      pwb >= 0 &&
+      typeof ab === 'number' &&
+      Number.isFinite(ab) &&
+      ab >= 0
+    );
+  }
+  return true;
 }

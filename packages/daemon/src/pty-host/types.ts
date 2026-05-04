@@ -80,15 +80,42 @@ export type HostToChildMessage =
   | { readonly kind: 'send-input'; readonly bytes: Uint8Array }
   | { readonly kind: 'resize'; readonly cols: number; readonly rows: number };
 
+/**
+ * Backpressure rejection payload — T4.3.
+ *
+ * Emitted by the pty-host child when a `send-input` would push the
+ * per-session pending-write tally past the 1 MiB cap (spec ch06 §1
+ * FOREVER-STABLE row F5). The daemon main process maps this into a
+ * Connect `RESOURCE_EXHAUSTED` reply on the originating `SendInput` RPC
+ * and writes a `crash_log` row with `source = "pty_input_overflow"`,
+ * `summary` containing the `sessionId` + `pendingWriteBytes`. NO bytes
+ * from the rejected `SendInput` are ever passed to the node-pty master.
+ *
+ * Field shape is locked here (matches docs/superpowers/specs/2026-05-04
+ * -pty-attach-handler.md §2.2 SendInputRejectedMessage). v0.4 may add
+ * fields additively but MUST NOT rename / renumber.
+ */
+export interface SendInputRejectedPayload {
+  readonly sessionId: string;
+  /** Current pending-write tally at the moment of rejection (bytes). */
+  readonly pendingWriteBytes: number;
+  /** Size of the rejected `send-input` payload in bytes. */
+  readonly attemptedBytes: number;
+}
+
 /** Closed union of every child→host message. */
 export type ChildToHostMessage =
   | { readonly kind: 'ready'; readonly sessionId: string; readonly pid: number }
   | { readonly kind: 'exiting'; readonly reason: 'graceful' | 'test-crash' }
-  /** Delta / snapshot / send-input-rejected variants are reserved kinds;
-   *  their payload shape is intentionally unspecified at T4.1 and lands
-   *  with the codec / backpressure tasks. The discriminant is enumerated
-   *  in {@link ChildToHostKind} so `switch` statements stay exhaustive. */
-  | { readonly kind: 'delta' | 'snapshot' | 'send-input-rejected' };
+  /** Delta / snapshot variants are reserved kinds; their payload shape is
+   *  intentionally unspecified at T4.1 and lands with the codec tasks.
+   *  The discriminant is enumerated in {@link ChildToHostKind} so `switch`
+   *  statements stay exhaustive. */
+  | { readonly kind: 'delta' | 'snapshot' }
+  | {
+      readonly kind: 'send-input-rejected';
+      readonly payload: SendInputRejectedPayload;
+    };
 
 /**
  * Reasons the daemon may observe for a child exit. Mirrors the spec's

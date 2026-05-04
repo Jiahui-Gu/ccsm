@@ -16,27 +16,67 @@
 // can grep the daemon stdout for the exact command line that *will* be
 // spawned without depending on an unfinished module.
 //
+// T4.3 addition: SendInput backpressure 1 MiB cap (spec ch06 §1 F5).
+//   - A `PendingWriteTracker` (1 MiB cap) is owned for the lifetime of
+//     the child. A pluggable `PtyWriter` is its sink: in T4.3 the
+//     default writer is a stub that simulates instant drain (real
+//     node-pty wiring lands with T4.6+ which will inject a writer that
+//     forwards `master.write(buf)` and observes the drain event).
+//   - Every `send-input` IPC asks the tracker for an admission verdict;
+//     reject → emit `send-input-rejected` IPC carrying `sessionId`,
+//     `pendingWriteBytes`, `attemptedBytes`. NO bytes are forwarded to
+//     the writer in the reject path. The daemon main process maps that
+//     IPC into a Connect `RESOURCE_EXHAUSTED` reply on the originating
+//     `SendInput` RPC and writes a `crash_log` row (source =
+//     `pty_input_overflow`).
+//
 // What is intentionally NOT here yet:
 //   - `node-pty` import / spawn — lands with T4.6 alongside the codec.
 //   - `xterm-headless` import / Terminal init — lands with T4.6 (codec).
 //   - Delta accumulator + snapshot scheduler — T4.9 / T4.10.
-//   - 1 MiB SendInput backpressure — T4.3.
+//   - Real node-pty PtyWriter implementation — T4.6+.
 //   - Test-only crash branch (`CCSM_PTY_TEST_CRASH_ON`) — T4.5.
 //
 // SRP: this module is a *sink* for host→child messages and a *producer*
-// of child→host lifecycle messages. Real PTY I/O is delegated to future
-// modules (one node-pty wrapper per concern; not all in this file).
+// of child→host lifecycle messages. The pending-write decider lives in
+// `pending-write-tracker.ts`; the future node-pty writer lives behind
+// the `PtyWriter` interface so this file stays the orchestrator only.
 //
 // Layer 1: this file only runs as a forked child. It has no exports
 // other than the side-effect of installing IPC handlers; the host
 // surface (`spawnPtyHostChild`) is what daemon code imports.
 
 import { computeSpawnArgv } from './spawn-argv.js';
+import {
+  PendingWriteTracker,
+  PENDING_WRITE_CAP_BYTES,
+} from './pending-write-tracker.js';
 import type {
   ChildToHostMessage,
   HostToChildMessage,
   SpawnPayload,
 } from './types.js';
+
+/**
+ * Pluggable writer for `send-input` bytes that pass the backpressure
+ * check. T4.3 ships with a stub `instantDrainWriter` which feeds drain
+ * accounting back to the tracker synchronously (so the tracker tally
+ * never grows under the stub — which is exactly the right behavior for
+ * a no-op writer; the cap still rejects oversized SINGLE writes).
+ *
+ * T4.6+ replaces the default with a writer that calls
+ * `ptyMaster.write(buf)` and registers a drain listener; that writer
+ * MUST call `tracker.recordWrite(buf.length)` BEFORE handing bytes to
+ * the master and MUST call `tracker.recordDrain(n)` from the drain
+ * event with the drained byte count.
+ */
+export interface PtyWriter {
+  /** Write `bytes` to the underlying pty master. The implementation is
+   *  responsible for calling `tracker.recordWrite` / `recordDrain` at
+   *  the appropriate times. Throws or rejects if the underlying master
+   *  is not writable; the caller maps that into a child crash exit. */
+  write(bytes: Uint8Array): void;
+}
 
 function log(line: string): void {
   // Stdout (not IPC) so the daemon's stdout tail captures it. Prefix
@@ -60,10 +100,49 @@ function send(msg: ChildToHostMessage): void {
 function isHostToChildMessage(x: unknown): x is HostToChildMessage {
   if (typeof x !== 'object' || x === null) return false;
   const k = (x as { kind?: unknown }).kind;
-  return k === 'spawn' || k === 'close' || k === 'send-input' || k === 'resize';
+  if (k !== 'spawn' && k !== 'close' && k !== 'send-input' && k !== 'resize') {
+    return false;
+  }
+  if (k === 'send-input') {
+    // Defensive shape check — IPC delivers structured-clonable values
+    // but a malformed parent could still send a wrong-typed `bytes`.
+    const b = (x as { bytes?: unknown }).bytes;
+    return b instanceof Uint8Array;
+  }
+  return true;
 }
 
 let spawnPayload: SpawnPayload | null = null;
+
+// T4.3: per-child pending-write tracker. The cap is the spec's 1 MiB
+// constant; tests that need a smaller cap fork with the env var
+// `CCSM_PTY_PENDING_CAP_BYTES` (used only by the T4.3 fixture — NOT a
+// production tuning knob; the cap is FOREVER-STABLE per spec).
+const tracker = new PendingWriteTracker(resolveCapForTest());
+
+// T4.3 default writer: instant-drain stub. T4.6+ replaces this when
+// node-pty + xterm-headless are wired in.
+const writer: PtyWriter = makeInstantDrainWriter(tracker);
+
+function resolveCapForTest(): number {
+  const raw = process.env.CCSM_PTY_PENDING_CAP_BYTES;
+  if (raw === undefined || raw === '') return PENDING_WRITE_CAP_BYTES;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return PENDING_WRITE_CAP_BYTES;
+  return parsed;
+}
+
+function makeInstantDrainWriter(t: PendingWriteTracker): PtyWriter {
+  return {
+    write(bytes: Uint8Array): void {
+      // Stub semantics: account for the write then immediately drain
+      // the same byte count. A real node-pty writer will defer the
+      // recordDrain call until the master's drain event fires.
+      t.recordWrite(bytes.length);
+      t.recordDrain(bytes.length);
+    },
+  };
+}
 
 function handleSpawn(payload: SpawnPayload): void {
   if (spawnPayload !== null) {
@@ -98,6 +177,36 @@ function handleClose(): void {
   setTimeout(() => process.exit(0), 20);
 }
 
+function handleSendInput(bytes: Uint8Array): void {
+  // T4.3: per-session 1 MiB pending-write cap (spec ch06 §1 F5).
+  // We require a prior `spawn` so we know the sessionId for the
+  // rejection IPC. A stray `send-input` before spawn is a daemon-side
+  // ordering bug; we drop with a log line rather than crash.
+  if (spawnPayload === null) {
+    log(`(early) send-input bytes=${bytes.length} dropped before spawn`);
+    return;
+  }
+  const verdict = tracker.decide(bytes.length);
+  if (verdict.kind === 'reject') {
+    log(
+      `send-input rejected: pending=${verdict.pendingWriteBytes} ` +
+      `attempted=${verdict.attemptedBytes} cap=${verdict.capBytes}`,
+    );
+    send({
+      kind: 'send-input-rejected',
+      payload: {
+        sessionId: spawnPayload.sessionId,
+        pendingWriteBytes: verdict.pendingWriteBytes,
+        attemptedBytes: verdict.attemptedBytes,
+      },
+    });
+    return;
+  }
+  // Accepted: forward to the writer. The writer is responsible for
+  // calling `tracker.recordWrite` / `recordDrain`.
+  writer.write(bytes);
+}
+
 function handleMessage(raw: unknown): void {
   if (!isHostToChildMessage(raw)) {
     log(`dropped malformed IPC message: ${JSON.stringify(raw)}`);
@@ -111,8 +220,7 @@ function handleMessage(raw: unknown): void {
       handleClose();
       return;
     case 'send-input':
-      // T4.3 wires the backpressure cap + master.write here.
-      log(`(stub) send-input bytes=${raw.bytes.length}`);
+      handleSendInput(raw.bytes);
       return;
     case 'resize':
       // T4.10 wires xterm-headless resize + Resize-snapshot coalescing.
