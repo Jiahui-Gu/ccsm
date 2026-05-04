@@ -60,6 +60,10 @@ import {
 } from '@ccsm/proto';
 
 import {
+  makeCreateSessionHandler,
+  type CreateSessionDeps,
+} from '../sessions/create-handler.js';
+import {
   makeDestroySessionHandler,
   type DestroySessionDeps,
 } from '../sessions/destroy-handler.js';
@@ -166,29 +170,33 @@ export function registerHelloHandler(
 /**
  * Register the v0.3 SessionService handlers that have landed so far —
  * Hello (T2.3), WatchSessions (T3.3), the read pair ListSessions /
- * GetSession (Wave 3 §6.9 sub-task 5 / Task #336) and DestroySession
- * (Wave 3 §6.9 sub-task 7 / Task #338) — under a SINGLE
+ * GetSession (Wave 3 §6.9 sub-task 5 / Task #336), DestroySession
+ * (Wave 3 §6.9 sub-task 7 / Task #338) and CreateSession (Wave 3 §6.9
+ * sub-task 6 / Task #339) — under a SINGLE
  * `router.service(SessionService, ...)` call.
  *
  * Why a combined registration (not multiple `service()` calls): per
  * Connect-ES `ConnectRouter.service` semantics, calling
  * `service(desc, impl)` more than once for the same descriptor REPLACES
  * the prior registration (the router is a path-keyed map). Registering
- * Hello, then WatchSessions, then ListSessions/GetSession/DestroySession
- * in separate calls would silently drop the earlier ones. The
- * Hello-only path (`registerHelloHandler` above) is preserved for callers
- * that have not yet wired a SessionManager (existing test fixtures);
- * production startup wiring (T1.7) uses this combined form.
+ * Hello, then WatchSessions, then ListSessions/GetSession/DestroySession/
+ * CreateSession in separate calls would silently drop the earlier ones.
+ * The Hello-only path (`registerHelloHandler` above) is preserved for
+ * callers that have not yet wired a SessionManager (existing test
+ * fixtures); production startup wiring (T1.7) uses this combined form.
  *
- * `readHandlersDeps` and `destroyHandlerDeps` are optional so existing
- * callers (test fixtures that built `{ helloDeps, watchSessionsDeps }`
- * before #336 / #338 landed) keep compiling without churn. In production
- * startup wiring (T1.7) all four are always supplied off the same
- * `SessionManager` instance — single owner of the sessions table; a
- * DestroySession publishes to the same in-memory event bus the
- * WatchSessions stream subscribes to.
+ * `readHandlersDeps`, `destroyHandlerDeps` and `createSessionDeps` are
+ * optional so existing callers (test fixtures that built
+ * `{ helloDeps, watchSessionsDeps }` before the per-overlay sub-tasks
+ * landed) keep compiling without churn. In production startup wiring
+ * (T1.7) all five are always supplied off the same `SessionManager`
+ * instance — single owner of the sessions table; a CreateSession
+ * publishes `created` to the same in-memory event bus the
+ * WatchSessions stream subscribes to (round-trip: create one ->
+ * watcher sees `created` event), and the new row is immediately visible
+ * to ListSessions / GetSession on the same boot.
  *
- * Methods not yet implemented (CreateSession, RenameSession, ...) remain
+ * Methods not yet implemented (RenameSession, ImportSession, ...) remain
  * `Unimplemented` per the Connect router's "absent method →
  * Unimplemented" rule, exactly as in the stub-only path.
  */
@@ -199,6 +207,7 @@ export function registerSessionService(
     readonly watchSessionsDeps: WatchSessionsDeps;
     readonly readHandlersDeps?: ReadHandlersDeps;
     readonly destroyHandlerDeps?: DestroySessionDeps;
+    readonly createSessionDeps?: CreateSessionDeps;
   },
 ): ConnectRouter {
   const impl: Parameters<typeof router.service<typeof SessionService>>[1] = {
@@ -211,6 +220,9 @@ export function registerSessionService(
   }
   if (deps.destroyHandlerDeps !== undefined) {
     impl.destroySession = makeDestroySessionHandler(deps.destroyHandlerDeps);
+  }
+  if (deps.createSessionDeps !== undefined) {
+    impl.createSession = makeCreateSessionHandler(deps.createSessionDeps);
   }
   router.service(SessionService, impl);
   return router;
@@ -256,6 +268,7 @@ export function makeDaemonRoutes(
   settingsDeps?: SettingsServiceDeps,
   draftDeps?: DraftServiceDeps,
   ptyAttachDeps?: PtyAttachDeps,
+  createSessionDeps?: CreateSessionDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -265,6 +278,7 @@ export function makeDaemonRoutes(
         watchSessionsDeps,
         readHandlersDeps,
         destroyHandlerDeps,
+        createSessionDeps,
       });
     } else {
       registerHelloHandler(router, helloDeps);
@@ -369,6 +383,25 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    */
   readonly destroyHandlerDeps?: DestroySessionDeps;
   /**
+   * When set (and `helloDeps` + `watchSessionsDeps` are also set),
+   * installs the Wave 3 §6.9 sub-task 6 (Task #339) CreateSession
+   * handler in the same SessionService registration as Hello +
+   * WatchSessions + read pair + DestroySession (see
+   * `registerSessionService` for the "registering twice replaces"
+   * caveat). Reuses the SAME `SessionManager` instance the other
+   * SessionService overlays use so a CreateSession publishes a
+   * `created` event to the same in-memory bus the WatchSessions stream
+   * subscribes to (round-trip: create one -> watcher sees `created`)
+   * and the new row is immediately visible to ListSessions /
+   * GetSession on the same boot. PTY spawn for the freshly-created
+   * session is OUT OF SCOPE here — Task #359 wires
+   * `attachPtyHost` separately so this unary handler stays decoupled
+   * from the spawn lifecycle (see `create-handler.ts` SCOPE note).
+   * Tests that don't need the create wire-up simply omit it and the
+   * method stays `Unimplemented`.
+   */
+  readonly createSessionDeps?: CreateSessionDeps;
+  /**
    * When set, installs the Wave-3 SettingsService overlay (Task #349 /
    * audit #228 sub-task 9 / spec #337 §6.1 step 1) on top of the
    * stubs. Both `GetSettings` and `UpdateSettings` ship in this
@@ -444,6 +477,7 @@ export function createDaemonNodeAdapter(
     settingsDeps,
     draftDeps,
     ptyAttachDeps,
+    createSessionDeps,
     interceptors: callerInterceptors,
     ...rest
   } = options;
@@ -458,6 +492,7 @@ export function createDaemonNodeAdapter(
           settingsDeps,
           draftDeps,
           ptyAttachDeps,
+          createSessionDeps,
         )
       : stubRoutes;
   const interceptors = [

@@ -102,6 +102,7 @@ import {
   DraftService,
   GetCrashLogRequestSchema,
   OwnerFilter,
+  PtyGeometrySchema,
   RequestMetaSchema,
   SessionService,
   SettingsSchema,
@@ -508,6 +509,73 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     expect(raised, 'expected ConnectError on unknown session id').not.toBeNull();
     expect(raised!.code).not.toBe(Code.Unimplemented);
     expect(raised!.code).toBe(Code.PermissionDenied);
+  });
+
+  // Wave 3 §6.9 sub-task 6 (Task #339) — SessionService.CreateSession.
+  // Production wire-up regression: pre-#339 the Connect router returned
+  // `Code.Unimplemented` for SessionService.CreateSession even though
+  // `SessionManager.create()` (T3.2 / #38) was fully implemented. This
+  // assertion proves:
+  //   1. the create-handler overlay is installed in the production
+  //      bind hook (`makeRouterBindHook({ createSessionDeps })`);
+  //   2. the unary call returns a populated `Session` (id ULID-shaped,
+  //      cwd echoed, owner = caller's LocalUser principal, state =
+  //      STARTING per spec ch05 §6);
+  //   3. request_id round-trips per spec ch04 §2.
+  // PTY spawn for the freshly-created session is OUT OF SCOPE here
+  // (Task #359 wires `attachPtyHost` separately — see
+  // `sessions/create-handler.ts` SCOPE note).
+  it('Listener-A.SessionService.CreateSession does NOT return Unimplemented + round-trips a Session (Task #339)', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    // `sessions.owner_id` is FK -> `principals.id` (db/migrations/001_initial.sql
+    // L46). Production peer-cred middleware upserts the row on connect (T1.3),
+    // but the boot-e2e test bearer-token path resolves to
+    // `{ kind: 'local-user', uid: 'test', ... }` without exercising that
+    // upsert. Seed the row directly so the FK check on `manager.create`
+    // (called from inside the CreateSession handler) passes — same pattern
+    // the WatchSessions smoke uses below.
+    r.db
+      .prepare(
+        `INSERT OR IGNORE INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run('local-user:test', 'local-user', 'test', Date.now(), Date.now());
+
+    const client = makeSessionClient(baseUrl);
+    const meta = newMeta();
+    const resp = await client.createSession({
+      meta,
+      cwd: setup.tmpRoot, // a real, readable path on every CI leg
+      env: { CCSM_E2E: '1' },
+      claudeArgs: ['--help'],
+      initialGeometry: create(PtyGeometrySchema, { cols: 100, rows: 30 }),
+    });
+    // Reaching this line proves we did NOT get Code.Unimplemented (the
+    // pre-#339 stub baseline would have thrown ConnectError before
+    // resp was assigned). Sanity-check the payload shape now.
+    expect(resp.session).toBeDefined();
+    const sess = resp.session!;
+    // ULID-shaped id (26 chars Crockford-base32 — see SessionManager
+    // `newSessionId`). Just check length + character class to keep
+    // this assertion stable against future generator implementation
+    // tweaks.
+    expect(sess.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(sess.cwd).toBe(setup.tmpRoot);
+    // STARTING == 1 in the proto SessionState enum (common.proto +
+    // sessions/types.ts forever-stable mapping). v0.3 SessionManager
+    // emits STARTING on create; T4.x transitions to RUNNING.
+    expect(sess.state).toBe(1);
+    // Owner principal is the local-user variant the test bearer token
+    // resolves to; we just assert the oneof case is set so a future
+    // proto change to the variant tag fails this loud.
+    expect(sess.owner?.kind?.case).toBe('localUser');
+    expect(resp.meta?.requestId).toBe(meta.requestId);
   });
 
   it('rejects unauthenticated calls (no bearer token) with Code.Unauthenticated', async () => {
