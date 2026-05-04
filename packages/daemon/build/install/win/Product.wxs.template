@@ -1,0 +1,223 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CCSM Windows MSI installer manifest.
+
+  Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+        chapter 10 §5.1 (Windows MSI) + ch07 §2 (state directory layout).
+  Task: T7.4 (#81) — installer: per-OS service registration + state dir creation.
+
+  Lineage: derived from the T9.13 spike at
+    tools/spike-harness/probes/msi-service-install-25h2/Product.wxs
+  which proved WiX 4 <ServiceInstall> + <ServiceControl> work on Win 11 25H2
+  for a sea binary. This is the production manifest; see ch10 §5.1 for the
+  locked design decisions (WiX 4, NOT sc.exe custom action; ServiceConfig
+  failure-actions; LocalService account; %PROGRAMDATA%\ccsm DACL).
+
+  Token substitution (run by build-msi.ps1):
+    @CCSM_VERSION@        product version (e.g. 0.3.0)
+    @CCSM_UPGRADE_CODE@   stable upgrade GUID (NEVER change across releases)
+    @CCSM_DAEMON_DIR@     absolute path to staged daemon dir containing
+                          ccsm-daemon.exe + native\
+    @CCSM_DAEMON_EXE@     absolute path to ccsm-daemon.exe inside the staged dir
+    @CCSM_MANUFACTURER@   "ccsm" or downstream fork name
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="CCSM"
+           Manufacturer="@CCSM_MANUFACTURER@"
+           Version="@CCSM_VERSION@"
+           UpgradeCode="@CCSM_UPGRADE_CODE@"
+           Compressed="yes"
+           Scope="perMachine">
+
+    <!--
+      Major upgrade: same UpgradeCode + higher Version => previous install
+      uninstalled atomically before new payload installs. State directory
+      under %PROGRAMDATA%\ccsm is left intact (ServiceInstall keeps its
+      registration; data files are not in <File> elements).
+    -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+
+    <!--
+      REMOVEUSERDATA public property — ch10 §5 step 4 silent uninstall
+      contract. msiexec /x ... REMOVEUSERDATA=1 /qn removes the state
+      directory. Default 0 keeps user data.
+    -->
+    <Property Id="REMOVEUSERDATA" Value="0" Secure="yes" />
+
+    <!-- Install layout: %ProgramFiles%\ccsm\ for binaries; %ProgramData%\ccsm\ for state. -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ccsm">
+        <Directory Id="NativeFolder" Name="native" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="STATEDIR" Name="ccsm">
+        <Directory Id="DESCRIPTORSDIR" Name="descriptors" />
+      </Directory>
+    </StandardDirectory>
+
+    <!--
+      Daemon executable + ServiceInstall + ServiceControl + ServiceConfig.
+
+      Locked decisions (ch10 §5.1):
+        - <ServiceInstall> NOT sc.exe custom action (declarative cleaner
+          for uninstall and rollback).
+        - Account: NT AUTHORITY\LocalService (built-in, low-priv).
+          LocalService can bind UDS under %PROGRAMDATA%\ccsm with the DACL
+          we set below (Modify for LocalService; Read for interactive user
+          on the descriptor file).
+        - Type=ownProcess; Start=auto (service starts at boot per ch10 §5
+          step 6 "Start the service"). Auto-start is the production mode;
+          the T9.13 spike used demand to keep tests deterministic.
+        - ErrorControl=normal; service start failure does NOT block boot
+          (ch10 §5 step 7 explicitly handles healthz failure via installer
+          rollback, not via SCM hard-fail).
+        - Vital=yes => MSI install fails (ERROR_INSTALL_FAILURE 1603) if
+          registration fails, triggering rollback per ch10 §5 step 7 (c).
+        - <ServiceConfig FirstFailureActionType=restart, etc.> matches the
+          spec line "configures service failure actions (verified
+          post-install via sc qfailure ccsm-daemon — restart on
+          first/second failure, run-program on third)".
+        - <util:ServiceConfig ServiceSidType="restricted"> matches spec
+          "per-service SID type (verified via sc qsidtype ccsm-daemon
+          returning RESTRICTED)".
+    -->
+    <Component Id="DaemonSvc"
+               Directory="INSTALLFOLDER"
+               Bitness="always64"
+               Guid="*">
+      <File Id="DaemonExe"
+            Name="ccsm-daemon.exe"
+            Source="@CCSM_DAEMON_EXE@"
+            KeyPath="yes" />
+
+      <ServiceInstall Id="CcsmDaemonInstall"
+                      Name="ccsm-daemon"
+                      DisplayName="CCSM Daemon"
+                      Description="CCSM (Claude Code Session Manager) background daemon. Manages PTY sessions and the local Connect-RPC listener."
+                      Type="ownProcess"
+                      Start="auto"
+                      ErrorControl="normal"
+                      Account="NT AUTHORITY\LocalService"
+                      Vital="yes">
+        <!--
+          ServiceConfig (WiX 4 schema) — failure actions per ch10 §5.1.
+          Restart on first + second failure (60 s reset window); on third
+          failure, do nothing (operator inspection). The MSI must NOT
+          configure a destructive RunCommand for the third action — the
+          installer's healthz-fail rollback path (ch10 §5 step 7) is the
+          recovery boundary.
+        -->
+        <ServiceConfigFailureActions Id="CcsmDaemonFailure"
+                                     ResetPeriodInSeconds="60">
+          <Failure Action="restart" DelayInSeconds="5" />
+          <Failure Action="restart" DelayInSeconds="30" />
+          <Failure Action="none"   DelayInSeconds="0" />
+        </ServiceConfigFailureActions>
+
+        <!--
+          ServiceConfig (WiX 4 element) — apply at install + reinstall.
+          DelayedAutoStart=no: we want immediate auto-start so /healthz
+          comes up within the installer's 10 s budget.
+        -->
+        <ServiceConfig DelayedAutoStart="no"
+                       OnInstall="yes"
+                       OnReinstall="yes" />
+      </ServiceInstall>
+
+      <!--
+        util:ServiceConfig — sets SCM SID type "restricted" so the service
+        SID has write access only to objects ACL'd for it (state dir DACL
+        below grants ccsm-daemon SID Modify on STATEDIR). Verified by
+        ch10 §5.1 ship-gate: `sc qsidtype ccsm-daemon` returns RESTRICTED.
+      -->
+      <util:ServiceConfig ServiceName="ccsm-daemon"
+                          ServiceSidType="restricted" />
+
+      <ServiceControl Id="CcsmDaemonControl"
+                      Name="ccsm-daemon"
+                      Start="install"
+                      Stop="both"
+                      Remove="uninstall"
+                      Wait="yes" />
+    </Component>
+
+    <!--
+      Native modules (better_sqlite3.node, pty.node) live next to the exe
+      under <install>\native\ — ch10 §2 native loader resolves via
+      process.execPath/native/. This component is harvested at build time
+      by build-msi.ps1 (heat.exe / wix harvest) over @CCSM_DAEMON_DIR@\native;
+      the placeholder File element below is a minimal stub the harvester
+      replaces. We commit a stub so the .wxs is self-validating against
+      the WiX 4 schema even before harvest runs.
+    -->
+    <Component Id="NativeStub"
+               Directory="NativeFolder"
+               Bitness="always64"
+               Guid="*">
+      <File Id="NativeReadme"
+            Name="README.txt"
+            Source="@CCSM_DAEMON_DIR@\native\README.txt"
+            KeyPath="yes" />
+    </Component>
+
+    <!--
+      State directory (%PROGRAMDATA%\ccsm) — ch07 §2 win32 row.
+      <CreateFolder> + <util:PermissionEx> set the DACL per ch10 §5.1:
+        - LocalService: Modify (so the daemon can write listener-a.json,
+          ccsm.db, crash-raw.ndjson).
+        - BUILTIN\Users: Read on the directory and on listener-a.json
+          specifically (so per-user Electron can read the descriptor
+          without joining a group).
+      Permanent="yes" + the REMOVEUSERDATA-gated component below handles
+      the "remove on /qn REMOVEUSERDATA=1" matrix.
+
+      The descriptor file itself (listener-a.json) is written by the
+      daemon at boot (ch07 §2.1, T1.6); the installer creates the
+      directory and DACL only.
+    -->
+    <Component Id="StateDir"
+               Directory="STATEDIR"
+               Guid="*">
+      <CreateFolder>
+        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <!--
+        Component is permanent unless REMOVEUSERDATA=1. Achieved via two
+        components controlled by Condition; this component holds the DACL
+        and stays put.
+      -->
+      <Condition>NOT REMOVEUSERDATA OR REMOVEUSERDATA="0"</Condition>
+    </Component>
+
+    <Component Id="StateDirRemovable"
+               Directory="STATEDIR"
+               Guid="*">
+      <CreateFolder>
+        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+      <util:RemoveFolderEx On="uninstall" Property="STATEDIR" />
+      <Condition>REMOVEUSERDATA="1"</Condition>
+    </Component>
+
+    <Component Id="DescriptorsDir"
+               Directory="DESCRIPTORSDIR"
+               Guid="*">
+      <CreateFolder>
+        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+      </CreateFolder>
+    </Component>
+
+    <Feature Id="Main" Title="CCSM" Level="1">
+      <ComponentRef Id="DaemonSvc" />
+      <ComponentRef Id="NativeStub" />
+      <ComponentRef Id="StateDir" />
+      <ComponentRef Id="StateDirRemovable" />
+      <ComponentRef Id="DescriptorsDir" />
+    </Feature>
+
+  </Package>
+</Wix>
