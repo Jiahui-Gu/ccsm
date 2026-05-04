@@ -9,8 +9,15 @@
 //     them in.
 //   - On `close`, send `{kind:'exiting', reason:'graceful'}` then exit 0.
 //
+// T4.2 addition: on `spawn`, compute the per-OS `(file, args)` pair the
+// future `node-pty.spawn` call will use (via `computeSpawnArgv`) and log
+// it. The actual `node-pty` import + spawn lands in T4.6+; logging the
+// resolved argv now means installer smoke tests + the 1-hour soak harness
+// can grep the daemon stdout for the exact command line that *will* be
+// spawned without depending on an unfinished module.
+//
 // What is intentionally NOT here yet:
-//   - `node-pty` import / spawn — lands with T4.2 (UTF-8 spawn argv).
+//   - `node-pty` import / spawn — lands with T4.6 alongside the codec.
 //   - `xterm-headless` import / Terminal init — lands with T4.6 (codec).
 //   - Delta accumulator + snapshot scheduler — T4.9 / T4.10.
 //   - 1 MiB SendInput backpressure — T4.3.
@@ -24,6 +31,7 @@
 // other than the side-effect of installing IPC handlers; the host
 // surface (`spawnPtyHostChild`) is what daemon code imports.
 
+import { computeSpawnArgv } from './spawn-argv.js';
 import type {
   ChildToHostMessage,
   HostToChildMessage,
@@ -63,12 +71,20 @@ function handleSpawn(payload: SpawnPayload): void {
     return;
   }
   spawnPayload = payload;
-  // T4.2+ will do the actual node-pty.spawn here. For T4.1 the payload
-  // is just stashed so a future commit can pick it up without changing
-  // the IPC handshake.
+  // T4.2: compute the per-OS spawn argv (Windows wraps in
+  // `cmd /c chcp 65001 >nul && claude.exe ...`; POSIX is bare claude).
+  // We log the resolved (file, args) so installer smoke + the soak
+  // harness can grep for the exact command line that *will* be spawned.
+  // The actual `node-pty.spawn(file, args)` call lands in T4.6+.
+  const resolved = computeSpawnArgv({
+    platform: process.platform,
+    claudeArgs: payload.claudeArgs,
+  });
   log(
     `spawn accepted: session=${payload.sessionId} cols=${payload.cols} ` +
-    `rows=${payload.rows} argv=${JSON.stringify(payload.claudeArgs)}`,
+    `rows=${payload.rows} argv=${JSON.stringify(payload.claudeArgs)} ` +
+    `resolved.file=${JSON.stringify(resolved.file)} ` +
+    `resolved.args=${JSON.stringify(resolved.args)}`,
   );
 }
 

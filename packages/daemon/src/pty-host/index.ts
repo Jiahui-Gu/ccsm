@@ -10,6 +10,13 @@ export {
   UTF8_CONTRACT_KEYS_WIN32,
 } from './spawn-env.js';
 export type { Utf8EnvOptions } from './spawn-env.js';
+export {
+  computeSpawnArgv,
+  DEFAULT_CLAUDE_BINARY_POSIX,
+  DEFAULT_CLAUDE_BINARY_WIN32,
+  WIN32_CODEPAGE_STEP,
+} from './spawn-argv.js';
+export type { SpawnArgvOptions, SpawnArgvResult } from './spawn-argv.js';
 export type {
   ChildExit,
   ChildExitReason,
