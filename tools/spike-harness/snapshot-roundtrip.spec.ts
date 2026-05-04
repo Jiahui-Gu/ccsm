@@ -14,26 +14,94 @@
 //   - Imports the codec from packages/snapshot-codec (pinned by ch06 §1603 of
 //     the design spec).
 //
-// STATUS: describe.skip until T4.6 (SnapshotV1 codec) lands. The test body
-// is intentionally hollow — what matters TODAY is that the file exists at
-// this path so downstream T9.8 wiring can `vitest run tools/spike-harness/`
-// and see the skipped-with-TODO marker. Once T4.6 ships, flip describe.skip
-// to describe and import the real codec.
+// STATUS: live. T4.6 encoder (#46) + T4.7 decoder (#44, PR #1021 commit
+// 82e16c1) are both shipped, so this fixture now drives the real codec.
+// Helper code lives in `./snapshot-roundtrip-helpers.ts`; this file owns
+// the test cases. The exhaustive fuzz (random VT streams across many
+// seeds) lives in `packages/snapshot-codec/src/__tests__/decoder.spec.ts`
+// (D14) — this spec is the contract anchor downstream T9.8 wiring targets.
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-// TODO(T4.6): uncomment once packages/snapshot-codec exports {encode, decode}.
-// import { encode, decode } from '@ccsm/snapshot-codec';
+import {
+  assertRoundtrip,
+  buildHeadlessTerminal,
+  bytesEqual,
+  decodeSnapshotV1,
+  encodeInner,
+  encodeSnapshotV1,
+  reencodeFromDecoded,
+} from './snapshot-roundtrip-helpers.js';
 
-describe.skip('SnapshotV1 round-trip (TODO: T4.6 codec)', () => {
-  it('decode(encode(s)) is semantically equal to s', () => {
-    // TODO: implement when T4.6 lands.
-    expect(true).toBe(true);
+describe('SnapshotV1 round-trip', () => {
+  it('decode(encode(s)) is semantically equal to s', async () => {
+    const term = await buildHeadlessTerminal({
+      cols: 40,
+      rows: 6,
+      payload: 'hello \x1b[1mworld\x1b[0m\r\nline two',
+    });
+    const wire = encodeSnapshotV1(term);
+    const decoded = decodeSnapshotV1(wire);
+    expect(decoded.cols).toBe(40);
+    expect(decoded.rows).toBe(6);
+    // Viewport line count == rows; scrollback is 0 because nothing has
+    // scrolled off in this short payload.
+    expect(decoded.scrollbackLines).toBe(0);
+    expect(decoded.lines.length).toBe(6);
+    // Cursor advanced past "line two" (8 chars) on row 1.
+    expect(decoded.cursorRow).toBe(1);
+    expect(decoded.cursorCol).toBe(8);
+    // Palette must include at least one bold entry from the SGR 1 we wrote.
+    const hasBold = decoded.attrsPalette.some((e) => (e.flags & 0x01) !== 0);
+    expect(hasBold).toBe(true);
   });
 
-  it('encode(decode(encode(s))) is byte-identical to encode(s)', () => {
-    // TODO: implement when T4.6 lands. Use vt-grammar.mjs corpus + W1-W6
-    // replay corpus per ch14 §1.8 corpus (C2) and (C3).
-    expect(true).toBe(true);
+  it('encode(decode(encode(s))) is byte-identical to encode(s)', async () => {
+    // Spec ch14 §1.8 corpus C2 (vt-grammar) and C3 (W1-W6 replay) drive
+    // exhaustive random fuzz inside `decoder.spec.ts` D14. Here we lock
+    // the byte-equality property with three representative shapes:
+    //   - empty terminal (degenerate baseline)
+    //   - plain ASCII with newlines (cell + line geometry)
+    //   - SGR + unicode (palette + grapheme path)
+    const cases = [
+      { name: 'empty', payload: '' },
+      { name: 'ascii', payload: 'foo\r\nbar\r\nbaz qux' },
+      {
+        name: 'sgr-unicode',
+        payload:
+          '\x1b[31mred\x1b[0m \x1b[1;42mbold-on-green\x1b[0m\r\n' +
+          '漢字 naïve éclair 📸',
+      },
+    ];
+    for (const c of cases) {
+      const term = await buildHeadlessTerminal({
+        cols: 40,
+        rows: 6,
+        scrollback: 50,
+        payload: c.payload,
+      });
+      const wire1 = encodeSnapshotV1(term);
+      const decoded = decodeSnapshotV1(wire1);
+      const innerDirect = encodeInner(term);
+      const innerReencoded = reencodeFromDecoded(decoded);
+      expect(
+        bytesEqual(innerReencoded, innerDirect),
+        `case '${c.name}': inner re-encode mismatch ` +
+          `(direct=${innerDirect.byteLength}B, re-encoded=${innerReencoded.byteLength}B)`,
+      ).toBe(true);
+    }
+  });
+
+  it('assertRoundtrip helper exposes both contracts as one call', async () => {
+    const term = await buildHeadlessTerminal({
+      cols: 24,
+      rows: 4,
+      payload: 'spike\r\nharness',
+    });
+    // Throws on either contract failure; returning the decoded snapshot
+    // keeps the helper useful for downstream T9.8 wiring assertions.
+    const decoded = assertRoundtrip(term);
+    expect(decoded.cols).toBe(24);
+    expect(decoded.rows).toBe(4);
   });
 });
