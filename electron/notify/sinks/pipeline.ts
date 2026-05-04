@@ -17,7 +17,7 @@
 // forgetSid) are forwarded straight to the tracker.
 
 import type { BrowserWindow } from 'electron';
-import { OscTitleSniffer, type OscTitleEvent } from '../../ptyHost/oscTitleSniffer';
+import { OscTitleSniffer, type OscTitleEvent } from '../../../packages/daemon/src/ptyHost/oscTitleSniffer';
 import { decide, type Ctx } from '../notifyDecider';
 import { createRunStateTracker, type RunStateTracker } from '../runStateTracker';
 import { classifyTitleState } from '../titleStateClassifier';

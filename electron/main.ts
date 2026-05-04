@@ -59,7 +59,7 @@ process.on('uncaughtException', (err) => {
 // init is idempotent and a no-op when no DSN is set.
 initSentry();
 
-import { killAllPtySessions } from './ptyHost';
+import { killAllPtySessions } from '../packages/daemon/src/ptyHost';
 import { configureSessionWatcher } from './sessionWatcher';
 import { BadgeManager } from './notify/badge';
 import {
