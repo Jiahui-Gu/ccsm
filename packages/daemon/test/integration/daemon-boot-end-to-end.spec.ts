@@ -27,6 +27,36 @@
 //      surfaces the boot probe `result.crashReplayResult.inserted >= 1`,
 //      and the file is truncated post-replay (silent-loss safety,
 //      ch09 §6.2 case (e)).
+//   7. Wave-3 #225 rolling extension — `result.wired` deep-equals
+//      `REQUIRED_COMPONENTS` minus `WARN_ONLY` (write-coalescer). The
+//      previous superset shape silently tolerated drift between
+//      `runStartup.lock.ts:REQUIRED_COMPONENTS` and `index.ts`'s
+//      pushed-`wired` list.
+//   8. Wave-3 #225 rolling extension — WatchSessions over-the-wire smoke:
+//      publishes a `created` event into the wired bus via
+//      `result.sessionManager` and asserts the client receives the
+//      proto SessionEvent. Stronger than `watch-sessions-wired.spec.ts`
+//      (which only asserts not-Unimplemented).
+//   9. Wave-3 #225 rolling extension — GetCrashLog over-the-wire smoke:
+//      asserts the seeded crash row that `replayCrashRawOnBoot` ingested
+//      is echoed by id over the wire. Stronger than
+//      `crash-getlog-wired.spec.ts`. Cross-OS aware: tolerant when the
+//      POSIX `/var/lib/ccsm` seed write was not writable (assertion 6
+//      already covers that branch).
+//
+// Spec "≥14 assertions" reality check (Task #225):
+//   The v0.3 spec sub-task #225 cited "≥14 wire assertions" as the
+//   rolling-extension target. As of working @ HEAD only THREE Connect
+//   RPCs are actually wired in production (Hello, WatchSessions,
+//   GetCrashLog) — see `index.ts:runStartup` `makeRouterBindHook(...)`
+//   call. The remaining ~10 RPC methods (Create/Destroy/Get/List
+//   sessions, GetRawCrashLog, WatchCrashLog, all of PtyService and
+//   SettingsService) still resolve to `Code.Unimplemented` because their
+//   handlers / wire-up tasks have not landed yet (#336/#338/#339/#341/#349).
+//   Stuffing reverse-assertions for the unwired ~10 here would lock in
+//   transitional Unimplemented behavior we expect to delete in 2 weeks
+//   — net negative. The next rolling extension lands when those wire-up
+//   tasks merge.
 //
 // Why in-process (not child-process) boot:
 //   - We import and call the exported `runStartup` directly. This is
@@ -67,8 +97,13 @@ import { createConnectTransport } from '@connectrpc/connect-node';
 
 import {
   PROTO_VERSION,
+  CrashService,
+  GetCrashLogRequestSchema,
+  OwnerFilter,
   RequestMetaSchema,
   SessionService,
+  WatchScope,
+  WatchSessionsRequestSchema,
 } from '@ccsm/proto';
 import * as AjvNs from 'ajv';
 
@@ -76,6 +111,7 @@ import { runStartup, type RunStartupResult } from '../../src/index.js';
 import { Lifecycle, Phase } from '../../src/lifecycle.js';
 import { REQUIRED_COMPONENTS } from '../../src/runStartup.lock.js';
 import { TEST_BEARER_TOKEN } from '../../src/auth/index.js';
+import type { Principal } from '../../src/auth/index.js';
 
 const Ajv =
   (AjvNs as unknown as {
@@ -140,12 +176,28 @@ async function teardownBootEnv(setup: BootEnv): Promise<void> {
   });
 }
 
-/** Stop everything the boot brought up. Safe to call on partial boots. */
+/** Stop everything the boot brought up. Safe to call on partial boots.
+ *
+ * `listenerA.stop()` calls `server.close(...)` which waits for in-flight
+ * HTTP/2 streams to close. The Connect-ES client (created via
+ * `createConnectTransport`) keeps a long-lived h2 session open by default,
+ * so an unary RPC's response does NOT close the underlying session — and
+ * `server.close()` therefore hangs forever. Cap each shutdown step at
+ * 1500ms to match the harness.ts pattern (see L228-234) so a single
+ * client-pinned session cannot push afterEach over the 10s vitest hook
+ * budget. The OS reclaims the listening socket on process exit.
+ */
 async function stopBoot(result: RunStartupResult | null): Promise<void> {
   if (result === null) return;
   result.captureSourcesUnsubscribe?.();
-  await result.supervisor?.stop().catch(() => {});
-  await result.listenerA?.stop().catch(() => {});
+  await Promise.race([
+    Promise.resolve(result.supervisor?.stop()).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 1500).unref()),
+  ]);
+  await Promise.race([
+    Promise.resolve(result.listenerA?.stop()).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 1500).unref()),
+  ]);
   result.crashPruner.stop();
   try {
     result.db.close();
@@ -204,6 +256,27 @@ function makeSessionClient(
     ],
   });
   return createClient(SessionService, transport);
+}
+
+/**
+ * Crash client mirrors `makeSessionClient` (same transport + bearer-token
+ * interceptor) — separate factory so the smoke `it` for `getCrashLog`
+ * stays single-concern. Task #225 rolling extension: proves the
+ * CrashService.GetCrashLog wire actually echoes a row from the
+ * `crash_log` table that boot's `replayCrashRawOnBoot` populated.
+ */
+function makeCrashClient(baseUrl: string): Client<typeof CrashService> {
+  const transport = createConnectTransport({
+    httpVersion: '2',
+    baseUrl,
+    interceptors: [
+      (next) => async (req) => {
+        req.header.set('authorization', `Bearer ${TEST_BEARER_TOKEN}`);
+        return next(req);
+      },
+    ],
+  });
+  return createClient(CrashService, transport);
 }
 
 function newMeta() {
@@ -383,31 +456,203 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     }
   });
 
-  // Task #221 — assertWired contract. `runStartup` now collects a
-  // `wired: string[]` of canonical component names actually wired by
-  // this boot and calls `assertWired` against `REQUIRED_COMPONENTS`. A
-  // successful boot here means every hard-required component reported
-  // present; the e2e then locks the array shape so a future regression
-  // that drops a wire-up (and silently absents the name) fails this
-  // file BEFORE it can ship.
-  it('runStartup probe: result.wired covers every REQUIRED_COMPONENTS entry that is hard-required on this boot', () => {
+  // Task #225 rolling extension — `runStartup.lock.ts` REQUIRED_COMPONENTS
+  // contract is now LOCKED via deep-equality (`REQUIRED_COMPONENTS` minus
+  // the current `WARN_ONLY` set). The previous superset shape silently
+  // tolerated a drift where a name was added to REQUIRED_COMPONENTS but
+  // never pushed into `index.ts:wired` (or vice-versa). A bidirectional
+  // exact-set assertion fails immediately on either side of that drift.
+  //
+  // `WARN_ONLY` here mirrors `runStartup.lock.ts:WARN_ONLY` literally —
+  // intentionally duplicated rather than re-exported so a refactor that
+  // changes the production set has to update this file too (the e2e is
+  // the contract test, not the implementation).
+  it('runStartup probe: result.wired equals REQUIRED_COMPONENTS minus WARN_ONLY (exact set, no drift)', () => {
     expect(result).not.toBeNull();
     const wired = result!.wired;
-    // The production e2e never sets any `CCSM_DAEMON_SKIP_*` envs, so
-    // every hard-required component (REQUIRED_COMPONENTS minus the
-    // current WARN_ONLY set in runStartup.lock.ts) MUST be present.
-    // We assert the strict superset relationship rather than deep
-    // equality so the test does not need to be edited each time a
-    // WARN_ONLY entry graduates to hard-required (it auto-tightens).
     const WARN_ONLY = new Set(['write-coalescer']);
-    for (const name of REQUIRED_COMPONENTS) {
-      if (WARN_ONLY.has(name)) continue;
-      expect(wired, `missing wired entry: ${name}`).toContain(name);
+    const expected = REQUIRED_COMPONENTS.filter((n) => !WARN_ONLY.has(n));
+    // Sort both sides so order changes in REQUIRED_COMPONENTS / wired
+    // don't false-fail (canonical order is documented in
+    // runStartup.lock.ts but the contract is set-equality, not order).
+    expect([...wired].sort()).toEqual([...expected].sort());
+  });
+
+  // Task #225 rolling extension — WatchSessions over-the-wire smoke.
+  // `watch-sessions-wired.spec.ts` (#290) only proves the stream stays
+  // open past 250ms (handler installed). This stronger test publishes a
+  // synthetic `created` event into the SAME bus the production handler
+  // subscribes to (via `result.sessionManager`, surfaced by Task #225)
+  // and asserts the client receives a `kind=created` proto SessionEvent.
+  // Failure mode pinned: a future refactor that disconnects the wired
+  // bus from the handler subscription (e.g. constructs a fresh manager
+  // inside the bind hook) would yield no event and time out here.
+  it('WatchSessions smoke: client receives a SessionEvent.created when manager.create fires on the wired bus', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    expect(r.sessionManager).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const ac = new AbortController();
+    const client = makeSessionClient(baseUrl);
+    const stream = client.watchSessions(
+      create(WatchSessionsRequestSchema, {
+        meta: newMeta(),
+        scope: WatchScope.OWN,
+      }),
+      { signal: ac.signal },
+    );
+    const iterator = stream[Symbol.asyncIterator]();
+
+    // The TEST_PRINCIPAL the loopback auth interceptor synthesizes is
+    // `{ kind: 'local-user', uid: 'test', displayName: 'test' }` —
+    // mirror it here so the principalKey filter on the bus matches the
+    // subscribing client. A drift in either side breaks this test
+    // before it reaches production.
+    const callerPrincipal: Principal = {
+      kind: 'local-user',
+      uid: 'test',
+      displayName: 'test',
+    };
+    // `sessions.owner_id` is FK -> `principals.id` (see
+    // db/migrations/001_initial.sql L46). Production peer-cred middleware
+    // upserts the row on connect (T1.3) — but the WatchSessions wire-up
+    // the smoke is testing does NOT take that path (it only reads
+    // PRINCIPAL_KEY from contextValues). Insert the row directly so the
+    // FK check on `manager.create` below passes; mirrors the same
+    // pattern in `packages/daemon/test/sessions/SessionManager.spec.ts`
+    // setup (the unit-test seam, principalKey = `<kind>:<uid>`).
+    r.db
+      .prepare(
+        `INSERT OR IGNORE INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run('local-user:test', 'local-user', 'test', Date.now(), Date.now());
+
+    // Kick a `created` event onto the bus AFTER subscribing (the
+    // WatchSessions wire is tail-only — see watch-sessions.ts Layer 1
+    // note explicitly rejecting a snapshot frame). Wait until the
+    // server-side handler has actually called `manager.subscribe(...)`
+    // before publishing — `setImmediate` alone races against the http2
+    // round-trip + Connect dispatch on slow hosts. We poll
+    // `eventBus.listenerCount(principalKey)` (the bus's documented
+    // observability hook) up to 5s; if it never goes >0 the wire is
+    // broken and the assertion below catches it via `timedOut`.
+    const sessionManagerCast = r.sessionManager as unknown as {
+      readonly eventBus: { readonly listenerCount: (k: string) => number };
+    };
+    const subscribeDeadline = Date.now() + 5000;
+    while (
+      sessionManagerCast.eventBus.listenerCount('local-user:test') === 0 &&
+      Date.now() < subscribeDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    // No surprise extras either — the daemon should not be reporting
-    // names that aren't in the canonical list.
-    for (const name of wired) {
-      expect(REQUIRED_COMPONENTS).toContain(name);
+
+    const created = r.sessionManager!.create(
+      {
+        cwd: '/tmp/ccsm-daemon-boot-e2e',
+        env_json: '{}',
+        claude_args_json: '[]',
+        geometry_cols: 80,
+        geometry_rows: 24,
+      },
+      callerPrincipal,
+    );
+
+    let firstEvent: IteratorResult<unknown> | null = null;
+    let timedOut = false;
+    try {
+      const winner = await Promise.race([
+        iterator.next().then((ev) => ({ kind: 'event' as const, ev })),
+        new Promise<{ kind: 'timeout' }>((resolve) =>
+          setTimeout(() => resolve({ kind: 'timeout' }), 2000),
+        ),
+      ]);
+      if (winner.kind === 'event') {
+        firstEvent = winner.ev as IteratorResult<unknown>;
+      } else {
+        timedOut = true;
+      }
+    } finally {
+      ac.abort();
+      await iterator.return?.(undefined).catch(() => {});
+    }
+
+    expect(timedOut, 'WatchSessions did not deliver the published event within 2s').toBe(false);
+    expect(firstEvent).not.toBeNull();
+    expect(firstEvent!.done).toBe(false);
+    const ev = firstEvent!.value as { kind: { case: string; value: { id: string } } };
+    expect(ev.kind.case).toBe('created');
+    expect(ev.kind.value.id).toBe(created.id);
+  });
+
+  // Task #225 rolling extension — GetCrashLog over-the-wire smoke.
+  // `crash-getlog-wired.spec.ts` (#229) only proves the response is not
+  // Code.Unimplemented. This stronger test asserts the response actually
+  // ECHOES the seeded crash row — proves the chain
+  //   crash-raw.ndjson  → replayCrashRawOnBoot
+  //                     → crash_log INSERT
+  //                     → GetCrashLog SELECT
+  //                     → wire response
+  // is end-to-end, not just that the handler runs.
+  //
+  // POSIX caveat: the seed write in `beforeEach` lands at
+  // `statePaths().crashRaw` (hard-coded `/var/lib/ccsm` on POSIX, see the
+  // setupBootEnv comment). Non-root runners get EACCES and the seed
+  // silently no-ops; in that case `replayCrashRawOnBoot` returns
+  // `fileMissing: true` and the table is empty. We branch on
+  // `crashReplayResult.inserted` so the test stays cross-OS:
+  //   - replay inserted >= 1 → response.entries MUST contain seededCrashId
+  //     (the seeded row attribution is `owner_id: 'daemon-self'`, which
+  //     OWN filter unions with the caller's principalKey — see
+  //     get-crash-log.ts producer).
+  //   - replay inserted == 0 → seed was not writable; we still assert the
+  //     wire returned a populated response shape (entries[]) so the
+  //     handler ran. This matches the existing assertion-6 posture.
+  it('GetCrashLog smoke: client receives the seeded crash entry that boot replayed (when seed was writable)', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const client = makeCrashClient(baseUrl);
+    const resp = await client.getCrashLog(
+      create(GetCrashLogRequestSchema, {
+        meta: newMeta(),
+        limit: 100,
+        sinceUnixMs: BigInt(0),
+        ownerFilter: OwnerFilter.OWN,
+      }),
+    );
+
+    // The wire shape was populated — handler ran end-to-end. `entries`
+    // is `repeated CrashEntry` so its length is always defined.
+    expect(Array.isArray(resp.entries)).toBe(true);
+
+    if (r.crashReplayResult.inserted >= 1) {
+      // Strong assertion: the seeded row MUST be in the response. Echo
+      // by id is harder than the existing wired-only spec — proves the
+      // SQL SELECT returned the row, the proto mapper rendered it, and
+      // the OWN owner filter (which unions caller principalKey with
+      // 'daemon-self' for daemon-attributed rows) accepted it.
+      const ids = resp.entries.map((e) => e.id);
+      expect(
+        ids,
+        `seeded crash id ${seededCrashId} not echoed by GetCrashLog ` +
+          `(replay inserted=${r.crashReplayResult.inserted}, response had ${resp.entries.length} entries)`,
+      ).toContain(seededCrashId);
+    } else {
+      // Seed was not writable on this runner (POSIX EACCES on
+      // /var/lib/ccsm). Soft assertion: handler ran, returned a valid
+      // (likely empty) page. The strong path is exercised on Windows
+      // where PROGRAMDATA override always succeeds.
+      expect(resp.entries.length).toBeGreaterThanOrEqual(0);
     }
   });
 });

@@ -54,7 +54,7 @@ import { writeDescriptor, type DescriptorV1 } from './listeners/descriptor.js';
 import type { Listener } from './listeners/types.js';
 import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
-import { SessionManager } from './sessions/SessionManager.js';
+import { SessionManager, type ISessionManager } from './sessions/SessionManager.js';
 import { statePaths } from './state-dir/paths.js';
 import {
   Shutdown,
@@ -109,6 +109,17 @@ export interface RunStartupResult {
     readonly malformed: number;
     readonly fileMissing: boolean;
   };
+  /**
+   * SessionManager instance bound to the production Listener A. `null` when
+   * the listener bind was skipped (`CCSM_DAEMON_SKIP_LISTENER=1` smoke /
+   * unit-test mode) — the manager is constructed inline with the listener
+   * and shares its lifecycle. Surfaced so the daemon-boot e2e (Task #225
+   * rolling extension) can publish a synthetic `created` event into the
+   * SAME bus the Connect handler subscribes to, proving the WatchSessions
+   * wire delivers events end-to-end (not just opens a stream). Future T6.x
+   * pty-host wave will reuse this same instance for spawn wiring.
+   */
+  readonly sessionManager: ISessionManager | null;
   /**
    * Names of components actually wired by this `runStartup` invocation.
    * Compared against `REQUIRED_COMPONENTS` (see `runStartup.lock.ts`)
@@ -297,6 +308,7 @@ export async function runStartup(
   // transport adapter directly in its own hardening pass).
   let listenerA: Listener | null = null;
   let descriptorPath: string | null = null;
+  let sessionManager: SessionManager | null = null;
   if (process.env.CCSM_DAEMON_SKIP_LISTENER === '1') {
     log('CCSM_DAEMON_SKIP_LISTENER=1: skipping listener bind (smoke / unit-test mode)');
   } else {
@@ -316,7 +328,7 @@ export async function runStartup(
     // installs the combined Hello + WatchSessions registration on
     // SessionService when both deps are present (see
     // `registerSessionService` "twice replaces" caveat).
-    const sessionManager = new SessionManager(db);
+    sessionManager = new SessionManager(db);
     const watchSessionsDeps = { manager: sessionManager };
     // Wave-3 #229 — wire CrashService.GetCrashLog handler in production.
     // Audit #228 sub-task 2 (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md):
@@ -455,6 +467,7 @@ export async function runStartup(
     captureSourcesInstalled,
     captureSourcesUnsubscribe,
     crashReplayResult,
+    sessionManager,
     wired,
   };
 }
