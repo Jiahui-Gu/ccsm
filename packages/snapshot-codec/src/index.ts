@@ -66,6 +66,21 @@ export type {
   XtermHeadlessLike,
 } from './encoder.js';
 
+export {
+  BadMagicError,
+  CorruptSnapshotError,
+  UnsupportedVersionError,
+  decodeInner,
+  decodeSnapshotV1,
+} from './decoder.js';
+export type {
+  DecodedAttrEntry,
+  DecodedCell,
+  DecodedLine,
+  DecodedModes,
+  DecodedSnapshotV1,
+} from './decoder.js';
+
 import {
   zstdCompressSync,
   zstdDecompressSync,
