@@ -1,0 +1,105 @@
+name: pty-soak
+
+# Ship-gate (c) per docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+# chapter 12 §4.3 — 1-hour zero-loss PTY soak. Canonical test path locked in
+# chapter 15 §3 #28: packages/daemon/test/integration/pty-soak-1h.spec.ts.
+#
+# Triggers (per spec ch11 §6 + Task #416):
+#   * workflow_dispatch — manual on-demand (e.g. release-tag promotion gate per
+#     chapter 13 §5: tag is promoted only after the soak run on that exact
+#     commit is green).
+#   * schedule (07:00 UTC daily) — nightly opt-in matching the chapter 11 §6
+#     CI matrix sketch. Non-blocking for PRs (regressions caught the next
+#     morning).
+#
+# Status (T8.4 reopen): the spec scaffolds at packages/daemon/test/integration/
+# pty-soak-{1h,10m,shared}.ts already self-skip via `describe.skipIf` until the
+# T4.x driver (pty-soak-driver.ts) lands — see pty-soak-shared.ts comment for
+# the exact gating contract. This workflow ships now so chapter 11 §6 CI can
+# pin the canonical path immediately and Task #235 ship-gate verification has
+# a target; the job goes from "skipped sentinel reports T4.x reason" to "real
+# 60-min run" automatically once the driver merges, with no edit here.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 07:00 UTC daily. Drives the nightly variant per chapter 11 §6.
+    - cron: '0 7 * * *'
+
+concurrency:
+  # Single in-flight run per ref. A second push that lands while a soak is
+  # running cancels the older one — the soak is a 60+ min job and double-booking
+  # the runner gives no useful signal.
+  group: pty-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pty-soak-1h:
+    name: pty-soak-1h (ship-gate (c))
+    # Per spec ch11 §6 + tools/runners/README.md: the 1-hour soak runs on a
+    # self-hosted runner labeled `[self-hosted, ccsm-soak]` so background CPU
+    # contention from the GitHub-hosted shared pool doesn't introduce timing
+    # flakes (the gate samples SendInput RTT p99 < 5 ms — very flake-prone on
+    # noisy hardware).
+    #
+    # Until the self-hosted runner is provisioned (tracked in infra repo), the
+    # workflow is dispatched manually and the ccsm-soak label is required; a
+    # missing label leaves the job queued, which is the intended fail-soft (a
+    # vacuous green on `ubuntu-latest` would defeat the whole gate).
+    runs-on: [self-hosted, ccsm-soak]
+    # 60-min soak + 15-min slack for boot + final byte-equality comparison +
+    # log upload. Matches the _runners-template.yml reference.
+    timeout-minutes: 75
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Generate proto bindings — daemon's tsc emit needs them present even
+      # when the soak skips (the spec file imports `./pty-soak-shared.js`
+      # which lives next to the daemon test sources and is built with the
+      # daemon tsc).
+      - name: Generate proto
+        run: pnpm --filter @ccsm/proto run gen
+
+      # Run only the 1h spec by file path. The spec self-skips via
+      # `describe.skipIf(!dependenciesPresent().ready)` until the T4.x driver
+      # lands; while skipped a sentinel `it('reports gating reason')` records
+      # WHY it skipped in vitest --reporter=verbose output (so a vacuous green
+      # is impossible — either the soak runs or the sentinel names the gap).
+      #
+      # The 10m smoke variant runs in the per-PR ci.yml suite; this workflow
+      # is dedicated to the nightly/on-demand 1h variant.
+      - name: Run pty-soak-1h
+        working-directory: packages/daemon
+        run: pnpm exec vitest run --reporter=verbose test/integration/pty-soak-1h.spec.ts
+
+      # Always upload artifacts — when the soak runs, callers want the
+      # cadence samples + SendInput RTT histogram + memory trace; when it
+      # skips, the verbose reporter output documents the gating reason.
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-soak-1h-${{ github.run_id }}
+          path: |
+            packages/daemon/test-results/**
+            packages/daemon/coverage/**
+          if-no-files-found: warn
+          retention-days: 14
