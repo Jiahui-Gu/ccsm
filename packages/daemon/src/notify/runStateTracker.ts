@@ -30,6 +30,7 @@
 //                      (mirrors pipeline.forgetSid for the state it owns).
 
 import type { Ctx, Decision, Event } from './notifyDecider.js';
+import type { NotifyEventBus } from './event-bus.js';
 
 export type TitleClassification = 'idle' | 'running' | 'waiting' | 'unknown';
 
@@ -61,6 +62,19 @@ export interface RunStateTracker {
 
 export function createRunStateTracker(
   decide: (event: Event, ctx: Ctx) => Decision | null,
+  /**
+   * Optional event bus. When provided, every non-null decision is also
+   * published as a `NotifyEvent` so subscribers (future
+   * `WatchNotifyEvents` handler — audit #228 sub-task 8) can stream
+   * decider firings without re-running the decider.
+   *
+   * The bus is wired here, at the SOLE call site of `decide()`, so a
+   * future change to the decider's invocation surface cannot drift the
+   * emit point off the decision path. Pure additive — when the bus is
+   * omitted (every existing test passes `decide` only), behaviour is
+   * unchanged.
+   */
+  eventBus?: NotifyEventBus,
 ): RunStateTracker {
   const runStartTs = new Map<string, number>();
   /** Map<sid, untilTs> — entry present + nowTs < untilTs ⇒ sid is muted. */
@@ -137,6 +151,15 @@ export function createRunStateTracker(
 
       if (decision !== null) {
         lastFiredTs.set(sid, nowTs);
+        // Single emit point for the whole notify pipeline. Mirrors
+        // `SessionManager.create`/`destroy` calling `bus.publish` after
+        // the state mutation — see `sessions/event-bus.ts` design notes.
+        eventBus?.emitNotifyEvent({
+          sid,
+          toast: decision.toast,
+          flash: decision.flash,
+          ts: nowTs,
+        });
       }
       return decision;
     },
