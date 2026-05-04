@@ -44,16 +44,66 @@
 //     prod sea builds inline `parseTestCrashEnv` and dead-code-strip
 //     the entire branch since the env var is absent at boot.
 //
+// T-PA-8 addition (this PR; spec `2026-05-04-pty-attach-handler.md` §9.2):
+// child-side delta + snapshot emission so the Attach handler (T-PA-5)
+// has IPC traffic to broadcast.
+//
+//   1. Synthetic initial snapshot (§3.3 FOREVER-STABLE) — on `spawn`,
+//      AFTER logging the resolved argv and BEFORE accepting any deltas,
+//      send a `SnapshotMessage` with `baseSeq=0n`, geometry from the
+//      spawn payload, schemaVersion=1, and an empty `screenState`.
+//      The empty screenState is a deliberate stub: the SnapshotV1 codec
+//      (T4.6) lands in a parallel wave and is not wired here yet; once
+//      the codec ships, this site swaps `new Uint8Array(0)` for
+//      `encodeSnapshotV1(xterm.serialize())` with no IPC shape change
+//      (`screenState` is opaque bytes per `types.ts`).
+//
+//   2. Delta accumulation (ch06 §3) — a `DeltaAccumulator` (16 ms /
+//      16 KiB cadence; the FOREVER-STABLE constants live in
+//      `pty/segmentation.ts`) batches raw VT bytes from the future
+//      node-pty `master.onData` event. Each emitted segment becomes a
+//      `DeltaMessage` IPC with monotonic `seq` starting at 1n.
+//
+//      The pty-output entrypoint (`feedPtyOutput`) is internal-only
+//      and is wired by the future T4.6 PtyWriter when it constructs the
+//      `node-pty` master; until then there is simply no producer, so no
+//      deltas flow but the cadence machinery is in place and unit-tested
+//      via `snapshot-scheduler.spec.ts` plus the daemon-boot e2e
+//      (end-to-end once T4.6 + T-PA-5 land).
+//
+//   3. Snapshot scheduler (ch06 §4) — `SnapshotScheduler` in
+//      `./snapshot-scheduler.ts` is a callback-driven cadence engine:
+//      it owns its own wall-clock window timer + Resize coalesce timer
+//      (driven by injected `TimerOps`) and synchronously invokes the
+//      `onSnapshot(reason)` sink whenever a trigger fires (delta-count,
+//      byte-volume, time-window-with-deltas, or coalesced Resize).
+//      Counters reset inside the scheduler before the sink runs, so
+//      child.ts only emits the SnapshotMessage IPC and does not need to
+//      drive `onSnapshotTaken`/timer logic. The sink flushes any
+//      in-flight delta segment via `accumulator.flushNow()` first so
+//      `baseSeq` reflects the most-recent emitted seq.
+//
+//   The cadence dispatch is per-session because this whole file IS
+//   per-session — `child_process.fork` gives us one V8 isolate per
+//   pty-host child. There is no cross-session state.
+//
 // What is intentionally NOT here yet:
 //   - `node-pty` import / spawn — lands with T4.6 alongside the codec.
 //   - `xterm-headless` import / Terminal init — lands with T4.6 (codec).
-//   - Delta accumulator + snapshot scheduler — T4.9 / T4.10.
-//   - Real node-pty PtyWriter implementation — T4.6+.
+//   - Real node-pty PtyWriter implementation — T4.6+. The future writer
+//     calls `feedPtyOutput(buf)` on every `master.onData` event so the
+//     accumulator below sees real VT bytes.
+//   - SnapshotV1 codec wrapping — T4.6. The synthetic + cadence
+//     snapshots currently emit `screenState = new Uint8Array(0)`; once
+//     the codec ships, swap in `encodeSnapshotV1(...)`.
 //
 // SRP: this module is a *sink* for host→child messages and a *producer*
-// of child→host lifecycle messages. The pending-write decider lives in
-// `pending-write-tracker.ts`; the future node-pty writer lives behind
-// the `PtyWriter` interface so this file stays the orchestrator only.
+// of child→host lifecycle / delta / snapshot messages. The
+// pending-write decider lives in `pending-write-tracker.ts`; the
+// segmentation decider lives in `pty/segmentation.ts`; the snapshot
+// cadence decider lives in `snapshot-scheduler.ts`; the future node-pty
+// writer lives behind the `PtyWriter` interface so this file stays the
+// orchestrator only.
 //
 // Layer 1: this file only runs as a forked child. It has no exports
 // other than the side-effect of installing IPC handlers; the host
@@ -71,6 +121,8 @@ import {
   parseTestCrashEnv,
   type TestCrashConfig,
 } from './test-crash-config.js';
+import { DeltaAccumulator } from '../pty/segmentation.js';
+import { SnapshotScheduler, type SnapshotReason } from './snapshot-scheduler.js';
 import type {
   ChildToHostMessage,
   HostToChildMessage,
@@ -88,7 +140,9 @@ import type {
  * `ptyMaster.write(buf)` and registers a drain listener; that writer
  * MUST call `tracker.recordWrite(buf.length)` BEFORE handing bytes to
  * the master and MUST call `tracker.recordDrain(n)` from the drain
- * event with the drained byte count.
+ * event with the drained byte count. The same T4.6 wiring also calls
+ * `feedPtyOutput(buf)` on every `master.onData` event so the
+ * `DeltaAccumulator` below sees real VT bytes.
  */
 export interface PtyWriter {
   /** Write `bytes` to the underlying pty master. The implementation is
@@ -150,6 +204,19 @@ const tracker = new PendingWriteTracker(resolveCapForTest());
 // T4.3 default writer: instant-drain stub. T4.6+ replaces this when
 // node-pty + xterm-headless are wired in.
 const writer: PtyWriter = makeInstantDrainWriter(tracker);
+
+// --- T-PA-8 child→host emission state ----------------------------------
+//
+// The accumulator and scheduler are constructed lazily on `spawn`
+// because they need (a) the wall-clock anchor for the time-window
+// trigger and (b) the current geometry for snapshot emission. Until
+// `spawn` arrives, no deltas can flow (the future node-pty master is
+// not yet created) so "lazy at spawn" is the natural lifecycle, not a
+// workaround.
+
+let accumulator: DeltaAccumulator | null = null;
+let scheduler: SnapshotScheduler | null = null;
+let currentGeometry: { cols: number; rows: number } | null = null;
 
 function resolveCapForTest(): number {
   const raw = process.env.CCSM_PTY_PENDING_CAP_BYTES;
@@ -229,6 +296,89 @@ function maybeTriggerTestCrashAfterBytes(msg: ChildToHostMessage): void {
   }
 }
 
+/**
+ * Emit a SnapshotMessage IPC for the current session. Spec
+ * `2026-05-04-pty-attach-handler.md` §2.2 + design ch06 §4.
+ *
+ * `baseSeq` is computed as the seq of the most-recent emitted delta —
+ * which the accumulator exposes as `nextSeqWillEmit() - 1` AFTER a
+ * `flushNow()` call has drained any in-flight bytes. For the synthetic
+ * initial snapshot (called from `handleSpawn` before any deltas have
+ * been emitted), the caller passes `baseSeq=0n` directly.
+ *
+ * `screenState` is currently a stub `Uint8Array(0)`; T4.6 swaps in
+ * `encodeSnapshotV1(xterm.serialize())` once the codec lands. The IPC
+ * shape (`Uint8Array`) does not change.
+ */
+function emitSnapshot(
+  baseSeq: bigint,
+  geometry: { cols: number; rows: number },
+): void {
+  send({
+    kind: 'snapshot',
+    baseSeq,
+    geometry: { cols: geometry.cols, rows: geometry.rows },
+    // Stub: empty screen bytes. T4.6 (SnapshotV1 codec + xterm-headless)
+    // replaces this with the encoded screen state. The Attach handler
+    // (T-PA-5) treats `screenState` as opaque, so the swap is local to
+    // this file.
+    screenState: new Uint8Array(0),
+    schemaVersion: 1,
+  });
+}
+
+/**
+ * Sink invoked by the `SnapshotScheduler` whenever a trigger fires.
+ * Drains any in-flight delta bytes first so the snapshot's `baseSeq`
+ * reflects the most-recent emitted delta — the load-bearing invariant
+ * for `since_seq` resume math (spec §3.4). The scheduler has already
+ * reset its counters before calling us, so we do not need to drive any
+ * scheduler bookkeeping here.
+ */
+function onSchedulerSnapshot(reason: SnapshotReason): void {
+  if (accumulator === null || currentGeometry === null) {
+    // Defensive: a trigger arrived before `spawn` initialized state.
+    // The scheduler is constructed in `handleSpawn` so this branch is
+    // unreachable in correct callers; we log and bail rather than
+    // emit a malformed snapshot.
+    log(`(bug) cadence snapshot trigger=${reason} before spawn; ignored`);
+    return;
+  }
+  accumulator.flushNow();
+  // After flushNow, `nextSeqWillEmit() - 1` is the seq of the most
+  // recent emitted delta (or `firstSeq - 1 = 0` if no deltas yet).
+  const lastSeq = accumulator.nextSeqWillEmit() - 1;
+  emitSnapshot(BigInt(lastSeq), currentGeometry);
+  log(`snapshot emitted: reason=${reason} baseSeq=${lastSeq}`);
+}
+
+/**
+ * Internal entry point invoked by the future T4.6 node-pty wiring on
+ * every `master.onData(buf)` event. NOT exported — T4.6 lives in this
+ * same file when it lands. The function is module-local so external
+ * tests cannot bypass the IPC boundary by calling it directly.
+ *
+ * Currently UNCALLED: the T4.3 stub `instantDrainWriter` does not
+ * spawn `node-pty`, so no PTY output exists. The plumbing is in place
+ * so the moment T4.6 wires `master.onData(b => feedPtyOutput(b))`,
+ * deltas start flowing at the 16 ms / 16 KiB cadence and the scheduler
+ * starts firing time/delta/byte/resize-triggered snapshots.
+ */
+function feedPtyOutput(bytes: Uint8Array): void {
+  if (accumulator === null) {
+    // Bytes before spawn would mean node-pty produced output before we
+    // told it the geometry — a wiring bug. Drop with a log line; the
+    // future T4.6 unit tests will cover the legal ordering.
+    log(`(bug) PTY output ${bytes.length} bytes before spawn; dropped`);
+    return;
+  }
+  accumulator.push(bytes);
+}
+// Reference the symbol so `noUnusedLocals` does not flag it before T4.6
+// wires `master.onData(feedPtyOutput)`. Removing this line is a no-op
+// once the real node-pty integration lands.
+void feedPtyOutput;
+
 function handleSpawn(payload: SpawnPayload): void {
   if (spawnPayload !== null) {
     log(`ignoring duplicate spawn for session ${payload.sessionId}`);
@@ -255,10 +405,76 @@ function handleSpawn(payload: SpawnPayload): void {
     `resolved.file=${JSON.stringify(resolved.file)} ` +
     `resolved.args=${JSON.stringify(resolved.args)}`,
   );
+
+  // T-PA-8: initialize delta accumulator + snapshot scheduler.
+  currentGeometry = { cols: payload.cols, rows: payload.rows };
+  accumulator = new DeltaAccumulator({
+    onDelta: ({ seq, payload: bytes, tsMs }) => {
+      // Forward the segment as IPC. Native `Uint8Array` survives
+      // structured clone (`serialization: 'advanced'` on the IPC
+      // channel) without base64 cost — see types.ts §DeltaMessage.
+      send({
+        kind: 'delta',
+        seq: BigInt(seq),
+        tsUnixMs: BigInt(tsMs),
+        payload: bytes,
+      });
+      // Account the byte volume against the snapshot scheduler. The
+      // callback-driven scheduler will synchronously invoke
+      // `onSchedulerSnapshot` if any threshold trips, so no return
+      // value to inspect here.
+      if (scheduler !== null) {
+        scheduler.noteDelta(bytes.length);
+      }
+    },
+    now: Date.now,
+    timer: {
+      setTimer: (cb, delayMs) => setTimeout(cb, delayMs),
+      clearTimer: (h) => clearTimeout(h as NodeJS.Timeout),
+    },
+    // firstSeq defaults to 1 — the synthetic snapshot's baseSeq=0
+    // anchors the seq sequence so the first real delta is seq=1.
+  });
+  scheduler = new SnapshotScheduler({
+    onSnapshot: onSchedulerSnapshot,
+    now: Date.now,
+    timer: {
+      setTimer: (cb, delayMs) => setTimeout(cb, delayMs),
+      clearTimer: (h) => clearTimeout(h as NodeJS.Timeout),
+    },
+  });
+
+  // §3.3 FOREVER-STABLE: emit synthetic initial snapshot (baseSeq=0n)
+  // BEFORE accepting / streaming any deltas. The scheduler is already
+  // constructed so a delta arriving in the same tick (extremely
+  // unlikely with the future node-pty since spawn() is synchronous
+  // before onData fires, but defensive) will see the correct anchor.
+  // This snapshot is emitted DIRECTLY (not via the scheduler) — the
+  // scheduler's wall-clock baseline is set at construction (just
+  // above) and represents "session start", which is exactly when the
+  // synthetic snapshot is taken.
+  emitSnapshot(0n, currentGeometry);
+  log(`synthetic snapshot emitted: baseSeq=0 cols=${payload.cols} rows=${payload.rows}`);
 }
 
 function handleClose(): void {
   log('close requested; sending exiting notice and exiting 0');
+  // T-PA-8: tear down cadence machinery before exit. We do NOT flush
+  // the accumulator here — buffered bytes that have not yet been
+  // emitted as a delta would carry a seq the daemon-side coalescer has
+  // not seen, and the snapshot scheduler is already torn down so a
+  // late snapshot cannot anchor them. Subscriber-side recovery is
+  // covered by the SQLite snapshot history (ch06 §7 restart replay).
+  if (accumulator !== null) {
+    accumulator.dispose();
+    accumulator = null;
+  }
+  if (scheduler !== null) {
+    scheduler.dispose();
+    scheduler = null;
+  }
+  currentGeometry = null;
+
   send({ kind: 'exiting', reason: 'graceful' });
   // Defer exit so the IPC 'message' actually lands at the parent
   // before the 'exit' event fires. Calling `process.disconnect()`
@@ -298,6 +514,25 @@ function handleSendInput(bytes: Uint8Array): void {
   writer.write(bytes);
 }
 
+function handleResize(cols: number, rows: number): void {
+  // T-PA-8: update the cached geometry so the next emitted snapshot
+  // (whether cadence-driven or resize-triggered) carries the correct
+  // dimensions. The future T4.6 wiring also calls
+  // `master.resize(cols, rows)` and `xterm.resize(cols, rows)` here.
+  if (currentGeometry !== null) {
+    currentGeometry.cols = cols;
+    currentGeometry.rows = rows;
+  }
+  log(`(stub) resize cols=${cols} rows=${rows}`);
+  // Resize-snapshot coalescing (ch06 §4 FOREVER-STABLE): the scheduler
+  // owns the 500ms coalesce window internally; subsequent Resizes
+  // inside that window are no-ops. The scheduler will fire its
+  // `onSnapshot` sink when the window closes.
+  if (scheduler !== null) {
+    scheduler.noteResize();
+  }
+}
+
 function handleMessage(raw: unknown): void {
   if (!isHostToChildMessage(raw)) {
     log(`dropped malformed IPC message: ${JSON.stringify(raw)}`);
@@ -314,8 +549,7 @@ function handleMessage(raw: unknown): void {
       handleSendInput(raw.bytes);
       return;
     case 'resize':
-      // T4.10 wires xterm-headless resize + Resize-snapshot coalescing.
-      log(`(stub) resize cols=${raw.cols} rows=${raw.rows}`);
+      handleResize(raw.cols, raw.rows);
       return;
   }
 }
