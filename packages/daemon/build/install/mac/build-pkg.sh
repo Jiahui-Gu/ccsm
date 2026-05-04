@@ -98,6 +98,15 @@ if [[ "$DRY_RUN" != "1" ]]; then
   cp -R "$NATIVE_DIR" "$STAGE/usr/local/ccsm/native"
   chmod 0755 "$STAGE/usr/local/ccsm/ccsm-daemon"
 
+  # T7.6 (#84) — ship the uninstaller as part of the payload. postinstall
+  # then copies it to /Library/Application Support/ccsm/ccsm-uninstall.command
+  # (spec ch10 §5.2 line). Keeping the source under /usr/local/ccsm keeps it
+  # owned by root and out of the daemon's writable state dir during the
+  # window between preinstall (state dir created) and postinstall (uninstall
+  # cmd dropped in).
+  cp "$MAC_DIR/uninstall.sh" "$STAGE/usr/local/ccsm/uninstall.sh"
+  chmod 0755 "$STAGE/usr/local/ccsm/uninstall.sh"
+
   PLIST_SRC="$MAC_DIR/com.ccsm.daemon.plist"
   PLIST_DST="$STAGE/Library/LaunchDaemons/com.ccsm.daemon.plist"
   sed "s|@CCSM_DAEMON_PATH@|$DAEMON_INSTALL_PATH|g" "$PLIST_SRC" > "$PLIST_DST"
