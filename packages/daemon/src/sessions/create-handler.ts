@@ -32,19 +32,27 @@
 //     ch05 §6 (session create flow: id := ULID(), state := STARTING,
 //     INSERT row, publish `created` event on the in-memory bus).
 //
-// SCOPE — what this PR does NOT do:
-//   - Spawn the pty-host child for the new session. PTY spawn lifecycle
-//     is owned by Task #359 (the `attachPtyHost` call sequence runs after
-//     CreateSession returns; the new session sits in STARTING until the
-//     pty-host bridge transitions it to RUNNING). Wiring CreateSession
-//     unary RPC unblocks the v0.3 client's "create then attach" flow
-//     without coupling the unary handler to PTY spawn (the spawn path
-//     is async and would otherwise force this handler to either block on
-//     PTY ready or invent a separate "creating" state — both are spec
-//     mis-shapes). v0.3 ship plan: Create returns the STARTING row; the
-//     client immediately opens a PtyService.Attach stream against the
-//     new session id; #359 wires the spawn so the Attach stream's first
-//     frame reflects real PTY output.
+// SCOPE — Task #359 update:
+//   - PTY spawn is now wired here via the optional `attachPtyHost` dep
+//     (see `CreateSessionDeps` below). When supplied, the handler calls
+//     `attachPtyHost(row, principal)` AFTER `manager.create` returns
+//     the freshly-INSERTed row. The callback is FIRE-AND-FORGET: it
+//     forks the per-session pty-host child (`spawnPtyHostChild`, T4.1)
+//     and installs the lifecycle watcher (`watchPtyHostChildLifecycle`,
+//     T4.4) so any child exit transitions the row to its terminal state
+//     via `SessionManager.markEnded`. CreateSession DOES NOT block on
+//     the child's `ready` IPC — the row is returned in STARTING state
+//     and the pty-host bridge transitions it to RUNNING asynchronously
+//     (spec ch05 §6 / ch06 §1).
+//   - When `attachPtyHost` is omitted (existing test fixtures /
+//     workflows that pre-date #359), the handler keeps the pre-#359
+//     behavior: row is INSERTed + `created` published, no child fork.
+//     Callers that want the row but no child (e.g. unit tests) just
+//     omit the dep.
+//   - Validation of cwd existence / executable resolution still lives
+//     in the pty-host spawn path (#359's `attachPtyHost`), surfaced via
+//     `SessionEvent.ended { reason='crashed' }` rather than synchronous
+//     CreateSession errors — same alternatives-rejected logic as before.
 //
 // SRP layering — three roles kept separate (dev.md §2):
 //   * decider:  `decodeCreateRequest(req)` — pure. Takes the proto
@@ -103,7 +111,7 @@ import {
 import { PRINCIPAL_KEY, type Principal as AuthPrincipal } from '../auth/index.js';
 
 import type { ISessionManager } from './SessionManager.js';
-import type { CreateSessionInput } from './types.js';
+import type { CreateSessionInput, SessionRow } from './types.js';
 import { sessionRowToProto } from './watch-sessions.js';
 
 // ---------------------------------------------------------------------------
@@ -173,6 +181,26 @@ export function decodeCreateRequest(req: CreateSessionRequest): CreateSessionInp
 
 export interface CreateSessionDeps {
   readonly manager: ISessionManager;
+  /**
+   * Optional Task #359 hook: invoked AFTER `manager.create` returns the
+   * freshly-INSERTed row. Production wires this to
+   * `makeProductionAttachPtyHost({ manager })` from
+   * `pty-host/attach-on-create.ts` — the callback forks a per-session
+   * pty-host child (`spawnPtyHostChild`, T4.1 / #41) and installs the
+   * lifecycle watcher (`watchPtyHostChildLifecycle`, T4.4 / #42) so the
+   * row transitions to its terminal state when the child exits.
+   *
+   * The callback MUST be fire-and-forget: any error is its own
+   * responsibility (the production factory routes errors to its
+   * `onError` log sink). Throwing synchronously from this callback
+   * propagates as a Connect `Internal` to the CreateSession caller —
+   * the row is already INSERTed at that point so the caller will see a
+   * row from a subsequent ListSessions even if the spawn never fired.
+   *
+   * Tests that don't need the spawn wire-up simply omit this field;
+   * the handler keeps the pre-#359 row-only behavior.
+   */
+  readonly attachPtyHost?: (row: SessionRow, principal: AuthPrincipal) => void;
 }
 
 /**
@@ -211,6 +239,19 @@ export function makeCreateSessionHandler(
 
     const input = decodeCreateRequest(req);
     const row = deps.manager.create(input, principal);
+
+    // Task #359: kick off the per-session pty-host child + lifecycle
+    // watcher AFTER the row is INSERTed (so the child has a row to
+    // markEnded against on exit) and BEFORE we render the response (so
+    // a parallel PtyService.Attach stream from the same client finds
+    // the per-session emitter already registered by the time it
+    // dispatches). The callback is fire-and-forget — see CreateSessionDeps
+    // jsdoc. Omitted in test fixtures that exercise only the row CRUD
+    // path; production `index.ts` wires it via
+    // `makeProductionAttachPtyHost`.
+    if (deps.attachPtyHost !== undefined) {
+      deps.attachPtyHost(row, principal);
+    }
 
     return create(CreateSessionResponseSchema, {
       // Echo request meta unchanged — same convention as Hello,
