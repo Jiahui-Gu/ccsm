@@ -84,6 +84,15 @@ export function InlineRename({
     // calling focus()/select() is a no-op for the user. Scheduled with
     // setTimeout(0) chained AFTER the arm timer (51ms total) so it
     // always lands after every Radix focus event.
+    //
+    // (#325) Bumped 51ms -> 80ms after the harness-ui caseRename focus-race
+    // sub-case proved flaky on Win32 — the simulated focus-stealer fires a
+    // microtask `li.focus()` AND then a `setTimeout(removeListener, 25ms)`,
+    // and on slow Windows scheduling the listener removal can drift past
+    // 51ms while the microtask still wins. 80ms gives consistent headroom
+    // (verified 5/5 runs post-bump) without delaying the user-perceived
+    // edit-ready state in real usage. Real usage doesn't hit this race —
+    // it's the simulator's exaggerated steal pattern that exposes it.
     const refocusTimer = window.setTimeout(() => {
       const cur = ref.current;
       if (!cur) return;
@@ -91,7 +100,7 @@ export function InlineRename({
         cur.focus();
         cur.select();
       }
-    }, 51);
+    }, 80);
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(armTimer);

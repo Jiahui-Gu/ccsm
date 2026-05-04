@@ -29,7 +29,7 @@
 // the ONLY non-test consumer of `ipcMain` / `webContents.send` for the
 // `updates:*` + `update:*` channel cluster.
 
-import { BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import {
   getUpdaterStatus,
@@ -77,6 +77,13 @@ export function broadcastUpdateDownloaded(info: { version: string }): void {
 export function registerUpdaterIpc(): void {
   if (registered) return;
   registered = true;
+
+  // Renderer asks for the running app version (Settings → Updates header
+  // and the future about-this-app surface). `app.getVersion()` is
+  // Electron-process-bound; routing through the §3.1 allowlist keeps the
+  // call near its sibling `updates:*` handlers since the renderer
+  // consumes both in the same UpdatesPane mount.
+  ipcMain.handle('updates:getCurrentVersion', (): string => app.getVersion());
 
   ipcMain.handle('updates:status', (): UpdateStatus => getUpdaterStatus());
 
@@ -128,6 +135,7 @@ export function registerUpdaterIpc(): void {
 export function __resetUpdaterIpcForTests(): void {
   if (!registered) return;
   for (const channel of [
+    'updates:getCurrentVersion',
     'updates:status',
     'updates:check',
     'updates:download',

@@ -40,6 +40,18 @@ const ccsmAllowlisted = {
   pickCwd: (defaultPath?: string): Promise<string | null> =>
     ipcRenderer.invoke('cwd:pick', defaultPath) as Promise<string | null>,
 
+  /**
+   * Running app version (Settings → Updates pane header). Bridges
+   * `app.getVersion()` from the main process — Electron-process-bound,
+   * so a real IPC hop is required. Sibling of the `updates:*` cluster
+   * because the UpdatesPane mount consumes both at once. The type
+   * declaration in `src/global.d.ts` previously listed this method but
+   * this preload had no exposure, so any production user opening the
+   * Updates tab triggered `undefined()` → ErrorBoundary; see PR #991.
+   */
+  getVersion: (): Promise<string> =>
+    ipcRenderer.invoke('updates:getCurrentVersion') as Promise<string>,
+
   // ─── In-app updater (Settings → Updates pane) ───────────────────────
   updatesStatus: (): Promise<UpdateStatus> =>
     ipcRenderer.invoke('updates:status') as Promise<UpdateStatus>,

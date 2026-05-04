@@ -348,14 +348,23 @@ export async function setTheme(win, mode, { verify = false, timeoutMs = 5000 } =
   }
 }
 
-// Wait for the renderer's zustand store to finish hydration (rendering
-// implies React has mounted, which implies hydrateStore().finally() has run).
-// Then forcibly replace state with the fixture and yield long enough for
-// React to flush. Use this instead of raw setState — the store is async-
-// hydrated and a bare setState can race the persisted-state apply.
+// Wait for the renderer's zustand store to finish hydration, then forcibly
+// replace state with the fixture and yield long enough for React to flush.
+// Use this instead of raw setState — the store is async-hydrated and a bare
+// setState can race the persisted-state apply.
+//
+// IMPORTANT (#325): post-#584 the AppSkeleton renders a real `<aside
+// data-testid="sidebar-skeleton">` BEFORE hydrate resolves, and post-#976
+// `hydrateStore()` is async (was previously gated on a pre-render await).
+// Gating only on `aside !== null` returns truthy during the skeleton phase,
+// so a bare `setState(fixture)` lands BEFORE hydrate's
+// `useStore.setState({ sessions: persisted.sessions, ... })` runs and gets
+// silently overwritten. The real wait condition is the renderer's own
+// `hydrated` flag, which `hydrateStore` flips to `true` after applying any
+// persisted snapshot. Then our seed setState is the last writer and survives.
 export async function seedStore(win, state) {
   await win.waitForFunction(
-    () => !!window.__ccsmStore && document.querySelector('aside') !== null,
+    () => !!window.__ccsmStore && window.__ccsmStore.getState().hydrated === true,
     null,
     { timeout: 20_000 }
   );
@@ -365,4 +374,17 @@ export async function seedStore(win, state) {
     store.setState(s);
   }, state);
   await win.waitForTimeout(200);
+}
+
+// Like seedStore but for cases that build their own setState payload inline
+// (don't go through the seedStore helper). Just blocks on the renderer's
+// `hydrated` flag so the subsequent setState isn't clobbered by the
+// persisted-snapshot apply inside `hydrateStore()`. Same root cause as the
+// note in seedStore above (#325).
+export async function waitForStoreHydrated(win, { timeout = 20_000 } = {}) {
+  await win.waitForFunction(
+    () => !!window.__ccsmStore && window.__ccsmStore.getState().hydrated === true,
+    null,
+    { timeout }
+  );
 }

@@ -52,6 +52,41 @@ const APP_STATE_KEEP = new Set([
 export async function resetBetweenCases(app, win, opts = {}) {
   const disposers = opts.disposers ?? [];
 
+  // 0. (#325) If a previous case threw a React render error, the Sentry
+  //    ErrorBoundary in src/index.tsx unmounted the entire <App/> tree and
+  //    replaced it with a static "Something went wrong" fallback. Subsequent
+  //    cases that setState() the store and expect <Sidebar>/<TerminalPane>
+  //    to re-render will time out forever — the live React tree is gone.
+  //    Detect the fallback marker and hard-reload the renderer so the next
+  //    case starts from a fresh React root.
+  let needsReload = false;
+  try {
+    needsReload = await win.evaluate(() => {
+      const root = document.getElementById('root');
+      if (!root) return false;
+      // The fallback is a single <div class="p-4 text-fg-tertiary">…</div>
+      // with no <aside> / <main> / __ccsmStore-driven children. Existence of
+      // either landmark means the live App still owns the tree.
+      if (root.querySelector('aside') || root.querySelector('main')) return false;
+      return /Something went wrong/.test(root.textContent || '');
+    });
+  } catch {
+    /* renderer may have just navigated; not fatal */
+  }
+  if (needsReload) {
+    try {
+      await win.reload();
+      await win.waitForLoadState('domcontentloaded');
+      await win.waitForFunction(
+        () => !!window.__ccsmStore && window.__ccsmStore.getState().hydrated === true,
+        null,
+        { timeout: 20_000 }
+      );
+    } catch {
+      /* if reload fails the next case will surface a clearer error than us */
+    }
+  }
+
   // 1. Run caller disposers FIRST so monkey-patched main-process modules are
   //    restored before we ask main for the live session list.
   for (const fn of disposers.splice(0)) {
