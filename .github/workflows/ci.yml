@@ -310,3 +310,70 @@ jobs:
       - name: Coverage (electron renderer — 60% gate)
         working-directory: packages/electron
         run: npx vitest run --coverage
+
+  # Task #79 / T7.8 — tools/sea-smoke/ post-install daemon end-to-end smoke.
+  # Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md ch10 §7.
+  #
+  # Runs the smoke harness on the three OSes the installer ships to. The
+  # END-TO-END exercise (start service → /healthz → Hello → CreateSession
+  # → Attach 'ok' → Stop) requires a real installed `ccsm-daemon` binary
+  # placed by the per-OS installer + service registration; that wiring
+  # lands with the e2e-installer-{win,mac,linux} self-hosted jobs (T7.4 /
+  # T7.5 own the install side). This job runs the smoke binary's
+  # typecheck on all three OSes so the harness itself never silently
+  # breaks ahead of the installer jobs. When T7.4 wires the real
+  # installer round-trip jobs, they will invoke
+  # `pnpm --filter @ccsm/sea-smoke run smoke` AFTER the install step;
+  # this job's matrix shape is identical so the wiring is one-line.
+  #
+  # Why three OS matrix even though no real daemon runs here yet: the
+  # smoke uses platform-locked paths and service-manager commands
+  # (lib/service-log.ts buildCaptureCommand). A POSIX-only typecheck
+  # would let a Windows-only TypeScript or import regression slip in. Per
+  # spec ch10 §6 the installer matrix is windows + macos + linux; this
+  # job mirrors that explicitly.
+  sea-smoke:
+    name: sea-smoke (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      # Frozen lockfile — adding tools/sea-smoke as a workspace member
+      # already updated pnpm-lock.yaml; further drift fails this step.
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      # Generate proto bindings so @ccsm/proto resolves during typecheck.
+      - name: Generate proto
+        run: pnpm --filter @ccsm/proto run gen
+      - name: Typecheck sea-smoke harness
+        run: pnpm --filter @ccsm/sea-smoke run typecheck
+      # Sanity dry-run: invoke the harness with skipStart + skipStop +
+      # an unreachable supervisor. The smoke MUST exit non-zero with the
+      # `/healthz never returned 200` message — if it crashes earlier
+      # (TypeScript ESM resolution / platform-paths typo / proto import
+      # regression) the regression surfaces here without needing the
+      # installer self-hosted runner. Exit-code is asserted via shell.
+      - name: Dry-run (expect /healthz timeout)
+        shell: bash
+        working-directory: tools/sea-smoke
+        run: |
+          set +e
+          node --import tsx -e "
+          import('./main.ts').then(async (m) => {
+            const code = await m.runSmoke({ skipStart: true, skipStop: true });
+            process.exit(code === 1 ? 0 : 99);
+          }).catch((e) => { console.error('import-fail', e); process.exit(98); });
+          "
+
