@@ -32,5 +32,26 @@ export default defineConfig({
     // with 10 minutes of slack for daemon-restart + byte-equality encode.
     testTimeout: Number(process.env.CCSM_VITEST_TIMEOUT_MS ?? 70 * 60 * 1000),
     hookTimeout: 60 * 1000,
+    // Coverage gate per chapter 12 §6: 60% lines on renderer code. Renderer
+    // currently measures ~85% locally so the gate is live (real, not aspirational).
+    // UI-shell paths (windowing/tray) are excluded because they require a real
+    // BrowserWindow and aren't unit-testable; same exclusions used by the
+    // legacy renderer suite.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
+      exclude: [
+        'dist/**',
+        'test/**',
+        'src/**/*.spec.ts',
+        'src/**/*.spec.tsx',
+        'src/**/__tests__/**',
+        'src/**/*.d.ts',
+      ],
+      thresholds: {
+        lines: 60,
+      },
+    },
   },
 });

@@ -3254,7 +3254,7 @@ Workload class coverage MUST be cross-checked against §4.3's table (file-tree r
 
 #### 6. Coverage target
 
-- Unit: 80% line coverage on `@ccsm/daemon/src` (excluding `dist/`, `gen/`, `test/`).
+- Unit: 80% line coverage on `@ccsm/daemon/src` (excluding `dist/`, `gen/`, `test/`). **Note**: the CI gate is temporarily wired at **50%** in `packages/daemon/vitest.config.coverage.ts` — followup #350 raises it to 80% once the unit suite catches up. Threshold only ever moves up, never relaxed.
 - Integration: not measured by line coverage; measured by RPC coverage — every RPC in [Chapter 04](#chapter-04--proto-and-rpc-surface) MUST have at least one integration test exercising the happy path and at least one exercising an error path. The §3 integration test list above enumerates each (Resize, GetCrashLog, SettingsService error-paths included).
 - Electron renderer: 60% line coverage on `src/renderer/`. UI-shell code (windowing, tray) is untested.
 
