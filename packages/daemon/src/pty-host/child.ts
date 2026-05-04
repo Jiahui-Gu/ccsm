@@ -30,12 +30,25 @@
 //     `SendInput` RPC and writes a `crash_log` row (source =
 //     `pty_input_overflow`).
 //
+// T4.5 addition: test-only crash branch (`CCSM_PTY_TEST_CRASH_ON`).
+//   - Spec ch06 §1 "Test-only crash branch (FOREVER-STABLE)": when the
+//     env var is set AND `NODE_ENV !== 'production'`, the child crashes
+//     with `process.exit(137)` at a configurable event so the daemon's
+//     T4.4 child-crash semantics (state→CRASHED, no respawn, crash_log
+//     row) can be exercised end-to-end without mocking the child.
+//   - The parse + matching logic lives in `test-crash-config.ts` (pure
+//     decider, SRP). This file only adds three one-line crash hooks
+//     at the natural lifecycle points (`boot`, on `spawn` IPC, on
+//     every child→host IPC byte for the `after-bytes:N` variant).
+//   - Production gate is dual: env var presence AND NODE_ENV check;
+//     prod sea builds inline `parseTestCrashEnv` and dead-code-strip
+//     the entire branch since the env var is absent at boot.
+//
 // What is intentionally NOT here yet:
 //   - `node-pty` import / spawn — lands with T4.6 alongside the codec.
 //   - `xterm-headless` import / Terminal init — lands with T4.6 (codec).
 //   - Delta accumulator + snapshot scheduler — T4.9 / T4.10.
 //   - Real node-pty PtyWriter implementation — T4.6+.
-//   - Test-only crash branch (`CCSM_PTY_TEST_CRASH_ON`) — T4.5.
 //
 // SRP: this module is a *sink* for host→child messages and a *producer*
 // of child→host lifecycle messages. The pending-write decider lives in
@@ -51,6 +64,13 @@ import {
   PendingWriteTracker,
   PENDING_WRITE_CAP_BYTES,
 } from './pending-write-tracker.js';
+import {
+  TEST_CRASH_EXIT_CODE,
+  TestCrashByteCounter,
+  estimateIpcPayloadBytes,
+  parseTestCrashEnv,
+  type TestCrashConfig,
+} from './test-crash-config.js';
 import type {
   ChildToHostMessage,
   HostToChildMessage,
@@ -95,6 +115,13 @@ function send(msg: ChildToHostMessage): void {
     process.exit(2);
   }
   process.send(msg);
+  // T4.5: account for outgoing IPC bytes against the `after-bytes:N`
+  // test-crash variant. The check runs AFTER the message is sent so
+  // the host actually observes the payload that tipped the counter
+  // (mirrors spec wording: "after the first 1024 bytes ... cross the
+  // IPC boundary"). In production `testCrash` is null and this is a
+  // single null-check + return.
+  maybeTriggerTestCrashAfterBytes(msg);
 }
 
 function isHostToChildMessage(x: unknown): x is HostToChildMessage {
@@ -144,12 +171,75 @@ function makeInstantDrainWriter(t: PendingWriteTracker): PtyWriter {
   };
 }
 
+// T4.5: test-only crash configuration. Parsed once at module load from
+// `CCSM_PTY_TEST_CRASH_ON` + `NODE_ENV`; in production both checks
+// short-circuit to `null` and every hook below becomes a single
+// null-guard + return. The byte counter only mutates when the
+// `after-bytes` variant is active.
+const testCrash: TestCrashConfig | null = parseTestCrashEnv(
+  process.env.CCSM_PTY_TEST_CRASH_ON,
+  process.env.NODE_ENV,
+);
+const testCrashCounter = new TestCrashByteCounter();
+
+/**
+ * Crash the child with the spec-defined exit code. Logs a stable line
+ * the integration test can grep before the process exits so failure
+ * triage shows WHICH variant fired. Never returns (process.exit aborts
+ * the event loop); declared as `never` so callers do not need to add
+ * an unreachable `return`.
+ */
+function triggerTestCrash(reasonLine: string): never {
+  log(
+    `TEST-ONLY crash branch fired: variant=${testCrash?.kind ?? 'unknown'} ` +
+    `event=${reasonLine} exitCode=${TEST_CRASH_EXIT_CODE}`,
+  );
+  // Best-effort structured pre-exit signal so the daemon's lifecycle
+  // watcher can distinguish a test-crash from a wild crash in log
+  // triage. The `exiting` message kind already enumerates `'test-crash'`
+  // in types.ts (reserved by T4.1 in anticipation of this task). We
+  // call `process.send` directly (not `send(...)`) so the after-bytes
+  // accounting hook does NOT recurse into another crash check on the
+  // notification message itself.
+  if (typeof process.send === 'function') {
+    try {
+      process.send({ kind: 'exiting', reason: 'test-crash' });
+    } catch {
+      // Parent may have already disconnected; ignore — the exit
+      // code below is the source of truth.
+    }
+  }
+  process.exit(TEST_CRASH_EXIT_CODE);
+}
+
+/**
+ * After-bytes accounting hook. Called from `send` after every child→
+ * host IPC message. Production no-op (testCrash null OR variant !=
+ * after-bytes); under the variant it accumulates the estimated payload
+ * byte count and fires `triggerTestCrash` the moment the threshold is
+ * reached.
+ */
+function maybeTriggerTestCrashAfterBytes(msg: ChildToHostMessage): void {
+  if (testCrash === null || testCrash.kind !== 'after-bytes') return;
+  const bytes = estimateIpcPayloadBytes(msg);
+  if (testCrashCounter.addAndShouldCrash(bytes, testCrash.threshold)) {
+    triggerTestCrash(
+      `after-bytes:${testCrash.threshold} (cumulative=${testCrashCounter.cumulative})`,
+    );
+  }
+}
+
 function handleSpawn(payload: SpawnPayload): void {
   if (spawnPayload !== null) {
     log(`ignoring duplicate spawn for session ${payload.sessionId}`);
     return;
   }
   spawnPayload = payload;
+  // T4.5: spawn-event test crash. Models "node-pty.spawn threw" without
+  // depending on the unfinished T4.6 wiring. Production no-op.
+  if (testCrash !== null && testCrash.kind === 'spawn') {
+    triggerTestCrash(`spawn (session=${payload.sessionId})`);
+  }
   // T4.2: compute the per-OS spawn argv (Windows wraps in
   // `cmd /c chcp 65001 >nul && claude.exe ...`; POSIX is bare claude).
   // We log the resolved (file, args) so installer smoke + the soak
@@ -251,3 +341,13 @@ process.on('disconnect', () => {
 send({ kind: 'ready', sessionId: '', pid: process.pid });
 
 log('ready');
+
+// T4.5: boot-event test crash. Fired AFTER `ready` is sent so the
+// daemon's lifecycle watcher observes the same handshake sequence as
+// a real child that crashed immediately post-init (more realistic than
+// crashing before `ready`, which would test a different code path —
+// the "child never readied" timeout in T4.6+ host wiring). Production
+// no-op (testCrash null).
+if (testCrash !== null && testCrash.kind === 'boot') {
+  triggerTestCrash('boot');
+}
