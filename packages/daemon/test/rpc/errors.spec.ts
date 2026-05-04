@@ -67,6 +67,17 @@ const EXPECTED: ReadonlyArray<{
     connectCode: Code.PermissionDenied,
     defaultMessageContains: 'principal',
   },
+  {
+    // Wave-3 #334 (audit #228 sub-task 3) — added in the same PR that
+    // wires `CrashService.GetRawCrashLog`. Code string + Connect-code
+    // mapping pinned by `packages/proto/src/ccsm/v1/crash.proto:74-75`
+    // and `docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md`
+    // ch09 §2; see the `STANDARD_ERROR_MAP` row comment for the
+    // forever-stable rationale.
+    code: 'crash.raw_log_read_failed',
+    connectCode: Code.Internal,
+    defaultMessageContains: 'crash-raw',
+  },
 ];
 
 /**
@@ -102,11 +113,12 @@ function decodeAttachedDetail(err: ConnectError): ErrorDetail {
 }
 
 describe('rpc/errors — STANDARD_ERROR_MAP coverage', () => {
-  it('exposes exactly the four v0.3 forever-stable codes', () => {
+  it('exposes exactly the v0.3 forever-stable codes', () => {
     // Keys snapshot — sorted for stability. Adding a v0.4 code MUST
     // update this assertion explicitly (review-gate, NOT auto-passing).
     expect(Object.keys(STANDARD_ERROR_MAP).sort()).toEqual(
       [
+        'crash.raw_log_read_failed',
         'daemon.starting',
         'request.missing_id',
         'session.not_owned',

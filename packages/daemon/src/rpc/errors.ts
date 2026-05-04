@@ -71,6 +71,13 @@ export const STANDARD_ERROR_MAP = {
   'request.missing_id': Code.InvalidArgument,
   // ch05 §4 / §5 — per-RPC ownership enforcement matrix.
   'session.not_owned': Code.PermissionDenied,
+  // ch09 §2 + crash.proto:74-75 — CrashService.GetRawCrashLog read
+  // failure (ENOENT is the spec-pinned "no fatal crashes yet" shape
+  // and is NOT an error; this code covers any other I/O failure
+  // surfaced while streaming `state/crash-raw.ndjson`). Pinned to
+  // Internal because the failure is daemon-side filesystem state, not
+  // anything the client can correct by retrying with different inputs.
+  'crash.raw_log_read_failed': Code.Internal,
 } as const satisfies Record<string, Code>;
 
 /**
@@ -101,6 +108,8 @@ const DEFAULT_MESSAGES: Record<StandardErrorCode, string> = {
   'request.missing_id':
     'request_id is required and must be a non-empty UUIDv4.',
   'session.not_owned': 'Session is owned by a different principal.',
+  'crash.raw_log_read_failed':
+    'Failed to read state/crash-raw.ndjson while streaming GetRawCrashLog.',
 };
 
 /**
