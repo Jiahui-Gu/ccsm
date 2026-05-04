@@ -46,6 +46,7 @@ import {
   installCaptureSources,
   type Unsubscribe,
 } from './crash/sources.js';
+import { defaultCrashEventBus } from './crash/event-bus.js';
 import { replayCrashRawOnBoot } from './crash/raw-appender.js';
 import { buildDaemonEnv, type DaemonEnv } from './env.js';
 import { Lifecycle, Phase } from './lifecycle.js';
@@ -323,13 +324,25 @@ export async function runStartup(
     // pre-#229 the entire CrashService was a stub on the wire even though
     // `crash_log` is populated end-to-end at boot (`replayCrashRawOnBoot`).
     // We pass the SAME `db` handle the rest of startup uses (single owner
-    // of the SQLite file; the future #335 WatchCrashLog wave reuses this
-    // same instance for its event-bus subscription). The streaming siblings
-    // (#334 GetRawCrashLog, #335 WatchCrashLog) stay `Unimplemented` until
-    // their sub-tasks land — `registerCrashService` ships a partial impl
-    // with only `getCrashLog` and the router's "absent method ->
-    // Unimplemented" rule covers the rest.
-    const crashDeps = { getCrashLogDeps: { db } };
+    // of the SQLite file; the #335 WatchCrashLog overlay reuses this same
+    // boot for its event-bus subscription). The remaining streaming sibling
+    // (#334 GetRawCrashLog) stays `Unimplemented` until its sub-task lands —
+    // `registerCrashService` ships a partial impl with `getCrashLog` +
+    // `watchCrashLog` and the router's "absent method -> Unimplemented" rule
+    // covers the rest.
+    //
+    // Wave-3 #335 — wire CrashService.WatchCrashLog. The handler subscribes
+    // to `defaultCrashEventBus` (Task #340) — the SAME singleton
+    // `crash/raw-appender.ts:appendCrashRaw` emits on after fsync. Routing
+    // both methods through the same `crashDeps` payload keeps the
+    // `registerCrashService` overlay's "single service() call covers every
+    // method" invariant honest (calling `service()` twice for the same
+    // descriptor would silently drop the earlier registration — see
+    // `register.ts` header).
+    const crashDeps = {
+      getCrashLogDeps: { db },
+      watchCrashLogDeps: { bus: defaultCrashEventBus },
+    };
     // Wave-3 §6.9 sub-task 5 (Task #336) — wire the SessionService read
     // pair (ListSessions / GetSession) on top of the WatchSessions
     // overlay. Both handlers reuse the same `sessionManager` (single
