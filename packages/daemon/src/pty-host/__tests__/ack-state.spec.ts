@@ -412,3 +412,135 @@ describe('AckSubscriberState — channel composition', () => {
     expect(s.channel.peek()?.seq).toBe(1n);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extended edge coverage — Task #353 (T-PA-IMPL.4):
+// the existing 32 UTs above cover every spec §4.2/§4.3/§4.5/§6.1 invariant;
+// the cases below pin behaviors that future refactors could silently
+// regress (capacity validation completeness, capacity=1 ring math,
+// post-overflow recovery, post-clear reuse, ack-fully-caught-up backlog,
+// bigint backlog at u64-scale).
+// ---------------------------------------------------------------------------
+
+describe('BoundedChannel — capacity validation edge cases', () => {
+  it('rejects NaN capacity', () => {
+    expect(() => new BoundedChannel(Number.NaN)).toThrow(RangeError);
+  });
+
+  it('rejects Infinity capacity', () => {
+    expect(() => new BoundedChannel(Number.POSITIVE_INFINITY)).toThrow(RangeError);
+  });
+
+  it('accepts capacity=1 (degenerate but valid ring)', () => {
+    // The smallest legal ring — useful for tests that want to force
+    // overflow on the second enqueue without juggling 4096 items.
+    const ch = new BoundedChannel<number>(1);
+    expect(ch.enqueue(7)).toBe('ok');
+    expect(ch.isFull).toBe(true);
+    expect(ch.enqueue(8)).toBe('overflow');
+    expect(ch.size).toBe(1);
+    expect(ch.dequeue()).toBe(7);
+    expect(ch.isEmpty).toBe(true);
+    // Ring head/tail wrapped at modulo 1; reuse must still work.
+    expect(ch.enqueue(9)).toBe('ok');
+    expect(ch.dequeue()).toBe(9);
+  });
+});
+
+describe('BoundedChannel — recovery after overflow', () => {
+  it('accepts new enqueues after a dequeue frees a slot', () => {
+    // Producer-side overflow does not poison the channel — once the
+    // consumer drains one, enqueue must succeed again. Pinning this
+    // means a future "freeze on first overflow" misimplementation
+    // surfaces immediately.
+    const ch = new BoundedChannel<number>(2);
+    ch.enqueue(1);
+    ch.enqueue(2);
+    expect(ch.enqueue(3)).toBe('overflow');
+    expect(ch.dequeue()).toBe(1);
+    expect(ch.enqueue(3)).toBe('ok');
+    expect(ch.size).toBe(2);
+    expect(ch.dequeue()).toBe(2);
+    expect(ch.dequeue()).toBe(3);
+  });
+});
+
+describe('BoundedChannel — post-clear reuse FIFO', () => {
+  it('preserves FIFO order after clear when previous head was non-zero', () => {
+    // Clear must reset internal head/tail to 0 — otherwise post-clear
+    // reuse could yield items in the wrong order. This caught a real
+    // bug class in earlier ring implementations.
+    const ch = new BoundedChannel<number>(4);
+    ch.enqueue(1);
+    ch.enqueue(2);
+    ch.enqueue(3);
+    ch.dequeue(); // head advances to 1
+    ch.dequeue(); // head advances to 2
+    ch.clear();
+    ch.enqueue(10);
+    ch.enqueue(20);
+    ch.enqueue(30);
+    expect(ch.dequeue()).toBe(10);
+    expect(ch.dequeue()).toBe(20);
+    expect(ch.dequeue()).toBe(30);
+  });
+});
+
+describe('AckSubscriberState — backlog math at boundary states', () => {
+  it('reports backlog=0n after ack catches up to lastDeliveredSeq', () => {
+    // Steady-state hand-off shape: client acks every delta as it's
+    // delivered. backlog must hit exactly 0n (NOT -1n via off-by-one,
+    // NOT 1n via a stale read of pre-ack lastAckedSeq).
+    const s = new AckSubscriberState({
+      subscriberId: 'sub',
+      sessionId: 'sess',
+      initialSeq: 0n,
+    });
+    s.onDelivered(1n);
+    s.onDelivered(2n);
+    s.onDelivered(3n);
+    expect(s.unackedBacklog).toBe(3n);
+    s.onAck(3n);
+    expect(s.unackedBacklog).toBe(0n);
+  });
+
+  it('preserves bigint backlog math at u64-scale (no Number coercion)', () => {
+    // unackedBacklog = lastDeliveredSeq - lastAckedSeq. Both operands
+    // are bigint, but a refactor that did `Number(...)` for the
+    // subtraction would silently lose precision once seqs cross 2^53.
+    // Ensure the contract holds at 2^54.
+    const big = 1n << 54n;
+    const s = new AckSubscriberState({
+      subscriberId: 'sub',
+      sessionId: 'sess',
+      initialSeq: big,
+    });
+    s.onDelivered(big + 100n);
+    s.onAck(big + 40n);
+    expect(s.unackedBacklog).toBe(60n);
+    // Critical: subtraction must remain exact.
+    expect(s.lastDeliveredSeq - s.lastAckedSeq).toBe(60n);
+  });
+});
+
+describe('AckSubscriberState — multi-step ack progression', () => {
+  it('advances lastAckedSeq monotonically across many in-window acks', () => {
+    // Each ack lands inside the window; backlog shrinks step by step.
+    const s = new AckSubscriberState({
+      subscriberId: 'sub',
+      sessionId: 'sess',
+      initialSeq: 0n,
+    });
+    for (let i = 1n; i <= 10n; i += 1n) s.onDelivered(i);
+    expect(s.unackedBacklog).toBe(10n);
+    expect(s.onAck(2n).kind).toBe('ok');
+    expect(s.unackedBacklog).toBe(8n);
+    expect(s.onAck(5n).kind).toBe('ok');
+    expect(s.unackedBacklog).toBe(5n);
+    // Idempotent ack between progress steps must not regress the watermark.
+    expect(s.onAck(5n).kind).toBe('ok');
+    expect(s.lastAckedSeq).toBe(5n);
+    expect(s.onAck(10n).kind).toBe('ok');
+    expect(s.unackedBacklog).toBe(0n);
+  });
+});
