@@ -15,10 +15,12 @@
 // the deps interface and the partial impl below; the wiring topology in
 // `router.ts` and `index.ts` does not change.
 //
-// Methods not yet implemented in v0.3 (`watchCrashLog`, `getRawCrashLog`)
-// remain Connect `Unimplemented` per the router's "absent method ->
-// Unimplemented" rule (Connect-ES contract; same way SessionService's
-// not-yet-landed methods stay stubbed).
+// Methods not yet implemented in v0.3 (`getRawCrashLog`) remain Connect
+// `Unimplemented` per the router's "absent method -> Unimplemented" rule
+// (Connect-ES contract; same way SessionService's not-yet-landed methods
+// stay stubbed). With Task #335 landed, both `getCrashLog` and
+// `watchCrashLog` are wired here; only `getRawCrashLog` (Task #334)
+// remains stubbed.
 
 import type { ConnectRouter } from '@connectrpc/connect';
 
@@ -28,15 +30,21 @@ import {
   makeGetCrashLogHandler,
   type GetCrashLogDeps,
 } from './get-crash-log.js';
+import {
+  makeWatchCrashLogHandler,
+  type WatchCrashLogDeps,
+} from './watch-crash-log.js';
 
 /**
  * Aggregate deps for every CrashService handler that ships in v0.3.
- * Today only `GetCrashLog` is wired; future overlays append fields here
- * (`getRawCrashLogDeps`, `watchCrashLogDeps`) without changing the
- * router-level signature in `router.ts:makeDaemonRoutes`.
+ * Today `GetCrashLog` (Task #229) and `WatchCrashLog` (Task #335) are
+ * wired; future overlays append fields here (`getRawCrashLogDeps`)
+ * without changing the router-level signature in
+ * `router.ts:makeDaemonRoutes`.
  */
 export interface CrashServiceDeps {
   readonly getCrashLogDeps: GetCrashLogDeps;
+  readonly watchCrashLogDeps: WatchCrashLogDeps;
 }
 
 /**
@@ -46,9 +54,12 @@ export interface CrashServiceDeps {
  *
  * Per Connect-ES `ConnectRouter.service` semantics, this REPLACES the
  * prior `{}` stub registration for `CrashService` — the partial impl
- * below installs `getCrashLog`, and the router's "absent method ->
- * Unimplemented" fallback keeps `watchCrashLog` / `getRawCrashLog`
- * returning `Code.Unimplemented` until their owning sub-tasks land.
+ * below installs `getCrashLog` + `watchCrashLog` in a SINGLE
+ * `service()` call (calling `service` twice for the same descriptor
+ * silently drops the earlier registration; see `router.ts`
+ * `registerSessionService` for the same caveat). The router's "absent
+ * method -> Unimplemented" fallback keeps `getRawCrashLog` returning
+ * `Code.Unimplemented` until Task #334 lands.
  */
 export function registerCrashService(
   router: ConnectRouter,
@@ -56,6 +67,7 @@ export function registerCrashService(
 ): ConnectRouter {
   router.service(CrashService, {
     getCrashLog: makeGetCrashLogHandler(deps.getCrashLogDeps),
+    watchCrashLog: makeWatchCrashLogHandler(deps.watchCrashLogDeps),
   });
   return router;
 }
