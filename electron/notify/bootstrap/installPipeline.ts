@@ -14,7 +14,7 @@
 
 import { app, BrowserWindow } from 'electron';
 import { installNotifyPipeline } from '../sinks/pipeline';
-import { onPtyData } from '../../ptyHost';
+import { onPtyData } from '../../../packages/daemon/src/ptyHost';
 import { sessionWatcher } from '../../sessionWatcher';
 import { forgetSid as forgetSessionTitleSid } from '../../sessionTitles';
 

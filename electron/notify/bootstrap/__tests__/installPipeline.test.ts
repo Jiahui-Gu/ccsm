@@ -5,7 +5,7 @@
 // We mock the four boundary modules so the test runs in plain Node:
 //   * electron (app + BrowserWindow)
 //   * ../sinks/pipeline (recording installNotifyPipeline)
-//   * ../../ptyHost (onPtyData subscriber capture)
+//   * ../../../packages/daemon/src/ptyHost (onPtyData subscriber capture)
 //   * ../../sessionWatcher (sessionWatcher EventEmitter capture)
 //
 // Each test then triggers a producer and asserts the corresponding
@@ -88,7 +88,7 @@ vi.mock('../../sinks/pipeline', () => ({
   },
 }));
 
-vi.mock('../../../ptyHost', () => ({
+vi.mock('../../../../packages/daemon/src/ptyHost', () => ({
   onPtyData: (cb: (sid: string, chunk: string | Buffer) => void) => {
     h.ptyDataCb.current = cb;
   },
