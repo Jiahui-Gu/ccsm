@@ -55,13 +55,15 @@ export default defineConfig({
     globals: false,
     // v8 coverage instrumentation roughly doubles wall-clock for IO-heavy
     // unit tests under Windows; sqlite-backed specs (e.g.
-    // src/db/__tests__/recovery.spec.ts which seeds 200 rows then scribbles
-    // page bytes to corrupt the file) measured 20s+ on the CI windows-latest
-    // runner vs. ~150ms locally without instrument. Bump the per-test ceiling
-    // to 30s so genuine product errors still surface fast (no silent
-    // hang-to-CI-job-timeout) but instrumented IO has headroom. Matches the
-    // root vitest config's 15s bump done for the same reason on jsdom suites.
-    testTimeout: 30000,
+    // src/db/__tests__/recovery.spec.ts which seeds 200 rows in a non-
+    // transactional loop then scribbles page bytes to corrupt the file)
+    // exhibit huge wall-clock variance on windows-latest shared runners:
+    // observed 9s on one run, >30s timeout on the next. Bump the per-test
+    // ceiling to 60s so genuine product hangs still surface fast vs the
+    // 15-min job ceiling, but instrumented sqlite IO has comfortable
+    // headroom. Followup: speed up recovery.spec by wrapping the seed loop
+    // in `db.transaction(...)()` (1 fsync vs 200) — tracked in #350.
+    testTimeout: 60000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
