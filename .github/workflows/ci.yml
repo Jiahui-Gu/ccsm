@@ -151,6 +151,24 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Task #128 / T10.12 — buf breaking against the merge-base SHA
+      # pre-tag, or against the v0.3 release tag post-tag (auto-detected
+      # by packages/proto/scripts/breaking-check.mjs). Spec ch11 §4 +
+      # ch15 §3 #1, #2, #19, #20 — rejects field renumber, removal,
+      # comment-only "reserved" bypass, and out-of-slot oneof additions.
+      # Active from phase 1 onward (NOT deferred until ship).
+      #
+      # Placed after typecheck so a TS-side regression doesn't mask
+      # proto-schema regressions (or vice versa) — both run independently.
+      # `fetch-depth: 0` above guarantees the merge-base + future v0.3
+      # tag are reachable without a second fetch.
+      - name: Proto breaking-change gate (buf breaking)
+        run: node packages/proto/scripts/breaking-check.mjs
+        env:
+          # CI hands us GITHUB_BASE_REF on PRs; the script reads it to
+          # pick origin/$GITHUB_BASE_REF as the merge-base candidate.
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+
       # Build is required before `npm test` because the load-smoke harness
       # (tests/electron-load-smoke.test.ts) require()s dist/electron/*.js
       # to verify CJS load cleanliness. Without dist present, those tests
