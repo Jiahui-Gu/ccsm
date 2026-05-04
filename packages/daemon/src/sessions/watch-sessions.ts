@@ -217,6 +217,16 @@ export function sessionEventToProto(
       return create(SessionEventSchema, {
         kind: { case: 'destroyed', value: ev.session.id },
       });
+    case 'ended':
+      // Spec ch06 §1: pty-host child exit (graceful or crash). Wire
+      // shape is `updated` carrying the full Session row — clients
+      // read the new `state` (EXITED|CRASHED) and `exit_code` to render
+      // the terminal-state badge. `destroyed` is reserved for the
+      // explicit DestroySession RPC path so a client can distinguish
+      // "user closed it" from "child died" by which oneof case lands.
+      return create(SessionEventSchema, {
+        kind: { case: 'updated', value: sessionRowToProto(ev.session, caller) },
+      });
     default: {
       const _exhaustive: never = ev;
       throw new Error(
