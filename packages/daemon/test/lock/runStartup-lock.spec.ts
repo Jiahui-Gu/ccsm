@@ -37,7 +37,7 @@ describe('assertWired (Task #221)', () => {
     expect(warnLines[0]).toContain('write-coalescer');
   });
 
-  it('throws listing all 5 components when present is empty', () => {
+  it('throws listing all hard-required components when present is empty', () => {
     let raised: Error | null = null;
     try {
       assertWired([]);
@@ -80,12 +80,13 @@ describe('assertWired (Task #221)', () => {
     expect(() => assertWired(HARD_REQUIRED)).not.toThrow();
   });
 
-  it('REQUIRED_COMPONENTS exposes the canonical 5-component list in stable order', () => {
+  it('REQUIRED_COMPONENTS exposes the canonical 6-component list in stable order', () => {
     expect(REQUIRED_COMPONENTS).toEqual([
       'listener-a',
       'supervisor',
       'capture-sources',
       'crash-replayer',
+      'crash-rpc',
       'write-coalescer',
     ]);
   });
