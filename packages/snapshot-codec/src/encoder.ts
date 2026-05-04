@@ -508,7 +508,6 @@ export function encodeInner(
   const cursorX = buffer.cursorX;
   const cursorY = buffer.cursorY;
   const baseY = buffer.baseY;
-  const totalLines = buffer.length;
   const scrollbackLines = baseY;
   const viewportLines = rows;
 
@@ -544,7 +543,6 @@ export function encodeInner(
   // are the viewport. xterm's `IBuffer.getLine(y)` uses absolute buffer
   // coords matching that layout exactly.
   const totalSnapLines = scrollbackLines + viewportLines;
-  void totalLines; // available for diagnostics; spec mandates spec count
 
   const cellRef = buffer.getNullCell();
   for (let y = 0; y < totalSnapLines; y++) {

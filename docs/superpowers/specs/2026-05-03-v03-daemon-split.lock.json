@@ -15,7 +15,7 @@
     "b": {
       "title": "Gate B — snapshot codec",
       "files": [
-        { "path": "packages/snapshot-codec/src/index.ts", "sha256": "e7d7e9a3283328c282a133cbad39dbab5c6d206c3c4e2752429540d3f3e71bd1" }
+        { "path": "packages/snapshot-codec/src/index.ts", "sha256": "d2ed9c46d21c02f6055cc12c2471048ee10f40d4254d3a4501f986bd14e1a1dc" }
       ]
     },
     "c": {
