@@ -60,6 +60,10 @@ import {
 } from '@ccsm/proto';
 
 import {
+  makeDestroySessionHandler,
+  type DestroySessionDeps,
+} from '../sessions/destroy-handler.js';
+import {
   makeGetSessionHandler,
   makeListSessionsHandler,
   type ReadHandlersDeps,
@@ -155,31 +159,32 @@ export function registerHelloHandler(
 
 /**
  * Register the v0.3 SessionService handlers that have landed so far —
- * Hello (T2.3), WatchSessions (T3.3) and the read pair ListSessions /
- * GetSession (Wave 3 §6.9 sub-task 5 / Task #336) — under a SINGLE
+ * Hello (T2.3), WatchSessions (T3.3), the read pair ListSessions /
+ * GetSession (Wave 3 §6.9 sub-task 5 / Task #336) and DestroySession
+ * (Wave 3 §6.9 sub-task 7 / Task #338) — under a SINGLE
  * `router.service(SessionService, ...)` call.
  *
  * Why a combined registration (not multiple `service()` calls): per
  * Connect-ES `ConnectRouter.service` semantics, calling
  * `service(desc, impl)` more than once for the same descriptor REPLACES
  * the prior registration (the router is a path-keyed map). Registering
- * Hello, then WatchSessions, then ListSessions/GetSession in three
- * separate calls would silently drop the first two. The Hello-only
- * path (`registerHelloHandler` above) is preserved for callers that
- * have not yet wired a SessionManager (existing test fixtures);
+ * Hello, then WatchSessions, then ListSessions/GetSession/DestroySession
+ * in separate calls would silently drop the earlier ones. The
+ * Hello-only path (`registerHelloHandler` above) is preserved for callers
+ * that have not yet wired a SessionManager (existing test fixtures);
  * production startup wiring (T1.7) uses this combined form.
  *
- * `readHandlersDeps` is optional so existing callers (test fixtures
- * that built `{ helloDeps, watchSessionsDeps }` before #336 landed)
- * keep compiling without churn. In production startup wiring (T1.7)
- * it is always supplied — see `index.ts` where the same
- * `SessionManager` instance is reused across watchSessionsDeps and
- * readHandlersDeps (single owner of the sessions table).
+ * `readHandlersDeps` and `destroyHandlerDeps` are optional so existing
+ * callers (test fixtures that built `{ helloDeps, watchSessionsDeps }`
+ * before #336 / #338 landed) keep compiling without churn. In production
+ * startup wiring (T1.7) all four are always supplied off the same
+ * `SessionManager` instance — single owner of the sessions table; a
+ * DestroySession publishes to the same in-memory event bus the
+ * WatchSessions stream subscribes to.
  *
- * Methods not yet implemented (CreateSession, DestroySession,
- * RenameSession, ...) remain `Unimplemented` per the Connect router's
- * "absent method → Unimplemented" rule, exactly as in the stub-only
- * path.
+ * Methods not yet implemented (CreateSession, RenameSession, ...) remain
+ * `Unimplemented` per the Connect router's "absent method →
+ * Unimplemented" rule, exactly as in the stub-only path.
  */
 export function registerSessionService(
   router: ConnectRouter,
@@ -187,6 +192,7 @@ export function registerSessionService(
     readonly helloDeps: HelloDeps;
     readonly watchSessionsDeps: WatchSessionsDeps;
     readonly readHandlersDeps?: ReadHandlersDeps;
+    readonly destroyHandlerDeps?: DestroySessionDeps;
   },
 ): ConnectRouter {
   const impl: Parameters<typeof router.service<typeof SessionService>>[1] = {
@@ -196,6 +202,9 @@ export function registerSessionService(
   if (deps.readHandlersDeps !== undefined) {
     impl.listSessions = makeListSessionsHandler(deps.readHandlersDeps);
     impl.getSession = makeGetSessionHandler(deps.readHandlersDeps);
+  }
+  if (deps.destroyHandlerDeps !== undefined) {
+    impl.destroySession = makeDestroySessionHandler(deps.destroyHandlerDeps);
   }
   router.service(SessionService, impl);
   return router;
@@ -213,11 +222,17 @@ export function makeDaemonRoutes(
   watchSessionsDeps?: WatchSessionsDeps,
   crashDeps?: CrashServiceDeps,
   readHandlersDeps?: ReadHandlersDeps,
+  destroyHandlerDeps?: DestroySessionDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
     if (watchSessionsDeps !== undefined) {
-      registerSessionService(router, { helloDeps, watchSessionsDeps, readHandlersDeps });
+      registerSessionService(router, {
+        helloDeps,
+        watchSessionsDeps,
+        readHandlersDeps,
+        destroyHandlerDeps,
+      });
     } else {
       registerHelloHandler(router, helloDeps);
     }
@@ -282,6 +297,17 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * `Unimplemented`.
    */
   readonly readHandlersDeps?: ReadHandlersDeps;
+  /**
+   * When set (and `helloDeps` + `watchSessionsDeps` are also set),
+   * installs the Wave 3 §6.9 sub-task 7 (Task #338) DestroySession
+   * handler in the same SessionService registration. Reuses the same
+   * `SessionManager` instance the WatchSessions / read overlays use so
+   * a DestroySession publishes to the same in-memory event bus the
+   * WatchSessions stream subscribes to (round-trip: destroy one ->
+   * watcher sees `destroyed` event). Tests that don't need the destroy
+   * wire-up simply omit it and the method stays `Unimplemented`.
+   */
+  readonly destroyHandlerDeps?: DestroySessionDeps;
 }
 
 /**
@@ -320,9 +346,9 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps, interceptors: callerInterceptors, ...rest } = options;
+  const { helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps, destroyHandlerDeps, interceptors: callerInterceptors, ...rest } = options;
   const routes =
-    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps) : stubRoutes;
+    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps, destroyHandlerDeps) : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),

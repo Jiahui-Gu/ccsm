@@ -351,12 +351,24 @@ export async function runStartup(
     // descriptor twice replaces" caveat that forces all SessionService
     // handlers into one registration.
     const readHandlersDeps = { manager: sessionManager };
+    // Wave-3 §6.9 sub-task 7 (Task #338) — wire SessionService.DestroySession
+    // on top of the SessionService overlay. Audit #228 sub-task 7
+    // (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md): pre-#338
+    // DestroySession was a stub on the wire even though
+    // `SessionManager.destroy()` (T3.2 / #38) is fully implemented. Reuse
+    // the SAME `sessionManager` so a DestroySession publishes to the
+    // same in-memory event bus the WatchSessions stream subscribes to
+    // (round-trip: destroy one -> watcher sees `destroyed` event) and so
+    // the post-destroy row state is visible to ListSessions / GetSession
+    // on the same boot.
+    const destroyHandlerDeps = { manager: sessionManager };
     listenerA = makeListenerA(env, {
       bindHook: makeRouterBindHook({
         helloDeps,
         watchSessionsDeps,
         crashDeps,
         readHandlersDeps,
+        destroyHandlerDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by

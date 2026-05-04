@@ -369,6 +369,33 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     expect(raised!.code).toBe(Code.PermissionDenied);
   });
 
+  // Wave 3 §6.9 sub-task 7 (Task #338) — SessionService.DestroySession.
+  // Same regression catch as the read-pair / Hello assertions above:
+  // prove the production wire path actually swaps the stub for the real
+  // handler. We exercise the unknown-id branch (no created session at
+  // boot — CreateSession handler hasn't landed yet) which surfaces
+  // `Code.PermissionDenied` via `SessionManager.loadRow`'s
+  // not_owned-collapses-not_found rule. NOT Unimplemented proves the
+  // overlay is live.
+  it('Listener-A.SessionService.DestroySession does NOT return Unimplemented', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const client = makeSessionClient(baseUrl);
+    let raised: ConnectError | null = null;
+    try {
+      await client.destroySession({ meta: newMeta(), sessionId: 'no-such-id' });
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(raised, 'expected ConnectError on unknown session id').not.toBeNull();
+    expect(raised!.code).not.toBe(Code.Unimplemented);
+    expect(raised!.code).toBe(Code.PermissionDenied);
+  });
+
   it('rejects unauthenticated calls (no bearer token) with Code.Unauthenticated', async () => {
     expect(result).not.toBeNull();
     const r = result!;
