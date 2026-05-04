@@ -70,8 +70,13 @@ import {
 } from '../sessions/watch-sessions.js';
 
 import { registerCrashService, type CrashServiceDeps } from './crash/register.js';
+import { registerDraftService, type DraftServiceDeps } from './draft/register.js';
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
+import {
+  registerSettingsService,
+  type SettingsServiceDeps,
+} from './settings/register.js';
 
 /**
  * Stable enumeration of every v0.3 Connect service from `@ccsm/proto`.
@@ -213,6 +218,8 @@ export function makeDaemonRoutes(
   watchSessionsDeps?: WatchSessionsDeps,
   crashDeps?: CrashServiceDeps,
   readHandlersDeps?: ReadHandlersDeps,
+  settingsDeps?: SettingsServiceDeps,
+  draftDeps?: DraftServiceDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -229,6 +236,20 @@ export function makeDaemonRoutes(
     // Same additive overlay shape as SessionService above.
     if (crashDeps !== undefined) {
       registerCrashService(router, crashDeps);
+    }
+    // SettingsService overlay (Wave-3 #349 / audit #228 sub-task 9 /
+    // spec #337 §6.1 step 1). Replaces the stub `{}` registration with
+    // a full impl exposing `GetSettings` + `UpdateSettings` against the
+    // existing `settings` table (no new migration — spec §1).
+    if (settingsDeps !== undefined) {
+      registerSettingsService(router, settingsDeps);
+    }
+    // DraftService overlay (Wave-3 #349 / spec #337 §6.1 step 1).
+    // Drafts ride on the same `settings` table under key
+    // `draft:<session_id>` (spec §2.2 + draft.proto line 8); the
+    // overlay exposes `GetDraft` + `UpdateDraft`.
+    if (draftDeps !== undefined) {
+      registerDraftService(router, draftDeps);
     }
   };
 }
@@ -282,6 +303,23 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * `Unimplemented`.
    */
   readonly readHandlersDeps?: ReadHandlersDeps;
+  /**
+   * When set, installs the Wave-3 SettingsService overlay (Task #349 /
+   * audit #228 sub-task 9 / spec #337 §6.1 step 1) on top of the
+   * stubs. Both `GetSettings` and `UpdateSettings` ship in this
+   * registration (no streaming methods on the service). Production
+   * startup wires this when `index.ts` constructs a `settingsDeps`
+   * against the same `db` handle; tests omit it for the stub baseline.
+   */
+  readonly settingsDeps?: SettingsServiceDeps;
+  /**
+   * When set, installs the Wave-3 DraftService overlay (Task #349 /
+   * spec #337 §6.1 step 1) on top of the stubs. Both `GetDraft` and
+   * `UpdateDraft` ship in this registration. Drafts ride on the
+   * `settings` table under key `draft:<session_id>` so this overlay
+   * shares the SettingsService `db` handle.
+   */
+  readonly draftDeps?: DraftServiceDeps;
 }
 
 /**
@@ -320,9 +358,27 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps, interceptors: callerInterceptors, ...rest } = options;
+  const {
+    helloDeps,
+    watchSessionsDeps,
+    crashDeps,
+    readHandlersDeps,
+    settingsDeps,
+    draftDeps,
+    interceptors: callerInterceptors,
+    ...rest
+  } = options;
   const routes =
-    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps) : stubRoutes;
+    helloDeps !== undefined
+      ? makeDaemonRoutes(
+          helloDeps,
+          watchSessionsDeps,
+          crashDeps,
+          readHandlersDeps,
+          settingsDeps,
+          draftDeps,
+        )
+      : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),

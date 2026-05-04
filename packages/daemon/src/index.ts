@@ -26,6 +26,7 @@
 //   - Graceful shutdown                        → T1.8 (`Shutdown.run` + signal handlers)
 
 import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 
 import type { Interceptor } from '@connectrpc/connect';
@@ -55,6 +56,7 @@ import { writeDescriptor, type DescriptorV1 } from './listeners/descriptor.js';
 import type { Listener } from './listeners/types.js';
 import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
+import { upsertSettingsBoot } from './rpc/settings/store.js';
 import { SessionManager, type ISessionManager } from './sessions/SessionManager.js';
 import { statePaths } from './state-dir/paths.js';
 import {
@@ -216,6 +218,29 @@ export async function runStartup(
         .map((m) => m.version)
         .join(',')}`,
     );
+    // Wave-3 #349 — UPSERT daemon-derived Settings rows (spec #337 §5).
+    // Runs AFTER migrations (settings table exists) and BEFORE
+    // assertWired so SettingsService.GetSettings sees both rows on the
+    // first post-boot call. Idempotent — every boot writes the same
+    // two rows; consecutive boots with no env change are a no-op at
+    // the row-content level. The task brief simplifies the spec's
+    // `~/.claude/settings.json` parse to an env-var fallback
+    // (`CCSM_DETECTED_CLAUDE_DEFAULT_MODEL`) so the boot path stays
+    // hermetic for the daemon-boot e2e — full settings.json parsing
+    // is forward-safe (a sibling task can extend this UPSERT to read
+    // the file without touching the wire shape).
+    const detectedModel =
+      process.env.CCSM_DETECTED_CLAUDE_DEFAULT_MODEL ?? '';
+    upsertSettingsBoot(db, {
+      userHomePath: homedir(),
+      detectedClaudeDefaultModel: detectedModel,
+    });
+    log(
+      `settings boot UPSERT: user_home_path=set ` +
+        `detected_claude_default_model=${
+          detectedModel === '' ? 'empty' : 'set'
+        }`,
+    );
   } catch (err) {
     // Close the handle so we don't leak it on a startup-abort path.
     try {
@@ -363,12 +388,32 @@ export async function runStartup(
     // descriptor twice replaces" caveat that forces all SessionService
     // handlers into one registration.
     const readHandlersDeps = { manager: sessionManager };
+    // Wave-3 #349 — wire SettingsService + DraftService production
+    // overlays (spec #337 §6.1 step 1). Both services share the same
+    // `db` handle (drafts ride on the `settings` table under key
+    // `draft:<session_id>` per spec §2.2). Pre-#349 both services
+    // were stubs returning `Code.Unimplemented` despite `001_initial.sql`
+    // having created the `settings` table from day one — closing the
+    // wire gap that the audit #228 sub-task 9 flagged. The boot UPSERT
+    // for `user_home_path` / `detected_claude_default_model` ran above
+    // (after `runMigrations`) so the first post-boot `GetSettings`
+    // call sees the daemon-derived rows.
+    const settingsDeps = {
+      getSettingsDeps: { db, onUnknownKey: (k: string) => log(`settings: unknown key '${k}' (forward-tolerant; ignored)`) },
+      updateSettingsDeps: { db, onUnknownKey: (k: string) => log(`settings: unknown key '${k}' (forward-tolerant; ignored)`) },
+    };
+    const draftDeps = {
+      getDraftDeps: { db },
+      updateDraftDeps: { db },
+    };
     listenerA = makeListenerA(env, {
       bindHook: makeRouterBindHook({
         helloDeps,
         watchSessionsDeps,
         crashDeps,
         readHandlersDeps,
+        settingsDeps,
+        draftDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by
@@ -472,6 +517,15 @@ export async function runStartup(
   // this name correctly stays absent from `wired` (assertWired then
   // throws on the missing `listener-a` first).
   if (listenerA !== null) wired.push('crash-rpc');
+  // `settings-service` / `draft-service`: bound to the Listener A
+  // Connect router via `makeRouterBindHook({ settingsDeps, draftDeps })`
+  // above (Wave-3 #349 / spec #337 §6.1 step 1). Both names are tied
+  // to the listener bind: `CCSM_DAEMON_SKIP_LISTENER=1` short-circuits
+  // the bind and the overlays never reach the router, in which case
+  // these names correctly stay absent from `wired` (assertWired then
+  // throws on the missing `listener-a` first).
+  if (listenerA !== null) wired.push('settings-service');
+  if (listenerA !== null) wired.push('draft-service');
   // `write-coalescer`: NOT pushed yet — module exists at
   // `src/sqlite/coalescer.ts` but the per-session pty-host bridge
   // wires in T6.x. `assertWired` treats this name as WARN_ONLY for now

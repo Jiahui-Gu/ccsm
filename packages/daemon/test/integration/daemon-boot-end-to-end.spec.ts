@@ -97,11 +97,16 @@ import { createConnectTransport } from '@connectrpc/connect-node';
 
 import {
   PROTO_VERSION,
+  CrashRetentionSchema,
   CrashService,
+  DraftService,
   GetCrashLogRequestSchema,
   OwnerFilter,
   RequestMetaSchema,
   SessionService,
+  SettingsSchema,
+  SettingsScope,
+  SettingsService,
   WatchScope,
   WatchSessionsRequestSchema,
 } from '@ccsm/proto';
@@ -277,6 +282,41 @@ function makeCrashClient(baseUrl: string): Client<typeof CrashService> {
     ],
   });
   return createClient(CrashService, transport);
+}
+
+/**
+ * Generic Connect-client factory parameterised on a service descriptor.
+ * Used by the Wave-3 #349 SettingsService + DraftService assertions
+ * which would otherwise repeat the transport-construction boilerplate.
+ */
+function makeServiceClient<S extends Parameters<typeof createClient>[0]>(
+  service: S,
+  baseUrl: string,
+  authzHeader: string | null = `Bearer ${TEST_BEARER_TOKEN}`,
+): Client<S> {
+  const transport = createConnectTransport({
+    httpVersion: '2',
+    baseUrl,
+    interceptors: [
+      (next) => async (req) => {
+        if (authzHeader !== null) {
+          req.header.set('authorization', authzHeader);
+        }
+        return next(req);
+      },
+    ],
+  });
+  return createClient(service, transport);
+}
+
+/** Pull the loopback baseUrl out of a bound listener descriptor. Throws
+ *  if the descriptor is not loopback (the boot-e2e always forces it). */
+function loopbackBaseUrl(result: RunStartupResult): string {
+  const desc = result.listenerA!.descriptor();
+  if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') {
+    throw new Error(`expected loopback descriptor, got ${desc.kind}`);
+  }
+  return `http://127.0.0.1:${desc.port}`;
 }
 
 function newMeta() {
@@ -706,5 +746,295 @@ describe('daemon-boot end-to-end (Task #208)', () => {
       // where PROGRAMDATA override always succeeds.
       expect(resp.entries.length).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  // ===========================================================================
+  // Wave-3 #349 — SettingsService + DraftService production wire-up
+  // (spec docs/superpowers/specs/2026-05-04-settings-storage.md §7).
+  //
+  // Nine acceptance assertions extending the rolling-extension contract
+  // (#225, plan §6.6 — every new wire-up PR adds an assertion). Pre-#349
+  // both services were stubs returning `Code.Unimplemented`; these checks
+  // pin the boot UPSERT (§5), the round-trip semantics (§4.2 / §4.4), the
+  // partial-update presence semantics (§4.2), the scope/daemon-derived
+  // rejections (§4.1 / §4.2), the empty-draft + DELETE branch (§4.4), the
+  // peer-cred ownership gate (§4.3), and the migration-lock self-check.
+  // ===========================================================================
+
+  it('§7 #1 — SettingsService.GetSettings is wired and returns boot UPSERT user_home_path', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+    const resp = await client.getSettings({
+      meta: newMeta(),
+      scope: SettingsScope.GLOBAL,
+    });
+    // Pre-#349 contract was Code.Unimplemented; getting a populated
+    // GetSettingsResponse proves the overlay landed.
+    expect(resp.effectiveScope).toBe(SettingsScope.GLOBAL);
+    expect(resp.settings).toBeDefined();
+    // Boot UPSERT (spec §5) writes os.homedir() into `user_home_path`;
+    // it MUST be a non-empty string on every boot regardless of OS.
+    expect(typeof resp.settings?.userHomePath).toBe('string');
+    expect(resp.settings!.userHomePath.length).toBeGreaterThan(0);
+  });
+
+  it('§7 #2 — Settings round-trip: UpdateSettings ui_prefs entry then GetSettings returns it', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+    const upd = await client.updateSettings({
+      meta: newMeta(),
+      settings: create(SettingsSchema, {
+        uiPrefs: { 'appearance.theme': 'dark' },
+      }),
+      scope: SettingsScope.GLOBAL,
+    });
+    // F7 round-trip: the post-merge Settings comes back in the response.
+    expect(upd.settings?.uiPrefs?.['appearance.theme']).toBe('dark');
+    // Subsequent GetSettings reads from the same row.
+    const get = await client.getSettings({
+      meta: newMeta(),
+      scope: SettingsScope.GLOBAL,
+    });
+    expect(get.settings?.uiPrefs?.['appearance.theme']).toBe('dark');
+    // Boot UPSERT row is still present — UpdateSettings did not
+    // clobber daemon-derived state.
+    expect(get.settings!.userHomePath.length).toBeGreaterThan(0);
+  });
+
+  it('§7 #3 — partial-update presence: crash_retention.max_entries=0 with presence bit writes 0', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+    const upd = await client.updateSettings({
+      meta: newMeta(),
+      settings: create(SettingsSchema, {
+        crashRetention: create(CrashRetentionSchema, {
+          maxEntries: 0,
+          maxAgeDays: 0,
+        }),
+      }),
+      scope: SettingsScope.GLOBAL,
+    });
+    expect(upd.settings?.crashRetention).toBeDefined();
+    expect(upd.settings?.crashRetention?.maxEntries).toBe(0);
+    expect(upd.settings?.crashRetention?.maxAgeDays).toBe(0);
+    const get = await client.getSettings({
+      meta: newMeta(),
+      scope: SettingsScope.GLOBAL,
+    });
+    expect(get.settings?.crashRetention).toBeDefined();
+    expect(get.settings?.crashRetention?.maxEntries).toBe(0);
+    expect(get.settings?.crashRetention?.maxAgeDays).toBe(0);
+  });
+
+  it('§7 #4 — Settings rejects PRINCIPAL scope with Code.InvalidArgument', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+    let raised: ConnectError | null = null;
+    try {
+      await client.getSettings({
+        meta: newMeta(),
+        scope: SettingsScope.PRINCIPAL,
+      });
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(raised, 'expected ConnectError on PRINCIPAL scope').not.toBeNull();
+    expect(raised!.code).toBe(Code.InvalidArgument);
+  });
+
+  it('§7 #5 — Settings rejects daemon-derived field write with Code.InvalidArgument', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+    let raised: ConnectError | null = null;
+    try {
+      await client.updateSettings({
+        meta: newMeta(),
+        settings: create(SettingsSchema, {
+          userHomePath: '/tmp/spoofed',
+        }),
+        scope: SettingsScope.GLOBAL,
+      });
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(raised, 'expected ConnectError on user_home_path write').not.toBeNull();
+    expect(raised!.code).toBe(Code.InvalidArgument);
+  });
+
+  it('§7 #6 — DraftService.GetDraft is wired and returns empty for unknown session', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    // Seed a session row owned by the test principal so the peer-cred
+    // gate passes. principalKey for TEST_BEARER_TOKEN is `local-user:test`
+    // (auth/interceptor.ts).
+    const sid = '01HXXXXXXXXXXXXXXXXXXXXXXX'; // valid 26-char Crockford ULID
+    r.db
+      .prepare(
+        'INSERT INTO principals (id, kind, first_seen_ms, last_seen_ms) VALUES (?, ?, ?, ?)',
+      )
+      .run('local-user:test', 'local-user', Date.now(), Date.now());
+    r.db
+      .prepare(
+        'INSERT INTO sessions (id, owner_id, state, cwd, env_json, claude_args_json, geometry_cols, geometry_rows, created_ms, last_active_ms) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sid,
+        'local-user:test',
+        0,
+        '/tmp',
+        '{}',
+        '[]',
+        80,
+        24,
+        Date.now(),
+        Date.now(),
+      );
+    const client = makeServiceClient(DraftService, baseUrl);
+    const resp = await client.getDraft({
+      meta: newMeta(),
+      sessionId: sid,
+    });
+    // Pre-#349 contract was Code.Unimplemented; populated response with
+    // text='' + updated_unix_ms=0 proves the overlay + the empty-draft
+    // branch (draft.proto comment line 18-19).
+    expect(resp.text).toBe('');
+    expect(Number(resp.updatedUnixMs)).toBe(0);
+  });
+
+  it('§7 #7 — Draft round-trip + DELETE: Update→Get returns text; UpdateDraft("") clears the row', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const sid = '01HYYYYYYYYYYYYYYYYYYYYYYY';
+    // Reuse the principal row from §7 #6 (still present in this beforeEach
+    // — single boot per test); just add a second session row.
+    r.db
+      .prepare(
+        'INSERT OR IGNORE INTO principals (id, kind, first_seen_ms, last_seen_ms) VALUES (?, ?, ?, ?)',
+      )
+      .run('local-user:test', 'local-user', Date.now(), Date.now());
+    r.db
+      .prepare(
+        'INSERT INTO sessions (id, owner_id, state, cwd, env_json, claude_args_json, geometry_cols, geometry_rows, created_ms, last_active_ms) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sid,
+        'local-user:test',
+        0,
+        '/tmp',
+        '{}',
+        '[]',
+        80,
+        24,
+        Date.now(),
+        Date.now(),
+      );
+    const client = makeServiceClient(DraftService, baseUrl);
+    const updResp = await client.updateDraft({
+      meta: newMeta(),
+      sessionId: sid,
+      text: 'hello',
+    });
+    expect(Number(updResp.updatedUnixMs)).toBeGreaterThan(0);
+    const getResp = await client.getDraft({
+      meta: newMeta(),
+      sessionId: sid,
+    });
+    expect(getResp.text).toBe('hello');
+    // DELETE branch: UpdateDraft("") removes the row.
+    await client.updateDraft({
+      meta: newMeta(),
+      sessionId: sid,
+      text: '',
+    });
+    const getAfterDelete = await client.getDraft({
+      meta: newMeta(),
+      sessionId: sid,
+    });
+    expect(getAfterDelete.text).toBe('');
+    expect(Number(getAfterDelete.updatedUnixMs)).toBe(0);
+    // Direct SQL probe — row actually GONE, not just empty-string value.
+    const row = r.db
+      .prepare<[string, string], { value: string }>(
+        'SELECT value FROM settings WHERE scope = ? AND key = ?',
+      )
+      .get('global', `draft:${sid}`);
+    expect(row).toBeUndefined();
+  });
+
+  it('§7 #8 — Draft peer-cred enforcement: GetDraft for foreign-owned session returns PermissionDenied', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const sid = '01HZZZZZZZZZZZZZZZZZZZZZZZ';
+    // Insert a "foreign" principal row + a session owned by them.
+    r.db
+      .prepare(
+        'INSERT INTO principals (id, kind, first_seen_ms, last_seen_ms) VALUES (?, ?, ?, ?)',
+      )
+      .run('local-user:other', 'local-user', Date.now(), Date.now());
+    r.db
+      .prepare(
+        'INSERT INTO sessions (id, owner_id, state, cwd, env_json, claude_args_json, geometry_cols, geometry_rows, created_ms, last_active_ms) ' +
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        sid,
+        'local-user:other',
+        0,
+        '/tmp',
+        '{}',
+        '[]',
+        80,
+        24,
+        Date.now(),
+        Date.now(),
+      );
+    const client = makeServiceClient(DraftService, baseUrl);
+    let raised: ConnectError | null = null;
+    try {
+      await client.getDraft({
+        meta: newMeta(),
+        sessionId: sid,
+      });
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(
+      raised,
+      'expected ConnectError on foreign-owned session GetDraft',
+    ).not.toBeNull();
+    expect(raised!.code).toBe(Code.PermissionDenied);
+  });
+
+  it('§7 #9 — migration-lock self-check still passes (no surprise 002_*.sql)', async () => {
+    // Pull the lock + runner exports lazily so the boot above is the
+    // only path that opens the production DB.
+    const { MIGRATION_LOCKS } = await import(
+      '../../src/db/locked.js'
+    );
+    const { runMigrations } = await import('../../src/db/migrations/runner.js');
+    // Spec §7 #9: exactly one entry (001) and a re-run returns
+    // applied: [] because the table-already-there state is the
+    // expected post-boot shape.
+    expect(MIGRATION_LOCKS.length).toBe(1);
+    expect(MIGRATION_LOCKS[0]?.version).toBe(1);
+    expect(result).not.toBeNull();
+    const r = result!;
+    const rerun = runMigrations(r.db);
+    expect(rerun.applied).toEqual([]);
   });
 });
