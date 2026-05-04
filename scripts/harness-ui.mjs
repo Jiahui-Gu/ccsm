@@ -245,59 +245,62 @@ async function caseSettingsUpdatesPane({ win, log }) {
   log('updates pane: version + status labels render, idle status line + check button visible');
 }
 // ---------- titlebar ----------
-// No native frame on win/linux; >=2 top drag regions of expected height;
-// window controls inside right pane (not sidebar) on win/linux.
+// Wave 0c (#217) / Wave 0e (#247): the renderer no longer draws a custom
+// title bar. `electron/window/createWindow.ts` constructs the BrowserWindow
+// without `frame:false` / `titleBarStyle`, so Electron uses the native OS
+// chrome (Win32 caption bar, GNOME headerbar, macOS hiddenInset traffic
+// lights) for drag + min/max/close. The self-drawn `WindowControls` and
+// `DragRegion` strip in `src/App.tsx` were intentionally removed (see the
+// comment block above `<main className="... right-pane-frame ...">`).
+//
+// The earlier version of this case asserted the inverse — that >=2
+// `[style*="app-region: drag"]` elements existed and that
+// `aria-label="Close"`/`Minimize`/`Maximize` buttons were rendered inside
+// the right pane. With native chrome those elements never exist; the case
+// red-flagged a working app every run. PRs #289 / #976 surfaced the
+// regression downstream because harness-ui flips harness-* RED on titlebar.
+//
+// New invariants — all platforms:
+//   * The two-pane shell (`<main>` + `<aside>`) hydrates within 10s.
+//   * The renderer never paints a self-drawn drag strip
+//     (`[style*="app-region: drag"]`) — those would compete with the
+//     native caption for hit-testing and double-pad the top edge.
+//   * The renderer never paints self-drawn window controls
+//     (`button[aria-label="Minimize"|"Maximize"|"Restore"|"Close"]`) —
+//     the native chrome supplies them and we don't want two sets.
 async function caseTitlebar({ app, win, log }) {
   await win.waitForFunction(() => !!document.querySelector('main') && !!document.querySelector('aside'), null, { timeout: 10000 });
 
   const platform = await app.evaluate(() => process.platform);
 
-  const dragRegions = await win.evaluate(() => {
+  const selfDrawnDragRegions = await win.evaluate(() => {
     const els = Array.from(document.querySelectorAll('[style*="app-region: drag"]'));
     return els.map((el) => {
       const r = el.getBoundingClientRect();
       return { height: Math.round(r.height), top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width) };
-    }).filter((r) => r.top === 0);
-  });
-  if (dragRegions.length < 2) {
-    throw new Error(`expected >=2 top drag regions, got ${dragRegions.length}: ${JSON.stringify(dragRegions)}`);
-  }
-  // After PR #347 on win/linux: sidebar drag region is 8px (no traffic
-  // lights to clear). On macOS, commit b876e48 set it to 40px to clear the
-  // hiddenInset titlebar's traffic-light buttons. Right pane stays 32px to
-  // host WindowControls (or empty space on macOS).
-  const expectedLeft = platform === 'darwin' ? 40 : 8;
-  for (const r of dragRegions) {
-    const expected = r.left === 0 ? expectedLeft : 32;
-    if (Math.abs(r.height - expected) > 2) {
-      throw new Error(`drag region height expected ~${expected} (left=${r.left}), got ${r.height}. all=${JSON.stringify(dragRegions)}`);
-    }
-  }
-
-  if (platform !== 'darwin') {
-    for (const name of ['Minimize', 'Close']) {
-      await win.locator(`button[aria-label="${name}"]`).waitFor({ state: 'visible', timeout: 5000 });
-    }
-    await win.locator('button[aria-label="Maximize"], button[aria-label="Restore"]').first().waitFor({ state: 'visible', timeout: 5000 });
-
-    const geometry = await win.evaluate(() => {
-      const sidebar = document.querySelector('aside');
-      const close = Array.from(document.querySelectorAll('button')).find((b) => b.getAttribute('aria-label') === 'Close');
-      if (!sidebar || !close) return null;
-      const s = sidebar.getBoundingClientRect();
-      const c = close.getBoundingClientRect();
-      return { sidebarRight: s.right, closeLeft: c.left, closeRight: c.right, windowWidth: window.innerWidth };
     });
-    if (!geometry) throw new Error('sidebar or Close button missing');
-    if (geometry.closeLeft < geometry.sidebarRight) {
-      throw new Error(`Close button is not inside the right pane (closeLeft=${geometry.closeLeft} < sidebarRight=${geometry.sidebarRight})`);
-    }
-    if (geometry.windowWidth - geometry.closeRight > 4) {
-      throw new Error(`Close button not flush to window right edge (gap=${geometry.windowWidth - geometry.closeRight})`);
-    }
+  });
+  if (selfDrawnDragRegions.length !== 0) {
+    throw new Error(
+      `native chrome regression: expected 0 self-drawn drag regions, got ${selfDrawnDragRegions.length}: ${JSON.stringify(selfDrawnDragRegions)}. ` +
+      `BrowserWindow now uses native frame (electron/window/createWindow.ts); the renderer must not paint app-region:drag strips.`
+    );
   }
 
-  log(`platform=${platform} dragRegions=${dragRegions.length}`);
+  const selfDrawnWindowControls = await win.evaluate(() => {
+    const labels = ['Minimize', 'Maximize', 'Restore', 'Close'];
+    return labels.flatMap((label) =>
+      Array.from(document.querySelectorAll(`button[aria-label="${label}"]`)).map(() => label)
+    );
+  });
+  if (selfDrawnWindowControls.length !== 0) {
+    throw new Error(
+      `native chrome regression: expected 0 self-drawn window-control buttons, got ${JSON.stringify(selfDrawnWindowControls)}. ` +
+      `Native OS chrome supplies min/max/close; the renderer must not render duplicates.`
+    );
+  }
+
+  log(`platform=${platform} native-chrome OK (no self-drawn drag region, no self-drawn window controls)`);
 }
 
 // ---------- tray ----------
