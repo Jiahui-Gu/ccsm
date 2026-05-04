@@ -317,6 +317,58 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     expect(resp.meta?.requestId.startsWith('e2e-')).toBe(true);
   });
 
+  // Wave 3 §6.9 sub-task 5 (Task #336) — SessionService.ListSessions and
+  // GetSession read pair. Same regression catch as the Hello assertion
+  // above: prove the production wire path actually swaps the stub for
+  // the real handler. ListSessions on a fresh boot returns an empty
+  // `sessions` array (not Unimplemented). GetSession against a
+  // never-created id surfaces `Code.PermissionDenied` (the security
+  // boundary in `SessionManager.loadRow` collapses NotFound into
+  // not_owned to prevent cross-principal id enumeration) — also NOT
+  // Unimplemented. Both proofs use the existing bearer-authenticated
+  // session client; no extra fixture state is needed.
+  it('Listener-A.SessionService.ListSessions does NOT return Unimplemented', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const client = makeSessionClient(baseUrl);
+    const meta = newMeta();
+    const resp = await client.listSessions({ meta });
+    // The stub-baseline contract is `Unimplemented`; we proved the real
+    // handler is wired by getting back a populated response shape.
+    expect(resp.meta?.requestId).toBe(meta.requestId);
+    expect(Array.isArray(resp.sessions)).toBe(true);
+    // Fresh boot — no CreateSession handler has landed yet, so the list
+    // is empty. When CreateSession lands this assertion can be relaxed
+    // to `>= 0`.
+    expect(resp.sessions).toHaveLength(0);
+  });
+
+  it('Listener-A.SessionService.GetSession does NOT return Unimplemented', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const client = makeSessionClient(baseUrl);
+    let raised: ConnectError | null = null;
+    try {
+      await client.getSession({ meta: newMeta(), sessionId: 'no-such-id' });
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(raised, 'expected ConnectError on unknown session id').not.toBeNull();
+    // The stub baseline would be Unimplemented. The real handler maps
+    // the missing-row case through `SessionManager.loadRow` which throws
+    // `session.not_owned` (PermissionDenied) — proves the handler ran.
+    expect(raised!.code).not.toBe(Code.Unimplemented);
+    expect(raised!.code).toBe(Code.PermissionDenied);
+  });
+
   it('rejects unauthenticated calls (no bearer token) with Code.Unauthenticated', async () => {
     expect(result).not.toBeNull();
     const r = result!;

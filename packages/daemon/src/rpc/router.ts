@@ -60,6 +60,11 @@ import {
 } from '@ccsm/proto';
 
 import {
+  makeGetSessionHandler,
+  makeListSessionsHandler,
+  type ReadHandlersDeps,
+} from '../sessions/read-handlers.js';
+import {
   makeWatchSessionsHandler,
   type WatchSessionsDeps,
 } from '../sessions/watch-sessions.js';
@@ -150,31 +155,49 @@ export function registerHelloHandler(
 
 /**
  * Register the v0.3 SessionService handlers that have landed so far —
- * Hello (T2.3) and WatchSessions (T3.3) — under a SINGLE
+ * Hello (T2.3), WatchSessions (T3.3) and the read pair ListSessions /
+ * GetSession (Wave 3 §6.9 sub-task 5 / Task #336) — under a SINGLE
  * `router.service(SessionService, ...)` call.
  *
- * Why a combined registration (not two `service()` calls): per Connect-ES
- * `ConnectRouter.service` semantics, calling `service(desc, impl)` twice
- * for the same descriptor REPLACES the prior registration (the router
- * is a path-keyed map). Registering Hello and then WatchSessions
- * separately would silently drop Hello. The Hello-only path
- * (`registerHelloHandler` above) is preserved for callers that have not
- * yet wired a SessionManager (existing test fixtures); production
- * startup wiring (T1.7) uses this combined form.
+ * Why a combined registration (not multiple `service()` calls): per
+ * Connect-ES `ConnectRouter.service` semantics, calling
+ * `service(desc, impl)` more than once for the same descriptor REPLACES
+ * the prior registration (the router is a path-keyed map). Registering
+ * Hello, then WatchSessions, then ListSessions/GetSession in three
+ * separate calls would silently drop the first two. The Hello-only
+ * path (`registerHelloHandler` above) is preserved for callers that
+ * have not yet wired a SessionManager (existing test fixtures);
+ * production startup wiring (T1.7) uses this combined form.
  *
- * Methods not yet implemented (ListSessions, GetSession, CreateSession,
- * DestroySession, RenameSession, ...) remain `Unimplemented` per the
- * Connect router's "absent method → Unimplemented" rule, exactly as in
- * the stub-only path.
+ * `readHandlersDeps` is optional so existing callers (test fixtures
+ * that built `{ helloDeps, watchSessionsDeps }` before #336 landed)
+ * keep compiling without churn. In production startup wiring (T1.7)
+ * it is always supplied — see `index.ts` where the same
+ * `SessionManager` instance is reused across watchSessionsDeps and
+ * readHandlersDeps (single owner of the sessions table).
+ *
+ * Methods not yet implemented (CreateSession, DestroySession,
+ * RenameSession, ...) remain `Unimplemented` per the Connect router's
+ * "absent method → Unimplemented" rule, exactly as in the stub-only
+ * path.
  */
 export function registerSessionService(
   router: ConnectRouter,
-  deps: { readonly helloDeps: HelloDeps; readonly watchSessionsDeps: WatchSessionsDeps },
+  deps: {
+    readonly helloDeps: HelloDeps;
+    readonly watchSessionsDeps: WatchSessionsDeps;
+    readonly readHandlersDeps?: ReadHandlersDeps;
+  },
 ): ConnectRouter {
-  router.service(SessionService, {
+  const impl: Parameters<typeof router.service<typeof SessionService>>[1] = {
     hello: makeHelloHandler(deps.helloDeps),
     watchSessions: makeWatchSessionsHandler(deps.watchSessionsDeps),
-  });
+  };
+  if (deps.readHandlersDeps !== undefined) {
+    impl.listSessions = makeListSessionsHandler(deps.readHandlersDeps);
+    impl.getSession = makeGetSessionHandler(deps.readHandlersDeps);
+  }
+  router.service(SessionService, impl);
   return router;
 }
 
@@ -189,11 +212,12 @@ export function makeDaemonRoutes(
   helloDeps: HelloDeps,
   watchSessionsDeps?: WatchSessionsDeps,
   crashDeps?: CrashServiceDeps,
+  readHandlersDeps?: ReadHandlersDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
     if (watchSessionsDeps !== undefined) {
-      registerSessionService(router, { helloDeps, watchSessionsDeps });
+      registerSessionService(router, { helloDeps, watchSessionsDeps, readHandlersDeps });
     } else {
       registerHelloHandler(router, helloDeps);
     }
@@ -248,6 +272,16 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * rest of startup uses); tests omit it for the stub baseline.
    */
   readonly crashDeps?: CrashServiceDeps;
+  /**
+   * When set (and `helloDeps` + `watchSessionsDeps` are also set),
+   * installs the Wave 3 §6.9 sub-task 5 (Task #336) read pair
+   * (ListSessions / GetSession) in the same SessionService
+   * registration. Both handlers reuse the SessionManager already wired
+   * for WatchSessions (single owner of the sessions table). Tests that
+   * don't need the read pair simply omit it and those two methods stay
+   * `Unimplemented`.
+   */
+  readonly readHandlersDeps?: ReadHandlersDeps;
 }
 
 /**
@@ -286,9 +320,9 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { helloDeps, watchSessionsDeps, crashDeps, interceptors: callerInterceptors, ...rest } = options;
+  const { helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps, interceptors: callerInterceptors, ...rest } = options;
   const routes =
-    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps) : stubRoutes;
+    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps, readHandlersDeps) : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),
