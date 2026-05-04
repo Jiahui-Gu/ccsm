@@ -188,6 +188,121 @@ describe('spawnPtyHostChild — send() guards', () => {
   });
 });
 
+describe('spawnPtyHostChild — T4.11a snapshot→WriteCoalescer wire-up (Task #386)', () => {
+  // Spec ch07 §5: every snapshot the child posts must be enqueued into
+  // the coalescer (parallel to the in-memory emitter fan-out, not
+  // mutually exclusive). Stub the coalescer with a duck-typed object
+  // that records every call — no DB needed at this layer.
+
+  it('routes a well-formed SnapshotMessage IPC into coalescer.enqueueSnapshot exactly once with the correct payload', async () => {
+    const calls: Array<{
+      kind: 'snapshot';
+      sessionId: string;
+      baseSeq: number;
+      schemaVersion: number;
+      geometryCols: number;
+      geometryRows: number;
+      payload: Uint8Array;
+      createdMs: number;
+    }> = [];
+    const coalescer = {
+      enqueueSnapshot(write: typeof calls[number]) {
+        calls.push(write);
+      },
+    };
+
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId: 'sess-coalescer' }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'snapshot-coalescer' },
+      coalescer,
+    });
+
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId: 'sess-coalescer' }) });
+
+      // Drive the iterator until the snapshot lands so we don't race the
+      // closeAndWait teardown.
+      for await (const m of handle.messages()) {
+        if (m.kind === 'snapshot') break;
+      }
+    } finally {
+      await handle.closeAndWait();
+    }
+
+    expect(calls).toHaveLength(1);
+    const got = calls[0]!;
+    expect(got.kind).toBe('snapshot');
+    expect(got.sessionId).toBe('sess-coalescer');
+    expect(got.baseSeq).toBe(7);
+    expect(got.schemaVersion).toBe(1);
+    expect(got.geometryCols).toBe(120);
+    expect(got.geometryRows).toBe(40);
+    expect(Array.from(got.payload)).toEqual([0xde, 0xad, 0xbe, 0xef]);
+    expect(typeof got.createdMs).toBe('number');
+    expect(got.createdMs).toBeGreaterThan(0);
+  });
+
+  it('does not call coalescer.enqueueSnapshot when no coalescer is provided (opt-out default)', async () => {
+    // Same fixture mode emits a snapshot; with no coalescer wired, the
+    // host must silently skip the SQLite path (lifecycle + emitter
+    // fan-out unaffected).
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId: 'sess-no-coalescer' }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'snapshot-coalescer' },
+    });
+
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId: 'sess-no-coalescer' }) });
+      for await (const m of handle.messages()) {
+        if (m.kind === 'snapshot') break;
+      }
+    } finally {
+      await handle.closeAndWait();
+    }
+    // No assertion needed beyond reaching here without throwing — the
+    // absence of a coalescer must not crash the IPC pump.
+  });
+
+  it('keeps the IPC pump alive when coalescer.enqueueSnapshot throws', async () => {
+    // The coalescer documents two throw paths: ConnectError(RESOURCE_
+    // EXHAUSTED) on queue cap, and programmer-error rethrows. Neither
+    // may take down the daemon main process — the session keeps
+    // running off the in-memory ring.
+    const coalescer = {
+      enqueueSnapshot(): void {
+        throw new Error('simulated coalescer failure');
+      },
+    };
+    const handle = spawnPtyHostChild({
+      payload: makePayload({ sessionId: 'sess-coalescer-throws' }),
+      childEntrypoint: FIXTURE,
+      forkEnv: { ...process.env, CCSM_FIXTURE_MODE: 'snapshot-coalescer' },
+      coalescer,
+    });
+
+    try {
+      await handle.ready();
+      handle.send({ kind: 'spawn', payload: makePayload({ sessionId: 'sess-coalescer-throws' }) });
+      // Iterator must still see the snapshot — the throw is swallowed.
+      let sawSnapshot = false;
+      for await (const m of handle.messages()) {
+        if (m.kind === 'snapshot') {
+          sawSnapshot = true;
+          break;
+        }
+      }
+      expect(sawSnapshot).toBe(true);
+    } finally {
+      const exit = await handle.closeAndWait();
+      expect(exit.reason).toBe('graceful');
+    }
+  });
+});
+
 describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => {
   // The fixture mirrors src/pty-host/child.ts's send-input handling:
   // small CCSM_PTY_PENDING_CAP_BYTES + the `send-input-rejected` IPC

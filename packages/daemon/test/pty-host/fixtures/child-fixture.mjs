@@ -11,6 +11,11 @@
 //   CCSM_FIXTURE_MODE=crash          — ready then process.exit(137) immediately
 //   CCSM_FIXTURE_MODE=no-ready       — never send ready (parent ready() should reject on exit)
 //   CCSM_FIXTURE_MODE=echo           — echo every spawn payload back as a 'snapshot' kind
+//   CCSM_FIXTURE_MODE=snapshot-coalescer — emit one well-formed SnapshotMessage on spawn
+//                                       (T4.11a / Task #386: coalescer wire-up coverage).
+//                                       Payload bytes are deterministic so the spec can
+//                                       byte-compare the SnapshotWrite the coalescer
+//                                       receives.
 //   CCSM_FIXTURE_MODE=backpressure   — T4.3: enforce a small pending-write cap
 //                                       (CCSM_PTY_PENDING_CAP_BYTES) and emit
 //                                       'send-input-rejected' IPC matching the
@@ -60,6 +65,18 @@ process.on('message', (raw) => {
   if (k === 'spawn') {
     if (mode === 'echo') {
       send({ kind: 'snapshot' });
+    } else if (mode === 'snapshot-coalescer') {
+      // Well-formed SnapshotMessage per pty-host/types.ts §2.4. bigint
+      // fields survive the IPC because spawnPtyHostChild uses
+      // serialization: 'advanced' (structured clone). Deterministic
+      // payload so host.spec.ts can assert byte equality.
+      send({
+        kind: 'snapshot',
+        baseSeq: 7n,
+        geometry: { cols: 120, rows: 40 },
+        screenState: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+        schemaVersion: 1,
+      });
     }
     return;
   }
