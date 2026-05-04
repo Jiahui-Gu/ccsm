@@ -64,6 +64,7 @@ import {
   type WatchSessionsDeps,
 } from '../sessions/watch-sessions.js';
 
+import { registerCrashService, type CrashServiceDeps } from './crash/register.js';
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
 
@@ -187,6 +188,7 @@ export function registerSessionService(
 export function makeDaemonRoutes(
   helloDeps: HelloDeps,
   watchSessionsDeps?: WatchSessionsDeps,
+  crashDeps?: CrashServiceDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -194,6 +196,15 @@ export function makeDaemonRoutes(
       registerSessionService(router, { helloDeps, watchSessionsDeps });
     } else {
       registerHelloHandler(router, helloDeps);
+    }
+    // CrashService overlay (Wave-3 #229 / audit #228 sub-task 2).
+    // `registerCrashService` REPLACES the stub registration for
+    // CrashService with a partial impl exposing `getCrashLog`; the
+    // router's "absent method -> Unimplemented" fallback keeps
+    // `watchCrashLog` / `getRawCrashLog` stubbed (separate sub-tasks).
+    // Same additive overlay shape as SessionService above.
+    if (crashDeps !== undefined) {
+      registerCrashService(router, crashDeps);
     }
   };
 }
@@ -227,6 +238,16 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * a manager simply omit it (Hello-only path stays).
    */
   readonly watchSessionsDeps?: WatchSessionsDeps;
+  /**
+   * When set, installs the Wave-3 CrashService overlay (Task #229 /
+   * audit #228 sub-task 2) on top of the stubs. Today this binds
+   * `CrashService.GetCrashLog`; the streaming siblings
+   * (`GetRawCrashLog`, `WatchCrashLog`) stay `Unimplemented` until
+   * their sub-tasks land. Production startup wires this when
+   * `index.ts` constructs a `crashDeps` (the same `db` handle the
+   * rest of startup uses); tests omit it for the stub baseline.
+   */
+  readonly crashDeps?: CrashServiceDeps;
 }
 
 /**
@@ -265,9 +286,9 @@ export type DaemonNodeHandler = ReturnType<typeof connectNodeAdapter>;
 export function createDaemonNodeAdapter(
   options: CreateDaemonNodeAdapterOptions = {},
 ): DaemonNodeHandler {
-  const { helloDeps, watchSessionsDeps, interceptors: callerInterceptors, ...rest } = options;
+  const { helloDeps, watchSessionsDeps, crashDeps, interceptors: callerInterceptors, ...rest } = options;
   const routes =
-    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps) : stubRoutes;
+    helloDeps !== undefined ? makeDaemonRoutes(helloDeps, watchSessionsDeps, crashDeps) : stubRoutes;
   const interceptors = [
     requestMetaInterceptor,
     ...(callerInterceptors ?? []),

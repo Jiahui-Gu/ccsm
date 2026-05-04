@@ -318,10 +318,23 @@ export async function runStartup(
     // `registerSessionService` "twice replaces" caveat).
     const sessionManager = new SessionManager(db);
     const watchSessionsDeps = { manager: sessionManager };
+    // Wave-3 #229 — wire CrashService.GetCrashLog handler in production.
+    // Audit #228 sub-task 2 (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md):
+    // pre-#229 the entire CrashService was a stub on the wire even though
+    // `crash_log` is populated end-to-end at boot (`replayCrashRawOnBoot`).
+    // We pass the SAME `db` handle the rest of startup uses (single owner
+    // of the SQLite file; the future #335 WatchCrashLog wave reuses this
+    // same instance for its event-bus subscription). The streaming siblings
+    // (#334 GetRawCrashLog, #335 WatchCrashLog) stay `Unimplemented` until
+    // their sub-tasks land — `registerCrashService` ships a partial impl
+    // with only `getCrashLog` and the router's "absent method ->
+    // Unimplemented" rule covers the rest.
+    const crashDeps = { getCrashLogDeps: { db } };
     listenerA = makeListenerA(env, {
       bindHook: makeRouterBindHook({
         helloDeps,
         watchSessionsDeps,
+        crashDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by
@@ -417,6 +430,14 @@ export async function runStartup(
   if (crashReplayResult !== null && crashReplayResult !== undefined) {
     wired.push('crash-replayer');
   }
+  // `crash-rpc`: bound to the Listener A Connect router via
+  // `makeRouterBindHook({ crashDeps })` above. Track it as wired iff
+  // Listener A actually bound — the test seam
+  // `CCSM_DAEMON_SKIP_LISTENER=1` short-circuits the listener bind, in
+  // which case the CrashService overlay never reaches the router and
+  // this name correctly stays absent from `wired` (assertWired then
+  // throws on the missing `listener-a` first).
+  if (listenerA !== null) wired.push('crash-rpc');
   // `write-coalescer`: NOT pushed yet — module exists at
   // `src/sqlite/coalescer.ts` but the per-session pty-host bridge
   // wires in T6.x. `assertWired` treats this name as WARN_ONLY for now

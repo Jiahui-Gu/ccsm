@@ -28,6 +28,12 @@
  * - `supervisor`     — Supervisor UDS server is bound (T1.7).
  * - `capture-sources`— `installCaptureSources` ran (ch09 §1).
  * - `crash-replayer` — `replayCrashRawOnBoot` ran (ch09 §6.2).
+ * - `crash-rpc`      — `CrashService.GetCrashLog` Connect handler is
+ *   installed on Listener A (Wave-3 #229 / audit #228 sub-task 2).
+ *   Pre-#229 the entire `CrashService` returned `Unimplemented` despite
+ *   the `crash_log` table being populated; this name asserts the wire
+ *   handler is in the production overlay so a regression that drops
+ *   the `crashDeps` pass-through fails boot.
  * - `write-coalescer`— SQLite write coalescer is wired (ch07 §5).
  *   v0.3 status: the coalescer module exists at
  *   `src/sqlite/coalescer.ts` but the per-session bridge that hands it
@@ -43,6 +49,7 @@ export const REQUIRED_COMPONENTS: ReadonlyArray<string> = [
   'supervisor',
   'capture-sources',
   'crash-replayer',
+  'crash-rpc',
   'write-coalescer',
 ] as const;
 
