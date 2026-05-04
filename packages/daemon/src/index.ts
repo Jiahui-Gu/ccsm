@@ -58,6 +58,7 @@ import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
 import { upsertSettingsBoot } from './rpc/settings/store.js';
 import { SessionManager, type ISessionManager } from './sessions/SessionManager.js';
+import { makeProductionAttachPtyHost } from './pty-host/attach-on-create.js';
 import { statePaths } from './state-dir/paths.js';
 import {
   Shutdown,
@@ -423,7 +424,23 @@ export async function runStartup(
     // here (Task #359 wires `attachPtyHost` separately so the unary
     // handler stays decoupled from the spawn lifecycle — see
     // `sessions/create-handler.ts` SCOPE note).
-    const createSessionDeps = { manager: sessionManager };
+    // same boot. Task #359 wires `attachPtyHost` here so the new row
+    // gets a per-session pty-host child fork + lifecycle watcher
+    // chained to `SessionManager.markEnded` on child exit.
+    // `CCSM_PTY_HOST_CHILD_ENTRYPOINT` is the test seam: the
+    // daemon-boot e2e injects the pty-host fixture (vitest cannot
+    // `child_process.fork` `child.ts` without a tsx loader); production
+    // omits the env and `host.ts` resolves `dist/pty-host/child.js`
+    // via `import.meta.url` math.
+    const createSessionDeps = {
+      manager: sessionManager,
+      attachPtyHost: makeProductionAttachPtyHost({
+        manager: sessionManager,
+        childEntrypoint: process.env.CCSM_PTY_HOST_CHILD_ENTRYPOINT,
+        onError: (where, err) =>
+          log(`attachPtyHost ${where} step threw: ${String(err)}`),
+      }),
+    };
     // Wave-3 #349 — wire SettingsService + DraftService production
     // overlays (spec #337 §6.1 step 1). Both services share the same
     // `db` handle (drafts ride on the `settings` table under key

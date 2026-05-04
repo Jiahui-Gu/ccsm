@@ -164,6 +164,20 @@ async function setupBootEnv(): Promise<BootEnv> {
       ? `\\\\.\\pipe\\ccsm-daemon-boot-e2e-${process.pid}-${Date.now()}`
       : join(tmpRoot, 'supervisor.sock');
   process.env.CCSM_VERSION = '0.3.0-e2e-test';
+  // Task #359: production CreateSession wires `attachPtyHost` which
+  // forks a per-session pty-host child via `child_process.fork`.
+  // `child.ts` is not loadable by `node` directly under vitest (no tsx
+  // loader); point the production factory at the same `child-fixture.mjs`
+  // the host.spec uses so the e2e exercises the full spawn → ready →
+  // exit → markEnded chain on real IPC bytes. Production omits the env
+  // and `host.ts` falls back to `dist/pty-host/child.js`.
+  process.env.CCSM_PTY_HOST_CHILD_ENTRYPOINT = join(
+    HERE,
+    '..',
+    'pty-host',
+    'fixtures',
+    'child-fixture.mjs',
+  );
   return { tmpRoot, origEnv };
 }
 
@@ -576,6 +590,256 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     // proto change to the variant tag fails this loud.
     expect(sess.owner?.kind?.case).toBe('localUser');
     expect(resp.meta?.requestId).toBe(meta.requestId);
+  });
+
+  // Wave-3 §6.9 sub-task 8 / Task #359 — CreateSession wires
+  // `attachPtyHost` (`spawnPtyHostChild` + `watchPtyHostChildLifecycle`).
+  // Pre-#359 the CreateSession handler INSERTed the row + published
+  // `created` but did NOT fork the per-session pty-host child, so the
+  // row sat in STARTING forever and the WatchSessions stream never saw
+  // `ended`. Two assertions:
+  //
+  //   1. process-tree probe: after CreateSession returns, the daemon
+  //      process has at least one extra child (the pty-host fork) it
+  //      did NOT have before the call. Uses `tasklist` on win32 and
+  //      `ps` on POSIX — both cross-OS executables that ship with the
+  //      base OS install. Tolerant of races: the child may exit between
+  //      the CreateSession ack and our probe (the fixture's `normal`
+  //      mode keeps the child alive until `close`), so the assertion
+  //      uses `>=` rather than `==` against a captured baseline.
+  //
+  //   2. crash → ended event: a child crash (fixture `CCSM_FIXTURE_MODE
+  //      =crash` — ready then `process.exit(137)`) propagates through
+  //      `watchPtyHostChildLifecycle` → `decideSessionEnd` →
+  //      `SessionManager.markEnded` and the `SessionEvent.ended` lands
+  //      on the WatchSessions stream the renderer subscribes to. This
+  //      is the load-bearing wire for the v0.3 client's "session
+  //      crashed" UX — without #359 the row stays STARTING and the UI
+  //      never updates.
+  //
+  // The fixture is injected via `CCSM_PTY_HOST_CHILD_ENTRYPOINT` set in
+  // `setupBootEnv` (vitest cannot fork `child.ts` directly); the boot
+  // here uses `normal` mode by default but the second `it` re-runs
+  // with `crash` mode in the forked child via the env override.
+  it('Task #359 — CreateSession forks a per-session pty-host child (process-tree probe)', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    r.db
+      .prepare(
+        `INSERT OR IGNORE INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run('local-user:test', 'local-user', 'test', Date.now(), Date.now());
+
+    // Capture child pids of the daemon test process BEFORE CreateSession.
+    // Differencing against the post-create snapshot pins the new fork
+    // even if the test runner has its own children. We do not assert
+    // exact count — just "strictly more after than before", which
+    // tolerates concurrent vitest workers spawning their own children.
+    const { spawnSync } = await import('node:child_process');
+    function listChildPids(parentPid: number): number[] {
+      if (process.platform === 'win32') {
+        // wmic is deprecated on Win11 23H2 but `tasklist /v` doesn't
+        // expose ParentPID. Use `wmic process where (ParentProcessId=PID) get ProcessId`
+        // via PowerShell as the cross-Win-version path.
+        const r = spawnSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-Command',
+            `Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | Select-Object -ExpandProperty ProcessId`,
+          ],
+          { encoding: 'utf8' },
+        );
+        if (r.status !== 0) return [];
+        return r.stdout
+          .split(/\r?\n/)
+          .map((s) => Number.parseInt(s.trim(), 10))
+          .filter((n) => Number.isFinite(n) && n > 0);
+      }
+      // POSIX: `ps -o pid= --ppid <pid>` is portable across linux/mac.
+      const r = spawnSync('ps', ['-o', 'pid=', '--ppid', String(parentPid)], {
+        encoding: 'utf8',
+      });
+      if (r.status !== 0) return [];
+      return r.stdout
+        .split(/\r?\n/)
+        .map((s) => Number.parseInt(s.trim(), 10))
+        .filter((n) => Number.isFinite(n) && n > 0);
+    }
+
+    const before = new Set(listChildPids(process.pid));
+
+    const client = makeSessionClient(baseUrl);
+    await client.createSession({
+      meta: newMeta(),
+      cwd: setup.tmpRoot,
+      env: {},
+      claudeArgs: ['--help'],
+      initialGeometry: create(PtyGeometrySchema, { cols: 80, rows: 24 }),
+    });
+
+    // The fork happens synchronously inside the CreateSession handler
+    // (spawnPtyHostChild returns a handle immediately), but `ps` /
+    // `wmic` queries need a moment to see the new entry. Poll for up
+    // to 2s with 50ms cadence; bail the moment we see a delta.
+    const deadline = Date.now() + 2000;
+    let after: Set<number> = new Set();
+    let sawNewChild = false;
+    while (Date.now() < deadline) {
+      after = new Set(listChildPids(process.pid));
+      const newPids = [...after].filter((p) => !before.has(p));
+      if (newPids.length >= 1) {
+        sawNewChild = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(
+      sawNewChild,
+      `expected at least one new child of pid=${process.pid} after CreateSession; ` +
+        `before=[${[...before].join(',')}] after=[${[...after].join(',')}]`,
+    ).toBe(true);
+  });
+
+  it('Task #359 — child crash propagates SessionEvent.ended through WatchSessions', { timeout: 15000 }, async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    r.db
+      .prepare(
+        `INSERT OR IGNORE INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run('local-user:test', 'local-user', 'test', Date.now(), Date.now());
+
+    // Flip the fixture into crash mode for THIS test only by mutating
+    // the env the daemon-side `attachPtyHost` reads when it forks the
+    // child. The daemon snapshotted CCSM_PTY_HOST_CHILD_ENTRYPOINT at
+    // boot, but `forkEnv` in the production factory is `undefined`
+    // which means `host.ts` inherits `process.env` per-call — so a
+    // mutation here lands in the next fork.
+    const prevMode = process.env.CCSM_FIXTURE_MODE;
+    process.env.CCSM_FIXTURE_MODE = 'crash';
+
+    try {
+      // Open a WatchSessions stream BEFORE CreateSession so we don't
+      // miss the `created` → `ended` sequence. Use the same OWN scope
+      // the renderer uses.
+      const ac = new AbortController();
+      const client = makeSessionClient(baseUrl);
+      const stream = client.watchSessions(
+        create(WatchSessionsRequestSchema, {
+          meta: newMeta(),
+          scope: WatchScope.OWN,
+        }),
+        { signal: ac.signal },
+      );
+      const iterator = stream[Symbol.asyncIterator]();
+
+      // Wait for the bus subscription to land before CreateSession (same
+      // pattern the WatchSessions smoke uses above) so the `created`
+      // event is not raced past.
+      const sessionManagerCast = r.sessionManager as unknown as {
+        readonly eventBus: { readonly listenerCount: (k: string) => number };
+      };
+      const subscribeDeadline = Date.now() + 5000;
+      while (
+        sessionManagerCast.eventBus.listenerCount('local-user:test') === 0 &&
+        Date.now() < subscribeDeadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      const created = await client.createSession({
+        meta: newMeta(),
+        cwd: setup.tmpRoot,
+        env: {},
+        claudeArgs: ['--help'],
+        initialGeometry: create(PtyGeometrySchema, { cols: 80, rows: 24 }),
+      });
+      const sessionId = created.session!.id;
+
+      // Drain events until we see the proto SessionEvent that the
+      // bus's `ended` wire-mapping produces, with a hard upper bound so
+      // a regression where ended never fires surfaces as a clean test
+      // fail rather than a hung suite. The crash fixture exits
+      // ~immediately after `ready`, so 10s is generous (cross-OS
+      // process startup overhead can push the create→ready→exit→
+      // markEnded chain past the 5s default).
+      //
+      // Wire shape note (`watch-sessions.ts:eventToProto` + spec ch06
+      // §1): the in-memory `'ended'` bus event maps to the proto oneof
+      // case `updated` carrying the full Session row — clients
+      // distinguish "child died" from "user-initiated DestroySession"
+      // by inspecting the post-update `state` field (CRASHED for crash,
+      // EXITED for graceful close), not by the oneof tag. The test
+      // therefore matches on `(kind.case === 'updated' && state ===
+      // CRASHED)` rather than a dedicated `ended` tag.
+      //
+      // Implementation note: we keep ONE in-flight `iterator.next()`
+      // promise at a time. Calling `iterator.next()` twice without
+      // awaiting violates the async-iterator contract (the second call
+      // races with the first and may swallow events). The outer
+      // deadline-race uses a single sentinel timeout that cancels the
+      // whole loop, not per-iteration races.
+      const STATE_CRASHED = 4; // sessions/types.ts SessionState.CRASHED
+      let endedSeen = false;
+      let endedReason: string | undefined;
+
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      const timeoutPromise = new Promise<{ kind: 'timeout' }>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve({ kind: 'timeout' }), 10000);
+      });
+      try {
+        while (!endedSeen) {
+          const winner = await Promise.race([
+            iterator.next().then((ev) => ({ kind: 'event' as const, ev })),
+            timeoutPromise,
+          ]);
+          if (winner.kind === 'timeout') break;
+          const ev = winner.ev;
+          if (ev.done) break;
+          const value = ev.value as {
+            kind: { case: string; value: { id: string; state?: number } };
+          };
+          if (
+            value.kind.case === 'updated' &&
+            value.kind.value.id === sessionId &&
+            value.kind.value.state === STATE_CRASHED
+          ) {
+            endedSeen = true;
+            endedReason = String(value.kind.value.state);
+            break;
+          }
+        }
+      } finally {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        ac.abort();
+        await iterator.return?.(undefined).catch(() => {});
+      }
+
+      expect(
+        endedSeen,
+        `expected SessionEvent.ended for session ${sessionId} within 5s; ` +
+          `reason=${endedReason ?? '(none)'}`,
+      ).toBe(true);
+    } finally {
+      if (prevMode === undefined) {
+        delete process.env.CCSM_FIXTURE_MODE;
+      } else {
+        process.env.CCSM_FIXTURE_MODE = prevMode;
+      }
+    }
   });
 
   it('rejects unauthenticated calls (no bearer token) with Code.Unauthenticated', async () => {
