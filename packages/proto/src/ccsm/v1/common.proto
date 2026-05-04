@@ -34,6 +34,40 @@ enum SessionState {
   SESSION_STATE_CRASHED = 4;
 }
 
+// Forever-stable. Per-session SDK-turn axis — ORTHOGONAL to `SessionState`
+// (which is process lifecycle: STARTING/RUNNING/EXITED/CRASHED). A session
+// in `SESSION_STATE_RUNNING` (the OS subprocess is alive) can be in any of
+// the three turn states below depending on what claude is doing inside that
+// subprocess. UI uses the turn axis to drive the AgentIcon attention halo
+// (idle / requires_action → halo on, running → halo off); process axis
+// drives the row presence + crash/exit affordances. Don't conflate.
+//
+// Mirrors the SDK's authoritative `SDKSessionStateChangedMessage.state`
+// enum (see `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`) so the
+// daemon does not invent a parallel vocabulary the UI then has to translate
+// twice. ccsm spawns the CLI as a subprocess and tails the on-disk JSONL
+// transcript to infer this axis (see
+// `packages/daemon/src/sessionWatcher/inference.ts`).
+//
+// Wire encoding: the proto3 enum names below intentionally collide with no
+// existing identifier. The `*_UNSPECIFIED = 0` slot is the proto3 default
+// and means "daemon has not yet inferred a turn state for this session"
+// (e.g. JSONL file not yet appeared). Clients MUST treat UNSPECIFIED as
+// "no halo signal" — NOT as a synonym for IDLE — to avoid spurious
+// attention flashes during session start-up before the first JSONL frame
+// lands.
+enum SessionTurnState {
+  SESSION_TURN_STATE_UNSPECIFIED = 0;
+  // Claude finished its turn; the user owes the next move. Drive halo on.
+  SESSION_TURN_STATE_IDLE = 1;
+  // Claude is mid-turn (tool call in flight, or user just typed and the
+  // assistant frame hasn't landed yet). Halo off.
+  SESSION_TURN_STATE_RUNNING = 2;
+  // Claude paused on a permission prompt. Drive halo on (same UX as IDLE
+  // for v0.3; v0.4 may differentiate with a distinct affordance).
+  SESSION_TURN_STATE_REQUIRES_ACTION = 3;
+}
+
 // Forever-stable. Used by every RPC for traceability.
 //
 // F7: closes R4 P1 — daemon MUST validate `request_id` is non-empty on every

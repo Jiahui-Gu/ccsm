@@ -1,12 +1,12 @@
 {
   "version": 1,
   "files": {
-    "src/ccsm/v1/common.proto": "7e06b7b67fe1f4a75852392238e565bb6ba8081964cba3656cedaaaad2ee5102",
+    "src/ccsm/v1/common.proto": "f064186f4af6d0e3a45d3d1a38ba1c2e66bd6ea69f94f5cd3f447c47f311dbe2",
     "src/ccsm/v1/crash.proto": "d7133746b30daaa20041d0309a196e08ba87f4ab68ee5ffc0a3175a0dc041ce9",
     "src/ccsm/v1/draft.proto": "895e426a34ea4d9f1743049149c64214a5d4af866f4381f98b998a49acac7946",
     "src/ccsm/v1/notify.proto": "2332a47efa90c6b3e982964c7bda4489aff16b599ea6da59a85e4f4f408d878d",
     "src/ccsm/v1/pty.proto": "430658cf93fecac7e53e49b63735aa9962b0fe7ff03a4c2398a681167e828d60",
-    "src/ccsm/v1/session.proto": "ab3e9a70f20fdfadb7c64ef7aa37b89d324d14aaa150a7d7938e30de9ca68467",
+    "src/ccsm/v1/session.proto": "dc4a78eced7ec31e431edf5b00a74f7aa0179161805ecde268a957836d86e325",
     "src/ccsm/v1/settings.proto": "2894f3dc91a912f269994686dc58596229fed359e63f4389d10c9840a328e173",
     "src/ccsm/v1/supervisor.proto": "d6018cc763f8097ce2df097865ee59b7fdecee84f9fe8b784a563b4709b9f1d5"
   }

@@ -144,6 +144,27 @@ message Session {
   // presence-bit: bit unset means "not currently spawned"; any non-zero
   // value is a live OS pid attributable to this session.
   optional int32 runtime_pid = 9;
+  // Task #265: SDK turn-state axis (orthogonal to `state` above, which is
+  // the OS process lifecycle axis). Sourced from the daemon's JSONL
+  // tail-watcher (`packages/daemon/src/sessionWatcher/inference.ts`).
+  // Drives the renderer's AgentIcon attention halo via WatchSessions
+  // `updated` events — daemon emits `SessionEvent.updated` with the new
+  // turn_state whenever the inferred axis transitions for a session.
+  //
+  // `optional` (proto3 field-presence): an unset bit means "daemon has
+  // not yet inferred a turn state for this session" (e.g. JSONL file not
+  // yet appeared / brand-new session). Distinguishable on the wire from
+  // `SESSION_TURN_STATE_UNSPECIFIED` set explicitly only via the
+  // presence bit; clients SHOULD treat both unset and UNSPECIFIED as
+  // "no halo signal".
+  //
+  // v0.3 cutover: the renderer subscribes to WatchSessions, reads
+  // `turn_state` off the `updated` Session payloads, and feeds it through
+  // the existing `mapState` in `src/agent/lifecycle.ts` (replacing the
+  // current Electron-IPC `session:state` channel). Wire is forever-stable;
+  // future axes (e.g. autoscroll-pinned-by-user) get new field numbers,
+  // never reuse 10.
+  optional SessionTurnState turn_state = 10;
 }
 
 // F6: closes R1 P0.1 (chapter 08). Forever-stable. Per-session friendly
