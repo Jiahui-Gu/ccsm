@@ -1,0 +1,22 @@
+{
+  "name": "@ccsm/sea-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Post-install daemon end-to-end smoke (T7.8 / spec ch10 §7). Invoked by e2e-installer-{win,mac,linux} jobs AFTER the installer has placed the ccsm-daemon binary and registered the per-OS service. NOT a unit test — runs the real installed service via systemctl / launchctl / Start-Service, polls Supervisor /healthz over UDS or named pipe, then exercises Hello + CreateSession + Attach + Stop end-to-end.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "node --import tsx main.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0",
+    "@ccsm/proto": "workspace:*",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.7.3"
+  }
+}
