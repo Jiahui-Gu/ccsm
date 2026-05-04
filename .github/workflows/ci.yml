@@ -265,32 +265,33 @@ jobs:
       # cross-platform invocation: cd into the package and run the locally
       # installed vitest via npx (resolves through the hoisted node_modules).
       #
-      # Per-package devDeps install: the root `npm ci` only installs the root
-      # package.json's deps — it ignores `packages/*/package.json` because the
-      # root has no `workspaces` field (intentional: pnpm-workspace.yaml is the
-      # source of truth, npm is just CI's installer). Result: `cd
-      # packages/daemon && npx vitest` cannot resolve daemon-only devDeps like
-      # `@connectrpc/connect-node` (imported by src/rpc/router.ts → loaded by
-      # src/rpc/__tests__/router.spec.ts). Locally `pnpm install` populates
-      # packages/daemon/node_modules/ so the gap is invisible. We `npm install
-      # --no-save --no-audit --no-fund --legacy-peer-deps` per package right
-      # before its coverage gate so the package's own deps are present without
-      # touching the root lockfile.
-      - name: Install daemon package deps
-        working-directory: packages/daemon
-        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps
+      # Per-package devDeps not in the root install: the root `npm ci` only
+      # installs deps from the root package.json — it ignores
+      # `packages/*/package.json` because the root has no `workspaces` field
+      # (intentional: pnpm-workspace.yaml is the source of truth, npm is just
+      # CI's installer). Result: `cd packages/daemon && npx vitest` cannot
+      # resolve daemon-only devDeps like `@connectrpc/connect-node` (imported
+      # by src/rpc/router.ts → loaded by src/rpc/__tests__/router.spec.ts).
+      # Locally `pnpm install` populates packages/daemon/node_modules/ via
+      # symlink so the gap is invisible.
+      #
+      # Cannot `cd packages/daemon && npm install` — daemon's package.json
+      # references `@ccsm/proto: workspace:*` and npm errors with
+      # EUNSUPPORTEDPROTOCOL on the `workspace:` protocol. Instead, install
+      # only the third-party deps the per-package vitest run needs into the
+      # root node_modules tree (npm hoists single-package installs there;
+      # node's import resolver finds them via parent-walk from
+      # packages/daemon/). `--no-save` keeps the root package-lock.json
+      # untouched. Pin the version to match packages/daemon/package.json
+      # devDeps so the gate exercises the wire types the daemon ships with.
+      - name: Install missing daemon devDeps for coverage gate
+        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps @connectrpc/connect-node@^2.1.1
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       - name: Coverage (daemon, unit only — temp 50% gate, see #350)
         working-directory: packages/daemon
         run: npx vitest run --coverage --config vitest.config.coverage.ts
-
-      - name: Install electron package deps
-        working-directory: packages/electron
-        run: npm install --no-save --no-audit --no-fund --legacy-peer-deps
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
       - name: Coverage (electron renderer — 60% gate)
         working-directory: packages/electron
