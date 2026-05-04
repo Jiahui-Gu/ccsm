@@ -55,7 +55,10 @@
     "proto-version-check": "pnpm --filter @ccsm/proto run version-drift-check",
     "check:engines": "node -e \"if(!process.version.startsWith('v22.'))console.warn('[warn] CI uses Node 22, you have '+process.version+'; native modules may need rebuild')\"",
     "check:native": "cd packages/daemon && node -e \"require('better-sqlite3')(':memory:').exec('select 1')\"",
-    "rebuild:native": "npm rebuild better-sqlite3"
+    "rebuild:native": "npm rebuild better-sqlite3",
+    "package:win-msi": "pnpm --filter @ccsm/daemon run sign:win && pnpm --filter @ccsm/daemon run build:msi && pwsh tools/verify-signing.ps1",
+    "package:mac-pkg": "pnpm --filter @ccsm/daemon run sign:mac && pnpm --filter @ccsm/daemon run build:pkg:mac && bash tools/verify-signing.sh",
+    "package:linux-deb-rpm": "pnpm --filter @ccsm/daemon run sign:linux && pnpm --filter @ccsm/daemon run build:pkg:linux && bash tools/verify-signing.sh"
   },
   "engines": {
     "node": ">=22.0.0 <23"
