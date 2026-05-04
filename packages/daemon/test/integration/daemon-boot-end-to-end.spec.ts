@@ -264,6 +264,7 @@ function makeSessionClient(
  * stays single-concern. Task #225 rolling extension: proves the
  * CrashService.GetCrashLog wire actually echoes a row from the
  * `crash_log` table that boot's `replayCrashRawOnBoot` populated.
+ * Also reused by the Wave-3 #334 GetRawCrashLog wiring assertion below.
  */
 function makeCrashClient(baseUrl: string): Client<typeof CrashService> {
   const transport = createConnectTransport({
@@ -528,6 +529,61 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     // don't false-fail (canonical order is documented in
     // runStartup.lock.ts but the contract is set-equality, not order).
     expect([...wired].sort()).toEqual([...expected].sort());
+  });
+
+  // Wave-3 Task #334 — CrashService.GetRawCrashLog server-streaming
+  // wire-up. Pre-#334 the router's "absent method -> Unimplemented"
+  // rule meant calling GetRawCrashLog returned `Code.Unimplemented`
+  // even though `state/crash-raw.ndjson` is the spec-pinned source for
+  // the renderer's "Download raw log" affordance (chapter 08 §3 / 09 §2).
+  // We prove the real handler is wired by confirming the call returns
+  // a usable stream (NOT Unimplemented) and emits at least the spec-
+  // mandated terminal `eof=true` chunk. Concrete byte payload is NOT
+  // asserted here — the per-OS state-dir resolver may point the path
+  // at a real file (win32 with `PROGRAMDATA` overridden) or at an
+  // unwritable shared root (POSIX `/var/lib/ccsm` non-root runner),
+  // so the wire shape is the only cross-platform-stable assertion.
+  // The byte-level semantics are pinned by the handler's own unit
+  // tests (`get-raw-crash-log.spec.ts`); this assertion only proves
+  // the production overlay actually replaces the stub.
+  it('Listener-A.CrashService.GetRawCrashLog does NOT return Unimplemented', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.listenerA).not.toBeNull();
+    const desc = r.listenerA!.descriptor();
+    if (desc.kind !== 'KIND_TCP_LOOPBACK_H2C') return;
+    const baseUrl = `http://127.0.0.1:${desc.port}`;
+
+    const client = makeCrashClient(baseUrl);
+    const stream = client.getRawCrashLog({ meta: newMeta() });
+    let sawEof = false;
+    let chunkCount = 0;
+    let raised: ConnectError | null = null;
+    try {
+      for await (const chunk of stream) {
+        chunkCount += 1;
+        if (chunk.eof) {
+          sawEof = true;
+          break;
+        }
+        // Defensive: bound the loop in case a regression replaces the
+        // terminal-sentinel policy with an infinite stream.
+        if (chunkCount > 1024) break;
+      }
+    } catch (err) {
+      raised = ConnectError.from(err);
+    }
+    expect(
+      raised?.code,
+      `expected stream to complete (or fail with non-Unimplemented), got ${raised?.code}: ${raised?.message}`,
+    ).not.toBe(Code.Unimplemented);
+    // Either the stream completed cleanly with the eof sentinel (the
+    // happy path) OR it raised a non-Unimplemented error (e.g. EACCES
+    // on a POSIX runner whose state-dir is unwritable). Both prove the
+    // handler is wired; only `Code.Unimplemented` proves it is NOT.
+    if (raised === null) {
+      expect(sawEof, 'expected terminal RawCrashChunk{eof:true} sentinel').toBe(true);
+    }
   });
 
   // Task #225 rolling extension — WatchSessions over-the-wire smoke.

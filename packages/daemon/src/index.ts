@@ -332,28 +332,39 @@ export async function runStartup(
     sessionManager = new SessionManager(db);
     const watchSessionsDeps = { manager: sessionManager };
     // Wave-3 #229 — wire CrashService.GetCrashLog handler in production.
-    // Audit #228 sub-task 2 (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md):
+    // Wave-3 #334 — wire CrashService.GetRawCrashLog server-streaming
+    // handler in the same overlay (separate sub-task because the
+    // streaming + 64 KiB chunk semantics are non-overlapping with the
+    // unary GetCrashLog handler; same `registerCrashService` call site
+    // because `ConnectRouter.service(desc, impl)` REPLACES the prior
+    // registration — see `register.ts` header comment).
+    // Audit #228 sub-task 2/3 (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md):
     // pre-#229 the entire CrashService was a stub on the wire even though
     // `crash_log` is populated end-to-end at boot (`replayCrashRawOnBoot`).
     // We pass the SAME `db` handle the rest of startup uses (single owner
     // of the SQLite file; the #335 WatchCrashLog overlay reuses this same
-    // boot for its event-bus subscription). The remaining streaming sibling
-    // (#334 GetRawCrashLog) stays `Unimplemented` until its sub-task lands —
-    // `registerCrashService` ships a partial impl with `getCrashLog` +
-    // `watchCrashLog` and the router's "absent method -> Unimplemented" rule
-    // covers the rest.
+    // boot for its event-bus subscription) and the SAME `sp.crashRaw`
+    // path the capture-source sink writes to and `replayCrashRawOnBoot`
+    // reads from (the #334 GetRawCrashLog streaming handler reads it
+    // back over the wire).
     //
     // Wave-3 #335 — wire CrashService.WatchCrashLog. The handler subscribes
     // to `defaultCrashEventBus` (Task #340) — the SAME singleton
     // `crash/raw-appender.ts:appendCrashRaw` emits on after fsync. Routing
-    // both methods through the same `crashDeps` payload keeps the
-    // `registerCrashService` overlay's "single service() call covers every
-    // method" invariant honest (calling `service()` twice for the same
-    // descriptor would silently drop the earlier registration — see
+    // every CrashService method through the same `crashDeps` payload keeps
+    // the `registerCrashService` overlay's "single service() call covers
+    // every method" invariant honest (calling `service()` twice for the
+    // same descriptor would silently drop the earlier registration — see
     // `register.ts` header).
+    //
+    // Wave-3 #334 — wire CrashService.GetRawCrashLog server-streaming
+    // handler. With #334 landed, every v0.3 CrashService method is wired
+    // and none falls through to the router's "absent method ->
+    // Unimplemented" fallback.
     const crashDeps = {
       getCrashLogDeps: { db },
       watchCrashLogDeps: { bus: defaultCrashEventBus },
+      getRawCrashLogDeps: { crashRawPath: sp.crashRaw },
     };
     // Wave-3 §6.9 sub-task 5 (Task #336) — wire the SessionService read
     // pair (ListSessions / GetSession) on top of the WatchSessions

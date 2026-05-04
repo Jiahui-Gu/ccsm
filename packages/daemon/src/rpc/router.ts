@@ -221,12 +221,12 @@ export function makeDaemonRoutes(
     } else {
       registerHelloHandler(router, helloDeps);
     }
-    // CrashService overlay (Wave-3 #229 / audit #228 sub-task 2).
-    // `registerCrashService` REPLACES the stub registration for
-    // CrashService with a partial impl exposing `getCrashLog`; the
-    // router's "absent method -> Unimplemented" fallback keeps
-    // `watchCrashLog` / `getRawCrashLog` stubbed (separate sub-tasks).
-    // Same additive overlay shape as SessionService above.
+    // CrashService overlay (Wave-3 #229 / #335 / #334; audit #228
+    // sub-tasks 2 + 3). `registerCrashService` REPLACES the stub
+    // registration for CrashService with a full v0.3 impl exposing
+    // `getCrashLog` (#229), `watchCrashLog` (#335) and
+    // `getRawCrashLog` (#334). Same additive overlay shape as
+    // SessionService above.
     if (crashDeps !== undefined) {
       registerCrashService(router, crashDeps);
     }
@@ -263,13 +263,17 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    */
   readonly watchSessionsDeps?: WatchSessionsDeps;
   /**
-   * When set, installs the Wave-3 CrashService overlay (Task #229 /
-   * audit #228 sub-task 2) on top of the stubs. Today this binds
-   * `CrashService.GetCrashLog`; the streaming siblings
-   * (`GetRawCrashLog`, `WatchCrashLog`) stay `Unimplemented` until
-   * their sub-tasks land. Production startup wires this when
-   * `index.ts` constructs a `crashDeps` (the same `db` handle the
-   * rest of startup uses); tests omit it for the stub baseline.
+   * When set, installs the Wave-3 CrashService overlay (Tasks #229
+   * + #335 + #334; audit #228 sub-tasks 2 + 3) on top of the stubs.
+   * This binds `CrashService.GetCrashLog` (unary),
+   * `CrashService.WatchCrashLog` (server-streaming, event-bus driven)
+   * and `CrashService.GetRawCrashLog` (server-streaming, file
+   * chunked) — the entire v0.3 CrashService surface. Production
+   * startup wires this when `index.ts` constructs a `crashDeps` (the
+   * same `db` handle the rest of startup uses, the
+   * `defaultCrashEventBus` singleton appended to by
+   * `appendCrashRaw`, plus the resolved `state/crash-raw.ndjson`
+   * path); tests omit it for the stub baseline.
    */
   readonly crashDeps?: CrashServiceDeps;
   /**
