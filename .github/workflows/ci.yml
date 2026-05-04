@@ -256,8 +256,18 @@ jobs:
       #
       # Electron: 60% lines LIVE. Renderer measures ~85% so this gate is
       # well-met today; threshold matches chapter 12 §6.
+      # Repo's monorepo glue is turbo + pnpm-workspace.yaml on disk, but CI
+      # installs with `npm ci` (see Install deps step) and the Windows runner
+      # has no pnpm shim — the original `pnpm --filter @ccsm/<pkg>` invocation
+      # fails with "pnpm: not recognized as a name of a cmdlet". The package
+      # also lacks a top-level `npm workspaces` declaration, so
+      # `npm test --workspace=...` errors with "No workspaces found". Cleanest
+      # cross-platform invocation: cd into the package and run the locally
+      # installed vitest via npx (resolves through the hoisted node_modules).
       - name: Coverage (daemon, unit only — temp 50% gate, see #350)
-        run: pnpm --filter @ccsm/daemon test --coverage --config vitest.config.coverage.ts
+        working-directory: packages/daemon
+        run: npx vitest run --coverage --config vitest.config.coverage.ts
 
       - name: Coverage (electron renderer — 60% gate)
-        run: pnpm --filter @ccsm/electron test --coverage
+        working-directory: packages/electron
+        run: npx vitest run --coverage
