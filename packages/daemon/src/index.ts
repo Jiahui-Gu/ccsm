@@ -410,6 +410,20 @@ export async function runStartup(
     // the post-destroy row state is visible to ListSessions / GetSession
     // on the same boot.
     const destroyHandlerDeps = { manager: sessionManager };
+    // Wave-3 §6.9 sub-task 6 (Task #339) — wire SessionService.CreateSession
+    // on top of the SessionService overlay. Audit #228 sub-task 6
+    // (docs/superpowers/specs/2026-05-04-rpc-stub-gap-audit.md): pre-#339
+    // CreateSession was a stub on the wire even though
+    // `SessionManager.create()` (T3.2 / #38) is fully implemented. Reuse
+    // the SAME `sessionManager` so a CreateSession publishes `created`
+    // to the same in-memory event bus the WatchSessions stream subscribes
+    // to (round-trip: create one -> watcher sees `created` event) and the
+    // new row is immediately visible to ListSessions / GetSession on the
+    // same boot. PTY spawn for the freshly-created session is OUT OF SCOPE
+    // here (Task #359 wires `attachPtyHost` separately so the unary
+    // handler stays decoupled from the spawn lifecycle — see
+    // `sessions/create-handler.ts` SCOPE note).
+    const createSessionDeps = { manager: sessionManager };
     // Wave-3 #349 — wire SettingsService + DraftService production
     // overlays (spec #337 §6.1 step 1). Both services share the same
     // `db` handle (drafts ride on the `settings` table under key
@@ -437,6 +451,7 @@ export async function runStartup(
         destroyHandlerDeps,
         settingsDeps,
         draftDeps,
+        createSessionDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by
