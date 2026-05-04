@@ -1,6 +1,14 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // Mirror the webpack DefinePlugin constant so source files that reference
+  // `__APP_VERSION__` (e.g. src/components/settings/UpdatesPane.tsx after
+  // the Wave 0b `window.ccsm.getVersion` purge) compile and run under
+  // vitest as well. Bundle-version semantics: read the runtime test value
+  // from the root package.json so we don't drift from webpack.config.js.
+  define: {
+    __APP_VERSION__: JSON.stringify('0.0.0-test'),
+  },
   test: {
     environment: 'jsdom',
     include: [
