@@ -31,6 +31,7 @@ import {
   ErrorDetailSchema,
   PtyService,
   RequestMetaSchema,
+  SessionState,
   type ErrorDetail,
 } from '@ccsm/proto';
 
@@ -46,6 +47,7 @@ import {
   awaitSnapshot,
   deltaToFrame,
   makeAttachHandler,
+  sessionStateChangedToFrame,
   snapshotToFrame,
   type PtyAttachDeps,
   type PtyEmitterEvent,
@@ -147,6 +149,20 @@ class FakeEmitter implements PtySessionEmitterLike {
         /* swallow */
       }
     }
+  }
+  publishSessionStateChanged(args: {
+    readonly state: 'RUNNING' | 'DEGRADED';
+    readonly reason: string;
+    readonly sinceUnixMs: number;
+  }): void {
+    if (this.#closed) return;
+    this.#broadcast({
+      kind: 'session-state-changed',
+      state: args.state,
+      reason: args.reason,
+      lastSeq: this.#maxSeq,
+      sinceUnixMs: args.sinceUnixMs,
+    });
   }
   subscriberCount(): number {
     return this.#subs.size;
@@ -254,6 +270,36 @@ describe('snapshotToFrame / deltaToFrame', () => {
     expect(frame.kind.value.seq).toBe(7n);
     expect(frame.kind.value.tsUnixMs).toBe(1700000000007n);
     expect(Array.from(frame.kind.value.payload)).toEqual([0xff, 0x00]);
+  });
+
+  it('sessionStateChangedToFrame maps DEGRADED string → SessionState.DEGRADED enum', () => {
+    const frame = sessionStateChangedToFrame({
+      state: 'DEGRADED',
+      reason: 'snapshot write failure x3 (SQLITE_FULL); cooldown 60s',
+      lastSeq: 42n,
+      sinceUnixMs: 1700000000123,
+    });
+    expect(frame.kind.case).toBe('sessionStateChanged');
+    if (frame.kind.case !== 'sessionStateChanged') throw new Error('case mismatch');
+    expect(frame.kind.value.state).toBe(SessionState.DEGRADED);
+    expect(frame.kind.value.reason).toBe(
+      'snapshot write failure x3 (SQLITE_FULL); cooldown 60s',
+    );
+    expect(frame.kind.value.lastSeq).toBe(42n);
+    expect(frame.kind.value.tsUnixMs).toBe(1700000000123n);
+  });
+
+  it('sessionStateChangedToFrame maps RUNNING string → SessionState.RUNNING enum', () => {
+    const frame = sessionStateChangedToFrame({
+      state: 'RUNNING',
+      reason: 'snapshot probe succeeded; resuming writes',
+      lastSeq: 100n,
+      sinceUnixMs: 1700000060000,
+    });
+    expect(frame.kind.case).toBe('sessionStateChanged');
+    if (frame.kind.case !== 'sessionStateChanged') throw new Error('case mismatch');
+    expect(frame.kind.value.state).toBe(SessionState.RUNNING);
+    expect(frame.kind.value.lastSeq).toBe(100n);
   });
 });
 
@@ -597,6 +643,98 @@ describe('PtyService.Attach — over the wire', () => {
     expect(err).toBeInstanceOf(ConnectError);
     expect((err as ConnectError).code).toBe(Code.Canceled);
     expect(readErrorDetail(err)?.code).toBe('pty.session_destroyed');
+  });
+
+  it('publishSessionStateChanged(DEGRADED) yields PtyFrame.session_state_changed (Task #385 / spec ch06 §4)', async () => {
+    const emitter = new FakeEmitter('sess-1');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    emitter.publishDelta(makeDelta(1n));
+    emitter.publishDelta(makeDelta(2n));
+    registry.set('sess-1', emitter);
+
+    const iter = client.attach(makeReq({ sessionId: 'sess-1', sinceSeq: 0n }));
+    const ai = iter[Symbol.asyncIterator]();
+    // Warm-up: snapshot.
+    const f0 = await ai.next();
+    expect(f0.value?.kind.case).toBe('snapshot');
+
+    // Now publish a DEGRADED transition. The handler MUST surface it as
+    // a PtyFrame.session_state_changed frame on the wire (Round 1 wired
+    // the emitter publish; Round 2 wires the attach sink).
+    void Promise.resolve().then(() =>
+      emitter.publishSessionStateChanged({
+        state: 'DEGRADED',
+        reason: 'snapshot write failure x3 (SQLITE_FULL); cooldown 60s',
+        sinceUnixMs: 1700000000000,
+      }),
+    );
+    const f1 = await ai.next();
+    expect(f1.done).toBe(false);
+    expect(f1.value?.kind.case).toBe('sessionStateChanged');
+    if (f1.value?.kind.case === 'sessionStateChanged') {
+      expect(f1.value.kind.value.state).toBe(SessionState.DEGRADED);
+      expect(f1.value.kind.value.reason).toBe(
+        'snapshot write failure x3 (SQLITE_FULL); cooldown 60s',
+      );
+      // lastSeq snapshots emitter.currentMaxSeq() at publish time = 2.
+      expect(f1.value.kind.value.lastSeq).toBe(2n);
+      expect(f1.value.kind.value.tsUnixMs).toBe(1700000000000n);
+    }
+
+    await ai.return?.(undefined);
+  });
+
+  it('DEGRADED → RUNNING transitions both yield session_state_changed frames in order', async () => {
+    // Spec ch06 §4: 60s cooldown elapses + snapshot probe succeeds → emitter
+    // publishes RUNNING. The attach sink must surface BOTH directions of
+    // the transition so renderers can drop the DEGRADED badge.
+    const emitter = new FakeEmitter('sess-1');
+    emitter.publishSnapshot(makeSnapshot(0n));
+    registry.set('sess-1', emitter);
+
+    const iter = client.attach(makeReq({ sessionId: 'sess-1', sinceSeq: 0n }));
+    const ai = iter[Symbol.asyncIterator]();
+    await ai.next(); // consume snapshot
+
+    // Transition 1: RUNNING → DEGRADED.
+    void Promise.resolve().then(() =>
+      emitter.publishSessionStateChanged({
+        state: 'DEGRADED',
+        reason: 'cooldown 60s',
+        sinceUnixMs: 1700000000000,
+      }),
+    );
+    const fDegraded = await ai.next();
+    expect(fDegraded.value?.kind.case).toBe('sessionStateChanged');
+    if (fDegraded.value?.kind.case === 'sessionStateChanged') {
+      expect(fDegraded.value.kind.value.state).toBe(SessionState.DEGRADED);
+    }
+
+    // A live delta in between — must still flow.
+    void Promise.resolve().then(() => emitter.publishDelta(makeDelta(1n)));
+    const fDelta = await ai.next();
+    expect(fDelta.value?.kind.case).toBe('delta');
+    if (fDelta.value?.kind.case === 'delta') {
+      expect(fDelta.value.kind.value.seq).toBe(1n);
+    }
+
+    // Transition 2: DEGRADED → RUNNING (cooldown probe succeeded).
+    void Promise.resolve().then(() =>
+      emitter.publishSessionStateChanged({
+        state: 'RUNNING',
+        reason: 'snapshot probe succeeded; resuming writes',
+        sinceUnixMs: 1700000060000,
+      }),
+    );
+    const fRunning = await ai.next();
+    expect(fRunning.value?.kind.case).toBe('sessionStateChanged');
+    if (fRunning.value?.kind.case === 'sessionStateChanged') {
+      expect(fRunning.value.kind.value.state).toBe(SessionState.RUNNING);
+      expect(fRunning.value.kind.value.lastSeq).toBe(1n);
+      expect(fRunning.value.kind.value.tsUnixMs).toBe(1700000060000n);
+    }
+
+    await ai.return?.(undefined);
   });
 });
 

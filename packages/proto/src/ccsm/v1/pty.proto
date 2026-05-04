@@ -67,7 +67,44 @@ message PtyFrame {
                                 // OR if since_seq is older than retained delta window)
     PtyDelta delta = 2;         // may be sent many times
     PtyHeartbeat heartbeat = 3; // every 10s when no other frame; lets client detect stall
+    // F8: closes R0 06-P0.4 / spec ch06 §4 — out-of-band session-state
+    // transition signal. Subscribers receive a `session_state_changed`
+    // frame whenever the daemon flips the per-session SessionState (today
+    // only DEGRADED ↔ RUNNING; v0.4 may add more transitions). Forever-
+    // stable: the frame carries the new SessionState enum value plus a
+    // free-form `reason` string for log/UI surfacing. The frame does NOT
+    // imply any change to the delta seq stream — live deltas continue
+    // streaming from the in-memory ring throughout DEGRADED cooldown
+    // (spec ch06 §4: "live deltas continue to stream to subscribers from
+    // the in-memory ring; no new rows are written until the cool-down
+    // period (60 s) expires"). UIs that want to render a DEGRADED badge
+    // listen for this frame; UIs that don't can ignore it forward-
+    // compatibly because the oneof payload is additive.
+    PtySessionStateChanged session_state_changed = 4;
   }
+}
+
+// Forever-stable. Spec ch06 §4. Emitted on `PtyFrame` whenever the daemon
+// flips per-session SessionState (snapshot-write 3-strike DEGRADED in v0.3;
+// future variants in v0.4). Carrying the seq the transition was observed
+// against lets subscribers correlate the state change with their applied
+// delta watermark for log/debug purposes — the field is advisory and MAY
+// be 0 if the transition fired before any deltas (e.g. very early failure).
+message PtySessionStateChanged {
+  SessionState state = 1;
+  // Free-form, human-readable. Examples: "snapshot write failure x3
+  // (SQLITE_FULL); cooldown 60s", "snapshot probe succeeded; resuming
+  // writes". UIs may surface verbatim; logs SHOULD include.
+  string reason = 2;
+  // Highest delta seq the daemon had broadcast at the moment of the
+  // transition. Advisory only; clients MUST NOT block on this value
+  // (the next delta may already be in flight on the same stream).
+  uint64 last_seq = 3;
+  // Daemon wall-clock millis when the transition was decided. Useful
+  // for UI "DEGRADED for 12s" timers and for log correlation across
+  // crash_log rows (spec ch06 §4 / ch07 §5: every DEGRADED transition
+  // also writes a crash_log row with `source = "pty_session_degraded"`).
+  int64 ts_unix_ms = 4;
 }
 
 // Forever-stable. Schema details in chapter 06.

@@ -26,12 +26,23 @@ message LocalUser {
 }
 
 // Forever-stable. Surfaced to UI; ordering MUST match enum int values forever.
+//
+// F8: closes R0 06-P0.4 / spec ch06 §4 — the additive `SESSION_STATE_DEGRADED`
+// variant is wired through `PtyFrame.session_state_changed` (pty.proto) so
+// subscribers learn the daemon has stopped attempting snapshot writes for the
+// session for the next 60 s after the 3-strike disk-class failure threshold.
+// The session continues to stream live deltas from the in-memory ring during
+// the cooldown; DEGRADED is purely an out-of-band signal, NOT a separate
+// process-lifecycle state. After the cooldown elapses and a probe write
+// succeeds the session transitions back to `SESSION_STATE_RUNNING` (also
+// signalled via `session_state_changed`).
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_STARTING = 1;
   SESSION_STATE_RUNNING = 2;
   SESSION_STATE_EXITED = 3;
   SESSION_STATE_CRASHED = 4;
+  SESSION_STATE_DEGRADED = 5;
 }
 
 // Forever-stable. Per-session SDK-turn axis — ORTHOGONAL to `SessionState`
