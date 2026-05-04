@@ -14,9 +14,28 @@
 // or:
 //   npx vitest run --config packages/electron/vitest.config.ts
 
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+// CI installs deps with `npm ci --legacy-peer-deps` (see ci.yml "Install
+// deps") but the repo root `package.json` has no `workspaces` field — only
+// `pnpm-workspace.yaml`. Result: `cd packages/electron && npx vitest` on
+// CI cannot resolve `@ccsm/proto` (no symlink in
+// packages/electron/node_modules/) and any spec whose import graph reaches
+// it will fail with ERR_MODULE_NOT_FOUND. Locally, `pnpm install` creates
+// the symlink so the same command passes — masking the gap. Resolve the
+// package directly to its source entry (mirrors the `paths` mapping in the
+// repo root tsconfig.json).
+const protoSrcIndex = fileURLToPath(
+  new URL('../proto/src/index.ts', import.meta.url),
+);
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@ccsm/proto': protoSrcIndex,
+    },
+  },
   test: {
     environment: 'node',
     include: [

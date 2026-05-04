@@ -17,9 +17,28 @@
 // Run:
 //   pnpm --filter @ccsm/daemon test --coverage --config vitest.config.coverage.ts
 
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+// CI installs deps with `npm ci --legacy-peer-deps` (see ci.yml "Install
+// deps"), but the repo root `package.json` has no `workspaces` field — only
+// `pnpm-workspace.yaml`. Result: under `cd packages/daemon && npx vitest`
+// on CI, `@ccsm/proto` is not symlinked into `packages/daemon/node_modules/`
+// and `import { ... } from '@ccsm/proto'` fails with ERR_MODULE_NOT_FOUND
+// (e.g. src/rpc/__tests__/router.spec.ts). Locally, `pnpm install` creates
+// the symlink so the same command passes — masking the gap. Resolve the
+// package directly to its source entry (mirrors the `paths` mapping in the
+// repo root tsconfig.json) so the unit-coverage gate works on CI too.
+const protoSrcIndex = fileURLToPath(
+  new URL('../proto/src/index.ts', import.meta.url),
+);
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@ccsm/proto': protoSrcIndex,
+    },
+  },
   test: {
     environment: 'node',
     // Unit-only: co-located specs under src/. Excludes test/** (integration),
@@ -34,6 +53,15 @@ export default defineConfig({
     include: ['src/**/*.spec.ts', 'src/**/__tests__/**/*.spec.ts'],
     exclude: ['**/integration.spec.ts'],
     globals: false,
+    // v8 coverage instrumentation roughly doubles wall-clock for IO-heavy
+    // unit tests under Windows; sqlite-backed specs (e.g.
+    // src/db/__tests__/recovery.spec.ts which seeds 200 rows then scribbles
+    // page bytes to corrupt the file) measured 20s+ on the CI windows-latest
+    // runner vs. ~150ms locally without instrument. Bump the per-test ceiling
+    // to 30s so genuine product errors still surface fast (no silent
+    // hang-to-CI-job-timeout) but instrumented IO has headroom. Matches the
+    // root vitest config's 15s bump done for the same reason on jsdom suites.
+    testTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
