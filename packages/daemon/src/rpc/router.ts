@@ -77,6 +77,7 @@ import { registerCrashService, type CrashServiceDeps } from './crash/register.js
 import { registerDraftService, type DraftServiceDeps } from './draft/register.js';
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
+import { makeAttachHandler, type PtyAttachDeps } from './pty-attach.js';
 import {
   registerSettingsService,
   type SettingsServiceDeps,
@@ -216,6 +217,30 @@ export function registerSessionService(
 }
 
 /**
+ * Register the v0.3 PtyService.Attach handler (Wave 3 §6.9 sub-task 10 /
+ * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6).
+ *
+ * REPLACES the stub `{}` registration for PtyService with `{ attach }`.
+ * Other PtyService methods (SendInput / Resize / AckPty /
+ * CheckClaudeAvailable) stay `Code.Unimplemented` per the
+ * "absent-method → unimplemented" Connect router rule until their
+ * owning tasks land. The combined-registration caveat that applies to
+ * SessionService also applies here (`router.service` REPLACES on the
+ * same descriptor) — so when the next PtyService method handler ships,
+ * it MUST be added to this same call site rather than registered via a
+ * second `service()` call.
+ */
+export function registerPtyService(
+  router: ConnectRouter,
+  deps: PtyAttachDeps,
+): ConnectRouter {
+  router.service(PtyService, {
+    attach: makeAttachHandler(deps),
+  });
+  return router;
+}
+
+/**
  * Bundled routes callback that installs stubs for every service AND the
  * real T2.3 Hello handler on SessionService. Use this from the daemon's
  * production startup wiring (T1.7) — pass through to
@@ -230,6 +255,7 @@ export function makeDaemonRoutes(
   destroyHandlerDeps?: DestroySessionDeps,
   settingsDeps?: SettingsServiceDeps,
   draftDeps?: DraftServiceDeps,
+  ptyAttachDeps?: PtyAttachDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -265,6 +291,15 @@ export function makeDaemonRoutes(
     // overlay exposes `GetDraft` + `UpdateDraft`.
     if (draftDeps !== undefined) {
       registerDraftService(router, draftDeps);
+    }
+    // PtyService.Attach overlay (Wave-3 §6.9 sub-task 10 / Task #355 /
+    // spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6). Wires the
+    // server-streaming Attach handler against the per-session in-memory
+    // emitter registry (PR #1027 / T-PA-5 supplies the production
+    // `getEmitter`; tests pass an inline fake). Other PtyService
+    // methods stay `Code.Unimplemented` until their tasks land.
+    if (ptyAttachDeps !== undefined) {
+      registerPtyService(router, ptyAttachDeps);
     }
   };
 }
@@ -350,6 +385,18 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * shares the SettingsService `db` handle.
    */
   readonly draftDeps?: DraftServiceDeps;
+  /**
+   * When set, installs the Wave-3 §6.9 sub-task 10 (Task #355 / spec
+   * `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6) PtyService.Attach
+   * server-streaming overlay. `getEmitter` is the seam to the per-
+   * session `PtySessionEmitter` registry that PR #1027 (T-PA-5)
+   * exports. Production startup wires it as `(sid) =>
+   * ptyEmitterRegistry.getEmitter(sid)`; tests pass an inline fake.
+   * Other PtyService methods (SendInput / Resize / AckPty /
+   * CheckClaudeAvailable) stay `Code.Unimplemented` until their
+   * owning tasks land.
+   */
+  readonly ptyAttachDeps?: PtyAttachDeps;
 }
 
 /**
@@ -396,6 +443,7 @@ export function createDaemonNodeAdapter(
     destroyHandlerDeps,
     settingsDeps,
     draftDeps,
+    ptyAttachDeps,
     interceptors: callerInterceptors,
     ...rest
   } = options;
@@ -409,6 +457,7 @@ export function createDaemonNodeAdapter(
           destroyHandlerDeps,
           settingsDeps,
           draftDeps,
+          ptyAttachDeps,
         )
       : stubRoutes;
   const interceptors = [
