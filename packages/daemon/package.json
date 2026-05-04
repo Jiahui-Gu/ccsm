@@ -9,6 +9,7 @@
     "lint": "eslint \"src/**/*.ts\" \"eslint-plugins/**/*.{js,ts}\" \"build/**/*.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
+    "pretest": "node ../../scripts/ensure-native-abi.mjs node",
     "build:sea:posix": "bash build/build-sea.sh",
     "build:sea:win": "powershell -ExecutionPolicy Bypass -File build/build-sea.ps1",
     "stage:native:posix": "bash build/stage-native.sh dist/native",
