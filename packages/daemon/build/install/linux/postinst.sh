@@ -57,5 +57,24 @@ else
   warn "(ccsm-daemon expects systemd per ch07 §2 locked StateDirectory directives.)"
 fi
 
+# ---- 7. /healthz wait + rollback (T7.5, ch10 §5 step 7) ----
+# post-install-healthz.sh is shipped under /usr/lib/ccsm/ as part of the
+# package payload (build-pkg.sh stages it there). dpkg/rpm install
+# maintainer scripts to /var/lib/dpkg/info/ or extract them inline, so
+# sibling-resolution from $0 is unreliable; we hard-code the payload path.
+HEALTHZ_SH="/usr/lib/ccsm/post-install-healthz.sh"
+if [ -f "$HEALTHZ_SH" ]; then
+  log "running post-install /healthz wait (T7.5)"
+  if ! sh "$HEALTHZ_SH"; then
+    warn "post-install /healthz failed; service rolled back (state dir preserved)"
+    # Non-zero from postinst would block dpkg/rpm; the healthz script
+    # already executed scripted rollback (systemctl disable --now). We
+    # surface the failure in syslog but exit 0 so the package manager's
+    # transaction is not stuck in a half-removed state.
+  fi
+else
+  warn "post-install-healthz.sh not found at $HEALTHZ_SH; skipping /healthz wait"
+fi
+
 log "OK — postinst complete"
 exit 0

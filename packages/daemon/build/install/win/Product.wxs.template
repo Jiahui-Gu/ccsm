@@ -219,5 +219,14 @@
       <ComponentRef Id="DescriptorsDir" />
     </Feature>
 
+    <!--
+      T7.5 (#78) — post-install /healthz wait + 10s failure rollback.
+      The CustomAction itself is defined in HealthzCustomAction.wxs.template
+      (compiled into the same MSI by build-msi.ps1) and sequenced via that
+      Fragment's <InstallExecuteSequence>. The explicit ref pulls the
+      Fragment into the build per WiX 4 Fragment-resolution rules.
+    -->
+    <CustomActionRef Id="CcsmHealthzCheck" />
+
   </Package>
 </Wix>

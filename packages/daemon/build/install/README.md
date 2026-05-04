@@ -164,7 +164,6 @@ artifact.
 
 | Concern                                          | Owner                                  |
 | ------------------------------------------------ | -------------------------------------- |
-| Post-install `/healthz` 10 s wait + rollback     | T7.5 (#83)                             |
 | Uninstaller `REMOVEUSERDATA` matrix exercise     | T7.6 (#84)                             |
 | Electron app bundle in MSI / pkg / deb / rpm     | T7.7 (#85) `electron-builder` config   |
 | Sea-smoke post-install end-to-end                | T7.8 (#86)                             |
@@ -172,3 +171,44 @@ artifact.
 | In-place update flow + rollback                  | T7.10                                  |
 | CI workflow wiring (`.github/workflows/*.yml`)   | T0.9 (mutex)                           |
 | Code signing of the produced `.msi` / `.pkg` / `.deb` / `.rpm` | T7.3 sign-`*` scripts (already merged) |
+
+## Post-install `/healthz` wait + rollback (T7.5, #78)
+
+Implemented as `post-install-healthz.{sh,ps1}` at the install/ root:
+
+- **Linux + macOS**: `post-install-healthz.sh` polls `curl --unix-socket
+  <SUPERVISOR_SOCK> http://localhost/healthz` for HTTP 200 within 10 s.
+  On timeout / non-200 it captures `journalctl -u ccsm-daemon.service -n
+  200 --no-pager` (linux) or `log show --predicate 'process ==
+  "ccsm-daemon"' --last 5m` (mac), runs scripted rollback (`systemctl
+  disable --now ccsm-daemon` / `launchctl bootout
+  system/com.ccsm.daemon`), and exits 10 (timeout) or 11 (non-200). The
+  state directory is **never** touched by the rollback path
+  (`/var/lib/ccsm` and `/Library/Application Support/ccsm` are
+  preserved per spec ch10 §5 step 7).
+- **Windows**: `post-install-healthz.ps1` opens
+  `\\.\pipe\ccsm-supervisor` via `NamedPipeClientStream`, writes a raw
+  `GET /healthz HTTP/1.1` request, and parses the status line. Same 10 s
+  budget. On failure it captures `Get-WinEvent -LogName Application
+  -MaxEvents 200 | Where-Object { $_.ProviderName -like '*ccsm*' }` and
+  exits `1603` (`ERROR_INSTALL_FAILURE`) so the MSI engine reverses the
+  install transaction. The `StateDir` component is `Permanent` (see
+  `Product.wxs.template`) so `%PROGRAMDATA%\ccsm` survives rollback.
+- **WiX 4 wiring**: `win/HealthzCustomAction.wxs.template` defines the
+  `CcsmHealthzCheck` deferred CustomAction (`Return="check"`,
+  `Impersonate="no"`, sequenced `After="StartServices"` with `Condition="NOT
+  REMOVE"`). `Product.wxs.template` references it via
+  `<CustomActionRef Id="CcsmHealthzCheck"/>`.
+- **Payload staging**: `linux/build-pkg.sh` copies the script to
+  `/usr/lib/ccsm/post-install-healthz.sh` (hard-coded path; `dpkg`/`rpm`
+  install maintainer scripts to a separate dir so `$0`-relative
+  resolution is unreliable). `mac/build-pkg.sh` copies it next to
+  `postinstall` in the `.pkg` Scripts/ payload (sibling-resolved via
+  `dirname -- "$0"`). `win/build-msi.ps1` copies the `.ps1` next to the
+  daemon binary so the WiX `<Binary SourceFile="...">` resolves at
+  compile time.
+- **Tests**: 48 forever-stable shape gates in
+  `build/__tests__/post-install-healthz.spec.ts` covering success path,
+  timeout exit code, non-200 exit code, per-OS log capture commands,
+  scripted rollback content, state-dir preservation, WiX CustomAction
+  shape, and builder-script payload staging.

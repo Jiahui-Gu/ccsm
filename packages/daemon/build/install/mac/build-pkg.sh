@@ -105,7 +105,10 @@ if [[ "$DRY_RUN" != "1" ]]; then
 
   cp "$MAC_DIR/preinstall.sh"  "$SCRIPTS/preinstall"
   cp "$MAC_DIR/postinstall.sh" "$SCRIPTS/postinstall"
-  chmod 0755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall"
+  # T7.5: bundle the cross-OS healthz script alongside the postinstall
+  # so postinstall.sh can sibling-resolve it via "$(dirname -- "$0")".
+  cp "$BUILD_DIR/install/post-install-healthz.sh" "$SCRIPTS/post-install-healthz.sh"
+  chmod 0755 "$SCRIPTS/preinstall" "$SCRIPTS/postinstall" "$SCRIPTS/post-install-healthz.sh"
 fi
 
 COMPONENT_PKG="$OUT_DIR/ccsm-component-$VERSION.pkg"

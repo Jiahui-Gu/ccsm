@@ -91,6 +91,10 @@ if [[ "$DRY_RUN" != "1" ]]; then
   chmod 0755 "$STAGE/usr/lib/ccsm/ccsm-daemon"
   cp "$LINUX_DIR/ccsm-daemon.service" "$STAGE/lib/systemd/system/ccsm-daemon.service"
   chmod 0644 "$STAGE/lib/systemd/system/ccsm-daemon.service"
+  # T7.5: stage the cross-OS healthz script at the well-known payload
+  # path that postinst.sh hard-codes (/usr/lib/ccsm/post-install-healthz.sh).
+  cp "$BUILD_DIR/install/post-install-healthz.sh" "$STAGE/usr/lib/ccsm/post-install-healthz.sh"
+  chmod 0755 "$STAGE/usr/lib/ccsm/post-install-healthz.sh"
 fi
 
 mkdir -p "$OUT_DIR"

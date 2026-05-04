@@ -44,6 +44,25 @@ launchctl enable "$LABEL"
 log "launchctl kickstart -k $LABEL"
 launchctl kickstart -k "$LABEL"
 
-log "OK — daemon service registered and kickstarted"
-log "(post-install /healthz polling is owned by T7.5)"
+# ---- step 7. /healthz wait + rollback (T7.5, ch10 §5 step 7) ----
+# post-install-healthz.sh is bundled next to this script under the .pkg
+# Scripts/ payload root by build-pkg.sh.
+HEALTHZ_SH="$(dirname -- "$0")/post-install-healthz.sh"
+if [ -x "$HEALTHZ_SH" ] || [ -f "$HEALTHZ_SH" ]; then
+  log "running post-install /healthz wait (T7.5)"
+  if ! bash "$HEALTHZ_SH"; then
+    warn "post-install /healthz failed; service rolled back (state dir preserved)"
+    # Per ch10 §5 step 7 mac branch: scripted uninstall on healthz fail.
+    # The healthz script already invoked launchctl bootout. We exit 0
+    # here because the .pkg installer treats non-zero postinstall as a
+    # hard installer error (which is what we want — but the bootout +
+    # the script's stderr capture is the substantive rollback; the
+    # exit-code propagation is handled inside the script's exit 10/11).
+    exit 1
+  fi
+else
+  warn "post-install-healthz.sh not found at $HEALTHZ_SH; skipping /healthz wait"
+fi
+
+log "OK — daemon service registered, kickstarted, and /healthz validated"
 exit 0
