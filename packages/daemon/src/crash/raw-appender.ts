@@ -43,6 +43,7 @@ import {
 } from 'node:fs';
 
 import type { SqliteDatabase } from '../db/sqlite.js';
+import { defaultCrashEventBus } from './event-bus.js';
 
 // ---------------------------------------------------------------------------
 // Line shape — locked by spec ch09 §2. Adding fields is forbidden in v0.3
@@ -117,6 +118,13 @@ export function appendCrashRaw(path: string, entry: CrashRawEntry): void {
   } finally {
     closeSync(fd);
   }
+  // Single emit hook for the entire crash append pipeline (T#340 / #228
+  // audit). Subscribers — currently only the future #335
+  // CrashService.WatchCrashLog handler — observe the entry AFTER it has
+  // been fsync'd to disk, so a delivered event implies durability.
+  // Listener exceptions are isolated by the bus (try/catch + onListenerError);
+  // they cannot mask an append success.
+  defaultCrashEventBus.emitCrashAdded(entry);
 }
 
 /**
