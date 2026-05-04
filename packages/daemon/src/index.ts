@@ -330,11 +330,20 @@ export async function runStartup(
     // with only `getCrashLog` and the router's "absent method ->
     // Unimplemented" rule covers the rest.
     const crashDeps = { getCrashLogDeps: { db } };
+    // Wave-3 §6.9 sub-task 5 (Task #336) — wire the SessionService read
+    // pair (ListSessions / GetSession) on top of the WatchSessions
+    // overlay. Both handlers reuse the same `sessionManager` (single
+    // owner of the sessions table; sharing keeps SQL access in one
+    // place). See `registerSessionService` for the "registering a
+    // descriptor twice replaces" caveat that forces all SessionService
+    // handlers into one registration.
+    const readHandlersDeps = { manager: sessionManager };
     listenerA = makeListenerA(env, {
       bindHook: makeRouterBindHook({
         helloDeps,
         watchSessionsDeps,
         crashDeps,
+        readHandlersDeps,
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by
