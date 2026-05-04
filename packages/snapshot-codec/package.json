@@ -26,6 +26,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0"
+    "@types/node": "^22.10.0",
+    "@xterm/headless": "^5.5.0"
   }
 }
