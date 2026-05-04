@@ -22,8 +22,11 @@ export type {
   ChildExitReason,
   ChildToHostKind,
   ChildToHostMessage,
+  DeltaMessage,
   HostToChildKind,
   HostToChildMessage,
+  SendInputRejectedMessage,
+  SnapshotMessage,
   SpawnPayload,
 } from './types.js';
 export { decideSessionEnd } from './exit-decider.js';
