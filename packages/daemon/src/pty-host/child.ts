@@ -179,8 +179,8 @@ function handleClose(): void {
 
 function handleSendInput(bytes: Uint8Array): void {
   // T4.3: per-session 1 MiB pending-write cap (spec ch06 §1 F5).
-  // We require a prior `spawn` so we know the sessionId for the
-  // rejection IPC. A stray `send-input` before spawn is a daemon-side
+  // We require a prior `spawn` so the child is fully initialized before
+  // accepting traffic. A stray `send-input` before spawn is a daemon-side
   // ordering bug; we drop with a log line rather than crash.
   if (spawnPayload === null) {
     log(`(early) send-input bytes=${bytes.length} dropped before spawn`);
@@ -192,13 +192,14 @@ function handleSendInput(bytes: Uint8Array): void {
       `send-input rejected: pending=${verdict.pendingWriteBytes} ` +
       `attempted=${verdict.attemptedBytes} cap=${verdict.capBytes}`,
     );
+    // Flat IPC shape per spec 2026-05-04-pty-attach-handler.md §2.2.
+    // The daemon main process knows which session this child owns via
+    // the PtyHostChildHandle that wraps its IPC channel; sessionId is
+    // intentionally NOT echoed back.
     send({
       kind: 'send-input-rejected',
-      payload: {
-        sessionId: spawnPayload.sessionId,
-        pendingWriteBytes: verdict.pendingWriteBytes,
-        attemptedBytes: verdict.attemptedBytes,
-      },
+      pendingWriteBytes: verdict.pendingWriteBytes,
+      attemptedBytes: verdict.attemptedBytes,
     });
     return;
   }

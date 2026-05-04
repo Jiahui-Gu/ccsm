@@ -25,7 +25,6 @@ const capBytes = (() => {
   return Number.isFinite(n) && n > 0 ? n : 1024 * 1024;
 })();
 
-let spawnSessionId = null;
 let pendingWriteBytes = 0;
 
 function send(msg) {
@@ -38,16 +37,14 @@ function send(msg) {
 
 function handleSendInput(bytes) {
   if (mode !== 'backpressure') return; // other modes ignore send-input
-  if (spawnSessionId === null) return;
   const attempted = bytes.length;
   if (pendingWriteBytes + attempted > capBytes) {
+    // Flat IPC shape per spec 2026-05-04-pty-attach-handler.md §2.2 —
+    // mirrors src/pty-host/child.ts's send() call.
     send({
       kind: 'send-input-rejected',
-      payload: {
-        sessionId: spawnSessionId,
-        pendingWriteBytes,
-        attemptedBytes: attempted,
-      },
+      pendingWriteBytes,
+      attemptedBytes: attempted,
     });
     return;
   }
@@ -61,9 +58,6 @@ process.on('message', (raw) => {
   if (!raw || typeof raw !== 'object') return;
   const k = raw.kind;
   if (k === 'spawn') {
-    if (raw.payload && typeof raw.payload === 'object') {
-      spawnSessionId = raw.payload.sessionId ?? null;
-    }
     if (mode === 'echo') {
       send({ kind: 'snapshot' });
     }

@@ -347,13 +347,13 @@ function isChildToHostMessage(x: unknown): x is ChildToHostMessage {
     return false;
   }
   if (k === 'send-input-rejected') {
-    const p = (x as { payload?: unknown }).payload;
-    if (typeof p !== 'object' || p === null) return false;
-    const sid = (p as { sessionId?: unknown }).sessionId;
-    const pwb = (p as { pendingWriteBytes?: unknown }).pendingWriteBytes;
-    const ab = (p as { attemptedBytes?: unknown }).attemptedBytes;
+    // Flat shape per spec 2026-05-04-pty-attach-handler.md §2.2 —
+    // pendingWriteBytes + attemptedBytes are top-level fields on the
+    // message itself; no nested `payload`, no `sessionId` (the daemon
+    // main process knows which child sent it via the IPC channel).
+    const pwb = (x as { pendingWriteBytes?: unknown }).pendingWriteBytes;
+    const ab = (x as { attemptedBytes?: unknown }).attemptedBytes;
     return (
-      typeof sid === 'string' &&
       typeof pwb === 'number' &&
       Number.isFinite(pwb) &&
       pwb >= 0 &&

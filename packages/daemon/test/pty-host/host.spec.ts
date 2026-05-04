@@ -173,19 +173,24 @@ describe('spawnPtyHostChild — send() guards', () => {
 describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => {
   // The fixture mirrors src/pty-host/child.ts's send-input handling:
   // small CCSM_PTY_PENDING_CAP_BYTES + the `send-input-rejected` IPC
-  // payload shape locked in pty-host/types.ts (sessionId,
-  // pendingWriteBytes, attemptedBytes). Spec ch06 §1 row F5.
+  // shape locked in pty-host/types.ts (flat: pendingWriteBytes +
+  // attemptedBytes; no nested payload, no sessionId — the daemon main
+  // process resolves the session via the PtyHostChildHandle that wraps
+  // the IPC channel). Spec ch06 §1 row F5 + 2026-05-04-pty-attach-
+  // handler.md §2.2.
 
   async function collectFirstRejection(
     handle: ReturnType<typeof spawnPtyHostChild>,
   ): Promise<{
-    sessionId: string;
     pendingWriteBytes: number;
     attemptedBytes: number;
   }> {
     for await (const m of handle.messages()) {
       if (m.kind === 'send-input-rejected') {
-        return m.payload;
+        return {
+          pendingWriteBytes: m.pendingWriteBytes,
+          attemptedBytes: m.attemptedBytes,
+        };
       }
     }
     throw new Error('child exited before sending send-input-rejected');
@@ -211,7 +216,6 @@ describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => 
       handle.send({ kind: 'send-input', bytes: oversized });
 
       const rej = await collectFirstRejection(handle);
-      expect(rej.sessionId).toBe(sessionId);
       expect(rej.pendingWriteBytes).toBe(0);
       expect(rej.attemptedBytes).toBe(2048);
     } finally {
@@ -244,7 +248,7 @@ describe('spawnPtyHostChild — T4.3 SendInput backpressure (1 MiB cap)', () => 
 
       const rej = await collectFirstRejection(handle);
       expect(rej.attemptedBytes).toBe(2048);
-      expect(rej.sessionId).toBe(sessionId);
+      expect(rej.pendingWriteBytes).toBe(0);
     } finally {
       await handle.closeAndWait();
     }

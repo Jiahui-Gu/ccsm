@@ -81,22 +81,27 @@ export type HostToChildMessage =
   | { readonly kind: 'resize'; readonly cols: number; readonly rows: number };
 
 /**
- * Backpressure rejection payload — T4.3.
+ * Backpressure rejection message — T4.3.
  *
  * Emitted by the pty-host child when a `send-input` would push the
  * per-session pending-write tally past the 1 MiB cap (spec ch06 §1
  * FOREVER-STABLE row F5). The daemon main process maps this into a
  * Connect `RESOURCE_EXHAUSTED` reply on the originating `SendInput` RPC
  * and writes a `crash_log` row with `source = "pty_input_overflow"`,
- * `summary` containing the `sessionId` + `pendingWriteBytes`. NO bytes
- * from the rejected `SendInput` are ever passed to the node-pty master.
+ * `summary` containing the `sessionId` (resolved by the daemon main
+ * process from the `PtyHostChildHandle` that owns this child) and
+ * `pendingWriteBytes`. NO bytes from the rejected `SendInput` are ever
+ * passed to the node-pty master.
  *
- * Field shape is locked here (matches docs/superpowers/specs/2026-05-04
- * -pty-attach-handler.md §2.2 SendInputRejectedMessage). v0.4 may add
- * fields additively but MUST NOT rename / renumber.
+ * Wire shape is locked here (matches docs/superpowers/specs/2026-05-04
+ * -pty-attach-handler.md §2.2 SendInputRejectedMessage — flat fields,
+ * no nested `payload`, no `sessionId`; the child→daemon-main IPC is
+ * one-to-one with a session and the daemon already knows which child
+ * sent the message). v0.4 may add fields additively but MUST NOT
+ * rename / renumber.
  */
-export interface SendInputRejectedPayload {
-  readonly sessionId: string;
+export interface SendInputRejectedMessage {
+  readonly kind: 'send-input-rejected';
   /** Current pending-write tally at the moment of rejection (bytes). */
   readonly pendingWriteBytes: number;
   /** Size of the rejected `send-input` payload in bytes. */
@@ -112,10 +117,7 @@ export type ChildToHostMessage =
    *  The discriminant is enumerated in {@link ChildToHostKind} so `switch`
    *  statements stay exhaustive. */
   | { readonly kind: 'delta' | 'snapshot' }
-  | {
-      readonly kind: 'send-input-rejected';
-      readonly payload: SendInputRejectedPayload;
-    };
+  | SendInputRejectedMessage;
 
 /**
  * Reasons the daemon may observe for a child exit. Mirrors the spec's
