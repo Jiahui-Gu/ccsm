@@ -87,7 +87,9 @@ import {
   PtyDeltaSchema,
   PtyFrameSchema,
   PtyGeometrySchema,
+  PtySessionStateChangedSchema,
   PtySnapshotSchema,
+  SessionState,
   type AttachRequest,
   type PtyFrame,
   type PtyService,
@@ -123,12 +125,23 @@ import {
  * Spec §2.3-§2.4 — `'snapshot'` events fire on every snapshot
  * publication (steady-state Attach IGNORES these per §2.4 "at-most-one
  * snapshot per Attach"; only the warm-up snapshot is yielded onto the
- * wire). `'delta'` events fire for every IPC delta. `'closed'` fires
- * exactly once on emitter teardown.
+ * wire). `'delta'` events fire for every IPC delta.
+ * `'session-state-changed'` events fire whenever the host wire-up flips
+ * the per-session SessionState (Task #385 / spec ch06 §4: 3-strike
+ * DEGRADED + 60s cooldown probe back to RUNNING) — translated to
+ * `PtyFrame.session_state_changed` on the wire by this handler.
+ * `'closed'` fires exactly once on emitter teardown.
  */
 export type PtyEmitterEvent =
   | { readonly kind: 'snapshot'; readonly snapshot: PtySnapshotInMem }
   | { readonly kind: 'delta'; readonly delta: DeltaInMem }
+  | {
+      readonly kind: 'session-state-changed';
+      readonly state: 'RUNNING' | 'DEGRADED';
+      readonly reason: string;
+      readonly lastSeq: bigint;
+      readonly sinceUnixMs: number;
+    }
   | { readonly kind: 'closed'; readonly reason: 'pty.session_destroyed' };
 
 export type PtyEmitterListener = (event: PtyEmitterEvent) => void;
@@ -295,6 +308,53 @@ export function deltaToFrame(delta: DeltaInMem): PtyFrame {
         seq: delta.seq,
         payload: delta.payload,
         tsUnixMs: delta.tsUnixMs,
+      }),
+    },
+  });
+}
+
+/**
+ * Map an emitter `'session-state-changed'` event to the
+ * `PtyFrame.session_state_changed` oneof variant. Spec ch06 §4 / pty.proto
+ * §F8 — out-of-band per-session SessionState transition signal (today
+ * RUNNING ↔ DEGRADED). Pure, exported for unit tests.
+ *
+ * The emitter carries `state` as the string `'RUNNING' | 'DEGRADED'` so it
+ * stays free of proto/Connect imports (per spec §2.3); this sink is the
+ * single place where the string is translated to the proto enum value.
+ */
+export function sessionStateChangedToFrame(event: {
+  readonly state: 'RUNNING' | 'DEGRADED';
+  readonly reason: string;
+  readonly lastSeq: bigint;
+  readonly sinceUnixMs: number;
+}): PtyFrame {
+  // String → SessionState enum. Closed union of two strings; any future
+  // additions to PtyEvent's session-state-changed variant must be added
+  // here too (TS exhaustive switch keeps both sides honest).
+  let stateEnum: SessionState;
+  switch (event.state) {
+    case 'RUNNING':
+      stateEnum = SessionState.RUNNING;
+      break;
+    case 'DEGRADED':
+      stateEnum = SessionState.DEGRADED;
+      break;
+    default: {
+      const _exhaustive: never = event.state;
+      throw new Error(
+        `unhandled SessionState string: ${String(_exhaustive)}`,
+      );
+    }
+  }
+  return create(PtyFrameSchema, {
+    kind: {
+      case: 'sessionStateChanged',
+      value: create(PtySessionStateChangedSchema, {
+        state: stateEnum,
+        reason: event.reason,
+        lastSeq: event.lastSeq,
+        tsUnixMs: BigInt(event.sinceUnixMs),
       }),
     },
   });
@@ -707,13 +767,19 @@ export function makeAttachHandler(
           }
         }
 
-        // 3) Process any non-delta events the listener queued (snapshot
-        //    is ignored per §2.4 "at-most-one snapshot per Attach";
-        //    closed sets closedReason and short-circuits next pass).
+        // 3) Process any non-delta events the listener queued.
+        //    - 'session-state-changed': yield as PtyFrame.session_state_changed
+        //      (spec ch06 §4 — out-of-band signal, additive PtyFrame oneof).
+        //    - 'closed': set closedReason; next pass surfaces the terminal
+        //      error per §7.2.
+        //    - 'snapshot': dropped per §2.4 ("at-most-one snapshot per Attach").
+        //    - 'delta': already enqueued into the channel by the listener.
         while (eventQueue.length > 0) {
           const ev = eventQueue.shift() as PtyEmitterEvent;
           if (ev.kind === 'closed') {
             closedReason = { kind: 'session-destroyed' } satisfies ClosedReason;
+          } else if (ev.kind === 'session-state-changed') {
+            yield sessionStateChangedToFrame(ev);
           }
           // 'snapshot' and 'delta' (already enqueued above) — drop.
         }
@@ -723,7 +789,7 @@ export function makeAttachHandler(
 
         // 4) Park on the next event. The listener resolves with `null`
         //    on overflow / abort (terminal) or with the event for
-        //    snapshot/closed/delta (non-null).
+        //    snapshot/closed/delta/session-state-changed (non-null).
         const nextEvent = await new Promise<PtyEmitterEvent | null>(
           (resolve) => {
             pendingResolve = resolve;
@@ -739,6 +805,14 @@ export function makeAttachHandler(
         }
         if (nextEvent.kind === 'snapshot') {
           // Steady-state Attach IGNORES mid-stream snapshots per §2.4.
+          continue;
+        }
+        if (nextEvent.kind === 'session-state-changed') {
+          // Out-of-band SessionState transition (spec ch06 §4). Yield
+          // immediately as PtyFrame.session_state_changed; the next loop
+          // iteration's drain step will continue with any deltas the
+          // listener queued in the meantime.
+          yield sessionStateChangedToFrame(nextEvent);
           continue;
         }
         // nextEvent.kind === 'delta': it was already enqueued by the
