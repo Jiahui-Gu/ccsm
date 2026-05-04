@@ -1,17 +1,17 @@
 // IPC message shapes between daemon main process and per-session pty-host
 // child. Spec ch06 §1 (per-session topology, child_process.fork boundary).
 //
-// T4.1 scope: lifecycle-only stubs. The host→child messages cover spawn
-// hand-off and graceful close; the child→host messages cover ready
-// handshake and structured exit signalling. Snapshot / delta / SendInput
-// payloads are intentionally NOT defined here — they wire up in T4.6+
-// alongside the SnapshotV1 codec and PtyService Connect handlers. Adding
-// them now would either (a) freeze a wire shape before the codec lands,
-// or (b) ship a half-defined surface that gets renamed in T4.6. Either
-// is a v0.4 zero-rework violation; instead this file only enumerates the
-// closed-discriminant `kind` strings reserved for those later messages so
-// the switch statements in `host.ts` / `child.ts` stay exhaustive when
-// T4.6 fills the payloads in.
+// T4.1 scope: lifecycle-only stubs (ready / exiting / spawn / close /
+// send-input / resize). T-PA-1 (spec
+// `2026-05-04-pty-attach-handler.md` §9.1) extends the child→host union
+// with full payloads for the previously reserved `'delta'` /
+// `'snapshot'` / `'send-input-rejected'` kinds so the Attach handler
+// (T-PA-5/T-PA-6) and the child-side emitter (T-PA-8) have a single
+// pinned IPC surface to compile against. The discriminant strings did
+// NOT change — they were already reserved in T4.1 — so existing
+// `isChildToHostMessage` guards and `switch` statements in `host.ts` /
+// `child.ts` remain exhaustive without code edits beyond payload
+// access.
 //
 // SRP: this module is pure type declarations — no runtime, no I/O.
 
@@ -112,12 +112,57 @@ export interface SendInputRejectedMessage {
 export type ChildToHostMessage =
   | { readonly kind: 'ready'; readonly sessionId: string; readonly pid: number }
   | { readonly kind: 'exiting'; readonly reason: 'graceful' | 'test-crash' }
-  /** Delta / snapshot variants are reserved kinds; their payload shape is
-   *  intentionally unspecified at T4.1 and lands with the codec tasks.
-   *  The discriminant is enumerated in {@link ChildToHostKind} so `switch`
-   *  statements stay exhaustive. */
-  | { readonly kind: 'delta' | 'snapshot' }
+  | DeltaMessage
+  | SnapshotMessage
   | SendInputRejectedMessage;
+
+/**
+ * One delta segment produced by the pty-host child. Mirrors `PtyDelta`
+ * on the wire (`packages/proto/src/ccsm/v1/pty.proto`) but stays in
+ * native JS types (`bigint`, `Uint8Array`) — proto encoding happens at
+ * the Connect handler boundary in `rpc/pty-attach.ts`, never inside the
+ * IPC layer.
+ *
+ * Contract (spec `2026-05-04-pty-attach-handler.md` §2.1, §2.2):
+ * - `seq` is monotonically increasing per session, starting at `1`
+ *   after the most recent snapshot's `baseSeq`. Never reused, never
+ *   gapped. Maps to `PtyDelta.seq` (proto `uint64`).
+ * - `tsUnixMs` is the wall-clock capture timestamp; maps to
+ *   `PtyDelta.ts_unix_ms` (proto `int64`).
+ * - `payload` is the raw VT byte chunk (ch06 §3); opaque to the daemon
+ *   main process. Sent as a `Uint8Array` because IPC uses
+ *   `serialization: 'advanced'` (structured clone), so no base64 cost.
+ */
+export interface DeltaMessage {
+  readonly kind: 'delta';
+  readonly seq: bigint;
+  readonly tsUnixMs: bigint;
+  readonly payload: Uint8Array;
+}
+
+/**
+ * One snapshot produced by the pty-host child. Mirrors `PtySnapshot`
+ * on the wire but in native JS types.
+ *
+ * Contract (spec §2.2, §2.4, §3.3):
+ * - `baseSeq` equals the seq of the last delta emitted before this
+ *   snapshot was captured (so a subsequent Attach handler resumes
+ *   live deltas at `baseSeq + 1n`). The synthetic initial snapshot
+ *   captured on `'ready'` (§3.3) uses `baseSeq = 0n` because no
+ *   deltas have been emitted yet.
+ * - `geometry` reflects the PTY geometry at capture time.
+ * - `screenState` is the SnapshotV1 wire bytes from the codec
+ *   package (ch06 §2), already zstd-wrapped. Opaque to the daemon
+ *   main process.
+ * - `schemaVersion` is `1` in v0.3; bumps with codec evolution.
+ */
+export interface SnapshotMessage {
+  readonly kind: 'snapshot';
+  readonly baseSeq: bigint;
+  readonly geometry: { readonly cols: number; readonly rows: number };
+  readonly screenState: Uint8Array;
+  readonly schemaVersion: number;
+}
 
 /**
  * Reasons the daemon may observe for a child exit. Mirrors the spec's
