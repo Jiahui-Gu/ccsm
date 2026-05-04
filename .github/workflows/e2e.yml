@@ -42,7 +42,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
-          cache: 'npm'
+          # Task #364 — removed `cache: 'npm'`. The `actions/cache` step
+          # below caches node_modules verbatim (with electron binary +
+          # electron-ABI native bindings), making the setup-node ~/.npm
+          # cache redundant and adding setup overhead with no install-time
+          # benefit.
       # Cache node_modules directly — same rationale as ci.yml: `npm ci`
       # is the dominant Windows CI cost. Cache hit skips install entirely
       # and inherits the postinstall-rebuilt native bindings (better-sqlite3,
@@ -69,6 +73,17 @@ jobs:
         with:
           path: node_modules
           key: nm-e2e-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          # Task #364 — fallback to any prior e2e node22 cache when lockfile
+          # hash changes. Cache hit rate was low because every dep bump
+          # invalidates the primary key. With restore-keys, a stale cache
+          # is restored and `npm ci` reconciles only the diff. Native
+          # bindings carry old ABI from the stale cache; the
+          # `npx electron-rebuild` step below always runs to realign with
+          # Electron's NMV. The `nm-e2e-` prefix is preserved (must NOT
+          # collide with ci.yml's `nm-` prefix — see comment block above
+          # about the cross-workflow cache poisoning incident).
+          restore-keys: |
+            nm-e2e-${{ runner.os }}-${{ runner.arch }}-node22-
       - name: Cache Electron binary
         uses: actions/cache@v4
         with:
