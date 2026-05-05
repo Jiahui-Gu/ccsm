@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.12.0",
+    "@ccsm/snapshot-codec": "workspace:*",
     "@connectrpc/connect": "^2.1.1",
     "@xterm/addon-serialize": "^0.13.0",
     "@xterm/headless": "^5.5.0",
