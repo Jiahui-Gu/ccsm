@@ -27,18 +27,13 @@ const getSessionInfoMock = vi.fn(async () => {
 });
 
 import { __createForTest, type TitleChangedEvent } from '../index';
-// Wave-2-C: sessionTitles still lives under electron/ (W2-A's mv target).
-// This watcher test wires through sessionTitles via the watcher's
-// configurable `fetchTitle` / `flushRename` hooks, so the cross-tree
-// import below is a test-fixture-only edge — it disappears once W2-A
-// mv's electron/sessionTitles → daemon/sessionTitles.
 import {
   __resetForTests as __resetTitleBridge,
   __setSdkForTests as __setTitleBridgeSdk,
   enqueuePendingRename,
   getSessionTitle,
   flushPendingRename,
-} from '../../../electron/sessionTitles';
+} from '../../sessionTitles';
 
 let tmpRoot: string;
 
