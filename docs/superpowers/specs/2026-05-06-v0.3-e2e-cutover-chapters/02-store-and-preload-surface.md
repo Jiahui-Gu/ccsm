@@ -147,10 +147,32 @@ contextBridge.exposeInMainWorld('ccsm', ccsm);
 the shape breaks persist.
 **Why**: persist contract has been stable across waves; the renderer
 test in `tests/stores/persist.test.ts` (if present) pins it.
+**v0.2 baseline-cite (R1 guard)**: this signature MUST preserve the
+v0.2 type exactly. The fixer MUST verify with
+`git show 35b08d15^:electron/preload/bridges/ccsmCore.ts` (or the
+equivalent v0.2 path) that v0.2's `loadState` already returns
+`Promise<string | null>`; if v0.2 was `Promise<unknown>` (or any
+wider shape), keep that wider type and add a runtime assertion in
+`tests/stores/persist.test.ts` (NEW, see UT MUST below) instead of
+narrowing — narrowing the public preload surface in v0.3 is
+out-of-scope feature drift.
 
 **MUST**: `loadState` MUST resolve `null` (not throw) when the key
 isn't set — the persist code path treats `null` as "no persisted
 state, use defaults."
+**v0.2 baseline-cite (R1 guard)**: this MUST preserves v0.2
+missing-key semantics. The fixer MUST verify with
+`git show 35b08d15^:src/stores/persist.ts` AND
+`git show 35b08d15^:electron/preload/bridges/ccsmCore.ts` (or the
+equivalent v0.2 paths) that v0.2 already resolves `null` (rather
+than throwing) on the missing-key path; if v0.2 actually threw,
+preserve the throw and route the error-slice toast at the persist
+caller instead. CF-5 has landed the failure-path `null + toast`
+contract above on the same v0.2 short-circuit grounding (v0.2
+treats missing-key and transport failure as the same "no persisted
+state" branch); F-02 only adds this v0.2 baseline-cite guard so
+future fixers cannot silently invert the resolve/throw decision
+without re-running `git show`.
 
 **MUST (failure path)**: `loadState` MUST resolve `null` (NOT reject) on
 ANY of the following daemon-side or transport failure modes, treating
