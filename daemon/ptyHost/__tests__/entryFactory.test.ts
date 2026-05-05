@@ -29,7 +29,7 @@ interface PtyFakeBus {
   deferHeadlessWrite: boolean;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function bus(): PtyFakeBus { return (globalThis as any).__pf as PtyFakeBus; }
 
 vi.mock('node-pty', () => ({
@@ -122,14 +122,14 @@ describe('entryFactory.makeEntry', () => {
       ensureCopied: false,
       deferHeadlessWrite: false,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (globalThis as any).__pf = b;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     delete (globalThis as any).__pf;
   });
 
@@ -186,6 +186,51 @@ describe('entryFactory.makeEntry', () => {
     expect(b.watcherStop).toHaveBeenCalledWith('sid-F');
   });
 
+  it('SSE G-3 — pty:exit fires exactly once per attached subscriber, regardless of count (Task #604)', () => {
+    // Multi-subscriber correctness for the SSE pipe (spec §3.2.1 G-3):
+    // attaching N subscribers MUST result in N pty:exit deliveries (one
+    // per subscriber, not duplicated by the entry-level fan-out loop).
+    // Pinning here at the entryFactory boundary catches any future
+    // refactor that loops twice or re-emits via dataFanout into the same
+    // subscriber set.
+    const entry = makeEntry('sid-G3', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    const subA = { id: 'a', isDestroyed: () => false, send: vi.fn() };
+    const subB = { id: 'b', isDestroyed: () => false, send: vi.fn() };
+    const subC = { id: 'c', isDestroyed: () => false, send: vi.fn() };
+     
+    entry.attached.set('a', subA as any);
+     
+    entry.attached.set('b', subB as any);
+     
+    entry.attached.set('c', subC as any);
+
+    bus().onExit!({ exitCode: 0, signal: null });
+
+    for (const sub of [subA, subB, subC]) {
+      const exitCalls = sub.send.mock.calls.filter((c) => c[0] === 'pty:exit');
+      expect(exitCalls.length).toBe(1);
+      expect(exitCalls[0][1]).toEqual({ sessionId: 'sid-G3', code: 0, signal: null });
+    }
+  });
+
+  it('SSE G-3 — destroyed subscriber is skipped, live siblings still get pty:exit (Task #604)', () => {
+    const entry = makeEntry('sid-G3b', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
+    const dead = { id: 'd', isDestroyed: () => true, send: vi.fn() };
+    const alive = { id: 'l', isDestroyed: () => false, send: vi.fn() };
+     
+    entry.attached.set('d', dead as any);
+     
+    entry.attached.set('l', alive as any);
+
+    bus().onExit!({ exitCode: null, signal: 9 });
+
+    expect(dead.send).not.toHaveBeenCalled();
+    const aliveExits = alive.send.mock.calls.filter((c) => c[0] === 'pty:exit');
+    expect(aliveExits.length).toBe(1);
+    // SIGKILL signal shape is preserved end-to-end (sigkill-reattach v0.2 baseline).
+    expect(aliveExits[0][1]).toEqual({ sessionId: 'sid-G3b', code: null, signal: 9 });
+  });
+
   it('forwards pty data into headless write AND emitPtyData fanout', () => {
     makeEntry('sid-G', '/work', '/bin/claude', 80, 24, { onExit: vi.fn() });
     const b = bus();
@@ -226,14 +271,14 @@ describe('entryFactory.dispatchPtyChunk', () => {
       ensureCopied: false,
       deferHeadlessWrite: false,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     (globalThis as any).__pf = b;
     vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     delete (globalThis as any).__pf;
   });
 
@@ -247,7 +292,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
         sent.push({ chunk: payload.chunk, seq: payload.seq });
       },
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     entry.attached.set('1', wc as any);
 
     mod.dispatchPtyChunk('sid-DW', entry, 'a');
@@ -280,7 +325,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     entry.attached.set('1', wc as any);
 
     // Defer write callbacks so writes stay "pending" until we manually drain.
@@ -327,9 +372,9 @@ describe('entryFactory.dispatchPtyChunk', () => {
       isDestroyed: () => false,
       send: (_ch: string, payload: { seq: number }) => aliveSent.push(payload.seq),
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     entry.attached.set('1', dead as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     entry.attached.set('2', alive as any);
 
     mod.dispatchPtyChunk('sid-DEAD', entry, 'x');
