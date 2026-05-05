@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 // packages/daemon/build/inline-migrations.mjs — generate src/db/migrations/inlined.ts
 // from the bundled *.sql files so the SEA-bundled daemon does NOT depend on
 // runtime filesystem reads of `import.meta.url`.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global console, process */
 // packages/daemon/build/bundle-for-sea-spec.mjs — pretest helper.
 //
 // `test/integration/daemon-sea-boot.spec.ts` (Task #463) inspects
