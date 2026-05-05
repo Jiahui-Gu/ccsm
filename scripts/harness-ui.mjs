@@ -1463,6 +1463,44 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
 // `harness-real-cli.mjs`; this case is strictly the renderer-side
 // wiring contract.
 async function caseTerminalPaneMounted({ win, log }) {
+  // Round-3 fix: Task #464 round-2 added a renderer-side polyfill that
+  // installs `window.ccsmPty.checkClaudeAvailable` from `src/index.tsx`
+  // BEFORE `root.render()`. The polyfill's body awaits an internal
+  // `clientsReady` promise that `boot.tsx`'s `ColdStartGate` resolves once
+  // the Connect client bundle is built — but harness-ui has no daemon
+  // running, the descriptor fetch fails inside `ColdStartGate`, clients
+  // never bind, and the promise never resolves. The App probe's
+  // `useEffect(deps=[])` then sits forever in the await branch and
+  // `claudeAvailable` stays `undefined`, so the right pane renders the
+  // `[data-testid="claude-availability-probing"]` spinner — none of the
+  // three wait conditions below ever flip and the case times out.
+  //
+  // Pre-round-2 the polyfill didn't exist; `window.ccsmPty` was undefined,
+  // App's optional-chain returned falsy, the probe's "preload missing"
+  // catch branch flipped `claudeAvailable=false` synchronously, and the
+  // case completed via the ClaudeMissingGuide fallback branch below.
+  //
+  // The round-3 fix in `packages/electron/src/renderer/window-ccsm-pty-bridge.ts`
+  // makes `installWindowCcsmPtyBridgeStub()` SKIP the install when an
+  // existing `window.ccsmPty.checkClaudeAvailable` is already present.
+  // We exploit that here: install a deterministic harness stub via
+  // `addInitScript` (so it runs before the bundle's polyfill init),
+  // returning `{ available: false }`. The polyfill then preserves our
+  // stub, the App probe resolves immediately to `false`, and the right
+  // pane renders ClaudeMissingGuide — the `claudeAvailable=false` branch
+  // assertions below take over.
+  await win.context().addInitScript(() => {
+    if (window.__ccsmTask464HarnessStubInstalled) return;
+    const existing = window.ccsmPty ?? {};
+    window.ccsmPty = {
+      ...existing,
+      checkClaudeAvailable: async () => ({ available: false }),
+    };
+    window.__ccsmTask464HarnessStubInstalled = true;
+  });
+  await win.reload();
+  await win.waitForLoadState('domcontentloaded');
+
   // Seed a real session so App's `active` resolves and the right-pane
   // branch runs. tutorialSeen=true skips the tutorial overlay.
   //

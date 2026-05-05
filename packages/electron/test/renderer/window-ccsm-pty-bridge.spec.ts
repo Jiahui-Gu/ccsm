@@ -240,4 +240,32 @@ describe('window-ccsm-pty-bridge — two-phase install', () => {
     expect(bridge.list).toBe(existingStub);
     expect(typeof bridge.checkClaudeAvailable).toBe('function');
   });
+
+  it('does NOT overwrite a pre-existing checkClaudeAvailable stub (round-3 e2e seam)', async () => {
+    // Round-3 fix: e2e harness `addInitScript` may install a deterministic
+    // stub (`{ available: false }`) before the bundle's `installWindowCcsmPtyBridgeStub`
+    // call. Without this preservation the polyfill's queueing async function
+    // overrides the stub, the harness has no daemon to ever bind clients to,
+    // and App.tsx's probe `useEffect(deps=[])` awaits `clientsReady` forever
+    // — terminal-pane-mounted on harness-ui then hangs on the
+    // `[data-testid="claude-availability-probing"]` spinner instead of
+    // surfacing ClaudeMissingGuide.
+    const stubResult = { available: false } as const;
+    const harnessStub = vi.fn(async () => stubResult);
+    (window as unknown as { ccsmPty: Record<string, unknown> }).ccsmPty = {
+      checkClaudeAvailable: harnessStub,
+    };
+
+    installWindowCcsmPtyBridgeStub();
+
+    const bridge = (window as unknown as {
+      ccsmPty: {
+        checkClaudeAvailable: () => Promise<{ available: boolean }>;
+      };
+    }).ccsmPty;
+    expect(bridge.checkClaudeAvailable).toBe(harnessStub);
+    const result = await bridge.checkClaudeAvailable();
+    expect(result).toEqual(stubResult);
+    expect(harnessStub).toHaveBeenCalledTimes(1);
+  });
 });

@@ -241,9 +241,23 @@ export function installWindowCcsmPtyBridgeStub(): void {
     ccsmPty?: Record<string, unknown>;
   };
   // Preserve any pre-existing surface (test stubs, future polyfills
-  // for list/spawn/etc.); only graft `checkClaudeAvailable` on.
+  // for list/spawn/etc.). If the consumer has ALREADY installed a
+  // `checkClaudeAvailable` (e.g. e2e harness `addInitScript` stub
+  // that runs before bundle eval, or a future preload that delivers
+  // the real method), keep theirs — the polyfill exists only to
+  // bridge the SHIP-GATE gap when nothing else has supplied one.
+  // Round-3: this changed from unconditional overwrite to
+  // existence-check so `harness-ui` (no daemon, no clients ever
+  // bind) can stub the method to a deterministic
+  // `{ available: false }` and the App probe resolves immediately
+  // instead of awaiting `clientsReady` forever.
   const existing = w.ccsmPty ?? {};
-  w.ccsmPty = { ...existing, checkClaudeAvailable };
+  w.ccsmPty = {
+    ...existing,
+    ...(typeof existing.checkClaudeAvailable === 'function'
+      ? {}
+      : { checkClaudeAvailable }),
+  };
 }
 
 /**
