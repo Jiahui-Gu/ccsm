@@ -17,6 +17,11 @@ concurrency:
 
 permissions:
   contents: read
+  # Task #530 — `actions: read` lets actions/download-artifact@v4 fetch
+  # artifacts from a different workflow run (ci.yml) on the same SHA.
+  # `pull-requests: read` lets `gh run list` resolve the PR head SHA.
+  actions: read
+  pull-requests: read
 
 jobs:
   e2e:
@@ -148,8 +153,103 @@ jobs:
       # ci.yml won the cache race. Diagnosed via Task #919.
       - name: Ensure native modules built for Electron ABI
         run: npx electron-rebuild
-      - name: Build
+
+      # Task #530 (CI-SPEED commit 1) — try downloading the `dist/` artifact
+      # uploaded by ci.yml's `test` job for the same PR head. The download
+      # action matches the artifact by name (`dist-${{ github.run_id }}`)
+      # within the same workflow run; for cross-workflow lookup we use the
+      # github-script-style API via `actions/download-artifact@v4` with
+      # `run-id` + `github-token`.
+      #
+      # github.event.workflow_run is null for `pull_request` triggers, so we
+      # resolve the most-recent successful CI run for the same head SHA via
+      # the gh CLI (preinstalled on runners). If anything fails (no CI run,
+      # API rate-limit, artifact expired) the step's `continue-on-error: true`
+      # marker keeps the job alive and the next "Build (fallback)" step
+      # rebuilds locally.
+      #
+      # Saves ~30-45s on warm-cache PRs where ci.yml's test job already
+      # produced a viable dist/.
+      - name: Locate CI run for head SHA
+        id: ci_run
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        continue-on-error: true
+        run: |
+          # ci.yml runs in parallel with e2e.yml on the same `pull_request`
+          # event. Poll for the most-recent CI run on this SHA to finish
+          # successfully, with a short bounded wait so we don't extend
+          # e2e's wall-clock if ci.yml is slow. The wait budget below is
+          # tuned so the BEST CASE (ci.yml's `test` job ~280s; e2e's
+          # install+rebuild+electron prep ~180-240s before this step)
+          # has e2e arrive at this poll right around when ci.yml finishes.
+          # MAX_WAIT 90s caps the downside on cold PRs where ci.yml is
+          # slower than e2e — past the budget we fall through to local
+          # build (zero net cost vs the baseline).
+          MAX_WAIT=90
+          INTERVAL=10
+          elapsed=0
+          run_id=""
+          while [ "$elapsed" -lt "$MAX_WAIT" ]; do
+            run_id=$(gh run list \
+              --workflow ci.yml \
+              --commit "$HEAD_SHA" \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty' || true)
+            if [ -n "$run_id" ]; then
+              echo "Found successful CI run $run_id for $HEAD_SHA after ${elapsed}s"
+              echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep "$INTERVAL"
+            elapsed=$((elapsed + INTERVAL))
+          done
+          echo "No successful CI run found for $HEAD_SHA within ${MAX_WAIT}s — will fall back to local build"
+
+      - name: Download dist artifact from CI
+        id: dl_dist
+        if: steps.ci_run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: dist-${{ steps.ci_run.outputs.run_id }}
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.ci_run.outputs.run_id }}
+
+      - name: Verify dist artifact contents
+        id: verify_dist
+        if: steps.dl_dist.outcome == 'success'
+        shell: bash
+        run: |
+          # Sanity: artifact must contain renderer bundle + main entry, else
+          # treat as missing and fall through to local build.
+          if [ -f dist/renderer/bundle.js ] && [ -f dist/electron/main.js ]; then
+            echo "dist artifact OK — skipping build:app"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist artifact incomplete — will rebuild"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (fallback if no artifact)
+        if: steps.verify_dist.outputs.ok != 'true'
         run: npm run build:app
+
+      - name: Build (gen-only when artifact reused)
+        if: steps.verify_dist.outputs.ok == 'true'
+        shell: bash
+        run: |
+          # Skipping build:app (artifact downloaded); but still produce proto
+          # gen output so any e2e helper that imports @ccsm/proto resolves.
+          # gen-proto.mjs is idempotent and ~1-2s.
+          node scripts/gen-proto.mjs
       - name: Run e2e
         # Task #343 (Wave M3.5-CHECK no-skipif-cheat) — removed
         # `E2E_SKIP=harness-real-cli`. The blanket skip env was a
