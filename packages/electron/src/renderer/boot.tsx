@@ -57,6 +57,7 @@ import {
 
 import { createClients, type CcsmClients } from '../rpc/clients.js';
 import { ClientsProvider } from '../rpc/queries.js';
+import { installWindowCcsmPtyBridge } from './window-ccsm-pty-bridge.js';
 import {
   ConnectionProvider,
   useConnection,
@@ -257,6 +258,20 @@ function ColdStartGate(props: {
   const overlay = (
     <DaemonNotRunningModal open={modal.open} onRetry={modal.onRetry} />
   );
+
+  // Task #464 / SHIP-GATE — install `window.ccsmPty.checkClaudeAvailable`
+  // against the typed Connect client as soon as the bundle exists.
+  // App.tsx's boot effect at `src/App.tsx:227` reads
+  // `window.ccsmPty.checkClaudeAvailable` directly (a pre-#215 call site
+  // that the v0.3 cutover has not migrated to `useClients()` yet); without
+  // this install, the optional chain returns `undefined` and the renderer
+  // unconditionally mounts ClaudeMissingGuide on first paint. See
+  // `./window-ccsm-pty-bridge.ts` for the full root-cause writeup.
+  React.useEffect(() => {
+    if (clients !== null) {
+      installWindowCcsmPtyBridge(clients);
+    }
+  }, [clients]);
 
   // Children render UNCONDITIONALLY (see file header). When clients are
   // available we wrap them in `<ClientsProvider>`; when not, they render

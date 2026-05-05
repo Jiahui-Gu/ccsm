@@ -32,9 +32,10 @@
 //     real `peerCredAuthInterceptor` so handlers see a populated
 //     PRINCIPAL_KEY. The boot-end-to-end spec
 //     (`daemon-boot-end-to-end.spec.ts`) cannot stand in here because
-//     production wire-up still routes `PtyService.SendInput`,
-//     `Resize`, `CheckClaudeAvailable` to `Code.Unimplemented` (see
-//     `rpc/router.ts:registerPtyService` comment). The boot-e2e file
+//     production wire-up still routes `PtyService.SendInput` and
+//     `Resize` to `Code.Unimplemented` (see
+//     `rpc/router.ts:registerPtyService` comment;
+//     `CheckClaudeAvailable` shipped under Task #464). The boot-e2e file
 //     deliberately refuses to reverse-assert those Unimplemented
 //     branches (file header comment §2: "Stuffing reverse-assertions
 //     for the unwired ~10 here would lock in transitional

@@ -473,6 +473,14 @@ export async function runStartup(
         settingsDeps,
         draftDeps,
         createSessionDeps,
+        // Task #464 / SHIP-GATE — install the real
+        // PtyService.CheckClaudeAvailable handler so the renderer's
+        // first-paint probe at `src/App.tsx:227` resolves instead of
+        // returning `undefined` and locking every user out behind
+        // ClaudeMissingGuide. Empty deps `{}` selects the production
+        // defaults (`claudeResolver` + bounded `spawnSync`); see
+        // `rpc/pty/check-claude-available.ts` for the seam shape.
+        checkClaudeAvailableDeps: {},
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by

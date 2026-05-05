@@ -10,9 +10,9 @@
 // Wire-up note (transitional handler):
 //   The production daemon currently routes SendInput to
 //   `Code.Unimplemented` (see `rpc/router.ts:registerPtyService`
-//   comment — "Other PtyService methods (SendInput / Resize /
-//   CheckClaudeAvailable) stay `Code.Unimplemented` until their
-//   owning tasks land"). Per ch12 §3's "every RPC MUST have at least
+//   comment — "Other PtyService methods (SendInput / Resize) stay
+//   `Code.Unimplemented` until their owning tasks land";
+//   CheckClaudeAvailable shipped under Task #464). Per ch12 §3's "every RPC MUST have at least
 //   one happy-path and one error-path integration test" criterion the
 //   spec for this file owns the wire contract: the handler below is
 //   the minimal in-spec impl that the production handler MUST match

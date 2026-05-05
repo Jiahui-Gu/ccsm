@@ -81,6 +81,10 @@ import { registerCrashService, type CrashServiceDeps } from './crash/register.js
 import { registerDraftService, type DraftServiceDeps } from './draft/register.js';
 import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
+import {
+  makeCheckClaudeAvailableHandler,
+  type CheckClaudeAvailableDeps,
+} from './pty/check-claude-available.js';
 import { makeAttachHandler, makeAckPtyHandler, type PtyAttachDeps } from './pty-attach.js';
 import {
   registerSettingsService,
@@ -231,25 +235,37 @@ export function registerSessionService(
 /**
  * Register the v0.3 PtyService.Attach handler (Wave 3 §6.9 sub-task 10 /
  * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6) AND
- * the AckPty companion handler (Task #49 / T4.13 / spec §6).
+ * the AckPty companion handler (Task #49 / T4.13 / spec §6) AND the
+ * CheckClaudeAvailable handler (Task #464 / SHIP-GATE — first-paint
+ * claude probe; see `./pty/check-claude-available.ts`).
  *
  * REPLACES the stub `{}` registration for PtyService with
- * `{ attach, ackPty }`. Other PtyService methods (SendInput / Resize /
- * CheckClaudeAvailable) stay `Code.Unimplemented` per the
+ * `{ attach, ackPty, checkClaudeAvailable }`. Other PtyService methods
+ * (SendInput / Resize) stay `Code.Unimplemented` per the
  * "absent-method → unimplemented" Connect router rule until their
  * owning tasks land. The combined-registration caveat that applies to
  * SessionService also applies here (`router.service` REPLACES on the
  * same descriptor) — so when the next PtyService method handler ships,
  * it MUST be added to this same call site rather than registered via a
  * second `service()` call.
+ *
+ * `checkClaudeAvailableDeps` is optional so existing test fixtures
+ * that constructed `{ getEmitter }` keep compiling; production startup
+ * passes `{}` to use the default `claudeResolver` + `spawnSync`
+ * implementations. Tests that need to assert resolver behavior pass
+ * inline fakes via this seam.
  */
 export function registerPtyService(
   router: ConnectRouter,
   deps: PtyAttachDeps,
+  checkClaudeAvailableDeps: CheckClaudeAvailableDeps = {},
 ): ConnectRouter {
   router.service(PtyService, {
     attach: makeAttachHandler(deps),
     ackPty: makeAckPtyHandler(deps),
+    checkClaudeAvailable: makeCheckClaudeAvailableHandler(
+      checkClaudeAvailableDeps,
+    ),
   });
   return router;
 }
@@ -271,6 +287,7 @@ export function makeDaemonRoutes(
   draftDeps?: DraftServiceDeps,
   ptyAttachDeps?: PtyAttachDeps,
   createSessionDeps?: CreateSessionDeps,
+  checkClaudeAvailableDeps?: CheckClaudeAvailableDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -312,10 +329,31 @@ export function makeDaemonRoutes(
     // spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6). Wires the
     // server-streaming Attach handler against the per-session in-memory
     // emitter registry (PR #1027 / T-PA-5 supplies the production
-    // `getEmitter`; tests pass an inline fake). Other PtyService
-    // methods stay `Code.Unimplemented` until their tasks land.
+    // `getEmitter`; tests pass an inline fake). Same registration also
+    // installs CheckClaudeAvailable (Task #464 / SHIP-GATE) when
+    // `checkClaudeAvailableDeps` is supplied — folded in here because
+    // `router.service(PtyService, ...)` REPLACES on the same descriptor
+    // (combined-registration caveat). When `ptyAttachDeps` is omitted
+    // but `checkClaudeAvailableDeps` is supplied (the v0.3 production
+    // wiring path until T-PA-5 lands), we still want the boot probe to
+    // work, so we fall through to a probe-only registration below.
+    // Methods not registered here stay `Code.Unimplemented`.
     if (ptyAttachDeps !== undefined) {
-      registerPtyService(router, ptyAttachDeps);
+      registerPtyService(router, ptyAttachDeps, checkClaudeAvailableDeps);
+    } else if (checkClaudeAvailableDeps !== undefined) {
+      // SHIP-GATE: production startup currently does NOT supply
+      // ptyAttachDeps (T-PA-5 emitter wiring is a separate task), but
+      // the renderer's first-paint probe MUST resolve or every user
+      // sees ClaudeMissingGuide on boot (Task #464 root cause). We
+      // register PtyService with just `checkClaudeAvailable` here so
+      // the probe lands even without the streaming handlers. When
+      // T-PA-5 ships and production sets `ptyAttachDeps`, this branch
+      // becomes dead code — the `if` above takes over.
+      router.service(PtyService, {
+        checkClaudeAvailable: makeCheckClaudeAvailableHandler(
+          checkClaudeAvailableDeps,
+        ),
+      });
     }
   };
 }
@@ -427,11 +465,25 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * session `PtySessionEmitter` registry that PR #1027 (T-PA-5)
    * exports. Production startup wires it as `(sid) =>
    * ptyEmitterRegistry.getEmitter(sid)`; tests pass an inline fake.
-   * Other PtyService methods (SendInput / Resize / AckPty /
-   * CheckClaudeAvailable) stay `Code.Unimplemented` until their
-   * owning tasks land.
+   * Other PtyService methods (SendInput / Resize) stay
+   * `Code.Unimplemented` until their owning tasks land.
    */
   readonly ptyAttachDeps?: PtyAttachDeps;
+  /**
+   * When set, installs the Task #464 / SHIP-GATE
+   * PtyService.CheckClaudeAvailable handler (real implementation,
+   * delegating to `claudeResolver` + `spawnSync` via the seams in
+   * `./pty/check-claude-available.ts`). Production startup wires `{}`
+   * to use the default resolver; tests pass inline fakes.
+   *
+   * Folded into the same `router.service(PtyService, ...)` call as
+   * `ptyAttachDeps` when both are set (the combined-registration
+   * caveat — see `registerPtyService`). When only this is set,
+   * registers PtyService with just `checkClaudeAvailable` so the
+   * renderer's boot probe resolves even before T-PA-5 ships the
+   * Attach overlay.
+   */
+  readonly checkClaudeAvailableDeps?: CheckClaudeAvailableDeps;
 }
 
 /**
@@ -480,6 +532,7 @@ export function createDaemonNodeAdapter(
     draftDeps,
     ptyAttachDeps,
     createSessionDeps,
+    checkClaudeAvailableDeps,
     interceptors: callerInterceptors,
     ...rest
   } = options;
@@ -495,6 +548,7 @@ export function createDaemonNodeAdapter(
           draftDeps,
           ptyAttachDeps,
           createSessionDeps,
+          checkClaudeAvailableDeps,
         )
       : stubRoutes;
   const interceptors = [
