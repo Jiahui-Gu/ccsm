@@ -139,6 +139,7 @@ describe('packages/daemon/build/sign-*.{sh,ps1} (spec ch10 §3, T7.3)', () => {
     // themselves are placeholder-safe (exit 0 + WARN on wrong host), but
     // the tests assert tool-trace output that the wrong host can't emit.
     // skipIf keeps the assertion on the matching host only.
+    // [PLATFORM-GATE: codesign + xcrun notarytool only available on macOS]
     it.skipIf(process.platform !== 'darwin')(
       'sign-mac.sh dry-run prints codesign + xcrun notarytool traces (darwin only)',
       () => {
@@ -160,6 +161,7 @@ describe('packages/daemon/build/sign-*.{sh,ps1} (spec ch10 §3, T7.3)', () => {
       },
     );
 
+    // [PLATFORM-GATE: debsigs / rpm / gpg toolchain only present on Linux runners]
     it.skipIf(process.platform !== 'linux')(
       'sign-linux.sh dry-run prints debsigs + rpm --addsign + gpg --detach-sign traces (linux only)',
       () => {

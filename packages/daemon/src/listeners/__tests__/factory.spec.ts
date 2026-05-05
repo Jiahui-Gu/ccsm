@@ -223,6 +223,7 @@ describe('defaultBindHook — loopbackTcp end-to-end', () => {
   });
 });
 
+// [PLATFORM-GATE: POSIX UDS not available on Windows]
 describe.skipIf(!POSIX)('defaultBindHook — uds end-to-end (POSIX only)', () => {
   let dir: string;
   let sockPath: string;

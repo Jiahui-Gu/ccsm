@@ -11,6 +11,7 @@ import { bindH2NamedPipe, normalizePipePath } from '../h2-named-pipe.js';
 import type { BoundTransport } from '../types.js';
 
 const isWin = platform() === 'win32';
+// [PLATFORM-GATE: Windows named pipe API unavailable on POSIX]
 const describeWin = isWin ? describe : describe.skip;
 
 let bound: BoundTransport | null = null;
@@ -94,6 +95,7 @@ describeWin('bindH2NamedPipe (win32)', () => {
 });
 
 describe('bindH2NamedPipe (POSIX guard)', () => {
+  // [PLATFORM-GATE: POSIX-only routing-hint check; skip on Windows where the bind succeeds]
   it.skipIf(isWin)('throws synchronously on POSIX with a routing-hint message', async () => {
     const server = createServer();
     await expect(bindH2NamedPipe(server, { pipeName: 'never-binds' })).rejects.toThrow(

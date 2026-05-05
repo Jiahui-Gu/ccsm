@@ -81,6 +81,7 @@ function* walkTs(root: string): Generator<string> {
 
 const cadenceFileExists = existsSync(CADENCE_FILE_ABS);
 
+// [PLATFORM-GATE: requires generated cadence source file (skip when not present in this build)]
 describe.skipIf(!cadenceFileExists)(
   'pty segmentation cadence (single source file lock)',
   () => {

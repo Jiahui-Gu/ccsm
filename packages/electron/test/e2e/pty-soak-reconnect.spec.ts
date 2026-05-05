@@ -201,6 +201,7 @@ const SKIP_REASON = SKIP_OVERRIDE
 // `describe.skipIf(...)` keeps the suite present in the report (so CI can
 // observe the skip count + reason) while preventing any of its lifecycle
 // hooks from running. Vitest 4.x supports `skipIf` natively.
+// [PLATFORM-GATE: requires built service binary + Playwright electron fixture; otherwise skipped pending dependencies]
 describe.skipIf(SHOULD_SKIP)(
   `T8.5 pty-soak-reconnect — Electron-side companion to ship-gate (c)`,
   () => {

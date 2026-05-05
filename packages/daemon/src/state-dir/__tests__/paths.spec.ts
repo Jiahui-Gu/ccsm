@@ -122,6 +122,7 @@ describe('ensureStateDir — mkdir + mode (linux only; skip on win32)', () => {
     }
   });
 
+  // [PLATFORM-GATE: POSIX 0700 mkdir mode semantics not applicable on Windows]
   it.skipIf(skip)('creates the root + descriptors subdir with mode 0700', async () => {
     // Build a sandbox + monkey-patch the linux root for this single call by
     // rewriting `process.cwd()` is invasive — instead we create a tmp dir,
@@ -144,6 +145,7 @@ describe('ensureStateDir — mkdir + mode (linux only; skip on win32)', () => {
     expect(descStat.mode & 0o777).toBe(0o700);
   });
 
+  // [PLATFORM-GATE: POSIX 0700 mkdir mode semantics not applicable on Windows]
   it.skipIf(skip)('ensureStateDir is idempotent on repeat invocation', async () => {
     // Simulate by mkdir-ing the same dir twice with recursive; should not throw.
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ccsm-state-dir-'));
@@ -155,6 +157,7 @@ describe('ensureStateDir — mkdir + mode (linux only; skip on win32)', () => {
     ).resolves.toBeUndefined();
   });
 
+  // [PLATFORM-GATE: POSIX 0700 mkdir mode semantics not applicable on Windows]
   it.skipIf(skip)('exposes a callable ensureStateDir for the running platform', async () => {
     // We can't write to /var/lib/ccsm in CI, but we *can* assert the
     // function signature + that it returns a StatePaths object whose root

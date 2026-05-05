@@ -67,6 +67,7 @@ describe('update-flow.spec.{sh,ps1} — files exist', () => {
 });
 
 describe('update-flow.spec.sh (dry-run)', () => {
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('main script --dry-run exits 0', () => {
     const r = spawnSync('bash', [SH_MAIN, '--dry-run', '--simulate-healthz=pass'], {
       encoding: 'utf8',
@@ -81,6 +82,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
     expect(r.stdout).toMatch(/update flow complete/);
   });
 
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('main script --dry-run + simulate-healthz=fail triggers rollback path', () => {
     const r = spawnSync(
       'bash',
@@ -100,6 +102,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
     expect(r.stdout).toMatch(/"owner_id":"daemon-self"/);
   });
 
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('lib/stop-with-escalation.sh --dry-run exits 0', () => {
     const r = spawnSync(
       'bash',
@@ -110,6 +113,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
     expect(r.stdout).toMatch(/polite stop/);
   });
 
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('lib/rename-prev.sh --dry-run exits 0', () => {
     const r = spawnSync(
       'bash',
@@ -120,6 +124,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
     expect(r.stdout).toMatch(/install root: \/tmp\/nope/);
   });
 
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('lib/rollback.sh --dry-run prints update_rollback NDJSON', () => {
     const r = spawnSync(
       'bash',
@@ -138,6 +143,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
     expect(r.stdout).toMatch(/"summary":"update_rollback: test"/);
   });
 
+  // [PLATFORM-GATE: bash not installed (POSIX shell scripts require bash on PATH)]
   it.skipIf(!bashAvailable)('lib/rollback.sh propagates non-zero exit when bash forces it', () => {
     // Sanity: prove the spec can FAIL (per task acceptance criterion). Run
     // bash with `set -e` and `false` to confirm spawnSync surfaces
@@ -149,6 +155,7 @@ describe('update-flow.spec.sh (dry-run)', () => {
 });
 
 describe('update-flow.spec.ps1 (dry-run)', () => {
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('main script -DryRun exits 0', () => {
     const r = spawnSync(
       'pwsh',
@@ -165,6 +172,7 @@ describe('update-flow.spec.ps1 (dry-run)', () => {
     expect(r.stdout).toMatch(/update flow complete/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('main script -DryRun -SimulateHealthz fail triggers rollback', () => {
     const r = spawnSync(
       'pwsh',
@@ -182,6 +190,7 @@ describe('update-flow.spec.ps1 (dry-run)', () => {
     expect(r.stdout).toMatch(/"owner_id":\s*"daemon-self"/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('lib/stop-with-escalation.ps1 -DryRun parses + exits 0', () => {
     const r = spawnSync(
       'pwsh',
@@ -192,6 +201,7 @@ describe('update-flow.spec.ps1 (dry-run)', () => {
     expect(r.stdout).toMatch(/polite stop/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('lib/rename-prev.ps1 -DryRun parses + exits 0', () => {
     const r = spawnSync(
       'pwsh',
@@ -209,6 +219,7 @@ describe('update-flow.spec.ps1 (dry-run)', () => {
     expect(r.stdout).toMatch(/install root:/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('lib/rollback.ps1 -DryRun prints update_rollback NDJSON', () => {
     const r = spawnSync(
       'pwsh',
@@ -232,6 +243,7 @@ describe('update-flow.spec.ps1 (dry-run)', () => {
     expect(r.stdout).toMatch(/update_rollback: test/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell scripts require pwsh on PATH)]
   it.skipIf(!pwshAvailable)('main ps1 parses without syntax errors', () => {
     const r = spawnSync(
       'pwsh',
