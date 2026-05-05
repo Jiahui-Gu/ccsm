@@ -1,4 +1,5 @@
 // packages/daemon/test/bench/rss.bench.ts
+// [BENCH-INFO: deferred to v0.4 — see Task #468 for real wire-up after T1.7 Supervisor /healthz]
 //
 // T8.13 — daemon resident-set memory after warmup. Spawns the daemon,
 // runs a representative warmup workload (N sessions opened, M Hello

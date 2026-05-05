@@ -1,4 +1,5 @@
 // packages/daemon/test/bench/sendinput-rtt.bench.ts
+// [BENCH-INFO: deferred to v0.4 — see Task #468 for real wire-up after T1.7 Supervisor /healthz]
 //
 // T8.13 — SendInput end-to-end round-trip: client writes 1 byte via
 // SendInput, daemon forwards to pty-host, pty echoes, daemon streams the
