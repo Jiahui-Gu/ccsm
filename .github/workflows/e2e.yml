@@ -122,17 +122,24 @@ jobs:
       - name: Build
         run: npm run build:app
       - name: Run e2e
-        # E2E_SKIP=harness-real-cli — public CI runners have no `claude`
-        # CLI installed AND no Anthropic auth tokens, so every case in
-        # harness-real-cli that calls waitForTerminalReady deterministically
-        # times out (the renderer falls through to ClaudeMissingGuide and
-        # never mounts <TerminalPane>). The harness stays runnable locally
-        # via `node scripts/harness-real-cli.mjs` (or `npm run probe:e2e`
-        # without the env var) for the dev / dogfood loop, where the user's
-        # ~/.claude is real. (#726)
+        # Task #343 (Wave M3.5-CHECK no-skipif-cheat) — removed
+        # `E2E_SKIP=harness-real-cli`. The blanket skip env was a
+        # vacuously-green gate (the harness ran zero cases on every CI
+        # run). The harness now sentinel-skips itself in-process when
+        # `claude` is missing from PATH and `CCSM_CLAUDE_BIN` is unset
+        # (see `scripts/harness-real-cli.mjs:detectClaudeBin`), printing
+        # a `[SENTINEL-SKIP] harness-real-cli` line in the summary so the
+        # gating reason is visible in CI logs. Public CI runners still
+        # have neither the binary nor Anthropic auth, so the net effect
+        # on green-CI matches the prior env (whole harness skipped) but
+        # the skip is now an explicit, auditable sentinel rather than a
+        # silent E2E_SKIP entry. Locally `pnpm run probe:e2e` keeps the
+        # full harness (the dev's PATH normally has `claude`).
+        # Per-case skips inside the harness (currently:
+        # session-state-becomes-idle pending PR-A renderer cutover, see
+        # #265 followup) are surfaced as `[SENTINEL-SKIP]` rows in the
+        # final HARNESS SUMMARY table.
         run: npm run probe:e2e
-        env:
-          E2E_SKIP: harness-real-cli
       - name: Upload e2e logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

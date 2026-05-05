@@ -158,20 +158,31 @@
 // shows up as a failing test rather than a vacuously-green skip.
 //
 //   T1.4  — Listener A bind + descriptor write
-//           marker: `packages/daemon/src/listeners/listener-a.ts`
-//           Without it the daemon never writes `listener-a.json`, so the
+//           marker: `packages/daemon/src/listeners/factory.ts`
+//           (Originally `listener-a.ts`; renamed by T1.4 PR #912 — the
+//           factory module is the loader the daemon entrypoint imports
+//           to bind Listener A and write `listener-a.json`.)
+//           Without it the daemon never writes the descriptor, so the
 //           Electron renderer has no transport descriptor to read.
 //
-//   T6.2  — Electron-side Connect-RPC transport bridge
-//           marker: `packages/electron/src/rpc/transport.ts` exists AND
-//                   exports `createDaemonTransport`.
-//           Without it the renderer has no Connect transport to drive
-//           `SessionService.Create` / `PtyService.Attach`.
+//   T6.2  — Electron-side Connect-RPC transport surface
+//           marker: `packages/electron/src/rpc/clients.ts` AND
+//                   `packages/electron/src/rpc/queries.ts`
+//           (Originally a single `transport.ts`; T6.3 PR #915 split it
+//           into the typed client factory (`clients.ts`) and the React
+//           Query bindings (`queries.ts`). Both files are load-bearing
+//           for `SessionService.Create` / `PtyService.Attach` to be
+//           reachable from the renderer; either being absent invalidates
+//           the dependency.)
 //
 //   ch06 §2 SnapshotV1 encoder
-//           marker: `packages/daemon/src/pty/snapshot-v1.ts`
-//           The byte-equality assertion in step 7 IS the gate; without
-//           the encoder there is no comparator.
+//           marker: `packages/snapshot-codec/src/index.ts`
+//           (Originally `packages/daemon/src/pty/snapshot-v1.ts`; T4.7
+//           PR #1021 extracted the encoder into the standalone
+//           `@ccsm/snapshot-codec` package so the daemon and the
+//           Electron-side replay both consume the same bytes-in/bytes-out
+//           module. The byte-equality assertion in step 7 IS the gate;
+//           without the encoder there is no comparator.)
 //
 //   T8.7  — `claude-sim` deterministic workload fixture
 //           marker: `packages/daemon/test/fixtures/claude-sim/bin/claude-sim`
@@ -231,13 +242,16 @@ const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 // during test collection.
 
 const T1_4_LISTENER_A_MARKER = join(
-  REPO_ROOT, 'packages', 'daemon', 'src', 'listeners', 'listener-a.ts',
+  REPO_ROOT, 'packages', 'daemon', 'src', 'listeners', 'factory.ts',
 );
-const T6_2_TRANSPORT_MARKER = join(
-  REPO_ROOT, 'packages', 'electron', 'src', 'rpc', 'transport.ts',
+const T6_2_TRANSPORT_CLIENTS_MARKER = join(
+  REPO_ROOT, 'packages', 'electron', 'src', 'rpc', 'clients.ts',
+);
+const T6_2_TRANSPORT_QUERIES_MARKER = join(
+  REPO_ROOT, 'packages', 'electron', 'src', 'rpc', 'queries.ts',
 );
 const SNAPSHOT_V1_ENCODER_MARKER = join(
-  REPO_ROOT, 'packages', 'daemon', 'src', 'pty', 'snapshot-v1.ts',
+  REPO_ROOT, 'packages', 'snapshot-codec', 'src', 'index.ts',
 );
 const T8_7_CLAUDE_SIM_MARKER_POSIX = join(
   REPO_ROOT, 'packages', 'daemon', 'test', 'fixtures', 'claude-sim', 'bin', 'claude-sim',
@@ -248,9 +262,16 @@ const PLAYWRIGHT_FIXTURE_MARKER = join(
 );
 
 const MISSING_MARKERS: string[] = [];
-if (!existsSync(T1_4_LISTENER_A_MARKER)) MISSING_MARKERS.push('T1.4 Listener A');
-if (!existsSync(T6_2_TRANSPORT_MARKER)) MISSING_MARKERS.push('T6.2 transport bridge');
-if (!existsSync(SNAPSHOT_V1_ENCODER_MARKER)) MISSING_MARKERS.push('SnapshotV1 encoder (ch06 §2)');
+if (!existsSync(T1_4_LISTENER_A_MARKER)) MISSING_MARKERS.push('T1.4 Listener A (factory.ts)');
+if (
+  !existsSync(T6_2_TRANSPORT_CLIENTS_MARKER) ||
+  !existsSync(T6_2_TRANSPORT_QUERIES_MARKER)
+) {
+  MISSING_MARKERS.push('T6.2 transport surface (clients.ts + queries.ts)');
+}
+if (!existsSync(SNAPSHOT_V1_ENCODER_MARKER)) {
+  MISSING_MARKERS.push('SnapshotV1 encoder (@ccsm/snapshot-codec)');
+}
 if (
   !existsSync(T8_7_CLAUDE_SIM_MARKER_POSIX) &&
   !existsSync(T8_7_CLAUDE_SIM_MARKER_WIN)
@@ -304,6 +325,26 @@ describe.skipIf(SHOULD_SKIP)(
 // is visible as a failing test rather than a quietly-passing skip. This
 // mirrors the pattern in `pty-soak-reconnect.spec.ts` (T8.5).
 describe('T8.3 sigkill-reattach — skip-marker self-check', () => {
+  it('reports gating reason', () => {
+    // Aliased name kept in lockstep with `pty-soak-1h.spec.ts:78`'s
+    // `it('reports gating reason', ...)` so both ship-gate sentinels
+    // surface under a stable, greppable test name regardless of which
+    // dependency is missing.
+    if (SHOULD_SKIP) {
+      expect(SKIP_REASON).toMatch(/awaiting dependencies|manual override/);
+      // Also assert MISSING_MARKERS is non-empty when not overridden, so a
+      // future bug that flips SHOULD_SKIP=true with empty MISSING_MARKERS
+      // (e.g. someone deletes a marker check without wiring the impl)
+      // fails THIS test instead of vacuously passing.
+      if (!SKIP_OVERRIDE) {
+        expect(MISSING_MARKERS.length).toBeGreaterThan(0);
+      }
+      console.log(`[T8.3] suite skipped — ${SKIP_REASON}`);
+    } else {
+      expect(MISSING_MARKERS).toEqual([]);
+    }
+  });
+
   it('reports a stable skip reason while dependencies are pending', () => {
     if (SHOULD_SKIP) {
       expect(SKIP_REASON).toMatch(/awaiting dependencies|manual override/);
