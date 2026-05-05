@@ -101,16 +101,30 @@ describe('packages/daemon/build/install/** (spec ch10 §5, T7.4)', () => {
 
     it('declares failure actions: restart x2 + none (ch10 §5.1)', () => {
       // Spec: "restart on first/second failure, run-program on third".
-      // We use Action="none" on third to avoid spawning a recovery exe
-      // until the operator inspects (the installer rollback path is the
+      // We use ThirdFailureActionType="none" to avoid spawning a recovery
+      // exe until the operator inspects (the installer rollback path is the
       // recovery boundary). PR body explains the deviation if reviewer
       // wants the spec literal "run-program".
-      expect(wxs).toMatch(/<ServiceConfigFailureActions/);
-      expect(wxs).toMatch(/Action="restart"[\s\S]*?DelayInSeconds="5"/);
+      //
+      // Task #462 (wix5 migration): WiX 5 dropped the native
+      // <ServiceConfigFailureActions> attribute spelling we used to use
+      // (ResetPeriodInSeconds / Failure DelayInSeconds) and the recommended
+      // replacement is <util:ServiceConfig FirstFailureActionType=...
+      // SecondFailureActionType=... ResetPeriodInDays=... /> per the
+      // WIX1149 advisory. Asserting on the util element here.
+      expect(wxs).toMatch(/<util:ServiceConfig[\s\S]*?FirstFailureActionType="restart"/);
+      expect(wxs).toMatch(/<util:ServiceConfig[\s\S]*?SecondFailureActionType="restart"/);
+      expect(wxs).toMatch(/<util:ServiceConfig[\s\S]*?ThirdFailureActionType="none"/);
     });
 
-    it('declares ServiceSidType="restricted" (ch10 §5.1 verified by sc qsidtype)', () => {
-      expect(wxs).toMatch(/ServiceSidType="restricted"/);
+    it('declares ServiceSid="restricted" (ch10 §5.1 verified by sc qsidtype)', () => {
+      // Task #462 (wix5 migration): WiX 5 dropped the
+      // util:ServiceConfig/@ServiceSidType attribute and moved per-service
+      // SID type onto the native <ServiceConfig> element via the renamed
+      // ServiceSid attribute (values: none/restricted/unrestricted).
+      // sc qsidtype output is unchanged ("RESTRICTED") — only the WiX
+      // surface moved.
+      expect(wxs).toMatch(/<ServiceConfig[\s\S]*?ServiceSid="restricted"/);
     });
 
     it('creates %PROGRAMDATA%\\ccsm state directory with DACL', () => {

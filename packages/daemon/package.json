@@ -40,6 +40,7 @@
     "@connectrpc/connect-node": "^2.1.1",
     "@types/better-sqlite3": "^7.6.12",
     "ajv": "^8.20.0",
+    "esbuild": "^0.27.7",
     "prebuildify": "^6.0.1"
   }
 }
