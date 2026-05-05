@@ -132,6 +132,26 @@ These constrain every fix proposed in chapters 02–05.
 6. **No transport regression**. Every fix is implemented on the
    wave-2 daemon HTTP/SSE pipe. Reverting any single bridge to IPC is
    a P0 finding.
+7. **Daemon liveness contract**. The daemon process is a hard
+   dependency of the renderer; v0.3 pins the failure semantics so
+   every fixer codes against the same contract:
+   - On `spawnDaemon` rejection in `electron/main.ts` (boot path),
+     electron MUST hard-exit with a non-zero code AND emit a
+     structured stderr line in the format owned by
+     [03-ptyhost-wiring](./03-ptyhost-wiring.md) §6 (CF-6 stderr
+     contract). No silent fallback, no IPC retry.
+   - On daemon process exit AFTER window creation (mid-session),
+     electron MUST surface a renderer toast via the existing zustand
+     error slice AND disable the pty / data RPC surfaces until the
+     user restarts the app. The renderer MUST NOT auto-retry the
+     daemon connection.
+   - **Auto-restart on crash is deferred to v0.4** (see
+     [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7); v0.3 ships with
+     fail-loud + restart-by-user semantics only.
+   Why: chapter 03 §3 makes `spawnDaemon` awaited and chapter 03 §6
+   pins the stderr format; without this iron rule the boot-failure
+   and mid-session-exit code paths would be implemented inconsistently
+   across PR-3 / PR-6 fixers.
 
 ## 4. Relationship to v0.3 wave-2
 
@@ -189,6 +209,15 @@ The spec is "done" when:
 5. [05-release-slicing-and-dag](./05-release-slicing-and-dag.md)
    provides the PR DAG, blockers, and the gate criteria
    (`e2e 3 harness all green` ∧ `lint/typecheck/build/unit still green`).
+6. **Daemon stderr is structured and captured.** Daemon-side and
+   electron-main-side error output MUST follow the structured-stderr
+   format pinned in [03-ptyhost-wiring](./03-ptyhost-wiring.md) §6
+   (CF-6: `[ccsmd] <ISO-8601> <level> <category>: ...`), and the
+   harness runner MUST capture both electron-main and daemon streams
+   to per-case files so any v0.3 CI flake (Risk-1 in
+   [05-release-slicing-and-dag](./05-release-slicing-and-dag.md) §4)
+   is post-mortem-debuggable without re-running. Why: a single
+   un-attributable flake otherwise costs hours of bisection.
 
 The downstream **implementation** is "done" only when the e2e CI gate
 hits absolute-green for two consecutive runs on a fresh worktree. That
