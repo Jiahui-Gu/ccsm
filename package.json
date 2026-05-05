@@ -34,6 +34,7 @@
     "test:app": "vitest run",
     "lint:app": "eslint . --ext .ts,.tsx",
     "lint:no-ipc": "bash tools/lint-no-ipc.sh",
+    "lint:no-worker-threads": "bash tools/lint-no-worker-threads.sh",
     "lint:spec-code-lock": "bash tools/check-spec-code-lock.sh",
     "prelint:app": "node scripts/gen-proto.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json",
