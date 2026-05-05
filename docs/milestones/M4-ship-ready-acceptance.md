@@ -72,7 +72,8 @@ All gates green. Suggested next step:
     git push origin v0.3.0
 
 Reminder: v0.3.0 push triggers the release workflow. Make sure
-minisign secrets are configured before pushing the tag.
+minisign secrets (MINISIGN_PRIVATE_KEY + MINISIGN_PASSWORD) are
+configured in GitHub repo secrets before pushing the tag.
 ```
 
 The driver: (i) walks 4 gates in strict order; (ii) gate-a/b execute REAL pnpm lint + REAL vitest specs; (iii) gate-c/d emit WARN-then-PASS with explicit `#416` / `#417` followup citations matching `#415` — exactly the documented v0.3 ship plan; (iv) `emit-tag.sh` prints the `git tag v0.3.0 <SHA>` suggestion when all gates green. Exit code 0.
@@ -342,6 +343,6 @@ git tag v0.3.0 6f0687ff4e33f9aa39ef2a6de9ddbe17bf9118f3
 git push origin v0.3.0
 ```
 
-Reminder (per emit-tag.sh): `v0.3.0` push triggers `.github/workflows/release.yml`. Confirm minisign secret (`MINISIGN_SECRET_KEY` + `MINISIGN_SECRET_PASSWORD`) is configured in GitHub repo secrets before pushing the tag — `release.yml` minisign step is placeholder-safe per PR #780 (T7.0a fix), so missing secret will WARN-skip rather than hard-fail, but the tag should ship with sidecars.
+Reminder (per emit-tag.sh): `v0.3.0` push triggers `.github/workflows/release.yml`. Confirm minisign secrets (`MINISIGN_PRIVATE_KEY` + `MINISIGN_PASSWORD`) are configured in GitHub repo secrets before pushing the tag — `release.yml` minisign step is placeholder-safe per Task #425, so missing secret will WARN-skip rather than hard-fail, but the tag should ship with sidecars.
 
 This PR does **not** push the tag. The `git tag` command is for the manager to execute manually after merging this M4 acceptance doc.

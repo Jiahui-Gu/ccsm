@@ -20,5 +20,6 @@ All gates green. Suggested next step:
     git push origin ${VERSION}
 
 Reminder: ${VERSION} push triggers the release workflow. Make sure
-minisign secrets are configured before pushing the tag.
+minisign secrets (MINISIGN_PRIVATE_KEY + MINISIGN_PASSWORD) are
+configured in GitHub repo secrets before pushing the tag.
 EOF

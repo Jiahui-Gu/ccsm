@@ -166,6 +166,69 @@ jobs:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
+      # Install minisign so we can produce .minisig sidecars for each
+      # release artifact. Placeholder-safe: if MINISIGN_PRIVATE_KEY isn't
+      # configured we skip signing entirely (WARN, no fail) per v0.3 ship
+      # non-negotiable "builds MUST continue unsigned if absent".
+      - name: Install minisign
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            linux)
+              sudo apt-get update -y
+              sudo apt-get install -y minisign
+              ;;
+            mac)
+              brew install minisign
+              ;;
+            win)
+              # Pre-built Windows binary from upstream (jedisct1/minisign).
+              curl -fsSL -o minisign.zip https://github.com/jedisct1/minisign/releases/download/0.11/minisign-0.11-win64.zip
+              unzip -o minisign.zip -d "$RUNNER_TEMP/minisign"
+              echo "$RUNNER_TEMP/minisign/minisign-win64" >> "$GITHUB_PATH"
+              ;;
+          esac
+          minisign -v || "$RUNNER_TEMP/minisign/minisign-win64/minisign.exe" -v || true
+
+      # Sign each release artifact with minisign. Produces a .minisig sidecar
+      # next to each binary in release/. continue-on-error keeps the workflow
+      # green even if signing fails — sidecars are nice-to-have for v0.3, the
+      # hard ship gate is the artifact itself.
+      - name: Sign artifacts with minisign
+        id: minisign
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        shell: bash
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -uo pipefail
+          if [ -z "${MINISIGN_PRIVATE_KEY:-}" ] || [ -z "${MINISIGN_PASSWORD:-}" ]; then
+            echo "::warning title=minisign skipped::MINISIGN_PRIVATE_KEY / MINISIGN_PASSWORD not configured. No .minisig sidecars will be produced."
+            exit 0
+          fi
+          # Materialize the secret key to a temp file (minisign needs a file path).
+          KEY_FILE="$RUNNER_TEMP/minisign.key"
+          printf '%s' "$MINISIGN_PRIVATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          shopt -s nullglob
+          signed=0
+          # Sign every shippable artifact; skip metadata yml / blockmap.
+          for f in release/*.exe release/*.dmg release/*.zip release/*.AppImage release/*.deb release/*.rpm; do
+            [ -f "$f" ] || continue
+            echo "Signing $f"
+            echo "$MINISIGN_PASSWORD" | minisign -S -s "$KEY_FILE" -m "$f" -t "ccsm release artifact $(basename "$f")"
+            signed=$((signed + 1))
+          done
+          rm -f "$KEY_FILE"
+          echo "Signed $signed artifact(s)."
+          if [ "$signed" -eq 0 ]; then
+            echo "::warning title=minisign no-op::No matching artifacts found in release/ to sign."
+          fi
+
       - name: Upload artifacts to workflow run
         uses: actions/upload-artifact@v4
         with:
@@ -179,6 +242,7 @@ jobs:
             release/*.rpm
             release/*.yml
             release/*.blockmap
+            release/*.minisig
           if-no-files-found: error
           retention-days: 14
 
@@ -201,5 +265,6 @@ jobs:
             release/*.rpm
             release/latest*.yml
             release/*.blockmap
+            release/*.minisig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
