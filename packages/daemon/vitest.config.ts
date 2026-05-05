@@ -28,6 +28,22 @@ export default defineConfig({
       'eslint-plugins/**/*.spec.ts',
       'test/**/*.spec.ts',
     ],
+    // Exclude PTY soak ship-gate specs from the default daemon test run
+    // (Task #491). They are scaffolds that depend on the v0.4 claude-sim
+    // driver (T4.6 / T8.7) and self-skip via `describe.skipIf` today, but
+    // a `describe.skipIf` skip still surfaces in the PR CI report and
+    // muddies the "no skipped tests" ship rule. The specs remain
+    // git-tracked and are exercised by .github/workflows/pty-soak.yml
+    // (workflow_dispatch + nightly schedule); excluding them here keeps
+    // them out of the per-PR `pnpm -F @ccsm/daemon test` path only.
+    // Reverse-verify: deleting these two entries makes
+    // `npx vitest list` re-emit pty-soak-1h.spec.ts / pty-soak-10m.spec.ts.
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/test/integration/pty-soak-1h.spec.ts',
+      '**/test/integration/pty-soak-10m.spec.ts',
+    ],
     globals: false,
   },
 });
