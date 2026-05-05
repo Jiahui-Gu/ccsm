@@ -181,6 +181,13 @@ fixer MUST add (or extend) cases:
 
 **Why**: these are the exact properties HP-8 sigkill-reattach depends on.
 
+### Latency / throughput targets — deferred (v0.4)
+
+producer→paint p99 latency target 与 per-sid sustained throughput target
+(Set B drain probe `pty-sse-burst-drain`) 在 v0.3 不写硬指标, 仅保证 §2
+G-1..G-5 的 correctness 契约 + G-5 64 KiB queue cap 的反压信号。defer
+到 v0.4 reliability spec, 见 §7 F-7。
+
 ## 3. Daemon-port readiness (HP-3)
 
 ### Failure mode being fixed
@@ -659,6 +666,7 @@ items are explicitly **deferred to v0.4**:
 | F-4   | NEW `sigkill-reattach` harness case promoted from Set B informational into Set A release-blocker       | v0.4 e2e suite PR (TBD)                  |
 | F-5   | 4 boundary UTs in `daemon/ptyHost/__tests__/lifecycle.test.ts` (TTL elapsed → GC; elapsed → new snapshot; reattach pre-TTL → snapshot served; detach + immediate reattach → no race) using `vi.useFakeTimers()` | v0.4 reliability spec PR (TBD)           |
 | F-6   | Chapter 05 G10 release gate locking sigkill-reattach NEW case as ship criteria                         | v0.4 release-slicing spec PR (TBD)       |
+| F-7   | SSE pty pipe latency / throughput targets + Set B `pty-sse-burst-drain` drain probe — v0.3 仅保留 G-1..G-5 correctness 契约, 不写 latency/throughput 数字; v0.4 reliability spec 一并定 (与 F-1..F-3 sigkill 系列一起设计) | v0.4 reliability spec PR (TBD)           |
 
 **Why deferred**: each item introduces a NEW product rule or NEW release
 criterion that v0.2 did not ship; v0.3 is a refactor and would inflate
