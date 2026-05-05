@@ -273,6 +273,18 @@ MUST surface a user-visible error (not a silent retry-loop). Existing
 zustand error slice handles this; verify the toast appears in
 `window.ccsmPty.spawn` failures.
 
+### Loopback bind invariant
+
+**MUST**: the daemon HTTP server MUST bind `127.0.0.1` only; binding
+to `0.0.0.0` / `::` / 任何非 loopback 接口 = P0 regression. Daemon
+当前无 auth, loopback 是唯一 trust boundary。任何放宽必须独立 RFC +
+user/product approval (例如 v0.4 web-frontend prep 等场景), 不允许
+spec 默认带入。Gate enforcement: see
+[ch05 §1 G9](./05-release-slicing-and-dag.md#1-top-level-v03-e2e-iron-rules-recap-gate-form);
+surface implication: see
+[ch02 §1](./02-store-and-preload-surface.md#1-surface-catalog-what-lives-on-window)
+footer note.
+
 ## 4. sigkill-reattach (HP-8)
 
 ### Required contract

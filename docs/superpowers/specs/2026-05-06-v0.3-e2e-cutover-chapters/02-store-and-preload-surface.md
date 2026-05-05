@@ -47,6 +47,14 @@ without bisecting wave history.
 with bridges; v0.4 hardening pass will rationalise.
 **Why deferred (target)**: v0.4.
 
+**Note**: daemon HTTP loopback-bind invariant (cross-ref
+[ch03 §3](./03-ptyhost-wiring.md#3-daemon-port-readiness-hp-3)) — the
+surface list above assumes daemon is only listening on `127.0.0.1`,
+and renderer fetch base URL is constrained to loopback. Any widening
+to `0.0.0.0` / `::` / non-loopback breaks the trust boundary this
+catalog is designed against and is a P0 regression (see ch03 §3
+"Loopback bind invariant" + ch05 §1 G9).
+
 ## 2. `window.__ccsmStore` exposure (HP-1)
 
 ### Failure mode being fixed

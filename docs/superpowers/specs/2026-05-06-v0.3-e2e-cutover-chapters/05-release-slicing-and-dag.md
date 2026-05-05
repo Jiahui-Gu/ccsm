@@ -19,7 +19,7 @@ permitted iff ALL of the following hold:
 | G6 | `harness-ui` Set A subset is green for two consecutive runs                                           | `.github/workflows/e2e.yml` job          |
 | G7 | `harness-dnd` Set A subset is green for two consecutive runs                                          | `.github/workflows/e2e.yml` job          |
 | G8 | Vitest skip total = 0 (`it.skip / test.skip / describe.skip / xit / xdescribe` in `tests/ src/ daemon/ electron/`); harness skip-flag count (`skipLaunch / requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly` set true on a case) ≤ ch04 §1.1 baseline (currently 1: `cap-skip-launch-bundle-shape` KEEP) | `grep -rEn "(it\|test\|describe)\.skip\(\|\bxit\b\|\bxdescribe\b" tests/ src/ daemon/ electron/` returns 0; harness flag count diff'd against [04-probe-and-harness-update](./04-probe-and-harness-update.md) §1.1 |
-| G9 | NO transport regression (no preload bridge reverted to IPC for a wave-2 endpoint)                     | grep diff for `ipcRenderer.invoke`       |
+| G9 | NO transport regression (no preload bridge reverted to IPC for a wave-2 endpoint) AND no daemon HTTP listen widening (cross-ref [ch03 §3](./03-ptyhost-wiring.md#loopback-bind-invariant) + [ch02 §1](./02-store-and-preload-surface.md#1-surface-catalog-what-lives-on-window) footer) | grep diff for `ipcRenderer.invoke`; AND `grep -rEn "createServer\|\.listen\(.*0\.0\.0\.0\|\.listen\(.*'::" daemon/ src/ electron/` MUST return 0 lines outside test fixtures |
 | G10| sigkill-reattach harness case (NEW per chapter 04 §4) is green                                        | `harness-real-cli` Set A                 |
 
 ## 2. PR DAG
