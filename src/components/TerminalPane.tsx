@@ -17,9 +17,28 @@ import { usePtyAttach, type PtyAttachState } from '../terminal/usePtyAttach';
 //
 // The host div carries [data-terminal-host] and [data-active-sid={sessionId}]
 // so the e2e probes (PR-7) can locate the active terminal deterministically.
+//
+// Spec #592 T-4 / Task #603 (PR-4) — host-unconditional + xterm pin order:
+//   - The host div is rendered ALWAYS, even when no session is active.
+//     `sessionId` is nullable; the data-active-sid attribute is set only
+//     when a sid is provided. This lets the upstream `terminal-host-mounted`
+//     e2e probe (#605 PR-8) latch on the host before the active session
+//     resolves, avoiding the previous "blank pane → conditional mount"
+//     race that #888 / #852 fallout exposed.
+//   - xterm is pinned strictly AFTER the pty-host wire is in place:
+//     `useXtermSingleton(hostRef, enabled)` only constructs the Terminal
+//     when a sid exists AND `window.ccsmPty` is wired. The renderer never
+//     boots an xterm against a half-initialised preload — this is the
+//     wire-then-instantiate ordering documented in §3.1.5.
 
 type Props = {
-  sessionId: string;
+  /**
+   * The active session id, or `null` while no session is selected.
+   * Spec #592 T-4 PR-4: kept nullable so the host element can mount
+   * before the session lifecycle resolves.
+   */
+  sessionId: string | null;
+  /** Working directory for spawn-on-attach-null. Ignored when sessionId is null. */
   cwd: string;
 };
 
@@ -27,15 +46,27 @@ export function TerminalPane({ sessionId, cwd }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const { t } = useTranslation();
 
-  useXtermSingleton(hostRef);
+  // xterm pin order: enable bring-up only once we have a sid. The
+  // singleton hook also re-checks `window.ccsmPty` internally (the
+  // pty-host wire) so the constructor never runs before the bridge.
+  const xtermEnabled = sessionId != null;
+  useXtermSingleton(hostRef, xtermEnabled);
   useTerminalResize(hostRef);
   const { state, onRetry } = usePtyAttach(sessionId, cwd);
+
+  // `data-active-sid` is set only when a sid is present. e2e probes that
+  // need to wait for "active terminal" should look for both attributes;
+  // probes that only need the host (e.g. terminal-host-mounted, #605
+  // PR-8) should match `[data-terminal-host]` alone.
+  const hostProps: Record<string, string> = { 'data-terminal-host': '' };
+  if (sessionId != null) {
+    hostProps['data-active-sid'] = sessionId;
+  }
 
   return (
     <div
       className="relative flex-1 w-full h-full bg-black ring-1 ring-inset ring-white/5"
-      data-terminal-host
-      data-active-sid={sessionId}
+      {...hostProps}
     >
       <div ref={hostRef} className="absolute inset-0" />
       <Overlay state={state} onRetry={onRetry} t={t} />
@@ -52,6 +83,14 @@ function Overlay({
   onRetry: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
+  if (state.kind === 'idle') {
+    // Host-mounted-without-sid window (spec #592 T-4 PR-4): no overlay
+    // text — the empty-state copy lives in App.tsx's no-active-session
+    // chrome. Returning null here keeps the host visually identical to
+    // a freshly-attached pane (black background) so the transition into
+    // 'attaching' is a single overlay flip rather than a layout shift.
+    return null;
+  }
   if (state.kind === 'attaching') {
     return (
       <div className="absolute inset-0 z-10 flex items-center justify-center text-neutral-400 text-sm pointer-events-none">
