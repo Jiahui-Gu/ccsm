@@ -16,6 +16,13 @@ jobs:
   changes:
     name: detect changes
     runs-on: ubuntu-latest
+    # Task #501 — paths-filter on a small repo runs in ~6s P95. 3min cap
+    # is 25× headroom for runner-acquisition jitter while still bounding
+    # any future hang in dorny/paths-filter (or its checkout) to a
+    # bearable wait. Without this cap the job inherits GH Actions'
+    # 360min default and a hang here blocks all downstream jobs gated
+    # on `needs: changes`.
+    timeout-minutes: 3
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
@@ -712,7 +719,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    timeout-minutes: 15
+    # Task #501 — historical P50=211s, P95=270s (4.5min). Tightened
+    # 15 → 10 to bound hang risk on the proto/audit-table tooling.
+    # 10min is ~2.2× P95, leaving room for cold-cache `pnpm install`
+    # and runner jitter while still firing well below the prior 15min
+    # cap if a sub-step (gh CLI, audit-revalidate) wedges.
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read

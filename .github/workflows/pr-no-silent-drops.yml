@@ -30,7 +30,11 @@ permissions:
 jobs:
   no-silent-drops:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Task #501 — checkout + `gh pr view --json files` + `git diff`.
+    # Historical P50=11s, P95=18s (max 29s over 30 success runs).
+    # Tightened 10 → 5 min so a wedged gh CLI / network hang on the
+    # API call is killed quickly. 5min is ~16× P95 — plenty of buffer.
+    timeout-minutes: 5
     steps:
       - name: Checkout PR head with full history
         uses: actions/checkout@v4
