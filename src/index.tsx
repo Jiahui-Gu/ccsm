@@ -7,6 +7,7 @@ import '@fontsource-variable/jetbrains-mono';
 import App from './App';
 import { hydrateStore, type HydrationTrace } from './stores/store';
 import { flushNow, setPersistErrorHandler } from './stores/persist';
+import { installCcsmShim } from './lib/window-ccsm-shim';
 import './styles/global.css';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
@@ -43,19 +44,33 @@ const root = createRoot(document.getElementById('root')!);
 // IPC of the boot sequence. Components that read persisted state subscribe
 // to `useStore(s => s.hydrated)` and show skeleton/empty UI for the
 // sub-frame window before hydration lands.
+//
+// v0.3 wave 1: `installCcsmShim()` is awaited *before* render so the
+// `window.ccsm` compatibility surface is in place when components first
+// read sync properties (e.g. `window.ccsm?.window.platform` in
+// `<DragRegion />`). Discovery of the daemon port + a single
+// `/api/window/platform` round-trip costs ~one IPC-equivalent and is
+// strictly faster than the old hydration gate (which used to await
+// `loadModels()` too); if the daemon is offline at boot the shim falls
+// back to a guessed platform and async methods throw `daemon offline`
+// — the renderer still mounts.
 const trace = ((window as unknown as {
   __ccsmHydrationTrace?: HydrationTrace;
 }).__ccsmHydrationTrace ??= {} as HydrationTrace);
 trace.renderedAt = Date.now();
-root.render(
-  <ErrorBoundary
-    fallback={
-      <div className="p-4 text-fg-tertiary">
-        Something went wrong. The error was reported to the developer.
-      </div>
-    }
-  >
-    <App />
-  </ErrorBoundary>
-);
-void hydrateStore();
+
+void (async () => {
+  await installCcsmShim();
+  root.render(
+    <ErrorBoundary
+      fallback={
+        <div className="p-4 text-fg-tertiary">
+          Something went wrong. The error was reported to the developer.
+        </div>
+      }
+    >
+      <App />
+    </ErrorBoundary>
+  );
+  void hydrateStore();
+})();

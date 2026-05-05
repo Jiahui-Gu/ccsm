@@ -76,6 +76,14 @@ export default [
         requestAnimationFrame: 'readonly',
         cancelAnimationFrame: 'readonly',
         ResizeObserver: 'readonly',
+        // v0.3 wave 1: renderer talks to the local daemon over loopback
+        // HTTP (`src/lib/daemon-client.ts`), so it needs the platform
+        // `fetch` family. Electron's renderer runs in Chromium where
+        // these globals are always available.
+        fetch: 'readonly',
+        Response: 'readonly',
+        Request: 'readonly',
+        Headers: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.

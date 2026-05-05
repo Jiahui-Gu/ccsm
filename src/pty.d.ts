@@ -81,6 +81,12 @@ export interface CcsmPtyApi {
 
 declare global {
   interface Window {
+    // Stays non-optional in v0.3 wave 1 — the pty bridge is owned by a
+    // sibling wave and the renderer's terminal code (src/terminal/*) is
+    // outside this PR's scope. Keeping the type non-optional avoids
+    // forcing terminal call sites to add `!`/`?` narrowing they don't
+    // currently have. The `window.ccsm` shim is the only bridge whose
+    // ambient typing flips to optional in this PR.
     ccsmPty: CcsmPtyApi;
     __ccsmTerm?: import('@xterm/xterm').Terminal;
   }
