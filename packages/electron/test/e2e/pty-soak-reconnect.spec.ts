@@ -1,3 +1,4 @@
+// [V0.4: real impl in #484, excluded from v0.3 PR e2e job — see Task #492]
 // T8.5 — Electron-side companion to the daemon `pty-soak-1h` ship-gate (c).
 // Canonical path locked by design spec ch12 §4.3 (single source of truth):
 //   "Electron-side reattach companion: packages/electron/test/e2e/pty-soak-reconnect.spec.ts"
