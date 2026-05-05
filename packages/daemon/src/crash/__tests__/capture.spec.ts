@@ -1,4 +1,4 @@
-// packages/daemon/test/crash/capture.spec.ts
+// packages/daemon/src/crash/__tests__/capture.spec.ts
 //
 // Table-driven tests for crash capture sources (spec ch09 §6.2).
 //
@@ -40,7 +40,7 @@ import {
   installCaptureSources,
   newCrashId,
   truncateUtf8,
-} from '../../src/crash/sources.js';
+} from '../sources.js';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures.
