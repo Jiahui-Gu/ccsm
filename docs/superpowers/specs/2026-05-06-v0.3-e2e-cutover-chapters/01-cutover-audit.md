@@ -288,6 +288,9 @@ For each wave-2 hot path, the audit records:
 - **Verdict**: **KEEP** unless the audit during repair shows leaked
   daemon processes between cases — in which case promote to FIX in
   [04-probe-and-harness-update](./04-probe-and-harness-update.md) §4.
+  If/when leak detected: ch04 §2 reset-between-cases hook is the
+  planned mechanism (deferred to v0.4 unless v0.3 incident triggers
+  promotion).
 
 ### HP-13 — `__legacy_to_delete__` removal (#1105)
 
