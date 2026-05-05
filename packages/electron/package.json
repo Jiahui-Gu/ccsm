@@ -11,6 +11,7 @@
   "main": "dist/main/protocol-app.js",
   "scripts": {
     "lint": "eslint \"test/**/*.ts\"",
+    "pretypecheck": "node ../../scripts/gen-proto.mjs",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
     "build:mac": "electron-builder --mac --config electron-builder.yml",
