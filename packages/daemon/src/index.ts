@@ -59,7 +59,7 @@ import { makeRouterBindHook } from './rpc/bind.js';
 import { upsertSettingsBoot } from './rpc/settings/store.js';
 import { SessionManager, type ISessionManager } from './sessions/SessionManager.js';
 import { makeProductionAttachPtyHost } from './pty-host/attach-on-create.js';
-import { statePaths } from './state-dir/paths.js';
+import { statePathsFromRoot } from './state-dir/paths.js';
 import {
   Shutdown,
   installShutdownHandlers,
@@ -189,11 +189,15 @@ export async function runStartup(
   lifecycle.advanceTo(Phase.OPENING_DB);
 
   // T5.7 / Task #60 — corrupt-DB recovery (ch07 §6). MUST run BEFORE any
-  // other code opens the SQLite file. We resolve the canonical state paths
-  // here (not from `env.paths`) because the entrypoint env shape predates
-  // T5.3's `statePaths()` and only carries a `stateDir` string; the spec
-  // pins the DB and crash-raw filenames to this module's constants.
-  const sp = statePaths();
+  // other code opens the SQLite file. Task #446: rebase the canonical file
+  // layout onto `env.paths.stateDir` so `CCSM_STATE_DIR` (honoured by
+  // `buildDaemonEnv`) actually flows through to the DB / crash-raw paths.
+  // Pre-#446 we called `statePaths()` here, which only reads `PROGRAMDATA`
+  // (per spec ch07 §2 + `paths.spec.ts` FORBIDDEN env keys) and silently
+  // dropped the override. `env.ts` is the single source of truth for
+  // `stateDir`; `statePathsFromRoot` reapplies the canonical filenames
+  // (`ccsm.db`, `crash-raw.ndjson`, `listener-a.json`) under it.
+  const sp = statePathsFromRoot(env.paths.stateDir);
   const recovery = checkAndRecover({
     dbPath: sp.db,
     crashRawPath: sp.crashRaw,
