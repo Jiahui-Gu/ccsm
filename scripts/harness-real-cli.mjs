@@ -561,6 +561,7 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
     const api = /** @type {any} */ (globalThis).window?.ccsmSession;
     return Boolean(api && typeof api.onState === 'function');
   });
+  // [PLATFORM-GATE: requires PR-A wave (Connect-RPC session-state subscription stream + renderer cutover); v0.3 ch15 §3 #29 forbids new IPC bridge; M3.5-acceptance §A.2 confirms PR-A pending; un-soft-skip in #467 (deferred v0.4)]
   if (!hasPreloadOnState) {
     const reason =
       'session-state-becomes-idle skipped — PR-A renderer cutover followup pending ' +
@@ -595,6 +596,7 @@ async function caseSessionStateBecomesIdle({ electronApp: _electronApp, win, tem
     });
   });
   const apiMissing = await win.evaluate(() => Boolean(window.__sessionStateApiMissing));
+  // [PLATFORM-GATE: requires PR-A wave (Connect-RPC session-state subscription stream + renderer cutover); v0.3 ch15 §3 #29 forbids new IPC bridge; M3.5-acceptance §A.2 confirms PR-A pending; un-soft-skip in #467 (deferred v0.4)]
   if (apiMissing) {
     // Defence in depth: the preflight probe above should have caught this.
     // If we get here, the API disappeared between probe and install — keep
