@@ -1,7 +1,25 @@
 import Database from 'better-sqlite3';
-import { app } from 'electron';
 import * as path from 'path';
+import * as os from 'os';
 import * as fs from 'fs';
+
+// Wave-2 A: this module moved out of electron/ into daemon/. The daemon is a
+// plain Node process and has no `electron.app.getPath('userData')` to ask for
+// the per-user data directory, so we accept it via the `CCSM_USER_DATA_DIR`
+// env var (electron sets this in `daemon-spawner` before launching us). When
+// the env var is missing — typical for a one-off `node dist/daemon/main.js`
+// dev probe — we fall back to `<os.tmpdir()>/ccsm-daemon` so smoke tests still
+// work; we log the fallback so a misconfigured prod boot is visible. The DB
+// file name (`ccsm.db`) and on-disk schema are unchanged.
+function resolveUserDataDir(): string {
+  const fromEnv = process.env.CCSM_USER_DATA_DIR;
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  const fallback = path.join(os.tmpdir(), 'ccsm-daemon');
+  process.stderr.write(
+    `[db] CCSM_USER_DATA_DIR not set; falling back to ${fallback}\n`,
+  );
+  return fallback;
+}
 
 let db: Database.Database | null = null;
 
@@ -121,7 +139,7 @@ function ensureHealthyDb(file: string, current: Database.Database): Database.Dat
 
 export function initDb(): Database.Database {
   if (db) return db;
-  const dir = app.getPath('userData');
+  const dir = resolveUserDataDir();
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'ccsm.db');
 

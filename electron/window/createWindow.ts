@@ -30,11 +30,75 @@ import {
 } from 'electron';
 import * as path from 'path';
 import { buildAppIcon } from '../branding/icon';
-import {
-  type CloseAction,
-  getCloseAction,
-  setCloseAction,
-} from '../prefs/closeAction';
+import { getDaemonPort } from '../daemon-spawner';
+
+// Wave-2 A: prefs/closeAction.ts moved into the daemon, but window's
+// `win.on('close')` handler must read the user's preference SYNCHRONOUSLY —
+// Electron's close event has no `await`. We bridge by:
+//   1. Defining the same `CloseAction` type + parser locally (small enough
+//      to inline; mirrors daemon/prefs/closeAction.ts byte-for-byte).
+//   2. Asynchronously fetching `closeAction` from the daemon at window
+//      creation time and caching it in module memory.
+//   3. The on-close handler reads the cache; until the prime resolves we
+//      fall back to the platform default ('tray' on macOS, 'ask' elsewhere)
+//      — same as a fresh-install user has anyway.
+//   4. When the user picks "quit" from the ask-dialog and ticks "don't ask
+//      again", we both update the local cache (immediate effect) AND POST
+//      to the daemon (cross-restart persistence).
+// Trade-off vs the legacy direct-sqlite read: a Settings change flushed via
+// db:save is not reflected in this cache — next app restart picks it up. v0.4
+// can add a daemon→electron push when the close-action key changes.
+type CloseAction = 'ask' | 'tray' | 'quit';
+const CLOSE_ACTION_KEY = 'closeAction';
+function parseCloseAction(raw: unknown, platform: NodeJS.Platform): CloseAction {
+  if (raw === 'ask' || raw === 'tray' || raw === 'quit') return raw;
+  return platform === 'darwin' ? 'tray' : 'ask';
+}
+let closeActionCache: CloseAction = parseCloseAction(undefined, process.platform);
+function getCloseAction(): CloseAction {
+  return closeActionCache;
+}
+function setCloseAction(value: CloseAction): void {
+  closeActionCache = value;
+  // Best-effort cross-restart persistence. Daemon may not be ready yet on a
+  // very-fast quit; swallow any failure — the user's choice still applies
+  // for the rest of this session via the in-memory cache above.
+  const port = getDaemonPort();
+  if (port == null) return;
+  void fetch(`http://127.0.0.1:${port}/api/db/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ args: [CLOSE_ACTION_KEY, value] }),
+  }).catch((err) => {
+    console.warn('[window] persist closeAction to daemon failed:', err);
+  });
+}
+// Async-prime the cache once we know the daemon port. Polled because the
+// spawn promise may resolve after window creation; once we have a port we
+// fetch and update the cache. A failure (daemon down, network race) leaves
+// the platform default in place — degraded but functional.
+async function primeCloseActionCache(): Promise<void> {
+  // Wait up to 5s for the daemon port to appear. After that we give up — the
+  // daemon-failed-to-start surface lives elsewhere.
+  for (let i = 0; i < 50; i++) {
+    if (getDaemonPort() != null) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  const port = getDaemonPort();
+  if (port == null) return;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/db/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ args: [CLOSE_ACTION_KEY] }),
+    });
+    if (!res.ok) return;
+    const payload = (await res.json()) as { result?: unknown };
+    closeActionCache = parseCloseAction(payload.result, process.platform);
+  } catch (err) {
+    console.warn('[window] prime closeAction cache failed:', err);
+  }
+}
 
 export interface CreateWindowDeps {
   /** True iff we should load the webpack-dev-server URL instead of the
@@ -95,6 +159,11 @@ export function installContextMenu(win: BrowserWindow): void {
 }
 
 export function createWindow(deps: CreateWindowDeps): BrowserWindow {
+  // Wave-2 A: kick the async prime of the closeAction cache once per window
+  // creation. The on-close handler reads `getCloseAction()` synchronously
+  // and falls back to the platform default until this resolves.
+  void primeCloseActionCache();
+
   // E2E hidden mode: when CCSM_E2E_HIDDEN=1 the window is created
   // at position (-32000, -32000) — far outside any monitor's visible
   // area on every common multi-monitor layout. The window IS shown

@@ -69,6 +69,10 @@ function installElectronResolveHook(): () => void {
 // by `node dist/daemon/main.js` printing "[daemon] startup phase complete"
 // (any module-load throw at boot fails that). Old electron paths removed
 // here so the smoke list reflects what actually ships in dist/electron.
+//
+// Wave-2-A: sentry/init also physically mv'd into daemon/ (its beforeSend
+// reads prefs/crashReporting → db, which all live in daemon now). Removed
+// from the electron load-smoke; daemon's own smoke is the gate.
 const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
   // notify sink consumer (NEW W2-C — main-process EventSource consumer
   // that fires the OS Notification + flashFrame for each daemon Decision).
@@ -88,16 +92,10 @@ const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
   // covered by harness-real-cli e2e. Excluded from load-smoke to avoid
   // hard dependence on local native build.
 
-  // sentry init — load-smoke critical (PR #501 ESM regression risk)
-  ['sentry/init', 'sentry/init.js'],
-
   // tray + window — partly exercised by surviving harness-ui cases but no
   // load-smoke gate.
   ['tray/createTray', 'tray/createTray.js'],
   ['window/createWindow', 'window/createWindow.js'],
-
-  // sessionTitles index — wires deciders + writeback into the IPC layer.
-  ['sessionTitles/index', 'sessionTitles/index.js'],
 ];
 
 describe('electron-load-smoke — runtime/sink modules require cleanly (Task #764)', () => {

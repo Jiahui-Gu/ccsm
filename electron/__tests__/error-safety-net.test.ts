@@ -45,11 +45,13 @@ describe('main-process error safety net (source wiring)', () => {
   });
 
   it('does NOT call app.exit / process.exit from inside the safety-net handlers', () => {
-    // Slice from the first process.on to the initSentry() call — that's the
-    // safety-net block. Assert it doesn't auto-exit (preserves test default
-    // throw behavior + matches renderer "log + degrade" stance).
+    // Slice from the first process.on to `installUpdaterIpc` import — that's
+    // the safety-net block. Wave-2 A: anchor was previously `initSentry()`,
+    // but Sentry init moved into the daemon (daemon/startup/data.ts) so it
+    // no longer appears in main.ts. The updater import is the next stable
+    // live anchor after the safety-net.
     const start = live.search(/\bprocess\.on\(\s*['"]unhandledRejection['"]/);
-    const end = live.indexOf('initSentry()');
+    const end = live.indexOf("from './updater'");
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const block = live.slice(start, end);

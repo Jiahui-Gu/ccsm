@@ -3,19 +3,16 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Mirror db.test.ts: redirect electron's userData to a per-test tmp dir so
-// (a) we never touch the real app data and (b) each test gets a clean slate.
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-db-hardening-'));
+// Wave-2 A: db.ts now reads `CCSM_USER_DATA_DIR` from env. Per-test tmp dir
+// so (a) we never touch real app data and (b) each test gets a clean slate.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-db-hardening-'));
 let tmpDir = tmpRoot;
-
-vi.mock('electron', () => ({
-  app: { getPath: () => tmpDir }
-}));
 
 async function freshDb() {
   const mod = await import('../db');
   mod.closeDb();
   tmpDir = fs.mkdtempSync(path.join(tmpRoot, 'run-'));
+  process.env.CCSM_USER_DATA_DIR = tmpDir;
   return mod;
 }
 

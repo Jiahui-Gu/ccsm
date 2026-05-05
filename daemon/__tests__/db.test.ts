@@ -1,22 +1,20 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// `initDb` asks electron for the userData dir. Point it at a per-test tmp dir
-// so real app data isn't touched and each test gets a fresh database.
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentory-db-test-'));
+// Wave-2 A: db.ts now reads `CCSM_USER_DATA_DIR` from env (no more electron
+// `app.getPath`). Point it at a per-test tmp dir so real app data isn't
+// touched and each test gets a fresh database.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-db-test-'));
 let tmpDir = tmpRoot;
-
-vi.mock('electron', () => ({
-  app: { getPath: () => tmpDir }
-}));
 
 async function freshDb() {
   // Reset the module-local singleton between tests.
   const mod = await import('../db');
   mod.closeDb();
   tmpDir = fs.mkdtempSync(path.join(tmpRoot, 'run-'));
+  process.env.CCSM_USER_DATA_DIR = tmpDir;
   return mod;
 }
 
