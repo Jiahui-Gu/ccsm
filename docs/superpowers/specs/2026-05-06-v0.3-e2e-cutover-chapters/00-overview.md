@@ -59,12 +59,19 @@ lint/typecheck/build/unit baseline and WITHOUT introducing any new
   emitting a per-path FIX/KEEP/REVERT verdict.
 - Refreshing probe-utils so harnesses can drive the post-cutover
   surface without local hacks.
-- Producing a per-harness-case verdict table (KEEP / DELETE / FIX / MARK)
-  for every case currently routed through harness-runner's skip
-  directives (`requiresClaudeBin` / `windowsOnly` / `darwinOnly` /
-  `skipLaunch`). dev-574 reports ~88 distinct case-skip combinations
-  across the three harnesses; the audit confirms exact count and
-  classifies each.
+- Producing a per-harness-case verdict policy (KEEP / DELETE / FIX /
+  MARK) for any future case marked with a runner gate flag
+  (`requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly /
+  skipLaunch`). Ground-truth at `35b08d15` / `5d0c5375`: **0 Vitest
+  `.skip` directives, 1 `skipLaunch:true` case**
+  (`cap-skip-launch-bundle-shape`, capability demo of the runner
+  itself; KEEP). The dev-574 "~88" figure was a count of runner
+  gate-evaluations across the case×flag matrix in
+  `scripts/probe-helpers/harness-runner.mjs`, NOT actual skipped
+  tests; v0.3 treats §3.1 ("zero e2e skip") as a forward guard against
+  introducing new skips during repair, not a triage backlog. Canonical
+  baseline lives in [04-probe-and-harness-update](./04-probe-and-harness-update.md)
+  §1.1.
 - A release-slicing plan plus DAG so manager can dispatch fixers
   in parallel without merge collisions.
 

@@ -8,68 +8,45 @@ under-test surface is correct").
 
 ## 1. Skip inventory & reconciliation
 
-### Author finding (single grep, mechanical)
+### §1.1 Canonical baseline (R5 ground-truth, verified at `5d0c5375`)
 
-Running, on `35b08d15`:
+Ground-truth at the spec branch HEAD `5d0c5375` (rebased onto
+`35b08d15`):
 
 ```bash
-grep -rEn "\b(it|test|describe)\.skip\(|\bxit\(|\bxtest\(|skipIf\(|skip:\s*true" \
-  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' \
-  tests src scripts
+$ grep -rEn "(it|test|describe)\.skip\(|\bxit\b|\bxdescribe\b" \
+    --include='*.ts' --include='*.tsx' --include='*.js' tests/ src/ daemon/ electron/
+# 0 matches
+
+$ grep -rn "skipLaunch" --include='*.mjs' scripts/
+# scripts/probe-helpers/harness-runner.mjs : 13 references (the runner mechanism)
+# scripts/harness-ui.mjs:1624 : { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, … }
 ```
 
-returned **0 hits**. There are no Vitest / Jest skip directives in the
-codebase.
+| Source                                                                         | Count |
+|--------------------------------------------------------------------------------|-------|
+| Vitest `it.skip / test.skip / describe.skip / xit / xdescribe` in `tests/ src/ daemon/ electron/` | **0** |
+| `vitest.config.ts` exclude patterns beyond standard `node_modules / dist`      | **0** |
+| Harness `skipLaunch: true`                                                     | **1** (`cap-skip-launch-bundle-shape`, capability demo of the runner; KEEP) |
+| Harness `requiresClaudeBin: true` in `tests/`                                  | **0** |
+| Harness `windowsOnly / darwinOnly / linuxOnly` in `tests/`                     | **0** |
 
-The harness skip mechanism is a separate axis, implemented in
-`scripts/probe-helpers/harness-runner.mjs` lines 487-526 via
-`requiresClaudeBin / windowsOnly / darwinOnly / skipLaunch` case flags.
-On `35b08d15`, only ONE such flag is set across the three harnesses:
+The dev-574-narrated "88" figure was a count of runner gate-evaluation
+points (case×capability-flag matrix evaluated by
+`scripts/probe-helpers/harness-runner.mjs`), NOT skipped tests. There
+is essentially **nothing to triage at the case level** on this baseline:
+the only "skip-like" entry is `cap-skip-launch-bundle-shape`, which is
+a capability demo and correctly classified KEEP.
 
-```
-scripts/harness-ui.mjs:1624: { id: 'cap-skip-launch-bundle-shape', skipLaunch: true, … }
-```
+### §1.2 Forward guard (mechanical implementation of iron rule §3.1)
 
-That case is intentionally `skipLaunch` (a capability demo of the
-runner itself, NOT a regression-skip).
-
-### Reviewer / fixer responsibility
-
-The "88 .skip" figure cited by manager (sourced from dev-574 narrative)
-does NOT correspond to anything the author can locate on `35b08d15`. We
-posit three interpretations:
-
-1. dev-574 was counting harness CASES that fail or are blocked on the
-   wave-2 cutover regressions (interpretation: "88 cases dev-574 wants
-   us to triage"). Possible — dev-574 ran across pool-1's full test
-   tree which includes `.spec.tsx` files this audit may have missed.
-2. dev-574 was counting probe assertions guarded by
-   `if (!cond) return;`-style early-returns inside harness case bodies.
-   These are not formal `.skip`s; they are silent bypasses we may want
-   to convert to hard failures.
-3. dev-574 was counting an older snapshot of the codebase (pre-#1106
-   merge). Less likely — manager's brief explicitly anchors at
-   `35b08d15`.
-
-**Reviewer R5 (testability) MUST**: enumerate the canonical "skip-like"
-list at `35b08d15` by surveying:
-
-- every `requiresClaudeBin: true` case across the three harnesses
-- every `windowsOnly` / `darwinOnly` case
-- every harness case where the body contains `if (...) return;` /
-  `if (...) { log(...); return; }` early-exits (silent bypasses)
-- every `npm test` / `vitest --run` exclude-pattern in `package.json`
-  / `vitest.config.ts`
-
-then attach the count to chapter 04 as a reviewer-round addendum.
-
-### Verdict policy
-
-For every "skip-like" entry, the verdict is exactly one of:
+The v0.3 rule "zero e2e skip" is a **forward guard against introducing
+new skips during the repair**, not a triage backlog. Any future
+skip-like introduced during repair MUST be classified as exactly one of:
 
 - **KEEP**: legitimate platform / environment guard (`windowsOnly` for
-  a tray feature unique to win32). Leave unchanged. MUST have a
-  one-line `Why kept:` comment in the case body.
+  a tray feature unique to win32). MUST have a one-line `Why kept:`
+  comment in the case body.
 - **DELETE**: probe / case is dead — covers a feature that no longer
   exists. Remove the entire case. MUST link to the commit that removed
   the underlying feature.
@@ -80,8 +57,33 @@ For every "skip-like" entry, the verdict is exactly one of:
   binary on Linux runners). Move to Set B (informational) and document
   in chapter 04 §3.
 
+[chapter 05](./05-release-slicing-and-dag.md) §1 G8 is the merge-time
+gate that enforces this. Any addition during the repair MUST appear
+in the PR body as a classification line, otherwise G8 fails.
+
 **Iron rule reminder**: NO case may be re-classified as skip in v0.3
 under any verdict.
+
+### §1.3 Real triage (capability-flag scope)
+
+The "real" triage that the original §1 framing implied — enumerating
+every `requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly /
+skipLaunch` case across the three harnesses — collapses to a single
+finding on this baseline:
+
+> **v0.3 does not introduce a capability-flag regime.** At `5d0c5375`,
+> `tests/` contains **0 occurrences** of any of `requiresClaudeBin /
+> windowsOnly / darwinOnly / linuxOnly / skipLaunch` (verified at
+> `5d0c5375`). The single live `skipLaunch:true` case
+> (`cap-skip-launch-bundle-shape`) lives in `scripts/harness-ui.mjs`
+> and is a capability demo of the runner mechanism itself.
+>
+> Future work that needs platform / environment gating MUST go through
+> an independent RFC (out of scope for v0.3); v0.3 ships with the
+> existing Set A / Set B distinction (§3) as the only gating axis.
+
+Consequently §6 acceptance signal #1 is satisfied by §1.1 above; no
+separate `04a-skip-inventory.md` artifact is required.
 
 ## 2. probe-utils refresh
 
@@ -230,9 +232,9 @@ them):
 
 ## 6. Acceptance signal for chapter 04
 
-- A canonical skip inventory is committed (probably as
-  `docs/superpowers/specs/2026-05-06-v0.3-e2e-cutover-chapters/04a-skip-inventory.md`
-  produced by the reviewer round; not yet by author).
+- §1.1 canonical baseline (R5 ground-truth: 0 Vitest skip + 1 KEEP
+  `skipLaunch`) is committed in this chapter; no separate
+  `04a-skip-inventory.md` artifact required.
 - `probe-utils.mjs` `seedStore` resolves within 5s on cold launch in
   CI.
 - `waitForTerminalReady` resolves within 10s on cold launch in CI.

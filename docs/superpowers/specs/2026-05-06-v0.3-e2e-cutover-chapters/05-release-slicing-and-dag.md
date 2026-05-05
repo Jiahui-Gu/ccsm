@@ -18,7 +18,7 @@ permitted iff ALL of the following hold:
 | G5 | `harness-real-cli` Set A subset is green for two consecutive runs                                     | `.github/workflows/e2e.yml` job          |
 | G6 | `harness-ui` Set A subset is green for two consecutive runs                                           | `.github/workflows/e2e.yml` job          |
 | G7 | `harness-dnd` Set A subset is green for two consecutive runs                                          | `.github/workflows/e2e.yml` job          |
-| G8 | NO new `it.skip / xtest / xit / harness skip flag` introduced relative to `35b08d15`                  | grep diff in PR body                     |
+| G8 | Vitest skip total = 0 (`it.skip / test.skip / describe.skip / xit / xdescribe` in `tests/ src/ daemon/ electron/`); harness skip-flag count (`skipLaunch / requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly` set true on a case) ≤ ch04 §1.1 baseline (currently 1: `cap-skip-launch-bundle-shape` KEEP) | `grep -rEn "(it\|test\|describe)\.skip\(\|\bxit\b\|\bxdescribe\b" tests/ src/ daemon/ electron/` returns 0; harness flag count diff'd against [04-probe-and-harness-update](./04-probe-and-harness-update.md) §1.1 |
 | G9 | NO transport regression (no preload bridge reverted to IPC for a wave-2 endpoint)                     | grep diff for `ipcRenderer.invoke`       |
 | G10| sigkill-reattach harness case (NEW per chapter 04 §4) is green                                        | `harness-real-cli` Set A                 |
 
