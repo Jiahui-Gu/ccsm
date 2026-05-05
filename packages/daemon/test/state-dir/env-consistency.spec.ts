@@ -23,7 +23,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildDaemonEnv } from '../../src/env.js';
-import { statePaths } from '../../src/state-dir/paths.js';
+import { statePaths, statePathsFromRoot } from '../../src/state-dir/paths.js';
 
 const SAVED_ENV: Record<string, string | undefined> = {};
 const ENV_KEYS = ['CCSM_STATE_DIR', 'PROGRAMDATA'] as const;
@@ -119,6 +119,40 @@ describe('env.paths.stateDir vs statePaths().root — single source of truth (ch
     withPlatform('linux', () => {
       const env = buildDaemonEnv();
       expect(env.paths.stateDir).toBe('/tmp/ccsm-override');
+    });
+  });
+
+  // Task #446: regression — `index.ts` previously called `statePaths()` with
+  // no args to resolve `dbPath` and `crashRawPath`, which silently bypassed
+  // `CCSM_STATE_DIR` (paths.ts only honours `PROGRAMDATA`). The fix is to
+  // rebase via `statePathsFromRoot(env.paths.stateDir)`. This spec asserts
+  // that the rebased layout points the DB and crash-raw NDJSON under the
+  // override root, NOT under `/var/lib/ccsm` / `%PROGRAMDATA%\ccsm`.
+  it('Task #446: statePathsFromRoot(env.paths.stateDir) honours CCSM_STATE_DIR for db + crashRaw', () => {
+    process.env.CCSM_STATE_DIR = '/tmp/test1';
+    withPlatform('linux', () => {
+      const env = buildDaemonEnv();
+      const sp = statePathsFromRoot(env.paths.stateDir, 'linux');
+      expect(sp.root).toBe('/tmp/test1');
+      expect(sp.db).toBe('/tmp/test1/ccsm.db');
+      expect(sp.crashRaw).toBe('/tmp/test1/crash-raw.ndjson');
+      expect(sp.descriptor).toBe('/tmp/test1/listener-a.json');
+      // Negative: the bare `statePaths()` resolver still ignores the env
+      // (proves the bypass surface is in the call site, not in paths.ts).
+      const bare = statePaths('linux');
+      expect(bare.db).toBe('/var/lib/ccsm/ccsm.db');
+      expect(bare.db).not.toBe(sp.db);
+    });
+  });
+
+  it('Task #446: win32 statePathsFromRoot uses backslash join under override', () => {
+    process.env.CCSM_STATE_DIR = 'D:\\custom\\ccsm';
+    withPlatform('win32', () => {
+      const env = buildDaemonEnv();
+      const sp = statePathsFromRoot(env.paths.stateDir, 'win32');
+      expect(sp.root).toBe('D:\\custom\\ccsm');
+      expect(sp.db).toBe('D:\\custom\\ccsm\\ccsm.db');
+      expect(sp.crashRaw).toBe('D:\\custom\\ccsm\\crash-raw.ndjson');
     });
   });
 });

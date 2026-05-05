@@ -74,6 +74,28 @@ export function statePaths(
   env: NodeJS.ProcessEnv = process.env,
 ): StatePaths {
   const root = stateRoot(platform, env);
+  return statePathsFromRoot(root, platform);
+}
+
+/**
+ * Compute the spec ch07 §2 file layout under an explicit `root`. Pure: no
+ * `process.env` reads, no I/O. Use this when the caller already resolved a
+ * state root from `DaemonEnv.paths.stateDir` (which honours
+ * `CCSM_STATE_DIR`) and needs the canonical filenames (`ccsm.db`,
+ * `crash-raw.ndjson`, `listener-a.json`) under that root with the
+ * platform-correct path separator.
+ *
+ * Task #446: `index.ts` previously called `statePaths()` with no args,
+ * which silently bypassed `CCSM_STATE_DIR` because the resolver only
+ * recognises `PROGRAMDATA` (per spec ch07 §2 / paths.spec.ts FORBIDDEN
+ * env keys). The env-var override surface lives in `env.ts` (single source
+ * of truth for `stateDir`); this helper lets callers reapply it without
+ * teaching `paths.ts` to read env vars.
+ */
+export function statePathsFromRoot(
+  root: string,
+  platform: StateDirPlatform = process.platform,
+): StatePaths {
   // Use platform-correct join so win32 uses `\` and POSIX uses `/`. Tests
   // assert posix-style on linux/darwin and either `\` or `/` on win32.
   const join = platform === 'win32' ? path.win32.join : path.posix.join;
