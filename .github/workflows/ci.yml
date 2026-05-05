@@ -834,19 +834,55 @@ jobs:
           # and it's the dominant install cost on a cold runner.
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
+      # Task #530 (CI-SPEED commit 2) — turbo local cache, persisted via
+      # actions/cache. The two `npx turbo run` invocations below (gen +
+      # test, both filtered to @ccsm/proto) write task outputs into
+      # `.turbo/cache/<hash>/` keyed by content hash of inputs declared
+      # in turbo.json (proto: gen → gen/**; test → src/test/vitest configs).
+      #
+      # Cache key: lockfile + turbo.json content + the proto sources
+      # (.proto + lock.json) — anything finer-grained than that and turbo
+      # itself does the in-cache lookup. restore-keys gives prefix
+      # fallback so a near-miss (e.g. a non-proto src/ change in another
+      # package) still warm-loads previous turbo results; turbo discards
+      # anything whose content hash doesn't match, so a stale restore
+      # cannot poison the run.
+      #
+      # Fallback: cache miss = turbo runs the underlying scripts as
+      # before (`pnpm --filter @ccsm/proto run gen|test`); no fail.
+      - name: Cache turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-ch15-${{ runner.os }}-${{ hashFiles('turbo.json', 'pnpm-lock.yaml', 'packages/proto/**/*.proto', 'packages/proto/lock.json') }}
+          restore-keys: |
+            turbo-ch15-${{ runner.os }}-
+
       # Generated TS bindings are not checked in (gen/ts/ is .gitignored
       # per packages/proto convention). Required by the proto vitest
       # suite which imports the generated message types.
+      #
+      # Task #530 — invoke via `npx turbo run gen --filter=@ccsm/proto`
+      # so the .turbo cache short-circuits when proto inputs are
+      # unchanged. turbo.json `gen` task declares outputs: ["gen/**"]
+      # which is what gets restored on a hit. Falls back to running
+      # `pnpm --filter @ccsm/proto run gen` on cache miss.
       - name: Generate proto bindings
-        run: pnpm --filter @ccsm/proto run gen
+        run: npx turbo run gen --filter=@ccsm/proto
 
       # ch15 §3 items 3, 7, 26, 27 (and others) — proto-shape invariants
       # asserted by the @ccsm/proto vitest suite. 8 spec files cover
       # error-detail round-trip, open-string tolerance, principalKey
       # colon-split, segmentation-cadence single-source, perf-budgets-locked
       # markdown-table parse, etc.
+      #
+      # Task #530 — same turbo wrapper for cache reuse. turbo.json `test`
+      # task has empty outputs (vitest emits no persistent artifacts) so
+      # only stdout/stderr is replayed on cache hit, but the input-hash
+      # short-circuit still avoids re-running vitest when nothing in the
+      # task's input set changed.
       - name: Proto package tests (ch15 §3 #3, #7, #26, #27)
-        run: pnpm --filter @ccsm/proto run test
+        run: npx turbo run test --filter=@ccsm/proto
 
       # ch15 §3 item 23 — every .proto edit MUST bump the matching SHA256
       # entry in packages/proto/lock.json in the same PR. lock-check.mjs
