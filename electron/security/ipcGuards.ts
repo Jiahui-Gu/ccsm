@@ -8,6 +8,12 @@
 
 import * as path from 'path';
 import * as os from 'os';
+// `Electron.IpcMainInvokeEvent` is the only Electron-typed identifier in
+// this file. Importing it as a type (instead of using the global namespace)
+// keeps the module compilable from `tsconfig.daemon.json`, which include-
+// path-pulls `isSafePath` for `daemon/ptyHost/cwdResolver.ts` (W2-B) but
+// does not load Electron's ambient type globals.
+import type { IpcMainInvokeEvent } from 'electron';
 
 // Filter renderer-supplied filesystem paths before any `fs.*` call. UNC paths
 // (`\\server\share\...` or `//server/share/...`) MUST be rejected on Windows:
@@ -45,6 +51,6 @@ export function resolveCwd(cwd: string): string {
 // can otherwise call into ipcMain with the same `e.sender`. Pairs with the
 // `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
 // installed in createWindow().
-export function fromMainFrame(e: Electron.IpcMainInvokeEvent): boolean {
+export function fromMainFrame(e: IpcMainInvokeEvent): boolean {
   return e.senderFrame === e.sender.mainFrame;
 }

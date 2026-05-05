@@ -99,6 +99,9 @@ vi.mock('../cwdResolver', () => ({
 
 vi.mock('../dataFanout', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+  emitPtyExit: () => {
+    /* no-op for entryFactory tests; subscriber path is what they pin */
+  },
 }));
 
 import { makeEntry } from '../entryFactory';
@@ -245,7 +248,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
       },
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entry.attached.set(1, wc as any);
+    entry.attached.set('1', wc as any);
 
     mod.dispatchPtyChunk('sid-DW', entry, 'a');
     mod.dispatchPtyChunk('sid-DW', entry, 'b');
@@ -278,7 +281,7 @@ describe('entryFactory.dispatchPtyChunk', () => {
       send: vi.fn(),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entry.attached.set(1, wc as any);
+    entry.attached.set('1', wc as any);
 
     // Defer write callbacks so writes stay "pending" until we manually drain.
     bus().deferHeadlessWrite = true;
@@ -325,9 +328,9 @@ describe('entryFactory.dispatchPtyChunk', () => {
       send: (_ch: string, payload: { seq: number }) => aliveSent.push(payload.seq),
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entry.attached.set(1, dead as any);
+    entry.attached.set('1', dead as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entry.attached.set(2, alive as any);
+    entry.attached.set('2', alive as any);
 
     mod.dispatchPtyChunk('sid-DEAD', entry, 'x');
     expect(dead.send).not.toHaveBeenCalled();

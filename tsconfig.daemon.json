@@ -12,6 +12,14 @@
     "rootDir": ".",
     "lib": ["ES2022"]
   },
-  "include": ["daemon/**/*"],
-  "exclude": ["daemon/**/__tests__/**"]
+  "include": [
+    "daemon/**/*",
+    "electron/sessionWatcher/**/*",
+    "electron/security/ipcGuards.ts",
+    "src/shared/**/*"
+  ],
+  "exclude": [
+    "daemon/**/__tests__/**",
+    "electron/sessionWatcher/**/__tests__/**"
+  ]
 }

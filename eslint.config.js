@@ -85,6 +85,11 @@ export default [
         Response: 'readonly',
         Request: 'readonly',
         Headers: 'readonly',
+        // v0.3 wave 2-B (Task #581): preload bridge uses SSE to subscribe
+        // to `/api/events/pty` from chromium. EventSource + MessageEvent
+        // are platform globals in the renderer process.
+        EventSource: 'readonly',
+        MessageEvent: 'readonly',
         // `NodeJS` namespace is also referenced from renderer-side .d.ts
         // files (e.g. cliBridge.d.ts) that mirror preload types — keep it
         // available alongside browser globals.

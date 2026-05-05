@@ -21,7 +21,7 @@ interface FakeEntry {
   pty: FakePty;
   headless: { resize: ReturnType<typeof vi.fn> };
   serialize: { serialize: () => string };
-  attached: Map<number, unknown>;
+  attached: Map<string, unknown>;
   cols: number;
   rows: number;
   cwd: string;
