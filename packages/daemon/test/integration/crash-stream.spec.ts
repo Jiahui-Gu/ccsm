@@ -36,11 +36,14 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { create } from '@bufbuild/protobuf';
+import { Code, ConnectError } from '@connectrpc/connect';
 import type { HandlerContext } from '@connectrpc/connect';
 
 import {
   CrashEntrySchema,
   CrashService,
+  ErrorDetailSchema,
+  type ErrorDetail,
   OwnerFilter,
   type WatchCrashLogRequest,
 } from '@ccsm/proto';
@@ -50,6 +53,7 @@ import {
   principalKey,
 } from '../../src/auth/index.js';
 import type { CrashRawEntry } from '../../src/crash/raw-appender.js';
+import { throwError } from '../../src/rpc/errors.js';
 import {
   TEST_PRINCIPAL_KEY,
   newRequestMeta,
@@ -197,6 +201,19 @@ beforeEach(async () => {
           if (principal === null) {
             throw new Error('principal not set on context');
           }
+          // Spec ch15 §3 #14: OwnerFilter MUST reject the broadened
+          // value (ALL) on v0.3 with PermissionDenied. Mirrors the
+          // production guard in
+          // `src/rpc/crash/watch-crash-log.ts:decideOwnerScope` so the
+          // wire-shape contract test and the production handler agree
+          // on the v0.3 enforcement.
+          if (req.ownerFilter === OwnerFilter.ALL) {
+            throwError(
+              'session.not_owned',
+              'OWNER_FILTER_ALL is not permitted on v0.3 (admin scope reserved for v0.4 — spec ch15 §3 #14)',
+              { requested_owner_filter: 'ALL' },
+            );
+          }
           const callerKey = principalKey(principal);
           const ownerFilter = req.ownerFilter;
 
@@ -211,13 +228,14 @@ beforeEach(async () => {
             push(entry) {
               // OWN filter: include entries owned by the caller OR the
               // daemon-self sentinel (ch04 §5 OWNER_FILTER_OWN
-              // definition).
+              // definition). ALL is rejected at the handler entry above
+              // (spec ch15 §3 #14) so we only ever reach this branch
+              // with UNSPECIFIED/OWN — no ALL pass-through.
+              void ownerFilter;
               const ownsIt =
                 entry.owner_id === callerKey ||
                 entry.owner_id === 'daemon-self';
-              const passesFilter =
-                ownerFilter === OwnerFilter.ALL ? true : ownsIt;
-              if (passesFilter) {
+              if (ownsIt) {
                 queue.push(entry);
                 if (resolveNext) {
                   resolveNext();
@@ -411,5 +429,44 @@ describe('crash-stream (ch12 §3 / ch04 §5 / ch09 §1)', () => {
 
     await collector;
     expect(collected).toEqual(['01HZ0TESTSELFOWNED000001']);
+  });
+
+  it('rejects OWNER_FILTER_ALL with PermissionDenied + session.not_owned (Task #433, ch15 §3 #14)', async () => {
+    // Spec ch15 §3 #14: OwnerFilter / SettingsScope / WatchScope MUST
+    // reject the broadened values (ALL / PRINCIPAL) on v0.3 with
+    // PermissionDenied. ALL is reserved for v0.4 admin principals; the
+    // wire shape allows it (forever-stable) but the v0.3 daemon's
+    // authorization layer refuses it. Mirrors the WATCH_SCOPE_ALL
+    // reject test in test/sessions/watch-sessions.spec.ts:403 and the
+    // sibling crash-getlog reject test.
+    //
+    // Reverse-verify: flip the daemon-side guard in
+    // `src/rpc/crash/watch-crash-log.ts:decideOwnerScope` (and the
+    // mirrored guard in this spec's inline handler) to map ALL back to
+    // a permissive verdict -> this test goes RED, proving the
+    // assertion is real.
+    const client = harness.makeClient(CrashService);
+    const stream = client.watchCrashLog({
+      meta: newRequestMeta(),
+      ownerFilter: OwnerFilter.ALL,
+    });
+    let captured: unknown = null;
+    try {
+      for await (const _ev of stream) {
+        void _ev;
+      }
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ConnectError);
+    const ce = captured as ConnectError;
+    expect(ce.code).toBe(Code.PermissionDenied);
+    const details = ce.findDetails(ErrorDetailSchema) as ErrorDetail[];
+    expect(details.length).toBeGreaterThanOrEqual(1);
+    expect(details[0].code).toBe('session.not_owned');
+    expect(details[0].extra.requested_owner_filter).toBe('ALL');
+    // Error message MUST cite the spec section so a reviewer reading
+    // the wire payload can find the source of truth without grep.
+    expect(ce.message).toMatch(/ch15\s*§3\s*#14/);
   });
 });

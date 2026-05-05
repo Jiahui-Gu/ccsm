@@ -37,11 +37,14 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { create } from '@bufbuild/protobuf';
+import { Code, ConnectError } from '@connectrpc/connect';
 import type { HandlerContext } from '@connectrpc/connect';
 
 import {
   CrashEntrySchema,
   CrashService,
+  ErrorDetailSchema,
+  type ErrorDetail,
   type GetCrashLogRequest,
   GetCrashLogResponseSchema,
   OwnerFilter,
@@ -52,6 +55,7 @@ import {
   principalKey,
 } from '../../src/auth/index.js';
 import type { CrashRawEntry } from '../../src/crash/raw-appender.js';
+import { throwError } from '../../src/rpc/errors.js';
 import {
   TEST_PRINCIPAL_KEY,
   newRequestMeta,
@@ -132,6 +136,18 @@ beforeEach(async () => {
           const principal = ctx.values.get(PRINCIPAL_KEY);
           if (principal === null) {
             throw new Error('principal not set on context');
+          }
+          // Spec ch15 §3 #14: OwnerFilter MUST reject the broadened
+          // value (ALL) on v0.3 with PermissionDenied. Mirrors the
+          // production guard in `src/rpc/crash/get-crash-log.ts`
+          // (`makeGetCrashLogHandler`) so the wire-shape contract test
+          // and the production handler agree on the v0.3 enforcement.
+          if (req.ownerFilter === OwnerFilter.ALL) {
+            throwError(
+              'session.not_owned',
+              'OWNER_FILTER_ALL is not permitted on v0.3 (admin scope reserved for v0.4 — spec ch15 §3 #14)',
+              { requested_owner_filter: 'ALL' },
+            );
           }
           const callerKey = principalKey(principal);
           const rows = store.query({
@@ -313,27 +329,45 @@ describe('crash-getlog (ch12 §3 / ch04 §5)', () => {
     expect(res.entries).toHaveLength(0);
   });
 
-  it('ALL filter is broader than OWN (forever-stable v0.4 hook); v0.3 daemon may policy-restrict', async () => {
-    // The proto allows ALL; v0.3 daemon's authorization layer SHOULD
-    // restrict it to admin principals (ch04 §5). The wire shape here
-    // pins the row-set difference: ALL returns >= OWN's count when the
-    // store has foreign-owner entries.
+  it('rejects OWNER_FILTER_ALL with PermissionDenied + session.not_owned (Task #433, ch15 §3 #14)', async () => {
+    // Spec ch15 §3 #14: OwnerFilter / SettingsScope / WatchScope MUST
+    // reject the broadened values (ALL / PRINCIPAL) on v0.3 with
+    // PermissionDenied. ALL is reserved for v0.4 admin principals; the
+    // wire shape allows it (forever-stable) but the v0.3 daemon's
+    // authorization layer refuses it. Mirrors the WATCH_SCOPE_ALL +
+    // SETTINGS_SCOPE_PRINCIPAL reject tests already in the daemon test
+    // suite (e.g. test/sessions/watch-sessions.spec.ts:403 "ALL scope:
+    // throws ConnectError(PermissionDenied) + ErrorDetail
+    // 'session.not_owned'").
+    //
+    // Reverse-verify: flip the daemon-side guard in
+    // `src/rpc/crash/get-crash-log.ts:makeGetCrashLogHandler` (and the
+    // mirrored guard in this spec's inline handler) to skip the ALL
+    // reject -> this test goes RED, proving the assertion is real.
     const fixtures = seedFixtures();
     store.insert(...fixtures);
 
     const client = harness.makeClient(CrashService);
-    const own = await client.getCrashLog({
-      meta: newRequestMeta(),
-      limit: 1000,
-      sinceUnixMs: BigInt(0),
-      ownerFilter: OwnerFilter.OWN,
-    });
-    const all = await client.getCrashLog({
-      meta: newRequestMeta(),
-      limit: 1000,
-      sinceUnixMs: BigInt(0),
-      ownerFilter: OwnerFilter.ALL,
-    });
-    expect(all.entries.length).toBeGreaterThanOrEqual(own.entries.length);
+    let captured: unknown = null;
+    try {
+      await client.getCrashLog({
+        meta: newRequestMeta(),
+        limit: 100,
+        sinceUnixMs: BigInt(0),
+        ownerFilter: OwnerFilter.ALL,
+      });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ConnectError);
+    const ce = captured as ConnectError;
+    expect(ce.code).toBe(Code.PermissionDenied);
+    const details = ce.findDetails(ErrorDetailSchema) as ErrorDetail[];
+    expect(details.length).toBeGreaterThanOrEqual(1);
+    expect(details[0].code).toBe('session.not_owned');
+    expect(details[0].extra.requested_owner_filter).toBe('ALL');
+    // Error message MUST cite the spec section so a reviewer reading
+    // the wire payload can find the source of truth without grep.
+    expect(ce.message).toMatch(/ch15\s*§3\s*#14/);
   });
 });
