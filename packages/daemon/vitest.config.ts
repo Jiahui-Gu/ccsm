@@ -2,9 +2,24 @@
 // source they cover (vs. the root `tests/**/*.test.ts` convention used by
 // the legacy renderer/electron code). Daemon code is pure node — no jsdom.
 
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+// Resolve `@ccsm/snapshot-codec` directly to its source entry so daemon
+// specs can import the production codec without requiring the sibling
+// package to be pre-built (matches the @ccsm/proto alias pattern in
+// vitest.config.coverage.ts; same root cause — npm ci on CI without a
+// `workspaces` field skips the pnpm symlink).
+const snapshotCodecSrcIndex = fileURLToPath(
+  new URL('../snapshot-codec/src/index.ts', import.meta.url),
+);
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@ccsm/snapshot-codec': snapshotCodecSrcIndex,
+    },
+  },
   test: {
     environment: 'node',
     // `eslint-plugins/**` holds the local ESLint plugin source + its
