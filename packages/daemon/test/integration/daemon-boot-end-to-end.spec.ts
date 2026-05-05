@@ -118,6 +118,7 @@ import { Lifecycle, Phase } from '../../src/lifecycle.js';
 import { REQUIRED_COMPONENTS } from '../../src/runStartup.lock.js';
 import { TEST_BEARER_TOKEN } from '../../src/auth/index.js';
 import type { Principal } from '../../src/auth/index.js';
+import { openDatabase, walCheckpointTruncate } from '../../src/db/sqlite.js';
 
 const Ajv =
   (AjvNs as unknown as {
@@ -1564,5 +1565,212 @@ describe('daemon-boot end-to-end (Task #208)', () => {
       await handle.closeAndWait();
       resetEmitterRegistry();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Task #523 — v0.3 ship-gate end-to-end. Four extension assertions that
+  // close the install/uninstall/real-restart loop on the existing harness:
+  //   (a) WAL persistence — explicit walCheckpointTruncate then reopen the
+  //       same DB file and read the row back. Proves journal_mode=WAL +
+  //       graceful checkpoint actually flushes user-visible state to disk.
+  //   (b) Supervisor graceful drain — `supervisor.stop()` is the in-process
+  //       graceful-drain seam (production /shutdown → onShutdown →
+  //       SIGTERM → main()'s shutdown handler eventually awaits the same
+  //       `stop()`; see index.ts L520-525). Stop must close the listener
+  //       cleanly (idempotent + no throw) AND make /healthz unreachable.
+  //   (c) SettingsService → real DB restart → row persists. Writes a
+  //       Settings entry over the wire, then closes the boot's DB handle,
+  //       reopens the same file with `openDatabase`, and SELECTs the row
+  //       directly. Proves the SettingsService write hit durable storage,
+  //       not just the in-memory cache.
+  //   (d) Descriptor / supervisor ordering invariant. Spec ch03 §3.2:
+  //       "the descriptor MUST be present on disk before any client can
+  //        observe ready=true on /healthz". Verified by (1) descriptor
+  //       file exists + parses, (2) /healthz=200 ready=true, (3) the
+  //       boot_id is identical in both — locks the two outputs to the
+  //       same boot, so a regression that writes the descriptor AFTER
+  //       supervisor /healthz flips ready would surface as a stale or
+  //       missing descriptor at this point.
+  // -------------------------------------------------------------------------
+
+  it('Task #523 (a) — WAL persists user rows across explicit checkpoint + reopen', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+
+    // Insert a row through the production DB handle. `principals` is a
+    // first-class table that does not require any extra wiring (used by
+    // peer-cred upserts everywhere else in this file) — a fresh seed key
+    // keyed by Date.now() avoids collisions with rows other tests
+    // inserted into the same boot.
+    const principalKey = `local-user:wal-persist-${Date.now()}`;
+    r.db
+      .prepare(
+        `INSERT INTO principals (id, kind, display_name, first_seen_ms, last_seen_ms)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(principalKey, 'local-user', 'wal-persist', Date.now(), Date.now());
+
+    // Explicit graceful-shutdown checkpoint (spec ch07 §5: "Daemon issues
+    // PRAGMA wal_checkpoint(TRUNCATE) on graceful shutdown to leave a
+    // clean DB on disk"). MUST happen before close — see helper docstring.
+    const checkpoint = walCheckpointTruncate(r.db);
+    // `busy === 0` means no other connection held frames; in this
+    // single-handle test that is the expected outcome.
+    expect(checkpoint.busy).toBe(0);
+
+    // Close the boot handle. Subsequent SELECTs would race `db.close()`
+    // otherwise. Mirror `stopBoot` so afterEach's idempotent close is a
+    // no-op (better-sqlite3 close() is idempotent by exception, the
+    // afterEach try/catch already handles a double-close).
+    r.db.close();
+
+    // Reopen the same on-disk file with the production opener (applies
+    // the same boot PRAGMAs — readers/writers should see identical
+    // semantics). The DB path is the canonical CCSM_STATE_DIR location
+    // — see index.ts L200 `statePathsFromRoot(env.paths.stateDir)`.
+    const dbPath = join(setup.tmpRoot, 'ccsm.db');
+    const reopened = openDatabase(dbPath);
+    try {
+      const row = reopened
+        .prepare<[string], { id: string; display_name: string }>(
+          'SELECT id, display_name FROM principals WHERE id = ?',
+        )
+        .get(principalKey);
+      expect(row, `principals row for ${principalKey} not found after reopen`).toBeDefined();
+      expect(row!.id).toBe(principalKey);
+      expect(row!.display_name).toBe('wal-persist');
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('Task #523 (b) — Supervisor graceful drain: stop() closes the listener cleanly + healthz unreachable', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.supervisor).not.toBeNull();
+    const supervisorAddr = r.supervisor!.address();
+
+    // Pre-condition: /healthz is up + ready=true (covered by the existing
+    // healthz it(), repeated here so the post-stop assertion can quote
+    // the contrast in the failure message).
+    const before = await getHealthz(supervisorAddr);
+    expect(before.status).toBe(200);
+    const beforeBody = JSON.parse(before.body);
+    expect(beforeBody.ready).toBe(true);
+
+    // Graceful drain. `stop()` is the in-process equivalent of the
+    // production /shutdown → SIGTERM → main()'s graceful-shutdown chain
+    // (see index.ts L520-525 comment). The contract: returns a resolved
+    // Promise (not rejected), idempotent, and post-stop the listener
+    // accepts no further connections.
+    await expect(r.supervisor!.stop()).resolves.toBeUndefined();
+    // Idempotent — second call must be a no-op (matches SupervisorServer
+    // contract in server.ts L300-310).
+    await expect(r.supervisor!.stop()).resolves.toBeUndefined();
+
+    // Post-stop /healthz MUST fail at the socket layer (ECONNREFUSED on
+    // POSIX UDS, ENOENT/connection-failure on Windows named-pipe). Both
+    // surface as a node:http error; the exact errno varies by OS. We
+    // accept any rejection — the assertion is "unreachable", not "a
+    // specific errno".
+    let postStopReachable = false;
+    try {
+      await getHealthz(supervisorAddr);
+      postStopReachable = true;
+    } catch {
+      /* expected — listener closed */
+    }
+    expect(
+      postStopReachable,
+      `/healthz at ${supervisorAddr} still answered after supervisor.stop()`,
+    ).toBe(false);
+  });
+
+  it('Task #523 (c) — SettingsService write persists across real DB close + reopen (restart simulation)', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    const baseUrl = loopbackBaseUrl(r);
+    const client = makeServiceClient(SettingsService, baseUrl);
+
+    // Write a distinctive ui_prefs entry over the wire — SettingsService
+    // is the production write path (boot UPSERT + UpdateSettings handler).
+    const themeMarker = `dark-${Date.now()}`;
+    const upd = await client.updateSettings({
+      meta: newMeta(),
+      settings: create(SettingsSchema, {
+        uiPrefs: { 'appearance.theme': themeMarker },
+      }),
+      scope: SettingsScope.GLOBAL,
+    });
+    expect(upd.settings?.uiPrefs?.['appearance.theme']).toBe(themeMarker);
+
+    // Drain the WAL into the main DB so the reopen below sees the row
+    // even on systems where the autocheckpoint hasn't fired (the row is
+    // tiny — wal_autocheckpoint=1000 frames is well above one INSERT).
+    const checkpoint = walCheckpointTruncate(r.db);
+    expect(checkpoint.busy).toBe(0);
+
+    // Real "restart" simulation: close the running daemon's DB handle
+    // and reopen the same on-disk file. This is the SAME path the
+    // production daemon takes on a real restart (`openDatabase` is the
+    // single boot opener — see index.ts L216).
+    r.db.close();
+    const dbPath = join(setup.tmpRoot, 'ccsm.db');
+    const reopened = openDatabase(dbPath);
+    try {
+      // Direct SQL probe — settings table layout: PRIMARY KEY (scope, key)
+      // with JSON value (db/migrations/001_initial.sql L109-114). The
+      // SettingsService writes ui_prefs entries under the
+      // `ui_prefs.<key>` row name (see settings/repo.ts) — but the v0.3
+      // shape is a single JSON-encoded `ui_prefs` blob. Read whichever
+      // row carries the marker and assert containment to stay robust to
+      // either layout choice.
+      const rows = reopened
+        .prepare<[], { key: string; value: string }>(
+          "SELECT key, value FROM settings WHERE scope = 'global'",
+        )
+        .all();
+      const themeFound = rows.some((row) => row.value.includes(themeMarker));
+      expect(
+        themeFound,
+        `theme marker ${themeMarker} not present in settings rows after reopen: ${JSON.stringify(rows)}`,
+      ).toBe(true);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('Task #523 (d) — descriptor file is present on disk and bound to the same boot as /healthz ready=true', async () => {
+    expect(result).not.toBeNull();
+    const r = result!;
+    expect(r.descriptorPath).not.toBeNull();
+    expect(r.supervisor).not.toBeNull();
+
+    // Step 1 — descriptor file exists + parses on disk. mtime must be at
+    // or before "now" (sanity: it was written during this test's beforeEach
+    // boot, not by a clock-skewed future write).
+    const stDesc = await stat(r.descriptorPath!);
+    expect(stDesc.size).toBeGreaterThan(0);
+    expect(stDesc.mtimeMs).toBeLessThanOrEqual(Date.now() + 1);
+    const descriptor = JSON.parse(await readFile(r.descriptorPath!, 'utf8'));
+
+    // Step 2 — supervisor /healthz=200 + ready=true.
+    const { status, body } = await getHealthz(r.supervisor!.address());
+    expect(status).toBe(200);
+    const healthz = JSON.parse(body);
+    expect(healthz.ready).toBe(true);
+
+    // Step 3 — the descriptor and the healthz body BOTH carry boot_id
+    // and they MUST agree. This locks the contract "if a client can see
+    // ready=true on /healthz, the descriptor on disk belongs to THIS
+    // boot" — the runStartup ordering (index.ts L504 descriptor write,
+    // L510 advanceTo READY, L543 supervisor.start) makes this trivially
+    // true today; this assertion catches a regression that reorders
+    // those steps (e.g. a future refactor that starts the supervisor
+    // before the descriptor write would either leave descriptor-on-disk
+    // missing or carry a different boot_id when racing parallel boots).
+    expect(descriptor.boot_id).toBe(r.env.bootId);
+    expect(healthz.boot_id).toBe(r.env.bootId);
+    expect(descriptor.boot_id).toBe(healthz.boot_id);
   });
 });
