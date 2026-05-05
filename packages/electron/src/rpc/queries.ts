@@ -96,6 +96,25 @@ export function useClients(): CcsmClients {
   return ctx;
 }
 
+/**
+ * Soft variant of {@link useClients} that returns `null` when no
+ * provider is mounted instead of throwing. Use ONLY for components that
+ * MUST render during the renderer-boot race window — `<RendererBoot>`
+ * deliberately renders its children without a `<ClientsProvider>` while
+ * the descriptor fetch is in flight (see boot.tsx ColdStartGate). The
+ * Task #464 ship-gate boot probe (`<App/>` deciding whether to mount
+ * `<ClaudeMissingGuide>`) is the canonical caller — gating the whole
+ * UI on a missing provider would re-introduce the death-spiral the gate
+ * was created to fix.
+ *
+ * Most call sites should keep using {@link useClients}: throwing is the
+ * right default (a missing provider IS a wiring bug for steady-state
+ * components that mount AFTER `connection.state === 'connected'`).
+ */
+export function useOptionalClients(): CcsmClients | null {
+  return React.useContext(ClientsContext);
+}
+
 // ---------------------------------------------------------------------------
 // Cache-key shape — uniform across all hooks
 // ---------------------------------------------------------------------------

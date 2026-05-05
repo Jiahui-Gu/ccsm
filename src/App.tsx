@@ -30,6 +30,9 @@ import { useSessionTitleBridge } from './app-effects/useSessionTitleBridge';
 import { useNotifyFlashBridge } from './app-effects/useNotifyFlashBridge';
 import { useCwdRedirectedBridge } from './app-effects/useCwdRedirectedBridge';
 import { useHydrateSystemLocale } from './app-effects/useHydrateSystemLocale';
+import { useOptionalClients } from '@ccsm/electron/rpc/queries';
+import { create } from '@bufbuild/protobuf';
+import { CheckClaudeAvailableRequestSchema } from '@ccsm/proto';
 
 // Initialise i18next once, before any component renders. Subsequent
 // language changes flow through `applyLanguage` (called by the store
@@ -207,33 +210,58 @@ export default function App() {
   // state because the install state doesn't change mid-session — only
   // when the user runs `npm install -g …` in another terminal and hits
   // "Re-check" inside ClaudeMissingGuide, which calls
-  // `ccsmPty.checkClaudeAvailable` itself and signals success via
+  // `PtyService.CheckClaudeAvailable` itself and signals success via
   // its `onResolved` prop.
+  //
+  // Task #464 cutover: previously this called `window.ccsmPty.checkClaudeAvailable`,
+  // a preload-shim path the v0.4 cleanup will delete. We now go through the
+  // Connect RPC `PtyService.CheckClaudeAvailable` so the v0.3 wire surface
+  // is exercised end-to-end (and so the daemon-resolver result is the single
+  // source of truth — preload fallback could lie when claude is installed
+  // but the renderer's PATH inheritance was lost). `useOptionalClients` is
+  // the soft variant that returns `null` during the brief
+  // `<ClientsProvider>`-not-yet-mounted window at boot — when it stays null
+  // past the daemon-unreachable budget we fall back to `false` so the user
+  // gets the actionable `<ClaudeMissingGuide>` rather than an indefinite
+  // probing spacer (matches the preload-missing fallback the legacy path
+  // used). Once a real `clients` lands the effect re-runs and the
+  // authoritative RPC verdict overrides the fallback.
   //
   // `undefined` = still probing (render nothing claude-gated yet);
   // `true`/`false` = resolved.
   const [claudeAvailable, setClaudeAvailable] = React.useState<boolean | undefined>(undefined);
+  const clients = useOptionalClients();
   useEffect(() => {
-    let cancelled = false;
-    const bridge = window.ccsmPty;
-    if (!bridge?.checkClaudeAvailable) {
-      // Preload missing — treat as unavailable so the guide surfaces
-      // rather than silently rendering an empty TerminalPane.
-      setClaudeAvailable(false);
-      return;
+    if (clients === null) {
+      // Daemon-unreachable budget. 3 s is generous for the local h2c
+      // bring-up (~50-200ms typical); past that, treat as "no daemon"
+      // so the user sees the guide and the "Re-check" button rather
+      // than a never-resolving spinner. Cleared on unmount + on
+      // clients-ready re-render.
+      const timer = setTimeout(
+        () => setClaudeAvailable((prev) => (prev === undefined ? false : prev)),
+        3000,
+      );
+      return () => clearTimeout(timer);
     }
+    let cancelled = false;
+    const ctrl = new AbortController();
     void (async () => {
       try {
-        const result = await bridge.checkClaudeAvailable();
-        if (!cancelled) setClaudeAvailable(result.available);
+        const reply = await clients.pty.checkClaudeAvailable(
+          create(CheckClaudeAvailableRequestSchema, {}),
+          { signal: ctrl.signal },
+        );
+        if (!cancelled) setClaudeAvailable(reply.available);
       } catch {
         if (!cancelled) setClaudeAvailable(false);
       }
     })();
     return () => {
       cancelled = true;
+      ctrl.abort();
     };
-  }, []);
+  }, [clients]);
 
   // New sessions are created in-place — no modal. The store seeds `cwd` from
   // `userHome` (always-true default per spec). Users repick via the StatusBar

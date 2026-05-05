@@ -57,6 +57,7 @@ import type { Listener } from './listeners/types.js';
 import { LISTENER_A_HELLO_ID } from './rpc/hello.js';
 import { makeRouterBindHook } from './rpc/bind.js';
 import { upsertSettingsBoot } from './rpc/settings/store.js';
+import { resolveClaude } from './ptyHost/claudeResolver.js';
 import { SessionManager, type ISessionManager } from './sessions/SessionManager.js';
 import { makeProductionAttachPtyHost } from './pty-host/attach-on-create.js';
 import { statePathsFromRoot } from './state-dir/paths.js';
@@ -473,6 +474,16 @@ export async function runStartup(
         settingsDeps,
         draftDeps,
         createSessionDeps,
+        // Task #464 ship-gate: real PtyService.CheckClaudeAvailable
+        // handler. The renderer's boot probe + <ClaudeMissingGuide>
+        // re-check both call this RPC; without the overlay the stub
+        // path returns Code.Unimplemented and the UI strands users on
+        // ClaudeMissingGuide. `force: true` per
+        // ResolveClaudeFn commentary — cheap spawnSync vs. stale
+        // cached null on the user's "Re-check" path.
+        checkClaudeAvailableDeps: {
+          resolveClaude: () => resolveClaude({ force: true }),
+        },
         // Order matters: bearer→PeerInfo deposit MUST run before
         // peerCredAuthInterceptor (which reads PEER_INFO_KEY and
         // derives Principal). `requestMetaInterceptor` is prepended by

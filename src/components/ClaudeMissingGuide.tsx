@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import { useTranslation } from '../i18n/useTranslation';
+import { useOptionalClients } from '@ccsm/electron/rpc/queries';
+import { create } from '@bufbuild/protobuf';
+import { CheckClaudeAvailableRequestSchema } from '@ccsm/proto';
 
 /**
  * Full-screen page rendered at boot when the `claude` CLI is not on PATH.
@@ -9,10 +12,11 @@ import { useTranslation } from '../i18n/useTranslation';
  * fails, the rest of the app cannot function, so we replace the entire UI
  * with this guide rather than letting users dig through broken sessions.
  *
- * The re-check button calls `ccsmPty.checkClaudeAvailable` so the user
- * can install via npm in a separate terminal and resolve in-place without
- * restarting the app. App wiring (deciding when to mount this vs. the
- * normal shell) lands in W2c.
+ * The re-check button calls `PtyService.CheckClaudeAvailable` over Connect
+ * RPC (Task #464 cutover from the legacy `window.ccsmPty` preload shim) so
+ * the user can install via npm in a separate terminal and resolve in-place
+ * without restarting the app. Daemon binds the resolver with `force: true`
+ * so the per-process cache is bypassed on every probe.
  */
 type Props = { onResolved: () => void };
 
@@ -20,17 +24,22 @@ export function ClaudeMissingGuide({ onResolved }: Props) {
   const { t } = useTranslation();
   const [checking, setChecking] = useState(false);
   const installCommand = 'npm install -g @anthropic-ai/claude-code';
+  const clients = useOptionalClients();
 
   const onRecheck = async () => {
     if (checking) return;
     setChecking(true);
     try {
-      // `window.ccsmPty.checkClaudeAvailable` was folded in from the
-      // deleted ccsmCliBridge surface in PR-8 (single CLI host namespace).
-      const bridge = window.ccsmPty;
-      if (!bridge?.checkClaudeAvailable) return;
-      const result = await bridge.checkClaudeAvailable({ force: true });
-      if (result.available) {
+      // Task #464 cutover: PtyService.CheckClaudeAvailable over Connect RPC
+      // (was `window.ccsmPty.checkClaudeAvailable`). `useOptionalClients`
+      // returns `null` during the renderer-boot race window — leave the
+      // button as a no-op until the provider lands; the user can click
+      // again. Production paths reach steady-state in <1s.
+      if (clients === null) return;
+      const reply = await clients.pty.checkClaudeAvailable(
+        create(CheckClaudeAvailableRequestSchema, {}),
+      );
+      if (reply.available) {
         onResolved();
         return;
       }

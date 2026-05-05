@@ -83,6 +83,10 @@ import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
 import { makeAttachHandler, makeAckPtyHandler, type PtyAttachDeps } from './pty-attach.js';
 import {
+  makeCheckClaudeAvailableHandler,
+  type CheckClaudeAvailableDeps,
+} from './pty/check-claude-available.js';
+import {
   registerSettingsService,
   type SettingsServiceDeps,
 } from './settings/register.js';
@@ -231,26 +235,41 @@ export function registerSessionService(
 /**
  * Register the v0.3 PtyService.Attach handler (Wave 3 §6.9 sub-task 10 /
  * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6) AND
- * the AckPty companion handler (Task #49 / T4.13 / spec §6).
+ * the AckPty companion handler (Task #49 / T4.13 / spec §6) AND the
+ * CheckClaudeAvailable handler (Task #464 / ship-gate / pty.proto §F6).
  *
  * REPLACES the stub `{}` registration for PtyService with
- * `{ attach, ackPty }`. Other PtyService methods (SendInput / Resize /
- * CheckClaudeAvailable) stay `Code.Unimplemented` per the
+ * `{ attach, ackPty, checkClaudeAvailable }`. Other PtyService methods
+ * (SendInput / Resize) stay `Code.Unimplemented` per the
  * "absent-method → unimplemented" Connect router rule until their
  * owning tasks land. The combined-registration caveat that applies to
  * SessionService also applies here (`router.service` REPLACES on the
  * same descriptor) — so when the next PtyService method handler ships,
  * it MUST be added to this same call site rather than registered via a
  * second `service()` call.
+ *
+ * `checkClaudeAvailableDeps` is optional so existing test fixtures that
+ * built a `PtyAttachDeps`-only PtyService overlay keep compiling without
+ * churn. When omitted, `checkClaudeAvailable` falls back to the stub
+ * `Code.Unimplemented` (consistent with the other not-yet-wired
+ * methods). Production startup wiring (T1.7) always supplies it.
  */
 export function registerPtyService(
   router: ConnectRouter,
-  deps: PtyAttachDeps,
+  deps: PtyAttachDeps & {
+    readonly checkClaudeAvailableDeps?: CheckClaudeAvailableDeps;
+  },
 ): ConnectRouter {
-  router.service(PtyService, {
+  const impl: Partial<import('@connectrpc/connect').ServiceImpl<typeof PtyService>> = {
     attach: makeAttachHandler(deps),
     ackPty: makeAckPtyHandler(deps),
-  });
+  };
+  if (deps.checkClaudeAvailableDeps !== undefined) {
+    impl.checkClaudeAvailable = makeCheckClaudeAvailableHandler(
+      deps.checkClaudeAvailableDeps,
+    );
+  }
+  router.service(PtyService, impl);
   return router;
 }
 
@@ -271,6 +290,7 @@ export function makeDaemonRoutes(
   draftDeps?: DraftServiceDeps,
   ptyAttachDeps?: PtyAttachDeps,
   createSessionDeps?: CreateSessionDeps,
+  checkClaudeAvailableDeps?: CheckClaudeAvailableDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -308,14 +328,24 @@ export function makeDaemonRoutes(
     if (draftDeps !== undefined) {
       registerDraftService(router, draftDeps);
     }
-    // PtyService.Attach overlay (Wave-3 §6.9 sub-task 10 / Task #355 /
-    // spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6). Wires the
-    // server-streaming Attach handler against the per-session in-memory
-    // emitter registry (PR #1027 / T-PA-5 supplies the production
-    // `getEmitter`; tests pass an inline fake). Other PtyService
-    // methods stay `Code.Unimplemented` until their tasks land.
+    // PtyService overlay — bundles Attach (Task #355 / T-PA-6), AckPty
+    // (Task #49 / T4.13) and CheckClaudeAvailable (Task #464 /
+    // ship-gate). The combined registration is required because
+    // `router.service(desc, impl)` REPLACES on duplicate descriptor
+    // calls. CheckClaudeAvailable can ship without an Attach overlay
+    // (e.g. tests that only exercise the boot probe), so it has its
+    // own registration branch when ptyAttachDeps is missing.
     if (ptyAttachDeps !== undefined) {
-      registerPtyService(router, ptyAttachDeps);
+      registerPtyService(router, {
+        ...ptyAttachDeps,
+        checkClaudeAvailableDeps,
+      });
+    } else if (checkClaudeAvailableDeps !== undefined) {
+      router.service(PtyService, {
+        checkClaudeAvailable: makeCheckClaudeAvailableHandler(
+          checkClaudeAvailableDeps,
+        ),
+      });
     }
   };
 }
@@ -427,11 +457,20 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * session `PtySessionEmitter` registry that PR #1027 (T-PA-5)
    * exports. Production startup wires it as `(sid) =>
    * ptyEmitterRegistry.getEmitter(sid)`; tests pass an inline fake.
-   * Other PtyService methods (SendInput / Resize / AckPty /
-   * CheckClaudeAvailable) stay `Code.Unimplemented` until their
-   * owning tasks land.
+   * Other PtyService methods (SendInput / Resize) stay
+   * `Code.Unimplemented` until their owning tasks land.
    */
   readonly ptyAttachDeps?: PtyAttachDeps;
+  /**
+   * When set, installs the Task #464 ship-gate
+   * `PtyService.CheckClaudeAvailable` handler. Production startup
+   * binds `resolveClaude: () => resolveClaude({force: true})` from
+   * `ptyHost/claudeResolver.ts`; tests pass an inline fake. Wired
+   * INDEPENDENTLY of `ptyAttachDeps` so a daemon boot that hasn't
+   * spawned any pty sessions still answers the renderer's boot probe
+   * with a real boolean (not `Code.Unimplemented`).
+   */
+  readonly checkClaudeAvailableDeps?: CheckClaudeAvailableDeps;
 }
 
 /**
@@ -480,6 +519,7 @@ export function createDaemonNodeAdapter(
     draftDeps,
     ptyAttachDeps,
     createSessionDeps,
+    checkClaudeAvailableDeps,
     interceptors: callerInterceptors,
     ...rest
   } = options;
@@ -495,6 +535,7 @@ export function createDaemonNodeAdapter(
           draftDeps,
           ptyAttachDeps,
           createSessionDeps,
+          checkClaudeAvailableDeps,
         )
       : stubRoutes;
   const interceptors = [
