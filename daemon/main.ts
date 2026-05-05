@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { registerApi } from "./api/index";
 import { startServer, type ServerHandle } from "./server";
 import { Router, type HandlerResult } from "./router";
+import { runStartup } from "./startup/index";
 
 interface PackageJsonLike {
   version?: string;
@@ -54,12 +55,13 @@ function buildRouter(version: string): Router {
   return router;
 }
 
-function installShutdown(handle: ServerHandle): void {
+function installShutdown(handle: ServerHandle, abortController: AbortController): void {
   let shuttingDown = false;
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stderr.write(`[daemon] received ${signal}, shutting down\n`);
+    abortController.abort();
     // Stop accepting new connections; existing keep-alive conns will be torn
     // down by Node when there is no in-flight request.
     handle.close().then(
@@ -88,13 +90,17 @@ function installShutdown(handle: ServerHandle): void {
 async function main(): Promise<void> {
   const version = readPackageVersion();
   const router = buildRouter(version);
+  const abortController = new AbortController();
+
+  await runStartup({ router, version, abort: abortController.signal });
+
   const handle = await startServer({ router });
 
   // PROTOCOL: first line on stdout MUST be `PORT=<n>\n`. Don't add prefix,
   // don't buffer, don't conflate with logs.
   process.stdout.write(`PORT=${handle.port}\n`);
 
-  installShutdown(handle);
+  installShutdown(handle, abortController);
 
   process.stderr.write(
     `[daemon] listening on 127.0.0.1:${handle.port} (version=${version})\n`,
