@@ -65,16 +65,23 @@ export interface LifecycleDeps {
   setIsQuitting: (v: boolean) => void;
   /** Best-effort reap of any live node-pty children spawned through
    *  ptyHost. Idempotent; critical on Windows where conpty can otherwise
-   *  leak the claude child past Electron quit. */
+   *  leak the claude child past Electron quit. Wave-1 B: ptyHost lives
+   *  in the daemon now, so main passes a noop here — the daemon reaps
+   *  its own pty children inside its own SIGTERM handler. */
   killAllPtySessions: () => void;
   /** Tear down the notify pipeline + its app-level listeners (focus/blur,
    *  sessionWatcher 'unwatched') and any pending flash timers. Optional
    *  because `before-quit` may fire before the pipeline is constructed
    *  (e.g. early failure in app.whenReady). Idempotent on its own.
-   *  Audit #876 cluster 1.14 + 3.8 / Task #884. */
+   *  Audit #876 cluster 1.14 + 3.8 / Task #884. Wave-1 B: notify pipeline
+   *  lives in the daemon now; main passes a noop. */
   disposeNotifyPipeline?: () => void;
-  /** Close the SQLite handle on a real quit. */
+  /** Close the SQLite handle on a real quit. Wave-1 B: db handle moved
+   *  to the daemon; main passes a noop. */
   closeDb: () => void;
+  /** Send SIGTERM to the daemon child so it can flush + close its db /
+   *  pty children gracefully. Required addition for v0.3 wave-1 B. */
+  killDaemon: () => void;
   /** Spawn a fresh main window from the macOS dock-click `activate` path
    *  when every BrowserWindow has been destroyed. */
   createWindow: () => void;
@@ -92,6 +99,7 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
     createWindow,
     getWindowCount,
     disposeNotifyPipeline,
+    killDaemon,
   } = deps;
 
   app.on('before-quit', () => {
@@ -107,6 +115,14 @@ export function registerLifecycleHandlers(deps: LifecycleDeps): void {
       } catch {
         /* ignore — best-effort cleanup on quit */
       }
+    }
+    // SIGTERM the daemon child. The daemon owns db / pty / notify
+    // pipeline lifetimes in v0.3 — it's responsible for graceful
+    // shutdown of those resources.
+    try {
+      killDaemon();
+    } catch {
+      /* ignore — best-effort cleanup on quit */
     }
   });
 
