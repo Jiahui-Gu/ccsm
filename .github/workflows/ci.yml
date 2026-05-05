@@ -530,4 +530,170 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # Task #427 — chapter 15 §3 forbidden-pattern enforcement.
+  #
+  # Spec: docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
+  #       chapter 15 §3 (forbidden patterns 1-29) — the mechanical reviewer
+  #       checklist that v0.4 PRs must clear. Several of those items have
+  #       on-disk enforcement artifacts (proto unit tests, packages/proto
+  #       lock.json gate, tools/check-migration-locks.sh, the audit-table
+  #       revalidate script) that landed in earlier waves but were never
+  #       wired into CI — they were sitting on disk firing zero PRs.
+  #
+  # Why a separate job (not folded into lint-typecheck-test):
+  #   * lint-typecheck-test installs via `npm ci --legacy-peer-deps` because
+  #     the windows-latest runner historically lacked a pnpm shim AND
+  #     packages/daemon/package.json's `workspace:*` protocol is npm-illegal
+  #     (see comments around line 259-275 in this file). That job therefore
+  #     CANNOT invoke `pnpm --filter @ccsm/<pkg>` — the shell will fail
+  #     with "pnpm: not recognized as a name of a cmdlet".
+  #   * Mirroring the sea-smoke / package job pattern (pnpm/action-setup +
+  #     `pnpm install --frozen-lockfile`) is the cleanest path.
+  #   * runs-on: windows-latest because packages/proto/lock.json records
+  #     SHA256 over RAW on-disk bytes with NO line-ending normalization
+  #     (per packages/proto/test/lock.spec.ts comment "no normalization").
+  #     The lock.json values were generated on a Windows checkout (CRLF
+  #     line endings); a Linux runner would re-checkout the .proto files
+  #     with LF and recompute different hashes, failing test/lock.spec.ts
+  #     with phantom "drift" on every PR. Pinning this job to
+  #     windows-latest mirrors lint-typecheck-test's matrix choice
+  #     (Task #322) and the .gitattributes default for this repo.
+  #   * Coverage rationale per ch15 §3 item:
+  #       - item 1, 2, 19, 20 (proto rename / renumber / oneof slot)
+  #         → buf breaking already wired in lint-typecheck-test (line 184).
+  #       - item 4 (v0.3 migration sql immutability)
+  #         → tools/check-migration-locks.sh (this job, gh CLI required).
+  #       - item 23 (lock.json must bump with every .proto edit)
+  #         → packages/proto/scripts/lock-check.mjs (this job).
+  #       - items 3, 7, 26, 27, 28, 29 + various spec invariants
+  #         → packages/proto vitest suite (`pnpm --filter @ccsm/proto run test`)
+  #           — covers wire-shape round-trip, error-detail, open-string
+  #           tolerance, principalKey colon split, segmentation cadence,
+  #           perf-budgets-locked, etc. (8 spec files / 53 tests today).
+  #       - per-PR audit verdict re-validation
+  #         → tools/audit-table-revalidate.sh (this job; reads ch15 §1/§2
+  #           tables AND the PR's touched-file set).
+  #
+  # Daemon test wiring is INTENTIONALLY DEFERRED — see TODO comment below.
+  ch15-enforcement:
+    name: ch15 §3 enforcement
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same fetch-depth: 0 reasoning as lint-typecheck-test — buf
+          # breaking and the audit-table-revalidate script may need to
+          # resolve merge-base against origin/<base>. Cheap on this small
+          # repo.
+          fetch-depth: 0
 
+      # packages/proto/lock.json records SHA256 over the BYTES the dev
+      # captured at `pnpm --filter @ccsm/proto run lock` time. Those bytes
+      # were CRLF (the de-facto Windows-host convention used by every dev
+      # on this project; .gitattributes declares `eol=lf` for .proto but
+      # autocrlf=true on the dev machines overrides it on checkout, and
+      # lock.json was committed from those CRLF working trees). The
+      # GitHub-hosted windows-latest runner ships with autocrlf=true on
+      # the default global git config, so a fresh `actions/checkout@v4`
+      # already produces CRLF — we re-affirm here as a defensive guard
+      # so the lock.spec.ts / lock-check.mjs hash comparisons stay
+      # reproducible regardless of any future runner-image config drift.
+      # (If a future cleanup re-locks lock.json against LF bytes, drop
+      # this step. Until then, divergence between this job's checkout
+      # and the dev machines is what produces phantom drift.)
+      - name: Affirm CRLF line endings (lock.json baseline)
+        shell: pwsh
+        run: |
+          git config core.autocrlf true
+          git rm --cached -r --quiet .
+          git reset --hard HEAD
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+        env:
+          # Skip electron binary download — none of the steps below need it
+          # and it's the dominant install cost on a cold runner.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Generated TS bindings are not checked in (gen/ts/ is .gitignored
+      # per packages/proto convention). Required by the proto vitest
+      # suite which imports the generated message types.
+      - name: Generate proto bindings
+        run: pnpm --filter @ccsm/proto run gen
+
+      # ch15 §3 items 3, 7, 26, 27 (and others) — proto-shape invariants
+      # asserted by the @ccsm/proto vitest suite. 8 spec files cover
+      # error-detail round-trip, open-string tolerance, principalKey
+      # colon-split, segmentation-cadence single-source, perf-budgets-locked
+      # markdown-table parse, etc.
+      - name: Proto package tests (ch15 §3 #3, #7, #26, #27)
+        run: pnpm --filter @ccsm/proto run test
+
+      # ch15 §3 item 23 — every .proto edit MUST bump the matching SHA256
+      # entry in packages/proto/lock.json in the same PR. lock-check.mjs
+      # recomputes hashes and fails on drift.
+      - name: Proto lock-check (ch15 §3 #23)
+        run: pnpm --filter @ccsm/proto run lock-check
+
+      # ch15 §3 item 4 — v0.3 migration files (packages/daemon/src/db/
+      # migrations/*.sql) are immutable post-tag. The script is
+      # placeholder-safe pre-tag: it exits 0 with a notice when v0.3.0
+      # release does not yet exist (which is the case during v0.3 ship
+      # work). Post-tag, any SHA256 drift fails the PR mechanically.
+      # GH_TOKEN required by `gh release view` invocation inside the
+      # script.
+      - name: Migration-file lock-check (ch15 §3 #4)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/check-migration-locks.sh
+
+      # Per-PR re-validation of the chapter 15 §1/§2 audit verdicts: the
+      # script enumerates forever-stable file paths from the design spec
+      # and asserts the PR's touched-file set does not modify them
+      # without an explicit `audit-override: <path> — <reason>` marker
+      # in the PR body. workflow_dispatch runs (no PR number) skip the
+      # check via the `--diff` fallback against the merge-base.
+      - name: Audit-table revalidate (ch15 §1/§2)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ github.event.pull_request.number }}" ]; then
+            bash tools/audit-table-revalidate.sh --pr ${{ github.event.pull_request.number }}
+          else
+            # workflow_dispatch / push: fall back to diff vs merge-base.
+            BASE_REF="${GITHUB_BASE_REF:-working}"
+            bash tools/audit-table-revalidate.sh --diff "origin/${BASE_REF}...HEAD"
+          fi
+
+      # TODO(Task #427 followup): wire `pnpm --filter @ccsm/daemon run test`
+      # here. Verified locally on Windows host on 2026-05-05: the daemon
+      # vitest suite has 7 pre-existing failures in
+      # src/rpc/__tests__/integration.spec.ts (h2c-loopback bind),
+      # test/integration/{crash-getlog,crash-watch,watch-sessions}-wired.spec.ts,
+      # and test/pty-host/test-crash-integration.spec.ts — all with
+      # 10s/30s afterEach hook timeouts on the loopback HTTP/2 path.
+      # These are baseline issues on origin/working (commit fa6b1e1), not
+      # introduced by Task #427, and gating PR merges on them would block
+      # every v0.3 ship PR. Wiring is deferred to a followup that first
+      # stabilizes the integration suite. ch15 §3 items the daemon suite
+      # would back-stop (#5 SnapshotV1 layout, #6 listener slot array,
+      # #18 listeners[1] writer rule, #25 child_process boundary, etc.)
+      # remain covered by direct daemon-side .spec.ts files that do pass;
+      # what we lose by deferring is integration-level wire coverage, not
+      # ch15 enforcement.
