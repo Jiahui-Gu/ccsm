@@ -8,6 +8,27 @@
  *  - All responses are `application/json`.
  *  - 200 OK / 400 bad_request / 404 not_found / 500 internal_error.
  *  - Request bodies, when present, are `application/json`.
+ *
+ * --------------------------------------------------------------------------
+ * SECURITY INVARIANT — LOOPBACK ONLY (spec: 2026-05-06 v0.3 e2e cutover §3)
+ * --------------------------------------------------------------------------
+ * The daemon HTTP server MUST bind to a loopback interface (127.0.0.1 or
+ * ::1). Binding to 0.0.0.0, a public IP, or a hostname that resolves to a
+ * non-loopback interface would expose the daemon's command/control surface
+ * to the local network — every endpoint here can read/spawn arbitrary user
+ * sessions, mutate prefs, and stream pty traffic. There is no auth layer
+ * (the daemon trusts the loopback boundary). DO NOT relax this without a
+ * spec change AND an auth story.
+ *
+ * Enforcement is two-layered, both fail-closed:
+ *   1. `assertLoopbackHost(host)` rejects non-loopback string inputs before
+ *      `server.listen()` is called.
+ *   2. After listen, we re-check `server.address().address` to catch the
+ *      case where DNS resolved a "loopback-looking" hostname to an
+ *      external interface (or a future Node release changes semantics).
+ *
+ * If either check fails, we close the socket and throw — the daemon will
+ * not start. This is deliberately louder than logging a warning.
  */
 
 import {
@@ -16,11 +37,64 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import type { AddressInfo } from "node:net";
+import { isIP, type AddressInfo } from "node:net";
 
 import { Router, writeJson, type HandlerResult } from "./router";
 
 const MAX_BODY_BYTES = 1 * 1024 * 1024; // 1 MiB; wave-1 endpoints are tiny.
+
+/**
+ * Allow-list of loopback host strings accepted by `startServer`.
+ *
+ * Intentionally narrow: only the canonical IPv4 / IPv6 loopback literals.
+ * "localhost" is NOT included — on misconfigured hosts it can resolve to
+ * a non-loopback address (corp DNS, /etc/hosts overrides, search domains).
+ * Callers that need a hostname should resolve it themselves and pass the
+ * literal IP, so the loopback check is unambiguous.
+ */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "::1"]);
+
+/**
+ * Returns true if `addr` is a loopback IP literal.
+ *
+ * Accepts:
+ *  - any 127.0.0.0/8 IPv4 address (Node's `server.address()` may report
+ *    `127.0.0.1` or, on some platforms, the equivalent dotted form).
+ *  - `::1` and its full form `0:0:0:0:0:0:0:1`.
+ *  - IPv4-mapped IPv6 loopback `::ffff:127.0.0.1` (Node sometimes reports
+ *    this when the OS dual-stacks an IPv4 listen).
+ */
+function isLoopbackAddress(addr: string): boolean {
+  const family = isIP(addr);
+  if (family === 4) {
+    return addr.startsWith("127.");
+  }
+  if (family === 6) {
+    if (addr === "::1" || addr === "0:0:0:0:0:0:0:1") return true;
+    // IPv4-mapped IPv6: ::ffff:127.x.x.x
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(addr);
+    if (mapped && mapped[1].startsWith("127.")) return true;
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Throws if `host` is not in the loopback allow-list. Fails closed.
+ *
+ * See SECURITY INVARIANT note above. The error message is intentionally
+ * explicit — if this fires in production, an operator needs to know
+ * exactly what was rejected and why.
+ */
+export function assertLoopbackHost(host: string): void {
+  if (!LOOPBACK_HOSTS.has(host)) {
+    throw new Error(
+      `daemon: refusing to bind non-loopback host "${host}" — daemon HTTP ` +
+        `server must bind 127.0.0.1 or ::1 (no auth layer; loopback is the ` +
+        `trust boundary). Allowed: ${[...LOOPBACK_HOSTS].join(", ")}.`,
+    );
+  }
+}
 
 export interface ServerHandle {
   server: Server;
@@ -41,6 +115,10 @@ export async function startServer(
   const { router } = opts;
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 0;
+
+  // Pre-listen guard: reject non-loopback host strings before opening
+  // any socket. See SECURITY INVARIANT in the file header.
+  assertLoopbackHost(host);
 
   const server = createServer((req, res) => {
     void handleRequest(router, req, res);
@@ -63,6 +141,18 @@ export async function startServer(
   const addr = server.address() as AddressInfo | null;
   if (!addr || typeof addr === "string") {
     throw new Error("daemon: failed to bind server (no AddressInfo)");
+  }
+
+  // Post-listen guard: belt-and-braces re-check that the kernel actually
+  // bound a loopback interface. Catches the case where DNS / OS quirks
+  // resolved a "loopback-looking" host to something external. If this
+  // fires, close the socket so we don't leak a public listener.
+  if (!isLoopbackAddress(addr.address)) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw new Error(
+      `daemon: server bound non-loopback address "${addr.address}" — ` +
+        `aborting (loopback invariant).`,
+    );
   }
 
   const close = (): Promise<void> =>
