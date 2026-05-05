@@ -92,6 +92,37 @@ This section enumerates concrete edits required in
 `scripts/probe-helpers/*.mjs` to align with the post-cutover surface
 defined in chapter 02.
 
+### §2.0 Ready-signal contract (signal vs poll)
+
+Each probe MUST distinguish between **signal-based wait** (deterministic:
+probe blocks on a specific event/promise that fires when the property
+becomes true) and **poll-with-timeout** (best-effort: probe re-checks
+every Nms until either truthy or timeout). The two have very different
+flake profiles, and the entire "tighten timeouts" story (chapter 04 §6,
+chapter 05 §3 PR-8) only works if probes use the strongest signal
+their property allows.
+
+| Probe step                                            | Signal type           | Signal source (production-side emitter)                                                                 |
+|--------------------------------------------------------|------------------------|----------------------------------------------------------------------------------------------------------|
+| `seedStore` "wait for `__ccsmStore`"                  | **sync** (post ch02 §2 fix) | `globalThis.__ccsmStore` is set at module eval; replace `waitForFunction` with single-shot `evaluate` after `domcontentloaded`. |
+| `seedStore` "wait for app shell"                      | **event**             | App.tsx fires `window.dispatchEvent(new Event('ccsm:app-shell-ready'))` at end of first useEffect; probe `waitForEvent('ccsm:app-shell-ready')` instead of polling for `[data-testid="app-shell-ready"]`. **Production-emit owner**: PR-2 (App.tsx). |
+| `waitForTerminalReady` `host` flag                    | **event**             | TerminalPane fires `window.dispatchEvent(new CustomEvent('ccsm:terminal-host-mounted', { detail: { sid } }))` in `useEffect([sid])` after host element is in DOM. **Production-emit owner**: PR-4 (TerminalPane). |
+| `waitForTerminalReady` `term` flag                    | **event**             | xterm singleton fires `window.dispatchEvent(new CustomEvent('ccsm:term-attached', { detail: { sid } }))` after `term.open(hostEl)`. **Production-emit owner**: PR-4 (xtermSingleton). |
+| `waitForTerminalReady` `buffer` flag                  | **sync** (true iff `term` true) | `term.buffer.active` is non-null synchronously after `term.open()`; assert in same step as `term`, no separate poll. |
+| `daemon-port-ready-before-render` (NEW case)          | **sync**              | Post Option C, port is resolved at first JS execution; assert `await ccsmPty.checkClaudeAvailable()` returns within 500ms wall-clock AND `window.__ccsmDaemonPortLoadIterations === 0` (counter pinned by `electron/preload/bridges/ccsmPty.ts` per ch03 §3 fallback poll). |
+
+Probes that lack a signal source MAY remain poll-with-timeout but MUST
+document the reason in a code comment AND log every poll iteration at
+TRACE level so flake post-mortem is possible.
+
+**MUST**: production-side event emits (`ccsm:app-shell-ready` /
+`ccsm:terminal-host-mounted` / `ccsm:term-attached`) land in their
+respective owner PRs (chapter 05 §3 PR-2 / PR-4); PR-8 (probe-utils
+refresh) consumes them via `waitForEvent`. If any emit is rejected
+during PR review, the corresponding probe falls back to
+`waitForFunction` and §2.0 above documents the reason in this table
+(do NOT silently revert to polling).
+
 ### scripts/probe-utils.mjs
 
 #### `seedStore` (lines 356-366)
@@ -196,6 +227,21 @@ per-case log file at
 - Verify it resets `window.__ccsmStore.setState({...initial})` correctly
   — i.e. the store reference is the SAME instance across cases (HP-1
   double-store risk).
+- **Runtime invariant (R5 testability — replaces one-time grep)**: at
+  the start of every case-N reset, capture `beforeRef = await
+  win.evaluate(() => (window as any).__ccsmStore)`; after the
+  `setState({...initial})` call, capture `afterRef = await
+  win.evaluate(() => (window as any).__ccsmStore)`; assert
+  `beforeRef === afterRef` (strict equality on the proxied JS reference;
+  Playwright serialises both to the same handle iff the underlying
+  zustand instance is identical). On mismatch, throw with message
+  `"__ccsmStore changed between cases — duplicate-store regression
+  (HP-1); see ch02 §2 Fix-B"`. The probe itself becomes the regression
+  test; no separate UT needed for the cross-case identity property.
+- **Why runtime, not one-time**: a one-time verify at PR-2 land does
+  not catch a v0.4+ feature-slice store accidentally creating a
+  sibling `useStore` proxy that drifts between cases. The cross-case
+  invariant runs every case, every CI run, with zero added cost.
 
 ## 3. Set A vs Set B (dogfood)
 
@@ -241,16 +287,42 @@ likely belong in Set B:
 in `.github/workflows/e2e.yml` already supports this (one job per
 harness; reviewer to verify).
 
+### Set assignment (R5 testability — Set A vs Set B vs DELETE)
+
+Each currently-red case from `/tmp/t574-e2e.log` MUST be assigned
+exactly one of `{Set A, Set B, DELETE}` per chapter 04 §1.2 verdict
+policy (KEEP / DELETE / FIX / MARK). The full case-by-case assignment
+is committed by the chapter 04 fixer to
+`docs/superpowers/specs/2026-05-06-v0.3-e2e-cutover-chapters/04b-case-set-assignment.md`
+(**NEW** — file does not exist at HEAD `5d0c5375`; created by the
+chapter 04 fixer round). Cases not on either Set A or Set B that are
+not DELETE are MARK (deferred to v0.4 with a tracker link).
+
+**Sigkill-reattach pin (CF-3 manager decision)**: the NEW
+`sigkill-reattach` harness case (chapter 04 §4 below) is **Set B
+informational in v0.3** per chapter 03 §4 (R1 strict). The
+`04b-case-set-assignment.md` artifact MUST reflect this; promotion
+into Set A is a v0.4 candidate per
+[03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 F-4 and is NOT
+re-litigated by the §3 assignment pass.
+
+**Why this is its own subsection**: G5/G6/G7 in chapter 05 §1 gate the
+merge on "Set A green twice in a row." Without a final canonical Set A
+list, a fixer doesn't know which currently-red case must turn green
+and which can stay red. The §3.1 list above is the post-fix candidate
+target; the `04b-case-set-assignment.md` artifact is the per-case
+verdict the gate enforces.
+
 ## 4. New harness cases required by spec
 
 The following cases SHOULD exist post-repair (chapter 05 PRs may add
 them):
 
-| Case id                           | Harness            | Set (v0.3)        | Asserts                                                              |
-|-----------------------------------|--------------------|-------------------|----------------------------------------------------------------------|
-| `daemon-port-ready-before-render` | harness-ui         | Set A             | `window.ccsmPty` works on the very first RPC (no 5s polling waste).  |
-| `sigkill-reattach`                | harness-real-cli   | **Set B (informational, v0.3)** | v0.3 scope = v0.2 already-shipping attach-replay assertions pass (basic resume after SIGKILL on the daemon-port substrate). **NO new behaviour assertion in v0.3** (no TTL / cap / cwd-mismatch / eviction assertions — those are v0.4 per [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7). v0.4 candidate for Set A promotion. |
-| `loadstate-roundtrip`             | harness-ui         | Set A             | `await window.ccsm.saveState('k','v'); await window.ccsm.loadState('k') === 'v'`. |
+| Case id                           | Harness            | Set (v0.3)        | Asserts                                                              | Budget (CI wall-clock)               |
+|-----------------------------------|--------------------|-------------------|----------------------------------------------------------------------|---------------------------------------|
+| `daemon-port-ready-before-render` | harness-ui         | Set A             | On harness app launch, `await window.ccsmPty.checkClaudeAvailable()` resolves within **500ms wall-clock** from page-load AND `window.__ccsmDaemonPortLoadIterations === 0` (debug counter pinned by `electron/preload/bridges/ccsmPty.ts` per ch03 §3 fallback poll). Why: the two-pronged assertion directly gates Option C correctness — a silent regression to Option A behaviour (poll succeeds at iteration N>0) is caught by the counter; a regression that adds latency without poll iterations is caught by the wall-clock bound. | total case **≤5s**                    |
+| `sigkill-reattach`                | harness-real-cli   | **Set B (informational, v0.3)** | v0.3 scope = v0.2 already-shipping attach-replay assertions pass (basic resume after SIGKILL on the daemon-port substrate). **NO new behaviour assertion in v0.3** (no TTL / cap / cwd-mismatch / eviction assertions — those are v0.4 per [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7). v0.4 candidate for Set A promotion. | **n/a in v0.3** (Set B informational; no budget pinned per CF-3 — the v0.4 promotion PR pins budget when the case becomes a release-blocker) |
+| `loadstate-roundtrip`             | harness-ui         | Set A             | `await window.ccsm.saveState('k','v'); await window.ccsm.loadState('k') === 'v'`. | total case **≤3s**                    |
 
 **Why each**:
 

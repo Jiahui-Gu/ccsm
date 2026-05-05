@@ -79,6 +79,38 @@ launch when:
 - TerminalPane mounts the host unconditionally (this section §1)
 - xterm singleton pins `__ccsmTerm` after `open()` (this section §1)
 
+### MUST UT — TerminalPane unconditional host (R5 testability lever)
+
+`tests/components/TerminalPane.test.tsx` (**NEW** — file does NOT exist
+at HEAD `5d0c5375`; verified `ls tests/components/` and `ls
+tests/terminal/`. The conventional path matches `src/components/TerminalPane.tsx`,
+NOT `tests/terminal/`.) MUST land in the same PR as the production fix
+to §1, with React Testing Library, covering exactly these three cases:
+
+1. **`claudeAvailable: false`** — render `<TerminalPane sid="s1" />`
+   with store state `{ claudeAvailable: false }`. Assert
+   `getByTestId('terminal-host')` resolves; the host element carries
+   `data-sid="s1"`. The Retry button (claude-missing affordance) is a
+   CHILD of the host element (`getByTestId('terminal-host').contains(retryBtn)`),
+   NOT in lieu of it. Cite v0.2 baseline at `35b08d15^` per §1
+   "R1 baseline-cite (MUST)" — if v0.2 swaps host for a separate error
+   screen, mirror that DOM topology and assert the stable `data-testid`
+   on whichever element v0.2 actually mounts.
+2. **`claudeAvailable: true, exitKind: 'crashed'`** — same; the
+   crashed-state Retry / restart child is INSIDE host. `getByTestId('terminal-host')`
+   never throws.
+3. **`claudeAvailable: true, kind: 'idle'`** — same; the xterm
+   container child is INSIDE host. `getByTestId('terminal-host')` never
+   throws.
+
+**Why MUST**: the unconditional-host property is the single
+most-easily-regressed property in the entire spec. Any future React
+change to TerminalPane that adds an early `if (!claudeAvailable) return null`
+silently re-introduces S5 (chapter 01 §"Symptom catalog"). The harness
+`terminal-pane-mounted` case is a 60s+ signal on CI; the UT above is a
+~100ms signal on every commit. Both are required; the harness is
+acceptance, the UT is regression test.
+
 ## 2. SSE event delivery
 
 `electron/preload/bridges/ccsmPty.ts:84-146` opens an `EventSource`
@@ -160,10 +192,91 @@ daemon, bound the port, parsed the `PORT=<n>` line.
 
 ### Required contract
 
-The 5s budget MUST be replaced with a "wait until first call" model
-that has NO upper bound on the wait, but a watchdog that surfaces a
-stuck daemon to the renderer as a typed error after a generous
-threshold (e.g. 30s) so users / tests don't hang indefinitely.
+The 5s budget MUST be replaced — Option C below makes the daemon port
+available BEFORE the renderer runs, so the per-RPC poll becomes a
+fallback (≤10 iterations, surfaces as typed error if exhausted) rather
+than the primary readiness mechanism. The ready-signal + timeout +
+error-handling contract for `spawnDaemon()` itself is the load-bearing
+piece and is pinned below; it is intentionally listed BEFORE the Option
+A/B/C choice so the decision section is self-contained.
+
+#### `spawnDaemon()` ready signal (MUST, R5 testability)
+
+`spawnDaemon()` resolves iff ALL of the following hold:
+
+1. Daemon child process spawned successfully (no `ENOENT` / `EACCES` /
+   spawn-syscall failure).
+2. Daemon stdout emitted exactly one line matching the regex
+   `^PORT=(\d+)$` (anchored, single capture). Stdout lines NOT matching
+   this regex MUST be ignored (forwarded to electron stderr per ch03 §6
+   logging) but MUST NOT resolve the promise.
+3. The parsed port number is in the inclusive range `[1024, 65535]`
+   (ephemeral / user range; daemon never binds to privileged
+   `[1, 1023]`).
+
+Resolves to `{ port: <n>, pid: <n> }`. Rejects with a typed `Error`
+(`code` ∈ `'spawn_failed' | 'malformed_port' | 'stdout_eof' |
+'child_exit_before_port' | 'startup_timeout'`) on any of: spawn
+failure, stdout EOF before PORT line, malformed PORT line, daemon
+child exit before PORT line, startup timeout (next subsection).
+
+**Why pinned**: a future refactor that resolves `spawnDaemon` on
+`child.spawn()` returning (process started but port not bound) silently
+collapses Option C's invariant. Pinning the regex + range as the
+contract makes the regression catchable at UT tier.
+
+#### 10s startup timeout (MUST, R5 testability)
+
+`spawnDaemon()` MUST reject with `code: 'startup_timeout'` if no
+matching `PORT=` line arrives within **10 seconds** of `child_process.spawn()`
+returning. The timer starts at spawn-call return, not at
+`child.on('spawn')` (some platforms delay the `spawn` event under
+load); the goal is wall-clock-bounded user-visible startup.
+
+The 10s value is a hard upper bound for any reasonable cold spawn on
+the supported platforms (Win / macOS / Linux). If a future platform
+proves to need >10s, the value is a per-platform spec edit, not a
+silent extension.
+
+#### Spawn-failure error handling (MUST)
+
+Caller (`electron/main.ts`) MUST handle `spawnDaemon()` rejection by:
+
+1. Surfacing a **fatal native Electron error dialog** (`dialog.showErrorBox`)
+   with the rejection `code` + the daemon's last stderr line (truncated
+   to 500 chars).
+2. Calling `app.exit(<non-zero>)` — clean exit, no `process.exit` mid-event-loop.
+3. **NOT** retrying `spawnDaemon` (that retry is owned by §3 "Spawn
+   failure path" below and applies to the port-collision case ONLY).
+4. **NOT** proceeding into `createWindow()`. A daemon-less window
+   violates the Option C contract and is worse for the user than no
+   window.
+
+Auto-restart loops are explicitly v0.4 reliability scope (see §7 +
+chapter 00 §3.7).
+
+#### MUST UT — `electron/__tests__/daemon-spawner.test.ts` (R5 testability)
+
+`electron/__tests__/daemon-spawner.test.ts` (**NEW** — file does NOT
+exist at HEAD `5d0c5375`; verified `ls electron/__tests__/`. Mock the
+child process via `vi.mock('node:child_process', ...)` stubbing
+`spawn`.) MUST cover exactly these four cases:
+
+1. **PORT-line happy path** — child stdout emits `"PORT=12345\n"`;
+   `spawnDaemon()` resolves to `{ port: 12345, pid }` within fake-time
+   <10s.
+2. **Malformed PORT line rejects** — child stdout emits `"PORT=abc\n"`
+   or `"PORT=80\n"` (privileged range) or `"PORT=99999\n"` (out of
+   range); `spawnDaemon()` rejects with `code: 'malformed_port'`.
+3. **stdout-EOF rejects** — child stdout closes without PORT line
+   (e.g. daemon binary prints nothing then exits); `spawnDaemon()`
+   rejects with `code: 'child_exit_before_port'` or `'stdout_eof'`.
+4. **10s timeout rejects** — child stdout never emits; advance fake
+   timers to 10s + 1ms; `spawnDaemon()` rejects with `code: 'startup_timeout'`.
+
+Each case asserts the rejection is a typed `Error` with the expected
+`code`, NOT a generic string error. Use `vi.useFakeTimers()` for the
+timeout case.
 
 #### Cold-spawn budget (measured)
 
@@ -421,6 +534,28 @@ real, UT-covered, Connect-roundtripped in v0.3.
   equivalent) calls this on app boot; the result drives the
   TerminalPane "Retry" UI when false. Set A harness case
   `terminal-pane-mounted` indirectly covers the true path.
+
+### Connect-roundtrip harness cases (Set A — three dedicated cases per RPC)
+
+The iron rule "real impl + UT + Connect-roundtrip per RPC in v0.3"
+requires a DIRECT harness-tier roundtrip per RPC, not indirect coverage
+("`terminal-pane-mounted` indirectly covers" is INSUFFICIENT — a
+fixer regressing `checkClaudeAvailable`'s wire shape can leave the
+indirect signal green). The "Connect-roundtrip" lines in each RPC
+subsection above are superseded by the Set A cases below; chapter 04
+§4 lists their budgets.
+
+| Case id                                | Harness            | Set | Asserts                                                                                                              |
+|----------------------------------------|--------------------|-----|----------------------------------------------------------------------------------------------------------------------|
+| `pty-input-roundtrip`                  | harness-real-cli   | A   | `await window.ccsmPty.input(sid, 'echo hi\r')` resolves `{ ok: true }`; a `pty:data` event fires within 1s with payload containing `"hi"`. |
+| `pty-resize-roundtrip`                 | harness-ui         | A   | `await window.ccsmPty.resize(sid, 80, 24)` resolves `{ ok: true }`; daemon-side `resizePtySession` was called with `(sid, 80, 24)` (verify via debug RPC or pty fake hook). |
+| `pty-claude-available-roundtrip`       | harness-ui         | A   | `await window.ccsmPty.checkClaudeAvailable({ force: true })` resolves a `{ available: boolean, path?: string, reason?: string }` shape (assert key set, type of `available`); zero indirection. |
+
+**Why dedicated cases**: each is ~15 lines of harness code, runs in
+<5s, and pins the RPC contract directly. Indirect coverage was the
+exact failure mode chapter 01 §"Symptom catalog" S1 hit during wave-2-A
+(`pty:input` regressed; `terminal-pane-mounted` stayed green because
+its assertion was upstream of the RPC).
 
 ### Anti-stub rule
 

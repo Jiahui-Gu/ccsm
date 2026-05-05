@@ -101,8 +101,13 @@ point at the wrong one.
 **Fix B**: there MUST be exactly one `useStore` symbol exported from
 exactly one path (`src/stores/store.ts`). Any sibling re-export MUST
 re-export the SAME identifier (`export { useStore } from './store'`).
-The fixer CHAPTER 02 implementer MUST `grep -RIn "create<.*Store" src/`
-and assert exactly one zustand `create(...)` call for the app store.
+A one-time grep at PR-2 land time is INSUFFICIENT — a future fixer
+adding a second `create<...>()` call must be caught at CI tier.
+**MUST UT (R5 testability lever)**: add `tests/stores/single-instance.test.ts`
+(NEW) — a Vitest test that globs `src/stores/**/*.ts`, scans for
+`\bcreate\s*<[^>]*>\s*\(` (zustand creator pattern), and asserts the
+match count equals exactly 1. CI catches the regression; manual
+review never has to remember.
 
 **Why**: a duplicate store is the silent-failure mode where harness
 seeds state into instance-A and the renderer reads from instance-B —
@@ -188,8 +193,21 @@ JSON.stringifies before calling).
 The HTTP route `/api/data/get` and `/api/data/set` already live in
 `daemon/api/data.ts` (per wave-2-A). The fixer MUST verify those routes
 return the wire shape above, and add UT in `daemon/api/__tests__/data.test.ts`
-covering: `get(missing) → null`, `get(set value) → that value`,
-`set(empty key) → 400 bad_request`.
+(**NEW directory + file** — the `daemon/api/__tests__/` subdir does not
+yet exist at HEAD; the PR creates it implicitly) covering:
+
+- `get(missing) → null`
+- `get(set value) → that value`
+- `set(empty key) → 400 bad_request`
+- **Encoded keys**: `get`/`set` with key containing `&` / `?` / `#` /
+  `%` (URL-special characters that MUST round-trip via
+  `encodeURIComponent`) succeeds; the persisted value is byte-equal to
+  the input.
+- **Unicode keys**: `get`/`set` with key `'theme.zh-CN'` round-trips
+  identically.
+- **Large values**: `set` with value > 100 KiB succeeds (or rejects
+  with a typed `value_too_large` token if a cap is introduced — v0.3
+  preserves v0.2 acceptance unless an explicit cap is RFC'd).
 
 ### Migration policy
 
@@ -264,6 +282,16 @@ sequenceDiagram
      If hydrate sets the same value, no re-apply runs (it's React
      correct, not a bug); ensure `apply()` is called once on initial
      mount regardless.
+4. **I-5**: cold paint MUST issue **exactly one** `window.ccsm.loadState(STATE_KEY)`
+   call. The mermaid diagram above pins the singular call as a contract,
+   not just current behaviour. **MUST UT (R5 testability lever)**: the
+   regression test for I-5 lives in `tests/stores/persist.test.ts`
+   (NEW per §3 above) — extend it with a case that mocks
+   `window.ccsm.loadState` as a `vi.fn()` spy, runs the cold-paint
+   hydration through `persist.ts`, and asserts `spy.mock.calls.length === 1`.
+   Why: a future fixer adding a second `loadState` (e.g. a sibling-key
+   read) on the cold path doubles the renderer ↔ daemon round-trip and
+   regresses the cold-launch budget; a UT pins "one" cheaply.
 
 ### `__ccsmHydrationTrace` shape (extended)
 
@@ -299,7 +327,8 @@ but `effective` was something other than `'dark' | 'light'`. Audit
 slips through; if found, fix to project to one of `'dark'|'light'`
 with `osPrefersDark` as the tiebreak.
 
-The fixer MUST add a unit test in `tests/app-effects/useThemeEffect.test.tsx`
+The fixer MUST extend the existing `tests/app-effects/useThemeEffect.test.tsx`
+(EXTEND — file already exists; verified at HEAD `5d0c5375`)
 covering all 6 input combinations
 (`{light,dark,system} × {osPrefersDark:true,false}`), each asserting
 exactly one of `dark`/`theme-light` is set, and `data-theme` reflects
@@ -314,6 +343,27 @@ Once HP-2 is fixed, the `loadState` override at `harness-ui.mjs:1165`
 works again, the slow-loadState window opens, the
 MutationObserver in the case observes the sidebar skeleton, and the
 case passes. No design change needed beyond verification.
+
+### Required UT levers (R5 testability map for §4 invariants)
+
+Each invariant in §4 above has the following UT-tier guard. The map
+makes "NEW vs EXTEND" status explicit so the fixer does not
+mis-classify (verified at HEAD `5d0c5375`):
+
+| Invariant | UT file | NEW / EXTEND | Asserts |
+|-----------|---------|--------------|---------|
+| I-1 (`__ccsmStore` exists by first render commit) | `tests/stores/store-eval-order.test.ts` | **NEW** | After `await import('src/stores/store')`, `(globalThis as any).__ccsmStore === useStore` synchronously; assignment runs before any awaited callback. |
+| I-2 (`renderedAt < hydrateDoneAt`) | (no UT — pure timing; covered by harness `startup-paints-before-hydrate`) | — | Integration-only. |
+| I-3a (theme always projects to `dark` or `theme-light`) | `tests/app-effects/useThemeEffect.test.tsx` | **EXTEND** (file exists at HEAD `5d0c5375`) | All 6 of `{light, dark, system} × {osPrefersDark: true, false}` produce exactly one of `<html>.dark` / `<html>.theme-light`; never neither, never both; `data-theme` attribute matches. |
+| I-3b (theme re-applies on persisted hydrate) | `tests/app-effects/useThemeEffect.test.tsx` | **EXTEND** (same file as I-3a) | When persisted hydrate sets a different `theme` value, `useThemeEffect` re-applies; when same value, `apply()` ran at least once on initial mount. |
+| I-5 (exactly one cold-paint `loadState` call) | `tests/stores/persist.test.ts` | **NEW** (per §3 above) | Spy on `window.ccsm.loadState`, run cold-paint hydration through `persist.ts`, assert `spy.mock.calls.length === 1`. |
+| §5 initial-state coverage | `tests/stores/initialState.test.ts` | **NEW** | Every field used in App.tsx first paint exists; `hydrated === false` pre-loadPersisted; top-level keys snapshot pinned. |
+
+**MUST**: each UT in the table above MUST land in the SAME PR as its
+corresponding production fix — landing the fix without the UT
+silently re-creates the regression-without-guard pattern that
+chapter 01 §"Symptom catalog" identifies as the root cause of S3 / S5
+recurrence post wave-2-A.
 
 ## 5. Initial state safety
 
