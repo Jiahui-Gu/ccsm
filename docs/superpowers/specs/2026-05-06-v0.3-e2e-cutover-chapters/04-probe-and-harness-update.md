@@ -182,8 +182,15 @@ Candidate Set A list (post-fix):
 | Harness            | Cases (Set A)                                                                                                               |
 |--------------------|------------------------------------------------------------------------------------------------------------------------------|
 | `harness-ui`       | sidebar-align, settings-open, settings-updates-pane, titlebar, tray, close-dialog-is-native, theme-toggle, import-empty-groups, rename, move-to-group-excludes-own-group, sidebar-long-name-truncates, startup-paints-before-hydrate, terminal-pane-mounted, cap-skip-launch-bundle-shape |
-| `harness-real-cli` | new-session-chat, new-session-focus-cli, alt-screen-fits-visible-viewport, session-rename-writes-jsonl, session-title-syncs-from-jsonl, attach-replay-from-headless-buffer, sigkill-reattach (NEW — author proposes adding) |
+| `harness-real-cli` | new-session-chat, new-session-focus-cli, alt-screen-fits-visible-viewport, session-rename-writes-jsonl, session-title-syncs-from-jsonl, attach-replay-from-headless-buffer |
 | `harness-dnd`      | dnd                                                                                                                          |
+
+**Set A scope (R1 strict, manager decision round 1)**: v0.3 Set A contains
+only cases that were already green at the v0.2 baseline (`35b08d15^`)
+plus the cases needed to verify wave-2 cutover did not regress them. The
+NEW `sigkill-reattach` harness case (chapter 04 §4 below) is **Set B
+informational in v0.3**; promotion into Set A is a v0.4 candidate per
+[03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 F-4.
 
 (The harness-real-cli list is partial — chapter 04 §1 reviewer pass
 will fill in the full inventory.)
@@ -209,18 +216,21 @@ harness; reviewer to verify).
 The following cases SHOULD exist post-repair (chapter 05 PRs may add
 them):
 
-| Case id                           | Harness            | Asserts                                                              |
-|-----------------------------------|--------------------|----------------------------------------------------------------------|
-| `daemon-port-ready-before-render` | harness-ui         | `window.ccsmPty` works on the very first RPC (no 5s polling waste).  |
-| `sigkill-reattach`                | harness-real-cli   | Full HP-8 flow: spawn → write → SIGKILL → spawn(same sid) → attach → snapshot replay. |
-| `loadstate-roundtrip`             | harness-ui         | `await window.ccsm.saveState('k','v'); await window.ccsm.loadState('k') === 'v'`. |
+| Case id                           | Harness            | Set (v0.3)        | Asserts                                                              |
+|-----------------------------------|--------------------|-------------------|----------------------------------------------------------------------|
+| `daemon-port-ready-before-render` | harness-ui         | Set A             | `window.ccsmPty` works on the very first RPC (no 5s polling waste).  |
+| `sigkill-reattach`                | harness-real-cli   | **Set B (informational, v0.3)** | v0.3 scope = v0.2 already-shipping attach-replay assertions pass (basic resume after SIGKILL on the daemon-port substrate). **NO new behaviour assertion in v0.3** (no TTL / cap / cwd-mismatch / eviction assertions — those are v0.4 per [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7). v0.4 candidate for Set A promotion. |
+| `loadstate-roundtrip`             | harness-ui         | Set A             | `await window.ccsm.saveState('k','v'); await window.ccsm.loadState('k') === 'v'`. |
 
 **Why each**:
 
 - `daemon-port-ready-before-render` regression-tests the cold-launch
   contract.
-- `sigkill-reattach` is the only e2e signal for HP-8 once the daemon-port
-  failure clears.
+- `sigkill-reattach` (v0.3 = Set B informational) is the e2e signal that
+  the v0.2 daemon-port attach-replay path is restored after wave-2
+  cutover. v0.3 does NOT promote this case to Set A or assert new
+  reliability semantics on it — those live in v0.4 per
+  [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 (F-4).
 - `loadstate-roundtrip` is the cheapest e2e regression test for HP-2
   silent removal.
 

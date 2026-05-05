@@ -210,7 +210,24 @@ For each wave-2 hot path, the audit records:
   (`attach-replay-from-headless-buffer`) covers this and it currently
   errors out at the daemon-port boundary (S2). Once HP-3 is fixed,
   whether this path actually works end-to-end is an unknown.
-- **Verdict**: **FIX** (mandatory v0.3 per iron rule §3.4).
+- **Verdict**: **FIX (scope-split, R1 strict)**.
+  - **(a) v0.3 must-fix** = restore the v0.2 daemon-port already-shipping
+    attach-replay path. Concretely: once HP-3 unblocks the daemon-port
+    boundary, the renderer's reattach-after-pty:exit flow MUST behave as
+    it did at `35b08d15^` — buffer replay is served by daemon's existing
+    v0.2 snapshot path (unchanged), no new product rules introduced.
+  - **(b) v0.4 defer** = NEW reliability semantics that did not exist in
+    v0.2 — explicitly: 60s snapshot TTL pin, cwd-mismatch → discard
+    snapshot policy, new `sigkill-reattach` harness case promotion into
+    Set A (v0.3 keeps Set B informational), and chapter 05 G10 release
+    gate lock on this case being green. See
+    [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 for the full defer
+    list and chapter 00 §3.4 for the iron-rule wording.
+  - Rationale: v0.3 is a refactor (chapter 00 §2 "Out of scope: any
+    change to product features"). Pinning new TTL / cwd / cap semantics
+    or making sigkill-reattach a release-blocker = NEW product rules
+    and inflates v0.3 scope. Manager decision (round 1): R1
+    strict-preservation派 prevails.
 - **Owner chapter**: [03-ptyhost-wiring](./03-ptyhost-wiring.md) §4.
 
 ### HP-9 — Three RPCs (`SendInput / Resize / CheckClaudeAvailable`)

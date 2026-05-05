@@ -20,7 +20,7 @@ permitted iff ALL of the following hold:
 | G7 | `harness-dnd` Set A subset is green for two consecutive runs                                          | `.github/workflows/e2e.yml` job          |
 | G8 | Vitest skip total = 0 (`it.skip / test.skip / describe.skip / xit / xdescribe` in `tests/ src/ daemon/ electron/`); harness skip-flag count (`skipLaunch / requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly` set true on a case) ≤ ch04 §1.1 baseline (currently 1: `cap-skip-launch-bundle-shape` KEEP) | `grep -rEn "(it\|test\|describe)\.skip\(\|\bxit\b\|\bxdescribe\b" tests/ src/ daemon/ electron/` returns 0; harness flag count diff'd against [04-probe-and-harness-update](./04-probe-and-harness-update.md) §1.1 |
 | G9 | NO transport regression (no preload bridge reverted to IPC for a wave-2 endpoint) AND no daemon HTTP listen widening (cross-ref [ch03 §3](./03-ptyhost-wiring.md#loopback-bind-invariant) + [ch02 §1](./02-store-and-preload-surface.md#1-surface-catalog-what-lives-on-window) footer) | grep diff for `ipcRenderer.invoke`; AND `grep -rEn "createServer\|\.listen\(.*0\.0\.0\.0\|\.listen\(.*'::" daemon/ src/ electron/` MUST return 0 lines outside test fixtures |
-| G10| sigkill-reattach harness case (NEW per chapter 04 §4) is green                                        | `harness-real-cli` Set A                 |
+| G10| sigkill-reattach v0.2 baseline maintained green: the v0.2 already-shipping `attach-replay-from-headless-buffer` Set A case stays green (smoke test only). v0.3 does NOT lock the NEW `sigkill-reattach` harness case (Set B informational per chapter 04 §3) or any new reliability semantics (TTL / cap / cwd / eviction) as a release gate — those gates live in v0.4 per [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 (F-4 / F-6). | `harness-real-cli` Set A `attach-replay-from-headless-buffer` green |
 
 ## 2. PR DAG
 
@@ -156,12 +156,30 @@ Legend:
   `daemon/ptyHost/lifecycle.ts`, `daemon/api/pty.ts` (SSE
   multiplexer hardening), `daemon/ptyHost/__tests__/dataFanout.test.ts`,
   `daemon/ptyHost/__tests__/lifecycle.test.ts` (extend),
-  `scripts/harness-real-cli.mjs` (NEW `sigkill-reattach` case).
-- **Acceptance**: NEW `sigkill-reattach` harness case green; UTs
-  cover guarantees G-1 / G-2 / G-3 / G-4 from chapter 03 §2.
+  `scripts/harness-real-cli.mjs` (NEW `sigkill-reattach` case in **Set B
+  informational** per chapter 04 §3 / §4).
+- **Acceptance (v0.3, R1 strict — manager decision round 1)**:
+  - **(a) v0.2 baseline restoration**: the v0.2 already-shipping
+    `attach-replay-from-headless-buffer` Set A case is green again on
+    the post-cutover daemon-port substrate (HP-3 prereq), exercising
+    daemon's existing v0.2 snapshot path unchanged. UTs cover SSE
+    guarantees G-1 / G-2 / G-3 / G-4 from chapter 03 §2 (these are
+    multi-subscriber correctness, NOT new sigkill semantics).
+  - **(b) NEW `sigkill-reattach` harness case** is added to
+    `scripts/harness-real-cli.mjs` and runs as **Set B informational**
+    in v0.3 — its result MUST NOT block PR-6 merge or v0.3 release.
+    No new TTL / cap / cwd / eviction assertions in v0.3.
+- **v0.4 follow-up (NOT in this PR)**: G-1..G-4 of the new sigkill
+  reliability strategy (snapshot TTL pin, buffer cap, ring-buffer
+  truncation, cwd-mismatch policy, dedup, 4 boundary UTs, Set A
+  promotion, G10 release-gate lock) are deferred per
+  [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 F-1..F-6. Placeholder
+  v0.4 PR index: `<v0.4-reliability-PR-TBD>` (sigkill hardening),
+  `<v0.4-e2e-PR-TBD>` (Set A promotion), `<v0.4-release-slicing-PR-TBD>`
+  (G10 gate lock).
 - **Risk**: medium — daemon lifecycle edits; covered by UTs.
 - **blockedBy**: PR-3 (port handshake), PR-5 (real RPCs landed).
-- **Subject seed**: `[T1.1] SSE event pipe + sigkill-reattach snapshot replay (HP-4 R3, HP-8)`
+- **Subject seed**: `[T1.1] SSE event pipe + sigkill-reattach v0.2 baseline restoration (HP-4 R3, HP-8)`
 
 ### PR-7 — theme effect post-hydrate (HP-5)
 

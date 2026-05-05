@@ -287,7 +287,23 @@ footer note.
 
 ## 4. sigkill-reattach (HP-8)
 
-### Required contract
+### v0.3 scope (R1 strict, manager decision round 1)
+
+**v0.3 = restore the v0.2 daemon-port already-shipping attach-replay path
+to green; nothing more.** Once HP-3 unblocks the daemon-port boundary, the
+renderer's reattach-after-pty:exit flow MUST behave as it did at
+`35b08d15^`. Buffer replay is served by daemon's **existing v0.2 snapshot
+behaviour (unchanged)** — no new TTL / cap / eviction / cwd semantics are
+introduced in v0.3. v0.3 is a refactor (chapter 00 §2); introducing new
+product rules on this path would expand scope.
+
+**Explicitly out of v0.3** (see §7 below for the consolidated defer list):
+60s snapshot TTL pin, buffer cap (1MB/sid), ring-buffer truncation +
+eviction log, cwd-mismatch → discard snapshot rule, NEW
+`sigkill-reattach` harness case in Set A, and chapter 05 G10 release-gate
+lock.
+
+### Required contract (v0.2 behaviour restoration only)
 
 After:
 
@@ -298,34 +314,29 @@ After:
 4. renderer issues `ccsmPty.spawn({ sid: X, cwd: <same> })`
 5. renderer issues `ccsmPty.attach(X)`
 
-The daemon MUST:
+The daemon MUST behave exactly as it did at `35b08d15^`:
 
-- accept the spawn for the SAME sid (re-use is allowed, NOT an error).
-- accept the attach and return `{ snapshot: <last buffer of dead pty>,
-  cols, rows, pid: <new pid> }` if the renderer's intent is to see the
-  pre-kill output replay.
+- accept the spawn for the SAME sid (re-use is allowed, NOT an error) —
+  v0.2 already shipped this.
+- accept the attach and return the buffer snapshot via daemon's existing
+  v0.2 `getBufferSnapshot` path; no new response shape.
 - emit fresh `pty:data` events for the new pty.
 
-### Implementation responsibilities
+### Implementation responsibilities (v0.3)
 
-- `daemon/ptyHost/lifecycle.ts` MUST retain the pre-kill buffer for the
-  sid until either (a) the renderer issues `detach` and never reattaches
-  before a TTL (e.g. 60s), or (b) the renderer issues a fresh `spawn`
-  with the same sid (in which case the snapshot is consumed by the
-  attach response and discarded).
-- `daemon/ptyHost/__tests__/lifecycle.test.ts` MUST have a case for
-  this exact flow.
-- The `attach-replay-from-headless-buffer` harness case is the e2e
-  signal.
+- Verify (do not modify) that `daemon/ptyHost/lifecycle.ts` retains the
+  pre-kill buffer using the v0.2 mechanism. If wave-2 cutover changed the
+  retention behaviour, restore the v0.2 behaviour; do NOT introduce a new
+  TTL / cap / eviction policy.
+- The `attach-replay-from-headless-buffer` harness case (already in
+  Set A pre-cutover) is the e2e signal for this restoration. The NEW
+  `sigkill-reattach` case proposed for chapter 04 §4 stays Set B
+  informational in v0.3.
 
-### Edge case
-
-If the renderer's `spawn` carries a different `cwd` than the original,
-the daemon MUST treat it as a NEW pty (snapshot discarded). Document
-this in `daemon/api/pty.ts` doc-comment.
-
-**Why**: avoids a confusing "I changed cwd but my old buffer is still
-showing" UX bug.
+**Why**: this section's job in v0.3 is to make sure the v0.2 attach-replay
+path is green again, not to harden it further. Hardening (TTL / cap /
+eviction / new UTs / new harness case promotion) is the v0.4 reliability
+workstream.
 
 ## 5. Three real RPCs (HP-9)
 
@@ -418,3 +429,24 @@ to UI copy.
   per-sid model is simple and the bug isn't here.
 - Daemon process supervision (auto-restart on crash): v0.4 reliability
   workstream.
+
+### sigkill-reattach v0.4 follow-up (defer list)
+
+Per §4 (R1 strict, manager decision round 1), v0.3 only restores the
+v0.2 daemon-port attach-replay path. The following sigkill-reattach
+items are explicitly **deferred to v0.4**:
+
+| #     | Item                                                                                                  | v0.4 owner / placeholder                |
+|-------|-------------------------------------------------------------------------------------------------------|------------------------------------------|
+| F-1   | Pin snapshot TTL = 60s MUST (currently relies on v0.2 implicit behaviour)                              | v0.4 reliability spec PR (TBD)           |
+| F-2   | Pin per-sid buffer cap (1MB) + ring-buffer truncation + structured eviction log line                   | v0.4 reliability spec PR (TBD)           |
+| F-3   | cwd-mismatch on respawn → discard snapshot policy (NEW product rule, not in v0.2)                      | v0.4 reliability spec PR (TBD)           |
+| F-4   | NEW `sigkill-reattach` harness case promoted from Set B informational into Set A release-blocker       | v0.4 e2e suite PR (TBD)                  |
+| F-5   | 4 boundary UTs in `daemon/ptyHost/__tests__/lifecycle.test.ts` (TTL elapsed → GC; elapsed → new snapshot; reattach pre-TTL → snapshot served; detach + immediate reattach → no race) using `vi.useFakeTimers()` | v0.4 reliability spec PR (TBD)           |
+| F-6   | Chapter 05 G10 release gate locking sigkill-reattach NEW case as ship criteria                         | v0.4 release-slicing spec PR (TBD)       |
+
+**Why deferred**: each item introduces a NEW product rule or NEW release
+criterion that v0.2 did not ship; v0.3 is a refactor and would inflate
+scope by adopting them. R1 strict-preservation派 prevails (round 1
+manager decision); the v0.4 reliability spec is the right home for these
+items once v0.3 ships.

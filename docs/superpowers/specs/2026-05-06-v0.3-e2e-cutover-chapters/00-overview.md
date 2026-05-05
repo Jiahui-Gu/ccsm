@@ -104,10 +104,27 @@ These constrain every fix proposed in chapters 02–05.
    absolute-green; Set B regressions that surface during repair are
    logged in [05-release-slicing-and-dag](./05-release-slicing-and-dag.md)
    §4 but do not block.
-4. **sigkill-reattach is a v0.3 must-fix**. The reattach-from-snapshot
-   path is currently exercised only via `attach-replay-from-headless-buffer`
-   which is broken at the daemon-port boundary; once the boundary is
-   fixed, the snapshot/replay UT path itself must land too.
+4. **sigkill-reattach is a v0.3 must-fix — scope = v0.2 baseline restoration only**.
+   The reattach-from-snapshot path is currently exercised only via
+   `attach-replay-from-headless-buffer` which is broken at the daemon-port
+   boundary; once the boundary is fixed, the v0.2 daemon-port already-shipping
+   attach-replay path MUST be restored to green. v0.3 scope = "restore the
+   attach-replay code path that v0.2 already shipped on the daemon-port
+   substrate; buffer replay is served by daemon's existing v0.2 snapshot
+   behaviour (unchanged)." v0.3 does NOT introduce new product semantics on
+   this path. Explicit **v0.4 defer list** for sigkill-reattach (NOT v0.3
+   work; see [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7):
+   - 60s snapshot TTL pin + buffer-cap (1MB/sid) + ring-buffer eviction.
+   - cwd-mismatch → discard snapshot policy.
+   - NEW `sigkill-reattach` harness case in Set A (v0.3 keeps it Set B
+     informational; promotion to Set A is a v0.4 candidate).
+   - Release gate `G10` lock on sigkill-reattach being green.
+   Why this split: v0.3 is a refactor (per §3.2 / §3 rule "no product
+   feature change"); pinning new TTL / cwd / cap semantics or making
+   sigkill-reattach a release-blocker = NEW product rules and would inflate
+   v0.3 scope. R1 strict-preservation派 (manager decision, round 1)
+   prevails — v0.3 ships when the v0.2 attach-replay path is green again,
+   not when new reliability semantics are pinned.
 5. **Three RPCs (`SendInput / Resize / CheckClaudeAvailable`) must be
    real implementations + UT + Connect-roundtrip** — no stubs, no
    "always-ok" returns. They are the smallest set the renderer cannot
