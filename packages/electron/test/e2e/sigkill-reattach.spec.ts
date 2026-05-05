@@ -1,3 +1,4 @@
+// [V0.4: real impl in #484, excluded from v0.3 PR e2e job — see Task #492]
 // T8.3 — Ship-gate (b): daemon survives Electron SIGKILL.
 //
 // Canonical path locked by design spec ch12 §4.2 (single source of truth):
