@@ -20,12 +20,51 @@
 //
 // Failure modes (best-effort, no fancy retry — the renderer surfaces a
 // "daemon failed to start" toast in the UI later):
-//   * spawn ENOENT → reject the ready promise.
-//   * exit before PORT line → reject the ready promise.
-//   * stdout PORT line malformed → reject the ready promise.
+//   * spawn ENOENT → reject the ready promise (kind: 'spawn-failed').
+//   * exit before PORT line → reject the ready promise (kind: 'early-exit').
+//   * stdout PORT line malformed → reject the ready promise (kind: 'bad-port-line').
+//   * READY_TIMEOUT_MS elapsed without PORT line → reject + SIGKILL child
+//     (kind: 'timeout'). Cold-launch budget is 500ms p95; 10s is the hard
+//     ceiling above which we declare the spawn dead and let the renderer
+//     surface a toast (PR #597 / spec §5.3.3 PR-3 Option C).
 
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
+
+/** Hard ceiling for the daemon's cold-launch ready signal. Cold-launch
+ *  budget under Option C is 500ms p95; 10s is the abort threshold above
+ *  which we kill the child and surface a typed error to the caller. */
+export const READY_TIMEOUT_MS = 10_000;
+
+/** Discriminated union of spawn-time failure reasons. Callers (main.ts,
+ *  preload bridge, future renderer toast) switch on `kind` instead of
+ *  string-matching the message. */
+export type DaemonSpawnFailureKind =
+  | 'spawn-failed' // spawn() itself failed (ENOENT, EACCES, etc.)
+  | 'early-exit' // child exited before printing PORT=<n>
+  | 'bad-port-line' // first stdout line wasn't `PORT=<valid integer>`
+  | 'timeout' // READY_TIMEOUT_MS elapsed with no PORT line
+  | 'no-pipes'; // spawn returned without stdout/stderr pipes
+
+/** Typed error thrown / rejected from spawnDaemon. Use `instanceof
+ *  DaemonSpawnError` + switch on `.kind` for handling. */
+export class DaemonSpawnError extends Error {
+  public readonly kind: DaemonSpawnFailureKind;
+  /** Original cause where applicable (spawn errno, exit code/signal, raw
+   *  stdout line). Stored loosely for log forwarding. */
+  public readonly detail: Record<string, unknown>;
+
+  constructor(
+    kind: DaemonSpawnFailureKind,
+    message: string,
+    detail: Record<string, unknown> = {},
+  ) {
+    super(`[daemon-spawner] ${message}`);
+    this.name = 'DaemonSpawnError';
+    this.kind = kind;
+    this.detail = detail;
+  }
+}
 
 let child: ChildProcess | null = null;
 let port: number | null = null;
@@ -80,13 +119,61 @@ export function spawnDaemon(): Promise<number> {
   const stderr = proc.stderr;
   if (!stdout || !stderr) {
     return Promise.reject(
-      new Error('[daemon-spawner] spawn returned no stdout/stderr pipes'),
+      new DaemonSpawnError(
+        'no-pipes',
+        'spawn returned no stdout/stderr pipes',
+      ),
     );
   }
 
   readyPromise = new Promise<number>((resolve, reject) => {
     let resolved = false;
     let stdoutBuf = '';
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+    const finishReject = (err: DaemonSpawnError) => {
+      if (resolved) return;
+      resolved = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      reject(err);
+    };
+    const finishResolve = (n: number) => {
+      if (resolved) return;
+      resolved = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      resolve(n);
+    };
+
+    // 10s ready-signal timeout (Option C). On fire we SIGKILL the child
+    // (SIGTERM may not be honored if the daemon is wedged in startup),
+    // null out module state, and reject with kind: 'timeout'.
+    timeoutHandle = setTimeout(() => {
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        /* best-effort */
+      }
+      child = null;
+      port = null;
+      finishReject(
+        new DaemonSpawnError(
+          'timeout',
+          `daemon did not emit PORT=<n> within ${READY_TIMEOUT_MS}ms`,
+          { timeoutMs: READY_TIMEOUT_MS },
+        ),
+      );
+    }, READY_TIMEOUT_MS);
+    // Don't keep the event loop alive for this timer — main process has
+    // its own lifecycle holders. unref() is a no-op if not supported.
+    if (typeof timeoutHandle.unref === 'function') {
+      timeoutHandle.unref();
+    }
 
     const onStdout = (chunk: Buffer) => {
       stdoutBuf += chunk.toString('utf8');
@@ -99,24 +186,27 @@ export function spawnDaemon(): Promise<number> {
       stdoutBuf = '';
       const m = /^PORT=(\d+)$/.exec(firstLine);
       if (!m) {
-        reject(
-          new Error(
-            `[daemon-spawner] expected first stdout line "PORT=<n>", got ${JSON.stringify(firstLine)}`,
+        finishReject(
+          new DaemonSpawnError(
+            'bad-port-line',
+            `expected first stdout line "PORT=<n>", got ${JSON.stringify(firstLine)}`,
+            { line: firstLine },
           ),
         );
         return;
       }
       const parsed = Number(m[1]);
       if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-        reject(
-          new Error(
-            `[daemon-spawner] invalid port from daemon: ${JSON.stringify(firstLine)}`,
+        finishReject(
+          new DaemonSpawnError(
+            'bad-port-line',
+            `invalid port from daemon: ${JSON.stringify(firstLine)}`,
+            { line: firstLine, parsed },
           ),
         );
         return;
       }
       port = parsed;
-      resolved = true;
       // Swap to a passthrough handler for any further stdout (logs).
       stdout.removeListener('data', onStdout);
       stdout.on('data', (b: Buffer) => {
@@ -126,7 +216,7 @@ export function spawnDaemon(): Promise<number> {
         process.stderr.write('[daemon stdout] ' + rest);
       }
       console.log(`[daemon-spawner] daemon ready on port ${parsed}`);
-      resolve(parsed);
+      finishResolve(parsed);
     };
     stdout.on('data', onStdout);
 
@@ -135,7 +225,11 @@ export function spawnDaemon(): Promise<number> {
     });
 
     proc.on('error', (err) => {
-      if (!resolved) reject(err);
+      finishReject(
+        new DaemonSpawnError('spawn-failed', err.message, {
+          cause: String(err),
+        }),
+      );
     });
 
     proc.on('exit', (code, signal) => {
@@ -145,13 +239,13 @@ export function spawnDaemon(): Promise<number> {
       child = null;
       port = null;
       // If we hadn't resolved yet, surface the early exit.
-      if (!resolved) {
-        reject(
-          new Error(
-            `[daemon-spawner] daemon exited before PORT line (code=${code} signal=${signal})`,
-          ),
-        );
-      }
+      finishReject(
+        new DaemonSpawnError(
+          'early-exit',
+          `daemon exited before PORT line (code=${code} signal=${signal})`,
+          { code, signal },
+        ),
+      );
     });
   });
 
@@ -177,4 +271,14 @@ export function killDaemon(): void {
   } catch {
     /* best-effort */
   }
+}
+
+/** Test-only: reset module-level state so unit tests can spawn fresh
+ *  daemons across cases without process re-import. Not exported through
+ *  any production import path — only `electron/__tests__/*.test.ts` uses
+ *  this. Idempotent. */
+export function __resetForTests(): void {
+  child = null;
+  port = null;
+  readyPromise = null;
 }
