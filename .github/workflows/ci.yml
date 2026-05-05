@@ -167,7 +167,7 @@ jobs:
         run: npm run lint:no-ipc
 
       - name: Lint (no worker_threads in pty-host) — ch15 §3 #25
-        run: pnpm lint:no-worker-threads
+        run: npm run lint:no-worker-threads
 
       - name: Typecheck
         run: npm run typecheck
