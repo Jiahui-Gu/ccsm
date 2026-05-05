@@ -57,7 +57,7 @@ import {
 
 import { createClients, type CcsmClients } from '../rpc/clients.js';
 import { ClientsProvider } from '../rpc/queries.js';
-import { installWindowCcsmPtyBridge } from './window-ccsm-pty-bridge.js';
+import { bindWindowCcsmPtyBridgeClients } from './window-ccsm-pty-bridge.js';
 import {
   ConnectionProvider,
   useConnection,
@@ -259,17 +259,22 @@ function ColdStartGate(props: {
     <DaemonNotRunningModal open={modal.open} onRetry={modal.onRetry} />
   );
 
-  // Task #464 / SHIP-GATE — install `window.ccsmPty.checkClaudeAvailable`
-  // against the typed Connect client as soon as the bundle exists.
-  // App.tsx's boot effect at `src/App.tsx:227` reads
-  // `window.ccsmPty.checkClaudeAvailable` directly (a pre-#215 call site
-  // that the v0.3 cutover has not migrated to `useClients()` yet); without
-  // this install, the optional chain returns `undefined` and the renderer
-  // unconditionally mounts ClaudeMissingGuide on first paint. See
-  // `./window-ccsm-pty-bridge.ts` for the full root-cause writeup.
+  // Task #464 / SHIP-GATE — bind the typed Connect client into the
+  // `window.ccsmPty.checkClaudeAvailable` polyfill once the bundle
+  // exists. The polyfill FUNCTION is installed synchronously at the
+  // renderer entry (`src/index.tsx` calls
+  // `installWindowCcsmPtyBridgeStub()` BEFORE `root.render()`), so by
+  // the time `App.tsx:227`'s probe `useEffect(deps=[])` fires on first
+  // mount, `window.ccsmPty.checkClaudeAvailable` is already a callable
+  // function — the optional chain returns truthy, the catch branch is
+  // never taken, ClaudeMissingGuide does not flash. The probe call
+  // internally awaits the `clientsReady` promise this bind resolves;
+  // the wait is invisible to the user (no UI flash, no setState to
+  // false → true thrash). See `./window-ccsm-pty-bridge.ts` header for
+  // the full round-1 → round-2 timing race writeup.
   React.useEffect(() => {
     if (clients !== null) {
-      installWindowCcsmPtyBridge(clients);
+      bindWindowCcsmPtyBridgeClients(clients);
     }
   }, [clients]);
 

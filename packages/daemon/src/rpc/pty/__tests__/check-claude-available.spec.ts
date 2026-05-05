@@ -71,6 +71,28 @@ describe('decideCheckClaudeAvailable', () => {
     });
     expect(runVersion).not.toHaveBeenCalled();
   });
+
+  it('threads `force=true` through to the resolver (round-2 cache bypass)', () => {
+    // Round-2 regression guard: ClaudeMissingGuide's Re-check button
+    // needs to bypass the daemon resolver's in-process cache (it caches
+    // both success AND null), otherwise post-launch installs are stuck.
+    const resolve = vi.fn((_opts?: { force?: boolean }) => '/bin/claude');
+    decideCheckClaudeAvailable({
+      resolve,
+      runVersion: () => '0.0.1',
+      force: true,
+    });
+    expect(resolve).toHaveBeenCalledWith({ force: true });
+  });
+
+  it('threads `force=false` (default) through to the resolver on the boot probe', () => {
+    const resolve = vi.fn((_opts?: { force?: boolean }) => '/bin/claude');
+    decideCheckClaudeAvailable({
+      resolve,
+      runVersion: () => '0.0.1',
+    });
+    expect(resolve).toHaveBeenCalledWith({ force: false });
+  });
 });
 
 describe('makeCheckClaudeAvailableHandler — through router transport', () => {
@@ -128,6 +150,20 @@ describe('makeCheckClaudeAvailableHandler — through router transport', () => {
     );
     expect(res.version).toBe('0.4.2');
     expect(res.errorCode).toBe('');
+  });
+
+  it('threads request.force into the resolver (round-2 wire path)', async () => {
+    const resolveClaude = vi.fn((_opts?: { force?: boolean }) => '/bin/claude');
+    const transport = makeBoundTransport({
+      resolveClaude,
+      runVersion: () => '0.0.1',
+    });
+    const client = createClient(PtyService, transport);
+    await client.checkClaudeAvailable({
+      meta: { requestId: 'rid-force', clientVersion: 't', clientSendUnixMs: 0n },
+      force: true,
+    });
+    expect(resolveClaude).toHaveBeenCalledWith({ force: true });
   });
 
   it('uses production defaults when deps are omitted (smoke)', async () => {

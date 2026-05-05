@@ -13,6 +13,21 @@ import './styles/global.css';
 // used by `<App/>` once #215 cuts call sites over from `window.ccsm*` to RPC.
 // See docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md ch08 §6.2.
 import { RendererBoot } from '@ccsm/electron/renderer/boot';
+// Task #464 / SHIP-GATE round-2 — install `window.ccsmPty.checkClaudeAvailable`
+// SYNCHRONOUSLY before `root.render()`. The polyfill function awaits an
+// internal `clientsReady` promise that `<RendererBoot>`'s `ColdStartGate`
+// resolves once the typed Connect bundle exists. This ordering matters:
+// `<App/>`'s boot probe `useEffect(deps=[])` at `src/App.tsx:227` runs on
+// first child commit BEFORE the parent gate's bind effect, and round-1's
+// install-inside-effect lost that race — the probe found
+// `window.ccsmPty === undefined`, set `claudeAvailable=false`, mounted
+// ClaudeMissingGuide before clients ever bound. With the stub installed
+// here at module evaluation time the function is callable from the very
+// first render commit; the await blocks the probe until clients are
+// ready, then resolves with the real daemon answer. See
+// `packages/electron/src/renderer/window-ccsm-pty-bridge.ts` header for
+// the full timing-race writeup.
+import { installWindowCcsmPtyBridgeStub } from '@ccsm/electron/renderer/window-ccsm-pty-bridge';
 
 // All knobs (DSN, environment, opt-out gating) live in the main process
 // init. The renderer SDK auto-discovers them via the IPC bridge that
@@ -40,6 +55,12 @@ window.addEventListener('beforeunload', () => {
 });
 
 const root = createRoot(document.getElementById('root')!);
+
+// Task #464 round-2: graft `window.ccsmPty.checkClaudeAvailable` onto
+// the renderer global BEFORE React mounts. See the import-site comment
+// above for why this is the SHIP-GATE fix vs. installing inside an
+// effect (which loses to App.tsx's child useEffect commit ordering).
+installWindowCcsmPtyBridgeStub();
 
 // perf/startup-render-gate: render IMMEDIATELY, then kick hydration in the
 // background. Previously the renderer awaited `hydrateStore()` (which

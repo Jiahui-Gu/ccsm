@@ -49,6 +49,10 @@
 //   5. N/A — see above.
 //
 // Forever-stable spec ref (proto pty.proto §6 / ch04 §3):
+//   message CheckClaudeAvailableRequest {
+//     RequestMeta meta = 1;
+//     bool force = 2;            // Task #464 round-2: bypass resolver cache (renderer recheck path)
+//   }
 //   message CheckClaudeAvailableResponse {
 //     RequestMeta meta = 1;
 //     bool available = 2;        // true iff resolveClaude() returned non-null
@@ -162,12 +166,12 @@ export type CheckClaudeAvailableVerdict = {
 };
 
 /**
- * Pure decider. Calls `ctx.resolve` (with the request's `force` flag
- * threaded through — proto request has no `force` field today, but the
- * renderer's recheck button passes `{ force: true }` to the WIRE-FACING
- * polyfill, which translates to a fresh resolver lookup; the daemon
- * always honors `force: false` here because the resolver's cache is
- * inside the same process, not exposed on the wire). When the resolver
+ * Pure decider. Calls `ctx.resolve({ force })` with the request's `force`
+ * flag threaded through (Task #464 round-2: proto field
+ * `CheckClaudeAvailableRequest.force` plumbs the renderer recheck signal
+ * to the daemon resolver so a user who installs claude post-launch can
+ * actually recover — pre-round-2 the resolver's cached `null` was sticky
+ * because the wire request had no force field). When the resolver
  * returns `null`, surfaces `error_code: "ENOENT"` so the renderer can
  * pick UI copy ("install claude" vs. "permission denied" — though the
  * permission case lands in v0.4; v0.3 only emits ENOENT or "").
@@ -180,15 +184,12 @@ export type CheckClaudeAvailableVerdict = {
 export function decideCheckClaudeAvailable(ctx: {
   readonly resolve: ResolveClaudeFn;
   readonly runVersion: RunVersionFn;
+  readonly force?: boolean;
 }): CheckClaudeAvailableVerdict {
-  // The proto request carries no flags today — see file header. The
-  // daemon resolver's `force` flag is plumbed via the renderer-side
-  // polyfill's `opts` arg (which calls into a renderer-only invalidator
-  // around the React Query cache); the daemon itself always serves the
-  // current resolver cache state. The renderer's "Re-check" button on
-  // ClaudeMissingGuide invalidates that cache before re-issuing, which
-  // is functionally equivalent to `force: true` from the user's POV.
-  const path = ctx.resolve();
+  // Round-2: thread `force` to the resolver. Default `false` so the
+  // first-paint probe enjoys the success cache; the renderer's recheck
+  // button explicitly passes `true` to bypass it.
+  const path = ctx.resolve({ force: ctx.force ?? false });
   if (path === null) {
     return {
       available: false,
@@ -222,7 +223,16 @@ export function makeCheckClaudeAvailableHandler(
     req: CheckClaudeAvailableRequest,
     _handlerContext: HandlerContext,
   ): CheckClaudeAvailableResponse => {
-    const verdict = decideCheckClaudeAvailable({ resolve, runVersion });
+    // Round-2: thread `req.force` (proto field 2) into the decider so the
+    // resolver bypasses its in-process cache when the renderer recheck
+    // button asks for it. Generated proto type defaults `force` to
+    // `false` for unset wire bytes, so backward-compatible with pre-#464
+    // callers that don't set the field.
+    const verdict = decideCheckClaudeAvailable({
+      resolve,
+      runVersion,
+      force: req.force,
+    });
     return create(CheckClaudeAvailableResponseSchema, {
       meta: create(RequestMetaSchema, {
         requestId: req.meta?.requestId ?? '',

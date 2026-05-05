@@ -144,7 +144,19 @@ message ResizeResponse { RequestMeta meta = 1; }
 // `claude` binary via (a) `Settings`-derived `claude_binary_path` config
 // (chapter 10 §5; not RPC-settable — security-sensitive), or (b) PATH
 // lookup if the config is unset.
-message CheckClaudeAvailableRequest { RequestMeta meta = 1; }
+message CheckClaudeAvailableRequest {
+  RequestMeta meta = 1;
+  // Task #464 round-2: bypass the daemon-side resolver cache. The
+  // resolver caches both success AND null (`claudeResolver.ts` line 32+),
+  // so a user who launches ccsm with no claude on PATH, then `npm install
+  // -g @anthropic-ai/claude-code` in another terminal, then clicks
+  // ClaudeMissingGuide's Re-check, would otherwise be served the stale
+  // cached `null` and stay stuck. The renderer's recheck button passes
+  // `force = true`; the boot-time probe leaves it false (default) so
+  // first-paint latency is not paid for an uncached lookup more than
+  // once per process.
+  bool force = 2;
+}
 message CheckClaudeAvailableResponse {
   RequestMeta meta = 1;
   bool available = 2;            // true iff daemon successfully resolved an executable
