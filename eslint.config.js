@@ -117,7 +117,7 @@ export default [
     }
   },
   {
-    files: ['electron/**/*.ts'],
+    files: ['electron/**/*.ts', 'daemon/**/*.ts'],
     languageOptions: {
       globals: {
         process: 'readonly',

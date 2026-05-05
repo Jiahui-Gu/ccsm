@@ -20,6 +20,8 @@
     "dev:app": "wait-on http://localhost:4100 && tsc -p tsconfig.electron.json && electron .",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.electron.json && webpack --mode production && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
+    "build:daemon": "tsc -p tsconfig.daemon.json",
+    "dev:daemon": "node dist/daemon/main.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.electron.json",
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
