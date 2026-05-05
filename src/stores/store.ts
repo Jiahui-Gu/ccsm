@@ -28,6 +28,24 @@ export const useStore = create<RootStore>((set, get) => ({
   hydrated: false,
 }));
 
+// Expose the zustand store on `window` so E2E probes can introspect /
+// drive state directly. We set this UNCONDITIONALLY (not gated on
+// NODE_ENV) because webpack production builds dead-strip the gated
+// branch — leaving probes that exercise a production-built renderer with
+// no way to seed state. The exposure is a debug affordance, not a
+// security boundary; same trade-off as `window.__ccsmI18n`.
+//
+// Spec §5.3.2 PR-2 (audit Variant A, docs/audit/2026-05-06-ccsmstore-eval-order.md):
+// the pin lives in this module — not in App.tsx — so that
+// `await import('src/stores/store')` is sufficient to make
+// `window.__ccsmStore` observable in the UT environment, and so the pin
+// survives any future code-split that lazy-loads App.tsx. The store
+// module is the symbol's owner, so the pin co-locates with the symbol
+// it exposes (same convention as `__ccsmI18n` / `src/i18n/index.ts`).
+if (typeof window !== 'undefined') {
+  (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
+}
+
 let hydrated = false;
 
 /**

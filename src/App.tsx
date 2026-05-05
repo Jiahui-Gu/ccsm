@@ -38,15 +38,16 @@ import { useExitAnimation } from './app-effects/useExitAnimation';
 // setter in src/store/preferences.ts).
 initI18n(usePreferences.getState().resolvedLanguage);
 
-// Expose the zustand store on `window` so E2E probes can introspect /
-// drive state directly. We set this UNCONDITIONALLY (not gated on
-// NODE_ENV) because webpack production builds dead-strip the gated
-// branch — leaving probes that exercise a production-built renderer with
-// no way to seed state. The exposure is a debug affordance, not a
-// security boundary; same trade-off as `window.__ccsmI18n`.
-if (typeof window !== 'undefined') {
-  (window as unknown as { __ccsmStore?: typeof useStore }).__ccsmStore = useStore;
-}
+// `window.__ccsmStore` is now pinned at module-eval time inside
+// src/stores/store.ts (Task #601, audit Variant A). The previous in-line
+// assignment that lived here has been moved so the pin co-locates with
+// the symbol it exposes and survives a future code-split that might
+// lazy-load this App module. See docs/audit/2026-05-06-ccsmstore-eval-order.md.
+
+// Module-scope guard for the `ccsm:app-shell-ready` window event so a
+// re-mount (HMR, future StrictMode double-effect) only emits once per
+// renderer process. PR-8 probe-utils treats the event as edge-triggered.
+let appShellReadyDispatched = false;
 
 /**
  * Inner zero-render component that lives inside `<ToastProvider>` so it
@@ -166,6 +167,22 @@ export default function App() {
   // Window hide-to-tray exit animation: fade <html> opacity in/out on
   // `window:beforeHide` / `window:afterShow`.
   useExitAnimation();
+
+  // PR-2 / Task #601: signal that the app shell has mounted and the
+  // `window.__ccsmStore` pin + `window.ccsm` bridges (installed by
+  // `installCcsmShim()` before `root.render()`) are both observable.
+  // PR-8 (#605) probe-utils consumes this in place of the current
+  // polling `waitForFunction(window.__ccsmStore && document.querySelector('aside'))`
+  // sequence. We dispatch on the first effect tick (which only runs
+  // after React has committed the initial DOM), idempotently — a
+  // module-level `dispatched` flag keeps a re-mount during HMR or a
+  // future StrictMode double-effect from emitting twice.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (appShellReadyDispatched) return;
+    appShellReadyDispatched = true;
+    window.dispatchEvent(new Event('ccsm:app-shell-ready'));
+  }, []);
 
   // -----------------------------------------------------------------------
   // Remaining inline effects (intentionally NOT extracted — couple to
