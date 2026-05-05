@@ -1,5 +1,12 @@
 // packages/daemon/test/integration/pty-soak-10m.spec.ts
 //
+// [V0.4: real impl in T4.6/T8.7, excluded from v0.3 default test run — see Task #491]
+// Excluded by packages/daemon/vitest.config.ts `exclude:` glob so the
+// per-PR `pnpm -F @ccsm/daemon test` path does not collect a self-skipping
+// scaffold. Still git-tracked. Once the T4.6/T8.7 driver lands, drop the
+// exclude entry to re-enable in the default suite (and in the per-PR ci.yml
+// 3-OS smoke matrix referenced below).
+//
 // Phase-5 smoke variant of the 1-hour ship-gate (c) soak. Per
 // docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md chapter 13
 // phase 5 done-when:

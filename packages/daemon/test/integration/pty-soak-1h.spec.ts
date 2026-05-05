@@ -1,5 +1,12 @@
 // packages/daemon/test/integration/pty-soak-1h.spec.ts
 //
+// [V0.4: real impl in T4.6/T8.7, excluded from v0.3 default test run — see Task #491]
+// Excluded by packages/daemon/vitest.config.ts `exclude:` glob so the
+// per-PR `pnpm -F @ccsm/daemon test` path does not collect a self-skipping
+// scaffold. Still git-tracked and still runs via .github/workflows/pty-soak.yml
+// (workflow_dispatch + nightly schedule). Once the T4.6/T8.7 driver lands,
+// drop the exclude entry to re-enable in the default suite.
+//
 // FOREVER-STABLE per docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
 // chapter 12 §4.3 (ship-gate (c)) + chapter 15 §3 #28 (canonical path lock).
 // The 1-hour zero-loss PTY soak. Path is single-source-of-truth: chapter 06
