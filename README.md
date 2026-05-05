@@ -67,7 +67,7 @@ To disable after opting in: open Settings → Notifications and uncheck "Send cr
 
 ## Development
 
-Requires Node 20+ and `npm`. The native module `better-sqlite3` is rebuilt for Electron's ABI on `npm install` via `electron-builder install-app-deps`.
+Requires Node 22.x (see `.nvmrc`, currently `22.18.0`) and `npm` / `pnpm`. The native module `better-sqlite3` is rebuilt for Electron's ABI on `npm install` via `electron-builder install-app-deps`. Other Node majors will be rejected at install time (`engine-strict=true` in `.npmrc`); use `nvm use` / `fnm use` in the repo root to switch.
 
 ```bash
 npm install
