@@ -140,6 +140,14 @@ For each wave-2 hot path, the audit records:
     `event: pty:data` not emitting; `daemon/api/pty.ts:74-` SSE
     multiplexer either not flushing or not subscribed to the right sid.
 - **Verdict**: **FIX** (three independent fixes on the same surface).
+  **R1 audit pre-step (MUST)**: before changing the host / term / buffer
+  three-flag timing in any PR, fixer MUST `git show 35b08d15^:` on
+  `src/components/TerminalPane.tsx`, `src/terminal/xtermSingleton.ts`,
+  and `src/terminal/usePtyAttach.ts` and record the v0.2 baseline line
+  numbers governing each flag's producer + ordering in the PR body.
+  Any deviation from v0.2 ordering or DOM topology requires explicit
+  user/product approval; absent approval, preserve v0.2 semantics and
+  only adapt the harness selectors.
 - **Owner chapter**: [03-ptyhost-wiring](./03-ptyhost-wiring.md) §1, §2.
 
 ### HP-5 — Theme application on first paint

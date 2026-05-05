@@ -24,10 +24,24 @@ We define exactly what produces each flag and what gates can stop it.
 - **Producer**: `src/components/TerminalPane.tsx` renders a host
   `<div data-testid="terminal-host" data-sid={sid} />` UNCONDITIONALLY
   once the active session id matches `sid`.
-- **Required gate change**: there MUST NOT be a "claudeAvailable === true"
-  conditional render around the host element. The pane MAY render an
-  error-state child (Retry button) inside the host when claude is
-  missing, but the host element with `data-testid` MUST be present.
+- **R1 baseline-cite (MUST, before any code change)**: fixer / PR
+  author MUST first run `git show 35b08d15^:src/components/TerminalPane.tsx`
+  to record v0.2's claude-missing branch (independent error screen vs
+  inline Retry inside host). The v0.2 DOM topology is the baseline; any
+  new code path MUST cite v0.2 baseline line numbers in the PR body.
+  Diverging from v0.2 DOM topology requires explicit user/product
+  approval recorded in the PR; absent approval, preserve v0.2 shape
+  and only expose a stable `data-testid` on whichever element actually
+  mounts (harness selector adapts, not UI).
+- **Required gate change** (conditional on baseline above): if v0.2
+  already renders the host unconditionally with an inline error child,
+  there MUST NOT be a "claudeAvailable === true" conditional render
+  around the host element; the pane MAY render an error-state child
+  (Retry button) inside the host when claude is missing, but the host
+  element with `data-testid` MUST be present. If v0.2 swaps host for
+  an independent error screen, preserve that and add a stable
+  `data-testid` on the error screen instead — do NOT collapse it into
+  host.
 - **Why**: the harness uses host presence as the "did App→TerminalPane
   wiring fire" signal; gating it on a downstream RPC (HP-9) couples
   S5 to S1 unnecessarily.
@@ -312,8 +326,14 @@ real, UT-covered, Connect-roundtripped in v0.3.
 - **Daemon impl**: `daemon/api/pty.ts` — calls
   `inputPtySession(sid, data)` from `daemon/ptyHost/index.ts`, which
   writes to the underlying `pty.write()`.
-- **MUST**: error-typed response (`{ ok: false, error: 'no_such_sid' }`)
-  if the sid does not exist. NOT 200 + silent drop.
+- **MUST** (R1 baseline-cite): fixer MUST first verify v0.2 behavior
+  via `git show 35b08d15^:` on the pre-cutover IPC handler for
+  `pty:input`. If v0.2 already silently drops writes to an unknown sid
+  (200 OK + no-op), v0.3 MUST preserve silent-drop semantics — promotion
+  to a typed error (`{ ok: false, error: 'no_such_sid' }`) is a v0.4
+  candidate that requires user/product approval, not a v0.3 refactor
+  freebie. Only if v0.2 already returned a typed error may v0.3 keep
+  the typed-error response.
 - **UT**: `daemon/ptyHost/__tests__/lifecycle.test.ts` — write to
   unknown sid returns typed error; write after kill returns typed error;
   write to live sid is observed by the underlying pty fake.
@@ -325,8 +345,14 @@ real, UT-covered, Connect-roundtripped in v0.3.
 
 - **Wire**: `POST /api/pty/resize` body `{ sid, cols, rows }` → `{ ok: true }`.
 - **Daemon impl**: `resizePtySession(sid, cols, rows)` → `pty.resize(...)`.
-- **MUST**: validate `cols > 0`, `rows > 0`, both integers; reject 400
-  on invalid.
+- **MUST** (R1 baseline-cite): fixer MUST first verify v0.2 behavior
+  via `git show 35b08d15^:` on the pre-cutover resize handler. Default
+  is to **clamp** invalid `cols`/`rows` (≤0, non-integer) to a safe
+  minimum (e.g. 1) and proceed — NOT reject with 400. Promotion to
+  `400 bad_request` is allowed ONLY if v0.2 already rejected the same
+  inputs (cite the baseline line); otherwise preserve the v0.2
+  acceptance envelope and add a UT proving the clamp behavior matches
+  v0.2.
 - **UT**: existing tests under `daemon/ptyHost/__tests__/` — extend if
   resize coverage missing.
 - **Connect-roundtrip**: harness UI case (a Set B nice-to-have, NOT a

@@ -125,7 +125,13 @@ Legend:
   `src/terminal/xtermSingleton.ts`,
   `tests/terminal/TerminalPane.test.tsx` (extend).
 - **Acceptance**: `terminal-pane-mounted` harness case passes; the
-  Retry-state path renders inside the host element, not in lieu of it.
+  Retry-state path **preserves v0.2 DOM topology** (cite
+  `git show 35b08d15^:src/components/TerminalPane.tsx` baseline line
+  numbers in PR body). Only stable `data-testid` attributes (e.g.
+  `data-testid='terminal-host'`) may be added to whichever element
+  v0.2 already mounts; harness selector adapts to v0.2 shape, not the
+  reverse. Any new DOM node or any change to the claude-missing branch
+  topology requires explicit user/product approval recorded in the PR.
 - **Risk**: medium — touches the most-watched UI surface.
 - **blockedBy**: PR-2 (needs reliable `__ccsmStore` for tests),
   PR-3 (needs daemon port deterministic).
