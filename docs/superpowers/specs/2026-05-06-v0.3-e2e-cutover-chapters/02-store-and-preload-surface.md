@@ -147,6 +147,39 @@ test in `tests/stores/persist.test.ts` (if present) pins it.
 isn't set — the persist code path treats `null` as "no persisted
 state, use defaults."
 
+**MUST (failure path)**: `loadState` MUST resolve `null` (NOT reject) on
+ANY of the following daemon-side or transport failure modes, treating
+them as equivalent to the missing-key case:
+
+- HTTP 5xx response from `/api/data/get` (daemon error / mid-boot
+  crash; see ch03 §7 daemon-liveness contract — v0.3 does NOT
+  auto-restart, so a one-shot 5xx is the expected mid-session symptom).
+- `fetch` rejection (network / IPC bridge unavailable).
+- JSON parse error on the response body (corrupt persisted blob).
+
+In all three cases the bridge MUST:
+
+1. Resolve `null` so `persist.ts` falls through to defaults and React
+   tree mount completes (NEVER block hydrate).
+2. Emit ONE toast via the zustand error slice (`useStore.getState().errors.push({...})`
+   or equivalent) with a short, user-readable reason (e.g. `"Failed to
+   load saved state, using defaults"`); the toast is fire-and-forget,
+   independent of the resolve.
+3. Pin `__ccsmHydrationTrace.loadStateError` to a short string tag
+   (`"http_5xx"` / `"fetch_reject"` / `"parse_error"`) for probe dump.
+
+**Why**: under daemon mid-boot crash (chapter 03 §7) `loadState` would
+otherwise reject; if `persist.ts` re-throws, React tree never finishes
+mount, harness sees `__ccsmStore` set but no `hydrated:true` and reports
+a confusing 20s timeout. Resolving `null` keeps the missing-key path
+identical and surfaces the failure non-blockingly.
+
+**MUST (UT)**: add `tests/stores/persist.test.ts` (NEW) covering three
+cases — (a) HTTP 5xx, (b) `fetch` reject (network error), (c) JSON
+parse error — each MUST assert (i) `loadState` resolves to `null`, (ii)
+exactly one toast was emitted on the error slice, (iii) `persist.ts`
+returned without throwing.
+
 **SHOULD**: keep `saveState`'s value as `string` (the persist code
 JSON.stringifies before calling).
 
@@ -214,14 +247,48 @@ sequenceDiagram
    applied at LEAST once before any test snapshot. Two sub-rules:
    - **I-3a**: at first paint, the initial-state `theme` value (default
      `'system'`) MUST resolve to either `dark` or `theme-light` —
-     never neither. Audit the `resolveEffectiveTheme` for the
-     `theme === 'system'` ∧ `osPrefersDark === undefined` case.
+     never neither. **Tiebreak (manager-pinned)**: when `theme === 'system'`
+     and `window.matchMedia` is unavailable (test runner stub returns
+     undefined / non-callable, or `matchMedia('(prefers-color-scheme: dark)').matches`
+     short-circuits to `false`), `resolveEffectiveTheme` MUST return
+     `light`. This matches v0.2 short-circuit semantics, verified at
+     `35b08d15:src/stores/slices/appearanceSlice.ts:resolveEffectiveTheme`
+     (v0.2 uses `osPrefersDark: boolean`, no undefined three-state path
+     — when `matchMedia` is unavailable the boolean short-circuits to
+     `false` → effective theme = `light`). v0.3 MUST preserve this
+     boolean short-circuit behaviour and MUST NOT introduce an
+     `osPrefersDark === undefined` three-state branch.
    - **I-3b**: when persisted hydrate sets `theme` to a different value,
      `useThemeEffect`'s deps array MUST observe the change. Currently
      `[theme]` — fine, AS LONG AS the value identity actually changes.
      If hydrate sets the same value, no re-apply runs (it's React
      correct, not a bug); ensure `apply()` is called once on initial
      mount regardless.
+
+### `__ccsmHydrationTrace` shape (extended)
+
+To let probe-utils (chapter 04 §2 `waitForTerminalReady` timeout dump)
+bisect WHICH async step in the hydration sequence stalled, the trace
+object MUST carry the following fields. Each field is pinned by the
+module that owns the corresponding step (sync, on entry/exit). Missing
+fields = the step never started.
+
+| Field                  | Type                  | Pinned by                      | When                                              |
+|------------------------|-----------------------|--------------------------------|---------------------------------------------------|
+| `renderedAt`           | `number` (ms)         | `src/stores/store.ts` / App.tsx | React's first render commit                       |
+| `loadStateStartedAt`   | `number` (ms)         | `src/stores/persist.ts`        | immediately before `await window.ccsm.loadState`  |
+| `loadStateResolvedAt`  | `number` (ms)         | `src/stores/persist.ts`        | after `loadState` resolves (null OR value)        |
+| `loadStateError`       | `string \| undefined` | `electron/preload/bridges/ccsmCore.ts` | one of `"http_5xx" \| "fetch_reject" \| "parse_error"` on failure path; `undefined` on success |
+| `setStateStartedAt`    | `number` (ms)         | `src/stores/persist.ts`        | immediately before `useStore.setState({...persisted, hydrated: true})` |
+| `setStateCompletedAt`  | `number` (ms)         | `src/stores/persist.ts`        | immediately after the setState call returns       |
+| `hydrateDoneAt`        | `number` (ms)         | `src/stores/persist.ts`        | after the hydrate effect's final commit (already in v0.2) |
+
+**Why**: when the hydrate path hangs, the DOM is empty and the only
+existing signal is "`hydrateDoneAt` never set". Splitting the window
+into `loadStateStartedAt → loadStateResolvedAt → setStateStartedAt →
+setStateCompletedAt` lets a probe dump (chapter 04 §2) tell at-a-glance
+whether the daemon round-trip stalled, the slice reducer threw, or
+React's commit phase blocked.
 
 ### Concrete fix for HP-5 (theme-toggle)
 

@@ -145,7 +145,14 @@ overrides. After chapter 03 §1, the three flags should flip within ~5s.
   drop to 30000 in a follow-up cleanup (NOT in scope for the same PR
   to keep the diff focused on the actual surface fix).
 - Add a one-time DOM dump on timeout (`win.content().slice(0,500)` in
-  the error message) so future flakes are debuggable.
+  the error message) so future flakes are debuggable. Additionally, on
+  timeout `await win.evaluate(() => window.__ccsmHydrationTrace)` and
+  dump the full trace object to
+  `tmp/e2e-logs/<run-id>/<case>.hydration-trace.json` (shape per
+  [02-store-and-preload-surface](./02-store-and-preload-surface.md) §4
+  "`__ccsmHydrationTrace` shape"); this lets the on-call bisect WHICH
+  hydration step (`loadState` round-trip, `setState`, or React commit)
+  stalled, instead of guessing from an empty DOM.
 - Add `term.cols / term.rows` to the returned object — useful for
   debugging the resize RPC (chapter 03 §5).
 
