@@ -34,7 +34,7 @@ export function registerApi(router: Router): void {
     const full = path.join(dir, name);
     let mod: { default?: Registrar };
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- dynamic auto-registry across compiled siblings; CJS require is intentional.
       mod = require(full) as { default?: Registrar };
     } catch (err) {
       process.stderr.write(`registerApi: require(${full}) failed: ${String(err)}\n`);

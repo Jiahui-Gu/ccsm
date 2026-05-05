@@ -120,6 +120,9 @@ vi.mock('../cwdResolver', () => ({
 
 vi.mock('../dataFanout', () => ({
   emitPtyData: (sid: string, chunk: string) => bus().emitData(sid, chunk),
+  emitPtyExit: () => {
+    /* no-op for detachReattach tests; not under test here */
+  },
 }));
 
 import { makeEntry, dispatchPtyChunk, BACKPRESSURE_WARN_THRESHOLD } from '../entryFactory';
@@ -131,16 +134,16 @@ import type { Entry } from '../entryFactory';
 // (the L4 invariant: visible xterm sees exactly what headless saw,
 // modulo the snapshot replay seam).
 interface FakeWc {
-  id: number;
+  id: string;
   destroyed: boolean;
   received: Array<{ chunk: string; seq: number }>;
   isDestroyed: () => boolean;
   send: (ch: string, payload: { sid: string; chunk: string; seq: number }) => void;
 }
 
-function makeFakeWc(id: number): FakeWc {
+function makeFakeWc(id: number | string): FakeWc {
   const wc: FakeWc = {
-    id,
+    id: String(id),
     destroyed: false,
     received: [],
     isDestroyed: () => wc.destroyed,

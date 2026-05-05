@@ -83,10 +83,11 @@ const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
   ['sessionWatcher/projectKey', 'sessionWatcher/projectKey.js'],
 
   // ptyHost runtime/sink layer
-  ['ptyHost/dataFanout', 'ptyHost/dataFanout.js'],
-  // entryFactory + ipcRegistrar + lifecycle + index pull native node-pty;
-  // covered by harness-real-cli e2e. Excluded from load-smoke to avoid
-  // hard dependence on local native build.
+  // (W2-B / Task #581 moved the ptyHost subtree under daemon/; the
+  // electron tree now only carries thin re-export shims that depend on
+  // daemon/. The daemon's own load-smoke covers the real modules; the
+  // shims themselves don't need a smoke since they're trivial re-exports
+  // and webpack/ts-emit catches the cross-tree resolution at build time.)
 
   // sentry init — load-smoke critical (PR #501 ESM regression risk)
   ['sentry/init', 'sentry/init.js'],

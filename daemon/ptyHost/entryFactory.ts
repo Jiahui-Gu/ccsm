@@ -23,7 +23,6 @@
 import * as pty from 'node-pty';
 import { Terminal as HeadlessTerminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-import type { WebContents } from 'electron';
 import { sessionWatcher } from '../sessionWatcher';
 import {
   ensureResumeJsonlAtSpawnCwd,
@@ -32,7 +31,7 @@ import {
   toClaudeSid,
 } from './jsonlResolver';
 import { resolveSpawnCwd } from './cwdResolver';
-import { emitPtyData } from './dataFanout';
+import { emitPtyData, emitPtyExit } from './dataFanout';
 
 export const DEFAULT_COLS = 120;
 export const DEFAULT_ROWS = 30;
@@ -52,14 +51,33 @@ export const SCROLLBACK = 10000;
 // below the threshold.
 export const BACKPRESSURE_WARN_THRESHOLD = 100;
 
+/**
+ * Subscriber attached to a per-session PTY for live event streaming. In the
+ * Electron-IPC era this was an `Electron.WebContents`; in the daemon-HTTP era
+ * (W2-B) it is an SSE writer wrapper supplied by `daemon/api/pty.ts`. Kept as
+ * a structural duck-type so `daemon/ptyHost/*` no longer depends on Electron
+ * APIs at all — `daemon/api/pty.ts` instantiates the concrete adapters.
+ */
+export interface PtyAttachedSubscriber {
+  /** Unique key in the per-entry `attached` map (also used by detach). */
+  readonly id: string;
+  /** True when the underlying transport (SSE response, WebContents) is gone
+   *  and `send()` would be a no-op or throw. */
+  isDestroyed(): boolean;
+  /** Push one event to the subscriber. Channel names mirror the legacy IPC
+   *  contract (`pty:data` / `pty:exit`) so renderer-side bridges stay
+   *  symmetric across the IPC → SSE swap. */
+  send(channel: string, payload: unknown): void;
+}
+
 export interface Entry {
   pty: pty.IPty;
   headless: HeadlessTerminal;
   serialize: SerializeAddon;
-  // Multiple webContents may attach (e.g. devtools/preview windows); broadcast
-  // pty:data to all of them. Keyed by webContents id so detach cleanup is O(1)
+  // Multiple subscribers may attach (e.g. devtools/preview windows); broadcast
+  // pty:data to all of them. Keyed by subscriber id so detach cleanup is O(1)
   // and we don't pin destroyed senders.
-  attached: Map<number, WebContents>;
+  attached: Map<string, PtyAttachedSubscriber>;
   cols: number;
   rows: number;
   /** Resolved spawn cwd (after `resolveSpawnCwd` fallback). Captured here
@@ -176,14 +194,18 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
     }
   });
 
-  // Sink 2: visible-xterm IPC fanout. Best-effort per attached webContents
-  // — a destroyed sender or an IPC throw must not wedge the PTY pump.
-  for (const wc of entry.attached.values()) {
-    if (!wc.isDestroyed()) {
+  // Sink 2: subscriber fan-out. Best-effort per attached subscriber
+  // — a destroyed sender or a transport throw must not wedge the PTY pump.
+  // The IPC era used `Electron.WebContents.send`; W2-B replaces this with
+  // SSE subscribers registered by `daemon/api/pty.ts`. The contract
+  // (channel name + payload shape) stayed identical so the renderer-side
+  // bridges did not have to change.
+  for (const sub of entry.attached.values()) {
+    if (!sub.isDestroyed()) {
       try {
-        wc.send('pty:data', { sid, chunk, seq });
+        sub.send('pty:data', { sid, chunk, seq });
       } catch {
-        /* renderer gone — best effort */
+        /* subscriber gone — best effort */
       }
     }
   }
@@ -191,9 +213,9 @@ export function dispatchPtyChunk(sid: string, entry: Entry, chunk: string): void
   // Sink 3 (module-level listeners): notify pipeline OSC sniffer is the
   // only production consumer today. Listeners are best-effort — throws
   // don't propagate back to ptyHost so a misbehaving sink can't wedge
-  // the PTY. Kept inside dispatchPtyChunk (not a separate hook) so the
-  // single fan-out point is the only place chunk-handling lives.
-  emitPtyData(sid, chunk);
+  // the PTY. The seq is forwarded too so any future seq-aware consumer
+  // sees the same value as Sink 2.
+  emitPtyData(sid, chunk, seq);
 }
 
 export function makeEntry(
@@ -273,19 +295,25 @@ export function makeEntry(
     // Broadcast exit to anyone still listening, then drop the entry. Using
     // `sessionId` in the payload (not just `sid`) matches the renderer-side
     // ttyd-exit shape so the existing exit handler can be reused.
-    for (const wc of entry.attached.values()) {
-      if (!wc.isDestroyed()) {
+    const payload = {
+      sessionId: sid,
+      code: exitCode ?? null,
+      signal: signal ?? null,
+    };
+    for (const sub of entry.attached.values()) {
+      if (!sub.isDestroyed()) {
         try {
-          wc.send('pty:exit', {
-            sessionId: sid,
-            code: exitCode ?? null,
-            signal: signal ?? null,
-          });
+          sub.send('pty:exit', payload);
         } catch {
-          /* renderer gone */
+          /* subscriber gone */
         }
       }
     }
+    // Module-level fan-out so `daemon/api/pty.ts` can close any open SSE
+    // response for this sid even when the subscriber send-loop above
+    // already short-circuited (e.g. socket already half-closed). Same
+    // belt-and-braces as Sink 2 + Sink 3 in `dispatchPtyChunk`.
+    emitPtyExit(sid, { code: exitCode ?? null, signal: signal ?? null });
     try {
       headless.dispose();
     } catch {

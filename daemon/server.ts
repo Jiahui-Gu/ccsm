@@ -84,8 +84,30 @@ async function handleRequest(
   try {
     const method = req.method ?? "GET";
     const url = req.url ?? "/";
-    // Strip query string; wave-1 endpoints don't read it.
+    // Strip query string; wave-1 endpoints don't read it. (Raw handlers
+    // get the unmodified `req.url` and may parse the query themselves —
+    // W2-B `/api/events/pty?sid=...` does this.)
     const path = url.split("?", 1)[0] ?? "/";
+
+    // Raw streaming handlers (SSE / chunked / non-JSON) take precedence.
+    // The handler owns the response end-to-end; the pipeline neither
+    // reads the body nor writes a status.
+    const rawHandler = router.resolveRaw(method, path);
+    if (rawHandler) {
+      try {
+        await rawHandler(req, res);
+      } catch (err) {
+        process.stderr.write(
+          `[daemon] raw handler threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+        );
+        if (!res.headersSent) {
+          writeJson(res, { status: 500, error: "internal_error" });
+        } else {
+          try { res.end(); } catch { /* socket gone */ }
+        }
+      }
+      return;
+    }
 
     const handler = router.resolve(method, path);
     if (!handler) {
