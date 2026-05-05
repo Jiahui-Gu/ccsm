@@ -8,21 +8,14 @@
 //   * keeps window / tray / lifecycle / menu wiring (no daemon equivalent);
 //   * keeps Sentry init.
 //
-// What was removed (Task #566 — wave-1 B):
+// What was removed (Task #566 — wave-1 B; Task #580 — wave-2 D):
 //   * register{Db,Session,System,Window,Utility}Ipc — the underlying
 //     handlers + business modules they call (db / sessionWatcher / ptyHost
-//     / notify pipeline / sessionTitles / prefs) are wave-2 dev's scope
-//     to physically move into daemon/. The legacy ipc/ tree was moved to
-//     electron/__legacy_to_delete__/ipc/ and is excluded from build /
-//     test / lint until wave-2 deletes it for good.
+//     / notify pipeline / sessionTitles / prefs) were physically moved
+//     into daemon/ during wave-2 A/B/C, and the parked legacy tree under
+//     electron/__legacy_to_delete__/ was deleted in wave-2 D.
 //   * notify pipeline + ptyHost + sessionWatcher boot — these run inside
 //     the daemon now. Renderer reaches them over HTTP, not IPC.
-//
-// During the wave-1 / wave-2 gap the app will start (daemon spawns, window
-// loads, lifecycle hooks fire) but renderer fetches against the daemon
-// will 404 because wave-2 hasn't lifted handlers into HTTP routes yet.
-// That's expected — the acceptance bar for this PR is "daemon spawns,
-// main attaches to its port".
 
 import { app, BrowserWindow, ipcMain, dialog, type Tray } from 'electron';
 import * as os from 'os';

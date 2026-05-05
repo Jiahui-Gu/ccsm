@@ -23,6 +23,7 @@ import type { Router, HandlerResult } from '../router';
 import { loadState, saveState } from '../db';
 import { validateSaveStateInput } from '../db-validate';
 import { emitStateSaved } from '../shared/stateSavedBus';
+import { isSafePath } from '../../electron/security/ipcGuards';
 import {
   getSessionTitle,
   listProjectSummaries,
@@ -182,8 +183,12 @@ export default function register(router: Router): void {
     makeHandler(async (args) => {
       const p = args[0];
       if (typeof p !== 'string') return getUserCwds();
-      // No isSafePath gate here — that lives in electron/security and is W2-D
-      // scope. v0.3 ship intent: keep behavior, move location.
+      // isSafePath gate (W2-D): the renderer-supplied cwd lands in the
+      // recents store and can later be re-fed to pty.spawn. Reject UNC /
+      // relative / non-string here so an unusable / unsafe value never
+      // makes it onto disk. Same defense lives at the spawn site
+      // (daemon/ptyHost/cwdResolver.ts) — this is defense-in-depth.
+      if (!isSafePath(p)) return getUserCwds();
       return pushUserCwd(p);
     }),
   );

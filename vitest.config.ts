@@ -12,11 +12,7 @@ export default defineConfig({
       // the mv preserves test coverage rather than silently dropping it.
       'daemon/**/__tests__/**/*.test.ts',
     ],
-    exclude: [
-      '**/node_modules/**',
-      '**/dist/**',
-      'electron/__legacy_to_delete__/**',
-    ],
+    exclude: ['**/node_modules/**', '**/dist/**'],
     globals: true,
     setupFiles: ['tests/setup.ts'],
     // v8 coverage instrumentation roughly doubles test wall-clock under
