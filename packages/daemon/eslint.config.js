@@ -15,8 +15,26 @@
 //     `**/listener-b.ts` (the single v0.4 file allowed to publish into
 //     slot 1) via a trailing override block. Bypass surface is grep-able
 //     here so reviewers can audit it as a single point.
+//   - Task #430 (#230-6 / P24) `ccsm/no-client-kind-branch` — forbids
+//     daemon control-flow branching on `HelloRequest.client_kind` /
+//     `HelloResponse.listener_id` (open-string observability fields per
+//     spec ch15 §3 #24). Read for logging / metrics is allowed; only
+//     `switch (req.client_kind)` and `req.client_kind === 'X'` /
+//     `req.listener_id !== 'A'` style branches are flagged. Scoped to
+//     `packages/daemon/src/**` via a trailing override block.
 import rootConfig from '../../eslint.config.js';
-import ccsmPlugin from './eslint-plugins/ccsm-no-listener-slot-mutation.js';
+import ccsmListenerSlotPlugin from './eslint-plugins/ccsm-no-listener-slot-mutation.js';
+import ccsmNoClientKindBranchPlugin from './eslint-plugins/ccsm-no-client-kind-branch.js';
+
+// Combine local plugin rules under a single `ccsm` namespace so the
+// flat config exposes them as `ccsm/<rule-name>` to ESLint.
+const ccsmPlugin = {
+  meta: { name: 'ccsm', version: '0.1.0' },
+  rules: {
+    ...ccsmListenerSlotPlugin.rules,
+    ...ccsmNoClientKindBranchPlugin.rules,
+  },
+};
 
 export default [
   ...rootConfig,
@@ -42,6 +60,16 @@ export default [
         ],
       }],
       'ccsm/no-listener-slot-mutation': 'error',
+    },
+  },
+  {
+    // ccsm/no-client-kind-branch is scoped to daemon source — tests
+    // and eslint-plugins/** don't need the guard (and the spec
+    // fixtures intentionally exercise the very patterns the rule
+    // forbids).
+    files: ['src/**/*.ts'],
+    rules: {
+      'ccsm/no-client-kind-branch': 'error',
     },
   },
   {
