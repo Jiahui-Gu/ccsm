@@ -39,7 +39,10 @@ function toPosix(p) {
 }
 
 function sha256OfFile(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+  // Mirror lock.mjs: UTF-8 read + CRLF -> LF normalization so Windows and
+  // Linux compute identical hashes regardless of git autocrlf behavior.
+  const content = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 function main() {
