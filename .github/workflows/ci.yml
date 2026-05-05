@@ -364,6 +364,28 @@ jobs:
           path: coverage/lcov.info
           if-no-files-found: warn
 
+      # Task #530 (CI-SPEED commit 1) — upload `dist/` for e2e.yml to
+      # download and skip its own `npm run build:app` step (~30-45s on
+      # warm-cache windows-latest). e2e.yml falls back to local build
+      # if the artifact is missing or download fails. Artifact is
+      # workflow-scoped (PR runId-keyed) so two concurrent PRs cannot
+      # cross-contaminate.
+      #
+      # `dist/` includes:
+      #   - dist/electron/*.js  (main process, tsc -p tsconfig.electron.json)
+      #   - dist/renderer/bundle.js (webpack production output)
+      #
+      # if-no-files-found: error — if build:app produced no dist, the
+      # build step itself should have failed; reaching this step with
+      # empty dist is an invariant violation worth surfacing loud.
+      - name: Upload dist artifact for e2e
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
       # Task #98 (T8.14a) — per-package coverage enforcement (chapter 12 §6).
       # Distinct from the root `coverage` step above (legacy renderer suite,
       # advisory only). These two steps are LIVE gates: they fail the PR if
