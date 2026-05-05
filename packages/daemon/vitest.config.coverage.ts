@@ -1,9 +1,12 @@
 // Daemon-package vitest config — coverage gate variant.
 //
-// TEMPORARY 50% THRESHOLD. Followup #350 will raise this to the spec-mandated
-// 80% (see docs/superpowers/specs/2026-05-03-v03-daemon-split-design.md
-// chapter 12 §6) once additional unit tests land. DO NOT relax further; the
-// number only ever moves up.
+// Threshold currently 60% (raised from 50% by Task #436 sweep). Spec
+// chapter 12 §6 mandates 80% as the v0.3 ship target; reaching that
+// requires tests against src/index.ts, src/sessions/*, src/rpc/*, and
+// src/crash/{filter-decider,pruner,raw-appender,sources} which are out
+// of Task #436's scope (pty-host / sqlite / agent / importScanner only).
+// Followup tasks should pick up the remaining ~18% gap incrementally.
+// DO NOT relax further; the number only ever moves up.
 //
 // Why a separate file vs. extending vitest.config.ts:
 //   The default `vitest.config.ts` includes `test/**/*.spec.ts` (integration
@@ -80,10 +83,15 @@ export default defineConfig({
         'src/**/*.d.ts',
       ],
       thresholds: {
-        // TEMPORARY: 50% holds the line while followup #350 closes the gap to
-        // the spec-mandated 80%. Local run measures ~55% so this gate is not
-        // vacuous — a regression that drops below 50% will fail CI.
-        lines: 50,
+        // Raised from 50% to 60% by Task #436 (pty-host / sqlite / agent /
+        // importScanner sweep). Local windows-11 measure is 61.6% — the
+        // 1.6% buffer absorbs minor v8 instrumentation variance across
+        // platforms. Spec ch12 §6 ship target is 80%; followup tasks must
+        // cover scope-out files (src/index.ts, src/sessions/*, src/rpc/*,
+        // src/crash/{filter-decider,pruner,raw-appender,sources}) before
+        // the threshold can move there without violating Task #436's
+        // 4-directory boundary.
+        lines: 60,
       },
     },
   },

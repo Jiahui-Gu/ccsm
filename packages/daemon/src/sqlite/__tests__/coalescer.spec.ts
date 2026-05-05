@@ -1,6 +1,8 @@
-// packages/daemon/test/sqlite/coalescer.spec.ts
+// packages/daemon/src/sqlite/__tests__/coalescer.spec.ts
 //
 // Vitest unit tests for the per-session write coalescer (Task #61 / T5.5).
+// Moved from test/sqlite/coalescer.spec.ts (Task #436) so it counts toward
+// the unit-coverage gate (vitest.config.coverage.ts excludes test/**).
 // Covers the four behaviors enumerated in the task and the spec ch07 §5
 // FOREVER-STABLE rules:
 //
@@ -20,7 +22,7 @@
 import { Code, ConnectError } from '@connectrpc/connect';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { openDatabase, type SqliteDatabase } from '../../src/db/sqlite.js';
+import { openDatabase, type SqliteDatabase } from '../../db/sqlite.js';
 import {
   DEGRADED_FAILURE_THRESHOLD,
   QUEUE_CAP_BYTES,
@@ -29,7 +31,7 @@ import {
   isDiskClassError,
   type DeltaWrite,
   type SnapshotWrite,
-} from '../../src/sqlite/coalescer.js';
+} from '../coalescer.js';
 
 // ---------------------------------------------------------------------------
 // Test fixture: a real in-memory SQLite DB with the two tables the
