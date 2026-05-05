@@ -1,4 +1,5 @@
 // packages/daemon/test/bench/cold-start.bench.ts
+// [BENCH-INFO: deferred to v0.4 — see Task #468 for real wire-up after T1.7 Supervisor /healthz]
 //
 // T8.13 — daemon cold-start latency: spawn(daemon) -> GET /healthz returns
 // 200 with {ready: true}. Wall-clock ms, single-shot per iteration.

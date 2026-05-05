@@ -40,3 +40,8 @@ this PR is on the hook for.
 All numbers here are **advisory**. The one blocking perf gate is SendInput
 p99, and that is enforced by the dedicated soak harness (Task #92), not by
 this bench suite.
+
+## Bench skip policy
+
+5 个 bench skip 是 perf gate, 不是 ship gate。v0.4 接通后 unskip (Task #468)。
+v0.3 PR CI 不跑 bench, audit 脚本 (Task #494) 验注释 tag 合规。
