@@ -21,8 +21,18 @@
 // console.warn so the user can debug.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { getClaudeConfigDir } from './shared/claudePaths';
+
+// Wave-2 A: shared/claudePaths.ts moved into daemon/. commands-loader stays
+// electron-side (dead-but-on-disk pending its own daemon move) so we inline
+// the one-line formula here rather than reach across the daemon/electron
+// boundary. Same precedence as the daemon-side helper:
+//   1. process.env.CLAUDE_CONFIG_DIR if set (parallel CLI configs)
+//   2. <homedir>/.claude (CLI default)
+function getClaudeConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
+}
 
 // Six logical sources surfaced by the slash-command palette. `skill` and
 // `agent` were previously folded into `user`; splitting them lets the picker

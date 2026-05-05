@@ -27,7 +27,6 @@
 import { app, BrowserWindow, ipcMain, dialog, type Tray } from 'electron';
 import * as os from 'os';
 import { buildTrayIcon } from './branding/icon';
-import { initSentry } from './sentry/init';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 import { spawnDaemon, getDaemonPort, killDaemon } from './daemon-spawner';
@@ -41,9 +40,10 @@ process.on('uncaughtException', (err) => {
   console.error('[main] uncaughtException:', err);
 });
 
-// Sentry init reads SENTRY_DSN and wires up beforeSend → opt-out check. The
-// init is idempotent and a no-op when no DSN is set.
-initSentry();
+// Wave-2 A: Sentry init moved into the daemon (daemon/startup/data.ts) since
+// the modules sentry's beforeSend consults (prefs/crashReporting → db) now
+// live there. The renderer-side @sentry/electron preload is independent and
+// continues to wire itself in via electron/preload.
 
 import { installUpdaterIpc } from './updater';
 import {
@@ -166,6 +166,15 @@ app.whenReady().then(async () => {
   // a port to expose by the time renderer scripts run. We don't block on
   // `await` for failures fatally — a daemon-failed-to-start surface is the
   // renderer's responsibility (a toast + retry button, wired in wave-1 C).
+  //
+  // Wave-2 A: inject the host-process facts the daemon would otherwise need
+  // electron APIs to discover. The daemon's db.ts reads CCSM_USER_DATA_DIR
+  // for the SQLite file location (so prod data lands in the same per-user
+  // dir electron uses), and sentry/init.ts reads CCSM_APP_VERSION /
+  // CCSM_IS_PACKAGED for release tagging + dev/prod environment.
+  process.env.CCSM_USER_DATA_DIR = app.getPath('userData');
+  process.env.CCSM_APP_VERSION = app.getVersion();
+  process.env.CCSM_IS_PACKAGED = app.isPackaged ? '1' : '0';
   spawnDaemon().catch((err) => {
     console.error('[main] daemon failed to start:', err);
   });

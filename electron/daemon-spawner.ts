@@ -32,14 +32,16 @@ let port: number | null = null;
 let readyPromise: Promise<number> | null = null;
 
 /** Path to the daemon entrypoint. dev-A owns this file; in dev we run the
- *  same `dist/daemon/index.js` that the prod bundle ships. Override with
+ *  same `dist/daemon/main.js` that the prod bundle ships. Override with
  *  `CCSM_DAEMON_ENTRY` for tests / one-off probes. */
 function resolveDaemonEntry(): string {
   const override = process.env.CCSM_DAEMON_ENTRY;
   if (override && override.length > 0) return override;
   // __dirname is .../dist/electron, so daemon entry sits at
-  // .../dist/daemon/index.js after `tsc -p tsconfig.electron.json`.
-  return path.join(__dirname, '..', 'daemon', 'index.js');
+  // .../dist/daemon/main.js after `tsc -p tsconfig.daemon.json`. Wave-2 A
+  // fix: was `index.js` (wave-1 placeholder name) but the actual entry
+  // emitted by tsconfig.daemon is main.js — daemon never had an index.ts.
+  return path.join(__dirname, '..', 'daemon', 'main.js');
 }
 
 /** Spawn the daemon if it isn't already running, return the resolved port.
