@@ -1,4 +1,5 @@
 // packages/daemon/test/bench/snapshot-encode.bench.ts
+// [BENCH-INFO: deferred to v0.4 — see Task #468 for real wire-up after T1.7 Supervisor /healthz]
 //
 // T8.13 — SnapshotV1 encode throughput in bytes/sec. Pure-CPU bench:
 // build a representative terminal snapshot (e.g. 80x24 with mixed

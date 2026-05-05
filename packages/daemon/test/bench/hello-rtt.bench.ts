@@ -1,4 +1,5 @@
 // packages/daemon/test/bench/hello-rtt.bench.ts
+// [BENCH-INFO: deferred to v0.4 — see Task #468 for real wire-up after T1.7 Supervisor /healthz]
 //
 // T8.13 — Hello RPC round-trip latency. Single client, sequential calls,
 // p50/p99 reported by tinybench's built-in samples histogram.
