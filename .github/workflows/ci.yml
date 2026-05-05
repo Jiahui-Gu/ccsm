@@ -548,9 +548,16 @@ jobs:
   #     CANNOT invoke `pnpm --filter @ccsm/<pkg>` — the shell will fail
   #     with "pnpm: not recognized as a name of a cmdlet".
   #   * Mirroring the sea-smoke / package job pattern (pnpm/action-setup +
-  #     `pnpm install --frozen-lockfile`) is the cleanest path. ubuntu-latest
-  #     keeps this job fast (no native rebuilds needed for the steps below;
-  #     no electron download — ELECTRON_SKIP_BINARY_DOWNLOAD=1).
+  #     `pnpm install --frozen-lockfile`) is the cleanest path.
+  #   * runs-on: windows-latest because packages/proto/lock.json records
+  #     SHA256 over RAW on-disk bytes with NO line-ending normalization
+  #     (per packages/proto/test/lock.spec.ts comment "no normalization").
+  #     The lock.json values were generated on a Windows checkout (CRLF
+  #     line endings); a Linux runner would re-checkout the .proto files
+  #     with LF and recompute different hashes, failing test/lock.spec.ts
+  #     with phantom "drift" on every PR. Pinning this job to
+  #     windows-latest mirrors lint-typecheck-test's matrix choice
+  #     (Task #322) and the .gitattributes default for this repo.
   #   * Coverage rationale per ch15 §3 item:
   #       - item 1, 2, 19, 20 (proto rename / renumber / oneof slot)
   #         → buf breaking already wired in lint-typecheck-test (line 184).
@@ -572,8 +579,8 @@ jobs:
     name: ch15 §3 enforcement
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: windows-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read
