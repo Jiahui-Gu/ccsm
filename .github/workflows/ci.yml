@@ -31,8 +31,159 @@ jobs:
               - '!LICENSE'
               - '!.gitignore'
 
-  lint-typecheck-test:
-    name: lint + typecheck + test (${{ matrix.os }})
+  # Task #489 — split the previous monolithic `lint + typecheck + test
+  # (windows-latest)` job (~7m22s wall) into three parallel windows-latest
+  # jobs: lint / typecheck / test. Research a08f476582ca68c05 estimated
+  # ~280s after split (vs 442s before). All three jobs share an identical
+  # `actions/cache` key so cache hits restore the same node_modules tree
+  # in each parallel runner.
+  #
+  # IMPORTANT — branch protection: the OLD required check name
+  # `lint + typecheck + test (windows-latest)` is REMOVED by this PR.
+  # Owner must add the three new required checks BEFORE merge:
+  #   - `lint (windows-latest)`
+  #   - `typecheck (windows-latest)`
+  #   - `test (windows-latest)`
+  # See PR body for the explicit instruction.
+
+  lint:
+    name: lint (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Task #322 — windows-only matrix (see test job below for full
+        # rationale; identical reasoning applies to all three split jobs).
+        os: [windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Mechanical guards (check-v02-shrinking.sh) need merge-base +
+          # full first-parent walk. See test job for the complete rationale.
+          fetch-depth: 0
+
+      - name: Check v0.2-only files don't grow (incl. step-wise)
+        run: bash tools/check-v02-shrinking.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Check spec-code lock (ship-gate paths)
+        run: bash tools/check-spec-code-lock.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Task #489 — same cache key as typecheck + test jobs so the three
+      # parallel windows-latest runners restore identical node_modules.
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            nm-${{ runner.os }}-${{ runner.arch }}-node22-
+
+      - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      # Native rebuild kept here for parity with the other jobs — keeps
+      # node_modules tree identical across the cache key, so a stale-key
+      # restore-keys hit doesn't drift between jobs. Lint itself doesn't
+      # dlopen native, so this is a small over-pay (~10s) for cache
+      # consistency. Optimization to skip lives in v0.4 P1.
+      - name: Rebuild native modules for current Node ABI
+        run: npm rebuild better-sqlite3
+      - name: Verify native ABI
+        run: npm run check:native
+
+      - name: Lint
+        run: npm run lint:app
+
+      - name: Lint (no IPC residue)
+        run: npm run lint:no-ipc
+
+      - name: Lint (no worker_threads in pty-host) — ch15 §3 #25
+        run: npm run lint:no-worker-threads
+
+  typecheck:
+    name: typecheck (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf-breaking needs merge-base resolvability for the GITHUB_BASE_REF
+          # candidate AND the future v0.3 release tag. fetch-depth:0 cheap on
+          # this small repo.
+          fetch-depth: 0
+
+      - name: Check v0.2-only files don't grow (incl. step-wise)
+        run: bash tools/check-v02-shrinking.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Check spec-code lock (ship-gate paths)
+        run: bash tools/check-spec-code-lock.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache node_modules
+        id: nm_cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: nm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            nm-${{ runner.os }}-${{ runner.arch }}-node22-
+
+      - name: Install deps
+        if: steps.nm_cache.outputs.cache-hit != 'true'
+        run: npm ci --legacy-peer-deps
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Rebuild native modules for current Node ABI
+        run: npm rebuild better-sqlite3
+      - name: Verify native ABI
+        run: npm run check:native
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Task #128 / T10.12 — buf breaking against the merge-base SHA pre-tag,
+      # or against the v0.3 release tag post-tag (auto-detected by
+      # packages/proto/scripts/breaking-check.mjs). Independent of the TS
+      # build/typecheck pass; lives in this job because it's a schema gate
+      # adjacent to typecheck and does not depend on `npm run build:app`.
+      - name: Proto breaking-change gate (buf breaking)
+        run: node packages/proto/scripts/breaking-check.mjs
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+
+  test:
+    name: test (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     strategy:
@@ -54,7 +205,9 @@ jobs:
     # leaving only ~10s under the 10-min cap; flaky timeout-cancellations were
     # masking real failures. Round-1 perf changes (cache restore-keys + coverage
     # merge) target ≤350s but the cap is widened first so a single cold-cache
-    # PR doesn't redline.
+    # PR doesn't redline. After Task #489 split, this job's wall is ~280s but
+    # the 15min cap remains as a generous ceiling for cold-cache + native
+    # rebuild contingencies.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -73,8 +226,6 @@ jobs:
       # may shrink but never grow vs the merge-base AND must be step-wise
       # monotonic across every first-parent commit in this branch series
       # (so a file can't shrink in commit N then re-grow in commit N+1).
-      # Was Linux-only pre-#322; runs on windows via Git-for-Windows bash
-      # since this is the only matrix entry now.
       - name: Check v0.2-only files don't grow (incl. step-wise)
         run: bash tools/check-v02-shrinking.sh
 
@@ -93,10 +244,7 @@ jobs:
       # or deleted. tools/check-spec-code-lock.sh reads
       # docs/superpowers/specs/2026-05-03-v03-daemon-split.lock.json and
       # verifies every locked path exists with the recorded SHA256
-      # (LF-normalized, so platform-stable). Was Linux-only pre-#322;
-      # runs on windows now via Git-for-Windows bash + node. Placed after
-      # Setup Node because the script uses `node -e` to parse the lock
-      # JSON (no jq dependency).
+      # (LF-normalized, so platform-stable).
       - name: Check spec-code lock (ship-gate paths)
         run: bash tools/check-spec-code-lock.sh
 
@@ -118,6 +266,9 @@ jobs:
       # Key includes os/arch/node major + lockfile hash so any dep change
       # busts the cache. Native ABI for Node-side tests is re-aligned by the
       # `npm rebuild better-sqlite3` step below, which always runs.
+      #
+      # Task #489 — IDENTICAL key + restore-keys as the lint and typecheck
+      # jobs above so all three parallel runners share the warm cache.
       - name: Cache node_modules
         id: nm_cache
         uses: actions/cache@v4
@@ -156,40 +307,6 @@ jobs:
       - name: Verify native ABI
         run: npm run check:native
 
-      - name: Lint
-        run: npm run lint:app
-
-      # Wave 0f (#214) — ship-gate (a): zero IPC residue under electron/ + src/.
-      # Forbidden symbols: ipcMain, ipcRenderer, contextBridge,
-      # additionalArguments, webContents.send. Allowlist at
-      # tools/.no-ipc-allowlist is forever-stable per chapter 15 §3 #29.
-      - name: Lint (no IPC residue)
-        run: npm run lint:no-ipc
-
-      - name: Lint (no worker_threads in pty-host) — ch15 §3 #25
-        run: npm run lint:no-worker-threads
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      # Task #128 / T10.12 — buf breaking against the merge-base SHA
-      # pre-tag, or against the v0.3 release tag post-tag (auto-detected
-      # by packages/proto/scripts/breaking-check.mjs). Spec ch11 §4 +
-      # ch15 §3 #1, #2, #19, #20 — rejects field renumber, removal,
-      # comment-only "reserved" bypass, and out-of-slot oneof additions.
-      # Active from phase 1 onward (NOT deferred until ship).
-      #
-      # Placed after typecheck so a TS-side regression doesn't mask
-      # proto-schema regressions (or vice versa) — both run independently.
-      # `fetch-depth: 0` above guarantees the merge-base + future v0.3
-      # tag are reachable without a second fetch.
-      - name: Proto breaking-change gate (buf breaking)
-        run: node packages/proto/scripts/breaking-check.mjs
-        env:
-          # CI hands us GITHUB_BASE_REF on PRs; the script reads it to
-          # pick origin/$GITHUB_BASE_REF as the merge-base candidate.
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-
       # Build is required before `npm test` because the load-smoke harness
       # (tests/electron-load-smoke.test.ts) require()s dist/electron/*.js
       # to verify CJS load cleanliness. Without dist present, those tests
@@ -224,11 +341,6 @@ jobs:
       # pinned by ch14 §1.B) were never executed in CI. They live outside
       # the root include on purpose (pure-node, no jsdom, no setup file)
       # and ship their own minimal config at tools/vitest.config.ts.
-      # Wire-up extends the existing required `lint + typecheck + test`
-      # job rather than adding a new required check (branch protection
-      # is frozen). Was Linux-only pre-#322; runs on windows now since
-      # the assertions are git/fs/process behaviour with no
-      # platform-specific paths.
       - name: Test (tools/**/*.spec.ts)
         run: npx vitest run --config tools/vitest.config.ts
 
@@ -713,7 +825,7 @@ jobs:
       # every v0.3 ship PR. Wiring is deferred to a followup that first
       # stabilizes the integration suite. ch15 §3 items the daemon suite
       # would back-stop (#5 SnapshotV1 layout, #6 listener slot array,
-      # #18 listeners[1] writer rule, #25 child_process boundary, etc.)
+      # #18 listeners[1] writer rule, #25 child_process duplicate boundary)
       # remain covered by direct daemon-side .spec.ts files that do pass;
       # what we lose by deferring is integration-level wire coverage, not
       # ch15 enforcement.
