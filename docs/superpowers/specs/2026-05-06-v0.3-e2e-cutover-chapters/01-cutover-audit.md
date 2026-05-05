@@ -106,6 +106,16 @@ For each wave-2 hot path, the audit records:
   wait off the per-RPC critical path — design choice in
   [03-ptyhost-wiring](./03-ptyhost-wiring.md) §3).
 - **Owner chapter**: [03-ptyhost-wiring](./03-ptyhost-wiring.md) §3.
+- **Open Q5 (blocks PR-3 dispatch)**: chapter 03 §3 picks Option C
+  (`await spawnDaemon` before `BrowserWindow`), which moves daemon-boot
+  latency onto the user-visible "click → window" path. Before PR-3 is
+  dispatched, a measured `p50`/`p95` cold-spawn latency table covering
+  Win / macOS / Linux MUST be appended to chapter 03 §3 (or a sibling
+  measurement note linked from it), with the `35b08d15` baseline as the
+  comparison anchor. Budget: ≤500ms regression vs `35b08d15` at p95;
+  >500ms triggers automatic fallback to Option B (pre-resolved port
+  cache) per chapter 05 §7 Risk-1, NOT manager re-deliberation.
+  PR-3 MUST NOT be opened for review until the table exists.
 
 ### HP-4 — `host / term / buffer` readiness flags
 
@@ -270,8 +280,20 @@ For each wave-2 hot path, the audit records:
 - **Q3**: For `requiresClaudeBin: true` cases — should they FAIL when
   the binary is missing locally, or remain skip-on-absent? v0.3 iron
   rule says zero skip; pragmatically these need a Set B fallback (chapter 04 §4).
-- **Q4**: dev-574's "88 .skip" count — what's the exact source line set?
+- **Q4** [**RESOLVED — R5**]: dev-574's "88 .skip" count — what's the exact source line set?
   Author found 0 Vitest skip directives in `tests/`, and only 1
   `skipLaunch:true` in `harness-ui.mjs`. Reviewer to reconcile —
   manager prompt cited 88; chapter 04 §1 must produce the canonical
   count.
+
+  **R5 ground-truth answer (canonical, see [04-probe-and-harness-update](./04-probe-and-harness-update.md) §1.1)**:
+  at `35b08d15` / `5d0c5375` the count is **0 Vitest
+  `it.skip / test.skip / describe.skip / xit / xdescribe` directives**
+  in `tests/ src/ daemon/ electron/`, **0 occurrences** of any of
+  `requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly /
+  skipLaunch` in `tests/`, and **1 `skipLaunch:true` case** in
+  `scripts/harness-ui.mjs:1624` (`cap-skip-launch-bundle-shape`,
+  capability demo of the runner mechanism; KEEP). dev-574's "88" was a
+  case×capability-flag evaluation count inside
+  `scripts/probe-helpers/harness-runner.mjs`, NOT actual skipped
+  tests.

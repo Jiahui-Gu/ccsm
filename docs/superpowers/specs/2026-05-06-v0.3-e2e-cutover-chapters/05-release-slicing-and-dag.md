@@ -107,6 +107,13 @@ Legend:
 - **Acceptance**: harness `attach-replay-from-headless-buffer` no
   longer reports `daemon port unavailable after 5s`; new
   `daemon-port-ready-before-render` harness case is green.
+- **Acceptance (cold-launch budget)**: PR body MUST include a measured
+  `p50`/`p95` cold-launch click-to-window delta vs `35b08d15` for each
+  of Win / macOS / Linux (table per chapter 03 §3 "Cold-spawn budget
+  (measured)"). Any platform showing **>500ms p95 regression**
+  automatically triggers fallback to Option B (pre-resolved port cache);
+  manager does NOT re-deliberate. PR-3 cannot land with an unfilled
+  table or with the >500ms threshold breached on Option C.
 - **Risk**: low-medium — changes app launch sequencing; verify
   packaged-app smoke too.
 - **blockedBy**: none.
@@ -222,9 +229,15 @@ spec-merge.
 ## 7. Risks & open questions for reviewers
 
 - **Risk-1**: PR-3 (Option C `await spawnDaemon`) lengthens
-  cold-launch by daemon-boot time. If the developer's primary box
-  shows a >500ms regression, fall back to Option B (pre-resolved
-  cache). Reviewer R3 (reliability) MUST confirm regression budget.
+  cold-launch by daemon-boot time. The **enforcement point** is the
+  PR-3 acceptance bullet (above): PR body MUST carry a measured
+  `p50`/`p95` cold-launch click-to-window delta vs `35b08d15` for
+  Win / macOS / Linux. **Any platform showing >500ms p95 regression
+  automatically triggers fallback to Option B (pre-resolved port
+  cache).** This is a deterministic gate, NOT a manager deliberation;
+  the budget number and rollback path are pinned in chapter 03 §3
+  "Cold-spawn budget (measured)" so the reviewer of PR-3 can mechanically
+  reject the PR without re-opening the design.
 - **Risk-2**: PR-2 may collide with PR-7 if the `appearanceSlice` is
   re-organised. Manager SHOULD merge PR-2 first then rebase PR-7.
 - **Risk-3**: PR-6 sigkill-reattach UT may surface a daemon supervision

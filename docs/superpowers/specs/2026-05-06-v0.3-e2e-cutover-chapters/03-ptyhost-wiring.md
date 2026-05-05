@@ -128,6 +128,34 @@ that has NO upper bound on the wait, but a watchdog that surfaces a
 stuck daemon to the renderer as a typed error after a generous
 threshold (e.g. 30s) so users / tests don't hang indefinitely.
 
+#### Cold-spawn budget (measured)
+
+Option C makes "renderer cannot run before daemon is ready" the contract,
+which means daemon-boot latency lands on the user-visible "click →
+window" path. The choice is conditional on that latency staying within
+budget.
+
+- **Baseline**: `35b08d15` cold-launch click-to-window time, measured on
+  the developer's primary box for each platform (Win / macOS / Linux).
+- **Budget**: post-Option-C cold-launch p95 MUST NOT regress more than
+  **500ms** vs the `35b08d15` baseline on any of the three platforms.
+- **Measurement**: PR-3 MUST attach a `p50`/`p95` table (Win / macOS /
+  Linux, baseline vs Option-C) to the PR body. Until that table exists
+  the value below stays as a placeholder:
+
+  | platform | baseline p95 | Option-C p95 | delta |
+  |----------|--------------|--------------|-------|
+  | Windows  | `<TBD by PR-3>` | `<TBD by PR-3>` | `<TBD by PR-3>` |
+  | macOS    | `<TBD by PR-3>` | `<TBD by PR-3>` | `<TBD by PR-3>` |
+  | Linux    | `<TBD by PR-3>` | `<TBD by PR-3>` | `<TBD by PR-3>` |
+
+- **Trigger**: a delta >500ms on any platform forces the fallback to
+  **Option B** (pre-resolved port cache via `daemon:portReady` IPC
+  event) per chapter 05 §7 Risk-1 — this is automatic, NOT a manager
+  judgement call. The fallback path is pre-designed below; Option B
+  becomes the shipped solution and Option C is documented as
+  "considered, exceeded budget."
+
 #### Implementation choice
 
 There are three viable shapes; pick exactly ONE and document the
@@ -165,19 +193,16 @@ on iteration 0.
 **Pros**: cleanest contract — "renderer cannot run before daemon is
 ready"; no new IPC channel; one-line fix in `electron/main.ts`.
 **Cons**: cold app launch is now sequenced (window appears later).
-Acceptable: the daemon spawn in dev mode is sub-second; production
-ditto. The user-perceptible "click → window" delay grows by ~daemon
-boot time, currently negligible.
+Acceptable iff the budget above holds; if not, Option B auto-wins.
 
 #### Decision
 
-**MUST adopt Option C** (await spawnDaemon before BrowserWindow).
+**MUST adopt Option C** (await spawnDaemon before BrowserWindow),
+**conditional** on the measured cold-spawn budget above
+(≤500ms p95 regression vs `35b08d15` on Win / macOS / Linux).
 **Why**: it's the only option that simultaneously makes the contract
 explicit ("daemon ready iff window exists"), removes the per-RPC
-critical-path penalty, and requires zero changes downstream. The
-window-show latency penalty is sub-second on every measured platform.
-If a future profiling pass demonstrates user-perceptible regression,
-the fix migrates to Option B (pre-resolved cache).
+critical-path penalty, and requires zero changes downstream.
 
 The 5s `for (let i = 0; i < 50; i += 1)` poll in
 `electron/preload/bridges/ccsmPty.ts:41` MUST stay (fallback path —
@@ -185,6 +210,47 @@ The 5s `for (let i = 0; i < 50; i += 1)` poll in
 between the await and the first RPC) but MAY be shortened to 10
 iterations. The error message MUST include "this should never happen
 post-spawnDaemon-await" so a future regression is debuggable.
+
+#### Spawn failure path
+
+If `spawnDaemon()` rejects (port bind failure, daemon binary missing,
+permission denied, malformed `PORT=<n>` line, 10s startup-timeout —
+see chapter 03 §3 ready-signal contract owned by CF-7), main MUST:
+
+1. **Catch** the rejection at the top-level `await` site in
+   `electron/main.ts`. No unhandled-rejection.
+2. **Retry exactly once** with `port=0` (ask the OS to assign any free
+   loopback port) before surfacing failure. The single retry covers the
+   common "developer left a previous daemon bound on a fixed port"
+   collision; it does NOT cover deeper failures.
+3. If the retry also rejects: show a **native Electron error dialog**
+   (`dialog.showErrorBox`) with the daemon's last stderr line (truncated
+   to 500 chars) and exit the app with a **non-zero exit code**.
+4. **No automatic restart loop.** Auto-restart is explicitly v0.4
+   reliability scope (see §7 + chapter 00 §3.7 — owned by F-00).
+5. **No silent fallback** to "open the window without a daemon." The
+   contract is "daemon ready iff window exists"; a daemon-less window
+   is worse than no window for the user.
+
+#### Race after await
+
+Even with Option C's `await spawnDaemon()`, there is a window between
+the await resolving and the first preload RPC firing where
+`getDaemonPort()` could theoretically return null (e.g., the in-memory
+port reference is cleared by a separate `before-quit` racing the
+bootstrap). The fixer MUST either:
+
+- **Prove the race cannot occur** by inspecting `electron/main.ts` and
+  showing that no path between `await spawnDaemon()` resolving and
+  `createWindow()` returning can clear the port, AND that `before-quit`
+  is not registered until after `createWindow()` returns; OR
+- **Pin the worst-case window** in the spec (e.g., "≤1 event-loop tick
+  between `await spawnDaemon()` resolving and `createWindow()` returning,
+  no other handler can preempt") AND keep the ≤10-iteration bridge poll
+  as the explicit guard for that window.
+
+The retained 10-iteration poll (above) is the implementation guard;
+this section is the contract that makes it explicit.
 
 ### Renderer error surface
 
