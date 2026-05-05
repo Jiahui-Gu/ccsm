@@ -1,4 +1,4 @@
-// packages/daemon/test/crash/pruner.spec.ts
+// packages/daemon/src/crash/__tests__/pruner.spec.ts
 //
 // Sink tests for the crash retention pruner (Task #64 / T5.12).
 //
@@ -8,14 +8,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { openDatabase, type SqliteDatabase } from '../../src/db/sqlite.js';
-import { runMigrations } from '../../src/db/migrations/runner.js';
+import { openDatabase, type SqliteDatabase } from '../../db/sqlite.js';
+import { runMigrations } from '../../db/migrations/runner.js';
 import {
   CrashPruner,
   PRUNE_INTERVAL_MS,
   STARTUP_WARMUP_MS,
   type PrunerLogger,
-} from '../../src/crash/pruner.js';
+} from '../pruner.js';
 
 function makeDb(): SqliteDatabase {
   const db = openDatabase(':memory:');

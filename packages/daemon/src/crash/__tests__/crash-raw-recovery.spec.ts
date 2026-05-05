@@ -1,4 +1,4 @@
-// packages/daemon/test/crash/crash-raw-recovery.spec.ts
+// packages/daemon/src/crash/__tests__/crash-raw-recovery.spec.ts
 //
 // Boot-replay recovery for crash-raw.ndjson — covers the silent-loss
 // failure modes called out by spec ch09 §6.2:
@@ -24,12 +24,12 @@ import * as path from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { openDatabase, type SqliteDatabase } from '../../src/db/sqlite.js';
+import { openDatabase, type SqliteDatabase } from '../../db/sqlite.js';
 import {
   appendCrashRaw,
   replayCrashRawOnBoot,
   type CrashRawEntry,
-} from '../../src/crash/raw-appender.js';
+} from '../raw-appender.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures: a fresh tmp dir per test holding the NDJSON file + a

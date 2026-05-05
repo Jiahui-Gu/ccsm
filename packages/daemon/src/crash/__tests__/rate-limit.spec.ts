@@ -1,4 +1,4 @@
-// packages/daemon/test/crash/rate-limit.spec.ts
+// packages/daemon/src/crash/__tests__/rate-limit.spec.ts
 //
 // `sqlite_op` rate-limit (spec ch09 §1: "one entry per ~60s per code-class
 // to prevent flooding"). Kept separate from capture.spec.ts because it
@@ -15,7 +15,7 @@ import {
   type SqliteErrorBus,
   type SqliteErrorInfo,
   installCaptureSources,
-} from '../../src/crash/sources.js';
+} from '../sources.js';
 
 function makeFakeSqliteBus(): {
   bus: SqliteErrorBus;
