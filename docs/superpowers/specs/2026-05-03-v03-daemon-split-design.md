@@ -1018,7 +1018,7 @@ service SettingsService {
 enum SettingsScope {
   SETTINGS_SCOPE_UNSPECIFIED = 0;  // treated as GLOBAL
   SETTINGS_SCOPE_GLOBAL = 1;       // single-row-per-key for the daemon install
-  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with InvalidArgument in v0.3
+  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with PermissionDenied in v0.3 (ch15 §3 #14, reconciled per Task #431)
 }
 
 message GetSettingsRequest {
@@ -1382,7 +1382,7 @@ export function assertOwnership(p: Principal, s: Session): void {
 | `SendInput` | as above |
 | `Resize` | as above |
 | `GetCrashLog` / `WatchCrashLog` | `OwnerFilter` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §5) defaults to `OWNER_FILTER_OWN`; daemon filters `crash_log` by `owner_id IN (principalKey(ctx.principal), 'daemon-self')`; `OWNER_FILTER_ALL` is rejected in v0.3 with `PermissionDenied` (parity with `SETTINGS_SCOPE_PRINCIPAL` and `WATCH_SCOPE_ALL`); local-user clients use `OWNER_FILTER_OWN` which yields the same effective view (see [Chapter 07](#chapter-07--data-and-state) §3 for the column and [Chapter 09](#chapter-09--crash-collector) §1 for source-attribution rules) |
-| `GetSettings` / `UpdateSettings` | `SettingsScope` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6) defaults to `SETTINGS_SCOPE_GLOBAL`; v0.3 daemon rejects `SETTINGS_SCOPE_PRINCIPAL` with `InvalidArgument` (the enum value exists for v0.4 only). Open to any local-user principal because v0.3 has exactly one. **`claude_binary_path` and any other code-execution-controlling key is NOT a `Settings` proto field** (see [Chapter 04](#chapter-04--proto-and-rpc-surface) §6); these are read by the daemon from the install-time config file only. There is no RPC path to set them in v0.3 or v0.4 — the boundary is mechanical (the field does not exist on the wire). |
+| `GetSettings` / `UpdateSettings` | `SettingsScope` ([Chapter 04](#chapter-04--proto-and-rpc-surface) §6) defaults to `SETTINGS_SCOPE_GLOBAL`; v0.3 daemon rejects `SETTINGS_SCOPE_PRINCIPAL` with `PermissionDenied` (parity with `OWNER_FILTER_ALL` and `WATCH_SCOPE_ALL`; ch15 §3 #14, reconciled per Task #431 — the enum value exists for v0.4 only and the scope is denied, not malformed). Open to any local-user principal because v0.3 has exactly one. **`claude_binary_path` and any other code-execution-controlling key is NOT a `Settings` proto field** (see [Chapter 04](#chapter-04--proto-and-rpc-surface) §6); these are read by the daemon from the install-time config file only. There is no RPC path to set them in v0.3 or v0.4 — the boundary is mechanical (the field does not exist on the wire). |
 
 **Why crash log + settings ship principal-scoped from v0.3 day one**: even with exactly one principal, the schema, proto enum, and SQL columns are present so that v0.4 multi-principal lands as new enum-value branches and new row inserts — not as a column add or a request-shape change. See [Chapter 15](#chapter-15--zero-rework-audit) §1 (rows §5, §10) for the audit verdict. The `principal_aliases` table ([Chapter 07](#chapter-07--data-and-state) §3) is empty in v0.3 and exists so v0.4 can thread `local-user` continuity (e.g., user uid 1000 → SSO sub) without rewriting historical `owner_id` values.
 

@@ -10,8 +10,11 @@
 // Spec ch04 §6 (SettingsService) — error contract:
 //   - Empty `RequestMeta.request_id` → `InvalidArgument` with
 //     `ErrorDetail.code = "request.missing_id"` (ch04 §2 / F7).
-//   - SETTINGS_SCOPE_PRINCIPAL on v0.3 → `InvalidArgument` (per ch04 §6
-//     comment "rejected with InvalidArgument in v0.3").
+//   - SETTINGS_SCOPE_PRINCIPAL on v0.3 → `PermissionDenied` (per ch15
+//     §3 #14 — all three enums OwnerFilter/SettingsScope/WatchScope
+//     reject the broad/aggregate value with PermissionDenied; the
+//     scope is denied, not malformed; reconciled per Task #431, which
+//     superseded the earlier proto-comment wording of `InvalidArgument`).
 //   - Out-of-range CrashRetention values (max_entries > 10000 or
 //     max_age_days > 90) → `InvalidArgument` per the ch04 §6 caps.
 //   - Negative geometry (cols/rows <= 0) → `InvalidArgument`.
@@ -21,7 +24,7 @@
 // for a scope. There is no "get one key" RPC in the v0.3 proto. The
 // closest contract surface is `Get` on a non-GLOBAL/non-UNSPECIFIED
 // scope (e.g., `SETTINGS_SCOPE_PRINCIPAL` in v0.3, which is the only
-// other valid enum value) — which returns `InvalidArgument`, not
+// other valid enum value) — which returns `PermissionDenied`, not
 // `NotFound`, because the scope itself is wire-rejected before any
 // row lookup. We pin both surfaces and document the divergence from the
 // ch12 §3 prose: NotFound-by-key would require a new RPC the proto does
@@ -123,11 +126,12 @@ function validateSettings(s: ReturnType<typeof create<typeof SettingsSchema>>) {
 
 function rejectV04Scope(scope: SettingsScope): void {
   if (scope === SettingsScope.PRINCIPAL) {
-    // ch04 §6: "v0.3 daemon honors only SETTINGS_SCOPE_GLOBAL;
-    // SETTINGS_SCOPE_PRINCIPAL is rejected with InvalidArgument in v0.3."
+    // ch15 §3 #14 (Task #431 reconcile): "v0.3 daemon honors only
+    // SETTINGS_SCOPE_GLOBAL; SETTINGS_SCOPE_PRINCIPAL is rejected with
+    // PermissionDenied in v0.3" — denied scope, not malformed wire.
     throw new ConnectError(
       'SETTINGS_SCOPE_PRINCIPAL is not supported in v0.3',
-      Code.InvalidArgument,
+      Code.PermissionDenied,
       undefined,
       [
         {
@@ -335,7 +339,7 @@ describe('settings-error (ch12 §3 / ch04 §6)', () => {
     }
   });
 
-  it('Update with SETTINGS_SCOPE_PRINCIPAL → InvalidArgument (v0.3 rejects v0.4 scope)', async () => {
+  it('Update with SETTINGS_SCOPE_PRINCIPAL → PermissionDenied (v0.3 rejects v0.4 scope)', async () => {
     const client = harness.makeClient(SettingsService);
     try {
       await client.updateSettings({
@@ -343,31 +347,32 @@ describe('settings-error (ch12 §3 / ch04 §6)', () => {
         settings: create(SettingsSchema, {}),
         scope: SettingsScope.PRINCIPAL,
       });
-      expect.fail('expected InvalidArgument');
+      expect.fail('expected PermissionDenied');
     } catch (err) {
       expect(err).toBeInstanceOf(ConnectError);
       const ce = err as ConnectError;
-      expect(ce.code).toBe(Code.InvalidArgument);
+      expect(ce.code).toBe(Code.PermissionDenied);
       const detail = ce.findDetails(ErrorDetailSchema)[0];
       expect(detail.code).toBe('settings.scope_unsupported');
     }
   });
 
-  it('Get with SETTINGS_SCOPE_PRINCIPAL → InvalidArgument (v0.3 rejects v0.4 scope)', async () => {
+  it('Get with SETTINGS_SCOPE_PRINCIPAL → PermissionDenied (v0.3 rejects v0.4 scope)', async () => {
     // Documented divergence from ch12 §3 prose ("NotFound for unknown key"):
     // GetSettings has no per-key surface; the closest unknown-target
     // surface is the v0.4 PRINCIPAL scope, which is wire-rejected with
-    // InvalidArgument BEFORE any row lookup. NotFound would require a
-    // GetSettingsByKey RPC the proto does not declare.
+    // PermissionDenied BEFORE any row lookup (ch15 §3 #14, reconciled
+    // per Task #431). NotFound would require a GetSettingsByKey RPC the
+    // proto does not declare.
     const client = harness.makeClient(SettingsService);
     try {
       await client.getSettings({
         meta: newRequestMeta(),
         scope: SettingsScope.PRINCIPAL,
       });
-      expect.fail('expected InvalidArgument');
+      expect.fail('expected PermissionDenied');
     } catch (err) {
-      expect((err as ConnectError).code).toBe(Code.InvalidArgument);
+      expect((err as ConnectError).code).toBe(Code.PermissionDenied);
     }
   });
 

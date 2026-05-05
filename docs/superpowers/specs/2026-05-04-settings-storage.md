@@ -92,7 +92,9 @@ designing fresh, key/value is the right call for v0.3:
 
 `scope` is always the literal string `'global'` in v0.3. The RPC layer
 rejects any other scope (`SettingsScope.SETTINGS_SCOPE_PRINCIPAL` returns
-`InvalidArgument` per settings.proto line 35). v0.4 will write
+`PermissionDenied` per ch15 §3 #14, reconciled per Task #431 — the scope
+is denied because v0.3 has no principal-scoped settings, not because the
+wire shape is malformed). v0.4 will write
 `'principal:local-user:1000'` etc. additively.
 
 `value` is **always JSON-encoded**, even for scalars. Readers parse per
@@ -267,8 +269,9 @@ Handler post-processing:
    without giving clients a path to spoof daemon-derived state.
 
 `scope` parameter handling: `SETTINGS_SCOPE_UNSPECIFIED` / `GLOBAL` →
-proceed; `SETTINGS_SCOPE_PRINCIPAL` → return `Code.InvalidArgument`
-(matches proto comment line 35).
+proceed; `SETTINGS_SCOPE_PRINCIPAL` → return `Code.PermissionDenied`
+(ch15 §3 #14, reconciled per Task #431; supersedes the earlier
+proto-comment wording of `InvalidArgument`).
 
 ### 4.2 SettingsService.UpdateSettings
 

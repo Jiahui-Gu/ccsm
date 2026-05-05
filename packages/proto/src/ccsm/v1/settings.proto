@@ -33,7 +33,7 @@ service SettingsService {
 enum SettingsScope {
   SETTINGS_SCOPE_UNSPECIFIED = 0;  // treated as GLOBAL
   SETTINGS_SCOPE_GLOBAL = 1;       // single-row-per-key for the daemon install
-  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with InvalidArgument in v0.3
+  SETTINGS_SCOPE_PRINCIPAL = 2;    // v0.4: per-principal overrides; rejected with PermissionDenied in v0.3 (ch15 §3 #14, reconciled per Task #431)
 }
 
 message GetSettingsRequest {
