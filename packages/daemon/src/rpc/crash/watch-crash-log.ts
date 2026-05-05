@@ -38,9 +38,11 @@
 //
 // SRP layering — three roles kept separate (dev.md §2):
 //   * decider:  `decideOwnerScope(filter)` — pure enum verdict over
-//               `OwnerFilter`. UNSPECIFIED/OWN → 'own'; ALL → 'all';
-//               unknown enum → 'reject_permission_denied' (forward-compat
-//               conservative deny, same posture as
+//               `OwnerFilter`. UNSPECIFIED/OWN → 'own'; ALL →
+//               'reject_permission_denied' (spec ch15 §3 #14: ALL is
+//               reserved for v0.4 admin principals; v0.3 daemon MUST
+//               reject); unknown enum → 'reject_permission_denied'
+//               (forward-compat conservative deny, same posture as
 //               `sessions/watch-sessions.ts:decideWatchScope`).
 //   * predicate: `isVisibleToCaller(entry, scope, callerKey)` — pure
 //               function. OWN visibility = `entry.owner_id === callerKey
@@ -124,31 +126,27 @@ import { throwError } from '../errors.js';
  * - `own` — `OWNER_FILTER_UNSPECIFIED` (==OWN per crash.proto comment) or
  *   `OWNER_FILTER_OWN`. Visibility: `entry.owner_id === callerKey ||
  *   entry.owner_id === DAEMON_SELF` (ch04 §5 + ch09 §1 sentinel).
- * - `all` — `OWNER_FILTER_ALL`. v0.3 has a single principal kind so the
- *   filter is effectively a no-op at runtime; v0.4 multi-principal
- *   tightens this to admin-only via the auth interceptor (today the
- *   wire shape allows it for the local-user principal). The integration
- *   spec `crash-stream.spec.ts "OWN filter drops events owned by other
- *   principals"` pins the OWN behavior; an explicit ALL spec lands when
- *   admin scoping does in v0.4.
- * - `reject_permission_denied` — unknown enum value the v0.3 daemon does
- *   not know. Conservative deny (same posture as
- *   `decideGetCrashLogQuery`'s unknown-enum throw and
- *   `decideWatchScope`'s default branch). A v0.4 client speaking a
- *   higher proto_version that sends a brand-new enum value gets a
- *   structured `(PermissionDenied, session.not_owned)` pair rather
- *   than silent acceptance.
+ * - `reject_permission_denied` — `OWNER_FILTER_ALL` on v0.3 (spec ch15 §3
+ *   #14: ALL reserved for v0.4 admin principals; v0.3 daemon MUST reject
+ *   with PermissionDenied + structured ErrorDetail), OR an unknown enum
+ *   value the v0.3 daemon does not know (forward-compat conservative
+ *   deny — same posture as `decideWatchScope`'s default branch). A v0.4
+ *   client speaking a higher proto_version that sends a brand-new enum
+ *   value gets a structured `(PermissionDenied, session.not_owned)` pair
+ *   rather than silent acceptance.
  */
 export type OwnerScopeVerdict =
   | { readonly kind: 'own' }
-  | { readonly kind: 'all' }
   | { readonly kind: 'reject_permission_denied' };
 
 /**
  * Pure decider over `OwnerFilter`. v0.3 enum values:
  *   - UNSPECIFIED (0) → 'own' (treated as OWN per crash.proto comment)
  *   - OWN         (1) → 'own'
- *   - ALL         (2) → 'all'
+ *   - ALL         (2) → 'reject_permission_denied' (spec ch15 §3 #14:
+ *                       OwnerFilter / SettingsScope / WatchScope MUST
+ *                       reject the broadened values on v0.3; ALL is
+ *                       reserved for v0.4 admin principals)
  *   - anything else → 'reject_permission_denied'
  */
 export function decideOwnerScope(filter: OwnerFilter): OwnerScopeVerdict {
@@ -157,7 +155,7 @@ export function decideOwnerScope(filter: OwnerFilter): OwnerScopeVerdict {
     case OwnerFilter.OWN:
       return { kind: 'own' };
     case OwnerFilter.ALL:
-      return { kind: 'all' };
+      return { kind: 'reject_permission_denied' };
     default:
       return { kind: 'reject_permission_denied' };
   }
@@ -177,8 +175,11 @@ export function decideOwnerScope(filter: OwnerFilter): OwnerScopeVerdict {
  * principalKey will ever match the sentinel — see ch09 §1 + the
  * `event-bus.ts` Layer 1 note on why filtering is the handler's job.
  *
- * ALL visibility: true. v0.3 has only one principal kind so this is
- * effectively the same as OWN at runtime; v0.4 admin scoping diverges.
+ * v0.3 has only one accepted scope verdict — `own` — because ALL is
+ * rejected at the sink (spec ch15 §3 #14). The
+ * `reject_permission_denied` branch is filtered out by the sink before
+ * this helper is reached, but we be defensive — an unknown scope hides
+ * everything rather than silently widening.
  *
  * Exported so unit tests can pin the predicate without spinning up a
  * Connect transport.
@@ -188,7 +189,6 @@ export function isVisibleToCaller(
   scope: OwnerScopeVerdict,
   callerKey: string,
 ): boolean {
-  if (scope.kind === 'all') return true;
   if (scope.kind === 'own') {
     return entry.owner_id === callerKey || entry.owner_id === DAEMON_SELF;
   }
@@ -455,15 +455,24 @@ export function makeWatchCrashLogHandler(
 
     const verdict = decideOwnerScope(req.ownerFilter);
     if (verdict.kind === 'reject_permission_denied') {
-      // Forward-compat conservative deny — matches the unknown-enum
-      // posture in `get-crash-log.ts:makeGetCrashLogHandler`. T2.5
+      // Spec ch15 §3 #14: OwnerFilter / SettingsScope / WatchScope MUST
+      // reject the broadened values (ALL / PRINCIPAL) on v0.3 with
+      // PermissionDenied. ALL is reserved for v0.4 admin principals.
+      // Forward-compat conservative deny — also catches unknown enum
+      // values from a v0.4 client speaking a higher proto_version. T2.5
       // single source of truth: `session.not_owned` →
       // `Code.PermissionDenied + ErrorDetail`.
-      throwError(
-        'session.not_owned',
-        `unknown OwnerFilter enum value ${String(req.ownerFilter)} — refusing to interpret`,
-        { requested_owner_filter: String(req.ownerFilter) },
-      );
+      const requested =
+        req.ownerFilter === OwnerFilter.ALL
+          ? 'ALL'
+          : String(req.ownerFilter);
+      const message =
+        req.ownerFilter === OwnerFilter.ALL
+          ? 'OWNER_FILTER_ALL is not permitted on v0.3 (admin scope reserved for v0.4 — spec ch15 §3 #14)'
+          : `unknown OwnerFilter enum value ${requested} — refusing to interpret`;
+      throwError('session.not_owned', message, {
+        requested_owner_filter: requested,
+      });
     }
 
     const callerKey = principalKey(principal);

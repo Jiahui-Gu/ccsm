@@ -276,15 +276,28 @@ export function makeGetCrashLogHandler(
       );
     }
     const plan = decideGetCrashLogQuery(req);
+    // Spec ch15 §3 #14: OwnerFilter / SettingsScope / WatchScope MUST
+    // reject the broadened values (ALL / PRINCIPAL) on v0.3 with
+    // PermissionDenied. ALL is reserved for v0.4 admin principals; the
+    // wire shape allows it but the v0.3 daemon's authorization layer
+    // refuses it — single source of truth alongside
+    // `sessions/watch-sessions.ts:decideWatchScope` (which rejects
+    // WATCH_SCOPE_ALL with the same `session.not_owned` ErrorDetail).
+    if (plan.ownerFilter === OwnerFilter.ALL) {
+      throwError(
+        'session.not_owned',
+        'OWNER_FILTER_ALL is not permitted on v0.3 (admin scope reserved for v0.4 — spec ch15 §3 #14)',
+        { requested_owner_filter: 'ALL' },
+      );
+    }
     // Defensive: reject unknown enum values rather than silently treating
-    // them as ALL or OWN. Mirrors the `decideWatchScope` posture in
+    // them as OWN. Mirrors the `decideWatchScope` posture in
     // sessions/watch-sessions.ts (forward-compat: a v0.4 client speaking
     // a higher proto_version may send an enum the v0.3 daemon does not
     // know; conservative deny is the contract).
     if (
       plan.ownerFilter !== OwnerFilter.UNSPECIFIED &&
-      plan.ownerFilter !== OwnerFilter.OWN &&
-      plan.ownerFilter !== OwnerFilter.ALL
+      plan.ownerFilter !== OwnerFilter.OWN
     ) {
       throwError(
         'session.not_owned',
