@@ -104,38 +104,42 @@
                       Account="NT AUTHORITY\LocalService"
                       Vital="yes">
         <!--
-          ServiceConfig (WiX 4 schema) — failure actions per ch10 §5.1.
-          Restart on first + second failure (60 s reset window); on third
-          failure, do nothing (operator inspection). The MSI must NOT
-          configure a destructive RunCommand for the third action — the
-          installer's healthz-fail rollback path (ch10 §5 step 7) is the
-          recovery boundary.
+          util:ServiceConfig (WiX 5 schema) — failure actions.
+            - Restart on first + second failure (1 day reset window — wix5
+              util uses DAYS, not seconds, for the reset period).
+            - Third failure: none (operator inspection). The MSI must NOT
+              configure a destructive RunCommand for the third action — the
+              installer's healthz-fail rollback path (ch10 §5 step 7) is the
+              recovery boundary.
+
+          WiX 5 dropped native <ServiceConfigFailureActions>'s old attribute
+          spelling (ResetPeriodInSeconds / DelayInSeconds) and removed
+          ServiceSidType from util:ServiceConfig — per-service SID type now
+          lives on the native <ServiceConfig> element via the new ServiceSid
+          attribute (see below).
         -->
-        <ServiceConfigFailureActions Id="CcsmDaemonFailure"
-                                     ResetPeriodInSeconds="60">
-          <Failure Action="restart" DelayInSeconds="5" />
-          <Failure Action="restart" DelayInSeconds="30" />
-          <Failure Action="none"   DelayInSeconds="0" />
-        </ServiceConfigFailureActions>
+        <util:ServiceConfig FirstFailureActionType="restart"
+                            SecondFailureActionType="restart"
+                            ThirdFailureActionType="none"
+                            ResetPeriodInDays="1"
+                            RestartServiceDelayInSeconds="5" />
 
         <!--
-          ServiceConfig (WiX 4 element) — apply at install + reinstall.
-          DelayedAutoStart=no: we want immediate auto-start so /healthz
-          comes up within the installer's 10 s budget.
+          Native ServiceConfig (WiX 5):
+            - DelayedAutoStart="no": immediate auto-start so /healthz comes
+              up within the installer's 10 s budget.
+            - ServiceSid="restricted": SCM SID type "restricted" so the
+              service SID has write access only to objects ACL'd for it
+              (state dir DACL above grants ccsm-daemon SID Modify on
+              STATEDIR). Replaces the WiX 4-era util:ServiceConfig
+              ServiceSidType attribute. Verified by ch10 §5.1 ship-gate:
+              `sc qsidtype ccsm-daemon` returns RESTRICTED.
         -->
         <ServiceConfig DelayedAutoStart="no"
+                       ServiceSid="restricted"
                        OnInstall="yes"
                        OnReinstall="yes" />
       </ServiceInstall>
-
-      <!--
-        util:ServiceConfig — sets SCM SID type "restricted" so the service
-        SID has write access only to objects ACL'd for it (state dir DACL
-        below grants ccsm-daemon SID Modify on STATEDIR). Verified by
-        ch10 §5.1 ship-gate: `sc qsidtype ccsm-daemon` returns RESTRICTED.
-      -->
-      <util:ServiceConfig ServiceName="ccsm-daemon"
-                          ServiceSidType="restricted" />
 
       <ServiceControl Id="CcsmDaemonControl"
                       Name="ccsm-daemon"
@@ -166,14 +170,27 @@
 
     <!--
       State directory (%PROGRAMDATA%\ccsm) — ch07 §2 win32 row.
-      <CreateFolder> + <util:PermissionEx> set the DACL per ch10 §5.1:
+
+      WiX 5 schema notes:
+        - Component <Condition> moved from child element to attribute form.
+        - Component Guid="*" requires a File KeyPath; CreateFolder-only
+          components must use an explicit, stable GUID (never regenerate
+          across releases — these GUIDs travel through MajorUpgrade).
+        - DACL is set via the WiX 5 NATIVE <PermissionEx Sddl="..."/>
+          element (not util:PermissionEx). In wix5 the Sddl attribute moved
+          to the native PermissionEx; util:PermissionEx switched to a
+          user/permission-bit model (User + GenericAll/Read/etc.) without
+          Sddl. SDDL string keeps the DACL self-documenting and 1:1 with
+          the spec — preferred over expanding into multiple per-principal
+          util:PermissionEx children.
+
+      DACL grants per ch10 §5.1 (unchanged from prior schema):
         - LocalService: Modify (so the daemon can write listener-a.json,
           ccsm.db, crash-raw.ndjson).
         - BUILTIN\Users: Read on the directory and on listener-a.json
           specifically (so per-user Electron can read the descriptor
           without joining a group).
-      Permanent="yes" + the REMOVEUSERDATA-gated component below handles
-      the "remove on /qn REMOVEUSERDATA=1" matrix.
+        - BUILTIN\Administrators: Full control.
 
       The descriptor file itself (listener-a.json) is written by the
       daemon at boot (ch07 §2.1, T1.6); the installer creates the
@@ -181,33 +198,28 @@
     -->
     <Component Id="StateDir"
                Directory="STATEDIR"
-               Guid="*">
+               Guid="3e2f7a14-8d6b-4c9a-9f5d-2a1b6c8e7d4f"
+               Condition='NOT REMOVEUSERDATA OR REMOVEUSERDATA="0"'>
       <CreateFolder>
-        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+        <PermissionEx Id="StateDirAcl" Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
       </CreateFolder>
-      <!--
-        Component is permanent unless REMOVEUSERDATA=1. Achieved via two
-        components controlled by Condition; this component holds the DACL
-        and stays put.
-      -->
-      <Condition>NOT REMOVEUSERDATA OR REMOVEUSERDATA="0"</Condition>
     </Component>
 
     <Component Id="StateDirRemovable"
                Directory="STATEDIR"
-               Guid="*">
+               Guid="7c4e9b25-1a3f-4e58-b6c0-9d8e2f5a3b71"
+               Condition='REMOVEUSERDATA="1"'>
       <CreateFolder>
-        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+        <PermissionEx Id="StateDirRemovableAcl" Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
       </CreateFolder>
       <util:RemoveFolderEx On="uninstall" Property="STATEDIR" />
-      <Condition>REMOVEUSERDATA="1"</Condition>
     </Component>
 
     <Component Id="DescriptorsDir"
                Directory="DESCRIPTORSDIR"
-               Guid="*">
+               Guid="b9d6f238-5e1c-4a87-8f2d-3c4b1e6a9d50">
       <CreateFolder>
-        <util:PermissionEx Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
+        <PermissionEx Id="DescriptorsDirAcl" Sddl="D:PAI(A;OICI;FA;;;LS)(A;OICI;0x1200a9;;;BU)(A;OICI;FA;;;BA)" />
       </CreateFolder>
     </Component>
 

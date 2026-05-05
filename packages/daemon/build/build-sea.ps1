@@ -33,8 +33,12 @@ try {
 
   # Step 2: esbuild bundle. Task #480: better-sqlite3 wrapper bundled in
   # (only `bindings` external, unreachable in SEA — see build-sea.sh).
+  # Task #462 fix: use `pnpm exec esbuild` so we resolve to the workspace's
+  # pinned esbuild (devDependency of @ccsm/daemon) via .pnpm bin shim, instead
+  # of `npx --yes esbuild` which on Windows tries to download and frequently
+  # fails (PATH / npm registry / cache permissions).
   Step 'esbuild bundle'
-  npx --yes esbuild dist/index.js `
+  pnpm exec esbuild dist/index.js `
     --bundle `
     --platform=node `
     --target=node22 `

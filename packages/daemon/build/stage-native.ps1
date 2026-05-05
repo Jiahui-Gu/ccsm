@@ -59,6 +59,7 @@ if (-not $bsqOk) {
 # node-pty — optional until T4.2 wires the actual spawn path.
 if (Test-Path (Join-Path $PkgDir 'node_modules/node-pty')) {
   Copy-FirstMatch -AddonName 'node-pty' -TargetFilename 'pty.node' -Candidates @(
+    "node_modules/node-pty/prebuilds/$pa/pty.node",
     "node_modules/node-pty/prebuilds/$pa/node-pty.node",
     "node_modules/node-pty/prebuilds/$pa/node.napi.node",
     'node_modules/node-pty/build/Release/pty.node'
