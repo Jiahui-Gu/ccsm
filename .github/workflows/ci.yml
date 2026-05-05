@@ -669,6 +669,7 @@ jobs:
       # in the PR body. workflow_dispatch runs (no PR number) skip the
       # check via the `--diff` fallback against the merge-base.
       - name: Audit-table revalidate (ch15 §1/§2)
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
