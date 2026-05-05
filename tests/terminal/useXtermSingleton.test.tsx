@@ -44,10 +44,17 @@ describe('useXtermSingleton', () => {
     terminalCtor.mockClear();
     openSpy.mockClear();
     loadAddonSpy.mockClear();
+    // Spec #592 T-4 / Task #603 (PR-4): xterm pin order requires the
+    // pty-host wire (`window.ccsmPty`) to be in place BEFORE the hook
+    // instantiates xterm. The original tests asserted bring-up against
+    // a bare jsdom window, so install a no-op bridge here to satisfy
+    // the new wire gate.
+    (window as unknown as { ccsmPty: object }).ccsmPty = {};
   });
 
   afterEach(() => {
     __resetSingletonForTests();
+    delete (window as unknown as { ccsmPty?: object }).ccsmPty;
   });
 
   it('creates the Terminal singleton on first mount', () => {

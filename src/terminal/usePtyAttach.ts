@@ -15,6 +15,12 @@ import {
 } from './xtermSingleton';
 
 export type PtyAttachState =
+  // `idle` covers the host-mounted-without-sid window introduced by
+  // spec #592 T-4 / Task #603 (PR-4): TerminalPane's host div now mounts
+  // unconditionally so e2e probes (terminal-host-mounted, follow-up
+  // #605 PR-8) can find it before the active session resolves. While
+  // sessionId is null the hook does not attach and renders no overlay.
+  | { kind: 'idle' }
   | { kind: 'attaching' }
   | { kind: 'ready' }
   // `exit` distinguishes user-intentional clean exit (no signal, code 0)
@@ -46,8 +52,10 @@ export type UsePtyAttachResult = {
  * Returns `{ state, onRetry }` for the host component to render the
  * appropriate overlay (attaching / error / exit) and Retry button.
  */
-export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult {
-  const [state, setState] = useState<PtyAttachState>({ kind: 'attaching' });
+export function usePtyAttach(sessionId: string | null, cwd: string): UsePtyAttachResult {
+  const [state, setState] = useState<PtyAttachState>(
+    sessionId == null ? { kind: 'idle' } : { kind: 'attaching' },
+  );
   // Store action — clear the disconnect entry on respawn success so the
   // sidebar red dot disappears the moment the pty is back. Routed through
   // a ref so the attach effect doesn't depend on it (and re-run unnecessarily).
@@ -57,7 +65,7 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
   // Tracks the sessionId we're currently attaching for so a stale resolve
   // from a previous session can't clobber the current one when the user
   // switches quickly.
-  const requestedSidRef = useRef<string>(sessionId);
+  const requestedSidRef = useRef<string | null>(sessionId);
   // Bumped by Retry to force the attach effect to re-run for the same sid.
   const [attachNonce, setAttachNonce] = useState(0);
 
@@ -65,6 +73,47 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
   // session, reset the terminal, attach the new one, and wire data flow.
   useEffect(() => {
     requestedSidRef.current = sessionId;
+    // Spec #592 T-4 PR-4: when the host mounts without a sid (initial
+    // boot, no active session yet), stay idle. No attach IPC, no xterm
+    // touch — the host div is in DOM purely so the e2e probe can find
+    // it. We still tear down any prior attach (sid → null transition)
+    // to release the previous session's pty subscriber.
+    if (sessionId == null) {
+      const prevSid = getActiveSid();
+      if (prevSid) {
+        setSnapshotReplay(null);
+        const unsubPrev = getUnsubscribeData();
+        if (unsubPrev) {
+          try {
+            unsubPrev();
+          } catch {
+            // already torn down — safe to ignore.
+          }
+          setUnsubscribeData(null);
+        }
+        const inDispPrev = getInputDisposable();
+        if (inDispPrev) {
+          try {
+            inDispPrev.dispose();
+          } catch {
+            // already disposed — safe to ignore.
+          }
+          setInputDisposable(null);
+        }
+        const ptyApiPrev = window.ccsmPty;
+        if (ptyApiPrev) {
+          try {
+            void ptyApiPrev.detach(prevSid);
+          } catch {
+            // best-effort.
+          }
+        }
+        setActiveSid(null);
+      }
+      setState({ kind: 'idle' });
+      return;
+    }
+
     let cancelled = false;
     setState({ kind: 'attaching' });
 
@@ -424,6 +473,33 @@ export function usePtyAttach(sessionId: string, cwd: string): UsePtyAttachResult
       // headless mirror unconditionally, and a subsequent re-attach
       // (initial mount, sid switch back, or Retry) replays via
       // `getBufferSnapshot` + drain (PR-B contract).
+      //
+      // Spec #592 T-4 PR-4 (#603): also dispose the per-attach input
+      // listener and pty data subscriber on unmount so the host →
+      // unmount path doesn't leak the Disposable / unsubscribe.
+      // Previously these only torn down on sid change (the active-sid
+      // detach branch); on a clean unmount they survived as dangling
+      // references on the singleton until a later attach overwrote
+      // them.
+      if (sessionId == null) return;
+      const inDispCleanup = getInputDisposable();
+      if (inDispCleanup) {
+        try {
+          inDispCleanup.dispose();
+        } catch {
+          // already disposed — safe to ignore.
+        }
+        setInputDisposable(null);
+      }
+      const unsubCleanup = getUnsubscribeData();
+      if (unsubCleanup) {
+        try {
+          unsubCleanup();
+        } catch {
+          // already torn down — safe to ignore.
+        }
+        setUnsubscribeData(null);
+      }
       const ptyApi = window.ccsmPty;
       if (ptyApi) {
         try {
