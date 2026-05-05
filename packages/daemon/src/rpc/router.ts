@@ -83,6 +83,12 @@ import { makeHelloHandler, type HelloDeps } from './hello.js';
 import { requestMetaInterceptor } from './middleware/request-meta.js';
 import { makeAttachHandler, makeAckPtyHandler, type PtyAttachDeps } from './pty-attach.js';
 import {
+  makeCheckClaudeAvailableHandler,
+  type CheckClaudeAvailableDeps,
+} from './check-claude-available.js';
+import { makeSendInputHandler, type SendInputDeps } from './pty-sendinput.js';
+import { makeResizeHandler, type ResizeDeps } from './pty-resize.js';
+import {
   registerSettingsService,
   type SettingsServiceDeps,
 } from './settings/register.js';
@@ -229,28 +235,57 @@ export function registerSessionService(
 }
 
 /**
- * Register the v0.3 PtyService.Attach handler (Wave 3 §6.9 sub-task 10 /
- * Task #355 / spec `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6) AND
- * the AckPty companion handler (Task #49 / T4.13 / spec §6).
+ * Register the v0.3 PtyService handlers under a SINGLE
+ * `router.service(PtyService, ...)` call.
  *
- * REPLACES the stub `{}` registration for PtyService with
- * `{ attach, ackPty }`. Other PtyService methods (SendInput / Resize /
- * CheckClaudeAvailable) stay `Code.Unimplemented` per the
- * "absent-method → unimplemented" Connect router rule until their
- * owning tasks land. The combined-registration caveat that applies to
- * SessionService also applies here (`router.service` REPLACES on the
- * same descriptor) — so when the next PtyService method handler ships,
- * it MUST be added to this same call site rather than registered via a
- * second `service()` call.
+ * Active handlers:
+ *   - `attach` (Wave 3 §6.9 sub-task 10 / Task #355 / spec
+ *     `2026-05-04-pty-attach-handler.md` §9.2 T-PA-6).
+ *   - `ackPty` (Task #49 / T4.13 / spec §6).
+ *   - `sendInput` (Task #543 / spec ch04 §6 / ch05 §5 / test shell §2.1).
+ *   - `resize` (Task #543 / spec ch04 §6 / ch05 §5 / test shell §2.2).
+ *   - `checkClaudeAvailable` (Task #543 / spec ch04 §6 / ch08 / test
+ *     shell §2.3).
+ *
+ * REPLACES the stub `{}` registration for PtyService. Per Connect-ES
+ * `ConnectRouter.service` semantics, calling `service` twice for the
+ * same descriptor REPLACES the prior registration (the router is a
+ * path-keyed map keyed on `service.typeName + method.name`); the
+ * combined-registration caveat that applies to SessionService applies
+ * here too — when a future PtyService method ships, it MUST be added
+ * to this same call site rather than registered via a second
+ * `service()` call.
+ *
+ * Each set of deps is OPTIONAL so existing callers (test fixtures that
+ * built `{ ptyAttachDeps }` before the §3.1 / §3.2 / §3.3 bundle landed)
+ * keep compiling without churn. Methods whose deps are omitted stay
+ * `Code.Unimplemented` per the absent-method rule.
  */
 export function registerPtyService(
   router: ConnectRouter,
-  deps: PtyAttachDeps,
+  deps: {
+    readonly ptyAttachDeps: PtyAttachDeps;
+    readonly sendInputDeps?: SendInputDeps;
+    readonly resizeDeps?: ResizeDeps;
+    readonly checkClaudeAvailableDeps?: CheckClaudeAvailableDeps;
+  },
 ): ConnectRouter {
-  router.service(PtyService, {
-    attach: makeAttachHandler(deps),
-    ackPty: makeAckPtyHandler(deps),
-  });
+  const impl: Parameters<typeof router.service<typeof PtyService>>[1] = {
+    attach: makeAttachHandler(deps.ptyAttachDeps),
+    ackPty: makeAckPtyHandler(deps.ptyAttachDeps),
+  };
+  if (deps.sendInputDeps !== undefined) {
+    impl.sendInput = makeSendInputHandler(deps.sendInputDeps);
+  }
+  if (deps.resizeDeps !== undefined) {
+    impl.resize = makeResizeHandler(deps.resizeDeps);
+  }
+  if (deps.checkClaudeAvailableDeps !== undefined) {
+    impl.checkClaudeAvailable = makeCheckClaudeAvailableHandler(
+      deps.checkClaudeAvailableDeps,
+    );
+  }
+  router.service(PtyService, impl);
   return router;
 }
 
@@ -271,6 +306,9 @@ export function makeDaemonRoutes(
   draftDeps?: DraftServiceDeps,
   ptyAttachDeps?: PtyAttachDeps,
   createSessionDeps?: CreateSessionDeps,
+  sendInputDeps?: SendInputDeps,
+  resizeDeps?: ResizeDeps,
+  checkClaudeAvailableDeps?: CheckClaudeAvailableDeps,
 ): (router: ConnectRouter) => void {
   return (router: ConnectRouter): void => {
     registerStubServices(router);
@@ -315,7 +353,12 @@ export function makeDaemonRoutes(
     // `getEmitter`; tests pass an inline fake). Other PtyService
     // methods stay `Code.Unimplemented` until their tasks land.
     if (ptyAttachDeps !== undefined) {
-      registerPtyService(router, ptyAttachDeps);
+      registerPtyService(router, {
+        ptyAttachDeps,
+        sendInputDeps,
+        resizeDeps,
+        checkClaudeAvailableDeps,
+      });
     }
   };
 }
@@ -432,6 +475,28 @@ export interface CreateDaemonNodeAdapterOptions extends ConnectRouterOptions {
    * owning tasks land.
    */
   readonly ptyAttachDeps?: PtyAttachDeps;
+  /**
+   * When set (and `ptyAttachDeps` is also set), installs the
+   * `PtyService.SendInput` handler in the same overlay (Task #543 /
+   * spec ch04 §6 / ch05 §5 / test shell §2.1). Production startup
+   * supplies `findSession: (id) => sessionManager.tryGet(id)` and
+   * `getPtyHost: (id) => ptyHostRegistry.get(id)`; tests pass inline
+   * fakes.
+   */
+  readonly sendInputDeps?: SendInputDeps;
+  /**
+   * When set (and `ptyAttachDeps` is also set), installs the
+   * `PtyService.Resize` handler in the same overlay (Task #543 /
+   * spec ch04 §6 / ch05 §5 / test shell §2.2).
+   */
+  readonly resizeDeps?: ResizeDeps;
+  /**
+   * When set (and `ptyAttachDeps` is also set), installs the
+   * `PtyService.CheckClaudeAvailable` handler (Task #543 / spec
+   * ch04 §6 / ch08 / test shell §2.3). Carries `resolver` (PATH walk)
+   * and `versionProbe` (spawn `claude --version` with timeout) seams.
+   */
+  readonly checkClaudeAvailableDeps?: CheckClaudeAvailableDeps;
 }
 
 /**
@@ -480,6 +545,9 @@ export function createDaemonNodeAdapter(
     draftDeps,
     ptyAttachDeps,
     createSessionDeps,
+    sendInputDeps,
+    resizeDeps,
+    checkClaudeAvailableDeps,
     interceptors: callerInterceptors,
     ...rest
   } = options;
@@ -495,6 +563,9 @@ export function createDaemonNodeAdapter(
           draftDeps,
           ptyAttachDeps,
           createSessionDeps,
+          sendInputDeps,
+          resizeDeps,
+          checkClaudeAvailableDeps,
         )
       : stubRoutes;
   const interceptors = [
