@@ -1,17 +1,22 @@
 /**
- * `window.ccsmSession` — preload bridge stub for the v0.3 daemon transition.
+ * `window.ccsmSession` — wave-2-C real bridge.
  *
- * Stub for wave-2-prep. setActive/setName fire-and-forget against the daemon
- * via `daemonEvent('session/setActive', ...)`-style routes (W2-A registers
- * `/api/event/session/setActive` and `/api/event/session/setName`). Event
- * subscriptions return noop unsubscribe — W2-C wires them to SSE.
+ * RPC surface (fire-and-forget POST):
+ *   - setActive(sid)         → POST /api/event/session/setActive {args:[sid]}
+ *   - setName(sid, name)     → POST /api/event/session/setName   {args:[sid,name]}
  *
- * Renderer's `app-effects/use*Bridge.ts` files do `if (!window.ccsmSession)
- * return` already; with this stub installed, callsites also tolerate
- * "subscribed but never fires" (the noop unsubscribe is fine).
+ * Event surface: wave-2-C registers no daemon-side SSE for session
+ * lifecycle — sessionWatcher emits internally to notify/badge inside the
+ * daemon, and the renderer-visible state-changed / title-changed /
+ * activate / cwd-redirected channels are W2-A's data.ts territory (they
+ * ride the sessionTitles fetch surface, not a push channel). The hooks
+ * below return noop unsubscribe so renderer cleanup paths run unchanged;
+ * a future wave-2 follow-up that adds a `/api/events/sessions` SSE topic
+ * can swap them to `openSse(...)` without touching callsites.
  */
 
-import { contextBridge } from "electron";
+import { contextBridge } from 'electron';
+import { fireDaemonEvent } from './_daemon';
 
 function noopUnsubscribe(): () => void {
   return () => {
@@ -19,30 +24,12 @@ function noopUnsubscribe(): () => void {
   };
 }
 
-// Fire-and-forget POST against the daemon. Looks up the daemon port via
-// the same channel ccsmCore uses (window.ccsm.getDaemonPort) — but this
-// preload runs before window.ccsm is exposed, so we read it lazily.
-async function fireEvent(method: string, args: unknown[]): Promise<void> {
-  const getPort = (window as unknown as { ccsm?: { getDaemonPort?: () => Promise<number | null> } }).ccsm
-    ?.getDaemonPort;
-  if (!getPort) return;
-  const port = await getPort();
-  if (port == null) return;
-  try {
-    await fetch(`http://127.0.0.1:${port}/api/event/${method}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ args }),
-    });
-  } catch {
-    /* fire-and-forget — daemon offline is not fatal here */
-  }
-}
-
 const ccsmSession = {
-  setActive: (sid: string | null): Promise<void> => fireEvent("session/setActive", [sid]),
-  setName: (sid: string, name: string): Promise<void> => fireEvent("session/setName", [sid, name]),
-  // Event subscriptions: noop until W2-C wires SSE.
+  setActive: (sid: string | null): Promise<void> =>
+    fireDaemonEvent('/api/event/session/setActive', [sid]),
+  setName: (sid: string, name: string): Promise<void> =>
+    fireDaemonEvent('/api/event/session/setName', [sid, name]),
+  // Pending future SSE topics (see header comment).
   onState: (_cb: (state: unknown) => void): (() => void) => noopUnsubscribe(),
   onTitle: (_cb: (e: unknown) => void): (() => void) => noopUnsubscribe(),
   onActivate: (_cb: (e: unknown) => void): (() => void) => noopUnsubscribe(),
@@ -52,5 +39,5 @@ const ccsmSession = {
 export type CcsmSessionApi = typeof ccsmSession;
 
 export function installCcsmSessionBridge(): void {
-  contextBridge.exposeInMainWorld("ccsmSession", ccsmSession);
+  contextBridge.exposeInMainWorld('ccsmSession', ccsmSession);
 }

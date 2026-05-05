@@ -156,7 +156,12 @@ export default [
         global: 'readonly',
         fetch: 'readonly',
         Response: 'readonly',
-        URLSearchParams: 'readonly'
+        URLSearchParams: 'readonly',
+        // Wave-2-C: preload bridges open SSE streams against the daemon
+        // via the platform `EventSource` API; the http reply lands as
+        // `MessageEvent` instances on the source's onmessage hook.
+        EventSource: 'readonly',
+        MessageEvent: 'readonly'
       }
     }
   }

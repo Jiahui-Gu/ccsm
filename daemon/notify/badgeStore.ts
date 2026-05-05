@@ -55,3 +55,26 @@ export class BadgeManager extends EventEmitter {
     this.emit('change', this.getTotal());
   }
 }
+
+/**
+ * Wave-2-C singleton — daemon-side badge state. Tray polls the aggregate
+ * total via `GET /api/badge/state` (registered in daemon/api/system.ts).
+ *
+ * Exposed as `bump(sid)` / `forget(sid)` thin wrappers so call sites read
+ * "decided to notify, bump unread" rather than tightly coupling to the
+ * `incrementSid` / `clearSid` legacy method names. Both wrappers are
+ * defensively no-op on falsy sid (matches BadgeManager itself).
+ */
+export const badgeStore = (() => {
+  const mgr = new BadgeManager();
+  return {
+    bump: (sid: string): void => mgr.incrementSid(sid),
+    forget: (sid: string): void => mgr.clearSid(sid),
+    clearAll: (): void => mgr.clearAll(),
+    getTotal: (): number => mgr.getTotal(),
+    onChange: (cb: (total: number) => void): (() => void) => {
+      mgr.on('change', cb);
+      return () => mgr.off('change', cb);
+    },
+  };
+})();

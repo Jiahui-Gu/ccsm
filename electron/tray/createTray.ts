@@ -11,9 +11,22 @@
 // e.g. after the user closed-to-tray and the OS evicted the renderer). The
 // quit menu item flips the cross-module `isQuitting` flag. Both are passed
 // in so this module stays leaf-of-graph (no electron/main.ts back-import).
+//
+// Wave-2-C: badge state moved to the daemon (`badgeStore` in
+// daemon/notify/badgeStore.ts; tray polls `/api/badge/state` every 5s).
+// Polling chosen over SSE because the tray tooltip is the only consumer
+// here and a 5s update cadence is well within UX tolerance (the OS native
+// notification fires immediately via the renderer-side sink consumer; the
+// tray badge tooltip is a passive secondary surface). The legacy
+// `BadgeManager` overlay icon path was removed in W2-C — we just append
+// "(N)" to the tooltip when there is unread; the OS taskbar dot/flash
+// belongs to the W2-D sink consumer.
 
 import { BrowserWindow, Menu, Tray, app } from 'electron';
 import { buildTrayIcon } from '../branding/icon';
+import { getDaemonPort } from '../daemon-spawner';
+
+const BADGE_POLL_MS = 5_000;
 
 export interface TrayDeps {
   /** Spawn a fresh main window when the tray is clicked but every
@@ -57,13 +70,46 @@ export function createTray(deps: TrayDeps): TrayController {
   tray.on('click', onClick);
   tray.on('double-click', onClick);
 
+  // Wave-2-C: poll daemon /api/badge/state every 5s and refresh the
+  // tooltip suffix with the unread total. We don't render an overlay
+  // glyph here — the renderer-side W2-D sink consumer owns the OS-visible
+  // badge (setOverlayIcon / app.setBadgeCount). This poll is a passive
+  // tooltip-text channel so the user can read "CCSM (3)" on hover even
+  // when the renderer is hidden.
+  let lastTotal = 0;
+  let baseTooltip = '';
+  const refreshTooltip = (): void => {
+    tray.setToolTip(lastTotal > 0 ? `${baseTooltip} (${lastTotal})` : baseTooltip);
+  };
+  const pollBadge = async (): Promise<void> => {
+    const port = getDaemonPort();
+    if (port == null) return;
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/badge/state`);
+      if (!res.ok) return;
+      const json = (await res.json()) as { total?: number };
+      const total = typeof json.total === 'number' ? json.total : 0;
+      if (total !== lastTotal) {
+        lastTotal = total;
+        refreshTooltip();
+      }
+    } catch {
+      /* daemon offline / not yet bound — try again next tick */
+    }
+  };
+  const pollHandle = setInterval(() => {
+    void pollBadge();
+  }, BADGE_POLL_MS);
+  pollHandle.unref();
+
   const applyLocale = () => {
     // Local require keeps the import graph linear (matches the pattern
     // main.ts uses elsewhere — see the longer comment near the
     // `ccsm:set-language` handler in main.ts).
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const i18n = require('../i18n') as typeof import('../i18n');
-    tray.setToolTip(i18n.tTray('tooltip'));
+    baseTooltip = i18n.tTray('tooltip');
+    refreshTooltip();
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: i18n.tTray('show'), click: () => showTrayWindow(deps) },
@@ -80,5 +126,8 @@ export function createTray(deps: TrayDeps): TrayController {
   };
 
   applyLocale();
+  // Kick an initial poll without waiting for the first 5s tick so the
+  // tooltip reflects badges that already accumulated before tray creation.
+  void pollBadge();
   return { tray, applyLocale };
 }

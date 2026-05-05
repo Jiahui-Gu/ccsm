@@ -11,11 +11,16 @@ export type HandlerResult =
   | { status: 200; body: unknown }
   | { status: 400; error: string }
   | { status: 404; error: string }
-  | { status: 500; error: string };
+  | { status: 500; error: string }
+  // Wave-2-C: handler took ownership of the response (SSE / long-poll). The
+  // server pipeline must NOT call writeJson again on this code-path. Handler
+  // is responsible for writeHead, body writes, and end().
+  | { status: 0; streamed: true };
 
 export type Handler = (
   req: IncomingMessage,
   body: unknown,
+  res: ServerResponse,
 ) => HandlerResult | Promise<HandlerResult>;
 
 export interface Route {
@@ -44,8 +49,10 @@ export class Router {
   }
 }
 
-/** Write a HandlerResult to a ServerResponse with `application/json`. */
+/** Write a HandlerResult to a ServerResponse with `application/json`.
+ *  Streamed results are skipped — the handler already owns the response. */
 export function writeJson(res: ServerResponse, result: HandlerResult): void {
+  if (result.status === 0) return; // streamed: handler wrote it.
   res.statusCode = result.status;
   res.setHeader("Content-Type", "application/json");
   const payload =

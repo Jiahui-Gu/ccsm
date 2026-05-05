@@ -34,6 +34,7 @@ export function registerApi(router: Router): void {
     const full = path.join(dir, name);
     let mod: { default?: Registrar };
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       mod = require(full) as { default?: Registrar };
     } catch (err) {
       process.stderr.write(`registerApi: require(${full}) failed: ${String(err)}\n`);

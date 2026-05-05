@@ -63,24 +63,24 @@ function installElectronResolveHook(): () => void {
 // phase 1 Section 2b enumeration plus a couple of always-loaded modules
 // that the audit covered indirectly. Keep grouped by area so failures
 // point at the obvious owner.
+//
+// Wave-2-C: notify decider/tracker/classifier/badgeStore + sessionWatcher
+// physically mv'd to daemon/. Their daemon-side load-smoke is exercised
+// by `node dist/daemon/main.js` printing "[daemon] startup phase complete"
+// (any module-load throw at boot fails that). Old electron paths removed
+// here so the smoke list reflects what actually ships in dist/electron.
 const RUNTIME_MODULES: ReadonlyArray<readonly [string, string]> = [
-  // notify pipeline + sinks
-  ['notify/badgeStore', 'notify/badgeStore.js'],
-  ['notify/sinks/badgeSink', 'notify/sinks/badgeSink.js'],
-  ['notify/sinks/flashSink', 'notify/sinks/flashSink.js'],
-  ['notify/sinks/toastSink', 'notify/sinks/toastSink.js'],
-  ['notify/sinks/pipeline', 'notify/sinks/pipeline.js'],
-  ['notify/badge', 'notify/badge.js'],
+  // notify sink consumer (NEW W2-C — main-process EventSource consumer
+  // that fires the OS Notification + flashFrame for each daemon Decision).
+  ['notify/sinkConsumer', 'notify/sinkConsumer.js'],
+  // notify pure pixel + label helpers — kept in electron because the
+  // BadgeManager OS overlay sink lives here historically; W2-D may mv.
+  ['notify/badgeLabel', 'notify/badgeLabel.js'],
+  ['notify/badgePixels', 'notify/badgePixels.js'],
 
-  // top-level main-process modules
-  ['badgeController', 'badgeController.js'],
-
-  // sessionWatcher producer/sink layer
-  ['sessionWatcher/fileSource', 'sessionWatcher/fileSource.js'],
-  ['sessionWatcher/pendingRenameFlusher', 'sessionWatcher/pendingRenameFlusher.js'],
-  ['sessionWatcher/stateEmitter', 'sessionWatcher/stateEmitter.js'],
-  ['sessionWatcher/titleEmitter', 'sessionWatcher/titleEmitter.js'],
+  // sessionWatcher COMPAT SHIM (W2-C — drops in W2-B once ptyHost mv's).
   ['sessionWatcher/index', 'sessionWatcher/index.js'],
+  ['sessionWatcher/projectKey', 'sessionWatcher/projectKey.js'],
 
   // ptyHost runtime/sink layer
   ['ptyHost/dataFanout', 'ptyHost/dataFanout.js'],

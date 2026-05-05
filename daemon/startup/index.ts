@@ -34,6 +34,7 @@ export async function runStartup(ctx: StartupContext): Promise<void> {
     const full = path.join(dir, name);
     let mod: { default?: Startup };
     try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       mod = require(full) as { default?: Startup };
     } catch (err) {
       process.stderr.write(`runStartup: require(${full}) failed: ${String(err)}\n`);
