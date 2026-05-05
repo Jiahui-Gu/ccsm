@@ -4,10 +4,11 @@
 //
 // Regenerate packages/proto/lock.json from packages/proto/src/**/*.proto.
 //
-// Walks the src tree, computes SHA256 of each .proto file (raw bytes — no
-// normalization, hash is over the exact on-disk content), and writes the
-// result to lock.json sorted by relative POSIX path. Pair with lock-check.mjs
-// (CI / pre-commit) to detect unintended schema drift.
+// Walks the src tree, computes SHA256 of each .proto file (UTF-8 content with
+// CRLF normalized to LF — so Windows checkouts produce the same hash as Linux
+// regardless of git autocrlf settings), and writes the result to lock.json
+// sorted by relative POSIX path. Pair with lock-check.mjs (CI / pre-commit)
+// to detect unintended schema drift.
 //
 // Usage: pnpm --filter @ccsm/proto run lock
 
@@ -38,7 +39,10 @@ function toPosix(p) {
 }
 
 function sha256OfFile(path) {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+  // Read as UTF-8 and normalize CRLF -> LF so Windows checkouts (where git
+  // autocrlf may have rewritten line endings) produce the same hash as Linux.
+  const content = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 function main() {
