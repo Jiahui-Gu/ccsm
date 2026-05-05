@@ -51,6 +51,7 @@ import {
   registerLifecycleHandlers,
 } from './lifecycle/appLifecycle';
 import { acquireSingleInstanceLock } from './lifecycle/singleInstance';
+import { installNotifySinkConsumer } from './notify/sinkConsumer';
 
 // `app.isPackaged` is the canonical "are we shipping" signal. The
 // `CCSM_PROD_BUNDLE=1` env var lets E2E probes force-load the production
@@ -168,6 +169,11 @@ app.whenReady().then(async () => {
   spawnDaemon().catch((err) => {
     console.error('[main] daemon failed to start:', err);
   });
+
+  // Wave-2-C: subscribe to the daemon's notify SSE so OS notifications and
+  // taskbar flashes fire in main (the daemon owns the decider; main owns
+  // the OS-side sinks). Survives daemon restarts via internal reconnect.
+  installNotifySinkConsumer();
 
   registerCwdPickerIpc();
   installUpdaterIpc();

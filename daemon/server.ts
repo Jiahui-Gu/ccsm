@@ -105,7 +105,7 @@ async function handleRequest(
 
     let result: HandlerResult;
     try {
-      result = await handler(req, body);
+      result = await handler(req, body, res);
     } catch (err) {
       process.stderr.write(
         `[daemon] handler threw: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,

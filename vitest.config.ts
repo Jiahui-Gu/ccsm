@@ -7,6 +7,10 @@ export default defineConfig({
       'tests/**/*.test.ts',
       'tests/**/*.test.tsx',
       'electron/**/__tests__/**/*.test.ts',
+      // Wave-2: code physically mv'd from electron/ → daemon/ keeps its
+      // existing __tests__ tree alongside the source. Pick those up so
+      // the mv preserves test coverage rather than silently dropping it.
+      'daemon/**/__tests__/**/*.test.ts',
     ],
     exclude: [
       '**/node_modules/**',
