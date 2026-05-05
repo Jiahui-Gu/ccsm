@@ -32,6 +32,7 @@
     "build:app": "npm run clean && npm run prebuild:app && tsc -p tsconfig.electron.json && webpack --mode production && node -e \"const fs=require('fs');const p='dist/renderer/bundle.js';const t=Date.now()/1000;fs.utimesSync(p,t,t)\"",
     "prebuild:app": "node scripts/ensure-native-abi.mjs electron && node scripts/gen-proto.mjs",
     "test:app": "vitest run",
+    "test:projects": "vitest run --config vitest.projects.config.ts",
     "lint:app": "eslint . --ext .ts,.tsx",
     "lint:no-ipc": "bash tools/lint-no-ipc.sh",
     "lint:no-worker-threads": "bash tools/lint-no-worker-threads.sh",
