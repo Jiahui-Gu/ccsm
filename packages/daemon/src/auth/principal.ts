@@ -10,6 +10,9 @@
 //   - ch05 §2 v0.3 single-principal invariant.
 //   - ch05 §3 derivation rules per transport (consumed by the per-OS
 //     extractors under ./peer-info/).
+//   - ch15 §3 #7 principalKey parser MUST first-colon-split (indexOf
+//     based) so v0.4 keys whose `value` contains `:` (e.g.
+//     `cf-access:auth0|abc:def`) round-trip cleanly. See `parsePrincipalKey`.
 //
 // SRP: this module is pure type declarations + a single `principalKey` pure
 // function. No I/O, no transport awareness. The interceptor (./interceptor.ts)
@@ -62,4 +65,37 @@ export function principalKey(p: Principal): string {
       throw new Error(`unhandled principal kind: ${String(_exhaustive)}`);
     }
   }
+}
+
+/**
+ * Parse a `principalKey` string back into its `{ kind, value }` parts.
+ *
+ * Forbidden rule (spec ch15 §3 #7): the implementation MUST use
+ * `key.indexOf(':')` and slice on the FIRST colon — `split(':')[0/1]` is
+ * banned because v0.4 will introduce keys whose `value` legitimately
+ * contains additional colons (e.g. `cf-access:auth0|abc:def`, where the
+ * Cloudflare Access JWT `sub` claim embeds an Auth0 IdP-prefixed id).
+ * Splitting on every colon would drop the suffix and break round-trip,
+ * silently rewriting `owner_id` rows the next time a query rebuilds the
+ * key. The first-colon-split rule is the wire-stable parse contract that
+ * keeps every existing v0.3 row valid forever.
+ *
+ * Pure: no I/O, no allocations beyond the two `slice` substrings. Throws
+ * synchronously on malformed input (no colon at all) — callers always have
+ * a `principalKey` from `principalKey()` above or from a SQLite
+ * `owner_id` column populated by the same function, so a missing colon
+ * indicates corruption and SHOULD surface immediately rather than be
+ * silently coerced. The returned `kind` is intentionally typed as
+ * `string` (not the `Principal['kind']` literal union) because parsing
+ * is the inverse of *string formatting*, not of validation: this function
+ * is round-trip safe over any `${kind}:${value}` string and does NOT
+ * promise `kind` is a recognised variant. Callers that need that check
+ * should narrow afterwards.
+ */
+export function parsePrincipalKey(key: string): { kind: string; value: string } {
+  const i = key.indexOf(':');
+  if (i < 0) {
+    throw new Error(`invalid principalKey: ${key} (missing ":")`);
+  }
+  return { kind: key.slice(0, i), value: key.slice(i + 1) };
 }

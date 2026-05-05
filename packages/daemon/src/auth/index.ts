@@ -22,7 +22,7 @@
 // tested independently of the Connect interceptor plumbing).
 
 export type { Principal } from './principal.js';
-export { principalKey } from './principal.js';
+export { principalKey, parsePrincipalKey } from './principal.js';
 export type {
   PeerInfo,
   UdsPeerCred,
