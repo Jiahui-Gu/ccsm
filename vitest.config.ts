@@ -8,6 +8,11 @@ export default defineConfig({
       'tests/**/*.test.tsx',
       'electron/**/__tests__/**/*.test.ts',
     ],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'electron/__legacy_to_delete__/**',
+    ],
     globals: true,
     setupFiles: ['tests/setup.ts'],
     // v8 coverage instrumentation roughly doubles test wall-clock under

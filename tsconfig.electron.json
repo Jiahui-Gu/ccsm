@@ -13,5 +13,5 @@
     "lib": ["ES2022"]
   },
   "include": ["electron/**/*", "src/shared/**/*"],
-  "exclude": ["electron/**/__tests__/**"]
+  "exclude": ["electron/**/__tests__/**", "electron/__legacy_to_delete__/**"]
 }

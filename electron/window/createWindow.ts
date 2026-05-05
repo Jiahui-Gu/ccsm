@@ -41,11 +41,6 @@ export interface CreateWindowDeps {
    *  packaged renderer bundle. Computed by main.ts from `app.isPackaged`
    *  and the `CCSM_PROD_BUNDLE` env override. */
   isDev: boolean;
-  /** Read latest active session id (mirrored from renderer) for the
-   *  badge controller's focus-change updates. */
-  getActiveSid: () => string | null;
-  /** Notify the badge controller that focus changed. */
-  onFocusChange: (info: { focused: boolean; activeSid: string | null }) => void;
   /** Read the latest `isQuitting` flag — close handler must short-circuit
    *  when an explicit quit path (tray Quit / before-quit / updater) is
    *  already in flight. */
@@ -256,7 +251,9 @@ export function createWindow(deps: CreateWindowDeps): BrowserWindow {
   });
 
   win.on('focus', () => {
-    deps.onFocusChange({ focused: true, activeSid: deps.getActiveSid() });
+    // Wave-1 B: focus-change fan-out previously fed the badge controller
+    // (notify-pipeline state). Badge / notify pipeline now lives in the
+    // daemon — the renderer pushes focus state over HTTP itself.
   });
 
   const emitMax = () =>

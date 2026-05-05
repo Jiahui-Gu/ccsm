@@ -1,8 +1,27 @@
-// `window.ccsm` — the catch-all "core" bridge: app-state persistence
-// (db:load/save), i18n, version, importable-session scan, recent/user
-// cwds, path existence, updater, and window controls. Originally lived
-// inline in `electron/preload.ts`; extracted in #769 (SRP wave-2 PR-A)
-// without behavioral change.
+// `window.ccsm` — v0.3 wave-1 thin bridge. The only surfaces here are the
+// ones that CANNOT live behind the daemon's loopback HTTP boundary:
+//
+//   1. `getDaemonPort()` — synchronous-ish accessor for the loopback port
+//      the daemon child bound to. Returns `null` until the spawn promise
+//      in main resolves; renderer is expected to poll/await before fetching
+//      against it. Wire is `ipcRenderer.invoke('daemon:getPort')`, not
+//      `process.versions` or any other mainworld leak — preload stays the
+//      single source of IPC channel knowledge.
+//   2. `pickCwd()` — OS folder picker. `dialog.showOpenDialog` needs the
+//      requesting BrowserWindow as its parent so the modal attribution is
+//      correct, which the daemon (a plain Node process with no window
+//      handle) cannot provide.
+//   3. `userHome()` — synchronous Node `os.homedir()` lookup. Kept on the
+//      IPC side so the renderer doesn't have to wait for the daemon port
+//      to be known just to seed its initial cwd default.
+//   4. updater channels — electron-updater drives signed-installer side
+//      effects from inside the Electron process; wrapping it over HTTP
+//      would put a privileged install path on a loopback socket.
+//
+// Everything else (db / sessions / pty / notify / session titles / i18n /
+// import scan / userCwds / paths:exist / window controls) moved to the
+// daemon's HTTP API. The renderer fetches `http://127.0.0.1:<port>/...`
+// using the port returned by `getDaemonPort()`.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
@@ -16,95 +35,30 @@ type UpdateStatus =
   | { kind: 'error'; message: string };
 
 const api = {
-  loadState: (key: string): Promise<string | null> => ipcRenderer.invoke('db:load', key),
-  // The IPC handler returns a `{ok}` shape so it never crosses the IPC
-  // boundary as a thrown Error (Electron surfaces those as ugly stack
-  // dumps in the renderer console). We unwrap here and re-throw on
-  // failure so the existing `.catch(onPersistError)` callers in
-  // src/stores/persist.ts and src/stores/drafts.ts actually fire — a
-  // resolved `{ok:false}` would otherwise slip past `.catch` silently
-  // and produce data loss with zero renderer signal.
-  saveState: async (key: string, value: string): Promise<void> => {
-    const result = (await ipcRenderer.invoke('db:save', key, value)) as
-      | { ok: true }
-      | { ok: false; error: string };
-    if (!result.ok) {
-      throw new Error(result.error);
-    }
-  },
-  // i18n: renderer reads OS locale to seed its "system" preference, and
-  // pushes the resolved UI language to main so OS notifications match.
-  // Lives under `i18n` to keep the bridge surface organised; renderer
-  // accesses via `window.ccsm.i18n.*`.
-  i18n: {
-    getSystemLocale: (): Promise<string | undefined> =>
-      ipcRenderer.invoke('ccsm:get-system-locale'),
-    setLanguage: (lang: 'en' | 'zh'): void => {
-      ipcRenderer.send('ccsm:set-language', lang);
-    }
-  },
-  getVersion: (): Promise<string> => ipcRenderer.invoke('app:getVersion'),
-
-  scanImportable: (): Promise<
-    Array<{ sessionId: string; cwd: string; title: string; mtime: number; projectDir: string; model: string | null }>
-  > => ipcRenderer.invoke('import:scan'),
-
   /**
-   * Most-recently-used cwds shown in the StatusBar cwd popover. Sourced from
-   * the ccsm-owned LRU (`app:userCwds`), NOT from CLI JSONL scans — the user's
-   * CLI history is not their ccsm working-set. Always includes the user's
-   * home directory as a fallback so the list is never empty on a fresh
-   * install. Use `userCwds.push` to extend the list when the user explicitly
-   * picks a non-default cwd.
+   * Resolved loopback port for the daemon child spawned by main.
+   * Returns `null` while the spawn promise is still in flight or after
+   * the daemon has died. Renderer should poll this from a single place
+   * (the boot-time hydration store) and re-poll on null instead of
+   * calling it from every fetch site.
    */
-  recentCwds: (): Promise<string[]> => ipcRenderer.invoke('import:recentCwds'),
+  getDaemonPort: (): Promise<number | null> =>
+    ipcRenderer.invoke('daemon:getPort'),
 
   /**
-   * Path to the user's home directory (`os.homedir()` on the main process).
-   * Used as the always-true default cwd for new sessions, regardless of CLI
-   * history. Resolved once at boot and cached in the renderer store.
-   */
-  userHome: (): Promise<string> => ipcRenderer.invoke('app:userHome'),
-
-  /**
-   * ccsm-owned LRU of cwds the user has explicitly chosen. Persisted in the
-   * `app_state` SQLite table; capped at 20 entries. The default-cwd source for
-   * new sessions is `userHome()` — this list only seeds the popover's recent
-   * column.
-   */
-  userCwds: {
-    get: (): Promise<string[]> => ipcRenderer.invoke('app:userCwds:get'),
-    push: (p: string): Promise<string[]> =>
-      ipcRenderer.invoke('app:userCwds:push', p),
-  },
-
-  /**
-   * Open the OS folder picker so the user can choose a working directory
-   * for a new session. Returns the picked absolute path on success, or
-   * `null` when the user cancelled. Backs the cwd popover's "Browse..."
-   * button (#628) — prior to this IPC the button was a no-op (just closed
-   * the popover), causing user-picked cwds to silently fall back to home.
+   * Open the OS folder picker so the user can choose a working directory.
+   * Returns the picked absolute path on success, or `null` when the user
+   * cancelled. Anchored on the requesting BrowserWindow so the dialog is
+   * modal to the right surface.
    */
   pickCwd: (defaultPath?: string): Promise<string | null> =>
     ipcRenderer.invoke('cwd:pick', { defaultPath }),
 
   /**
-   * The user's CLI default-model preference, read directly from
-   * `~/.claude/settings.json`'s `model` field. Seeds the new-session model
-   * picker so ccsm matches whatever the user already configured for the
-   * standalone CLI. Returns null when the field is unset, the file is
-   * missing, or it can't be parsed — caller falls back to the SDK default.
+   * Path to the user's home directory (`os.homedir()` on the main process).
+   * Used as the always-true default cwd for new sessions.
    */
-  defaultModel: (): Promise<string | null> => ipcRenderer.invoke('settings:defaultModel'),
-
-  /**
-   * Best-effort batched existence check. Returns a map keyed by the input
-   * path; permission errors and ENOENT both map to `false`. Used by the
-   * renderer's hydration migration to flag sessions whose persisted `cwd`
-   * was deleted between runs.
-   */
-  pathsExist: (paths: string[]): Promise<Record<string, boolean>> =>
-    ipcRenderer.invoke('paths:exist', paths),
+  userHome: (): Promise<string> => ipcRenderer.invoke('app:userHome'),
 
   updatesStatus: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:status'),
   updatesCheck: (): Promise<UpdateStatus> => ipcRenderer.invoke('updates:check'),
@@ -124,32 +78,6 @@ const api = {
     const wrap = (_e: IpcRendererEvent, payload: { version: string }) => handler(payload);
     ipcRenderer.on('update:downloaded', wrap);
     return () => ipcRenderer.removeListener('update:downloaded', wrap);
-  },
-
-  window: {
-    minimize: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
-    toggleMaximize: (): Promise<boolean> => ipcRenderer.invoke('window:toggleMaximize'),
-    close: (): Promise<void> => ipcRenderer.invoke('window:close'),
-    isMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
-    onMaximizedChanged: (handler: (max: boolean) => void): (() => void) => {
-      const wrap = (_e: IpcRendererEvent, max: boolean) => handler(max);
-      ipcRenderer.on('window:maximizedChanged', wrap);
-      return () => ipcRenderer.removeListener('window:maximizedChanged', wrap);
-    },
-    onBeforeHide: (
-      handler: (info: { durationMs: number }) => void
-    ): (() => void) => {
-      const wrap = (_e: IpcRendererEvent, payload: { durationMs: number }) =>
-        handler(payload);
-      ipcRenderer.on('window:beforeHide', wrap);
-      return () => ipcRenderer.removeListener('window:beforeHide', wrap);
-    },
-    onAfterShow: (handler: () => void): (() => void) => {
-      const wrap = () => handler();
-      ipcRenderer.on('window:afterShow', wrap);
-      return () => ipcRenderer.removeListener('window:afterShow', wrap);
-    },
-    platform: process.platform
   },
 };
 
