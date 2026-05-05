@@ -27,6 +27,18 @@ import * as path from 'node:path';
 import { isSea } from 'node:sea';
 
 import type BetterSqlite3 from 'better-sqlite3';
+// Task #480 — value import of the better-sqlite3 JS wrapper. esbuild bundles
+// this into `dist/bundle.cjs` for the SEA carrier, so the SEA daemon has a
+// real `Database` constructor at runtime (the napi `.node` only exposes a
+// raw `addon.Database` — without the wrapper `new Database(path)` throws
+// `Database2 is not a constructor`, dev report from PR #1066). The wrapper
+// itself does NOT load the .node addon at module-eval time — it lazily
+// resolves it inside `Database()` only when `nativeBinding == null`. We
+// always pass `nativeBinding` in SEA mode (see `loadNative`), so the
+// wrapper's `bindings('better_sqlite3.node')` fallback (which fails inside
+// SEA — `bindings` walks the FS for `build/Release/`) is never executed.
+// In dev/test the same wrapper resolves the .node via `bindings` normally.
+import * as betterSqlite3Module from 'better-sqlite3';
 // `node-pty` types are not a hard dep yet (T4.2+). Keep the type-side soft so
 // this module compiles before that lands.
 type NodePtyModule = typeof import('node-pty');
@@ -61,6 +73,13 @@ const DEV_PACKAGE_NAME: Record<NativeAddonName, string> = {
 /**
  * `.node` filenames that ship in `<install-dir>/native/` next to the sea
  * binary. Spec ch10 §2 example block locks these names.
+ *
+ * NOTE: in SEA mode `loadNative('better_sqlite3')` returns a wrapped
+ * `Database` constructor, NOT this raw napi addon directly — the upstream
+ * better-sqlite3 JS wrapper (`lib/database.js`) provides all the user-
+ * facing methods (`prepare` / `transaction` / `pragma` / ...). We bundle
+ * that JS wrapper into `dist/bundle.cjs` and hand it the raw napi addon
+ * via the `nativeBinding` option (see Task #480 / `loadBetterSqlite3Sea`).
  */
 const SEA_NATIVE_FILENAME: Record<NativeAddonName, string> = {
   better_sqlite3: './better_sqlite3.node',
@@ -121,8 +140,74 @@ export function loadNative<K extends NativeAddonName>(name: K): NativeAddonMap[K
     return cached as NativeAddonMap[K];
   }
   const req = getRequire();
-  const spec = isSea() ? SEA_NATIVE_FILENAME[name] : DEV_PACKAGE_NAME[name];
-  const mod = req(spec) as NativeAddonMap[K];
+  let mod: NativeAddonMap[K];
+  if (isSea() && name === 'better_sqlite3') {
+    // Task #480 — SEA-mode better-sqlite3 wrapper bridge.
+    //
+    // In SEA mode `req('./better_sqlite3.node')` returns the *raw napi
+    // addon* (an object exposing `Database` + `setErrorConstructor` +
+    // `isInitialized` flag — NOT a constructor on its own). The user-
+    // facing `Database` constructor lives in better-sqlite3's JS wrapper
+    // at `lib/database.js` (`new Database(filename, options)` →
+    // `new addon.Database(filename, ..., 8 args)`). Without the wrapper,
+    // `new Database(...)` throws `Database2 is not a constructor` (Task
+    // #463 follow-up: dev report from PR #1066 traced the SEA crash to
+    // this exact gap after migrations were unblocked).
+    //
+    // We bundle the JS wrapper into `dist/bundle.cjs` (esbuild now drops
+    // `--external:better-sqlite3`, see `build/bundle-for-sea-spec.mjs` +
+    // `build/build-sea.{sh,ps1}`). Here we:
+    //   1. Resolve the bundled wrapper via the workspace require — in
+    //      SEA this is the bundled-in CJS exports; in dev this is the
+    //      installed package (same identity).
+    //   2. Force-inject the SEA-loaded raw napi addon as the wrapper's
+    //      `nativeBinding` option on every construction. The wrapper's
+    //      `bindings('better_sqlite3.node')` fallback (which fails in
+    //      SEA — `bindings` package walks the filesystem looking for
+    //      build/Release/*.node) is therefore never executed.
+    //   3. Preserve the wrapper's static `SqliteError` export so callers
+    //      that do `Database.SqliteError` keep working.
+    const rawAddon = req(SEA_NATIVE_FILENAME[name]) as object;
+    // The wrapper comes from the top-of-file `import * as
+    // betterSqlite3Module from 'better-sqlite3'` so esbuild bundles it
+    // into `dist/bundle.cjs`. A `req('better-sqlite3')` here would NOT
+    // work in SEA: `createRequire` cannot resolve npm packages once
+    // postjected (no `node_modules` next to `process.execPath`). The
+    // import binding is what threads the wrapper through the bundler.
+    // CJS interop: `import * as` of a CJS module yields the namespace
+    // whose `default` is the module.exports value (the Database fn). Some
+    // bundler/loader combos also expose the function on the namespace
+    // itself, so try `default` first, then the namespace.
+    type BetterSqlite3Constructor = new (
+      filename: string | Buffer,
+      options?: { nativeBinding?: object | string } & Record<string, unknown>,
+    ) => unknown;
+    const ns = betterSqlite3Module as unknown as {
+      default?: BetterSqlite3Constructor & { SqliteError?: unknown };
+    } & BetterSqlite3Constructor & { SqliteError?: unknown };
+    const WrappedDatabase = (ns.default ?? ns) as BetterSqlite3Constructor & {
+      SqliteError?: unknown;
+    };
+    function Database(this: unknown, filename: string | Buffer, options?: Record<string, unknown>) {
+      // Always call as `new` — the upstream wrapper auto-news on plain
+      // call but going through `Reflect.construct` is cleaner and keeps
+      // `new.target` set correctly (matters for the wrapper's own
+      // `new.target == null` re-entry guard).
+      const merged = { ...(options ?? {}), nativeBinding: rawAddon };
+      // Reflect.construct returns the constructed instance.
+      return Reflect.construct(WrappedDatabase, [filename, merged], Database);
+    }
+    // Preserve prototype + static surface so `instanceof Database` and
+    // `Database.SqliteError` keep matching the upstream API.
+    Database.prototype = WrappedDatabase.prototype;
+    if (WrappedDatabase.SqliteError !== undefined) {
+      (Database as unknown as { SqliteError: unknown }).SqliteError = WrappedDatabase.SqliteError;
+    }
+    mod = Database as unknown as NativeAddonMap[K];
+  } else {
+    const spec = isSea() ? SEA_NATIVE_FILENAME[name] : DEV_PACKAGE_NAME[name];
+    mod = req(spec) as NativeAddonMap[K];
+  }
   cache.set(name, mod);
   return mod;
 }

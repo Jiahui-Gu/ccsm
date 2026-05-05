@@ -152,4 +152,52 @@ describe('daemon SEA bundle (Task #463)', () => {
     const expectedB64 = sqlBytes.toString('base64');
     expect(bundle).toContain(expectedB64);
   });
+
+  it('better-sqlite3 JS wrapper is inlined so SEA boot reaches READY (Task #480)', () => {
+    // Task #480 follow-up to Task #463: even with migrations inlined, the
+    // daemon SEA exe died at OPENING_DB with `Database2 is not a
+    // constructor` because esbuild had `--external:better-sqlite3`,
+    // leaving only the raw napi `.node` (which exposes
+    // `addon.Database` — NOT a top-level constructor). The fix bundles
+    // the better-sqlite3 JS wrapper (`lib/database.js`) into bundle.cjs
+    // and force-injects the SEA-loaded raw addon as `nativeBinding` from
+    // `native-loader.ts`. Reverse-verify: dropping the value-import of
+    // `better-sqlite3` from native-loader (or restoring
+    // `--external:better-sqlite3` in bundle-for-sea-spec.mjs /
+    // build-sea.{sh,ps1}) makes both checks below fail.
+    const bundle = readBundleOrFail();
+
+    // 1. The wrapper's user-facing validation messages live in
+    // `lib/database.js` and only get into bundle.cjs when esbuild has
+    // bundled the wrapper. The "Misspelled option" string is short,
+    // unique, and stable across better-sqlite3 versions (>= v7.0.0).
+    expect(
+      bundle,
+      'better-sqlite3 wrapper not bundled — restore the value `import * as ' +
+        "betterSqlite3Module from 'better-sqlite3'` in native-loader.ts and " +
+        "drop `--external:better-sqlite3` from the esbuild invocation in " +
+        'build/bundle-for-sea-spec.mjs + build/build-sea.{sh,ps1}.',
+    ).toContain('Misspelled option "readOnly" should be "readonly"');
+
+    // 2. The SEA-mode bridge in native-loader.ts must force-inject
+    // `nativeBinding` so the wrapper's filesystem-walking
+    // `bindings('better_sqlite3.node')` fallback never executes inside
+    // SEA. The literal `nativeBinding: rawAddon` (or `nativeBinding`
+    // shorthand) compiles to a property write on the merged options
+    // object — esbuild keeps the property name verbatim.
+    expect(
+      bundle,
+      'native-loader did not force-inject nativeBinding for SEA mode — see ' +
+        'src/native-loader.ts SEA branch (Task #480).',
+    ).toMatch(/nativeBinding\s*:/);
+
+    // 3. The raw napi addon path (`./better_sqlite3.node`) is the value
+    // SEA-mode `loadNative('better_sqlite3')` passes to its createRequire
+    // (rooted at `<install-dir>/native/`). The literal must survive into
+    // bundle.cjs — esbuild keeps the `SEA_NATIVE_FILENAME` table verbatim
+    // because the lookup is dynamic (`req(SEA_NATIVE_FILENAME[name])`).
+    // If this literal disappears the daemon will boot with no addon at
+    // all and explode at the first `db.prepare(...)` call.
+    expect(bundle).toMatch(/["']\.\/better_sqlite3\.node["']/);
+  });
 });

@@ -31,7 +31,8 @@ try {
     throw 'dist/index.js missing after tsc'
   }
 
-  # Step 2: esbuild bundle.
+  # Step 2: esbuild bundle. Task #480: better-sqlite3 wrapper bundled in
+  # (only `bindings` external, unreachable in SEA — see build-sea.sh).
   Step 'esbuild bundle'
   npx --yes esbuild dist/index.js `
     --bundle `
@@ -39,7 +40,7 @@ try {
     --target=node22 `
     --format=cjs `
     --outfile=dist/bundle.cjs `
-    --external:better-sqlite3 `
+    --external:bindings `
     --external:node-pty `
     --external:*.node
   if ($LASTEXITCODE -ne 0) { throw "esbuild exited $LASTEXITCODE" }

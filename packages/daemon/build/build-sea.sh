@@ -57,6 +57,10 @@ fi
 
 # Step 2: esbuild bundle. `--platform=node` + `--format=cjs` so sea's main
 # can `require()` it. Native modules (.node) are external (per T7.2 plan).
+# Task #480: better-sqlite3 wrapper (pure JS) is BUNDLED in (no longer
+# external) so the SEA daemon has a real Database constructor; only the
+# `bindings` shim is external (unreachable in SEA mode — native-loader
+# force-injects nativeBinding so wrapper never calls bindings()).
 echo "[build-sea] esbuild bundle"
 ( cd "$PKG_DIR" && npx --yes esbuild dist/index.js \
   --bundle \
@@ -64,7 +68,7 @@ echo "[build-sea] esbuild bundle"
   --target=node22 \
   --format=cjs \
   --outfile=dist/bundle.cjs \
-  --external:better-sqlite3 \
+  --external:bindings \
   --external:node-pty \
   --external:*.node )
 

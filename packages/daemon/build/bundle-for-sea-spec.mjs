@@ -112,7 +112,14 @@ function bundleIfStale() {
       '--target=node22',
       '--format=cjs',
       '--outfile=dist/bundle.cjs',
-      '--external:better-sqlite3',
+      // Task #480 — better-sqlite3 wrapper (lib/index.js → lib/database.js
+      // + methods/*) is now bundled INTO bundle.cjs so the SEA daemon has
+      // a real `Database` constructor at runtime. The native-loader (SEA
+      // mode) calls `require('better-sqlite3')` and force-injects the raw
+      // .node addon as `nativeBinding`, so the wrapper's `bindings()`
+      // fallback never runs. Keep `bindings` external (esbuild emits a
+      // `require("bindings")` stub that is unreachable in SEA mode).
+      '--external:bindings',
       '--external:node-pty',
       '--external:*.node',
     ],
