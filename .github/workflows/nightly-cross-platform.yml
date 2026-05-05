@@ -1,0 +1,160 @@
+name: Nightly cross-platform
+
+# Task #510 (FOLLOWUP-A) — cross-platform sea-smoke + package matrix.
+#
+# Background: ci.yml (PR-triggered) used to run sea-smoke and package on
+# the full 3-OS matrix (ubuntu-22.04 + macos-14 + windows-latest). All
+# current devs work on Windows hosts, so the mac/linux runs were paying
+# the full PR-latency cost (sea-smoke ~2-3 min/OS cold, package ~5-10
+# min/OS cold) for coverage that never gated a PR — branch protection
+# only requires the windows-latest variants. Task #510 demoted those
+# matrix legs to windows-only on PRs and moved the full cross-OS sweep
+# here, on a nightly cron, so cross-platform regressions still surface
+# within ~24h without slowing every PR.
+#
+# Trigger: nightly at 08:00 UTC (= 00:00 PST / 04:00 EST / 16:00 KST).
+# Off-hours for the team's primary working window so the runner pool is
+# uncongested. workflow_dispatch is also enabled so a maintainer can
+# trigger an ad-hoc cross-OS run after a risky merge without waiting for
+# the cron.
+#
+# Failure surfacing: a failed nightly job fires GitHub's default
+# "workflow failed" email to the actor + repo watchers (configured per
+# user under Settings → Notifications → Actions). No `gh issue create`
+# step is wired here on purpose — issue-creation on a flaky cross-OS
+# matrix would generate noise (mac runner image churn, brew network
+# blips) and the email channel is enough for a v0.3 ship-time signal.
+# A v0.4 followup may add issue-on-failure once the matrix proves
+# stable.
+
+on:
+  schedule:
+    # Daily at 08:00 UTC. Cron syntax: minute hour day-of-month month day-of-week.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-cross-platform-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Mirror of ci.yml's sea-smoke job, pinned to the full 3-OS matrix.
+  # Steps are intentionally a verbatim copy of ci.yml's sea-smoke job —
+  # any drift between the two means the nightly is no longer validating
+  # what PRs experience on Windows. If you edit one, edit both.
+  sea-smoke:
+    name: sea-smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: Generate proto
+        run: pnpm --filter @ccsm/proto run gen
+      - name: Typecheck sea-smoke harness
+        run: pnpm --filter @ccsm/sea-smoke run typecheck
+      - name: Dry-run (expect /healthz timeout)
+        shell: bash
+        working-directory: tools/sea-smoke
+        run: |
+          set +e
+          node --import tsx -e "
+          import('./main.ts').then(async (m) => {
+            const code = await m.runSmoke({ skipStart: true, skipStop: true });
+            process.exit(code === 1 ? 0 : 99);
+          }).catch((e) => { console.error('import-fail', e); process.exit(98); });
+          "
+
+  # Mirror of ci.yml's package job, pinned to the full 3-target matrix.
+  # See sea-smoke comment above re: drift discipline.
+  package:
+    name: package (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win-msi }
+          - { os: macos-14,        target: mac-pkg }
+          - { os: ubuntu-22.04,    target: linux-deb-rpm }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Generate proto
+        run: pnpm --filter @ccsm/proto run gen
+
+      - name: Install WiX 4 (windows only)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          echo "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Install fpm + rpm (linux only)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm dpkg-sig
+          sudo gem install --no-document fpm
+
+      - name: macOS toolchain probe (mac only)
+        if: matrix.os == 'macos-14'
+        run: |
+          command -v pkgbuild
+          command -v productbuild
+
+      - name: Package (${{ matrix.target }})
+        shell: bash
+        run: pnpm run package:${{ matrix.target }}
+
+      - name: Verify signing (mac/linux)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: bash tools/verify-signing.sh
+
+      - name: Verify signing (windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: pwsh tools/verify-signing.ps1
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-package-${{ matrix.target }}
+          path: |
+            packages/daemon/dist/*.msi
+            packages/daemon/dist/*.pkg
+            packages/daemon/dist/*.deb
+            packages/daemon/dist/*.rpm
+          if-no-files-found: warn
+          retention-days: 7

@@ -477,8 +477,13 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
+      # Task #510 (FOLLOWUP-A) — PR-triggered ci.yml runs sea-smoke on
+      # windows-latest only (devs all on Windows hosts; cross-OS coverage
+      # is owned by .github/workflows/nightly-cross-platform.yml). Other
+      # triggers (workflow_dispatch from main/working push, etc.) still
+      # exercise the full 3-OS matrix so manual reruns aren't degraded.
       matrix:
-        os: [ubuntu-22.04, macos-14, windows-latest]
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["windows-latest"]') || fromJSON('["ubuntu-22.04", "macos-14", "windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -574,11 +579,14 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
+      # Task #510 (FOLLOWUP-A) — PR-triggered ci.yml builds the win-msi
+      # package only (devs all on Windows hosts; mac-pkg + linux-deb-rpm
+      # cross-OS package coverage is owned by
+      # .github/workflows/nightly-cross-platform.yml). Other triggers
+      # (workflow_dispatch from main/working push, etc.) still exercise
+      # the full 3-target matrix so manual reruns aren't degraded.
       matrix:
-        include:
-          - { os: windows-latest, target: win-msi }
-          - { os: macos-14,        target: mac-pkg }
-          - { os: ubuntu-22.04,    target: linux-deb-rpm }
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"windows-latest","target":"win-msi"}]') || fromJSON('[{"os":"windows-latest","target":"win-msi"},{"os":"macos-14","target":"mac-pkg"},{"os":"ubuntu-22.04","target":"linux-deb-rpm"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
