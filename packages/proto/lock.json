@@ -2,12 +2,12 @@
   "version": 1,
   "files": {
     "src/ccsm/v1/common.proto": "7c2e34124f82d03629134fce100259c1a4f03ec2fa8d3d50c3e3e256f8e906d4",
-    "src/ccsm/v1/crash.proto": "d7133746b30daaa20041d0309a196e08ba87f4ab68ee5ffc0a3175a0dc041ce9",
-    "src/ccsm/v1/draft.proto": "895e426a34ea4d9f1743049149c64214a5d4af866f4381f98b998a49acac7946",
-    "src/ccsm/v1/notify.proto": "2332a47efa90c6b3e982964c7bda4489aff16b599ea6da59a85e4f4f408d878d",
+    "src/ccsm/v1/crash.proto": "3d7bef19d3527b65612279f1a61e289bc38c87f91bfef0b3ab93cef618cc5bd1",
+    "src/ccsm/v1/draft.proto": "7bbd947b122589ff6adf7a66928338beeff350147342a092d463aca1213da043",
+    "src/ccsm/v1/notify.proto": "371bc70e2aa2c55051d43c240585bb48eb946c01c807173f64ea9e6257cf814a",
     "src/ccsm/v1/pty.proto": "a797726ae1f5c32593abf4d69c658adb27490599035dbaa61d9c165b85108264",
     "src/ccsm/v1/session.proto": "dc4a78eced7ec31e431edf5b00a74f7aa0179161805ecde268a957836d86e325",
-    "src/ccsm/v1/settings.proto": "2894f3dc91a912f269994686dc58596229fed359e63f4389d10c9840a328e173",
-    "src/ccsm/v1/supervisor.proto": "d6018cc763f8097ce2df097865ee59b7fdecee84f9fe8b784a563b4709b9f1d5"
+    "src/ccsm/v1/settings.proto": "de1a8292ad3068228f1eb6acd856e6f594aaa2e1c9f4e737ba616711e3cf5d85",
+    "src/ccsm/v1/supervisor.proto": "1608271a3d43f28e2e799c4a7f2f349b5228208451767beccc61c0e4f9de3f8a"
   }
 }
