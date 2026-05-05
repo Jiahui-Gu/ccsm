@@ -105,9 +105,32 @@ function buildShim(platform: Platform): CcsmApi {
   const m = <T>(path: string) => (...args: unknown[]): Promise<T> =>
     daemonInvoke(path, args) as Promise<T>;
 
+  // saveState daemon route returns `{ ok: true } | { ok: false; error: string }`
+  // verbatim (see daemon/api/data.ts safeSaveState). The v0.2 preload
+  // bridge guaranteed `Promise<void>` that throws on `{ ok: false }`, and
+  // call sites in src/stores/persist.ts rely on `await saveState()` to
+  // propagate persist failures via thrown errors. The generic `m<void>`
+  // helper would resolve to the `{ ok }` discriminant and silently lose
+  // failures (data-loss regression). Unwrap-and-throw here keeps the
+  // outward contract identical to the v0.2 bridge.
+  const saveStateInvoke = async (key: string, value: string): Promise<void> => {
+    const res = (await daemonInvoke('db/save', [key, value])) as
+      | { ok: true }
+      | { ok: false; error: string }
+      | undefined
+      | null;
+    if (!res || (res as { ok: boolean }).ok !== true) {
+      const errMsg =
+        res && (res as { ok: false; error?: string }).error
+          ? (res as { ok: false; error: string }).error
+          : 'saveState failed';
+      throw new Error(errMsg);
+    }
+  };
+
   return {
-    loadState: m<string | null>('loadState'),
-    saveState: m<void>('saveState'),
+    loadState: m<string | null>('db/load'),
+    saveState: saveStateInvoke,
     i18n: {
       getSystemLocale: m<string | undefined>('i18n/getSystemLocale'),
       setLanguage: (l: 'en' | 'zh') => {
@@ -123,8 +146,11 @@ function buildShim(platform: Platform): CcsmApi {
     recentCwds: m<string[]>('recentCwds'),
     userHome: m<string>('userHome'),
     userCwds: {
-      get: m<string[]>('userCwds/get'),
-      push: m<string[]>('userCwds/push'),
+      // Daemon registers these under /api/app/userCwds/* (see
+      // daemon/api/data.ts). The shim previously called /api/userCwds/*
+      // which 404s — same drift class as loadState/saveState.
+      get: m<string[]>('app/userCwds/get'),
+      push: m<string[]>('app/userCwds/push'),
     },
     pickCwd: m<string | null>('pickCwd'),
     defaultModel: m<string | null>('defaultModel'),
