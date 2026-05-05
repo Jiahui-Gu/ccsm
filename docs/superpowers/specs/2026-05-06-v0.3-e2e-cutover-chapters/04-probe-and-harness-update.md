@@ -168,6 +168,29 @@ overrides. After chapter 03 §1, the three flags should flip within ~5s.
 - Currently `app.whenReady()` is the entry — verify nothing wave-2
   hoisted out.
 
+#### Daemon stderr capture
+
+The runner MUST pipe the spawned electron process's `stderr` (which
+forwards the daemon child's stderr — see [ch03 §6](./03-ptyhost-wiring.md#daemon-stderr-structured-logs)
+for the `[ccsmd] <ISO> <level> <category>: ...` format) to a
+per-case log file at
+`tmp/e2e-logs/<run-id>/<case>.electron.log`.
+
+- The directory `tmp/e2e-logs/<run-id>/` MUST be created at runner
+  startup (gitignored). `<run-id>` = ISO-second-precision timestamp
+  of the runner invocation; `<case>` = the harness case id.
+- On case PASS: the file is retained but NOT surfaced.
+- On case FAIL: the runner MUST tail the LAST 200 lines of the file,
+  filter for `[ccsmd] <ISO> <level=error>` records first, and
+  prepend that excerpt (clearly delimited, e.g. `--- daemon stderr
+  (last 200 lines, errors first) ---`) into the case's error
+  message before throwing, so the failure surface visible in CI
+  logs / harness output carries the daemon-side context without
+  requiring an artifact dive.
+- Log capture MUST be best-effort: an I/O failure on the log file
+  MUST NOT fail an otherwise-passing case (warn to runner stdout
+  and continue).
+
 ### scripts/probe-helpers/reset-between-cases.mjs
 
 - Verify it resets `window.__ccsmStore.setState({...initial})` correctly

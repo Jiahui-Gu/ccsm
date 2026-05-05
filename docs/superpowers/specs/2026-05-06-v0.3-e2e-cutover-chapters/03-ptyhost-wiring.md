@@ -99,6 +99,21 @@ per sid. Daemon side at `daemon/api/pty.ts` listens via
    replay events the renderer already received. Daemon SHOULD treat
    reconnection as "open new tail; renderer is responsible for catching
    up via attach if it cares."
+5. **G-5 (reconnect dedup contract)**: every `pty:data` event MUST
+   carry a monotonically-increasing `seq: number` (per-sid, never
+   reused, never decreasing across reconnects). The `attach` RPC
+   response MUST be `{ snapshot, snapshotLastSeq }` where
+   `snapshotLastSeq` is the `seq` of the LAST `pty:data` event that
+   was already incorporated into `snapshot`. On reconnect the
+   renderer MUST filter incoming `pty:data` events with
+   `seq <= snapshotLastSeq` (drop them — they are already in the
+   painted snapshot). User input issued during the SSE reconnect
+   window MUST be queued in renderer (cap **64 KiB**); on overflow
+   the bridge MUST surface `daemon_unavailable` to the caller and
+   drop the queued bytes — silent truncation is forbidden. Once the
+   new EventSource is `open`, the queue MUST be flushed in arrival
+   order via the existing `input` RPC before any new keystrokes are
+   forwarded.
 
 ### Concrete v0.3 fixes
 
@@ -123,6 +138,14 @@ fixer MUST add (or extend) cases:
 - two subscribers per sid → both receive every `pty:data`; `pty:exit`
   fires for both exactly once.
 - subscriber unsubscribes mid-stream → other subscriber unaffected.
+- subscriber close + reconnect (per G-5) → the new EventSource
+  receives ONLY events with `seq > snapshotLastSeq`; the renderer
+  MUST observe zero replay of pre-close events. UT asserts the
+  filtered event set equals the post-reconnect emission set
+  exactly (no replay, no drop of post-reconnect events). Queued
+  input issued during the reconnect window MUST be observed by the
+  pty fake exactly once after the new EventSource opens, in
+  arrival order.
 
 **Why**: these are the exact properties HP-8 sigkill-reattach depends on.
 
@@ -406,6 +429,34 @@ The fixer MUST NOT ship a placeholder implementation that returns
 the daemon impl for "TODO" / "stub" / "placeholder" and reject any
 match in these three RPCs.
 
+### Error-token enum (closed set, per-RPC subset)
+
+The `error` field of every `{ ok: false, error: <token> }` daemon RPC
+response MUST be exactly one of the following CLOSED enum (lowercase,
+underscored). Adding a new token is a breaking change requiring a
+spec edit:
+
+| token                | meaning                                                                  |
+|----------------------|--------------------------------------------------------------------------|
+| `no_such_sid`        | sid is unknown to the daemon (never spawned, or already GC'd)            |
+| `pty_dead`           | sid was spawned but the underlying pty has exited                        |
+| `bad_request`        | request payload failed schema / range validation                         |
+| `spawn_failed`       | `pty:spawn` could not start the underlying process                       |
+| `daemon_unavailable` | renderer-side bridge surfaced when daemon socket / SSE is unreachable    |
+| `internal`           | uncaught exception inside the daemon (stack logged via stderr §6)        |
+
+Per-RPC emit subset (each RPC MUST emit ONLY tokens from its column;
+reviewers grep against this table):
+
+| RPC                          | tokens this RPC may return                                           |
+|------------------------------|----------------------------------------------------------------------|
+| `pty:spawn`                  | `bad_request`, `spawn_failed`, `internal`                            |
+| `pty:input`                  | `no_such_sid`, `pty_dead`, `bad_request`, `internal` (silent-drop semantics per R1 baseline-cite above take precedence over `no_such_sid` if v0.2 dropped silently) |
+| `pty:resize`                 | `no_such_sid`, `pty_dead`, `bad_request`, `internal`                 |
+| `pty:attach`                 | `no_such_sid`, `internal`                                            |
+| `pty:checkClaudeAvailable`   | (never `ok:false` — failures encoded as `{ available:false, reason }`) |
+| renderer bridge (any RPC)    | `daemon_unavailable` (added by the preload bridge ONLY when the daemon socket / SSE is unreachable; daemon NEVER emits this token) |
+
 ## 6. Error surface conventions
 
 All daemon RPCs return one of two shapes:
@@ -421,6 +472,35 @@ human-readable message — that's the renderer's responsibility.
 
 **Why**: stable tokens let UTs assert exact strings without coupling
 to UI copy.
+
+### Daemon stderr structured logs
+
+Daemon process stderr MUST be a stream of newline-delimited records
+with a fixed prefix. The format is:
+
+```
+[ccsmd] <ISO-8601-timestamp> <level> <category>: <message>
+```
+
+- `<ISO-8601-timestamp>` — UTC, millisecond precision (e.g.
+  `2026-05-06T12:34:56.789Z`).
+- `<level>` — one of `debug` / `info` / `warn` / `error` (lowercase).
+- `<category>` — one of `boot` / `pty` / `api` / `lifecycle` /
+  `internal` (lowercase, extensible only via spec edit).
+- `<message>` — single line; multi-line payloads (stack traces) MUST
+  be either truncated to one line OR emitted as multiple consecutive
+  records with the same `<category>` and `level=error`.
+
+**Log level**: controlled by env var `CCSMD_LOG_LEVEL`; default
+`info`. Valid values: `debug` / `info` / `warn` / `error`. Records
+strictly below the configured level MUST NOT be written. The daemon
+MUST log its effective level once at boot
+(`[ccsmd] <ts> info boot: log level=info`).
+
+**Why**: chapter 04 §2 harness-runner captures daemon stderr to a
+per-case log file and tails error-level lines on failure; chapter 05
+G11 grep-asserts zero error-level lines on a green Set A run. Both
+gates require this stable prefix.
 
 ## 7. Out-of-scope (deferred)
 

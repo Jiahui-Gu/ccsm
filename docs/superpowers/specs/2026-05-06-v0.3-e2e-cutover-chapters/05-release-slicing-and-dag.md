@@ -21,6 +21,7 @@ permitted iff ALL of the following hold:
 | G8 | Vitest skip total = 0 (`it.skip / test.skip / describe.skip / xit / xdescribe` in `tests/ src/ daemon/ electron/`); harness skip-flag count (`skipLaunch / requiresClaudeBin / windowsOnly / darwinOnly / linuxOnly` set true on a case) ≤ ch04 §1.1 baseline (currently 1: `cap-skip-launch-bundle-shape` KEEP) | `grep -rEn "(it\|test\|describe)\.skip\(\|\bxit\b\|\bxdescribe\b" tests/ src/ daemon/ electron/` returns 0; harness flag count diff'd against [04-probe-and-harness-update](./04-probe-and-harness-update.md) §1.1 |
 | G9 | NO transport regression (no preload bridge reverted to IPC for a wave-2 endpoint) AND no daemon HTTP listen widening (cross-ref [ch03 §3](./03-ptyhost-wiring.md#loopback-bind-invariant) + [ch02 §1](./02-store-and-preload-surface.md#1-surface-catalog-what-lives-on-window) footer) | grep diff for `ipcRenderer.invoke`; AND `grep -rEn "createServer\|\.listen\(.*0\.0\.0\.0\|\.listen\(.*'::" daemon/ src/ electron/` MUST return 0 lines outside test fixtures |
 | G10| sigkill-reattach v0.2 baseline maintained green: the v0.2 already-shipping `attach-replay-from-headless-buffer` Set A case stays green (smoke test only). v0.3 does NOT lock the NEW `sigkill-reattach` harness case (Set B informational per chapter 04 §3) or any new reliability semantics (TTL / cap / cwd / eviction) as a release gate — those gates live in v0.4 per [03-ptyhost-wiring](./03-ptyhost-wiring.md) §7 (F-4 / F-6). | `harness-real-cli` Set A `attach-replay-from-headless-buffer` green |
+| G11| Daemon stderr capture across a full Set A run shows ZERO `error`-level records in the `[ccsmd] <ISO> <level> <category>: ...` stream (per [ch03 §6](./03-ptyhost-wiring.md#daemon-stderr-structured-logs) format and [ch04 §2](./04-probe-and-harness-update.md#daemon-stderr-capture) capture path). A non-zero count blocks merge regardless of test colour — daemon-internal errors during a "green" run indicate a silently swallowed regression. | `grep -cE '\] [0-9T:.\-]+Z error ' tmp/e2e-logs/<run-id>/*.electron.log` MUST return 0 (summed across all Set A case logs) |
 
 ## 2. PR DAG
 
@@ -234,6 +235,17 @@ Wave 1 (parallel, no inter-deps): PR-1, PR-2, PR-3, PR-5
 Wave 2 (after wave 1 lands): PR-4, PR-6, PR-7
 Wave 3 (after wave 2): PR-8
 Wave 4 (terminal): PR-9
+
+**R3 cross-cut note (CF-6 reliability hardening)**: the v0.3 R3
+cross-cut hardening — daemon spawn-failure path (PR-3), port-collision
+single-retry counter (PR-3), SSE reconnect dedup contract (PR-6 per
+[ch03 §2 G-5](./03-ptyhost-wiring.md#required-guarantees)), and probe
+timeout DOM/hydration-trace dumps (PR-8 per [ch04 §2](./04-probe-and-harness-update.md#scriptsprobe-utils-real-climjs))
+— rides each PR's existing wave slot and does NOT shift the dispatch
+order above. Sigkill snapshot TTL pin / per-sid buffer cap / 4
+boundary UTs are explicitly **NOT** part of this cross-cut: they are
+deferred to v0.4 per CF-3 manager decision and tracked in
+[ch03 §7](./03-ptyhost-wiring.md#7-out-of-scope-deferred) (F-1 / F-2 / F-5).
 
 Estimated calendar: with parallel dispatch and 1-day per-PR review
 turn-around, v0.3 e2e green is reachable in 4-5 working days from
