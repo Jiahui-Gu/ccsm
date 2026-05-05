@@ -18,8 +18,7 @@ export default [
       'docs/**',
       'webpack.config.js',
       'postcss.config.js',
-      'eslint.config.js',
-      'electron/__legacy_to_delete__/**'
+      'eslint.config.js'
     ]
   },
   js.configs.recommended,

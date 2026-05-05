@@ -1,19 +1,17 @@
-// IPC security guards extracted from electron/main.ts (Task #730 Phase A1).
+// Path-safety gate shared by the renderer-facing IPC surface in main and the
+// daemon's pty spawn path. The only remaining export after the v0.3 wave-2
+// cleanup (Task #580) is `isSafePath` — `resolveCwd` and `fromMainFrame` had
+// no production callers once electron/__legacy_to_delete__ was removed.
 //
-// Pure deciders/validators with no I/O — they take a value (path, IPC event)
-// and return a boolean / normalized form. Owning these in a dedicated module
-// makes the security contract independently auditable and trivially unit-
-// testable, and prevents accidental drift if a future handler forgets to
-// re-implement the same checks inline.
+// Kept under electron/security/ (rather than relocated to daemon/) because
+// tsconfig.daemon.json already include-pulls this single file for
+// `daemon/ptyHost/cwdResolver.ts` (W2-B). Moving it would force a churn in
+// that path + the daemon tsconfig include list with zero functional gain.
+//
+// File / module name retained for git history continuity even though
+// "ipcGuards" no longer reflects its sole consumer (the daemon spawn path).
 
 import * as path from 'path';
-import * as os from 'os';
-// `Electron.IpcMainInvokeEvent` is the only Electron-typed identifier in
-// this file. Importing it as a type (instead of using the global namespace)
-// keeps the module compilable from `tsconfig.daemon.json`, which include-
-// path-pulls `isSafePath` for `daemon/ptyHost/cwdResolver.ts` (W2-B) but
-// does not load Electron's ambient type globals.
-import type { IpcMainInvokeEvent } from 'electron';
 
 // Filter renderer-supplied filesystem paths before any `fs.*` call. UNC paths
 // (`\\server\share\...` or `//server/share/...`) MUST be rejected on Windows:
@@ -32,25 +30,4 @@ export function isSafePath(p: unknown): p is string {
     !p.startsWith('\\\\') &&
     !p.startsWith('//')
   );
-}
-
-// Expand a leading `~` / `~/` / `~\` to the user's home directory. Used by
-// `paths:exist` to normalize persisted cwds before the safety check. Inlined
-// here after the `electron/agent/sessions.ts` deletion (W3.5c) — it was the
-// only non-deleted consumer of the old `resolveCwd` helper.
-export function resolveCwd(cwd: string): string {
-  if (cwd === '~') return os.homedir();
-  if (cwd.startsWith('~/') || cwd.startsWith('~\\'))
-    return path.join(os.homedir(), cwd.slice(2));
-  return cwd;
-}
-
-// Defense-in-depth: every IPC handler that takes a privileged action should
-// first confirm the message originated from our top-level renderer frame. A
-// compromised iframe (e.g. via a future webview, or a misconfigured CSP)
-// can otherwise call into ipcMain with the same `e.sender`. Pairs with the
-// `setWindowOpenHandler({ action: 'deny' })` and `will-navigate` blocks
-// installed in createWindow().
-export function fromMainFrame(e: IpcMainInvokeEvent): boolean {
-  return e.senderFrame === e.sender.mainFrame;
 }
