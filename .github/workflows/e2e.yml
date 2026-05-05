@@ -33,6 +33,13 @@ jobs:
         # windows-only means local `npm run probe:e2e` green == CI green
         # with no platform escape hatch.
         os: [windows-latest]
+    # Task #501 — historical P50=307s, P95=348s (5.8min) over 20 success
+    # runs. 10min cap is ~1.7× P95, generous enough for cold-cache
+    # `npm ci` + electron-rebuild + electron binary install while still
+    # killing PR-#1066-style vitest hangs in 10min instead of the
+    # GH-Actions 360min default. Not widened to 15min because P95 sits
+    # comfortably under 6min; revisit only if e2e adds suites pushing
+    # P95 past ~7min.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

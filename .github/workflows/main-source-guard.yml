@@ -10,7 +10,11 @@ permissions:
 jobs:
   check-source:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Task #501 — single bash conditional on github.head_ref, no checkout,
+    # no install. Historical P50=5s, P95=14s (max 14s over 3 success runs).
+    # Tightened 10 → 5 min so a hung runner is killed in 5 min instead of
+    # 10. 5min is ~21× P95, ample for runner acquisition.
+    timeout-minutes: 5
     steps:
       - name: Reject non-working source
         run: |
