@@ -766,14 +766,44 @@ jobs:
           git rm --cached -r --quiet .
           git reset --hard HEAD
 
+      # pnpm/action-setup MUST come before actions/setup-node so that
+      # setup-node's `cache: 'pnpm'` can locate the pnpm shim when
+      # computing the cache key.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version-file: '.nvmrc'
+          # Task #513 (FOLLOWUP-C, v0.3 ship CI-speed) — turn on the
+          # built-in pnpm cache. Keys ~/.npm-style metadata + the pnpm
+          # store directory off pnpm-lock.yaml, so a cache hit skips the
+          # network fetch portion of `pnpm install --frozen-lockfile`.
+          # Pairs with the explicit actions/cache step below that caches
+          # the resolved pnpm store directory so `pnpm install` only does
+          # symlink reconciliation on a warm hit.
+          cache: 'pnpm'
 
-      - uses: pnpm/action-setup@v4
+      # Task #513 (FOLLOWUP-C) — explicit pnpm store cache, mirrors the
+      # lint/typecheck/test jobs' node_modules cache pattern (line 92,
+      # 159, 279). Setup-node's `cache: 'pnpm'` already keys on
+      # pnpm-lock.yaml; this step adds restore-keys fallback so a stale
+      # cache is restored when the lockfile changes (pnpm reconciles only
+      # the diff). Eval target: ch15-enforcement wall-time 190s -> ~165s.
+      - name: Resolve pnpm store path
+        id: pnpm_store
+        shell: bash
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
         with:
-          version: 10.33.2
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-node22-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-${{ runner.arch }}-node22-
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
