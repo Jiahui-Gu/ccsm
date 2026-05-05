@@ -769,9 +769,24 @@ async function main(): Promise<void> {
 
 // `import.meta.url` check so unit tests can `import { runStartup }` without
 // triggering `main()`.
+//
+// SEA caveat (Task #463): when this module is bundled by esbuild for the
+// SEA binary, `import.meta` is rewritten to a stub `{}` so
+// `fileURLToPath(import.meta.url)` throws (url=undefined). The pre-fix
+// code caught the throw and returned false, which would have silently
+// SKIPPED `main()` on the postjected binary — daemon process would exit 0
+// without doing anything. Detect SEA via `node:sea` and short-circuit to
+// "direct run = true" before touching `import.meta.url`. The unit-test
+// path (no SEA) keeps the original argv comparison.
 import { fileURLToPath } from 'node:url';
+import { isSea } from 'node:sea';
 
 function isDirectRun(): boolean {
+  if (isSea()) {
+    // The SEA binary has exactly one entrypoint — the bundled main module —
+    // so being loaded at all means we are the direct run.
+    return true;
+  }
   try {
     const entry = process.argv[1];
     if (!entry) return false;

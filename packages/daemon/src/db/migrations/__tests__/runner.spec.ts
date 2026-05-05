@@ -11,25 +11,33 @@
 //   - SHA256 mismatch on an already-applied row → throws
 //     MigrationLockMismatchError, schema_migrations untouched
 //   - SHA256 mismatch on a pending row → throws BEFORE any SQL exec runs
+//   - missing inlined payload → throws MissingInlinedMigrationError
+//
+// Note (Task #463): the runner now reads SQL from `MIGRATION_SQL` (an
+// inlined map regenerated each build) instead of `readFileSync(...)`. Tests
+// inject synthetic entries directly into that map + clean up in finally.
 
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { MIGRATION_LOCKS, type MigrationLock } from '../../locked.js';
 import { openDatabase, type SqliteDatabase } from '../../sqlite.js';
 
+import { MIGRATION_SQL } from '../inlined.js';
+
 import {
   MigrationLockMismatchError,
-  migrationFilePath,
+  MissingInlinedMigrationError,
+  migrationSql,
   runMigrations,
 } from '../runner.js';
 
-function sha256(path: string): string {
-  return createHash('sha256').update(readFileSync(path)).digest('hex');
+function sha256Of(s: string): string {
+  return createHash('sha256').update(s, 'utf8').digest('hex');
 }
 
 describe('runMigrations (T5.4 — ch07 §4)', () => {
@@ -79,17 +87,15 @@ describe('runMigrations (T5.4 — ch07 §4)', () => {
   });
 
   it('applies only the pending remainder when partially applied', () => {
-    // Drop a synthetic 999_*.sql into the real migrations dir for the
-    // duration of this test (and remove it in finally). The runner's file
-    // resolver is fixed to that dir, so this is the simplest path to
-    // exercise multi-lock partial-apply semantics without a fixture
-    // injection seam in the runner. Using version 999 avoids any clash
-    // with future real migrations.
-    const realDir = dirname(migrationFilePath('001_initial.sql'));
+    // Inject a synthetic 999_*.sql entry into the inlined payload map for
+    // the duration of this test. Using version 999 avoids any clash with
+    // future real migrations. The runner reads SQL from MIGRATION_SQL, so
+    // this is the equivalent of the old "drop a file in the migrations
+    // dir" pattern — same semantics, no filesystem touch.
+    const synthName = '999_synth_partial.sql';
     const synthSql = 'CREATE TABLE synth_partial (k INTEGER PRIMARY KEY);\n';
-    const synthPath = join(realDir, '999_synth_partial.sql');
-    const synthSha = createHash('sha256').update(synthSql).digest('hex');
-    writeFileSync(synthPath, synthSql);
+    const synthSha = sha256Of(synthSql);
+    MIGRATION_SQL[synthName] = synthSql;
 
     try {
       db = openDatabase(dbPath);
@@ -101,7 +107,7 @@ describe('runMigrations (T5.4 — ch07 §4)', () => {
       // and applies the synthetic 999.
       const customLocks: MigrationLock[] = [
         ...MIGRATION_LOCKS,
-        { version: 999, filename: '999_synth_partial.sql', sha256: synthSha },
+        { version: 999, filename: synthName, sha256: synthSha },
       ];
       const partial = runMigrations(db, customLocks);
       expect(partial.alreadyApplied.map((m) => m.version)).toEqual(
@@ -122,7 +128,7 @@ describe('runMigrations (T5.4 — ch07 §4)', () => {
         .all() as { name: string }[];
       expect(tableRows.map((r) => r.name)).toEqual(['synth_partial']);
     } finally {
-      rmSync(synthPath, { force: true });
+      delete MIGRATION_SQL[synthName];
     }
   });
 
@@ -178,7 +184,26 @@ describe('runMigrations (T5.4 — ch07 §4)', () => {
       const e = err as MigrationLockMismatchError;
       expect(e.filename).toBe('001_initial.sql');
       expect(e.expectedSha256).toBe('a'.repeat(64));
-      expect(e.actualSha256).toBe(sha256(migrationFilePath('001_initial.sql')));
+      expect(e.actualSha256).toBe(sha256Of(migrationSql('001_initial.sql')));
     }
+  });
+
+  it('throws MissingInlinedMigrationError when a lock references an absent payload', () => {
+    db = openDatabase(dbPath);
+    const orphan: MigrationLock[] = [
+      { version: 42, filename: '042_never_inlined.sql', sha256: 'f'.repeat(64) },
+    ];
+    expect(() => runMigrations(db!, orphan)).toThrow(MissingInlinedMigrationError);
+  });
+
+  it('migrationSql helper returns the inlined bytes for a known filename', () => {
+    const sql = migrationSql('001_initial.sql');
+    expect(sql).toContain('CREATE TABLE schema_migrations');
+    // SHA matches the locked entry exactly (this is the same byte-equality
+    // guarantee the runner uses, asserted here so a regression in the
+    // inlining script surfaces in unit tests, not at daemon boot).
+    const lock = MIGRATION_LOCKS.find((l) => l.filename === '001_initial.sql');
+    expect(lock).toBeDefined();
+    expect(sha256Of(sql)).toBe(lock!.sha256);
   });
 });

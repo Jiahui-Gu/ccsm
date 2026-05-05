@@ -1,0 +1,6 @@
+# packages/daemon/.gitignore — package-local ignores.
+#
+# Generated migration payload — produced by build/inline-migrations.mjs as
+# part of the npm `prebuild` hook. Source of truth is the *.sql files in
+# src/db/migrations/. See runner.ts header for why inlining exists (Task #463).
+src/db/migrations/inlined.ts
