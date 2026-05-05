@@ -353,6 +353,7 @@ describe('rpc/clients-transport-matrix (T8.11; spec ch12 §3)', () => {
   for (const matrixCase of cases) {
     // Use Vitest's per-case skip so the run reports the skip reason — much
     // friendlier than silently absent tests when triaging a Linux CI log.
+    // [PLATFORM-GATE: per-case skip when transport unavailable on this host (matrixCase.skipReason)]
     const block = matrixCase.skipReason ? describe.skip : describe;
 
     block(`${matrixCase.label} (${matrixCase.descriptorKind})`, () => {

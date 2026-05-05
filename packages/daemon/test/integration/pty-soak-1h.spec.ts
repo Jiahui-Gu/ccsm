@@ -47,6 +47,7 @@ const probe = dependenciesPresent();
 
 // `nightly` tag: spec runners may filter by tag (`vitest run --testNamePattern`)
 // to keep this out of the per-PR run. The 10m smoke variant is per-PR.
+// [PLATFORM-GATE: requires T4 pty soak harness dependencies (probe.ready)]
 describe.skipIf(!probe.ready)(`pty-soak-1h (ship-gate (c)) [nightly]`, () => {
   // Vitest test-level timeout. Add a 5-minute slack on top of the soak
   // duration for boot, shutdown, and final byte-equality comparison.
@@ -74,6 +75,7 @@ describe.skipIf(!probe.ready)(`pty-soak-1h (ship-gate (c)) [nightly]`, () => {
 // When the suite is skipped, leave a single sentinel test that records WHY
 // it was skipped (so `vitest --reporter=verbose` makes the gating reason
 // visible in CI output without polluting the regular test list).
+// [PLATFORM-GATE: gating-reason marker; only runs when soak harness deps are missing]
 describe.skipIf(probe.ready)('pty-soak-1h (skipped — pending dependencies)', () => {
   it('reports gating reason', () => {
     expect(probe.reason).toMatch(/T4\./);

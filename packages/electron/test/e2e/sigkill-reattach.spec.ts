@@ -297,6 +297,7 @@ const SERVICE_VARIANT = process.env.CCSM_E2E_SERVICE === '1';
 // `describe.skipIf(...)` keeps the suite present in the report (so CI can
 // observe the skip count + reason) while preventing any of its lifecycle
 // hooks from running. Vitest 4.x supports `skipIf` natively.
+// [PLATFORM-GATE: requires built service binary + Playwright electron fixture; otherwise skipped pending dependencies]
 describe.skipIf(SHOULD_SKIP)(
   `T8.3 sigkill-reattach — ship-gate (b) [${SERVICE_VARIANT ? 'service-installed' : 'subprocess'}]`,
   () => {

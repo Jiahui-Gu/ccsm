@@ -13,6 +13,7 @@ import { bindH2cUds } from '../h2c-uds.js';
 import type { BoundTransport } from '../types.js';
 
 const isWin = platform() === 'win32';
+// [PLATFORM-GATE: POSIX UDS not available on Windows]
 const describePosix = isWin ? describe.skip : describe;
 
 let bound: BoundTransport | null = null;
@@ -129,6 +130,7 @@ describePosix('bindH2cUds (POSIX)', () => {
 });
 
 describe('bindH2cUds (win32 guard)', () => {
+  // [PLATFORM-GATE: Windows-only routing-hint check; skip on POSIX where the bind succeeds]
   it.skipIf(!isWin)('throws synchronously on win32 with a routing-hint message', async () => {
     const server = createServer();
     await expect(bindH2cUds(server, { path: '/tmp/should-not-bind' })).rejects.toThrow(

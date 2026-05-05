@@ -69,6 +69,7 @@ function planLoopback(): BindDescriptor {
 }
 
 describe('router bind hook — over-the-wire Unimplemented', () => {
+  // [PLATFORM-GATE: POSIX UDS not available on Windows]
   it.skipIf(isWin)('serves Unimplemented via h2c-UDS (POSIX)', async () => {
     const hook = makeRouterBindHook();
     const planned = planUds();

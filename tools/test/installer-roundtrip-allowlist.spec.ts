@@ -152,6 +152,7 @@ describe('installer-roundtrip.ps1 (integration smoke)', () => {
     }
   })();
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell installer requires pwsh on PATH)]
   it.skipIf(!pwshAvailable)('PS1 -DryRun reports PASS for both variants', () => {
     const r = spawnSync(
       'pwsh',
@@ -168,6 +169,7 @@ describe('installer-roundtrip.ps1 (integration smoke)', () => {
     expect(r.stdout).toMatch(/variant=0 residue count: 5/);
   });
 
+  // [PLATFORM-GATE: pwsh not installed (PowerShell installer requires pwsh on PATH)]
   it.skipIf(!pwshAvailable)(
     'PS1 -DryRun stays fail-closed when global allowlist is empty (mocked via env)',
     () => {

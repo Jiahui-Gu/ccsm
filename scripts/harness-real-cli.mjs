@@ -3548,6 +3548,7 @@ function detectClaudeBin() {
 
 async function main() {
   // ---- preflight: harness-real-cli requires the upstream `claude` binary ----
+  // [PLATFORM-GATE: requires local claude CLI + Anthropic auth (CCSM_CLAUDE_BIN or `claude` on PATH)]
   // Without it every shared case times out at waitForTerminalReady. Sentinel-skip
   // the entire harness with a clear marker line + exit 0 so run-all-e2e.mjs
   // counts it as a passed-but-skipped harness rather than a 27-failure cascade.

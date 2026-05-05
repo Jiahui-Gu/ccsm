@@ -63,12 +63,14 @@ try {
 }
 
 describe('computeCertFingerprint', () => {
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)('matches the SHA-256 of the DER form of the cert', () => {
     const fp = computeCertFingerprint(TEST_CERT_PEM);
     expect(fp).toBe(TEST_CERT_FINGERPRINT);
     expect(fp).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)('accepts a Buffer in addition to a string', () => {
     const buf = Buffer.from(TEST_CERT_PEM, 'utf8');
     expect(computeCertFingerprint(buf)).toBe(TEST_CERT_FINGERPRINT);
@@ -76,6 +78,7 @@ describe('computeCertFingerprint', () => {
 });
 
 describe('bindH2Tls', () => {
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)(
     'binds an ephemeral 127.0.0.1 TLS port and surfaces port + fingerprint',
     async () => {
@@ -99,6 +102,7 @@ describe('bindH2Tls', () => {
     },
   );
 
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)(
     'serves an end-to-end h2 request with the pinned cert',
     async () => {
@@ -141,6 +145,7 @@ describe('bindH2Tls', () => {
     },
   );
 
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)('rejects non-loopback host at runtime', async () => {
     const server = createSecureServer({ cert: TEST_CERT_PEM, key: TEST_KEY_PEM });
     await expect(
@@ -153,6 +158,7 @@ describe('bindH2Tls', () => {
     ).rejects.toThrow(/MUST be 127\.0\.0\.1/);
   });
 
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)('rejects out-of-range port', async () => {
     const server = createSecureServer({ cert: TEST_CERT_PEM, key: TEST_KEY_PEM });
     await expect(
@@ -165,6 +171,7 @@ describe('bindH2Tls', () => {
     ).rejects.toThrow(/port out of range/);
   });
 
+  // [PLATFORM-GATE: h2 TLS requires cert fixture (HAVE_CERT)]
   it.skipIf(!HAVE_CERT)('close() is idempotent', async () => {
     const server = createSecureServer({ cert: TEST_CERT_PEM, key: TEST_KEY_PEM });
     bound = await bindH2Tls(server, {

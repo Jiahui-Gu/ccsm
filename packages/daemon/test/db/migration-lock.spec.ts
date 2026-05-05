@@ -43,6 +43,7 @@ function sha256OfFile(path: string): string {
 // runs. Instead we read it as text and parse the MIGRATION_LOCKS entries.
 const lockedTsExists = existsSync(LOCKED_TS_PATH);
 
+// [PLATFORM-GATE: requires generated db/locked.ts (skip when source not present in this build)]
 describe.skipIf(!lockedTsExists)('migration-lock (runtime self-check)', () => {
   // Parse `MIGRATION_LOCKS` entries from locked.ts source text. We accept
   // either object-literal form (`'<file>': '<hex>'`) or a Map/array form

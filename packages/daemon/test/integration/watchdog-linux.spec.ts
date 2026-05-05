@@ -28,6 +28,7 @@ import { startSystemdWatchdog, WATCHDOG_INTERVAL_MS } from '../../src/watchdog/s
 const isRealSystemdHost =
   process.platform === 'linux' && existsSync('/run/systemd/system');
 
+// [PLATFORM-GATE: requires Linux host with live systemd (/run/systemd/system)]
 describe.skipIf(!isRealSystemdHost)('systemd watchdog (real systemd host)', () => {
   it('spawns systemd-notify without error when NOTIFY_SOCKET points at the live socket', async () => {
     // The live notify socket on a Type=notify service is `/run/systemd/notify`.

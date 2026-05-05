@@ -27,6 +27,7 @@ import {
 
 const probe = dependenciesPresent();
 
+// [PLATFORM-GATE: requires T4 pty soak harness dependencies (probe.ready)]
 describe.skipIf(!probe.ready)('pty-soak-10m (phase-5 smoke variant)', () => {
   // 5-minute slack on top of the soak window for boot + final byte-equality.
   const TIMEOUT_MS = SOAK_DURATION_10M_MS + 5 * 60 * 1000;
@@ -49,6 +50,7 @@ describe.skipIf(!probe.ready)('pty-soak-10m (phase-5 smoke variant)', () => {
   );
 });
 
+// [PLATFORM-GATE: gating-reason marker; only runs when soak harness deps are missing]
 describe.skipIf(probe.ready)('pty-soak-10m (skipped — pending dependencies)', () => {
   it('reports gating reason', () => {
     expect(probe.reason).toMatch(/T4\./);
