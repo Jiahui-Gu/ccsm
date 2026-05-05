@@ -593,6 +593,27 @@ jobs:
           # repo.
           fetch-depth: 0
 
+      # packages/proto/lock.json records SHA256 over the BYTES the dev
+      # captured at `pnpm --filter @ccsm/proto run lock` time. Those bytes
+      # were CRLF (the de-facto Windows-host convention used by every dev
+      # on this project; .gitattributes declares `eol=lf` for .proto but
+      # autocrlf=true on the dev machines overrides it on checkout, and
+      # lock.json was committed from those CRLF working trees). The
+      # GitHub-hosted windows-latest runner ships with autocrlf=true on
+      # the default global git config, so a fresh `actions/checkout@v4`
+      # already produces CRLF — we re-affirm here as a defensive guard
+      # so the lock.spec.ts / lock-check.mjs hash comparisons stay
+      # reproducible regardless of any future runner-image config drift.
+      # (If a future cleanup re-locks lock.json against LF bytes, drop
+      # this step. Until then, divergence between this job's checkout
+      # and the dev machines is what produces phantom drift.)
+      - name: Affirm CRLF line endings (lock.json baseline)
+        shell: pwsh
+        run: |
+          git config core.autocrlf true
+          git rm --cached -r --quiet .
+          git reset --hard HEAD
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
