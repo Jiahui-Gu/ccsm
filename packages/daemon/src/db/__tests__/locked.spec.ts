@@ -9,14 +9,28 @@
 //   - every entry's SHA256 matches the on-disk file's bytes
 //   - versions are unique and strictly increasing in declaration order
 //   - filenames match the `NNN_<name>.sql` convention from ch07 §4
+//
+// Why we still read the on-disk *.sql file here even after Task #463 moved
+// the runner to an inlined module: this spec is the upstream invariant —
+// it asserts the *.sql source files agree with locked.ts. The runner-side
+// invariant (inlined bytes agree with locked.ts) is covered by
+// `migrations/__tests__/runner.spec.ts`. Two independent checks, one for
+// each link in the chain `*.sql → inlined.ts → MIGRATION_LOCKS`.
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 import { MIGRATION_LOCKS } from '../locked.js';
-import { migrationFilePath } from '../migrations/runner.js';
+
+// Resolve the migrations dir relative to this test file (vitest runs from
+// the source tree, so `import.meta.url` is well-defined here — unlike the
+// SEA-bundled runner case that motivated Task #463).
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = join(HERE, '..', 'migrations');
 
 describe('MIGRATION_LOCKS (T5.4 — ch07 §4)', () => {
   it('has at least one entry', () => {
@@ -25,7 +39,7 @@ describe('MIGRATION_LOCKS (T5.4 — ch07 §4)', () => {
 
   it('every recorded SHA256 matches the on-disk file', () => {
     for (const lock of MIGRATION_LOCKS) {
-      const path = migrationFilePath(lock.filename);
+      const path = join(MIGRATIONS_DIR, lock.filename);
       const actual = createHash('sha256').update(readFileSync(path)).digest('hex');
       expect(actual, `SHA256 mismatch for ${lock.filename}`).toBe(lock.sha256);
     }
@@ -54,3 +68,4 @@ describe('MIGRATION_LOCKS (T5.4 — ch07 §4)', () => {
     }
   });
 });
+

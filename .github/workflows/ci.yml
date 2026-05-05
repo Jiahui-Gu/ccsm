@@ -292,6 +292,23 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
+      # Task #463 round-4 — inlined migrations payload is gitignored (see
+      # packages/daemon/.gitignore: src/db/migrations/inlined.ts) and is
+      # produced by build/inline-migrations.mjs, normally chained through the
+      # `prebuild` / `pretypecheck` / `pretest` npm script hooks. The Coverage
+      # step below invokes vitest DIRECTLY via `npx vitest run` (not via
+      # `npm/pnpm test`), so npm lifecycle hooks do NOT fire and the
+      # generated `inlined.ts` is missing on a fresh CI checkout. The result
+      # is `Cannot find module './inlined.js' imported from
+      # packages/daemon/src/db/migrations/runner.ts` failing 5 specs
+      # (pruner, snapshot-store, runner, draft get/update handlers — all
+      # transitively import runner.ts). Generate the payload explicitly here
+      # so the unit-coverage gate has a working migrations module.
+      - name: Generate inlined migrations payload (daemon)
+        working-directory: packages/daemon
+        shell: bash
+        run: node build/inline-migrations.mjs
+
       - name: Coverage (daemon, unit only — temp 50% gate, see #350)
         working-directory: packages/daemon
         run: npx vitest run --coverage --config vitest.config.coverage.ts
