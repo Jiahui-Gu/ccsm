@@ -7,7 +7,7 @@
     "src/ccsm/v1/notify.proto": "371bc70e2aa2c55051d43c240585bb48eb946c01c807173f64ea9e6257cf814a",
     "src/ccsm/v1/pty.proto": "a797726ae1f5c32593abf4d69c658adb27490599035dbaa61d9c165b85108264",
     "src/ccsm/v1/session.proto": "dc4a78eced7ec31e431edf5b00a74f7aa0179161805ecde268a957836d86e325",
-    "src/ccsm/v1/settings.proto": "de1a8292ad3068228f1eb6acd856e6f594aaa2e1c9f4e737ba616711e3cf5d85",
+    "src/ccsm/v1/settings.proto": "ac6e7e6faff70179d0a95648a93ed01e41b2c5840135841da68baac0ab3a97f5",
     "src/ccsm/v1/supervisor.proto": "1608271a3d43f28e2e799c4a7f2f349b5228208451767beccc61c0e4f9de3f8a"
   }
 }

@@ -4,7 +4,8 @@
 // `SettingsService.UpdateSettings` Connect handler.
 //
 // Behaviour summary (spec §4.2):
-//   - Reject PRINCIPAL scope with InvalidArgument (same as Get).
+//   - Reject PRINCIPAL scope with PermissionDenied (same as Get; ch15
+//     §3 #14 + Task #431 reconcile: scope is denied, not malformed).
 //   - Reject any non-empty `user_home_path` / `detected_claude_default_model`
 //     write with InvalidArgument (those fields are daemon-derived; spec
 //     §5 + acceptance §7 #5).
@@ -59,7 +60,7 @@ export function makeUpdateSettingsHandler(
       throw new ConnectError(
         `SettingsScope ${SettingsScope[decision.scope] ?? String(decision.scope)} ` +
           'is not supported in v0.3 (only GLOBAL / UNSPECIFIED).',
-        Code.InvalidArgument,
+        Code.PermissionDenied,
       );
     }
 

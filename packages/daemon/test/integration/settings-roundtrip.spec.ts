@@ -15,7 +15,8 @@
 //     same merged Settings.
 //   - The DB row shape is `(scope, key, value)` PRIMARY KEY (scope, key);
 //     v0.3 daemon writes `scope = 'global'`. SETTINGS_SCOPE_PRINCIPAL is
-//     rejected with InvalidArgument (covered by settings-error.spec.ts).
+//     rejected with PermissionDenied (ch15 §3 #14, reconciled per Task
+//     #431; covered by settings-error.spec.ts).
 //   - Security-sensitive keys (`claude_binary_path`) are NOT in the
 //     proto schema — the boundary is mechanical (no field exists). So
 //     this spec only round-trips fields the proto allows.

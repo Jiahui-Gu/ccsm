@@ -1247,7 +1247,7 @@ describe('daemon-boot end-to-end (Task #208)', () => {
     expect(get.settings?.crashRetention?.maxAgeDays).toBe(0);
   });
 
-  it('§7 #4 — Settings rejects PRINCIPAL scope with Code.InvalidArgument', async () => {
+  it('§7 #4 — Settings rejects PRINCIPAL scope with Code.PermissionDenied', async () => {
     expect(result).not.toBeNull();
     const r = result!;
     const baseUrl = loopbackBaseUrl(r);
@@ -1262,7 +1262,10 @@ describe('daemon-boot end-to-end (Task #208)', () => {
       raised = ConnectError.from(err);
     }
     expect(raised, 'expected ConnectError on PRINCIPAL scope').not.toBeNull();
-    expect(raised!.code).toBe(Code.InvalidArgument);
+    // ch15 §3 #14 (Task #431 reconcile): scope is denied, not malformed
+    // wire — all three enums OwnerFilter/SettingsScope/WatchScope reject
+    // the broad/aggregate value with PermissionDenied in v0.3.
+    expect(raised!.code).toBe(Code.PermissionDenied);
   });
 
   it('§7 #5 — Settings rejects daemon-derived field write with Code.InvalidArgument', async () => {

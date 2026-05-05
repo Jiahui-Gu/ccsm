@@ -5,8 +5,11 @@
 //
 // SRP layering (dev.md §2):
 //   * decider:  `decideGetSettings(req)` — validate scope; on
-//     PRINCIPAL → reject with InvalidArgument (settings.proto line 36 +
-//     spec §4.1 last paragraph).
+//     PRINCIPAL → reject with PermissionDenied (ch15 §3 #14: all three
+//     enums OwnerFilter/SettingsScope/WatchScope reject the
+//     broad/aggregate value with PermissionDenied in v0.3 — the scope
+//     is denied because v0.3 has no principal-scoped settings, not
+//     because the wire shape is malformed; reconciled per Task #431).
 //   * producer: `readSettingsRows` (in `./store.ts`).
 //   * sink:     `makeGetSettingsHandler(deps)` — Connect handler that
 //     glues decider + producer + decoder, then echoes
@@ -44,8 +47,9 @@ export interface GetSettingsDeps {
 
 /**
  * Validate the request scope. Spec §4.1: UNSPECIFIED + GLOBAL proceed;
- * PRINCIPAL rejects with `Code.InvalidArgument` (matches
- * settings.proto line 36 + acceptance §7 #4).
+ * PRINCIPAL rejects with `Code.PermissionDenied` (ch15 §3 #14: the
+ * scope is denied — v0.3 has no principal-scoped settings — not
+ * malformed; reconciled per Task #431).
  *
  * Pure decider — no DB access. Returning a discriminated union rather
  * than throwing keeps the function unit-testable without a Connect
@@ -74,7 +78,7 @@ export function makeGetSettingsHandler(
       throw new ConnectError(
         `SettingsScope ${SettingsScope[decision.scope] ?? String(decision.scope)} ` +
           'is not supported in v0.3 (only GLOBAL / UNSPECIFIED).',
-        Code.InvalidArgument,
+        Code.PermissionDenied,
       );
     }
     const rows = readSettingsRows(deps.db);

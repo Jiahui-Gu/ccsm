@@ -138,8 +138,8 @@ and is proposed as **P-META** in §4.
 ### P14 — v0.4 reshaping request semantics of WatchSessions/GetCrashLog/WatchCrashLog/GetSettings/UpdateSettings
 - Forbidden: ch15 §3 item 14. The three enums (OwnerFilter, SettingsScope, WatchScope) MUST reject `ALL`/`PRINCIPAL` in v0.3 with `PermissionDenied`.
 - Status: PARTIAL.
-- Enforcement: `packages/daemon/test/sessions/watch-sessions.spec.ts:100` asserts `WATCH_SCOPE_ALL` → `reject_permission_denied`. `packages/daemon/test/integration/settings-error.spec.ts` asserts `SETTINGS_SCOPE_PRINCIPAL` → `InvalidArgument` (note: spec says `PermissionDenied`; the test pins `InvalidArgument` — spec/test divergence flagged in test header comment). No equivalent test for `OWNER_FILTER_ALL` on `GetCrashLog`/`WatchCrashLog`.
-- Gap: missing `OWNER_FILTER_ALL → PermissionDenied` assertion on crash RPCs; spec-vs-test mismatch on settings (PermissionDenied vs InvalidArgument).
+- Enforcement: `packages/daemon/test/sessions/watch-sessions.spec.ts:100` asserts `WATCH_SCOPE_ALL` → `reject_permission_denied`. `packages/daemon/test/integration/settings-error.spec.ts` asserts `SETTINGS_SCOPE_PRINCIPAL` → `PermissionDenied` (Task #431 reconciled the prior spec-vs-test divergence: src + tests + ch04/ch15 prose now agree on `PermissionDenied`; the proto-comment wording was likewise updated). No equivalent test for `OWNER_FILTER_ALL` on `GetCrashLog`/`WatchCrashLog`.
+- Gap: missing `OWNER_FILTER_ALL → PermissionDenied` assertion on crash RPCs (P14a). Settings spec-vs-test reconciled (P14b, Task #431).
 
 ### P15 — Modifying packages/electron/src/main/transport-bridge.ts for web/iOS reasons
 - Forbidden: ch15 §3 item 15. Bug fixes affecting renderer↔bridge↔daemon path are allowed; cross-client refactors are not.
