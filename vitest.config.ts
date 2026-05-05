@@ -11,6 +11,11 @@ export default defineConfig({
       // existing __tests__ tree alongside the source. Pick those up so
       // the mv preserves test coverage rather than silently dropping it.
       'daemon/**/__tests__/**/*.test.ts',
+      // Task #598 (PR-5): Connect-roundtrip specs for the three v0.3
+      // RPCs live under e2e/ as `*.spec.ts`. They start a real daemon
+      // HTTP server on 127.0.0.1:0 and assert wire shape via fetch —
+      // no electron / no playwright.
+      'e2e/**/*.spec.ts',
     ],
     exclude: ['**/node_modules/**', '**/dist/**'],
     globals: true,
