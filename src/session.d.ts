@@ -34,7 +34,12 @@ export interface CcsmSessionApi {
 
 declare global {
   interface Window {
-    ccsmSession: CcsmSessionApi;
+    // Optional for symmetry with `window.ccsm` / `window.ccsmPty` after
+    // the v0.3 wave-1 shim refactor. Existing call sites already cast
+    // `(window as unknown as { ccsmSession?: Bridge }).ccsmSession` and
+    // narrow with `if (!bridge) return;`, so making the ambient type
+    // optional matches reality and keeps the three bridges consistent.
+    ccsmSession?: CcsmSessionApi;
   }
 }
 
