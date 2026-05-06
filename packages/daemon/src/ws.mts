@@ -27,6 +27,16 @@ import {
 import type { WebSocket as WSWebSocket } from 'ws';
 import { WebSocketServer } from 'ws';
 
+import { RingBuffer } from './ring.mjs';
+
+// Maximum payload bytes per OUTPUT replay frame. When backfilling a long
+// scrollback we split into chunks of at most REPLAY_CHUNK_BYTES so individual
+// ws frames stay reasonable. Each chunk preserves the original seq of its
+// LAST byte (matches the live-stream invariant: seq is monotonically
+// increasing per OUTPUT frame; replay reuses the original frame seqs by
+// concatenating whole frames per chunk).
+const REPLAY_CHUNK_BYTES = 64 * 1024;
+
 // ---- Types --------------------------------------------------------------
 
 export interface PtyLike {
@@ -55,6 +65,10 @@ interface RuntimeSession {
   outputSeq: number;
   exited: boolean;
   exitCode: number;
+  /** Per-session ring buffer of OUTPUT bytes for lastSeq replay (T8 #661). */
+  ring: RingBuffer;
+  /** Per-frame seq -> { startSeqOfChunk, originalSeq } not needed; we keep
+   *  one ring entry per OUTPUT frame so seq granularity matches frames. */
 }
 
 export interface AttachWsOptions {
@@ -202,15 +216,28 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
       return;
     }
 
+    // 4. Optional lastSeq for replay-on-reconnect (DESIGN.md F4/F6, T8 #661).
+    //    Missing / unparseable -> 0 (treat as fresh client, no replay needed).
+    const lastSeqRaw = url.searchParams.get('lastSeq');
+    let lastSeq = 0;
+    if (lastSeqRaw !== null) {
+      const n = Number(lastSeqRaw);
+      if (Number.isFinite(n) && Number.isInteger(n) && n >= 0 && n <= 0xffffffff) {
+        lastSeq = n;
+      } else {
+        console.warn(`[ccsm/ws] ignoring bad lastSeq=${JSON.stringify(lastSeqRaw)}`);
+      }
+    }
+
     wss.handleUpgrade(req, socket, head, (ws) => {
-      onConnection(ws, sid);
+      onConnection(ws, sid, lastSeq);
     });
   };
 
   server.on('upgrade', onUpgrade);
 
   // ---- Per-connection wiring: subscribe to (or spawn) the runtime session.
-  function onConnection(ws: WSWebSocket, sid: string): void {
+  function onConnection(ws: WSWebSocket, sid: string, lastSeq: number): void {
     const sessInfo = sessions.get(sid);
     if (!sessInfo) {
       // Race: session was deleted between upgrade-validation and connection.
@@ -239,6 +266,59 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
       ws.close(1000, 'exited');
       return;
     }
+
+    // T8 #661: lastSeq replay. Must happen BEFORE adding ws to subscribers,
+    // so we don't interleave replayed bytes with a freshly-arriving live OUTPUT
+    // (PTY data callback iterates rt.subscribers).
+    if (lastSeq < rt.outputSeq) {
+      const replay = rt.ring.range(lastSeq + 1, rt.outputSeq);
+      if (replay === null) {
+        // Asked-for seq has been evicted from the ring. Tell the client to
+        // clear its scrollback before live OUTPUT resumes (DESIGN.md §5 RESET).
+        try {
+          ws.send(
+            encodeFrame({
+              type: FrameType.RESET,
+              seq: rt.outputSeq,
+              payload: new Uint8Array(0),
+            }),
+          );
+        } catch (err) {
+          console.warn('[ccsm/ws] RESET send failed:', (err as Error).message);
+        }
+      } else if (replay.byteLength > 0) {
+        // Send replayed bytes. We re-emit as OUTPUT frames carrying rt.outputSeq
+        // (the seq of the latest byte). Splitting into <= REPLAY_CHUNK_BYTES
+        // chunks keeps individual ws messages bounded; each chunk's seq is the
+        // *seq of its last byte* in the original stream — but since we don't
+        // track per-byte seqs (only per-frame), we approximate by sending the
+        // whole replay window with seq=rt.outputSeq for the LAST chunk and
+        // intermediate chunks with the same seq (client uses lastSeq=outputSeq
+        // after replay, intermediate seqs are not consulted by the reconnect
+        // logic — only the final live-stream seq matters).
+        const total = replay.byteLength;
+        for (let off = 0; off < total; off += REPLAY_CHUNK_BYTES) {
+          const end = Math.min(off + REPLAY_CHUNK_BYTES, total);
+          const chunk = replay.subarray(off, end);
+          try {
+            ws.send(
+              encodeFrame({
+                type: FrameType.OUTPUT,
+                seq: rt.outputSeq,
+                payload: chunk,
+              }),
+            );
+          } catch (err) {
+            console.warn('[ccsm/ws] replay send failed:', (err as Error).message);
+            break;
+          }
+        }
+      }
+      // lastSeq === rt.outputSeq: nothing to replay; fall through.
+    }
+    // (lastSeq >= rt.outputSeq with strictly greater: caller is "ahead" of
+    // server, which only happens after a daemon restart with state loss; we
+    // simply enter live mode with no replay.)
 
     rt.subscribers.add(ws);
 
@@ -340,16 +420,23 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
       outputSeq: 0,
       exited: false,
       exitCode: 0,
+      ring: new RingBuffer(),
     };
     runtime.set(sid, rt);
 
     pty.onData((data) => {
       const payload = Buffer.from(data, 'utf8');
+      const payloadView = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
       rt.outputSeq = (rt.outputSeq + 1) >>> 0;
+      // T8 #661: persist OUTPUT bytes in ring buffer for lastSeq replay.
+      // ring.append() may evict older frames silently — that's fine; future
+      // reconnects with a too-old lastSeq will get RESET (handled in
+      // onConnection above).
+      rt.ring.append(rt.outputSeq, payloadView);
       const frame = encodeFrame({
         type: FrameType.OUTPUT,
         seq: rt.outputSeq,
-        payload: new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+        payload: payloadView,
       });
       // Snapshot subscribers — sends in this microtask shouldn't be perturbed
       // by concurrent close handlers mutating the Set.
