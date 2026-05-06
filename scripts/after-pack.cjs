@@ -88,4 +88,46 @@ exports.default = async function afterPack(context) {
   console.log(
     `[after-pack] OK ${platformKey}: node-pty ${flavor} binding present (${sizeKB} KB) at ${which}`,
   );
+
+  // ───────── better-sqlite3 native binding (Task #641 Layer 2) ──────────
+  // Same contract as node-pty above, but for better-sqlite3. The dogfood
+  // #575 root cause was a postinstall electron-rebuild failure that left
+  // better-sqlite3 compiled against the host Node ABI; the runtime daemon
+  // then crashed on first DB open with `NODE_MODULE_VERSION mismatch`.
+  // Failing the build here turns "user gets a silent storage failure on
+  // first launch" into "the install isn't published in the first place".
+  //
+  // better-sqlite3 does NOT ship cross-platform prebuilds the same way
+  // node-pty does — its npm tarball includes a single rebuilt binding for
+  // the install host, which the postinstall step (scripts/postinstall.mjs)
+  // re-targets to the Electron ABI. So we only check the rebuilt path.
+  const sqliteRoot = path.join(
+    resourcesDir,
+    'app.asar.unpacked',
+    'node_modules',
+    'better-sqlite3',
+  );
+  const sqliteBinding = path.join(sqliteRoot, 'build', 'Release', 'better_sqlite3.node');
+  if (!fs.existsSync(sqliteBinding)) {
+    let listing = '<missing>';
+    try {
+      listing = fs.readdirSync(sqliteRoot).join(', ') || '<empty>';
+    } catch {
+      // sqliteRoot may not exist at all (asarUnpack typo etc.)
+    }
+    throw new Error(
+      `[after-pack] better-sqlite3 native binding missing for ${platformKey}.\n` +
+        `  Looked for: ${sqliteBinding}\n` +
+        `  better-sqlite3 contents: ${listing}\n` +
+        `Hint: confirm \`npm install\` ran the postinstall hook (scripts/postinstall.mjs) ` +
+        `which invokes @electron/rebuild for better-sqlite3. Without this binding the ` +
+        `daemon fails to open the SQLite DB and the app shows a silent storage failure ` +
+        `on first launch (Task #575 / #641). Check build.asarUnpack in package.json ` +
+        `includes **/node_modules/better-sqlite3/**.`,
+    );
+  }
+  const sqliteSizeKB = (fs.statSync(sqliteBinding).size / 1024).toFixed(0);
+  console.log(
+    `[after-pack] OK ${platformKey}: better-sqlite3 binding present (${sqliteSizeKB} KB) at ${sqliteBinding}`,
+  );
 };

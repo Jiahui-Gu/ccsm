@@ -28,6 +28,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import { rebuildWithRetry, blockingSleep } from './postinstall-helpers.mjs';
 
 // Preflight: warn (don't block) when running on a Node major other than 20.
 // better-sqlite3 builds cleanly on Node 20.x; newer node-gyp + Node may need
@@ -73,11 +74,20 @@ if (!existsSync(rebuildBin)) {
 
 function runRebuild(moduleName, { allowFailure } = { allowFailure: false }) {
   console.log(`[postinstall] Rebuilding ${moduleName} for Electron ABI...`);
-  const result = spawnSync(
+  const result = rebuildWithRetry({
     rebuildBin,
-    ['-f', '-o', moduleName, '--build-from-source'],
-    { stdio: 'inherit', shell: isWindows, cwd: repoRoot },
-  );
+    moduleName,
+    cwd: repoRoot,
+    isWindows,
+    allowFailure,
+    spawn: spawnSync,
+    sleep: blockingSleep,
+  });
+  if (result.attempts > 1) {
+    console.warn(
+      `[postinstall] ${moduleName} rebuild required ${result.attempts} attempts (Windows EPERM/EBUSY on .node lock from a stale electron.exe / vsbuild process is the typical cause; see Task #641).`,
+    );
+  }
   if (result.error) {
     if (allowFailure) {
       console.warn(`[postinstall] ${moduleName} rebuild failed to spawn: ${result.error.message} (continuing — prebuild fallback)`);
