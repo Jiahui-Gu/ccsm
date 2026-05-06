@@ -45,6 +45,20 @@ import { useStore } from './store';
 const SCROLLBACK_CAP_BYTES = 4 * 1024 * 1024;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
 
+// T11 #654: backpressure thresholds. We count xterm `term.write` calls that
+// haven't completed their flush callback yet. When the queue depth reaches
+// PAUSE_THRESHOLD we send a PAUSE frame to the daemon, telling it to stop
+// pushing OUTPUT to *this* subscriber until we drain. When the queue empties
+// (flushed back to 0) we send a single RESUME frame. Edge-triggered, so a
+// noisy PTY doesn't spam control frames.
+//
+// Why 16: xterm.js batches writes internally and flushes on the next animation
+// frame; under steady load each frame typically drains 1-3 writes. 16 gives a
+// generous ~4-5 frames of slack before we ask the daemon to back off, which
+// avoids ping-ponging on small bursts but still kicks in well before the
+// browser's own ws receive queue blows up.
+const PAUSE_THRESHOLD = 16;
+
 export interface SessionRuntimeEntry {
   sid: string;
   client: WsClient | null;
@@ -76,6 +90,21 @@ export interface SessionRuntimeEntry {
    * schedule (we lean on ws.onclose for both teardown branches).
    */
   finalized: boolean;
+  /**
+   * T11 #654: count of `term.write(...)` calls whose flush callback hasn't
+   * fired yet. Bumped by `notePendingWrite()` (called by MainPane right
+   * before each xterm.write of an OUTPUT chunk for the active sid) and
+   * decremented by `noteWriteFlushed()` from xterm's flush callback. When
+   * pendingWrites crosses PAUSE_THRESHOLD upward we send PAUSE; when it
+   * returns to 0 we send RESUME. Non-active sids never bump this counter
+   * (their bytes go straight into scrollback and never hit xterm).
+   */
+  pendingWrites: number;
+  /**
+   * T11 #654: edge-trigger flag for PAUSE/RESUME. We only send a control
+   * frame when this changes; otherwise a chatty PTY would spam frames.
+   */
+  paused: boolean;
 }
 
 /**
@@ -144,6 +173,8 @@ class SessionRuntime {
       reconnectAttempts: 0,
       reconnectTimer: null,
       finalized: false,
+      pendingWrites: 0,
+      paused: false,
     };
     this.entries.set(sid, entry);
     this.openWs(entry, token);
@@ -183,6 +214,37 @@ class SessionRuntime {
   /** Send RESIZE to the session's ws. */
   sendResize(sid: string, cols: number, rows: number): void {
     this.entries.get(sid)?.client?.sendResize(cols, rows);
+  }
+
+  /**
+   * T11 #654 — backpressure: caller signals it just enqueued an xterm write.
+   * If the in-flight queue depth crosses PAUSE_THRESHOLD upward, we send a
+   * PAUSE frame so the daemon stops pushing OUTPUT to this subscriber. Edge-
+   * triggered: only a state transition produces a control frame.
+   */
+  notePendingWrite(sid: string): void {
+    const entry = this.entries.get(sid);
+    if (!entry) return;
+    entry.pendingWrites += 1;
+    if (!entry.paused && entry.pendingWrites >= PAUSE_THRESHOLD) {
+      entry.paused = true;
+      entry.client?.sendPause();
+    }
+  }
+
+  /**
+   * T11 #654 — backpressure: caller (xterm flush callback) signals one write
+   * has drained. When the queue empties AND we're paused, send RESUME so the
+   * daemon flushes its per-subscriber backlog and resumes live forwarding.
+   */
+  noteWriteFlushed(sid: string): void {
+    const entry = this.entries.get(sid);
+    if (!entry) return;
+    if (entry.pendingWrites > 0) entry.pendingWrites -= 1;
+    if (entry.paused && entry.pendingWrites === 0) {
+      entry.paused = false;
+      entry.client?.sendResume();
+    }
   }
 
   /** Subscribe to live OUTPUT/RESET notifications. Returns unsubscribe fn. */
@@ -320,3 +382,4 @@ export const sessionRuntime = new SessionRuntime();
 export { SessionRuntime as _SessionRuntimeClassForTesting };
 export const _SCROLLBACK_CAP_BYTES_FOR_TESTING = SCROLLBACK_CAP_BYTES;
 export const _RECONNECT_DELAYS_MS_FOR_TESTING = RECONNECT_DELAYS_MS;
+export const _PAUSE_THRESHOLD_FOR_TESTING = PAUSE_THRESHOLD;

@@ -68,6 +68,13 @@ export function MainPane() {
   // StrictMode remount AND every activeSid change. The listener consults
   // `activeSidRef` + `termRef` at call time, so flipping the active sid
   // requires no resubscribe.
+  //
+  // T11 #654 backpressure: when we DO write into xterm, we sandwich the
+  // write between `notePendingWrite` (before) and `noteWriteFlushed` (in
+  // the flush callback). That gives the runtime an in-flight queue depth
+  // it uses to decide PAUSE/RESUME. Non-active sids return early below
+  // (their bytes are already in scrollback) so they never participate in
+  // backpressure — only the rendering subscriber gates the daemon.
   useEffect(() => {
     const unsubscribe = sessionRuntime.subscribeOutput((sid, payload) => {
       if (sid !== activeSidRef.current) return;
@@ -79,7 +86,10 @@ export function MainPane() {
         t.reset();
         return;
       }
-      t.write(new TextDecoder().decode(payload, { stream: true }));
+      sessionRuntime.notePendingWrite(sid);
+      t.write(new TextDecoder().decode(payload, { stream: true }), () => {
+        sessionRuntime.noteWriteFlushed(sid);
+      });
     });
     return () => {
       unsubscribe();

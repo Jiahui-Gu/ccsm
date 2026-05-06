@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   FrameType,
+  decodeFrame,
   encodeExit,
   encodeFrame,
 } from '@ccsm/shared';
@@ -8,6 +9,7 @@ import {
   sessionRuntime,
   _SCROLLBACK_CAP_BYTES_FOR_TESTING,
   _RECONNECT_DELAYS_MS_FOR_TESTING,
+  _PAUSE_THRESHOLD_FOR_TESTING,
 } from '../src/session-runtime';
 import { useStore } from '../src/store';
 
@@ -363,5 +365,104 @@ describe('session-runtime — per-session scrollback + reconnect (T10 / #662)', 
     expect(useStore.getState().sessionStatuses['s1']).toBe('connecting');
     FakeWs.instances[0]!.open();
     expect(useStore.getState().sessionStatuses['s1']).toBe('attached');
+  });
+
+  // ---- T11 #654 — backpressure (PAUSE/RESUME edge-triggered) -------------
+  //
+  // The runtime's `notePendingWrite` / `noteWriteFlushed` model the renderer
+  // queueing chunks into xterm. We never run a real Terminal here — these
+  // tests poke the runtime directly and assert that PAUSE/RESUME frames hit
+  // the wire at exactly the state-edge transitions, not at every tick.
+
+  it('PAUSE frame is sent when pending writes cross the threshold', () => {
+    sessionRuntime.attach('s1', 'tok');
+    const ws = FakeWs.instances[0]!;
+    ws.open();
+    // Drain anything written during open (none today, but defensive).
+    ws.sent.length = 0;
+
+    // Bump pendingWrites up to (threshold - 1): no PAUSE yet.
+    for (let i = 0; i < _PAUSE_THRESHOLD_FOR_TESTING - 1; i += 1) {
+      sessionRuntime.notePendingWrite('s1');
+    }
+    expect(ws.sent).toHaveLength(0);
+    expect(sessionRuntime.get('s1')!.paused).toBe(false);
+
+    // Crossing the threshold sends exactly one PAUSE frame.
+    sessionRuntime.notePendingWrite('s1');
+    expect(ws.sent).toHaveLength(1);
+    const decoded = decodeFrame(ws.sent[0]!);
+    expect(decoded.type).toBe(FrameType.PAUSE);
+    expect(decoded.payload.byteLength).toBe(0);
+    expect(sessionRuntime.get('s1')!.paused).toBe(true);
+  });
+
+  it('RESUME frame is sent when the in-flight queue drains back to zero', () => {
+    sessionRuntime.attach('s1', 'tok');
+    const ws = FakeWs.instances[0]!;
+    ws.open();
+    ws.sent.length = 0;
+
+    // Push past threshold to enter paused state.
+    for (let i = 0; i < _PAUSE_THRESHOLD_FOR_TESTING; i += 1) {
+      sessionRuntime.notePendingWrite('s1');
+    }
+    expect(sessionRuntime.get('s1')!.paused).toBe(true);
+    expect(ws.sent).toHaveLength(1);
+    expect(decodeFrame(ws.sent[0]!).type).toBe(FrameType.PAUSE);
+
+    // Drain N-1 writes: still paused, no RESUME yet.
+    for (let i = 0; i < _PAUSE_THRESHOLD_FOR_TESTING - 1; i += 1) {
+      sessionRuntime.noteWriteFlushed('s1');
+    }
+    expect(ws.sent).toHaveLength(1);
+    expect(sessionRuntime.get('s1')!.paused).toBe(true);
+
+    // The last drain (queue back to 0) emits exactly one RESUME.
+    sessionRuntime.noteWriteFlushed('s1');
+    expect(ws.sent).toHaveLength(2);
+    expect(decodeFrame(ws.sent[1]!).type).toBe(FrameType.RESUME);
+    expect(sessionRuntime.get('s1')!.paused).toBe(false);
+    expect(sessionRuntime.get('s1')!.pendingWrites).toBe(0);
+  });
+
+  it('repeated note* calls past the threshold do not spam PAUSE frames', () => {
+    // Edge-trigger property: while we are already paused, additional pending
+    // writes must not emit more PAUSE frames; while we're already resumed,
+    // additional flushed callbacks must not emit RESUME. This is what keeps
+    // a bursty PTY from drowning the daemon in control frames.
+    sessionRuntime.attach('s1', 'tok');
+    const ws = FakeWs.instances[0]!;
+    ws.open();
+    ws.sent.length = 0;
+
+    // Enter paused state once.
+    for (let i = 0; i < _PAUSE_THRESHOLD_FOR_TESTING; i += 1) {
+      sessionRuntime.notePendingWrite('s1');
+    }
+    expect(ws.sent).toHaveLength(1);
+
+    // Pile on a lot more pending writes — still exactly one PAUSE total.
+    for (let i = 0; i < 50; i += 1) {
+      sessionRuntime.notePendingWrite('s1');
+    }
+    expect(ws.sent).toHaveLength(1);
+    expect(decodeFrame(ws.sent[0]!).type).toBe(FrameType.PAUSE);
+
+    // Drain everything: exactly one RESUME.
+    const total = sessionRuntime.get('s1')!.pendingWrites;
+    for (let i = 0; i < total; i += 1) {
+      sessionRuntime.noteWriteFlushed('s1');
+    }
+    expect(ws.sent).toHaveLength(2);
+    expect(decodeFrame(ws.sent[1]!).type).toBe(FrameType.RESUME);
+
+    // Extra noteWriteFlushed calls (defensive: should never happen in
+    // practice, but the guard exists) must not emit a second RESUME or
+    // drive pendingWrites negative.
+    sessionRuntime.noteWriteFlushed('s1');
+    sessionRuntime.noteWriteFlushed('s1');
+    expect(ws.sent).toHaveLength(2);
+    expect(sessionRuntime.get('s1')!.pendingWrites).toBe(0);
   });
 });

@@ -176,6 +176,39 @@ export class WsClient {
     this.pendingResize = null;
   }
 
+  /**
+   * Send a PAUSE frame (T11 #654). Tells the daemon to stop forwarding
+   * OUTPUT bytes to THIS subscriber until a matching RESUME arrives. The
+   * daemon queues bytes (per its own cap) so a brief render-bound stall
+   * doesn't fight the network. No-op if the socket isn't OPEN — the runtime
+   * gates this behind paused-state edges, so a missed PAUSE during connect
+   * is equivalent to "still flowing", which is what we want.
+   */
+  sendPause(): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    const frame = encodeFrame({
+      type: FrameType.PAUSE,
+      seq: this.nextSeq(),
+      payload: new Uint8Array(0),
+    });
+    ws.send(frame);
+  }
+
+  /**
+   * Send a RESUME frame (T11 #654). Mate of sendPause(); see above.
+   */
+  sendResume(): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== ws.OPEN) return;
+    const frame = encodeFrame({
+      type: FrameType.RESUME,
+      seq: this.nextSeq(),
+      payload: new Uint8Array(0),
+    });
+    ws.send(frame);
+  }
+
   close(): void {
     const ws = this.ws;
     if (!ws) return;

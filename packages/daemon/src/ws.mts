@@ -37,6 +37,14 @@ import { RingBuffer } from './ring.mjs';
 // concatenating whole frames per chunk).
 const REPLAY_CHUNK_BYTES = 64 * 1024;
 
+// T11 #654: per-subscriber pause queue cap. When a paused subscriber's
+// queued OUTPUT bytes exceed this, we close its ws with code 1009 (Message
+// Too Big) instead of growing memory unbounded. The client can then
+// reconnect with `?lastSeq=...` and pick up via the ring-buffer replay
+// path — the per-subscriber queue is a transient render-stall buffer, not
+// durable state, so dropping it is safe.
+const PAUSE_QUEUE_CAP_BYTES = 1 * 1024 * 1024;
+
 // ---- Types --------------------------------------------------------------
 
 export interface PtyLike {
@@ -59,9 +67,29 @@ export interface SessionLike {
   alive: boolean;
 }
 
+interface SubscriberState {
+  /** T11 #654: when true, OUTPUT goes to pausedQueue instead of ws.send. */
+  paused: boolean;
+  /**
+   * T11 #654: queued OUTPUT frames captured while paused. We store the
+   * pre-encoded ws message (the same Uint8Array we would have sent live)
+   * so flush is a straight loop of ws.send — no re-encode. Queue order is
+   * preserved (FIFO via array push/iter), which keeps client-visible seq
+   * monotonic across the pause/resume boundary.
+   */
+  pausedQueue: Uint8Array[];
+  /** Running byte total of pausedQueue, compared to PAUSE_QUEUE_CAP_BYTES. */
+  pausedBytes: number;
+}
+
 interface RuntimeSession {
   pty: PtyLike;
-  subscribers: Set<WSWebSocket>;
+  /**
+   * T11 #654: subscribers carry per-connection state (pause flag + queue).
+   * Map iteration order matches insertion order, which we rely on so the
+   * fan-out below is deterministic for tests.
+   */
+  subscribers: Map<WSWebSocket, SubscriberState>;
   outputSeq: number;
   exited: boolean;
   exitCode: number;
@@ -320,7 +348,7 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
     // server, which only happens after a daemon restart with state loss; we
     // simply enter live mode with no replay.)
 
-    rt.subscribers.add(ws);
+    rt.subscribers.set(ws, { paused: false, pausedQueue: [], pausedBytes: 0 });
 
     ws.on('message', (raw, isBinary) => {
       if (!isBinary) {
@@ -343,7 +371,7 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
         console.warn('[ccsm/ws] bad frame from client:', (err as Error).message);
         return;
       }
-      handleClientFrame(rt!, frame.type, frame.payload);
+      handleClientFrame(rt!, ws, frame.type, frame.payload);
     });
 
     const cleanup = (): void => {
@@ -365,7 +393,12 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
     });
   }
 
-  function handleClientFrame(rt: RuntimeSession, type: FrameType, payload: Uint8Array): void {
+  function handleClientFrame(
+    rt: RuntimeSession,
+    ws: WSWebSocket,
+    type: FrameType,
+    payload: Uint8Array,
+  ): void {
     switch (type) {
       case FrameType.INPUT: {
         // node-pty.write expects string. Frontend sends UTF-8 bytes.
@@ -392,10 +425,36 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
         }
         break;
       }
-      case FrameType.PAUSE:
-      case FrameType.RESUME:
-        // T11 #654 will wire these; silently accept now.
+      case FrameType.PAUSE: {
+        // T11 #654: gate OUTPUT to this subscriber. Other subscribers (and
+        // the ring buffer) are unaffected — pause is per-connection.
+        const state = rt.subscribers.get(ws);
+        if (state) state.paused = true;
         break;
+      }
+      case FrameType.RESUME: {
+        // T11 #654: flush queued OUTPUT in original order, clear queue, then
+        // return to live forwarding. We send pre-encoded frames as-is so seq
+        // values stay monotonic at the wire level.
+        const state = rt.subscribers.get(ws);
+        if (!state) break;
+        state.paused = false;
+        if (state.pausedQueue.length > 0) {
+          const queued = state.pausedQueue;
+          state.pausedQueue = [];
+          state.pausedBytes = 0;
+          for (const frame of queued) {
+            if (ws.readyState !== ws.OPEN) break;
+            try {
+              ws.send(frame);
+            } catch (err) {
+              console.warn('[ccsm/ws] resume flush send failed:', (err as Error).message);
+              break;
+            }
+          }
+        }
+        break;
+      }
       default:
         // OUTPUT/EXIT/RESET are server-to-client; reject anything else.
         console.warn(`[ccsm/ws] ignoring c->s frame type=0x${type.toString(16)}`);
@@ -416,7 +475,7 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
     }
     const rt: RuntimeSession = {
       pty,
-      subscribers: new Set(),
+      subscribers: new Map(),
       outputSeq: 0,
       exited: false,
       exitCode: 0,
@@ -439,14 +498,33 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
         payload: payloadView,
       });
       // Snapshot subscribers — sends in this microtask shouldn't be perturbed
-      // by concurrent close handlers mutating the Set.
-      for (const ws of Array.from(rt.subscribers)) {
-        if (ws.readyState === ws.OPEN) {
-          try {
-            ws.send(frame);
-          } catch (err) {
-            console.warn('[ccsm/ws] ws.send failed:', (err as Error).message);
+      // by concurrent close handlers mutating the Map. T11 #654: paused
+      // subscribers buffer the pre-encoded frame instead of sending; if their
+      // queue exceeds PAUSE_QUEUE_CAP_BYTES we close with 1009 (the client
+      // can reconnect with lastSeq and pick up via the ring buffer).
+      for (const [ws, state] of Array.from(rt.subscribers.entries())) {
+        if (ws.readyState !== ws.OPEN) continue;
+        if (state.paused) {
+          state.pausedQueue.push(frame);
+          state.pausedBytes += frame.byteLength;
+          if (state.pausedBytes > PAUSE_QUEUE_CAP_BYTES) {
+            // Cap exceeded — drop the queue and disconnect this subscriber.
+            // 1009 = "Message Too Big" (RFC 6455 §7.4.1), the closest
+            // standard code; reason is human-readable for logs/devtools.
+            state.pausedQueue = [];
+            state.pausedBytes = 0;
+            try {
+              ws.close(1009, 'pause_queue_overflow');
+            } catch {
+              // ignore — close racing with another teardown is fine.
+            }
           }
+          continue;
+        }
+        try {
+          ws.send(frame);
+        } catch (err) {
+          console.warn('[ccsm/ws] ws.send failed:', (err as Error).message);
         }
       }
     });
@@ -462,7 +540,12 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
         seq: rt.outputSeq,
         payload: encodeExit(code),
       });
-      for (const ws of Array.from(rt.subscribers)) {
+      // T11 #654 note: EXIT is a terminal signal and bypasses any per-
+      // subscriber pause queue — the PTY is gone and there will be no more
+      // OUTPUT, so there is nothing meaningful to flush first. Clients
+      // currently in the paused state simply receive EXIT next; their
+      // pausedQueue is dropped along with the runtime.
+      for (const ws of Array.from(rt.subscribers.keys())) {
         if (ws.readyState === ws.OPEN) {
           try {
             ws.send(frame);
@@ -505,7 +588,7 @@ export function attachWebSocket(server: HttpServer, opts: AttachWsOptions): Atta
   async function shutdown(): Promise<void> {
     server.removeListener('upgrade', onUpgrade);
     for (const [sid, rt] of Array.from(runtime.entries())) {
-      for (const ws of Array.from(rt.subscribers)) {
+      for (const ws of Array.from(rt.subscribers.keys())) {
         try {
           ws.close(1001, 'going_away');
         } catch {

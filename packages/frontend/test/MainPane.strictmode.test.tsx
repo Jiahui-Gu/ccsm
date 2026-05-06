@@ -40,6 +40,8 @@ const runtimeGet = vi.hoisted(() =>
 );
 const runtimeSendInput = vi.hoisted(() => vi.fn());
 const runtimeSendResize = vi.hoisted(() => vi.fn());
+const runtimeNotePendingWrite = vi.hoisted(() => vi.fn());
+const runtimeNoteWriteFlushed = vi.hoisted(() => vi.fn());
 const outputListenerHolder = vi.hoisted(() => ({
   current: null as ((sid: string, payload: Uint8Array | null) => void) | null,
 }));
@@ -60,6 +62,8 @@ vi.mock('../src/session-runtime', () => ({
     get: runtimeGet,
     sendInput: runtimeSendInput,
     sendResize: runtimeSendResize,
+    notePendingWrite: runtimeNotePendingWrite,
+    noteWriteFlushed: runtimeNoteWriteFlushed,
     subscribeOutput: runtimeSubscribeOutput,
   },
 }));
