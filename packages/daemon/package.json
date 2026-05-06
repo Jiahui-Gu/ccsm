@@ -11,11 +11,16 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
-    "test": "vitest run --passWithNoTests",
-    "dev": "tsc -p tsconfig.json --watch"
+    "test": "vitest run",
+    "dev": "tsx watch src/index.mts",
+    "start": "node dist/index.mjs"
+  },
+  "dependencies": {
+    "@ccsm/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4"
   }

@@ -31,6 +31,9 @@ jobs:
       - name: Lint
         run: pnpm -r lint
 
+      - name: Build shared (required for typecheck of dependents)
+        run: pnpm -F @ccsm/shared build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
