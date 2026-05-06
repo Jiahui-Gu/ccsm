@@ -19,6 +19,12 @@
 
 import { app, BrowserWindow, ipcMain, dialog, type Tray } from 'electron';
 import * as os from 'os';
+import * as path from 'path';
+import {
+  runAbiSelfHeal,
+  defaultProbeBetterSqlite3,
+  defaultRunRebuild,
+} from './abi-self-heal';
 import { buildTrayIcon } from './branding/icon';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { notifyCloseActionFromRenderer } from './window/createWindow';
@@ -56,6 +62,61 @@ const isDev = !app.isPackaged && process.env.CCSM_PROD_BUNDLE !== '1';
 // Acquire the single-instance lock + register the second-instance focus
 // handler. See electron/lifecycle/singleInstance for the rationale.
 acquireSingleInstanceLock();
+
+// ─────────────────── ABI self-heal (Task #641 Layer 3) ────────────────────
+// Run BEFORE app.whenReady so that if better-sqlite3 was compiled against
+// the host Node ABI instead of Electron's (the dogfood #575 root cause), we
+// rebuild + relaunch BEFORE spawning the daemon (which would crash on its
+// first `require('better-sqlite3')`). One-shot guard inside runAbiSelfHeal
+// prevents an infinite loop if the rebuild itself can't fix things.
+//
+// In packaged builds with devDeps stripped we degrade to a no-op (rebuild
+// bin missing); the L1+L2 storage banner from #639 then surfaces the real
+// state to the user.
+function selfHealOrRelaunch(): void {
+  // Use a stable, well-known sub-dir under the OS userData root. We can't
+  // call app.getPath('userData') here yet (app may not be ready on first
+  // entry on some platforms — relying on app.name is fine because Electron
+  // initializes the path resolver at process start). Wrap in try so a
+  // probe/rebuild failure never blocks the app from at least attempting to
+  // boot — the daemon banner will tell the user something is wrong.
+  try {
+    let userDataDir: string;
+    try {
+      userDataDir = app.getPath('userData');
+    } catch {
+      // Fallback for the rare case Electron's path resolver isn't ready yet:
+      // use os.tmpdir() so the marker still works (it's only a one-shot loop
+      // guard, not user data).
+      userDataDir = path.join(os.tmpdir(), 'ccsm-abi-self-heal');
+    }
+    const result = runAbiSelfHeal({
+      userDataDir,
+      appRoot: app.getAppPath(),
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      probeBetterSqlite3: defaultProbeBetterSqlite3,
+      runRebuild: defaultRunRebuild,
+    });
+    if (result.kind === 'healed') {
+      console.log('[main] ABI self-heal succeeded — relaunching to load fresh native binding');
+      app.relaunch();
+      app.exit(0);
+      return;
+    }
+    if (result.kind === 'rebuild-failed' || result.kind === 'already-tried') {
+      // Don't kill the app — let it try to boot. The daemon-init banner
+      // (#639 L1) will surface the storage failure to the user with a
+      // precise reason.
+      console.warn(`[main] ABI self-heal could not auto-fix (${result.kind}) — continuing boot; daemon banner will surface the failure`);
+    }
+  } catch (err) {
+    // Self-heal must never throw past this boundary — a bug in the heal
+    // path can't be allowed to brick the app.
+    console.error('[main] ABI self-heal threw unexpectedly (ignoring, continuing boot):', err);
+  }
+}
+selfHealOrRelaunch();
 
 // Install the hidden Edit-role accelerator menu at module load so
 // copy/paste etc. work before app.whenReady. Re-run on locale change.
