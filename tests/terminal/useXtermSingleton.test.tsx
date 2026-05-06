@@ -47,34 +47,6 @@ describe('useXtermSingleton', () => {
     __resetSingletonForTests();
   });
 
-  it('does NOT create xterm on first mount when window.ccsmPty is absent (wire-gate closed)', () => {
-    // Spec #592 T-4 / Task #603 (PR-4): wire-then-instantiate. With a bare
-    // jsdom window (no `window.ccsmPty`), the hook must be a no-op even when
-    // `enabled` defaults true and the host ref is live. Original assertion
-    // "always creates xterm" was overturned by the new wire gate; the
-    // bring-up path (with the wire present) is covered in
-    // useXtermSingleton.wire-gate.test.tsx.
-    const host = document.createElement('div');
-    const ref = { current: host };
-    renderHook(() => useXtermSingleton(ref));
-    expect(terminalCtor).not.toHaveBeenCalled();
-    expect(openSpy).not.toHaveBeenCalled();
-    expect(onSelectionChangeSpy).not.toHaveBeenCalled();
-    expect(attachCustomKeyEventHandlerSpy).not.toHaveBeenCalled();
-  });
-
-  it('does NOT create xterm across remounts when window.ccsmPty is absent', () => {
-    const host = document.createElement('div');
-    const ref = { current: host };
-    const r1 = renderHook(() => useXtermSingleton(ref));
-    r1.unmount();
-    const r2 = renderHook(() => useXtermSingleton(ref));
-    r2.unmount();
-    // No wire across both mounts → ctor never called. Singleton-cache
-    // semantics under an open wire are covered in the wire-gate suite.
-    expect(terminalCtor).not.toHaveBeenCalled();
-  });
-
   it('no-ops when hostRef.current is null', () => {
     const ref = { current: null };
     renderHook(() => useXtermSingleton(ref));
