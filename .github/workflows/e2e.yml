@@ -9,6 +9,16 @@ on:
       - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
+  # Task #607 (PR-9, spec #592 T-9) — v0.3 e2e gate lock.
+  # Run on every push to `working` to:
+  #   (a) accumulate the flakiness baseline required by the spec
+  #       acceptance ("2 consecutive working-branch runs all-green"),
+  #   (b) detect post-merge regressions on the integration branch even
+  #       when the next PR's diff is paths-ignored.
+  # No `paths` filter on push — gate-lock policy is "every working-branch
+  # commit must be green", regardless of which files changed.
+  push:
+    branches: [working]
   workflow_dispatch:
 
 concurrency:

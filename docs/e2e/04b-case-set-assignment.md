@@ -244,3 +244,30 @@ brief's superseded figures.
   (audit trail for release-gate decisions).
 - The `sigkill-reattach` Set B → Set A promotion happens in v0.4 per
   spec §3.7 F-4; do **not** flip it in v0.3 PRs.
+
+---
+
+## 8. v0.3 e2e gate lock (PR-9 / T-9, Task #607)
+
+As of PR-9 the **v0.3 e2e gate is locked**:
+
+- The 42 Set A cases enumerated in §3 + §4 (sum verified in §5) are
+  the v0.3 merge-gate floor across the
+  `e2e (ubuntu-latest) / (macos-latest) / (windows-latest)` matrix
+  defined in `.github/workflows/e2e.yml`.
+- The 3 Set B cases (`reopen-resume`, `pty-subtree-killed-on-quit`,
+  `sigkill-reattach`) remain informational. CI does not run them
+  because the parent harness `harness-real-cli` is in the
+  `E2E_SKIP` list (no `claude` binary on hosted runners — see the
+  comment block above the `Run e2e` step). They are runnable
+  locally via `npm run probe:e2e` on a host with a real
+  `~/.claude` install.
+- Both `ci.yml` and `e2e.yml` now also fire on `push` to `working`,
+  so every integration-branch commit accumulates a fresh gate
+  result; this is the mechanism the v0.3 release acceptance
+  ("2 consecutive working-branch all-green runs") consumes.
+
+Re-classifying any case across the Set A / Set B boundary, or
+adding / removing cases, must follow the §7 audit-trail policy
+**and** call out impact on the lock posture in the PR body.
+

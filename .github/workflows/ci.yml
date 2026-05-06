@@ -8,6 +8,12 @@ on:
       - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
+  # Task #607 (PR-9, spec #592 T-9) — v0.3 gate lock companion.
+  # Run on every push to `working` to keep the merge-gate signal
+  # continuously fresh and supply the flakiness baseline (2 consecutive
+  # working-branch all-green runs) required by spec §5.3.9 acceptance.
+  push:
+    branches: [working]
   workflow_dispatch:
 
 concurrency:
