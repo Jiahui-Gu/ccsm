@@ -118,6 +118,19 @@ async function saveStateMethod(key: string, value: string): Promise<void> {
         : 'saveState failed';
     throw new Error(errMsg);
   }
+  // Task #636 — keep main's close-action cache in sync with the daemon.
+  // `win.on('close')` reads the preference SYNCHRONOUSLY (Electron's close
+  // event has no `await`), so without this nudge a renderer-side change
+  // only takes effect on next app launch — and the e2e tray/close-dialog
+  // cases share an electron, so the second case sees the first case's
+  // stale cache and fires the wrong branch. Fire-and-forget: a missed
+  // notify just falls back to the on-startup cache prime, which is the
+  // pre-v0.3 behaviour. Only piggy-back for keys main actually mirrors.
+  if (key === 'closeAction') {
+    void ipcRenderer.invoke('main:notifyCloseAction', value).catch(() => {
+      /* best-effort */
+    });
+  }
 }
 
 // The 25 daemon-backed methods. Same paths and shapes as the v0.2 IPC

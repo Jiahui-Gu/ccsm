@@ -73,7 +73,7 @@ function isLoopbackAddress(addr: string): boolean {
     if (addr === "::1" || addr === "0:0:0:0:0:0:0:1") return true;
     // IPv4-mapped IPv6: ::ffff:127.x.x.x
     const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(addr);
-    if (mapped && mapped[1].startsWith("127.")) return true;
+    if (mapped && mapped[1]?.startsWith("127.")) return true;
     return false;
   }
   return false;

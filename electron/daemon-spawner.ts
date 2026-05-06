@@ -89,20 +89,29 @@ export function spawnDaemon(): Promise<number> {
   if (readyPromise) return readyPromise;
 
   const entry = resolveDaemonEntry();
-  // Use the same Node runtime that's executing main (Electron's bundled
-  // node when dev, Node when packaged headless). `process.execPath` points
-  // at the Electron binary in dev — we still want Node semantics for the
-  // daemon, so prefer `process.env.npm_node_execpath` when set, else fall
-  // back to `node` from PATH. Packaged builds will set CCSM_DAEMON_NODE.
-  const nodeBin =
-    process.env.CCSM_DAEMON_NODE ||
-    process.env.npm_node_execpath ||
-    'node';
+  // Pick the runtime that matches our prebuilt native modules' ABI.
+  //
+  // Native deps (better-sqlite3, node-pty) are rebuilt against Electron's
+  // ABI (NODE_MODULE_VERSION = electron's V8 build, e.g. 145 for E41).
+  // The system `node` on PATH usually has a different ABI (127 for Node
+  // 22), so spawning the daemon under it `require('better-sqlite3')` blows
+  // up at module load with `compiled against a different Node.js version`.
+  //
+  // Default: run the daemon under our own Electron binary in
+  // ELECTRON_RUN_AS_NODE mode — same V8, same ABI, zero rebuild needed.
+  // Override with `CCSM_DAEMON_NODE=<absolute path>` for packaged headless
+  // CLI builds that ship a separate Node runtime.
+  const useElectronAsNode = !process.env.CCSM_DAEMON_NODE;
+  const nodeBin = process.env.CCSM_DAEMON_NODE || process.execPath;
 
   const proc = spawn(nodeBin, [entry], {
     cwd: process.cwd(),
     env: {
       ...process.env,
+      // ELECTRON_RUN_AS_NODE=1 makes the Electron binary skip the Chromium
+      // bootstrap and behave as plain Node — the only knob that lets us
+      // reuse `process.execPath` for a Node-style child without ABI drift.
+      ...(useElectronAsNode ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
       // Tell the daemon to bind a random free port on 127.0.0.1; it must
       // print `PORT=<n>` on stdout once ready.
       CCSM_DAEMON_BIND: '127.0.0.1:0',
