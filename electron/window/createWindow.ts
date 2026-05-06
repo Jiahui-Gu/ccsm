@@ -58,6 +58,23 @@ let closeActionCache: CloseAction = parseCloseAction(undefined, process.platform
 function getCloseAction(): CloseAction {
   return closeActionCache;
 }
+
+/**
+ * Update the in-memory close-action cache from a value the renderer just
+ * persisted via `window.ccsm.saveState('closeAction', ...)`.
+ *
+ * Why this exists: the daemon owns persistence, but `win.on('close')` reads
+ * the preference *synchronously* (Electron's close event has no `await`).
+ * We bridge by mirroring renderer-side writes into this main-process cache
+ * the moment they happen — otherwise tray/ask choreography would lag a full
+ * app restart behind the user's choice (e2e baseline-red, Task #636).
+ *
+ * Falls through to `parseCloseAction` so any garbage value gets normalised
+ * to the platform default rather than crashing the close handler later.
+ */
+export function notifyCloseActionFromRenderer(raw: unknown): void {
+  closeActionCache = parseCloseAction(raw, process.platform);
+}
 function setCloseAction(value: CloseAction): void {
   closeActionCache = value;
   // Best-effort cross-restart persistence. Daemon may not be ready yet on a

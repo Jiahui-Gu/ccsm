@@ -21,6 +21,7 @@ import { app, BrowserWindow, ipcMain, dialog, type Tray } from 'electron';
 import * as os from 'os';
 import { buildTrayIcon } from './branding/icon';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
+import { notifyCloseActionFromRenderer } from './window/createWindow';
 import { createTray, type TrayController } from './tray/createTray';
 import { spawnDaemon, getDaemonPort, killDaemon } from './daemon-spawner';
 
@@ -206,3 +207,12 @@ registerLifecycleHandlers({
 // Expose the spawn-resolved port to anyone who needs it inside main (the
 // preload bridge reads it via the `getDaemonPort` IPC handler below).
 ipcMain.handle('daemon:getPort', () => getDaemonPort());
+
+// Renderer-side `window.ccsm.saveState('closeAction', value)` calls this
+// IPC right after the daemon write succeeds so main's in-memory close-action
+// cache stays in lock-step with persisted state. Without this the cache
+// only refreshes on next app launch and the close handler picks the stale
+// branch (Task #636 — tray/close-dialog e2e baseline-red).
+ipcMain.handle('main:notifyCloseAction', (_e, raw: unknown) => {
+  notifyCloseActionFromRenderer(raw);
+});
