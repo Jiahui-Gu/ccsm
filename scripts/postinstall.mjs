@@ -28,7 +28,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
-import { rebuildWithRetry, blockingSleep } from './postinstall-helpers.mjs';
+import { rebuildWithRetry, blockingSleep, checkNoElectronRunning } from './postinstall-helpers.mjs';
 
 // Preflight: warn (don't block) when running on a Node major other than 20.
 // better-sqlite3 builds cleanly on Node 20.x; newer node-gyp + Node may need
@@ -70,6 +70,19 @@ if (!existsSync(rebuildBin)) {
   // the app bundle was built elsewhere and shouldn't need a rebuild.
   console.log('[postinstall] @electron/rebuild not installed (dev dep); skipping native rebuild.');
   process.exit(0);
+}
+
+// Task #643: fail fast if a ccsm/Electron process is still running.
+// @electron/rebuild's first step is `unlink(<module>/build/Release/*.node)`,
+// which hits EPERM on Windows / EBUSY on Linux when the file is mmap'd by
+// a live Electron. A retry loop can't recover because the user's own app
+// is the holder. Tell the user to close it and re-run.
+//
+// CCSM_POSTINSTALL_SKIP_PROCESS_CHECK=1 bypasses (CI sets this).
+const procCheck = checkNoElectronRunning();
+if (procCheck.blocked) {
+  console.error(procCheck.message);
+  process.exit(1);
 }
 
 function runRebuild(moduleName, { allowFailure } = { allowFailure: false }) {
