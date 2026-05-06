@@ -186,6 +186,10 @@ const en = {
     title: 'Claude binary missing from this install',
     body: 'CCSM ships the Claude binary inside the installer, but we couldn’t find it on disk. Please reinstall CCSM to repair the install — sessions can’t start until then.'
   },
+  storageHealth: {
+    title: 'Storage is broken — your work will not be saved',
+    bodyFallback: 'CCSM could not open its local database. Quit and reinstall, or copy any unsaved work elsewhere before closing.'
+  },
   importDialog: {
     title: 'Import sessions from Claude Code',
     description: 'Pick existing CLI transcripts to surface in CCSM. They resume on open.',

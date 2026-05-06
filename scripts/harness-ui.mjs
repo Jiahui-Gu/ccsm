@@ -1481,6 +1481,92 @@ async function caseTerminalPaneMounted({ win, log }) {
   log(`claudeAvailable=true branch: terminal host mounted with .xterm, pty list reports ${ptyList.count} entry/entries`);
 }
 
+// ---------- storage-health-banner (Task #639 v0.3 ship-blocker) ----------
+// Pins the contract that when the daemon's `initDb` fails (better-sqlite3
+// ABI mismatch / EACCES on userdata dir / sqlite header corruption / the
+// CCSM_TEST_BREAK_DB=1 test seam), the renderer paints the fatal
+// StorageHealthBanner — i.e. the user is NEVER silently in a state where
+// db:save returns ok=false but no UI surfaces it. That silent path was
+// the original dogfood-575 P0: users created groups/sessions, the daemon
+// kept printing PORT, every db:save returned silent failure, and on
+// restart all their work evaporated.
+//
+// This case relaunches electron with `CCSM_TEST_BREAK_DB=1` so initDb
+// throws deterministically. We then assert:
+//   1. `[data-testid="storage-health-banner"]` mounts in the right pane;
+//   2. the banner exposes the daemon-supplied reason in its body row
+//      (so the user can copy-paste it into a bug report);
+//   3. the renderer's `window.ccsm.getStorageHealth()` reports ok=false
+//      (i.e. the IPC bridge is delivering, not just main writing logs).
+//
+// The 4th red-line assertion (no silent db:save fail) is structurally
+// guaranteed by daemon/api/data.ts's safeSaveState short-circuit, which
+// returns `{ ok: false, error: 'storage_unavailable: ...' }` in this
+// state — and saveStateMethod in preload throws on that, which the
+// renderer surfaces via the persist-error toast. Pinning the daemon
+// short-circuit + banner DOM here is sufficient; the throw path is
+// covered by the daemon-storage-fail UT.
+//
+// Placed last in the harness because the broken-storage relaunch leaves
+// the electron process in a state that's not safe for follow-on cases —
+// reset-between-cases assumes a working DB to wipe app_state. Only
+// terminal-pane-mounted (which itself relaunches with normal env) sits
+// after; explicit relaunch on this case cleans up after itself.
+async function caseStorageHealthBanner({ win, log }) {
+  // The relaunch with CCSM_TEST_BREAK_DB=1 is wired via the case spec
+  // entry below (relaunch + launchEnv). By the time this body runs the
+  // app is already booted with the broken-db env.
+  //
+  // Wait for the banner to mount. The IPC chain is:
+  //   daemon initDb throws → markStorageUnhealthy(reason)
+  //     → main polls /api/health/storage post-spawn → fans on storage:health
+  //     → preload onStorageHealth → useStorageHealthBridge → store
+  //     → <StorageHealthBanner /> renders.
+  // 12s timeout absorbs the daemon spawn (cold ~500ms p95, 10s ceiling),
+  // main's HTTP probe, IPC fanout, and React commit.
+  const banner = win.locator('[data-testid="storage-health-banner"]');
+  try {
+    await banner.waitFor({ state: 'visible', timeout: 12000 });
+  } catch {
+    throw new Error(
+      'storage-health-banner never mounted — daemon broken-storage state did not surface to renderer (silent-loss regression — Task #639)'
+    );
+  }
+
+  // The banner body must carry the daemon-supplied reason so the user
+  // can quote it in a bug report. We don't pin the exact message (it
+  // depends on the test-seam string) but we DO assert the reason is
+  // non-empty and mentions the seam name so the renderer wiring
+  // (banner body = storageHealth.reason) is demonstrably alive, not
+  // showing the fallback string.
+  const bodyText = await banner.innerText();
+  if (!bodyText || bodyText.length < 4) {
+    throw new Error(`storage-health-banner has no body text: ${JSON.stringify(bodyText)}`);
+  }
+  if (!/CCSM_TEST_BREAK_DB/.test(bodyText)) {
+    throw new Error(
+      `storage-health-banner body did not contain the daemon-supplied reason. Got: ${JSON.stringify(bodyText)}`
+    );
+  }
+
+  // Verify the IPC bridge actually delivered the snapshot — i.e. main
+  // really did push and preload really did wire it. This catches a
+  // regression where the banner mounts from stale store state without
+  // the bridge actually firing.
+  const health = await win.evaluate(async () => {
+    if (!window.ccsm?.getStorageHealth) return { ok: 'no-bridge' };
+    return window.ccsm.getStorageHealth();
+  });
+  if (!health || typeof health !== 'object' || health.ok !== false) {
+    throw new Error(`window.ccsm.getStorageHealth() returned ${JSON.stringify(health)} — expected { ok: false, reason: ... }`);
+  }
+  if (typeof health.reason !== 'string' || !health.reason.length) {
+    throw new Error(`storage health snapshot missing reason field: ${JSON.stringify(health)}`);
+  }
+
+  log(`storage-health-banner mounted with daemon reason: ${health.reason}`);
+}
+
 // ---------- move-to-group-excludes-own-group ----------
 // PR #517 / commit a882478. Right-click → "Move to group" submenu must NOT
 // list the session's current group. PR #629 reverses the original "hide the
@@ -1657,7 +1743,19 @@ await runHarness({
     // available and a session is active, the right pane mounts the
     // in-renderer xterm host DIV `[data-terminal-host]` and main
     // surfaces the pty via window.ccsmPty.list().
-    { id: 'terminal-pane-mounted', run: caseTerminalPaneMounted }
+    { id: 'terminal-pane-mounted', run: caseTerminalPaneMounted },
+    // storage-health-banner (Task #639 v0.3 ship-blocker): pins that
+    // daemon initDb failure surfaces a fatal banner instead of silently
+    // dropping db:save calls. Relaunches with CCSM_TEST_BREAK_DB=1 so
+    // initDb throws deterministically without corrupting a real db.
+    // Placed last because the broken-db state is unsafe for follow-on
+    // cases — reset-between-cases assumes a working DB to wipe app_state.
+    {
+      id: 'storage-health-banner',
+      run: caseStorageHealthBanner,
+      relaunch: true,
+      launchEnv: { CCSM_TEST_BREAK_DB: '1' },
+    }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

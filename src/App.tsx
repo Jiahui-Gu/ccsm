@@ -12,6 +12,7 @@ import { ImportDialog } from './components/ImportDialog';
 import { ShortcutOverlay } from './components/ShortcutOverlay';
 import { DragRegion, WindowControls } from './components/WindowControls';
 import { InstallerCorruptBanner } from './components/InstallerCorruptBanner';
+import { StorageHealthBanner } from './components/StorageHealthBanner';
 import { useStore } from './stores/store';
 import { initI18n } from './i18n';
 import { useTranslation } from './i18n/useTranslation';
@@ -24,6 +25,7 @@ import { useSessionActivateBridge } from './app-effects/useSessionActivateBridge
 import { useFocusBridge } from './app-effects/useFocusBridge';
 import { useUpdateDownloadedBridge } from './app-effects/useUpdateDownloadedBridge';
 import { usePersistErrorBridge } from './app-effects/usePersistErrorBridge';
+import { useStorageHealthBridge } from './app-effects/useStorageHealthBridge';
 import { useSessionActiveBridge } from './app-effects/useSessionActiveBridge';
 import { useSessionNameBridge } from './app-effects/useSessionNameBridge';
 import { usePtyExitBridge } from './app-effects/usePtyExitBridge';
@@ -103,6 +105,12 @@ export default function App() {
   // Pipe `session:state` IPC events into the store via subscribeAgentEvents.
   // Drives the AgentIcon attention halo for non-active sessions.
   useAgentEventBridge();
+
+  // Task #639 — wire daemon storage-health probe into the store so
+  // <StorageHealthBanner /> paints when initDb failed. Runs unconditionally
+  // (no toast / push deps) so the banner appears even before
+  // <ToastProvider> wraps <AppEffectsBridge />.
+  useStorageHealthBridge();
 
   // `session:activate` from main → re-select the named session (desktop
   // notification click).
@@ -390,6 +398,7 @@ export default function App() {
                 <WindowControls />
               </DragRegion>
               <InstallerCorruptBanner />
+              <StorageHealthBanner />
               {mainBody}
             </main>
           }

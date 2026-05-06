@@ -175,6 +175,10 @@ const zh: EnCatalog = {
     title: '安装包内的 Claude 程序缺失',
     body: 'CCSM 在安装包里附带了 Claude 程序，但在硬盘上找不到它。请重新安装 CCSM 以修复 — 修复之前会话无法启动。'
   },
+  storageHealth: {
+    title: '存储不可用 — 你的修改不会被保存',
+    bodyFallback: 'CCSM 无法打开本地数据库。请关闭并重新安装，或在退出前先把未保存的内容复制到别处。'
+  },
   importDialog: {
     title: '从 Claude Code 导入会话',
     description: '挑选已有的 CLI 对话在 CCSM 中显示。打开时会自动 resume。',

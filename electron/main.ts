@@ -64,6 +64,14 @@ applyAppMenuLocale();
 let trayController: TrayController | null = null;
 let isQuitting = false;
 
+// Task #639 — last known storage-health snapshot from the daemon. Cached
+// so a renderer that loads AFTER the initial probe (e.g. a recreated
+// window after close-to-tray, or the renderer mounting before the IPC
+// fanout fires) can synchronously fetch the failure state via the
+// `storage:getHealth` IPC handler below. `null` = probe never reported,
+// treated as "ok" by the renderer.
+let lastKnownStorageHealth: { ok: boolean; reason?: string } | null = null;
+
 function getTrayBaseImage() {
   return buildTrayIcon();
 }
@@ -169,9 +177,49 @@ app.whenReady().then(async () => {
   process.env.CCSM_USER_DATA_DIR = app.getPath('userData');
   process.env.CCSM_APP_VERSION = app.getVersion();
   process.env.CCSM_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  spawnDaemon().catch((err) => {
-    console.error('[main] daemon failed to start:', err);
-  });
+  spawnDaemon()
+    .then(async (port) => {
+      // Task #639 — surface daemon storage init failure (better-sqlite3
+      // ABI mismatch / EACCES on userdata dir / sqlite corruption /
+      // CCSM_TEST_BREAK_DB=1) to the renderer as a fatal banner. Without
+      // this poll the daemon prints PORT, IPC works, db:save returns
+      // { ok: false } per call but the user only ever sees "Failed to
+      // save state" toasts and loses their work on restart (dogfood-575
+      // P0). Polling once is enough — initDb only runs at startup.
+      try {
+        const res = await fetch(
+          `http://127.0.0.1:${port}/api/health/storage`,
+          { signal: AbortSignal.timeout(2_000) },
+        );
+        if (res.ok) {
+          const health = (await res.json()) as { ok: boolean; reason?: string };
+          if (!health.ok) {
+            console.error(
+              `[main] storage health: NOT OK — reason: ${health.reason ?? '(none)'}`,
+            );
+            // Fan out to every BrowserWindow (the main window may be in
+            // any state — created/closed-to-tray/etc. — so we send to
+            // all and let the preload bridge filter at the renderer
+            // boundary). Resending on subsequent window creates is
+            // handled in createWindow's did-finish-load.
+            for (const w of BrowserWindow.getAllWindows()) {
+              w.webContents.send('storage:health', health);
+            }
+            // Cache so a freshly created window can request it on load.
+            lastKnownStorageHealth = health;
+          }
+        } else {
+          console.warn(
+            `[main] storage health probe returned HTTP ${res.status}`,
+          );
+        }
+      } catch (err) {
+        console.warn('[main] storage health probe failed:', err);
+      }
+    })
+    .catch((err) => {
+      console.error('[main] daemon failed to start:', err);
+    });
 
   // Wave-2-C: subscribe to the daemon's notify SSE so OS notifications and
   // taskbar flashes fire in main (the daemon owns the decider; main owns
@@ -207,6 +255,13 @@ registerLifecycleHandlers({
 // Expose the spawn-resolved port to anyone who needs it inside main (the
 // preload bridge reads it via the `getDaemonPort` IPC handler below).
 ipcMain.handle('daemon:getPort', () => getDaemonPort());
+
+// Task #639 — synchronous storage-health snapshot. The renderer's
+// useStorageHealthBridge hook calls this on mount so a window created
+// after the initial spawn-time fanout still picks up the failure state
+// without waiting for a second push. Returns null when the probe has
+// never reported (treated as "ok / unknown" by the renderer).
+ipcMain.handle('storage:getHealth', () => lastKnownStorageHealth);
 
 // Renderer-side `window.ccsm.saveState('closeAction', value)` calls this
 // IPC right after the daemon write succeeds so main's in-memory close-action

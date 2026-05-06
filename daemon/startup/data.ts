@@ -21,7 +21,7 @@
 
 import type { StartupContext } from './types';
 import { initSentry } from '../sentry/init';
-import { initDb, closeDb } from '../db';
+import { initDb, closeDb, markStorageUnhealthy } from '../db';
 import { subscribeNotifyEnabledInvalidation } from '../prefs/notifyEnabled';
 import { subscribeCrashReportingInvalidation } from '../prefs/crashReporting';
 
@@ -31,14 +31,19 @@ export default function start(ctx: StartupContext): void {
   initSentry();
 
   // (2) Eager db open. Surfaces corrupt-file recovery + WAL journal_mode
-  //     pragma at boot, not at first renderer call. Failures are logged
-  //     and swallowed so the daemon's non-db surfaces (sessionTitles,
-  //     import) still come up.
+  //     pragma at boot, not at first renderer call. Failures are recorded
+  //     on the storage-health singleton so the renderer can paint a fatal
+  //     banner — Task #639 (v0.3 ship-blocker). Daemon stays up so the
+  //     user can read logs / quit cleanly; every db op short-circuits with
+  //     a 503 in daemon/api/data.ts, which surfaces a non-silent failure
+  //     all the way to the persist-error toast.
   try {
     initDb();
   } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    markStorageUnhealthy(reason);
     process.stderr.write(
-      `[startup-data] initDb failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      `[startup-data] initDb failed (storage marked unhealthy): ${reason}\n`,
     );
   }
 
