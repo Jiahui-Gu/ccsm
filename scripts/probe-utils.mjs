@@ -348,6 +348,68 @@ export async function setTheme(win, mode, { verify = false, timeoutMs = 5000 } =
   }
 }
 
+// PR-8 (#605): Edge-triggered app-shell-ready handshake.
+//
+// Replaces the legacy polling pattern
+//   `await win.waitForFunction(() => !!window.__ccsmStore && document.querySelector('aside') !== null)`
+// which (a) burns CPU on a 100ms interval until React has mounted, and
+// (b) couples readiness to the presence of a specific DOM node (`aside`)
+// that several harness cases legitimately rebuild during their own
+// fixtures, masking real failures.
+//
+// The renderer (src/App.tsx, PR #1116) dispatches a window event
+// `ccsm:app-shell-ready` exactly once on the first effect tick, after
+// React has committed the initial DOM and `__ccsmStore` is pinned. The
+// caller (harness-runner.mjs) installs a `addEventListener` via
+// `BrowserContext.addInitScript` BEFORE `firstWindow` resolves so the
+// listener is wired at document_start; the listener resolves a promise
+// stored on `window.__ccsmAppShellReadyP` and stamps
+// `window.__ccsmAppShellReadyAt`. This helper awaits the promise via
+// `win.evaluate`. No polling — the only `waitForFunction` left is the
+// fallback bootstrap to detect that the listener was installed at all.
+//
+// Idempotent: re-installing on the same context is a no-op (the init
+// script body is keyed off `__ccsmAppShellReadyP` existence). Idempotent
+// in the renderer too: App.tsx guards re-dispatch with a module-level
+// flag, so HMR / StrictMode double-effects emit only once.
+
+/**
+ * Await the `ccsm:app-shell-ready` window event. Edge-triggered: returns
+ * as soon as the renderer dispatches (no polling). Throws on timeout.
+ *
+ * The caller is expected to have installed the listener via init-script
+ * before `firstWindow` resolved (see harness-runner.mjs `bootShellReady`).
+ * If the listener is missing this helper falls back to a one-shot
+ * `__ccsmStore` presence check — the legacy signal that `appWindow`
+ * historically relied on — so cases that haven't migrated still boot.
+ *
+ * @param {import('playwright').Page} win
+ * @param {{ timeout?: number }} [opts]
+ */
+export async function waitForAppShellReady(win, { timeout = 20_000 } = {}) {
+  await win.waitForFunction(
+    () => !!window.__ccsmAppShellReadyP || !!window.__ccsmStore,
+    null,
+    { timeout }
+  );
+  await win.evaluate(async (timeoutMs) => {
+    if (window.__ccsmAppShellReadyP) {
+      // Race the event-promise against a renderer-side timeout so a stuck
+      // dispatch surfaces as a real error instead of a Playwright eval
+      // hang masked by an outer timeout.
+      await Promise.race([
+        window.__ccsmAppShellReadyP,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('ccsm:app-shell-ready not dispatched within renderer timeout')), timeoutMs)
+        )
+      ]);
+    }
+    // Else: legacy path — the outer waitForFunction already proved
+    // __ccsmStore is present, and on legacy bundles without the event
+    // emit this is the best signal available.
+  }, timeout);
+}
+
 // Wait for the renderer's zustand store to finish hydration (rendering
 // implies React has mounted, which implies hydrateStore().finally() has run).
 // Then forcibly replace state with the fixture and yield long enough for
