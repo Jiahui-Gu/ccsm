@@ -5,6 +5,7 @@ import {
   API_PATHS,
   type CreateSessionRequest,
   type CreateSessionResponse,
+  type DeleteSessionResponse,
 } from '@ccsm/shared';
 
 export class HttpError extends Error {
@@ -44,4 +45,36 @@ export async function createSession(
     );
   }
   return (await res.json()) as CreateSessionResponse;
+}
+
+/**
+ * DELETE /api/sessions/:sid — ask the daemon to tear down a PTY session.
+ * The daemon responds 200 `{ ok: true }` on success or 404 if the sid is
+ * unknown. Either is treated as "session is gone" by the caller; only true
+ * transport / 5xx errors throw.
+ */
+export async function deleteSession(
+  token: string,
+  sid: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeleteSessionResponse> {
+  const res = await fetchImpl(API_PATHS.session(sid), {
+    method: 'DELETE',
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+  });
+  if (res.status === 404) {
+    // The session was already gone on the daemon side. Treat as success so
+    // the caller can prune it from the store without surfacing an error.
+    return { ok: true };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new HttpError(
+      res.status,
+      `DELETE ${API_PATHS.session(sid)} failed: ${res.status} ${text}`.trim(),
+    );
+  }
+  return (await res.json()) as DeleteSessionResponse;
 }

@@ -118,6 +118,107 @@ button {
   font-style: italic;
 }
 
+/* Default group + session rows (T9). */
+.sidebar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+
+.sidebar__group-header {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #aaa;
+}
+
+.sidebar__session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar__session {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-radius: 3px;
+}
+
+.sidebar__session:hover {
+  background: #232323;
+}
+
+.sidebar__session--active {
+  background: #2a2a2a;
+}
+
+.sidebar__session-row {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 12px;
+  color: inherit;
+  min-width: 0;
+}
+
+.sidebar__session-marker {
+  width: 8px;
+  color: #d4a017;
+  text-align: center;
+  flex: 0 0 8px;
+}
+
+.sidebar__session-sid {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar__session-time {
+  color: #888;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar__session-close {
+  flex: 0 0 24px;
+  width: 24px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  visibility: hidden;
+  padding: 0 4px;
+}
+
+.sidebar__session:hover .sidebar__session-close {
+  visibility: visible;
+}
+
+.sidebar__session-close:hover {
+  color: #ff6b6b;
+}
+
+.sidebar__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .sidebar__archived {
   flex: 0 0 auto;
   border-bottom: 1px solid #2a2a2a;

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createSession, HttpError } from '../src/api/sessions';
+import { createSession, deleteSession, HttpError } from '../src/api/sessions';
 
 describe('api/sessions.createSession', () => {
   it('POSTs to /api/sessions with Bearer token and returns the parsed sid', async () => {
@@ -51,5 +51,44 @@ describe('api/sessions.createSession', () => {
     await expect(
       createSession('bad', {}, fetchMock as unknown as typeof fetch),
     ).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe('api/sessions.deleteSession (T9 / #656)', () => {
+  it('issues DELETE with Bearer token to the per-sid path', async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('/api/sessions/sid-abc');
+      expect(init.method).toBe('DELETE');
+      const headers = init.headers as Record<string, string>;
+      expect(headers.authorization).toBe('Bearer t');
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    const got = await deleteSession(
+      't',
+      'sid-abc',
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(got).toEqual({ ok: true });
+  });
+
+  it('treats 404 as success (session already gone on the daemon side)', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('{"error":"not_found"}', { status: 404 }),
+    );
+    const got = await deleteSession(
+      't',
+      'ghost',
+      fetchMock as unknown as typeof fetch,
+    );
+    expect(got).toEqual({ ok: true });
+  });
+
+  it('throws HttpError on 5xx', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response('boom', { status: 500 }),
+    );
+    await expect(
+      deleteSession('t', 's1', fetchMock as unknown as typeof fetch),
+    ).rejects.toBeInstanceOf(HttpError);
   });
 });
