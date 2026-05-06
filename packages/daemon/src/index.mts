@@ -4,6 +4,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { createDaemonHttp } from './http.mjs';
+import { attachWebSocket } from './ws.mjs';
 
 const DEFAULT_PORT = 17832;
 const PORT_RETRY_MAX = 20;
@@ -61,6 +62,7 @@ async function main(): Promise<void> {
   const startPort = parsePort(process.env.PORT);
   const token = process.env.CCSM_TOKEN || generateToken();
   const http = createDaemonHttp({ token });
+  attachWebSocket(http.server, { token, sessions: http.sessions });
 
   const { port } = await listenWithRetry(http, startPort, PORT_RETRY_MAX);
 

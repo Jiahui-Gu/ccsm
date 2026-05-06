@@ -46,10 +46,13 @@ const MIME_TYPES: Record<string, string> = {
   '.map': 'application/json; charset=utf-8',
 };
 
-interface StubSession {
+// NOTE (T4): added optional `cwd` so the ws layer (ws.mts) can spawn the
+// node-pty in the right working directory. Routing/auth logic untouched.
+export interface StubSession {
   sid: string;
   createdAt: number;
   alive: boolean;
+  cwd?: string | undefined;
 }
 
 export interface DaemonHttpOptions {
@@ -166,11 +169,14 @@ async function handleApi(
       writeJson(res, 400, { error: 'bad_json' });
       return;
     }
-    // cwd is accepted but stub does not use it (real spawn = T4).
-    void body.cwd;
+    // T4: persist cwd so ws.mts can spawn node-pty with it.
     const sid = randomUUID();
     const createdAt = Date.now();
-    sessions.set(sid, { sid, createdAt, alive: true });
+    const stub: StubSession = { sid, createdAt, alive: true };
+    if (typeof body.cwd === 'string' && body.cwd.length > 0) {
+      stub.cwd = body.cwd;
+    }
+    sessions.set(sid, stub);
     const resp: CreateSessionResponse = { sid, createdAt };
     writeJson(res, 200, resp);
     return;
