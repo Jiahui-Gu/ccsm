@@ -1151,32 +1151,24 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
     // no longer works: `window.ccsm` is now installed by the preload via
     // `contextBridge.exposeInMainWorld`, which freezes the renderer-side
     // handle (function properties cannot be reassigned across the world
-    // boundary). Instead we monkey-patch `window.fetch` and inject the
-    // ~800ms latency on the `/api/db/load` daemon route directly. The
-    // hydration sequence ends up gated on the same loadState round-trip,
-    // so the observable "sidebar skeleton paints before hydrate flips"
-    // window is preserved. Wrap is idempotent (guarded by a window-scoped
-    // sentinel) so reload doesn't double-wrap.
-    if (!window.__ccsm584FetchWrapped) {
-      const originalFetch = window.fetch;
-      window.fetch = async (input, init) => {
-        try {
-          const url =
-            typeof input === 'string'
-              ? input
-              : input && typeof input.url === 'string'
-              ? input.url
-              : String(input);
-          if (url.includes('/api/db/load')) {
-            await new Promise((r) => setTimeout(r, 800));
-          }
-        } catch {
-          /* keep original behavior on any URL-shape weirdness */
-        }
-        return originalFetch.call(window, input, init);
-      };
-      window.__ccsm584FetchWrapped = true;
-    }
+    // boundary).
+    //
+    // Task #633 (B1-FIX): the prior fix attempt — monkey-patching
+    // `window.fetch` from this `addInitScript` — also doesn't work under
+    // contextIsolation:true. addInitScript injects into the renderer's
+    // MAIN world, but `daemonFetch` lives in the preload's ISOLATED world
+    // and uses *that* world's `fetch`. The wrap installed here is
+    // unreachable from the daemon round-trip path, which is why the case
+    // still timed out on CI ubuntu (see PR #1123 reviewer comment
+    // 4385104862).
+    //
+    // The working seam is preload-side: `installCcsmCoreBridge` exposes
+    // `window.__ccsmHarnessHooks.setLoadStateDelayMs(ms)` only when
+    // `CCSM_HARNESS=1` (set by harness-ui's `launch.env`). The hook flips
+    // a module-private delay that `loadState` honors before issuing the
+    // daemon call. The MutationObserver below stays in addInitScript
+    // because it operates on the renderer's main-world DOM, which is
+    // exactly where it needs to be.
 
     // #584: observer that snapshots the sidebar skeleton the first time it
     // appears in the DOM. Survives the skeleton-to-loaded React handoff.
@@ -1317,7 +1309,6 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
       observerInstalled: window.__ccsm584ObserverInstalled,
       observerError: window.__ccsm584ObserverError,
       hydrated: window.__ccsmStore?.getState?.().hydrated,
-      loadStateWrapped: !!window.__ccsm584FetchWrapped,
       hasSidebarSkeleton: !!document.querySelector(
         '[data-testid="sidebar-skeleton"]'
       ),
@@ -1367,11 +1358,15 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
 
   // After hydrate completes, the store flag flips and the populated UI
   // takes over from the skeleton. We confirm the flag goes true to prove
-  // we're not asserting against a stuck-skeleton state.
+  // we're not asserting against a stuck-skeleton state. Timeout is generous
+  // (15s) because Task #633's preload-side loadState delay (800ms) plus
+  // the rest of the hydration round-trip (daemon spawn + first DB read on
+  // a freshly-relaunched electron) can eat 5-10s on a cold CI runner; the
+  // tight 5s budget was already marginal pre-fix.
   await win.waitForFunction(
     () => !!window.__ccsmStore?.getState?.().hydrated,
     null,
-    { timeout: 5_000 }
+    { timeout: 15_000 }
   );
 
   log(
@@ -1643,10 +1638,20 @@ await runHarness({
     // case definition site (now deleted) for context.
     // startup-paints-before-hydrate (perf/startup-render-gate): pins
     // render-before-hydrate ordering via window.__ccsmHydrationTrace.
-    // Placed last because it calls win.reload() with init-script delays on
-    // loadState, and the reload + delay perturb the page state for any
-    // case that follows.
-    { id: 'startup-paints-before-hydrate', run: caseStartupPaintsBeforeHydrate },
+    // Placed last because it relaunches electron with a forced
+    // ~800ms loadState delay (CCSM_HARNESS_LOAD_STATE_DELAY_MS=800) to
+    // extend the hydrated=false window long enough for the
+    // MutationObserver to capture the sidebar skeleton paint. The
+    // delay is preload-side (Task #633) — earlier attempts to wrap
+    // window.fetch from addInitScript don't work under
+    // contextIsolation:true because daemonFetch lives in the preload's
+    // isolated world.
+    {
+      id: 'startup-paints-before-hydrate',
+      run: caseStartupPaintsBeforeHydrate,
+      relaunch: true,
+      launchEnv: { CCSM_HARNESS_LOAD_STATE_DELAY_MS: '800' }
+    },
     // terminal-pane-mounted: direct-xterm refactor (post-PR-1..PR-6).
     // Pins the App→TerminalPane wiring contract — when claude is
     // available and a session is active, the right pane mounts the

@@ -66,6 +66,42 @@ function makeMethod<T>(path: string) {
   return (...args: unknown[]): Promise<T> => callDaemonMethod<T>(path, args);
 }
 
+// Task #633 (B1-FIX) — harness-only loadState delay seam.
+//
+// Background: the e2e case `startup-paints-before-hydrate` needs to extend
+// the renderer's hydrated=false window long enough to observe the sidebar
+// skeleton paint. Pre-B1 the harness monkey-patched `window.ccsm.loadState`
+// from the renderer side, but B1 deleted the renderer shim and switched to
+// `contextBridge.exposeInMainWorld`, which freezes the renderer-side handle
+// (function properties cannot be reassigned across the world boundary).
+// The next attempted workaround — wrapping `window.fetch` from a Playwright
+// `addInitScript` — also doesn't work: `addInitScript` injects into the
+// renderer's main world, but `daemonFetch` runs in the preload's isolated
+// world, so its `fetch` call never hits the wrap.
+//
+// The clean answer is a preload-side test seam: read
+// `CCSM_HARNESS_LOAD_STATE_DELAY_MS` at preload load time, and have
+// `loadState` honor that delay before issuing the daemon call. The
+// harness-runner sets this env via per-case `launchEnv` on a relaunched
+// electron, so only the case that needs the delay pays for it. Production
+// renderers never see the env so the path is a strict no-op there.
+function readInitialLoadStateDelayMs(): number {
+  const raw = process.env.CCSM_HARNESS_LOAD_STATE_DELAY_MS;
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+const loadStateDelayMs = readInitialLoadStateDelayMs();
+
+function loadStateMethod(key: string): Promise<string | null> {
+  if (loadStateDelayMs > 0) {
+    return new Promise<void>((r) => setTimeout(r, loadStateDelayMs)).then(() =>
+      callDaemonMethod<string | null>('db/load', [key]),
+    );
+  }
+  return callDaemonMethod<string | null>('db/load', [key]);
+}
+
 // `saveState` daemon route returns `{ ok: true } | { ok: false; error }`
 // inside `result`. The pre-v0.3 IPC contract is `Promise<void>` that
 // throws on failure — call sites in src/stores/persist.ts await it for
@@ -144,7 +180,7 @@ function buildDaemonMethods(): {
   })();
 
   return {
-    loadState: makeMethod<string | null>('db/load'),
+    loadState: loadStateMethod,
     saveState: saveStateMethod,
     i18n: {
       getSystemLocale: makeMethod<string | undefined>('i18n/getSystemLocale'),
