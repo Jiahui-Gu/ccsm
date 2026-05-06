@@ -44,7 +44,8 @@ export type DaemonSpawnFailureKind =
   | 'early-exit' // child exited before printing PORT=<n>
   | 'bad-port-line' // first stdout line wasn't `PORT=<valid integer>`
   | 'timeout' // READY_TIMEOUT_MS elapsed with no PORT line
-  | 'no-pipes'; // spawn returned without stdout/stderr pipes
+  | 'no-pipes' // spawn returned without stdout/stderr pipes
+  | 'hard-fail'; // child exited non-zero before PORT — critical startup module threw (Task #639)
 
 /** Typed error thrown / rejected from spawnDaemon. Use `instanceof
  *  DaemonSpawnError` + switch on `.kind` for handling. */
@@ -63,6 +64,44 @@ export class DaemonSpawnError extends Error {
     this.name = 'DaemonSpawnError';
     this.kind = kind;
     this.detail = detail;
+  }
+}
+
+/** Subclass for the Task #639 hard-fail path: child exited non-zero
+ *  before emitting PORT, meaning a critical startup module (currently
+ *  initDb in daemon/startup/data.ts) threw and runStartup called
+ *  process.exit(1) deliberately. Carries the exit code + a stderr tail
+ *  so electron/main.ts can render the error inside the hard-fail
+ *  startup screen verbatim. */
+export class DaemonHardFailError extends DaemonSpawnError {
+  public readonly exitCode: number | null;
+  public readonly stderrTail: string;
+  constructor(exitCode: number | null, stderrTail: string) {
+    super(
+      'hard-fail',
+      `daemon exited ${exitCode} before PORT — critical startup failure`,
+      { exitCode, stderrTail },
+    );
+    this.name = 'DaemonHardFailError';
+    this.exitCode = exitCode;
+    this.stderrTail = stderrTail;
+  }
+}
+
+/** Subclass for the Task #639 timeout path: child neither emitted PORT
+ *  nor exited within READY_TIMEOUT_MS. Distinct from hard-fail because
+ *  the daemon may be wedged in startup (deadlock, slow disk) rather
+ *  than having explicitly failed. */
+export class DaemonSpawnTimeoutError extends DaemonSpawnError {
+  public readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(
+      'timeout',
+      `daemon did not emit PORT=<n> within ${timeoutMs}ms`,
+      { timeoutMs },
+    );
+    this.name = 'DaemonSpawnTimeoutError';
+    this.timeoutMs = timeoutMs;
   }
 }
 
@@ -139,6 +178,27 @@ export function spawnDaemon(): Promise<number> {
     let resolved = false;
     let stdoutBuf = '';
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    // Task #639 — keep a rolling stderr tail so a hard-fail (critical
+    // startup module threw) can be surfaced verbatim in the Electron
+    // hard-fail startup screen. Cap at ~50 lines / ~8KB to avoid
+    // unbounded growth from a chatty crash loop.
+    const STDERR_TAIL_MAX_LINES = 50;
+    const STDERR_TAIL_MAX_BYTES = 8 * 1024;
+    let stderrTailLines: string[] = [];
+    let stderrTailBytes = 0;
+    const pushStderrLine = (line: string) => {
+      stderrTailLines.push(line);
+      stderrTailBytes += line.length;
+      while (
+        stderrTailLines.length > STDERR_TAIL_MAX_LINES ||
+        stderrTailBytes > STDERR_TAIL_MAX_BYTES
+      ) {
+        const dropped = stderrTailLines.shift();
+        if (dropped === undefined) break;
+        stderrTailBytes -= dropped.length;
+      }
+    };
+    const stderrTailLeftover = { buf: '' };
 
     const finishReject = (err: DaemonSpawnError) => {
       if (resolved) return;
@@ -170,13 +230,7 @@ export function spawnDaemon(): Promise<number> {
       }
       child = null;
       port = null;
-      finishReject(
-        new DaemonSpawnError(
-          'timeout',
-          `daemon did not emit PORT=<n> within ${READY_TIMEOUT_MS}ms`,
-          { timeoutMs: READY_TIMEOUT_MS },
-        ),
-      );
+      finishReject(new DaemonSpawnTimeoutError(READY_TIMEOUT_MS));
     }, READY_TIMEOUT_MS);
     // Don't keep the event loop alive for this timer — main process has
     // its own lifecycle holders. unref() is a no-op if not supported.
@@ -230,7 +284,15 @@ export function spawnDaemon(): Promise<number> {
     stdout.on('data', onStdout);
 
     stderr.on('data', (b: Buffer) => {
-      process.stderr.write('[daemon stderr] ' + b.toString('utf8'));
+      const text = b.toString('utf8');
+      process.stderr.write('[daemon stderr] ' + text);
+      // Accumulate a rolling tail for hard-fail diagnostics.
+      stderrTailLeftover.buf += text;
+      const lines = stderrTailLeftover.buf.split('\n');
+      stderrTailLeftover.buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.length > 0) pushStderrLine(line);
+      }
     });
 
     proc.on('error', (err) => {
@@ -247,12 +309,28 @@ export function spawnDaemon(): Promise<number> {
       );
       child = null;
       port = null;
+      // Flush any leftover (non-newline-terminated) stderr fragment so
+      // FATAL banners that don't end with \n still show up.
+      if (stderrTailLeftover.buf.length > 0) {
+        pushStderrLine(stderrTailLeftover.buf);
+        stderrTailLeftover.buf = '';
+      }
+      // Task #639 — distinguish hard-fail (critical startup module threw,
+      // daemon explicitly process.exit(1)) from generic early-exit.
+      // Non-zero exit before PORT === hard-fail. Code zero or signaled
+      // exit before PORT === unexpected early-exit.
+      if (typeof code === 'number' && code !== 0) {
+        finishReject(
+          new DaemonHardFailError(code, stderrTailLines.join('\n')),
+        );
+        return;
+      }
       // If we hadn't resolved yet, surface the early exit.
       finishReject(
         new DaemonSpawnError(
           'early-exit',
           `daemon exited before PORT line (code=${code} signal=${signal})`,
-          { code, signal },
+          { code, signal, stderrTail: stderrTailLines.join('\n') },
         ),
       );
     });

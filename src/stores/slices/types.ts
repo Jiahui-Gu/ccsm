@@ -64,6 +64,12 @@ export type State = {
   flashStates: Record<string, boolean>;
   hydrated: boolean;
   installerCorrupt: boolean;
+  // Task #639 — daemon-reported storage health. `null` = main hasn't yet
+  // told us anything (treated as "ok / unknown" — boot path); `{ ok: true }`
+  // = explicitly healthy; `{ ok: false, reason }` = initDb failed and the
+  // StorageHealthBanner is rendered as a fatal banner the user can't
+  // dismiss until the install is fixed.
+  storageHealth: { ok: boolean; reason?: string } | null;
   openPopoverId: string | null;
   lastUsedCwd: string | null;
   disconnectedSessions: Record<
@@ -123,6 +129,9 @@ export type Actions = {
 
   // model picker
   setInstallerCorrupt: (corrupt: boolean) => void;
+
+  // storage health (Task #639)
+  setStorageHealth: (h: { ok: boolean; reason?: string } | null) => void;
 
   // popover
   openPopover: (id: string) => void;

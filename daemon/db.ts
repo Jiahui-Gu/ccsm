@@ -23,6 +23,48 @@ function resolveUserDataDir(): string {
 
 let db: Database.Database | null = null;
 
+// ── Storage health (Task #639) ──────────────────────────────────────────────
+// Surfaces initDb failure to the UI instead of swallowing it. The daemon
+// stays up so the user can see logs / quit cleanly, but every db op short-
+// circuits with a 503 + reason and the renderer paints a fatal banner.
+//
+// Three sources can mark storage unhealthy:
+//   1. initDb itself throws (better-sqlite3 ABI mismatch, EACCES on the
+//      userdata dir, ENOSPC on the WAL write, sqlite header corruption that
+//      survived ensureHealthyDb).
+//   2. CCSM_TEST_BREAK_DB=1 — a test/e2e seam that forces initDb to throw
+//      before touching disk so the failure path is reproducible without
+//      manually corrupting a live db.
+//   3. (future) a runtime saveState that throws SQLITE_FULL / SQLITE_IOERR
+//      could promote itself here too. Out of scope for this PR — initDb
+//      coverage is the v0.3 ship-blocker.
+//
+// This is intentionally a module-level singleton (NOT a slice on `db`)
+// because it must survive `db === null` — the whole point is "we never got
+// a handle".
+export interface StorageHealth {
+  ok: boolean;
+  reason?: string;
+}
+
+let storageHealth: StorageHealth = { ok: true };
+
+export function getStorageHealth(): StorageHealth {
+  return storageHealth;
+}
+
+/** Mark storage as unhealthy. Called by startup when initDb throws and
+ *  preserved across the rest of the process lifetime — sqlite errors at
+ *  this layer don't recover without a restart. */
+export function markStorageUnhealthy(reason: string): void {
+  storageHealth = { ok: false, reason };
+}
+
+/** Test-only: reset health back to ok between unit-test cases. */
+export function __resetStorageHealthForTests(): void {
+  storageHealth = { ok: true };
+}
+
 // Schema version for the on-disk SQLite layout. Bumped only when the table
 // shapes change in a way readers care about. Use `PRAGMA user_version` so
 // SQLite stores it for us — no extra metadata table required.
@@ -139,6 +181,15 @@ function ensureHealthyDb(file: string, current: Database.Database): Database.Dat
 
 export function initDb(): Database.Database {
   if (db) return db;
+  // Test/e2e seam — force the failure path without corrupting a real db
+  // on disk. Reproduces the dogfood-575 P0 (Task #639) where the user's
+  // data evaporates because db init silently fails. Setting this env var
+  // anywhere in the spawn chain makes initDb throw a deterministic error
+  // so the harness can assert the StorageHealthBanner appears + no
+  // db:save returns silent-fail.
+  if (process.env.CCSM_TEST_BREAK_DB === '1') {
+    throw new Error('CCSM_TEST_BREAK_DB=1 (forced storage init failure for testing)');
+  }
   const dir = resolveUserDataDir();
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'ccsm.db');

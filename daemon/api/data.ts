@@ -20,7 +20,7 @@
 
 import type { Router, HandlerResult } from '../router';
 
-import { loadState, saveState } from '../db';
+import { loadState, saveState, getStorageHealth } from '../db';
 import { validateSaveStateInput } from '../db-validate';
 import { emitStateSaved } from '../shared/stateSavedBus';
 import { isSafePath } from '../../electron/security/ipcGuards';
@@ -56,7 +56,17 @@ function readArgs(body: unknown): { ok: true; args: unknown[] } | { ok: false; e
 // the renderer-facing shape: any throw degrades to `null` so the renderer
 // falls through to its default state instead of receiving an opaque error.
 // Mirrors the legacy electron/ipc/dbIpc.ts handleDbLoad behavior.
+//
+// Storage-health short-circuit (Task #639): when initDb failed at startup
+// the db handle is null and re-calling `loadState` would re-throw the same
+// init error per IPC. Skip the call entirely — the renderer is already
+// painting the StorageHealthBanner from the GET /api/health/storage probe,
+// so flooding stderr with one error per saveState/loadState only obscures
+// the real root cause.
 function safeLoadState(key: string): string | null {
+  if (!getStorageHealth().ok) {
+    return null;
+  }
   try {
     return loadState(key);
   } catch (err) {
@@ -70,6 +80,11 @@ function safeLoadState(key: string): string | null {
 // db:save mirrors the legacy electron/ipc/dbIpc.ts handleDbSave: validate,
 // persist, then fan out the stateSavedBus event so per-key cache owners
 // (prefs/crashReporting, prefs/notifyEnabled) drop their cached value.
+//
+// Storage-health short-circuit (Task #639): if initDb failed we MUST NOT
+// silently return ok — that's the original P0. Return `{ ok: false }` with
+// a reason that points at the storage banner so the renderer's
+// saveStateMethod throws and the persist-error toast fires.
 function safeSaveState(
   key: unknown,
   value: unknown,
@@ -82,6 +97,13 @@ function safeSaveState(
       );
     }
     return v;
+  }
+  const health = getStorageHealth();
+  if (!health.ok) {
+    return {
+      ok: false,
+      error: `storage_unavailable: ${health.reason ?? 'initDb failed'}`,
+    };
   }
   try {
     saveState(key as string, value as string);
