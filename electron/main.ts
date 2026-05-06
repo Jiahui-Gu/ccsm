@@ -28,8 +28,16 @@ import {
 import { buildTrayIcon } from './branding/icon';
 import { createWindow as createMainWindowFactory } from './window/createWindow';
 import { notifyCloseActionFromRenderer } from './window/createWindow';
+import { createHardFailScreen } from './window/createHardFailScreen';
 import { createTray, type TrayController } from './tray/createTray';
-import { spawnDaemon, getDaemonPort, killDaemon } from './daemon-spawner';
+import {
+  spawnDaemon,
+  getDaemonPort,
+  killDaemon,
+  DaemonHardFailError,
+  DaemonSpawnTimeoutError,
+  DaemonSpawnError,
+} from './daemon-spawner';
 
 // safety net — escaped main-proc rejections kill app on Node 20+ default
 // (audit tech-debt-03-errors.md risk #2).
@@ -125,6 +133,18 @@ applyAppMenuLocale();
 let trayController: TrayController | null = null;
 let isQuitting = false;
 
+// Task #639 — last known runtime storage-health snapshot from the daemon.
+// Cached so a renderer that loads AFTER a runtime push (e.g. a recreated
+// window after close-to-tray) can synchronously fetch the failure state
+// via the `storage:getHealth` IPC handler below. `null` = no runtime
+// failure pushed (treated as "ok" by the renderer).
+//
+// Note: STARTUP-time storage failure no longer flows through this path.
+// It now goes through the daemon ready protocol — daemon exits 1, parent
+// shows the hard-fail screen, the main React app never mounts. See
+// daemon/startup/data.ts and createHardFailScreen.ts.
+let lastKnownStorageHealth: { ok: boolean; reason?: string } | null = null;
+
 function getTrayBaseImage() {
   return buildTrayIcon();
 }
@@ -217,10 +237,15 @@ app.whenReady().then(async () => {
     app.setAppUserModelId(aumid);
   }
 
-  // Spawn the daemon BEFORE creating the window so the preload bridge has
-  // a port to expose by the time renderer scripts run. We don't block on
-  // `await` for failures fatally — a daemon-failed-to-start surface is the
-  // renderer's responsibility (a toast + retry button, wired in wave-1 C).
+  // Task #639 — single ready-signal invariant: spawnDaemon resolves ONLY
+  // when the daemon emitted PORT, which (per the new ready protocol)
+  // implies all critical startup modules initialised cleanly. If it
+  // rejects with DaemonHardFailError (critical module like initDb threw,
+  // daemon process.exit(1)) or DaemonSpawnTimeoutError (10s no PORT,
+  // SIGKILLed), we MUST NOT createWindow — instead show the hard-fail
+  // startup screen so the user can't reach the main React app and create
+  // work that won't persist. This is the v0.3 ship-blocker fix for the
+  // dogfood-575 silent-data-loss P0.
   //
   // Wave-2 A: inject the host-process facts the daemon would otherwise need
   // electron APIs to discover. The daemon's db.ts reads CCSM_USER_DATA_DIR
@@ -230,20 +255,51 @@ app.whenReady().then(async () => {
   process.env.CCSM_USER_DATA_DIR = app.getPath('userData');
   process.env.CCSM_APP_VERSION = app.getVersion();
   process.env.CCSM_IS_PACKAGED = app.isPackaged ? '1' : '0';
-  spawnDaemon().catch((err) => {
-    console.error('[main] daemon failed to start:', err);
-  });
+
+  let daemonReady = false;
+  try {
+    await spawnDaemon();
+    daemonReady = true;
+  } catch (err) {
+    daemonReady = false;
+    let reason: string;
+    let detail: string | undefined;
+    if (err instanceof DaemonHardFailError) {
+      reason = `Daemon failed to start (exit code ${err.exitCode}). A critical component could not initialise.`;
+      detail = err.stderrTail;
+    } else if (err instanceof DaemonSpawnTimeoutError) {
+      reason = `Daemon did not respond within ${err.timeoutMs}ms. The startup process may be stuck.`;
+      detail = undefined;
+    } else if (err instanceof DaemonSpawnError) {
+      reason = `Daemon spawn failed (${err.kind}): ${err.message}`;
+      detail = typeof err.detail.stderrTail === 'string' ? (err.detail.stderrTail as string) : undefined;
+    } else {
+      reason = `Daemon failed to start: ${err instanceof Error ? err.message : String(err)}`;
+      detail = undefined;
+    }
+    console.error('[main] daemon failed to start, rendering hard-fail screen:', err);
+    // Show the static error screen and DO NOT createWindow / ensureTray.
+    // The main React app never mounts, no group/session UI is reachable,
+    // no IPC is wired except daemon:getPort (which returns null safely).
+    createHardFailScreen({ reason, detail });
+  }
 
   // Wave-2-C: subscribe to the daemon's notify SSE so OS notifications and
   // taskbar flashes fire in main (the daemon owns the decider; main owns
   // the OS-side sinks). Survives daemon restarts via internal reconnect.
-  installNotifySinkConsumer();
+  // Only wire if daemon is actually up — no point opening a SSE to a
+  // dead loopback.
+  if (daemonReady) {
+    installNotifySinkConsumer();
+  }
 
   registerCwdPickerIpc();
   installUpdaterIpc();
 
-  createWindow();
-  ensureTray();
+  if (daemonReady) {
+    createWindow();
+    ensureTray();
+  }
 });
 
 registerLifecycleHandlers({
@@ -268,6 +324,13 @@ registerLifecycleHandlers({
 // Expose the spawn-resolved port to anyone who needs it inside main (the
 // preload bridge reads it via the `getDaemonPort` IPC handler below).
 ipcMain.handle('daemon:getPort', () => getDaemonPort());
+
+// Task #639 — synchronous storage-health snapshot. The renderer's
+// useStorageHealthBridge hook calls this on mount so a window created
+// after the initial spawn-time fanout still picks up the failure state
+// without waiting for a second push. Returns null when the probe has
+// never reported (treated as "ok / unknown" by the renderer).
+ipcMain.handle('storage:getHealth', () => lastKnownStorageHealth);
 
 // Renderer-side `window.ccsm.saveState('closeAction', value)` calls this
 // IPC right after the daemon write succeeds so main's in-memory close-action

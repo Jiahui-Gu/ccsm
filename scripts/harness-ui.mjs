@@ -62,7 +62,9 @@
 import { runHarness, mod } from './probe-helpers/harness-runner.mjs';
 import { seedStore } from './probe-utils.mjs';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { _electron as electron } from 'playwright';
 // readFile/stat were used by the removed app-icon-default case.
 
 // ---------- sidebar-align ----------
@@ -1481,6 +1483,203 @@ async function caseTerminalPaneMounted({ win, log }) {
   log(`claudeAvailable=true branch: terminal host mounted with .xterm, pty list reports ${ptyList.count} entry/entries`);
 }
 
+// ---------- daemon-hard-fail-screen (Task #639 v0.3 ship-blocker) ----------
+// Pins the new daemon ready-protocol invariant: when a critical startup
+// module (currently initDb in daemon/startup/data.ts) throws, the daemon
+// process exits 1 BEFORE binding the HTTP server, never emits PORT, and
+// the Electron host renders a static hard-fail startup screen INSTEAD OF
+// the main React app. The user MUST NOT be able to reach group/session
+// UI in this state — that path was the dogfood-575 silent-data-loss P0.
+//
+// Uses skipLaunch + manual launch because:
+//   * The hard-fail screen never dispatches `ccsm:app-shell-ready`
+//     (it's a static data: URL, no React), so bootShellReady would
+//     time out at 20s on every run.
+//   * We need to verify the absence of the main app sidebar — easier
+//     to assert directly on the only window without harness booking.
+async function caseDaemonHardFailScreen({ log, harnessRoot }) {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-hardfail-'));
+  let app = null;
+  try {
+    app = await electron.launch({
+      args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
+      cwd: harnessRoot,
+      env: {
+        ...process.env,
+        CCSM_E2E_HIDDEN: '1',
+        LANG: 'en_US.UTF-8',
+        LC_ALL: 'en_US.UTF-8',
+        NODE_ENV: 'production',
+        CCSM_PROD_BUNDLE: '1',
+        // The seam — makes daemon initDb throw deterministically. Under
+        // the new ready protocol this exits the daemon 1 before PORT.
+        CCSM_TEST_BREAK_DB: '1',
+      },
+      timeout: 30_000,
+    });
+
+    // Wait for any window. The hard-fail screen is a single
+    // BrowserWindow with a data: URL; firstWindow resolves on it.
+    const win = await app.firstWindow();
+    await win.waitForLoadState('domcontentloaded');
+
+    // (1) The hard-fail-screen DOM must be present.
+    const hardFailRoot = win.locator('[data-testid="hard-fail-screen"]');
+    try {
+      await hardFailRoot.waitFor({ state: 'visible', timeout: 10_000 });
+    } catch {
+      const url = win.url();
+      const html = await win.content().catch(() => '<unavailable>');
+      throw new Error(
+        `hard-fail-screen never mounted — daemon broken-storage state did not surface to user (silent-loss regression — Task #639). win.url=${url} html-len=${html.length}`
+      );
+    }
+
+    // (2) The reason block must carry a non-empty diagnostic.
+    const reasonText = await win.locator('[data-testid="hard-fail-reason"]').innerText();
+    if (!reasonText || reasonText.length < 4) {
+      throw new Error(`hard-fail reason text is empty: ${JSON.stringify(reasonText)}`);
+    }
+
+    // (3) The MAIN React app must NOT be mounted. No sidebar, no
+    // window.__ccsmStore, no window.ccsm IPC bridge. This is the
+    // load-bearing assertion: if main React app is present in any
+    // form the user can create groups/sessions and lose work on
+    // restart, which is the exact P0 we're preventing.
+    const sidebar = await win.locator('aside').count();
+    if (sidebar > 0) {
+      throw new Error('hard-fail screen leaked the main React app sidebar — user could create groups/sessions in broken-storage state (silent-loss regression)');
+    }
+    const hasStore = await win.evaluate(() => typeof window.__ccsmStore !== 'undefined');
+    if (hasStore) {
+      throw new Error('hard-fail screen has window.__ccsmStore — main React app mounted despite hard-fail, regression');
+    }
+    const hasCcsmBridge = await win.evaluate(() => typeof window.ccsm !== 'undefined');
+    if (hasCcsmBridge) {
+      throw new Error('hard-fail screen has window.ccsm IPC bridge — preload was wired despite hard-fail, regression');
+    }
+
+    log(`hard-fail screen mounted, main app NOT reachable. reason=${JSON.stringify(reasonText.slice(0, 80))}`);
+  } finally {
+    if (app) {
+      try { await app.close(); } catch { /* ignore */ }
+    }
+    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+// ---------- restart-persistence-positive (Task #639 v0.3 ship-blocker) ----------
+// Pins the inverse contract: under a HEALTHY daemon, group + session state
+// MUST survive an app restart. This is the exact regression #575 dogfood
+// hit (users created work, restarted, all gone) — covering it ensures the
+// hard-fail-screen path doesn't silently swap with a broken-persistence
+// path. Two-launch sequence over the same userDataDir.
+async function caseRestartPersistencePositive({ log, harnessRoot }) {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsm-restart-'));
+  const launchOpts = {
+    args: ['.', '--lang=en', `--user-data-dir=${userDataDir}`],
+    cwd: harnessRoot,
+    env: {
+      ...process.env,
+      CCSM_E2E_HIDDEN: '1',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8',
+      NODE_ENV: 'production',
+      CCSM_PROD_BUNDLE: '1',
+    },
+    timeout: 30_000,
+  };
+
+  // ---- Launch 1: seed groups + sessions, wait for persist, close. ----
+  let app1 = null;
+  try {
+    app1 = await electron.launch(launchOpts);
+    const win1 = await app1.firstWindow();
+    await win1.waitForLoadState('domcontentloaded');
+    // Wait for store to be ready.
+    await win1.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+
+    // Seed via the store; persist middleware writes through to daemon.
+    await win1.evaluate(() => {
+      const store = window.__ccsmStore;
+      store.setState({
+        groups: [{ id: 'g-persist', name: 'test-persist', collapsed: false, kind: 'normal' }],
+        sessions: [
+          { id: 's-persist-1', groupId: 'g-persist', name: 'first', cwd: '/tmp', status: 'closed' },
+        ],
+      });
+    });
+
+    // Force a saveState round-trip by calling window.ccsm.saveState
+    // directly with the current snapshot. This bypasses any timing
+    // around persist-middleware debouncing.
+    const saveResult = await win1.evaluate(async () => {
+      const s = window.__ccsmStore.getState();
+      const payload = JSON.stringify({ groups: s.groups, sessions: s.sessions });
+      if (!window.ccsm?.saveState) return { ok: false, error: 'no-saveState-bridge' };
+      try {
+        await window.ccsm.saveState('store', payload);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+    if (!saveResult.ok) {
+      throw new Error(`saveState failed on healthy daemon: ${saveResult.error}`);
+    }
+
+    // Give daemon a beat to flush WAL.
+    await win1.waitForTimeout(300);
+    await app1.close();
+    app1 = null;
+  } finally {
+    if (app1) {
+      try { await app1.close(); } catch { /* ignore */ }
+    }
+  }
+
+  // ---- Launch 2: re-open same userDataDir, assert state restored. ----
+  let app2 = null;
+  try {
+    app2 = await electron.launch(launchOpts);
+    const win2 = await app2.firstWindow();
+    await win2.waitForLoadState('domcontentloaded');
+    await win2.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+
+    // Pull persisted snapshot via the SAME bridge a real app uses.
+    const restored = await win2.evaluate(async () => {
+      if (!window.ccsm?.loadState) return { error: 'no-loadState-bridge' };
+      const raw = await window.ccsm.loadState('store');
+      if (!raw) return { raw: null };
+      try {
+        return { raw, parsed: JSON.parse(raw) };
+      } catch {
+        return { raw, parseError: true };
+      }
+    });
+    if (restored.error) throw new Error(`restored snapshot bridge missing: ${restored.error}`);
+    if (!restored.raw) throw new Error('relaunched app could not loadState("store") — group/session state did NOT persist (silent-loss regression — Task #639)');
+    if (restored.parseError) throw new Error(`loadState returned non-JSON: ${restored.raw}`);
+    const groups = restored.parsed?.groups ?? [];
+    const sessions = restored.parsed?.sessions ?? [];
+    const persistedGroup = groups.find((g) => g.id === 'g-persist');
+    const persistedSession = sessions.find((s) => s.id === 's-persist-1');
+    if (!persistedGroup) {
+      throw new Error(`group "g-persist" missing after restart. Got groups=${JSON.stringify(groups)}`);
+    }
+    if (!persistedSession) {
+      throw new Error(`session "s-persist-1" missing after restart. Got sessions=${JSON.stringify(sessions)}`);
+    }
+
+    log(`restart preserved group "${persistedGroup.name}" + session "${persistedSession.name}" across full app close`);
+  } finally {
+    if (app2) {
+      try { await app2.close(); } catch { /* ignore */ }
+    }
+    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 // ---------- move-to-group-excludes-own-group ----------
 // PR #517 / commit a882478. Right-click → "Move to group" submenu must NOT
 // list the session's current group. PR #629 reverses the original "hide the
@@ -1657,7 +1856,28 @@ await runHarness({
     // available and a session is active, the right pane mounts the
     // in-renderer xterm host DIV `[data-terminal-host]` and main
     // surfaces the pty via window.ccsmPty.list().
-    { id: 'terminal-pane-mounted', run: caseTerminalPaneMounted }
+    { id: 'terminal-pane-mounted', run: caseTerminalPaneMounted },
+    // daemon-hard-fail-screen (Task #639 v0.3 ship-blocker): pins that
+    // critical daemon startup failure (initDb throw under
+    // CCSM_TEST_BREAK_DB=1) brings up a static hard-fail startup
+    // screen INSTEAD OF the main React app, so the user can't reach
+    // group/session UI in a state where saveState would silently drop
+    // (the dogfood-575 P0). skipLaunch + manual electron.launch because
+    // the hard-fail screen never dispatches ccsm:app-shell-ready.
+    {
+      id: 'daemon-hard-fail-screen',
+      run: caseDaemonHardFailScreen,
+      skipLaunch: true,
+    },
+    // restart-persistence-positive (Task #639 v0.3 ship-blocker): pins
+    // the inverse — under a HEALTHY daemon, group + session state
+    // SURVIVES app restart. This is the exact regression #575 hit.
+    // skipLaunch + manual two-launch sequence over the same userDataDir.
+    {
+      id: 'restart-persistence-positive',
+      run: caseRestartPersistencePositive,
+      skipLaunch: true,
+    }
   ],
   launch: {
     // CCSM_OPEN_IN_EDITOR_NOOP=1: tells the tool:open-in-editor IPC handler

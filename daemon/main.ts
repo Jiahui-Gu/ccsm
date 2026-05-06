@@ -92,6 +92,15 @@ async function main(): Promise<void> {
   const router = buildRouter(version);
   const abortController = new AbortController();
 
+  // Task #639 — runStartup runs BEFORE startServer. Critical-flagged
+  // startup modules (currently daemon/startup/data.ts) that throw will
+  // call process.exit(1) inside runStartup before this point — daemon
+  // never binds the HTTP server, never prints PORT, and the parent
+  // Electron host's spawnDaemon sees the early exit + non-zero code and
+  // surfaces the hard-fail startup screen. This is the single ready-
+  // signal invariant: "PORT=<n> on stdout" === "all critical deps init
+  // succeeded". No two-phase ready check (poll /api/health/storage AFTER
+  // PORT) — that hack is forbidden by the task spec.
   await runStartup({ router, version, abort: abortController.signal });
 
   const handle = await startServer({ router });

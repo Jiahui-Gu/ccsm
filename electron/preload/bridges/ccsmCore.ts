@@ -310,6 +310,29 @@ const ipcOnlyApi = {
     ipcRenderer.on('update:downloaded', wrap);
     return () => ipcRenderer.removeListener('update:downloaded', wrap);
   },
+
+  // Task #639 — daemon storage health surface. Pull (`getStorageHealth`)
+  // returns the last known snapshot from main's spawn-time probe; null
+  // means the probe never reported (treated as "ok / unknown" by the
+  // bridge). Push (`onStorageHealth`) fires when main re-fans the
+  // snapshot. The renderer's useStorageHealthBridge hook calls both on
+  // mount: pull for the synchronous initial paint (so a re-mounted
+  // window picks up an earlier failure without race), subscribe for
+  // late arrivals.
+  getStorageHealth: (): Promise<{ ok: boolean; reason?: string } | null> =>
+    ipcRenderer.invoke('storage:getHealth'),
+  onStorageHealth: (
+    handler: (h: { ok: boolean; reason?: string }) => void,
+  ): (() => void) => {
+    const wrap = (
+      _e: IpcRendererEvent,
+      payload: { ok: boolean; reason?: string },
+    ): void => handler(payload);
+    ipcRenderer.on('storage:health', wrap);
+    return (): void => {
+      ipcRenderer.removeListener('storage:health', wrap);
+    };
+  },
 };
 
 /**

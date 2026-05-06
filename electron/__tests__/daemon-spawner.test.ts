@@ -178,4 +178,77 @@ describe('spawnDaemon', () => {
     expect(port2).toBe(23456);
     expect(spawnCalls).toHaveLength(2);
   });
+
+  // Task #639 — child exits non-zero before PORT line. This is the new
+  // hard-fail path: a critical startup module (initDb in
+  // daemon/startup/data.ts) threw, runStartup printed FATAL to stderr
+  // and called process.exit(1) BEFORE binding the HTTP server. The
+  // parent never sees PORT, so spawnDaemon must reject with the new
+  // DaemonHardFailError carrying the exit code + stderr tail so the
+  // electron host can render it inside the hard-fail startup screen.
+  it('case 5 (Task #639): rejects with DaemonHardFailError when child exits non-zero before PORT, with stderr tail', async () => {
+    const fc = makeFakeChild();
+    nextChild.push(fc);
+
+    const p = mod.spawnDaemon();
+    const recorded = p.catch((e) => e);
+    await Promise.resolve();
+    // Daemon prints FATAL banner to stderr, then exits 1 — no PORT line.
+    fc.stderr.emit(
+      'data',
+      Buffer.from('[daemon] FATAL: critical startup module 50-data.js threw\n', 'utf8'),
+    );
+    fc.stderr.emit(
+      'data',
+      Buffer.from('[daemon] FATAL reason: Error: CCSM_TEST_BREAK_DB=1 (forced)\n', 'utf8'),
+    );
+    fc.emit('exit', 1, null);
+
+    const err = (await recorded) as InstanceType<typeof mod.DaemonHardFailError>;
+    expect(err).toBeInstanceOf(mod.DaemonHardFailError);
+    expect(err).toBeInstanceOf(mod.DaemonSpawnError);
+    expect(err.kind).toBe('hard-fail');
+    expect(err.exitCode).toBe(1);
+    expect(err.stderrTail).toContain('FATAL');
+    expect(err.stderrTail).toContain('CCSM_TEST_BREAK_DB');
+    expect(mod.getDaemonPort()).toBeNull();
+  });
+
+  // Task #639 — distinguish timeout from hard-fail. A wedged daemon
+  // (no exit, no PORT) is different from one that explicitly bailed
+  // out — they need different UX. Pin the discriminator.
+  it('case 6 (Task #639): timeout returns DaemonSpawnTimeoutError, NOT hard-fail', async () => {
+    const fc = makeFakeChild();
+    nextChild.push(fc);
+
+    const p = mod.spawnDaemon();
+    const recorded = p.catch((e) => e);
+    await vi.advanceTimersByTimeAsync(mod.READY_TIMEOUT_MS + 50);
+    await Promise.resolve();
+
+    const err = (await recorded) as InstanceType<typeof mod.DaemonSpawnTimeoutError>;
+    expect(err).toBeInstanceOf(mod.DaemonSpawnTimeoutError);
+    expect(err).not.toBeInstanceOf(mod.DaemonHardFailError);
+    expect(err.kind).toBe('timeout');
+    expect(err.timeoutMs).toBe(mod.READY_TIMEOUT_MS);
+  });
+
+  // Task #639 — exit code 0 before PORT is NOT hard-fail (daemon shut
+  // down cleanly without bringing up its HTTP server, which is weird
+  // but not a critical-init failure). Stays as the legacy 'early-exit'
+  // kind so callers can branch correctly.
+  it('case 7 (Task #639): exit code 0 before PORT stays as early-exit, not hard-fail', async () => {
+    const fc = makeFakeChild();
+    nextChild.push(fc);
+
+    const p = mod.spawnDaemon();
+    const recorded = p.catch((e) => e);
+    await Promise.resolve();
+    fc.emit('exit', 0, null);
+
+    const err = (await recorded) as InstanceType<typeof mod.DaemonSpawnError>;
+    expect(err).toBeInstanceOf(mod.DaemonSpawnError);
+    expect(err).not.toBeInstanceOf(mod.DaemonHardFailError);
+    expect(err.kind).toBe('early-exit');
+  });
 });
