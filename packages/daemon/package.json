@@ -1,0 +1,22 @@
+{
+  "name": "@ccsm/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ccsm": "./bin/ccsm.mjs"
+  },
+  "main": "./dist/index.mjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run --passWithNoTests",
+    "dev": "tsc -p tsconfig.json --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

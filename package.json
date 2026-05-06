@@ -1,0 +1,24 @@
+{
+  "name": "ccsm-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ccsm — Claude Code web session manager (monorepo root)",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
+    "eslint": "^8.57.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
