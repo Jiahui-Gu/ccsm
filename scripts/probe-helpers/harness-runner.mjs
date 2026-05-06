@@ -35,7 +35,10 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { appWindow } from '../probe-utils.mjs';
+import {
+  appWindow,
+  waitForAppShellReady
+} from '../probe-utils.mjs';
 import { resetBetweenCases } from './reset-between-cases.mjs';
 
 /**
@@ -116,6 +119,68 @@ async function appWindowWithDiag(app) {
   } finally {
     cap.cleanup();
   }
+}
+
+/**
+ * Boot the renderer to "app shell ready" without polling.
+ *
+ * Sequence:
+ *   1. Install the `ccsm:app-shell-ready` listener on the BrowserContext
+ *      via `addInitScript` BEFORE `firstWindow` resolves so the listener
+ *      is present at document_start for the initial navigation. (After
+ *      the first window is open, addInitScript only affects subsequent
+ *      navigations like `win.reload()`.)
+ *   2. Wait for the first window + DOMContentLoaded.
+ *   3. Belt-and-suspenders: inject the listener directly into the current
+ *      page in case the context-level script attached late (some
+ *      electron-playwright versions surface `app.context()` only after
+ *      window create). If `__ccsmStore` is already pinned by then, the
+ *      event has already fired — resolve the promise immediately rather
+ *      than wait for an event that won't come a second time.
+ *   4. Await the listener's promise.
+ *
+ * @param {import('playwright').ElectronApplication} app
+ * @returns {Promise<import('playwright').Page>}
+ */
+async function bootShellReady(app) {
+  // STEP 1: context-level init script BEFORE firstWindow.
+  try {
+    const ctx = await app.context();
+    await ctx.addInitScript({
+      content:
+        "(() => { if (window.__ccsmAppShellReadyP) return; let r; window.__ccsmAppShellReadyP = new Promise((x) => { r = x; }); window.addEventListener('ccsm:app-shell-ready', () => { window.__ccsmAppShellReadyAt = Date.now(); r(true); }, { once: true }); })();"
+    });
+  } catch {
+    /* best-effort: context() may throw on some electron-playwright versions */
+  }
+  const win = await appWindowWithDiag(app);
+  await win.waitForLoadState('domcontentloaded');
+  // STEP 3: direct page-level inject as fallback.
+  try {
+    await win.evaluate(() => {
+      if (window.__ccsmAppShellReadyP) return;
+      let resolveP;
+      window.__ccsmAppShellReadyP = new Promise((r) => { resolveP = r; });
+      // If __ccsmStore is already pinned the event likely already fired
+      // (store-pin happens at module-eval, dispatch on first effect tick;
+      // both precede this evaluate by the time we reach here on slower
+      // boots). Resolve immediately rather than wait for a second emit
+      // that the App.tsx idempotency guard prevents.
+      if (window.__ccsmStore) {
+        window.__ccsmAppShellReadyAt = window.__ccsmAppShellReadyAt ?? Date.now();
+        resolveP(true);
+        return;
+      }
+      window.addEventListener('ccsm:app-shell-ready', () => {
+        window.__ccsmAppShellReadyAt = Date.now();
+        resolveP(true);
+      }, { once: true });
+    });
+  } catch {
+    /* swallow — waitForAppShellReady has its own fallback */
+  }
+  await waitForAppShellReady(win, { timeout: 20_000 });
+  return win;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -476,9 +541,7 @@ export async function runHarness(spec) {
   if (needsAnyLaunch && filtered.some((c) => !c.skipLaunch && c.userDataDir !== 'fresh' && !c.relaunch)) {
     const opts = buildLaunchOpts(spec, null);
     app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-    win = await appWindowWithDiag(app);
-    await win.waitForLoadState('domcontentloaded');
-    await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+    win = await bootShellReady(app);
     if (spec.setup) {
       await spec.setup({ app, win });
     }
@@ -569,9 +632,7 @@ export async function runHarness(spec) {
         }
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindowWithDiag(app);
-        await win.waitForLoadState('domcontentloaded');
-        await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        win = await bootShellReady(app);
         if (spec.setup) {
           await spec.setup({ app, win });
         }
@@ -583,9 +644,7 @@ export async function runHarness(spec) {
       if (!app || !win) {
         const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
-        win = await appWindowWithDiag(app);
-        await win.waitForLoadState('domcontentloaded');
-        await win.waitForFunction(() => !!window.__ccsmStore, null, { timeout: 20_000 });
+        win = await bootShellReady(app);
         if (spec.setup) {
           await spec.setup({ app, win });
         }
