@@ -42,9 +42,14 @@ jobs:
 
   e2e:
     needs: build
-    runs-on: ubuntu-latest
-    # Linux-only for now: Playwright Chromium download is heavy (~150MB) and
-    # Windows e2e is opt-in via T12. The smoke spec is OS-agnostic.
+    # T12 (#655): cross-platform e2e matrix. macOS is intentionally NOT in the
+    # matrix — keeping CI cost down for v0.1.0; see README "Platform support"
+    # for the contributions-welcome note.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,27 +72,34 @@ jobs:
         # T7 p1-smoke spawns a real `claude` PTY via the daemon; the CLI must
         # be on PATH for node-pty to find it. We pin a recent version rather
         # than `latest` so CI failures point at code changes, not silent CLI
-        # behaviour drift.
+        # behaviour drift. p1-smoke + p3-stress still skip on CI (no Anthropic
+        # credentials), but other specs use the rig.
         run: npm install -g @anthropic-ai/claude-code@2.1.131
 
       - name: Build
         run: pnpm -r build
 
-      - name: Run e2e (rig + strictmode only on CI; p1-smoke needs claude auth)
-        # p1-smoke spawns the real `claude` CLI which requires interactive
-        # auth on first run. CI runners have no Anthropic credentials and no
-        # way to seed `~/.claude/`, so the PTY exits immediately and the
-        # walking-skeleton assertions can't run. The acceptance evidence for
-        # T7 lives in the PR description (snapshots taken on the dev's box,
-        # uploaded for manager multimodal review). On CI we still run the
-        # rig smoke + strictmode dev-mode spec to keep the harness honest.
-        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert p1-smoke
+      - name: 'Run e2e (excludes p1-smoke + p3-stress: both need authed claude)'
+        # p1-smoke + p3-stress spawn the real `claude` CLI which requires
+        # interactive auth on first run. CI runners have no Anthropic
+        # credentials and no way to seed `~/.claude/`, so the PTY exits
+        # immediately and the assertions can't run. Acceptance evidence for
+        # T7 / T12 lives in the PR description (snapshots taken on the dev's
+        # box, uploaded for manager multimodal review). On CI we still run
+        # the rig smoke + strictmode + groups + scrollback specs to keep the
+        # harness honest on BOTH ubuntu and windows.
+        # `shell: bash` so the `|` in the regex is parsed by bash, not by
+        # PowerShell on windows-latest (where `|` would be a pipeline).
+        shell: bash
+        env:
+          CI: 'true'
+        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert "p1-smoke|p3-stress"
 
       - name: Upload snapshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-snapshots
+          name: e2e-snapshots-${{ matrix.os }}
           path: packages/e2e/snapshots/
           if-no-files-found: ignore
 
@@ -95,6 +107,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-playwright-report
+          name: e2e-playwright-report-${{ matrix.os }}
           path: packages/e2e/playwright-report/
           if-no-files-found: ignore
