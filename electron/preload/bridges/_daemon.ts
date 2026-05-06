@@ -26,6 +26,127 @@ async function resolvePort(): Promise<number | null> {
   }
 }
 
+// Task #629 — A1 lazy port cache + fetch helper.
+//
+// Why a separate cache (not folded into resolvePort): the existing SSE
+// reconnect loop in `openSse` re-resolves the port on every reconnect to
+// recover from daemon restarts (daemon binds 127.0.0.1:0, picks a fresh
+// port each spawn). Caching there would defeat that recovery. The cache
+// here is for one-shot RPC-style calls (`daemonFetch`) where the renderer
+// just wants the port once per session and any daemon-restart fallout
+// shows up as a fetch failure that the caller already handles.
+//
+// `null` resolutions are NOT cached — first invocation can land before
+// `daemon:getPort` is wired (preload runs before main-process IPC handlers
+// finish registering on cold boot). Caching null would freeze that race
+// permanently. Successful (numeric) resolutions are cached for the
+// lifetime of the renderer; call `__resetDaemonPortCacheForTest` from
+// tests to drop it.
+let cachedPortPromise: Promise<number | null> | null = null;
+
+/**
+ * Resolve the daemon HTTP port, caching the first successful lookup.
+ *
+ * Concurrent first calls share the same in-flight invoke promise (so we
+ * never issue two `daemon:getPort` IPC calls in parallel during the
+ * preload-startup race window). If the resolve yields `null` (handler
+ * not yet registered) we drop the cache so the next caller retries.
+ */
+export async function getCachedDaemonPort(): Promise<number | null> {
+  if (cachedPortPromise) {
+    const cached = await cachedPortPromise;
+    if (cached != null) return cached;
+    // Previous attempt resolved to null — fall through to retry.
+    cachedPortPromise = null;
+  }
+  const inflight = resolvePort();
+  cachedPortPromise = inflight;
+  const port = await inflight;
+  if (port == null) {
+    // Don't lock in a null result; next caller should re-invoke.
+    cachedPortPromise = null;
+  }
+  return port;
+}
+
+/**
+ * Test seam — drop the cached port so a fresh `getCachedDaemonPort`
+ * call re-invokes `daemon:getPort`. Not exported via the bridge surface;
+ * intended only for unit tests that swap out the `electron` module mock
+ * between assertions.
+ */
+export function __resetDaemonPortCacheForTest(): void {
+  cachedPortPromise = null;
+}
+
+export interface DaemonFetchOptions {
+  method?: string;
+  /** JSON-serializable body. Sets `Content-Type: application/json`
+   *  automatically; omit for GET / no-body requests. */
+  json?: unknown;
+  /** Extra headers merged on top of the JSON content-type (when applicable). */
+  headers?: Record<string, string>;
+  /** AbortSignal forwarded to `fetch`. */
+  signal?: AbortSignal;
+}
+
+export class DaemonUnavailableError extends Error {
+  constructor() {
+    super('daemon port unavailable');
+    this.name = 'DaemonUnavailableError';
+  }
+}
+
+export class DaemonHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+  ) {
+    super(`daemon HTTP ${status} ${statusText}`);
+    this.name = 'DaemonHttpError';
+  }
+}
+
+/**
+ * Generic loopback fetch against the daemon. Resolves the port via the
+ * lazy cache, builds `http://127.0.0.1:${port}${path}`, and parses the
+ * response as JSON.
+ *
+ * Errors are surfaced (unlike `fireDaemonEvent` / `getDaemon` which
+ * swallow), so callers can decide retry / surface UX. Throws:
+ *   - `DaemonUnavailableError` when the port lookup fails (handler not
+ *     registered or main-process refused — caller can retry later)
+ *   - `DaemonHttpError` on non-2xx response
+ *   - the underlying `fetch` rejection (network / abort) otherwise
+ */
+export async function daemonFetch<T = unknown>(
+  path: string,
+  opts: DaemonFetchOptions = {},
+): Promise<T> {
+  const port = await getCachedDaemonPort();
+  if (port == null) throw new DaemonUnavailableError();
+  const headers: Record<string, string> = { ...(opts.headers ?? {}) };
+  let body: string | undefined;
+  if (opts.json !== undefined) {
+    headers['Content-Type'] = headers['Content-Type'] ?? 'application/json';
+    body = JSON.stringify(opts.json);
+  }
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: opts.method ?? (body ? 'POST' : 'GET'),
+    headers,
+    body,
+    signal: opts.signal,
+  });
+  if (!res.ok) throw new DaemonHttpError(res.status, res.statusText);
+  // Empty body (204 / 205) → return undefined as T. JSON.parse of '' throws.
+  if (res.status === 204 || res.status === 205) {
+    return undefined as T;
+  }
+  const text = await res.text();
+  if (text.length === 0) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
 export interface SseStream {
   /** Cancel any active source + stop reconnect loop. */
   close(): void;
