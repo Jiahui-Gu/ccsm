@@ -28,11 +28,11 @@ export function useXtermSingleton(
   // module-singleton cache for idempotence. Pin order needs both gates
   // (`enabled` and `window.ccsmPty`) to be open at the same render, but
   // those flips don't always show up in the dep array — e.g. the pty
-  // bridge is installed by `installCcsmShim` before React mounts in
-  // production but, in tests / late-wire scenarios, can land between
-  // renders without the `enabled` flag changing. A no-dep effect makes
-  // the bring-up moment the first render where both gates are open,
-  // independent of which gate flipped last.
+  // bridge is installed by the preload script before any renderer
+  // module evaluates in production but, in tests / late-wire scenarios,
+  // can land between renders without the `enabled` flag changing. A
+  // no-dep effect makes the bring-up moment the first render where both
+  // gates are open, independent of which gate flipped last.
   useEffect(() => {
     if (!enabled) return;
     if (!hostRef.current) return;

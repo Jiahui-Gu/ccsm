@@ -12,26 +12,28 @@ export type UpdateStatus =
   | { kind: 'downloaded'; version: string }
   | { kind: 'error'; message: string };
 
-// v0.3 wave 1: the legacy `window.ccsm` IPC bridge moved into the
-// renderer-side compatibility shim (`src/lib/window-ccsm-shim.ts`),
-// which proxies every call to the local daemon over loopback HTTP.
-// The 25-ish call sites elsewhere in the renderer keep using
-// `window.ccsm.X(...)` unchanged — the type now points at `CcsmApi`
-// from the shim instead of inlined here.
+// v0.3 wave B1 (Task #627): the renderer-side compatibility shim is
+// gone. `window.ccsm` is now installed exclusively by the preload bridge
+// `electron/preload/bridges/ccsmCore.ts`, which exposes the full surface
+// (6 IPC-only + 25 daemon-backed methods) under a single non-enumerable
+// configurable property. The type alias re-exports the preload bridge's
+// `CCSMAPI` so renderer call sites keep their static typing.
 //
-// `__getDaemonPort` is the new preload-installed bridge (wave 1
-// dev-B) that surfaces the daemon's bound loopback port to the
-// renderer at boot. The shim calls it once and caches the result.
-import type { CcsmApi } from './lib/window-ccsm-shim';
+// `__getDaemonPort` is preserved as an optional-but-unused declaration:
+// no renderer code references it after the shim deletion (the preload
+// bridge resolves the daemon port internally via `daemonFetch`), but
+// keeping the ambient prevents accidental re-introduction without a
+// type-level signal.
+import type { CCSMAPI } from '../electron/preload/bridges/ccsmCore';
 
 declare global {
   interface Window {
     // Optional to keep call-site narrowing (`if (!window.ccsm) return;`,
-    // `window.ccsm?.foo`) compiling unchanged. The shim guarantees a
-    // non-undefined value at runtime once `installCcsmShim()` has been
-    // awaited (which happens before React mounts in `index.tsx`), so the
-    // narrowing branches are dead code in practice but still type-check.
-    ccsm?: CcsmApi;
+    // `window.ccsm?.foo`) compiling unchanged. The preload bridge
+    // guarantees a non-undefined value at runtime before any renderer
+    // script evaluates, so the narrowing branches are dead code in
+    // practice but still type-check.
+    ccsm?: CCSMAPI;
     __getDaemonPort?: () => Promise<number>;
   }
 }

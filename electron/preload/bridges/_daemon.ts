@@ -69,6 +69,32 @@ export async function getCachedDaemonPort(): Promise<number | null> {
   return port;
 }
 
+// Task #627 (B1) — boot-polling wrapper used by `daemonFetch`.
+//
+// With the renderer-side shim deleted, the very first `loadState` /
+// `saveState` call from the hydration store runs before `spawnDaemon()`
+// has resolved on cold boot. The single-shot `getCachedDaemonPort()`
+// returns `null` in that race window and the call surfaces as
+// `DaemonUnavailableError` with no retry. Mirror the `ccsmPty.ts` boot
+// wait shape (50 attempts × 100ms ceiling = ~5s) so the very-first
+// daemon-backed call waits for spawn instead of failing permanently.
+//
+// Kept as a separate function — not folded into `getCachedDaemonPort` —
+// so the A1 contract ("one IPC invoke per uncached call, immediate
+// null on failure") is preserved for callers that want fail-fast
+// behaviour (e.g. the SSE reconnect loop in `openSse`, which has its
+// own retry timer and shouldn't double-poll).
+const FETCH_PORT_POLL_ATTEMPTS = 50;
+const FETCH_PORT_POLL_INTERVAL_MS = 100;
+async function getCachedDaemonPortForFetch(): Promise<number | null> {
+  for (let i = 0; i < FETCH_PORT_POLL_ATTEMPTS; i += 1) {
+    const port = await getCachedDaemonPort();
+    if (port != null) return port;
+    await new Promise((r) => setTimeout(r, FETCH_PORT_POLL_INTERVAL_MS));
+  }
+  return null;
+}
+
 /**
  * Test seam — drop the cached port so a fresh `getCachedDaemonPort`
  * call re-invokes `daemon:getPort`. Not exported via the bridge surface;
@@ -123,7 +149,7 @@ export async function daemonFetch<T = unknown>(
   path: string,
   opts: DaemonFetchOptions = {},
 ): Promise<T> {
-  const port = await getCachedDaemonPort();
+  const port = await getCachedDaemonPortForFetch();
   if (port == null) throw new DaemonUnavailableError();
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
   let body: string | undefined;

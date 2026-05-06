@@ -1,42 +1,37 @@
-// `window.ccsm` — v0.3 wave-1 thin bridge. The only surfaces here are the
-// ones that CANNOT live behind the daemon's loopback HTTP boundary:
+// `window.ccsm` — v0.3 wave-B1 single-source preload bridge. The renderer
+// no longer carries a `window-ccsm-shim` (deleted in Task #627); every
+// `window.ccsm.X(...)` call site is served by this preload module:
 //
-//   1. `getDaemonPort()` — synchronous-ish accessor for the loopback port
-//      the daemon child bound to. Returns `null` until the spawn promise
-//      in main resolves; renderer is expected to poll/await before fetching
-//      against it. Wire is `ipcRenderer.invoke('daemon:getPort')`, not
-//      `process.versions` or any other mainworld leak — preload stays the
-//      single source of IPC channel knowledge.
-//   2. `pickCwd()` — OS folder picker. `dialog.showOpenDialog` needs the
-//      requesting BrowserWindow as its parent so the modal attribution is
-//      correct, which the daemon (a plain Node process with no window
-//      handle) cannot provide.
-//   3. `userHome()` — synchronous Node `os.homedir()` lookup. Kept on the
-//      IPC side so the renderer doesn't have to wait for the daemon port
-//      to be known just to seed its initial cwd default.
-//   4. updater channels — electron-updater drives signed-installer side
-//      effects from inside the Electron process; wrapping it over HTTP
-//      would put a privileged install path on a loopback socket.
+//   * 6 IPC-only methods (`getDaemonPort`, `pickCwd`, `userHome`, and the
+//     `updates*` family + `onUpdate*` push channels) — these surfaces
+//     CANNOT live behind the daemon's loopback HTTP boundary because they
+//     need the BrowserWindow handle (`pickCwd` modal anchor), the main
+//     process's `os.homedir()` lookup (`userHome`), or electron-updater's
+//     signed-installer side effects (`updates*`).
 //
-// Everything else (db / sessions / pty / notify / session titles / i18n /
-// import scan / userCwds / paths:exist / window controls) moved to the
-// daemon's HTTP API. The renderer fetches `http://127.0.0.1:<port>/...`
-// using the port returned by `getDaemonPort()`.
+//   * 25 daemon-backed methods (`loadState`, `saveState`, `i18n.*`,
+//     `getVersion`, `scanImportable`, `recentCwds`, `userCwds.*`,
+//     `defaultModel`, `pathsExist`, `window.*`) — proxied through
+//     `daemonFetch` to `http://127.0.0.1:<port>/api/<path>` with the
+//     `{args:[...]}` envelope agreed with the daemon router.
 //
-// Task #628 (A2) — additionally expose the 25 daemon-backed methods that
-// the renderer-side `window-ccsm-shim` provides, so wave B1 can delete the
-// shim and let the renderer call `window.ccsm.*` directly. To avoid
-// breaking the shim BEFORE B1 lands, we install `window.ccsm` via
+// Installation contract: we install `window.ccsm` via
 // `Object.defineProperty` with `configurable: true` (NOT
 // `contextBridge.exposeInMainWorld`, which produces a non-configurable
-// binding the shim cannot redefine). This requires `sandbox: false` on
-// the BrowserWindow (already configured in electron/window/createWindow.ts).
+// binding that breaks tests / harness wrap helpers). This requires
+// `sandbox: false` on the BrowserWindow (already configured in
+// `electron/window/createWindow.ts`).
 //
-// The 25 methods are gated behind the env flag `CCSM_PRELOAD_SOURCE`
-// (default OFF). With the flag OFF, the bridge exposes only the original
-// 6 IPC-only methods, and the renderer-side shim still wins via
-// `Object.defineProperty(window, 'ccsm', { configurable: true, ... })`.
-// Wave B1 will (a) flip the flag default to ON and (b) delete the shim.
+// Wave history:
+//   * A1 (#629, merged): added the lazy daemon-port cache + daemonFetch
+//     helper underneath this bridge.
+//   * A2 (#628, merged): grew the 25 daemon-backed methods behind the
+//     `CCSM_PRELOAD_SOURCE` env flag (default OFF) so the renderer-side
+//     shim still won at runtime while the preload-source path was being
+//     tested.
+//   * B1 (this PR, #627): deleted the renderer shim and removed the
+//     `CCSM_PRELOAD_SOURCE` flag — the 25 methods are now unconditionally
+//     exposed and `window.ccsm` is single-sourced from preload.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { daemonFetch } from './_daemon';
@@ -57,8 +52,9 @@ type Platform =
 const NOOP_UNSUBSCRIBE = (): void => {};
 
 // Helper: POST `/api/<path>` with `{args:[...]}` envelope, return the
-// `result` field (mirrors the `daemon-client.ts` envelope used by the
-// renderer-side shim — same daemon routes, same wire format).
+// `result` field. Same wire format as the (now-deleted) renderer shim's
+// daemonInvoke helper — kept identical so the daemon router doesn't need
+// to know which side is calling.
 function callDaemonMethod<T>(path: string, args: unknown[]): Promise<T> {
   return daemonFetch<{ result: T } | undefined>(`/api/${path}`, {
     json: { args },
@@ -70,11 +66,47 @@ function makeMethod<T>(path: string) {
   return (...args: unknown[]): Promise<T> => callDaemonMethod<T>(path, args);
 }
 
+// Task #633 (B1-FIX) — harness-only loadState delay seam.
+//
+// Background: the e2e case `startup-paints-before-hydrate` needs to extend
+// the renderer's hydrated=false window long enough to observe the sidebar
+// skeleton paint. Pre-B1 the harness monkey-patched `window.ccsm.loadState`
+// from the renderer side, but B1 deleted the renderer shim and switched to
+// `contextBridge.exposeInMainWorld`, which freezes the renderer-side handle
+// (function properties cannot be reassigned across the world boundary).
+// The next attempted workaround — wrapping `window.fetch` from a Playwright
+// `addInitScript` — also doesn't work: `addInitScript` injects into the
+// renderer's main world, but `daemonFetch` runs in the preload's isolated
+// world, so its `fetch` call never hits the wrap.
+//
+// The clean answer is a preload-side test seam: read
+// `CCSM_HARNESS_LOAD_STATE_DELAY_MS` at preload load time, and have
+// `loadState` honor that delay before issuing the daemon call. The
+// harness-runner sets this env via per-case `launchEnv` on a relaunched
+// electron, so only the case that needs the delay pays for it. Production
+// renderers never see the env so the path is a strict no-op there.
+function readInitialLoadStateDelayMs(): number {
+  const raw = process.env.CCSM_HARNESS_LOAD_STATE_DELAY_MS;
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+const loadStateDelayMs = readInitialLoadStateDelayMs();
+
+function loadStateMethod(key: string): Promise<string | null> {
+  if (loadStateDelayMs > 0) {
+    return new Promise<void>((r) => setTimeout(r, loadStateDelayMs)).then(() =>
+      callDaemonMethod<string | null>('db/load', [key]),
+    );
+  }
+  return callDaemonMethod<string | null>('db/load', [key]);
+}
+
 // `saveState` daemon route returns `{ ok: true } | { ok: false; error }`
 // inside `result`. The pre-v0.3 IPC contract is `Promise<void>` that
 // throws on failure — call sites in src/stores/persist.ts await it for
-// persist-failure error propagation. Mirror the shim's unwrap-and-throw
-// so the preload-source path matches the shim path byte-for-byte.
+// persist-failure error propagation. Unwrap-and-throw here keeps the
+// outward contract identical to the v0.2 IPC bridge.
 async function saveStateMethod(key: string, value: string): Promise<void> {
   const res = (await callDaemonMethod('db/save', [key, value])) as
     | { ok: true }
@@ -90,9 +122,9 @@ async function saveStateMethod(key: string, value: string): Promise<void> {
   }
 }
 
-// The 25 daemon-backed methods. Mirrors src/lib/window-ccsm-shim.ts's
-// buildShim() — same paths, same shapes. Pre-resolved `platform` is
-// fetched lazily on first read via a sync-ish accessor: see comment on
+// The 25 daemon-backed methods. Same paths and shapes as the v0.2 IPC
+// surface they replaced. Pre-resolved `platform` is read synchronously
+// from `process.platform` at preload-load time: see comment on
 // `windowApi.platform` below.
 function buildDaemonMethods(): {
   loadState: (key: string) => Promise<string | null>;
@@ -128,19 +160,18 @@ function buildDaemonMethods(): {
     onBeforeHide: (handler: (info: { durationMs: number }) => void) => () => void;
     onAfterShow: (handler: () => void) => () => void;
     /**
-     * Pre-resolved at preload load time when possible. Until the daemon
-     * answers, falls back to a `process.platform`-style guess so the
-     * sync render-time read in src/components/DragRegion never sees
-     * `undefined`. The shim does the same trick.
+     * Pre-resolved at preload load time. Read synchronously inside
+     * `<DragRegion />` render so we cannot return a Promise here. The
+     * preload runs in the Electron renderer process where
+     * `process.platform` is the real OS, so no daemon round-trip is
+     * needed for the sync value to be correct on first paint.
      */
     platform: Platform;
   };
 } {
   // Best-effort sync platform — preload runs in the Electron renderer
-  // process, where `process.platform` is the real OS. We still kick off
-  // an async daemon fetch to keep parity with the shim's behavior, but
-  // for the preload-source path the sync value is already correct on
-  // first paint (no daemon round-trip needed).
+  // process, where `process.platform` is the real OS. No async fetch
+  // needed; the sync value is already correct on first paint.
   const syncPlatform = ((): Platform => {
     if (typeof process !== 'undefined' && process.platform) {
       return process.platform as Platform;
@@ -149,12 +180,12 @@ function buildDaemonMethods(): {
   })();
 
   return {
-    loadState: makeMethod<string | null>('db/load'),
+    loadState: loadStateMethod,
     saveState: saveStateMethod,
     i18n: {
       getSystemLocale: makeMethod<string | undefined>('i18n/getSystemLocale'),
-      // Fire-and-forget event channel — matches the shim's daemonEvent
-      // signature (POST /api/event/set-language with {args:[lang]}).
+      // Fire-and-forget event channel — POST /api/event/set-language
+      // with `{args:[lang]}`. Matches the v0.2 IPC `setLanguage` send.
       setLanguage: (l: 'en' | 'zh'): void => {
         void daemonFetch('/api/event/set-language', { json: { args: [l] } }).catch(
           () => {
@@ -176,8 +207,7 @@ function buildDaemonMethods(): {
     >('scanImportable'),
     recentCwds: makeMethod<string[]>('recentCwds'),
     userCwds: {
-      // Daemon route is /api/app/userCwds/* — see daemon/api/data.ts and
-      // the matching comment in the shim.
+      // Daemon route is /api/app/userCwds/* — see daemon/api/data.ts.
       get: makeMethod<string[]>('app/userCwds/get'),
       push: makeMethod<string[]>('app/userCwds/push'),
     },
@@ -247,49 +277,50 @@ const ipcOnlyApi = {
 };
 
 /**
- * Build the full surface exposed on `window.ccsm`. With the
- * `CCSM_PRELOAD_SOURCE` env flag OFF (default), this is exactly the
- * original 6-method IPC-only surface — the renderer's window-ccsm-shim
- * still owns the 25 daemon-backed methods. With the flag ON, we merge
- * the daemon-backed implementations in so the shim becomes redundant
- * (B1 will delete it).
+ * Build the full `window.ccsm` surface — 6 IPC-only methods merged with
+ * the 25 daemon-backed methods. Wave B1 (Task #627) removed the
+ * `CCSM_PRELOAD_SOURCE` env flag: the daemon-backed methods are now
+ * unconditionally exposed because the renderer-side shim that used to
+ * serve them is gone.
  */
-export function buildCcsmCoreApi(): typeof ipcOnlyApi & Partial<ReturnType<typeof buildDaemonMethods>> {
-  if (preloadSourceEnabled()) {
-    return { ...ipcOnlyApi, ...buildDaemonMethods() };
-  }
-  return { ...ipcOnlyApi };
-}
-
-/**
- * Read the preload-source env flag. Exposed for tests so they can flip
- * the flag deterministically (env vars set in vi.stubEnv don't reach
- * `process.env` reliably across module-graph boundaries; export the
- * accessor so the test can spy on it).
- */
-export function preloadSourceEnabled(): boolean {
-  if (typeof process === 'undefined' || !process.env) return false;
-  return process.env.CCSM_PRELOAD_SOURCE === '1';
+export function buildCcsmCoreApi(): typeof ipcOnlyApi & ReturnType<typeof buildDaemonMethods> {
+  return { ...ipcOnlyApi, ...buildDaemonMethods() };
 }
 
 export type CCSMAPI = ReturnType<typeof buildCcsmCoreApi>;
 
 /**
- * Install `window.ccsm`. Uses `Object.defineProperty` with
- * `configurable: true` (NOT `contextBridge.exposeInMainWorld`) so the
- * renderer-side window-ccsm-shim can still redefine the binding while
- * B1 hasn't deleted the shim yet.
+ * Install `window.ccsm` for the renderer.
  *
- * Requires `sandbox: false` on the host BrowserWindow — already
- * configured in electron/window/createWindow.ts.
+ * **Why contextBridge, not `Object.defineProperty(window, ...)`**: the
+ * BrowserWindow is created with `contextIsolation: true` (see
+ * `electron/window/createWindow.ts`). Under context isolation, the
+ * preload script's `window` is a separate JavaScript world from the
+ * renderer's main world — defining `window.ccsm` here only attaches it
+ * to the isolated world the renderer can't see. `contextBridge.
+ * exposeInMainWorld` is the only Electron-supported channel that
+ * crosses worlds.
  *
- * Falls back to `contextBridge.exposeInMainWorld` only if `window` is
- * not directly accessible (defensive — should never happen with
- * sandbox:false, but `contextBridge` is the historically-correct path
- * and worth keeping as a safety net).
+ * Side effect: contextBridge deep-clones plain values across the world
+ * boundary and proxies functions; the renderer-side handle is frozen,
+ * so test harnesses can no longer reassign individual methods (e.g.
+ * `window.ccsm.loadState = wrapped`). Harnesses that need to inject
+ * latency now wrap at the daemon boundary instead.
+ *
+ * Falls back to `Object.defineProperty(window, ...)` for the jsdom unit
+ * tests where `contextBridge.exposeInMainWorld` is mocked but no real
+ * isolated world exists.
  */
 export function installCcsmCoreBridge(): void {
   const api = buildCcsmCoreApi();
+  // Prefer contextBridge — the only world-crossing channel under
+  // contextIsolation:true (which is the production webPreferences).
+  try {
+    contextBridge.exposeInMainWorld('ccsm', api);
+    return;
+  } catch {
+    /* fall through to direct attach (jsdom / test environments) */
+  }
   if (typeof window !== 'undefined') {
     Object.defineProperty(window, 'ccsm', {
       value: api,
@@ -297,7 +328,5 @@ export function installCcsmCoreBridge(): void {
       configurable: true,
       enumerable: false,
     });
-    return;
   }
-  contextBridge.exposeInMainWorld('ccsm', api);
 }

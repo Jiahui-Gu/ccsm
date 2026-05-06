@@ -372,6 +372,15 @@ function freshUserDataDir(tag) {
  *   a fresh exit code):
  *     { id: 'close-aborts-sessions', relaunch: true, run: async ({ app }) => { ... } }
  *
+ * @property {Record<string, string>} [launchEnv]
+ *   Per-case env overlay applied LAST on a relaunch (wins over
+ *   `spec.launch.env`). Only honored when the case actually relaunches
+ *   electron (i.e. `relaunch: true` or `userDataDir: 'fresh'`); otherwise
+ *   the case shares the existing process and the overlay is ignored.
+ *   Used by Task #633's startup-paints-before-hydrate to inject
+ *   `CCSM_HARNESS_LOAD_STATE_DELAY_MS=800` for that one case without
+ *   slowing the rest of the harness.
+ *
  * @property {boolean} [requiresClaudeBin]
  *   Mark the case skippable when no upstream `claude` binary is reachable
  *   (see `resolveClaudeBin` for resolution order). Skipped cases show up in
@@ -472,8 +481,14 @@ function freshUserDataDir(tag) {
  *
  * @param {HarnessSpec} spec
  * @param {string | null} userDataDirOverride
+ * @param {Record<string, string>} [caseEnv]
+ *   Per-case env overlay applied LAST (wins over `spec.launch.env`). Only
+ *   honored on cases that actually relaunch (otherwise the case shares the
+ *   already-running electron and per-case env is moot). Used by Task #633's
+ *   startup-paints case to set `CCSM_HARNESS_LOAD_STATE_DELAY_MS=800` for
+ *   the relaunch only — the rest of the harness gets the normal fast boot.
  */
-function buildLaunchOpts(spec, userDataDirOverride) {
+function buildLaunchOpts(spec, userDataDirOverride, caseEnv) {
   const args = ['.', '--lang=en', ...(spec.launch?.args ?? [])];
   if (userDataDirOverride) {
     // Electron honors `--user-data-dir=<path>` as a CLI flag; this is the
@@ -496,7 +511,8 @@ function buildLaunchOpts(spec, userDataDirOverride) {
     LC_ALL: 'en_US.UTF-8',
     NODE_ENV: 'production',
     CCSM_PROD_BUNDLE: '1',
-    ...(spec.launch?.env ?? {})
+    ...(spec.launch?.env ?? {}),
+    ...(caseEnv ?? {})
   };
   return { args, env };
 }
@@ -630,7 +646,7 @@ export async function runHarness(spec) {
         if (wantsFreshDir) {
           activeUserDataDir = freshUserDataDir(`${spec.name}-${c.id}`);
         }
-        const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null);
+        const opts = buildLaunchOpts(spec, activeUserDataDir?.dir ?? null, c.launchEnv);
         app = await electron.launch({ args: opts.args, cwd: REPO_ROOT, env: opts.env });
         win = await bootShellReady(app);
         if (spec.setup) {
