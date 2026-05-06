@@ -1146,35 +1146,37 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
   // Install everything via context().addInitScript so it survives reload.
   await win.context().addInitScript(() => {
     window.__ccsm584InitRan = (window.__ccsm584InitRan || 0) + 1;
-    // Init scripts run at document_start — BEFORE preload finishes attaching
-    // `window.ccsm`. Poll briefly so we can wrap the IPC surfaces once they
-    // appear. Bail after ~2s to avoid leaking timers if something is wrong.
-    const deadline = Date.now() + 2000;
-    const tryWrap = () => {
-      try {
-        const ccsm = window.ccsm;
-        if (!ccsm) {
-          if (Date.now() < deadline) setTimeout(tryWrap, 5);
-          return;
-        }
-        // #584: delay loadState. Hydration sequence is fast (~30ms) because
-        // sqlite reads are local; the skeleton would otherwise paint for one
-        // frame and be gone before any test thread can observe it. Wrapping
-        // loadState extends the hydrated=false window long enough for the
-        // MutationObserver above to fire.
-        const originalLoad = ccsm.loadState;
-        if (originalLoad && !ccsm.__delayedLoadStateForStartupCase) {
-          ccsm.loadState = async (...args) => {
+    // Wave B1 (Task #627) deleted the renderer-side window-ccsm-shim, so
+    // the previous trick of `ccsm.loadState = async (...) => sleep+orig`
+    // no longer works: `window.ccsm` is now installed by the preload via
+    // `contextBridge.exposeInMainWorld`, which freezes the renderer-side
+    // handle (function properties cannot be reassigned across the world
+    // boundary). Instead we monkey-patch `window.fetch` and inject the
+    // ~800ms latency on the `/api/db/load` daemon route directly. The
+    // hydration sequence ends up gated on the same loadState round-trip,
+    // so the observable "sidebar skeleton paints before hydrate flips"
+    // window is preserved. Wrap is idempotent (guarded by a window-scoped
+    // sentinel) so reload doesn't double-wrap.
+    if (!window.__ccsm584FetchWrapped) {
+      const originalFetch = window.fetch;
+      window.fetch = async (input, init) => {
+        try {
+          const url =
+            typeof input === 'string'
+              ? input
+              : input && typeof input.url === 'string'
+              ? input.url
+              : String(input);
+          if (url.includes('/api/db/load')) {
             await new Promise((r) => setTimeout(r, 800));
-            return originalLoad.apply(ccsm, args);
-          };
-          ccsm.__delayedLoadStateForStartupCase = true;
+          }
+        } catch {
+          /* keep original behavior on any URL-shape weirdness */
         }
-      } catch {
-        /* swallow — case will fail loudly below if wrap didn't take */
-      }
-    };
-    tryWrap();
+        return originalFetch.call(window, input, init);
+      };
+      window.__ccsm584FetchWrapped = true;
+    }
 
     // #584: observer that snapshots the sidebar skeleton the first time it
     // appears in the DOM. Survives the skeleton-to-loaded React handoff.
@@ -1315,7 +1317,7 @@ async function caseStartupPaintsBeforeHydrate({ win, log }) {
       observerInstalled: window.__ccsm584ObserverInstalled,
       observerError: window.__ccsm584ObserverError,
       hydrated: window.__ccsmStore?.getState?.().hydrated,
-      loadStateWrapped: !!window.ccsm?.__delayedLoadStateForStartupCase,
+      loadStateWrapped: !!window.__ccsm584FetchWrapped,
       hasSidebarSkeleton: !!document.querySelector(
         '[data-testid="sidebar-skeleton"]'
       ),

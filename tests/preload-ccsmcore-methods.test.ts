@@ -59,94 +59,33 @@ async function loadModule() {
 }
 
 describe('preloadSourceEnabled', () => {
-  it('is false by default', async () => {
-    const mod = await loadModule();
-    expect(mod.preloadSourceEnabled()).toBe(false);
-  });
-
-  it('is true when CCSM_PRELOAD_SOURCE=1', async () => {
-    process.env.CCSM_PRELOAD_SOURCE = '1';
-    const mod = await loadModule();
-    expect(mod.preloadSourceEnabled()).toBe(true);
-  });
-
-  it('is false for non-"1" truthy values (strict opt-in)', async () => {
-    process.env.CCSM_PRELOAD_SOURCE = 'true';
-    const mod = await loadModule();
-    expect(mod.preloadSourceEnabled()).toBe(false);
-  });
+  // Wholesale-deleted in Task #627 (wave B1): the `preloadSourceEnabled`
+  // export is gone (the CCSM_PRELOAD_SOURCE flag was removed when the
+  // renderer-side shim was deleted). Subject under test no longer
+  // exists. The describe stub is preserved so the test count diff is
+  // explicit; remove the stub once a follow-up cleanup PR lands.
+  it.skip('subject deleted — see Task #627', () => {});
 });
 
 describe('buildCcsmCoreApi — flag OFF (default)', () => {
-  it('exposes only the 6 IPC-only surfaces (no daemon-backed methods)', async () => {
-    const mod = await loadModule();
-    const api = mod.buildCcsmCoreApi();
-
-    // IPC-only surfaces always present.
-    expect(typeof api.getDaemonPort).toBe('function');
-    expect(typeof api.pickCwd).toBe('function');
-    expect(typeof api.userHome).toBe('function');
-    expect(typeof api.updatesStatus).toBe('function');
-    expect(typeof api.updatesCheck).toBe('function');
-    expect(typeof api.updatesDownload).toBe('function');
-    expect(typeof api.updatesInstall).toBe('function');
-    expect(typeof api.updatesGetAutoCheck).toBe('function');
-    expect(typeof api.updatesSetAutoCheck).toBe('function');
-    expect(typeof api.onUpdateStatus).toBe('function');
-    expect(typeof api.onUpdateDownloaded).toBe('function');
-
-    // Daemon-backed surfaces absent — the shim still owns these.
-    expect((api as Record<string, unknown>).loadState).toBeUndefined();
-    expect((api as Record<string, unknown>).saveState).toBeUndefined();
-    expect((api as Record<string, unknown>).i18n).toBeUndefined();
-    expect((api as Record<string, unknown>).getVersion).toBeUndefined();
-    expect((api as Record<string, unknown>).scanImportable).toBeUndefined();
-    expect((api as Record<string, unknown>).recentCwds).toBeUndefined();
-    expect((api as Record<string, unknown>).userCwds).toBeUndefined();
-    expect((api as Record<string, unknown>).defaultModel).toBeUndefined();
-    expect((api as Record<string, unknown>).pathsExist).toBeUndefined();
-    expect((api as Record<string, unknown>).window).toBeUndefined();
-  });
+  // Wholesale-deleted in Task #627 (wave B1): the "flag OFF" code path
+  // is gone (`buildCcsmCoreApi` now unconditionally returns the merged
+  // 6 IPC-only + 25 daemon-backed surface). Subject under test no
+  // longer exists.
+  it.skip('subject deleted — see Task #627', () => {});
 });
 
 describe('installCcsmCoreBridge — shim coexistence', () => {
-  it('installs window.ccsm as configurable so the shim can redefine it', async () => {
-    const mod = await loadModule();
-    mod.installCcsmCoreBridge();
-
-    const desc = Object.getOwnPropertyDescriptor(window, 'ccsm');
-    expect(desc).toBeDefined();
-    expect(desc?.configurable).toBe(true);
-
-    // Now simulate the renderer-side shim's defineProperty — must NOT
-    // throw "Cannot redefine property: ccsm". This is the regression A2
-    // exists to prevent.
-    const shimSentinel = { __isShim: true } as const;
-    expect(() => {
-      Object.defineProperty(window, 'ccsm', {
-        value: shimSentinel,
-        writable: false,
-        configurable: true,
-        enumerable: false,
-      });
-    }).not.toThrow();
-
-    expect((window as unknown as { ccsm: typeof shimSentinel }).ccsm).toBe(
-      shimSentinel,
-    );
-  });
-
-  it('flag OFF — installed window.ccsm has no daemon-backed methods (shim wins)', async () => {
-    const mod = await loadModule();
-    mod.installCcsmCoreBridge();
-
-    const installed = (window as unknown as { ccsm: Record<string, unknown> }).ccsm;
-    expect(installed.loadState).toBeUndefined();
-    expect(installed.getVersion).toBeUndefined();
-    expect(installed.window).toBeUndefined();
-    // But the IPC-only surfaces are still there.
-    expect(typeof installed.getDaemonPort).toBe('function');
-  });
+  // Wholesale-deleted in Task #627 (wave B1): the renderer-side shim
+  // was deleted, so the "shim can redefine the binding" + "shim wins
+  // when flag OFF" coexistence scenarios no longer have a subject.
+  // The fact that `Object.defineProperty(window, 'ccsm', ...)` uses
+  // `configurable: true` is now exercised end-to-end by the e2e
+  // harness (which itself wraps `window.ccsm.loadState` in
+  // `caseStartupPaintsBeforeHydrate`); a pure-jsdom regression test
+  // for the descriptor flag would re-introduce a subject we just
+  // removed.
+  it.skip('subject deleted — see Task #627', () => {});
 });
 
 describe('buildCcsmCoreApi — flag ON', () => {

@@ -169,8 +169,9 @@ export default function App() {
   useExitAnimation();
 
   // PR-2 / Task #601: signal that the app shell has mounted and the
-  // `window.__ccsmStore` pin + `window.ccsm` bridges (installed by
-  // `installCcsmShim()` before `root.render()`) are both observable.
+  // `window.__ccsmStore` pin + `window.ccsm` bridges (installed by the
+  // preload bridge `electron/preload/bridges/ccsmCore.ts` before this
+  // script runs — see Task #627 / wave B1) are both observable.
   // PR-8 (#605) probe-utils consumes this in place of the current
   // polling `waitForFunction(window.__ccsmStore && document.querySelector('aside'))`
   // sequence. We dispatch on the first effect tick (which only runs
