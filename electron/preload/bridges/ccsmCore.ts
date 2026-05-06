@@ -49,8 +49,6 @@ type Platform =
   | 'aix' | 'android' | 'darwin' | 'freebsd' | 'haiku'
   | 'linux' | 'openbsd' | 'sunos' | 'win32' | 'cygwin' | 'netbsd';
 
-const NOOP_UNSUBSCRIBE = (): void => {};
-
 // Helper: POST `/api/<path>` with `{args:[...]}` envelope, return the
 // `result` field. Same wire format as the (now-deleted) renderer shim's
 // daemonInvoke helper — kept identical so the daemon router doesn't need
@@ -218,12 +216,37 @@ function buildDaemonMethods(): {
       toggleMaximize: makeMethod<boolean>('window/toggleMaximize'),
       close: makeMethod<void>('window/close'),
       isMaximized: makeMethod<boolean>('window/isMaximized'),
-      // Push channels are stubs — daemon has no SSE→renderer channel for
-      // these in v0.3. Wave 2 will wire them; until then return a no-op
-      // unsubscribe so call sites stay alive.
-      onMaximizedChanged: () => NOOP_UNSUBSCRIBE,
-      onBeforeHide: () => NOOP_UNSUBSCRIBE,
-      onAfterShow: () => NOOP_UNSUBSCRIBE,
+      // Task #624 (C2) — main-process IPC push channels. Main emits these
+      // via `win.webContents.send(...)` from `electron/window/createWindow.ts`:
+      //   * 'window:maximizedChanged' (boolean) — on win.maximize/unmaximize
+      //   * 'window:beforeHide' ({ durationMs }) — before fade-out + hide
+      //   * 'window:afterShow' (no payload) — after the show animation
+      // The bridge wraps each handler so we hide the IpcRendererEvent from
+      // the renderer-side callback contract (matches `onUpdateStatus` /
+      // `onUpdateDownloaded` above), and returns a strict-removeListener
+      // unsubscribe so the renderer can detach without leaking.
+      onMaximizedChanged: (handler: (max: boolean) => void): (() => void) => {
+        const wrap = (_e: IpcRendererEvent, max: boolean): void => handler(max);
+        ipcRenderer.on('window:maximizedChanged', wrap);
+        return (): void => {
+          ipcRenderer.removeListener('window:maximizedChanged', wrap);
+        };
+      },
+      onBeforeHide: (handler: (info: { durationMs: number }) => void): (() => void) => {
+        const wrap = (_e: IpcRendererEvent, info: { durationMs: number }): void =>
+          handler(info);
+        ipcRenderer.on('window:beforeHide', wrap);
+        return (): void => {
+          ipcRenderer.removeListener('window:beforeHide', wrap);
+        };
+      },
+      onAfterShow: (handler: () => void): (() => void) => {
+        const wrap = (_e: IpcRendererEvent): void => handler();
+        ipcRenderer.on('window:afterShow', wrap);
+        return (): void => {
+          ipcRenderer.removeListener('window:afterShow', wrap);
+        };
+      },
       platform: syncPlatform,
     },
   };

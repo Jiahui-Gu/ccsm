@@ -256,4 +256,103 @@ describe('buildCcsmCoreApi — flag ON', () => {
       u3();
     }).not.toThrow();
   });
+
+  // Task #624 (C2) — main-process push channels are now wired up. The
+  // bridge previously returned NOOP_UNSUBSCRIBE for these three event
+  // handlers (preserved by the test above for non-throw shape), but the
+  // production behavior must now register an `ipcRenderer.on` listener,
+  // forward the payload (skipping IpcRendererEvent), and return an
+  // unsubscribe that calls `ipcRenderer.removeListener` against the same
+  // (channel, wrap) pair. Main emits these from electron/window/createWindow.ts
+  // (`win.webContents.send('window:maximizedChanged', ...)` etc.).
+  //
+  // Strategy: replace the per-test `ipcOn` mock with a router that
+  // captures the (channel, wrap) tuple, then synthesize a main-process
+  // emit by invoking the captured wrap directly. The unsubscribe path
+  // is verified by removing the captured wrap from the router and then
+  // re-emitting — the renderer-side callback must NOT fire.
+  describe('window event channels — Task #624 (C2)', () => {
+    type Wrap = (...args: unknown[]) => void;
+    let listeners: Map<string, Set<Wrap>>;
+
+    beforeEach(() => {
+      listeners = new Map();
+      ipcOn.mockImplementation((channel: string, wrap: Wrap) => {
+        if (!listeners.has(channel)) listeners.set(channel, new Set());
+        listeners.get(channel)!.add(wrap);
+      });
+      ipcOff.mockImplementation((channel: string, wrap: Wrap) => {
+        listeners.get(channel)?.delete(wrap);
+      });
+    });
+
+    function emit(channel: string, ...args: unknown[]): void {
+      // Mirror Electron's IpcRenderer event signature: first arg is the
+      // IpcRendererEvent (we just pass an empty object — the bridge
+      // discards it via `_e`), then the payload.
+      const fakeEvent = {} as unknown;
+      for (const wrap of listeners.get(channel) ?? []) {
+        wrap(fakeEvent, ...args);
+      }
+    }
+
+    it('onMaximizedChanged forwards the boolean payload and unsubscribe stops delivery', async () => {
+      const mod = await loadModule();
+      const api = mod.buildCcsmCoreApi() as {
+        window: {
+          onMaximizedChanged: (h: (m: boolean) => void) => () => void;
+        };
+      };
+      const cb = vi.fn<(m: boolean) => void>();
+      const unsub = api.window.onMaximizedChanged(cb);
+
+      emit('window:maximizedChanged', true);
+      emit('window:maximizedChanged', false);
+      expect(cb).toHaveBeenCalledTimes(2);
+      expect(cb).toHaveBeenNthCalledWith(1, true);
+      expect(cb).toHaveBeenNthCalledWith(2, false);
+
+      unsub();
+      emit('window:maximizedChanged', true);
+      expect(cb).toHaveBeenCalledTimes(2); // no further deliveries
+    });
+
+    it('onBeforeHide forwards the {durationMs} payload and unsubscribe stops delivery', async () => {
+      const mod = await loadModule();
+      const api = mod.buildCcsmCoreApi() as {
+        window: {
+          onBeforeHide: (h: (info: { durationMs: number }) => void) => () => void;
+        };
+      };
+      const cb = vi.fn<(info: { durationMs: number }) => void>();
+      const unsub = api.window.onBeforeHide(cb);
+
+      emit('window:beforeHide', { durationMs: 220 });
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb).toHaveBeenCalledWith({ durationMs: 220 });
+
+      unsub();
+      emit('window:beforeHide', { durationMs: 220 });
+      expect(cb).toHaveBeenCalledTimes(1);
+    });
+
+    it('onAfterShow fires with no payload and unsubscribe stops delivery', async () => {
+      const mod = await loadModule();
+      const api = mod.buildCcsmCoreApi() as {
+        window: {
+          onAfterShow: (h: () => void) => () => void;
+        };
+      };
+      const cb = vi.fn<() => void>();
+      const unsub = api.window.onAfterShow(cb);
+
+      emit('window:afterShow');
+      emit('window:afterShow');
+      expect(cb).toHaveBeenCalledTimes(2);
+
+      unsub();
+      emit('window:afterShow');
+      expect(cb).toHaveBeenCalledTimes(2);
+    });
+  });
 });
