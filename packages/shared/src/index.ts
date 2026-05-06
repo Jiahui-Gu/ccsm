@@ -1,2 +1,2 @@
-export * from './frame';
-export * from './api';
+export * from './frame.js';
+export * from './api.js';

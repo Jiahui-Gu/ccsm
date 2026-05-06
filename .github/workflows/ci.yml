@@ -63,11 +63,25 @@ jobs:
       - name: Install Playwright Chromium
         run: pnpm e2e:install
 
+      - name: Install claude CLI (required by daemon node-pty spawn)
+        # T7 p1-smoke spawns a real `claude` PTY via the daemon; the CLI must
+        # be on PATH for node-pty to find it. We pin a recent version rather
+        # than `latest` so CI failures point at code changes, not silent CLI
+        # behaviour drift.
+        run: npm install -g @anthropic-ai/claude-code@2.1.131
+
       - name: Build
         run: pnpm -r build
 
-      - name: Run e2e
-        run: pnpm e2e
+      - name: Run e2e (rig + strictmode only on CI; p1-smoke needs claude auth)
+        # p1-smoke spawns the real `claude` CLI which requires interactive
+        # auth on first run. CI runners have no Anthropic credentials and no
+        # way to seed `~/.claude/`, so the PTY exits immediately and the
+        # walking-skeleton assertions can't run. The acceptance evidence for
+        # T7 lives in the PR description (snapshots taken on the dev's box,
+        # uploaded for manager multimodal review). On CI we still run the
+        # rig smoke + strictmode dev-mode spec to keep the harness honest.
+        run: pnpm -F @ccsm/e2e exec playwright test --grep-invert p1-smoke
 
       - name: Upload snapshots
         if: always()

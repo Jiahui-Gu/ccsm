@@ -97,10 +97,16 @@ interface ViteHandle {
 }
 
 async function startVite(): Promise<ViteHandle> {
-  // Invoke vite directly via `pnpm exec` so the CLI flags reach vite intact.
-  // `pnpm -F @ccsm/frontend dev -- ...` interposes `--` which vite-cli treats
-  // as positional and silently ignores subsequent flags (notably --host),
-  // which then defaults to ::1 only — making 127.0.0.1 navigation refuse.
+  // Cross-platform spawn discipline (mirrors p1-smoke.spec.ts):
+  //   POSIX:   spawn pnpm directly with detached:true so the child becomes
+  //            its own process group leader; tear down via `kill -PID` so
+  //            vite (a grandchild) actually receives the signal.
+  //   Windows: shell:true (Node 18.20+ refuses to spawn .cmd directly,
+  //            CVE-2024-27980); tear down via `taskkill /T /F`.
+  // The previous shell:true-everywhere version leaked vite under Linux CI,
+  // poisoning :5173 for any later test (caught by p1-smoke EADDRINUSE
+  // failure on CI run #25454604467).
+  const isWin = process.platform === 'win32';
   const proc = spawn(
     'pnpm',
     [
@@ -118,7 +124,8 @@ async function startVite(): Promise<ViteHandle> {
       cwd: REPO_ROOT,
       env: { ...process.env, FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
+      shell: isWin,
+      detached: !isWin,
     },
   );
 
@@ -176,14 +183,19 @@ async function stopVite(handle: ViteHandle): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
   const exited = new Promise<void>((r) => proc.once('exit', () => r()));
 
-  // On Windows we spawned via shell:true, so `proc` is cmd.exe wrapping pnpm
-  // wrapping node. SIGTERM only kills cmd.exe and leaves the actual vite
-  // process orphaned, holding the port for the next test run. Use taskkill
-  // /T (tree) to wipe the whole subtree. POSIX falls back to SIGTERM.
+  // Windows: taskkill /T to wipe the cmd → node → vite tree.
+  // POSIX:   we spawned with detached:true so the child is its own process
+  //          group leader; signal -PID to wipe vite + any helper procs.
   if (process.platform === 'win32' && proc.pid !== undefined) {
     spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
       stdio: 'ignore',
     });
+  } else if (proc.pid !== undefined) {
+    try {
+      process.kill(-proc.pid, 'SIGTERM');
+    } catch {
+      proc.kill('SIGTERM');
+    }
   } else {
     proc.kill('SIGTERM');
   }
@@ -192,7 +204,17 @@ async function stopVite(handle: ViteHandle): Promise<void> {
     exited,
     new Promise<void>((r) => setTimeout(r, 5_000)),
   ]);
-  if (proc.exitCode === null) proc.kill('SIGKILL');
+  if (proc.exitCode === null) {
+    if (process.platform !== 'win32' && proc.pid !== undefined) {
+      try {
+        process.kill(-proc.pid, 'SIGKILL');
+      } catch {
+        proc.kill('SIGKILL');
+      }
+    } else {
+      proc.kill('SIGKILL');
+    }
+  }
 }
 
 test('dev-mode StrictMode — xterm renders into MainPane (no blank pane)', async ({
