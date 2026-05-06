@@ -1,0 +1,160 @@
+/* Global reset + dark theme shell. Intentionally dependency-free (no Tailwind). */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #0d0d0d;
+  color: #e5e5e5;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* AppShell — two-column flex layout */
+.app-shell {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+.app-shell__sidebar {
+  width: 280px;
+  flex: 0 0 280px;
+  background: #1a1a1a;
+  border-right: 1px solid #2a2a2a;
+  overflow: hidden;
+}
+
+.app-shell__main {
+  flex: 1 1 auto;
+  background: #0d0d0d;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* Sidebar */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 8px;
+  gap: 8px;
+}
+
+.sidebar__top,
+.sidebar__bottom {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.sidebar__btn {
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.sidebar__btn:hover {
+  background: #333;
+}
+
+.sidebar__btn--primary {
+  flex: 1 1 auto;
+}
+
+.sidebar__btn--icon {
+  flex: 0 0 32px;
+  width: 32px;
+  padding: 6px 0;
+}
+
+.sidebar__groups {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid #2a2a2a;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 8px 0;
+  overflow-y: auto;
+}
+
+.sidebar__groups-header {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.sidebar__groups-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  letter-spacing: 0.05em;
+}
+
+.sidebar__groups-empty {
+  padding: 8px 4px;
+  color: #666;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.sidebar__archived {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #2a2a2a;
+  padding-bottom: 8px;
+}
+
+.sidebar__archived-toggle {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  text-align: left;
+  width: 100%;
+  color: #aaa;
+  font-size: 12px;
+}
+
+.sidebar__archived-toggle:hover {
+  color: #e5e5e5;
+}
+
+.sidebar__archived-body {
+  padding: 4px 8px;
+  color: #666;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* MainPane */
+.main-pane {
+  height: 100%;
+  width: 100%;
+  padding: 8px;
+  background: #0d0d0d;
+}
+
+.main-pane__terminal {
+  height: 100%;
+  width: 100%;
+}
