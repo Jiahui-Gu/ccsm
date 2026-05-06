@@ -8,3 +8,6 @@ build/
 coverage/
 .env
 .env.local
+packages/e2e/snapshots/
+packages/e2e/playwright-report/
+packages/e2e/test-results/

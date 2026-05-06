@@ -36,3 +36,48 @@ jobs:
 
       - name: Build
         run: pnpm -r build
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    # Linux-only for now: Playwright Chromium download is heavy (~150MB) and
+    # Windows e2e is opt-in via T12. The smoke spec is OS-agnostic.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm e2e:install
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Run e2e
+        run: pnpm e2e
+
+      - name: Upload snapshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-snapshots
+          path: packages/e2e/snapshots/
+          if-no-files-found: ignore
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-playwright-report
+          path: packages/e2e/playwright-report/
+          if-no-files-found: ignore

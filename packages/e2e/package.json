@@ -1,0 +1,20 @@
+{
+  "name": "@ccsm/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ccsm — end-to-end test rig (Playwright + daemon fixture + screenshot helper)",
+  "scripts": {
+    "test": "playwright test",
+    "install-browsers": "playwright install chromium",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.2",
+    "@types/node": "^22.9.0",
+    "playwright": "^1.48.2",
+    "typescript": "^5.6.3"
+  }
+}

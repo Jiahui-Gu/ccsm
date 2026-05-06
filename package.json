@@ -12,7 +12,9 @@
     "build": "pnpm -r run build",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test"
+    "test": "pnpm -r run test",
+    "e2e": "pnpm -F @ccsm/e2e test",
+    "e2e:install": "pnpm -F @ccsm/e2e install-browsers"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.13.0",
