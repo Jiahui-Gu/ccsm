@@ -206,4 +206,71 @@ describe('WsClient', () => {
     client.sendResize(170, 70);
     expect(ws.sent.length).toBe(2);
   });
+
+  // ---- T10 additions ----
+
+  it('appends ?lastSeq=<n> to the ws URL when the option is > 0', () => {
+    const client = new WsClient({
+      sid: 's',
+      token: 't',
+      lastSeq: 42,
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    expect(ws.url).toContain('lastSeq=42');
+  });
+
+  it('omits lastSeq from the URL when 0 (matches daemon "missing == 0" convention)', () => {
+    const client = new WsClient({
+      sid: 's',
+      token: 't',
+      lastSeq: 0,
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+    });
+    client.connect();
+    expect(MockWs.lastInstance!.url).not.toContain('lastSeq=');
+  });
+
+  it('routes RESET frames to onReset with the seq baseline', () => {
+    const onReset = vi.fn();
+    const onOutput = vi.fn();
+    const client = new WsClient({
+      sid: 's',
+      token: 't',
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+      onReset,
+      onOutput,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    ws.open();
+    const frame = encodeFrame({
+      type: FrameType.RESET,
+      seq: 123,
+      payload: new Uint8Array(0),
+    });
+    ws.receive(frame);
+    expect(onReset).toHaveBeenCalledWith(123);
+    expect(onOutput).not.toHaveBeenCalled();
+  });
+
+  it('forwards OUTPUT seq alongside the payload (carry-over for lastSeq merge)', () => {
+    const onOutput = vi.fn();
+    const client = new WsClient({
+      sid: 's',
+      token: 't',
+      WebSocketImpl: MockWs as unknown as typeof WebSocket,
+      onOutput,
+    });
+    client.connect();
+    const ws = MockWs.lastInstance!;
+    ws.open();
+    const payload = new TextEncoder().encode('chunk');
+    ws.receive(encodeFrame({ type: FrameType.OUTPUT, seq: 99, payload }));
+    expect(onOutput).toHaveBeenCalledTimes(1);
+    const [data, seq] = onOutput.mock.calls[0]!;
+    expect(new TextDecoder().decode(data as Uint8Array)).toBe('chunk');
+    expect(seq).toBe(99);
+  });
 });

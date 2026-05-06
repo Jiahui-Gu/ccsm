@@ -1,29 +1,28 @@
-// Zustand store for the multi-session frontend (Task #656 / T9 — DESIGN.md
-// §7 + §10).
+// Zustand store for the multi-session frontend.
 //
-// SCOPE — what T9 owns:
-//   - Holds a flat list of `SessionInfo` (sid + createdAt + alive flag) plus a
-//     single `activeSid` pointer. Sidebar renders the list under a "default"
-//     group (groups themselves are MVP-deferred); MainPane reacts to
-//     `activeSid` changes by tearing the ws + xterm down and rebuilding for
-//     the new sid.
-//   - Bootstrap-friendly: `addSession()` auto-promotes the new session to
-//     active so the existing single-session UX (T6: open page → session
-//     attached) keeps working without any caller-side state machine.
-//   - `closeSession()` rotates `activeSid` to the next sibling in the list
-//     (or null if empty), which is what the sidebar X-button needs.
+// HISTORY:
+//   - T9 (#656): introduced the multi-session table + activeSid + a single
+//     `status` slot for the active ws.
+//   - T10 (#662): added a per-session status map (`sessionStatuses`) so each
+//     row's connection state can be surfaced independently. Per-session
+//     scrollback + ws lifecycle live in `session-runtime.ts` (off-store, by
+//     design — see that module for the rationale).
+//
+// SCOPE — what the store owns:
+//   - Flat list of `SessionInfo` (sid + createdAt + alive flag).
+//   - `activeSid` pointer for which row the MainPane renders.
+//   - `sessionStatuses` map: per-sid WsStatus (the runtime publishes here
+//     after every status transition; UI components subscribe through the
+//     usual zustand hook).
+//   - Legacy `status` field reflects the active sid's status, for backward
+//     compatibility with components that haven't migrated to the per-sid
+//     map yet (Sidebar today).
 //
 // EXPLICITLY OUT OF SCOPE:
 //   - Real groups (rename/move/multi-group) — DESIGN.md §7 reserves this for
 //     post-MVP; the sidebar renders a fixed "default" group only.
-//   - Per-session scrollback / background ws — that is T10 (#662). T9 keeps
-//     a single ws connection in MainPane; switching activeSid drops the old
-//     connection and opens a new one. Switched-away scrollback is lost,
-//     which is the documented T9 trade-off.
 //   - Persistence (sessionStorage / localStorage of the session list).
-//     Reload reverts to a fresh list — daemon is the source of truth (T9
-//     does not yet call GET /api/sessions on boot; that is left to T10
-//     once scrollback restoration matters).
+//   - Scrollback / ws / reconnect — owned by session-runtime.ts.
 
 import type { SessionInfo } from '@ccsm/shared';
 import { create } from 'zustand';
@@ -37,31 +36,53 @@ interface Store {
   sessions: SessionInfo[];
   activeSid: string | null;
 
-  // ---- ws status of the *currently active* session (single-ws model) ----
+  // ---- ws status ----
+  /**
+   * Status of the currently active session's ws (mirrors
+   * `sessionStatuses[activeSid]`). Kept as a top-level slot for callers
+   * that haven't migrated to the per-sid map.
+   */
   status: WsStatus;
+  /**
+   * Per-sid status. Updated by `setSessionStatus` (called by
+   * session-runtime.ts) whenever any session's ws transitions. Missing keys
+   * mean "no runtime entry yet" and read as 'idle' at the UI layer.
+   */
+  sessionStatuses: Record<string, WsStatus>;
 
   // ---- mutators ----
   /**
-   * Append a session and auto-promote it to active. Called by the bootstrap
-   * path in MainPane (when the list starts empty) and by the sidebar's
-   * + New Session button. Idempotent on duplicate sid: if the sid is already
-   * present we just promote it without appending a second row.
+   * Append a session and auto-promote it to active. Idempotent on duplicate
+   * sid: if the sid is already present we just promote it without appending
+   * a second row.
    */
   addSession: (s: SessionInfo) => void;
   /**
    * Switch which sid is rendered. No-op if `sid` is already active or absent
-   * from the store.
+   * from the store. Refreshes `status` to whatever the new active sid's
+   * runtime status is (or 'idle' if the runtime hasn't published one yet).
    */
   setActive: (sid: string | null) => void;
   /**
    * Remove a sid from the store. If the removed sid was active, promote the
-   * next sibling in the list (or null if the list is now empty).
-   * NB: this only mutates client state — actually telling the daemon to
-   * tear the PTY down is the caller's responsibility (sidebar fires
-   * DELETE /api/sessions/:sid alongside this call).
+   * next sibling in the list (or null if the list is now empty). Also drops
+   * the per-sid status entry. NB: tearing the daemon-side PTY down + closing
+   * the ws is the runtime's responsibility (Sidebar fires
+   * DELETE /api/sessions/:sid + sessionRuntime.detach(sid) alongside this
+   * call).
    */
   closeSession: (sid: string) => void;
+  /**
+   * @deprecated Prefer `setSessionStatus(sid, status)` so the per-sid map is
+   * the source of truth. Kept so tests that pre-date T10 keep working.
+   */
   setStatus: (status: WsStatus) => void;
+  /**
+   * Per-sid status setter — the runtime calls this on every WsStatus change.
+   * If the sid is currently active, mirrors the value into the legacy
+   * `status` field too.
+   */
+  setSessionStatus: (sid: string, status: WsStatus) => void;
 }
 
 export const useStore = create<Store>((set) => ({
@@ -72,6 +93,7 @@ export const useStore = create<Store>((set) => ({
   sessions: [],
   activeSid: null,
   status: 'idle',
+  sessionStatuses: {},
 
   addSession: (s) =>
     set((state) => {
@@ -80,7 +102,8 @@ export const useStore = create<Store>((set) => ({
       // before the optimistic state update settles.
       const exists = state.sessions.some((row) => row.sid === s.sid);
       const sessions = exists ? state.sessions : [...state.sessions, s];
-      return { sessions, activeSid: s.sid };
+      const status = state.sessionStatuses[s.sid] ?? 'idle';
+      return { sessions, activeSid: s.sid, status };
     }),
 
   setActive: (sid) =>
@@ -91,7 +114,9 @@ export const useStore = create<Store>((set) => ({
       if (sid !== null && !state.sessions.some((row) => row.sid === sid)) {
         return state;
       }
-      return { activeSid: sid };
+      const status =
+        sid === null ? 'idle' : (state.sessionStatuses[sid] ?? 'idle');
+      return { activeSid: sid, status };
     }),
 
   closeSession: (sid) =>
@@ -100,18 +125,39 @@ export const useStore = create<Store>((set) => ({
       if (idx === -1) return state;
       const sessions = state.sessions.filter((row) => row.sid !== sid);
       let activeSid = state.activeSid;
+      let status = state.status;
       if (activeSid === sid) {
         // Pick the row that took the closed session's slot, or the new tail
         // if we just removed the last row.
         if (sessions.length === 0) {
           activeSid = null;
+          status = 'idle';
         } else {
           const fallback = sessions[idx] ?? sessions[sessions.length - 1];
           activeSid = fallback ? fallback.sid : null;
+          status =
+            activeSid === null
+              ? 'idle'
+              : (state.sessionStatuses[activeSid] ?? 'idle');
         }
       }
-      return { sessions, activeSid };
+      // Drop the per-sid status entry for the closed sid so the map doesn't
+      // grow unboundedly across long sessions.
+      const { [sid]: _dropped, ...sessionStatuses } = state.sessionStatuses;
+      void _dropped;
+      return { sessions, activeSid, status, sessionStatuses };
     }),
 
   setStatus: (status) => set({ status }),
+
+  setSessionStatus: (sid, status) =>
+    set((state) => {
+      const sessionStatuses = { ...state.sessionStatuses, [sid]: status };
+      // Mirror into the legacy single-status slot only when the changed sid
+      // is the active one, so existing UI keeps reflecting "the visible
+      // session" without per-sid awareness.
+      const next: Partial<Store> = { sessionStatuses };
+      if (sid === state.activeSid) next.status = status;
+      return next as Store;
+    }),
 }));

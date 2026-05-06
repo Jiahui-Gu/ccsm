@@ -27,6 +27,7 @@
 
 import { useState } from 'react';
 import { createSession, deleteSession, HttpError } from '../api/sessions';
+import { sessionRuntime } from '../session-runtime';
 import { useStore } from '../store';
 
 const notImplemented = (): void => {
@@ -107,11 +108,16 @@ export function Sidebar() {
       // Nothing to call on the daemon, but still prune locally so the UI
       // doesn't stick. This branch is mostly for defensive parity with the
       // create path — by the time we have a session row, we have a token.
+      sessionRuntime.detach(sid);
       closeSessionInStore(sid);
       return;
     }
     try {
       await deleteSession(tok, sid);
+      // Tear the per-session ws + scrollback down BEFORE pruning the store
+      // row, so the runtime listener can't fire on a sid the UI no longer
+      // knows about. Order matters: detach() is synchronous + idempotent.
+      sessionRuntime.detach(sid);
       closeSessionInStore(sid);
     } catch (err) {
       const msg =

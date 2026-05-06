@@ -3,45 +3,34 @@ import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
 import { createSession } from '../api/sessions';
-import { WsClient } from '../ws/client';
+import { sessionRuntime } from '../session-runtime';
 import { useStore } from '../store';
 
-// MainPane (Task #656 / T9 — DESIGN.md §7).
+// MainPane (Task #662 / T10 — DESIGN.md §7).
 //
-// Owns ONE xterm instance and ONE WsClient at any time, attached to the
-// store's `activeSid`. T9 trade-off versus the §7 ideal: switching activeSid
-// tears the ws + xterm down and rebuilds for the new sid. Per-session
-// background ws + scrollback restoration is T10 (#662) — explicitly out of
-// scope here. Manager-spec: "scrollback 丢失是预期的, T10 才真正做保留".
+// T10 RESHAPE OF T9:
+//   T9 owned the WsClient inside MainPane, which made switching activeSid
+//   tear the ws down (and thus lose scrollback). T10 moves all per-session
+//   ws + scrollback state into `session-runtime.ts` (a non-React singleton),
+//   so a session's bytes keep flowing into its scrollback even when the
+//   user is looking at a different session. MainPane now only:
+//     1. owns ONE xterm instance (renderer-side concern),
+//     2. attaches each known sid to the runtime (idempotent),
+//     3. on activeSid change, clears xterm and replays the new sid's
+//        scrollback from the runtime,
+//     4. subscribes to the runtime's OUTPUT/RESET pub-sub and writes only
+//        the active sid's bytes into xterm in real time.
 //
-// LIFECYCLE INVARIANTS:
+// LIFECYCLE INVARIANTS (preserved from T9):
 //
-//   1. Bootstrap is one-shot.
-//      On the very first mount with a token in sessionStorage and an empty
-//      session list, MainPane fires POST /api/sessions and addSession()s the
-//      result (which auto-promotes it to active). The `bootstrappedRef` guard
-//      survives StrictMode dev double-invoke so the POST happens exactly
-//      once, matching the T6 strictmode-regression assertion.
-//
-//   2. xterm is renderer-owned.
-//      The Terminal is constructed inside the effect body and disposed in
-//      cleanup. Under StrictMode the first cleanup disposes mount #1's
-//      terminal; mount #2 must rebuild a fresh one or MainPane goes blank.
-//      We thread writes through `termRef.current` so any in-flight WsClient
-//      callback always lands in the *currently mounted* terminal.
-//
-//   3. WsClient is ALSO scoped to (mount-cycle × activeSid).
-//      Unlike T6 (where the ws survived StrictMode for a single session),
-//      T9 must rebuild the ws every time activeSid changes. We keep the
-//      "don't close on StrictMode unmount" trick by stashing the desired
-//      sid in `clientSidRef` and only tearing down when the *next* effect
-//      run is for a different sid (or activeSid is null). Pure StrictMode
-//      remount within the same activeSid still skips the close, so the T6
-//      strictmode contract continues to hold.
-//
-//   4. Bootstrap path uses a synthetic local sid for the StrictMode guard.
-//      We mark `bootstrappedRef = true` *before* the await so the second
-//      StrictMode mount short-circuits, exactly the way T6 did it.
+//   - Bootstrap is one-shot (StrictMode dev double-invoke must not
+//     double-POST /api/sessions).
+//   - xterm is renderer-owned: rebuilt on each effect run, threaded through
+//     `termRef` so long-lived runtime listeners always write into the
+//     currently-mounted Terminal.
+//   - Runtime entries OUTLIVE the React effect cycle (that's the whole
+//     point of T10): we never call `sessionRuntime.detach()` on cleanup.
+//     Detach happens only when the user closes the row from the sidebar.
 
 export function MainPane() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,20 +38,17 @@ export function MainPane() {
   // Bootstrap guard — never reset on cleanup. Survives StrictMode.
   const bootstrappedRef = useRef(false);
 
-  // Active WsClient (scoped to current activeSid). Survives StrictMode
-  // remount within the same sid; replaced when activeSid changes.
-  const clientRef = useRef<WsClient | null>(null);
-  const clientSidRef = useRef<string | null>(null);
-
-  // Always points at the currently mounted Terminal so long-lived ws
-  // callbacks survive StrictMode's mount/unmount cycle.
+  // Always points at the currently mounted Terminal so long-lived runtime
+  // listeners survive StrictMode's mount/unmount cycle.
   const termRef = useRef<Terminal | null>(null);
+  // Mirrors the rendered activeSid for the runtime listener (which lives
+  // outside React state). Updated synchronously inside the effect.
+  const activeSidRef = useRef<string | null>(null);
 
   const token = useStore((s) => s.token);
   const sessions = useStore((s) => s.sessions);
   const activeSid = useStore((s) => s.activeSid);
   const addSession = useStore((s) => s.addSession);
-  const setStatus = useStore((s) => s.setStatus);
 
   // Token resolution: prefer the store cache, but fall back to sessionStorage
   // at action-time. The store eagerly snapshots sessionStorage at module load
@@ -76,14 +62,36 @@ export function MainPane() {
     return sessionStorage.getItem('ccsm.token');
   };
 
+  // ---- runtime output listener (mounted once, lives forever) ----
+  //
+  // Subscribed in a layout-time effect with empty deps so it survives
+  // StrictMode remount AND every activeSid change. The listener consults
+  // `activeSidRef` + `termRef` at call time, so flipping the active sid
+  // requires no resubscribe.
+  useEffect(() => {
+    const unsubscribe = sessionRuntime.subscribeOutput((sid, payload) => {
+      if (sid !== activeSidRef.current) return;
+      const t = termRef.current;
+      if (!t) return;
+      if (payload === null) {
+        // RESET — runtime already wiped its scrollback; mirror that into
+        // xterm so on-screen content matches the empty buffer.
+        t.reset();
+        return;
+      }
+      t.write(new TextDecoder().decode(payload, { stream: true }));
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
   // ---- bootstrap effect ----
   //
   // Auto-create the first session when the page loads with no sessions in
-  // the store. This preserves the T6 UX ("open page → terminal attaches")
-  // without requiring the user to click + New Session manually. The Sidebar
-  // + New Session button drives the *subsequent* sessions through the same
-  // store API (addSession), so this effect only ever fires once per page
-  // lifetime.
+  // the store. Preserves the T6 UX ("open page → terminal attaches"). The
+  // sidebar's + New Session button drives subsequent sessions through the
+  // same store API, so this effect only ever fires once per page lifetime.
   useEffect(() => {
     if (bootstrappedRef.current) return;
     const tok = resolveToken();
@@ -108,7 +116,30 @@ export function MainPane() {
     })();
   }, [sessions.length, addSession]);
 
-  // ---- xterm + ws effect (re-runs on activeSid change) ----
+  // ---- runtime attach for every known session ----
+  //
+  // Whenever the session list grows, make sure the runtime is tracking each
+  // sid. Idempotent — runtime.attach() is a no-op for sids it already owns.
+  // We never detach here: detach belongs to the explicit "user closed the
+  // row" code path (Sidebar already wires that to runtime.detach via the
+  // closeSession action — see Sidebar.tsx).
+  useEffect(() => {
+    const tok = resolveToken();
+    if (!tok) return;
+    for (const s of sessions) {
+      if (!sessionRuntime.has(s.sid)) {
+        sessionRuntime.attach(s.sid, tok);
+      }
+    }
+  }, [sessions, token]);
+
+  // ---- xterm lifecycle (re-runs on activeSid change) ----
+  //
+  // We rebuild xterm on every effect run because StrictMode dev cleanup
+  // disposes the previous one. On a real activeSid change we ALSO reset the
+  // freshly-built terminal and replay the new sid's scrollback from the
+  // runtime, so switching sessions shows their accumulated history instead
+  // of an empty screen.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -134,67 +165,42 @@ export function MainPane() {
       // jsdom and other zero-layout environments throw on fit(); harmless.
     }
     termRef.current = term;
+    activeSidRef.current = activeSid;
 
-    // ---- ws lifecycle ----
+    // ---- Replay scrollback for the new active session ----
     if (!activeSid) {
-      // No session selected (initial load before bootstrap, or after the
-      // user closed the last session). Show a hint and skip ws setup.
       writeNoticeTo(term, '[no active session — click + New Session]');
     } else if (!tok) {
       writeNoticeTo(term, '[no token in URL — append ?token=<t> and reload]');
-    } else if (clientRef.current && clientSidRef.current === activeSid) {
-      // Same sid as the previous mount cycle — this is a StrictMode remount,
-      // not a real session switch. Reuse the existing ws (T6 invariant) and
-      // just push the new viewport so node-pty matches the freshly built
-      // Terminal.
-      clientRef.current.sendResize(term.cols, term.rows);
     } else {
-      // Real switch to a new sid (or first attach for the very first sid).
-      // Tear down the previous ws if any, then open a fresh one.
-      if (clientRef.current) {
-        try {
-          clientRef.current.close();
-        } catch {
-          // close() is already best-effort; ignore.
-        }
-        clientRef.current = null;
-        clientSidRef.current = null;
+      // The runtime should already have an entry from the attach effect
+      // above; defensively ensure it (handles the rare race where xterm
+      // mounts before the attach effect on the same render commit).
+      if (!sessionRuntime.has(activeSid)) {
+        sessionRuntime.attach(activeSid, tok);
       }
-      const sid = activeSid;
-      const decoder = new TextDecoder();
-      const client = new WsClient({
-        sid,
-        token: tok,
-        // All callbacks route through termRef.current so they survive a
-        // StrictMode remount: the original `term` may already be disposed
-        // by the time output arrives, but termRef points at the live one.
-        onOutput: (data) => {
-          const t = termRef.current;
-          if (t) t.write(decoder.decode(data, { stream: true }));
-        },
-        onExit: (code) => {
-          const t = termRef.current;
-          if (t) writeNoticeTo(t, `[session exited code=${code}]`);
-        },
-        onDisconnect: (reason) => {
-          const t = termRef.current;
-          if (t) writeNoticeTo(t, `[disconnected: ${reason}]`);
-        },
-        onStatusChange: (s) => setStatus(s),
-      });
-      clientRef.current = client;
-      clientSidRef.current = sid;
-      client.connect();
-      // Push the initial size so the daemon spawns the PTY at the real
-      // viewport, not the node-pty default 80x24.
-      client.sendResize(term.cols, term.rows);
+      const entry = sessionRuntime.get(activeSid);
+      if (entry) {
+        const decoder = new TextDecoder();
+        // Replay chunks in order. xterm internally buffers writes, so even a
+        // multi-MB scrollback drains without blocking the event loop.
+        for (const chunk of entry.scrollback) {
+          term.write(decoder.decode(chunk, { stream: true }));
+        }
+      }
+      // Push the current viewport so the daemon PTY matches the freshly
+      // built Terminal (avoids the node-pty default 80x24 sticking around).
+      sessionRuntime.sendResize(activeSid, term.cols, term.rows);
     }
 
+    // ---- xterm input/resize wiring ----
     const inputDisp = term.onData((data) => {
-      clientRef.current?.sendInput(data);
+      const sid = activeSidRef.current;
+      if (sid) sessionRuntime.sendInput(sid, data);
     });
     const resizeDisp = term.onResize(({ cols, rows }) => {
-      clientRef.current?.sendResize(cols, rows);
+      const sid = activeSidRef.current;
+      if (sid) sessionRuntime.sendResize(sid, cols, rows);
     });
 
     const onWindowResize = (): void => {
@@ -210,22 +216,20 @@ export function MainPane() {
       window.removeEventListener('resize', onWindowResize);
       inputDisp.dispose();
       resizeDisp.dispose();
-      // Clear termRef BEFORE disposing so any in-flight ws callback hits
-      // the null branch instead of writing into a half-disposed Terminal.
+      // Clear termRef BEFORE disposing so any in-flight runtime callback
+      // hits the null branch instead of writing into a half-disposed Terminal.
       if (termRef.current === term) {
         termRef.current = null;
       }
+      // Don't null out activeSidRef on cleanup — the runtime listener uses it
+      // to gate writes to the live xterm; the next effect run sets it again.
       term.dispose();
-      // NOTE: we deliberately DO NOT close clientRef.current on cleanup.
-      // Two reasons:
-      //   - StrictMode dev double-mount: closing here would tear down the
-      //     ws right after creating it (the T6 regression we keep guarding).
-      //   - Real activeSid change: the *next* effect run handles the close
-      //     in the "real switch" branch, after deciding whether the new sid
-      //     differs from the cached one. Doing it here would lose that
-      //     comparison and force a needless reconnect on every rerender.
+      // NOTE: we deliberately DO NOT detach the runtime entry on cleanup.
+      // T10's whole point is that scrollback survives sid switches AND
+      // StrictMode remounts. detach() is invoked only by the sidebar's
+      // closeSession path (after DELETE /api/sessions/:sid succeeds).
     };
-  }, [activeSid, token, setStatus]);
+  }, [activeSid, token]);
 
   return (
     <div className="main-pane">

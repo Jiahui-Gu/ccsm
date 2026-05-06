@@ -10,35 +10,64 @@ import {
 import { StrictMode } from 'react';
 import { render, cleanup, act } from '@testing-library/react';
 
-// IMPORTANT: mock the WsClient before importing MainPane so the mock instance
-// is what the component constructs. The real WsClient would try to open a
-// browser WebSocket, which jsdom does not implement.
-const wsConnect = vi.fn();
-const wsSendResize = vi.fn();
-const wsSendInput = vi.fn();
-const wsClose = vi.fn();
-const wsCtor = vi.fn();
+// IMPORTANT: mock the session runtime BEFORE importing MainPane so the mock
+// instance is what the component talks to. The real runtime would try to open
+// a browser WebSocket via WsClient, which jsdom does not implement.
+//
+// T10 reshape: ws lifecycle now lives in `session-runtime.ts` (a singleton),
+// not inside MainPane. The contract MainPane must honour under StrictMode is:
+//   - exactly ONE POST /api/sessions despite double-invoke (preserved from T6)
+//   - exactly ONE runtime.attach(sid) per known sid despite double-invoke
+//   - the OUTPUT listener registered on mount #1 still writes into the
+//     terminal that mount #2 rebuilt (because it reads termRef + activeSidRef
+//     at call time)
 
-vi.mock('../src/ws/client', () => {
-  class FakeWsClient {
-    onOutput?: (data: Uint8Array) => void;
-    onExit?: (code: number) => void;
-    onStatusChange?: (s: string) => void;
-    onDisconnect?: (reason: string) => void;
-    constructor(opts: Record<string, unknown>) {
-      wsCtor(opts);
-    }
-    connect = wsConnect;
-    sendResize = wsSendResize;
-    sendInput = wsSendInput;
-    close = wsClose;
-  }
-  return { WsClient: FakeWsClient };
-});
+const runtimeAttach = vi.hoisted(() => vi.fn());
+const runtimeDetach = vi.hoisted(() => vi.fn());
+const runtimeHas = vi.hoisted(() => vi.fn(() => false));
+const runtimeGet = vi.hoisted(() =>
+  vi.fn(() => ({
+    sid: '',
+    client: null,
+    status: 'idle' as const,
+    scrollback: [] as Uint8Array[],
+    scrollbackBytes: 0,
+    lastSeq: 0,
+    reconnectAttempts: 0,
+    reconnectTimer: null,
+    finalized: false,
+  })),
+);
+const runtimeSendInput = vi.hoisted(() => vi.fn());
+const runtimeSendResize = vi.hoisted(() => vi.fn());
+const outputListenerHolder = vi.hoisted(() => ({
+  current: null as ((sid: string, payload: Uint8Array | null) => void) | null,
+}));
+const runtimeSubscribeOutput = vi.hoisted(() =>
+  vi.fn((cb: (sid: string, payload: Uint8Array | null) => void) => {
+    outputListenerHolder.current = cb;
+    return () => {
+      if (outputListenerHolder.current === cb) outputListenerHolder.current = null;
+    };
+  }),
+);
+
+vi.mock('../src/session-runtime', () => ({
+  sessionRuntime: {
+    attach: runtimeAttach,
+    detach: runtimeDetach,
+    has: runtimeHas,
+    get: runtimeGet,
+    sendInput: runtimeSendInput,
+    sendResize: runtimeSendResize,
+    subscribeOutput: runtimeSubscribeOutput,
+  },
+}));
 
 import { MainPane } from '../src/components/MainPane';
+import { useStore } from '../src/store';
 
-// Wait for the bootstrap promise chain (createSession + setSid) to flush.
+// Wait for the bootstrap promise chain (createSession + addSession) to flush.
 async function flushMicrotasks(times = 5): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     // eslint-disable-next-line no-await-in-loop
@@ -48,11 +77,18 @@ async function flushMicrotasks(times = 5): Promise<void> {
   }
 }
 
-describe('MainPane under React.StrictMode (P1-3 regression)', () => {
+describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () => {
   let fetchMock: Mock;
 
   beforeEach(() => {
     sessionStorage.setItem('ccsm.token', 'test-token');
+    useStore.setState({
+      token: 'test-token',
+      sessions: [],
+      activeSid: null,
+      status: 'idle',
+      sessionStatuses: {},
+    });
 
     // jsdom shims for xterm. xterm queries matchMedia (color-scheme) and uses
     // a <canvas> via the DOM renderer. Neither is implemented in jsdom; stub
@@ -72,8 +108,6 @@ describe('MainPane under React.StrictMode (P1-3 regression)', () => {
         }),
       });
     }
-    // Minimal CanvasRenderingContext2D stub — xterm only needs measureText to
-    // return *something* with a width during initial layout in jsdom.
     HTMLCanvasElement.prototype.getContext = function getContext() {
       return {
         measureText: () => ({ width: 8 }),
@@ -101,24 +135,37 @@ describe('MainPane under React.StrictMode (P1-3 regression)', () => {
       } as unknown as CanvasRenderingContext2D;
     } as unknown as typeof HTMLCanvasElement.prototype.getContext;
 
-    // jsdom doesn't ship fetch in older targets; install a mock unconditionally
-    // so we can count how many POST /api/sessions calls happen.
     fetchMock = vi.fn(async () =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-return
       ({
         ok: true,
         status: 200,
-        json: async () => ({ sid: 'sid-test-1' }),
+        json: async () => ({ sid: 'sid-test-1', createdAt: 0 }),
         text: async () => '',
       }) as unknown as Response,
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    wsConnect.mockClear();
-    wsSendResize.mockClear();
-    wsSendInput.mockClear();
-    wsClose.mockClear();
-    wsCtor.mockClear();
+    runtimeAttach.mockClear();
+    runtimeDetach.mockClear();
+    runtimeHas.mockClear();
+    runtimeHas.mockImplementation(() => false);
+    runtimeGet.mockClear();
+    runtimeGet.mockImplementation(() => ({
+      sid: '',
+      client: null,
+      status: 'idle' as const,
+      scrollback: [] as Uint8Array[],
+      scrollbackBytes: 0,
+      lastSeq: 0,
+      reconnectAttempts: 0,
+      reconnectTimer: null,
+      finalized: false,
+    }));
+    runtimeSendInput.mockClear();
+    runtimeSendResize.mockClear();
+    runtimeSubscribeOutput.mockClear();
+    outputListenerHolder.current = null;
   });
 
   afterEach(() => {
@@ -135,15 +182,16 @@ describe('MainPane under React.StrictMode (P1-3 regression)', () => {
 
     await flushMicrotasks();
 
-    // Critical invariant: POST /api/sessions fires once even though the effect
-    // ran twice (mount → cleanup → re-mount under StrictMode dev).
+    // Critical invariant carried over from T6: POST /api/sessions fires once
+    // even though the bootstrap effect ran twice (mount → cleanup → re-mount
+    // under StrictMode dev).
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(wsCtor).toHaveBeenCalledTimes(1);
-    expect(wsConnect).toHaveBeenCalledTimes(1);
-    // NOTE: WsClient.close MUST NOT be called during StrictMode unmount,
-    // otherwise the long-lived ws would be torn down immediately after
-    // creation. Closing only happens on real component unmount.
-    expect(wsClose).not.toHaveBeenCalled();
+    // T10 invariant: runtime.attach was invoked at least once for the
+    // bootstrapped sid, but never with detach (detach belongs to the user-
+    // initiated close path in the sidebar, not React cleanup).
+    expect(runtimeAttach).toHaveBeenCalled();
+    expect(runtimeAttach.mock.calls[0]![0]).toBe('sid-test-1');
+    expect(runtimeDetach).not.toHaveBeenCalled();
   });
 
   it('mounts a live xterm into the container after the StrictMode remount', async () => {
@@ -156,22 +204,19 @@ describe('MainPane under React.StrictMode (P1-3 regression)', () => {
     await flushMicrotasks();
 
     // xterm 5.x renders the screen layer with class `.xterm-screen`. If the
-    // ref guard wrongly skipped term creation on mount #2, this would be null
-    // (the previous Terminal was disposed in cleanup #1).
+    // ref guard wrongly skipped term creation on mount #2, this would be null.
     const screen = container.querySelector('.xterm-screen');
     expect(screen).not.toBeNull();
 
-    // The xterm root applies the `.xterm` class to the host div.
     const root = container.querySelector('.xterm');
     expect(root).not.toBeNull();
 
-    // The data-testid wrapper must still be present and contain the xterm DOM.
     const termHost = container.querySelector('[data-testid="main-terminal"]');
     expect(termHost).not.toBeNull();
     expect(termHost?.querySelector('.xterm')).not.toBeNull();
   });
 
-  it('routes ws output into the *currently mounted* terminal after remount', async () => {
+  it('routes runtime OUTPUT for the active sid into the currently mounted terminal', async () => {
     render(
       <StrictMode>
         <MainPane />
@@ -180,16 +225,17 @@ describe('MainPane under React.StrictMode (P1-3 regression)', () => {
 
     await flushMicrotasks();
 
-    // Pull the WsClient construction args — the callbacks captured here are
-    // the ones bound on mount #1. They must still be able to write into the
-    // terminal that was rebuilt on mount #2 (because they go via termRef).
-    expect(wsCtor).toHaveBeenCalledTimes(1);
-    const opts = wsCtor.mock.calls[0]![0] as {
-      onOutput: (data: Uint8Array) => void;
-    };
-
-    // Simulate an OUTPUT frame arriving after the StrictMode remount.
+    // The MainPane subscribed an output listener on mount. The bootstrap
+    // promoted the new sid to active, so writes for that sid should land in
+    // the live terminal without throwing — even though mount #1's terminal
+    // was disposed and only mount #2's terminal exists by this point.
+    expect(runtimeSubscribeOutput).toHaveBeenCalled();
+    expect(outputListenerHolder.current).not.toBeNull();
     const payload = new TextEncoder().encode('hello-from-pty');
-    expect(() => opts.onOutput(payload)).not.toThrow();
+    expect(() => outputListenerHolder.current!('sid-test-1', payload)).not.toThrow();
+    // RESET path (payload === null) must also be safe.
+    expect(() => outputListenerHolder.current!('sid-test-1', null)).not.toThrow();
+    // A foreign sid is silently dropped.
+    expect(() => outputListenerHolder.current!('other-sid', payload)).not.toThrow();
   });
 });

@@ -1,15 +1,16 @@
-// WebSocket client for one PTY session. MVP scope (Task #658 / T6):
-//   - Connect to `/ws?sid=...&token=...` on the same origin (vite proxies in dev,
-//     daemon serves both in prod — see DESIGN.md §F4).
-//   - Decode incoming binary frames, route OUTPUT to a callback and EXIT to a
-//     teardown callback.
-//   - Encode outgoing INPUT / RESIZE frames.
+// WebSocket client for one PTY session. Originally Task #658 / T6; extended
+// for Task #662 / T10 to:
+//   - accept an initial `lastSeq` and append it to the ws URL so the daemon's
+//     T8 (#661) ring-buffer replay can backfill bytes lost across a reconnect;
+//   - surface RESET frames via `onReset` so the runtime can wipe scrollback
+//     and the active terminal in lock-step with the daemon;
+//   - hand the OUTPUT/RESET frame `seq` to the callback so the caller can
+//     advance its own `lastSeq` cursor (using max(), see runtime).
 //
-// Out of scope here (left to T8 daemon + later frontend tasks):
-//   - lastSeq / ring-buffer replay
-//   - RESET handling
-//   - PAUSE / RESUME backpressure
-//   - reconnect with exponential backoff
+// Out of scope here (left to the runtime layer in session-runtime.ts):
+//   - reconnect scheduling and exponential backoff (browser ws gives us
+//     onclose; reconnect policy is per-session, not per-WsClient instance).
+//   - PAUSE / RESUME backpressure (T11).
 //
 // We intentionally use the browser-native WebSocket; no third-party ws lib.
 
@@ -32,9 +33,27 @@ export type WsStatus =
 export interface WsClientOptions {
   sid: string;
   token: string;
+  /**
+   * Optional starting `lastSeq` for the reconnect query. When > 0 the daemon
+   * will replay buffered OUTPUT (or send RESET) before resuming live stream.
+   * Defaults to 0 (fresh client, no replay needed).
+   */
+  lastSeq?: number;
   /** Override for tests. Defaults to global WebSocket. */
   WebSocketImpl?: typeof WebSocket;
-  onOutput?: (data: Uint8Array) => void;
+  /**
+   * OUTPUT frame received. `seq` is the daemon-assigned per-frame sequence
+   * number; the caller is expected to track `max()` of all OUTPUT/RESET seqs
+   * for the next reconnect.
+   */
+  onOutput?: (data: Uint8Array, seq: number) => void;
+  /**
+   * Daemon told us our requested `lastSeq` is older than the ring buffer can
+   * serve, so it sent RESET. Caller MUST clear scrollback and (if the session
+   * is currently rendering) clear xterm. The frame's seq is also the new
+   * "you are caught up" baseline.
+   */
+  onReset?: (seq: number) => void;
   onExit?: (code: number) => void;
   onStatusChange?: (status: WsStatus) => void;
   /** Called for ws.onerror or ws.onclose without a prior EXIT frame. */
@@ -46,14 +65,23 @@ export interface WsClientOptions {
  * proxy (`/ws` → 127.0.0.1:17832) and the daemon's own static-server path both
  * work without configuration. Falls back gracefully when `window` is missing
  * (e.g. unit tests in jsdom may stub location, but never undefine it).
+ *
+ * `lastSeq` is appended only when > 0 so the URL stays clean for the very
+ * first connect of a session (matches the daemon's "missing query == 0"
+ * convention).
  */
-export function buildWsUrl(sid: string, token: string): string {
+export function buildWsUrl(
+  sid: string,
+  token: string,
+  lastSeq: number = 0,
+): string {
   const loc =
     typeof window !== 'undefined' && window.location
       ? window.location
       : ({ protocol: 'http:', host: '127.0.0.1' } as Location);
   const wsProto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
   const params = new URLSearchParams({ sid, token });
+  if (lastSeq > 0) params.set('lastSeq', String(lastSeq));
   return `${wsProto}//${loc.host}${API_PATHS.ws}?${params.toString()}`;
 }
 
@@ -76,7 +104,11 @@ export class WsClient {
   connect(): void {
     if (this.ws) return; // idempotent — caller already connected
     const Ctor = this.opts.WebSocketImpl ?? WebSocket;
-    const url = buildWsUrl(this.opts.sid, this.opts.token);
+    const url = buildWsUrl(
+      this.opts.sid,
+      this.opts.token,
+      this.opts.lastSeq ?? 0,
+    );
     const ws = new Ctor(url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
@@ -175,7 +207,12 @@ export class WsClient {
     }
     switch (frame.type) {
       case FrameType.OUTPUT:
-        this.opts.onOutput?.(frame.payload);
+        this.opts.onOutput?.(frame.payload, frame.seq);
+        break;
+      case FrameType.RESET:
+        // Daemon ring buffer evicted our requested lastSeq; payload is empty
+        // by spec. Caller must clear scrollback + (if active) xterm.
+        this.opts.onReset?.(frame.seq);
         break;
       case FrameType.EXIT: {
         const { code } = decodeExit(frame.payload);
@@ -185,8 +222,7 @@ export class WsClient {
         this.close();
         break;
       }
-      // RESET / PAUSE / RESUME deferred to later tasks. Frontend never receives
-      // INPUT / RESIZE.
+      // PAUSE / RESUME deferred to T11. Frontend never receives INPUT / RESIZE.
       default:
         break;
     }
