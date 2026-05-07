@@ -95,6 +95,25 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
     let script = resolve_daemon_script(&app)?;
     eprintln!("[daemon-mgr] resolved daemon script: {}", script.display());
 
+    // T11: pin daemon SQLite path to Tauri's app_local_data_dir so the Tauri
+    // shell owns its data directory (`%LOCALAPPDATA%\<identifier>\ccsm.db` on
+    // Windows). The daemon already honors `CCSM_DB_PATH` env (see
+    // packages/daemon/src/index.mts), so no daemon-side change is needed.
+    let db_path = match app.path().app_local_data_dir() {
+        Ok(dir) => {
+            // Best-effort create — daemon openDb also calls ensureParentDir,
+            // but creating here surfaces permission issues earlier in logs.
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                eprintln!("[daemon-mgr] WARN: create_dir_all({}) failed: {e}", dir.display());
+            }
+            Some(dir.join("ccsm.db"))
+        }
+        Err(e) => {
+            eprintln!("[daemon-mgr] WARN: app_local_data_dir failed: {e}; daemon will fall back to default db path");
+            None
+        }
+    };
+
     #[cfg(windows)]
     let node_bin = "node.exe";
     #[cfg(not(windows))]
@@ -107,6 +126,11 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .kill_on_drop(true);
+
+    if let Some(ref p) = db_path {
+        eprintln!("[daemon-mgr] CCSM_DB_PATH={}", p.display());
+        cmd.env("CCSM_DB_PATH", p);
+    }
 
     #[cfg(windows)]
     {
