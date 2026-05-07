@@ -183,6 +183,9 @@ importers:
       vite:
         specifier: ^5.4.10
         version: 5.4.21(@types/node@22.19.17)
+      vitest:
+        specifier: ^2.1.4
+        version: 2.1.9(@types/node@22.19.17)(jsdom@25.0.1)
 
   packages/shared:
     devDependencies:

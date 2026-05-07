@@ -395,6 +395,25 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
         return;
       }
 
+      // GET /token — Task #696. Loopback-only daemon (listens on 127.0.0.1)
+      // exposes the current bearer token to the same-origin SPA so the web
+      // shell can bootstrap without a `?token=` URL param. Safe because:
+      //   * server only binds 127.0.0.1 (see index.mts), so a remote attacker
+      //     cannot reach this port at all;
+      //   * any local process can already read CCSM_TOKEN from env / from the
+      //     handshake stdout, so this endpoint exposes no new capability.
+      // We still apply CORS so the Tauri webview / dev vite proxy can read
+      // the body, mirroring /api/*. No auth required.
+      if (path === '/token' && method === 'GET') {
+        applyCorsHeaders(req, res);
+        writeJson(res, 200, { token: expectedToken });
+        return;
+      }
+      if (path === '/token' && method === 'OPTIONS') {
+        handleCorsPreflight(req, res);
+        return;
+      }
+
       writeText(res, 404, 'not found');
     } catch (err) {
       console.error('[ccsm] http handler error:', err);
