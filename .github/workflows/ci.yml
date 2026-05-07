@@ -57,6 +57,25 @@ jobs:
       - name: Build
         run: pnpm -r build
 
+      - name: Tauri shell guard (Task #711, S2-T10) — frontend-tauri must never reference Pages
+        # Architectural red-line: the Tauri desktop shell embeds frontend-web
+        # and loads loopback daemon; it must NEVER fetch https://cc-sm.pages.dev.
+        # See DESIGN.md §11 Deployment Topologies. Any hit here is a regression.
+        shell: bash
+        run: |
+          set -e
+          fail=0
+          for pat in 'pages\.dev' 'cc-sm' 'Pages'; do
+            hits=$(git grep -nE "$pat" -- packages/frontend-tauri/ || true)
+            if [ -n "$hits" ]; then
+              echo "::error::Tauri shell guard tripped — pattern '$pat' found in packages/frontend-tauri/:"
+              echo "$hits"
+              fail=1
+            fi
+          done
+          if [ "$fail" = "1" ]; then exit 1; fi
+          echo "Tauri shell guard OK — no Pages references in packages/frontend-tauri/."
+
   e2e:
     needs: build
     # T12 (#655): cross-platform e2e matrix. macOS is intentionally NOT in the

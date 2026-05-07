@@ -361,6 +361,25 @@ MVP 不做。但前端约束 (§7) 保证后续三条路任选其一都成本低
 
 ---
 
-## §11 Changelog
+## §11 Deployment Topologies
+
+> 详细路线图见 `docs/ROADMAP.md`。本节只锁一条架构红线: **Tauri 壳与 Cloudflare Pages 入口完全独立, 互不依赖**。
+
+ccsm 自 S2 起同时存在三种入口拓扑, 任一拓扑离线 / 下线均不影响其他拓扑:
+
+1. **Tauri 桌面壳** — Rust 进程 spawn 本地 daemon, daemon 内嵌 (embed) 已 build 好的 `frontend-web` 静态资源, webview 加载 `http://127.0.0.1:<port>/?token=<t>`。**Tauri 壳永远不 fetch Cloudflare Pages**, 没有网络也能用, 安装包自带前端 bundle。
+2. **浏览器 → 本地 daemon** (S0/S1) — 用户在普通浏览器开 daemon 自带的 `http://127.0.0.1:<port>/`, 拿 daemon 直接 serve 的 SPA。
+3. **浏览器 → Cloudflare Pages → 本地 daemon** (S2) — 用户在浏览器开 `https://cc-sm.pages.dev`, Pages 派发同一份 SPA, SPA 在浏览器里 fetch loopback daemon (`http://127.0.0.1:<port>`); Pages 仅是静态资源 CDN, 不参与鉴权也不代理流量。
+
+### 红线 (架构不变量)
+
+- Tauri 壳的 webview URL **必须**是 `http://127.0.0.1:<port>/...`, **不得**指向 `https://cc-sm.pages.dev` 或任何远端 host。
+- Tauri 壳的源码 (`packages/frontend-tauri/`) 中**不得**出现 `pages.dev` / `cc-sm` / 远端 fetch 逻辑。CI grep guard 兜底, 见 `.github/workflows/ci.yml`。
+- 三种拓扑共用同一份 `frontend-web` 代码, 但分发渠道独立: Tauri 走 embed, S0/S1 走 daemon static, S2 走 Pages。任一渠道更新都不会偷偷把另一条强行切到自己上。
+
+---
+
+## §12 Changelog
 
 - 2026-05-07 初版。web + daemon only, 桌面端 deferred。
+- 2026-05-07 §11 Deployment Topologies: Tauri shell guard — 三拓扑独立, Tauri 永不 fetch Pages (Task #711, S2-T10)。
