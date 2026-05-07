@@ -19,6 +19,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros"] }
 
+# S1 (#695): random bytes for generating ~/.ccsm/token on first launch.
+# `getrandom` is the de-facto standard thin wrapper over OS RNG
+# (BCryptGenRandom on Windows, getrandom(2) / /dev/urandom on Unix).
+getrandom = "0.2"
+hex = "0.4"
+
 # T9: Win32 Job Object — bind the daemon child to a Job with
 # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE so that any death of ccsm-tauri.exe
 # (TerminateProcess from Task Manager, app crash, hard power loss is OS-handled)

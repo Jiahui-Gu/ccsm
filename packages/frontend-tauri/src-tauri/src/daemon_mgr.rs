@@ -3,7 +3,7 @@
 //
 // scope (T8 only): spawn + handshake + emit + wait task. soft kill via kill_on_drop.
 // Job Object hard kill is T9. React listener is T10. daemon bundling for prod is T14.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -132,18 +132,23 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
         cmd.env("CCSM_DB_PATH", p);
     }
 
-    // Task #694 [wave-2.5]: pin daemon to a fixed token + port so a browser can
-    // open `http://127.0.0.1:9876/?token=ccsm-dev-fixed-token` in parallel with
-    // the Tauri shell, both talking to the same daemon (shared sqlite => shared
-    // sessions in both UIs). The daemon already honors `CCSM_TOKEN` and `PORT`
-    // env vars (see packages/daemon/src/index.mts), so this is a Tauri-side
-    // wiring change only.
+    // S1 (#695): load (or first-time generate) the persistent daemon token from
+    // `~/.ccsm/token` and pass it via CCSM_TOKEN env. Replaces the hard-coded
+    // `ccsm-dev-fixed-token` from wave-2.5. Daemon already honors CCSM_TOKEN.
     //
-    // SECURITY CAVEAT: a fixed token is acceptable interim because the daemon
-    // only listens on 127.0.0.1 (loopback-only); any local process can still
-    // reach it. This is NOT for production — wave-3 will replace with per-run
-    // ephemeral token + DNS-rebinding defense.
-    cmd.env("CCSM_TOKEN", "ccsm-dev-fixed-token");
+    // Fail-fast: if the file cannot be read/created/secured we surface a
+    // `daemon-error` event to the webview and abort spawn — silently falling
+    // back to a hard-coded token would defeat the security goal.
+    let token = match load_or_create_token() {
+        Ok(t) => t,
+        Err(e) => {
+            let reason = format!("token load/create failed: {e}");
+            eprintln!("[daemon-mgr] {reason}");
+            let _ = app.emit("daemon-error", DaemonErrorEvent { reason: reason.clone() });
+            return Err(reason);
+        }
+    };
+    cmd.env("CCSM_TOKEN", &token);
     cmd.env("PORT", "9876");
 
     #[cfg(windows)]
@@ -274,4 +279,131 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
     });
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// S1 (#695): persistent token at ~/.ccsm/token
+// ---------------------------------------------------------------------------
+//
+// On every daemon spawn we read `~/.ccsm/token` (Win: `%USERPROFILE%\.ccsm\token`)
+// and pass its contents via `CCSM_TOKEN` env. If the file does not exist we
+// generate a fresh 32-byte hex token, write it, and lock it down to the current
+// user (Unix: chmod 0600; Windows: rely on default ACL of files created under
+// `%USERPROFILE%`, which is already user-only — see notes below).
+//
+// Why a file instead of an env var or per-launch RNG: the web companion (Task
+// #696) needs a stable token it can fetch from the daemon; persisting once on
+// disk is the simplest source of truth shared by all surfaces.
+
+fn token_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE")
+        .ok_or_else(|| "USERPROFILE env not set".to_string())?;
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME").ok_or_else(|| "HOME env not set".to_string())?;
+    Ok(PathBuf::from(home).join(".ccsm"))
+}
+
+fn load_or_create_token() -> Result<String, String> {
+    let dir = token_dir()?;
+    let path = dir.join("token");
+
+    if path.exists() {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(format!("token file {} is empty", path.display()));
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    // First launch: mkdir -p ~/.ccsm, generate 32-byte hex, write, restrict perms.
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).map_err(|e| format!("getrandom: {e}"))?;
+    let token = hex::encode(buf);
+
+    write_token_file(&path, &token)?;
+    eprintln!("[daemon-mgr] generated new token at {}", path.display());
+    Ok(token)
+}
+
+#[cfg(unix)]
+fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("create {}: {e}", path.display()))?;
+    f.write_all(token.as_bytes())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+    // Windows: files created under %USERPROFILE% inherit the user-profile ACL,
+    // which by default grants Full Control to the owner + SYSTEM + Administrators
+    // and nothing to other interactive users. That matches the Unix 0600 intent
+    // ("only this user can read") for non-admin attackers, which is the threat
+    // model here (the daemon listens on 127.0.0.1, so the concern is other
+    // local user accounts, not Administrators on the same box).
+    //
+    // Tightening further (stripping SYSTEM/Administrators) would require a
+    // SetNamedSecurityInfo dance and would break legitimate admin tooling
+    // (backup, AV) without materially improving the threat model. Keep the
+    // default ACL, document the caveat in README.
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("create {}: {e}", path.display()))?;
+    f.write_all(token.as_bytes())
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_or_create_generates_and_persists() {
+        let tmp = std::env::temp_dir().join(format!("ccsm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // Point HOME/USERPROFILE at our tmp dir for this test only.
+        #[cfg(windows)]
+        let key = "USERPROFILE";
+        #[cfg(not(windows))]
+        let key = "HOME";
+        let prev = std::env::var_os(key);
+        std::env::set_var(key, &tmp);
+
+        let path = tmp.join(".ccsm").join("token");
+        assert!(!path.exists());
+
+        let t1 = load_or_create_token().expect("first call");
+        assert_eq!(t1.len(), 64, "32 bytes hex = 64 chars");
+        assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(path.exists());
+
+        let t2 = load_or_create_token().expect("second call");
+        assert_eq!(t1, t2, "second call must read existing file, not regenerate");
+
+        // restore env
+        if let Some(v) = prev {
+            std::env::set_var(key, v);
+        } else {
+            std::env::remove_var(key);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
