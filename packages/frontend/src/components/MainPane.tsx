@@ -114,6 +114,13 @@ export function MainPane() {
         const resp = await createSession(tok);
         const createdAt =
           typeof resp.createdAt === 'number' ? resp.createdAt : Date.now();
+        // Task #673: attach must happen AFTER the daemon has spawned the PTY
+        // (i.e. AFTER createSession returns 200). Doing it here, scoped to
+        // a sid we just minted, is the only way to guarantee the ws upgrade
+        // finds a runtime entry on the daemon side. The old "attach every
+        // hydrated sid" effect (removed below) raced the lazy /resume path
+        // and burned the 5-attempt reconnect budget on close(1008).
+        sessionRuntime.attach(resp.sid, tok);
         addSession({ sid: resp.sid, createdAt, alive: true });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -126,22 +133,26 @@ export function MainPane() {
     })();
   }, [sessions.length, addSession]);
 
-  // ---- runtime attach for every known session ----
+  // ---- runtime attach is owned by user-action callers (Task #673) ----
   //
-  // Whenever the session list grows, make sure the runtime is tracking each
-  // sid. Idempotent — runtime.attach() is a no-op for sids it already owns.
-  // We never detach here: detach belongs to the explicit "user closed the
-  // row" code path (Sidebar already wires that to runtime.detach via the
-  // closeSession action — see Sidebar.tsx).
-  useEffect(() => {
-    const tok = resolveToken();
-    if (!tok) return;
-    for (const s of sessions) {
-      if (!sessionRuntime.has(s.sid)) {
-        sessionRuntime.attach(s.sid, tok);
-      }
-    }
-  }, [sessions, token]);
+  // Historical (T10): a `useEffect([sessions, token])` here attached every
+  // sid in the store as soon as the bootstrap hook hydrated it. That model
+  // assumed the ws upgrade itself would lazily spawn the PTY (T6). Task #668
+  // moved spawn into the HTTP layer (POST /api/sessions, POST /:sid/resume),
+  // which means an unsolicited ws on a hydrated sid hits a daemon whose
+  // RuntimeRegistry has no entry — daemon close(1008, 'session_not_spawned')
+  // — and the runtime burns its 5-attempt reconnect budget for nothing.
+  // After that the entry is `disconnected` AND `runtime.has(sid) === true`,
+  // so a later /resume + setActive can never trigger a fresh openWs (attach
+  // is idempotent on existing entries). Net effect: history never replays.
+  //
+  // Fix: attach is now done by the three callers that KNOW the daemon has
+  // a fresh PTY:
+  //   - MainPane bootstrap (createSession 200 → attach → addSession)
+  //   - Sidebar onNewSession (createSession 200 → attach → addSession)
+  //   - Sidebar onSelectSession (resume 200 → detach+attach → setActive)
+  //
+  // No effect here.
 
   // ---- xterm lifecycle (re-runs on activeSid change) ----
   //
@@ -183,13 +194,21 @@ export function MainPane() {
     } else if (!tok) {
       writeNoticeTo(term, '[no token in URL — append ?token=<t> and reload]');
     } else {
-      // The runtime should already have an entry from the attach effect
-      // above; defensively ensure it (handles the rare race where xterm
-      // mounts before the attach effect on the same render commit).
-      if (!sessionRuntime.has(activeSid)) {
-        sessionRuntime.attach(activeSid, tok);
-      }
+      // Task #673: we no longer defensively attach here. The runtime entry
+      // MUST already exist by the time setActive() landed, because Sidebar
+      // (onSelectSession or onNewSession) and the bootstrap effect each
+      // attach RIGHT AFTER the daemon-side spawn HTTP call returns 200.
+      // If `entry` is missing it means an upstream caller forgot to
+      // attach — surface it instead of silently opening a ws against a
+      // sid the daemon has not spawned (root cause of #673).
       const entry = sessionRuntime.get(activeSid);
+      if (!entry) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[ccsm/MainPane] active sid ${activeSid} has no runtime entry — ` +
+            `caller (Sidebar/MainPane bootstrap) must attach after spawn 200`,
+        );
+      }
       if (entry) {
         const decoder = new TextDecoder();
         // Replay chunks in order. xterm internally buffers writes, so even a

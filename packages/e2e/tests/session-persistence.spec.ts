@@ -23,26 +23,34 @@
 // ============================================================================
 // FIXED in #672 — DAEMON AUTH NOW TREATS MISSING ORIGIN AS SAME-ORIGIN
 // ============================================================================
-// Original finding (filed during #669): per Fetch spec, browsers OMIT the
-// `Origin` header on SAME-ORIGIN GET/HEAD requests. Because the SPA + API
-// are served same-origin (daemon serves dist in prod; vite proxies /api/*
-// to the daemon in dev so the browser still sees same-origin), the
-// `GET /api/sessions` request that `useBootstrap` issues arrives with NO
-// Origin header — and the original `auth.mts` 403'd it, breaking the
-// bootstrap chain after page.reload().
+// Per Fetch spec, browsers OMIT the `Origin` header on SAME-ORIGIN GET/HEAD
+// requests. #672 fixes `packages/daemon/src/auth.mts` to treat missing Origin
+// as same-origin (token still required; cross-origin Origin headers like
+// evil.com still 403). The canary test below positively asserts both paths
+// (no-Origin AND with-Origin) return 200.
 //
-// #672 fixes `packages/daemon/src/auth.mts` to treat missing Origin as
-// same-origin (token still required; cross-origin Origin headers like
-// evil.com still 403). The two daemon tests that codified the buggy
-// behavior were updated:
-//   packages/daemon/test/auth.test.ts  -> missing Origin + valid token -> 200
-//   packages/daemon/test/negative.test.ts:8 -> same; 8b guards the wrong-token
-//                                              path so dropping Origin can't
-//                                              bypass auth.
+// ============================================================================
+// FIXED in #673 — WS RE-ATTACH AFTER DAEMON KILL+RESTART (L2 strict)
+// ============================================================================
+// Pre-#673, the L2 path was best-effort because frontend `MainPane` had a
+// `useEffect([sessions, token])` that attached a ws to every hydrated sid as
+// soon as `useBootstrap` populated the store. After #668 moved PTY spawn out
+// of the ws upgrade and into the HTTP layer, that early attach hit a daemon
+// whose RuntimeRegistry had no entry for the sid (KV restored sessions Map
+// but spawn is lazy on /resume), so daemon close(1008, 'session_not_spawned')
+// burned the runtime's 5-attempt reconnect budget. The entry was then stuck
+// in `disconnected` AND `runtime.has(sid) === true`, so the user click's
+// /resume call never triggered a fresh openWs (attach is idempotent).
 //
-// The `test.fixme(...)` marker on the L1/L2 test below has been removed and
-// the canary test was rewritten as a POSITIVE assertion that the fix is in
-// place (no-Origin AND with-Origin both 200).
+// Fix (#673): attach is now driven by the three callers that KNOW the daemon
+// has just spawned a PTY:
+//   - MainPane bootstrap (createSession 200 → attach)
+//   - Sidebar onNewSession (createSession 200 → attach)
+//   - Sidebar onSelectSession (resume 200 → detach + attach + setActive)
+// The L2 leg below has been promoted from best-effort try/catch to a strict
+// assertion identical in shape to L1 (row visible + click + xterm contains
+// PERSIST_TOKEN_1). If this asserts FAIL the wave-1 persistence chain is
+// broken — investigate, don't downgrade.
 //
 // CI vs local:
 //   This spec spawns a real `claude` PTY. CI has no Anthropic credentials
@@ -402,7 +410,7 @@ test.describe('session-persistence', () => {
   });
 
   test(
-    'L1 (page.reload) restores HELLO via lazy resume; L2 (daemon restart) best-effort logged',
+    'L1 (page.reload) and L2 (daemon kill+restart) both restore PERSIST_TOKEN_1 via lazy resume',
     async ({ page }, testInfo) => {
     // Per-test temp dir owns BOTH the SQLite db (so two daemon instances
     // share state) AND the daemon cwd (so claude --resume rebinds in the
@@ -546,18 +554,12 @@ test.describe('session-persistence', () => {
 
       // ---- L2: kill daemon, restart against same db, reload again -------
       //
-      // SCOPE NOTE (#672): #672's job is the daemon Origin/auth fix that
-      // unblocks L1 (page.reload). L2 (daemon restart re-hydration) depends
-      // on the SQLite KV chain (#667) AND the lazy resume path AND the ws
-      // re-attach handshake AFTER a fresh daemon process — separate moving
-      // parts, several still being landed in wave-1. Locally we observed
-      // the L2 ws upgrade gets closed before handshake response after a
-      // restart, with the resumed sid still in the sidebar (KV restore
-      // worked; ws/runtime re-attach did not). That is a wave-1 bug, not
-      // a #672 bug. To keep this PR strictly about the auth fix, we run
-      // L2 in best-effort mode: snap evidence + log the outcome, but do
-      // not fail the test on L2. Manager should file a follow-up task
-      // when wave-1 stabilises.
+      // Wave-1 strict assertion (was best-effort in #672, fixed in #673).
+      // L2 exercises the SQLite KV restore + lazy resume + ws re-attach
+      // chain after a daemon process boundary. The frontend (#673 fix)
+      // attaches sessionRuntime ws ONLY after the relevant spawn HTTP call
+      // returns 200, so a hydrated row no longer races the daemon's empty
+      // RuntimeRegistry into close(1008, 'session_not_spawned').
       await stopDaemon(daemon);
       daemon = null;
       // Tiny pause so the OS releases :17832 before we rebind it.
@@ -569,39 +571,21 @@ test.describe('session-persistence', () => {
       const sessionRow2 = page.locator(
         `[data-testid="sidebar-session-row-${activeSid}"]`,
       );
-      let l2RowVisible = false;
-      try {
-        await expect(sessionRow2).toBeVisible({ timeout: 20_000 });
-        l2RowVisible = true;
-      } catch {
-        // recorded below
-      }
+      await expect(
+        sessionRow2,
+        `L2: expected restored session row sid=${activeSid} after daemon kill+restart (#667 KV restore + #672 auth fix)`,
+      ).toBeVisible({ timeout: 20_000 });
       await snap(page, testInfo, '05-after-daemon-restart-sidebar');
-      // eslint-disable-next-line no-console -- surface L2 row visibility to manager via reporter output.
-      console.log(`[#672 e2e] L2 row visible after daemon restart = ${l2RowVisible} (sid=${activeSid})`);
 
-      let l2Resumed = false;
-      if (l2RowVisible) {
-        await sessionRow2.click();
-        try {
-          await waitForXtermContains(
-            page,
-            PERSIST_TOKEN_1,
-            45_000,
-            `L2 (daemon restart): expected ${PERSIST_TOKEN_1} to reappear`,
-          );
-          l2Resumed = true;
-        } catch {
-          // recorded below
-        }
-        await snap(page, testInfo, '06-L2-resumed');
-      }
-      // eslint-disable-next-line no-console -- surface L2 outcome to manager via reporter output.
-      console.log(
-        `[#672 e2e] L2 HELLO reappeared = ${l2Resumed}. ` +
-          `If false, the wave-1 SQLite-restore + ws-reattach chain has a separate bug ` +
-          `(out of scope for #672 — please file follow-up task).`,
+      await sessionRow2.click();
+
+      await waitForXtermContains(
+        page,
+        PERSIST_TOKEN_1,
+        45_000,
+        `L2 (daemon restart): expected ${PERSIST_TOKEN_1} to reappear after lazy resume of sid=${activeSid} (#673 ws re-attach)`,
       );
+      await snap(page, testInfo, '06-L2-resumed');
     } finally {
       if (vite) await stopVite(vite);
       if (daemon) await stopDaemon(daemon);

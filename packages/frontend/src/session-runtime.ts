@@ -82,6 +82,23 @@ export interface SessionRuntimeEntry {
    * stop trying and leave status='disconnected' for the UI to surface.
    */
   reconnectAttempts: number;
+  /**
+   * True once we have ever observed status='attached' for this entry — i.e.
+   * the ws has actually established at least once. Differs from
+   * `reconnectAttempts === 0`: that becomes 1 the moment ws.onclose fires
+   * (synchronously, before the retry timer), so by the time a click handler
+   * inspects it the value can already be > 0 even though the user perceives
+   * the entry as "still freshly attached, never confirmed alive".
+   *
+   * Used by Sidebar onSelectSession to decide whether a `connecting` status
+   * is freshly-spawned (skip /resume, fast-path setActive) or genuinely
+   * stale across a daemon restart (slow-path resume + detach + re-attach).
+   * Once true, we never reset it — even after a reconnect cycle, because
+   * "ever attached at least once in this entry's lifetime" is exactly what
+   * distinguishes "the daemon spawned a PTY and we talked to it" from "the
+   * daemon never spawned a PTY for this sid in this process".
+   */
+  hasEverAttached: boolean;
   /** Active retry timer, cleared on detach / successful open. */
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   /**
@@ -173,6 +190,7 @@ class SessionRuntime {
       reconnectAttempts: 0,
       reconnectTimer: null,
       finalized: false,
+      hasEverAttached: false,
       pendingWrites: 0,
       paused: false,
     };
@@ -320,6 +338,7 @@ class SessionRuntime {
     entry.status = status;
     if (status === 'attached') {
       entry.reconnectAttempts = 0;
+      entry.hasEverAttached = true;
     }
     this.publishStatus(entry);
   }

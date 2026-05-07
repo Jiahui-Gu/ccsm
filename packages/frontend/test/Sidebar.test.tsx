@@ -1,5 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+
+// Task #673: Sidebar now drives sessionRuntime.attach (after createSession or
+// resumeSession returns 200) so the ws upgrade always finds a daemon-side
+// PTY. Mock the runtime so unit tests can assert the attach/detach contract
+// without opening real WebSockets.
+const runtimeAttach = vi.hoisted(() => vi.fn());
+const runtimeDetach = vi.hoisted(() => vi.fn());
+const runtimeGet = vi.hoisted(() =>
+  vi.fn<
+    (sid: string) =>
+      | { reconnectAttempts: number; hasEverAttached: boolean }
+      | undefined
+  >(() => undefined),
+);
+
+vi.mock('../src/session-runtime', () => ({
+  sessionRuntime: {
+    attach: runtimeAttach,
+    detach: runtimeDetach,
+    has: vi.fn(() => false),
+    get: runtimeGet,
+    sendInput: vi.fn(),
+    sendResize: vi.fn(),
+    notePendingWrite: vi.fn(),
+    noteWriteFlushed: vi.fn(),
+    subscribeOutput: vi.fn(() => () => {}),
+  },
+}));
+
 import { Sidebar } from '../src/components/Sidebar';
 import { useStore } from '../src/store';
 
@@ -21,6 +50,10 @@ describe('Sidebar', () => {
 
   beforeEach(() => {
     resetStore();
+    runtimeAttach.mockClear();
+    runtimeDetach.mockClear();
+    runtimeGet.mockReset();
+    runtimeGet.mockReturnValue(undefined);
     alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
     // Default fetch mock — individual tests override as needed.
     globalThis.fetch = vi.fn(async () =>
@@ -109,7 +142,7 @@ describe('Sidebar', () => {
     expect(inactiveRow.textContent).toContain('10:31');
   });
 
-  it('clicking a session row whose ws is already open calls store.setActive directly (no resume POST)', () => {
+  it('clicking a session row whose ws is already attached calls store.setActive directly (no resume POST)', () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     useStore.setState({
@@ -125,6 +158,140 @@ describe('Sidebar', () => {
     fireEvent.click(screen.getByTestId('sidebar-session-row-bbbb2222'));
     expect(useStore.getState().activeSid).toBe('bbbb2222');
     expect(fetchMock).not.toHaveBeenCalled();
+    // Fast path must NOT touch the runtime — there's a live entry already.
+    expect(runtimeAttach).not.toHaveBeenCalled();
+    expect(runtimeDetach).not.toHaveBeenCalled();
+  });
+
+  // Task #673: a stale `connecting` status (ws bouncing off close(1008)
+  // after a daemon restart on a previously-attached entry, evidenced by
+  // hasEverAttached=true) MUST NOT take the fast path. The user click has
+  // to drive a /resume so the daemon re-spawns.
+  it('clicking a session row whose entry hasEverAttached=true but status=connecting (truly stale across daemon restart) POSTs /resume + detach+attach', async () => {
+    const fetchMock = vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+        text: async () => '',
+      }) as unknown as Response,
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    runtimeGet.mockImplementation((sid: string) =>
+      sid === 'bbbb2222'
+        ? { reconnectAttempts: 2, hasEverAttached: true }
+        : undefined,
+    );
+    useStore.setState({
+      sessions: [
+        { sid: 'aaaa1111', createdAt: 0, alive: true },
+        { sid: 'bbbb2222', createdAt: 0, alive: true },
+      ],
+      activeSid: 'aaaa1111',
+      sessionStatuses: { aaaa1111: 'attached', bbbb2222: 'connecting' },
+    });
+
+    render(<Sidebar />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('sidebar-session-row-bbbb2222'));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      '/api/sessions/bbbb2222/resume',
+    );
+    // detach must precede attach so a stale entry can't shortcut openWs.
+    expect(runtimeDetach).toHaveBeenCalledWith('bbbb2222');
+    expect(runtimeAttach).toHaveBeenCalledWith('bbbb2222', 'test-token');
+    const detachOrder = runtimeDetach.mock.invocationCallOrder[0]!;
+    const attachOrder = runtimeAttach.mock.invocationCallOrder[0]!;
+    expect(detachOrder).toBeLessThan(attachOrder);
+    expect(useStore.getState().activeSid).toBe('bbbb2222');
+  });
+
+  // Task #673 P0 regression: an entry that has never been attached
+  // (hasEverAttached=false), regardless of reconnectAttempts (which can
+  // already be > 0 because ws.onclose increments it synchronously before
+  // the retry timer fires, e.g. mock daemon refusing ws upgrade), MUST
+  // take the fast path. Otherwise immediately clicking a row right after
+  // createSession 200 would issue an extraneous /resume that the backend
+  // may not handle, and the click never lands.
+  it('clicking a session row whose entry hasEverAttached=false (fresh, never confirmed live) takes fast path even if reconnectAttempts>0', () => {
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    runtimeGet.mockImplementation((sid: string) =>
+      sid === 'bbbb2222'
+        ? { reconnectAttempts: 1, hasEverAttached: false }
+        : undefined,
+    );
+    useStore.setState({
+      sessions: [
+        { sid: 'aaaa1111', createdAt: 0, alive: true },
+        { sid: 'bbbb2222', createdAt: 0, alive: true },
+      ],
+      activeSid: 'aaaa1111',
+      sessionStatuses: { aaaa1111: 'attached', bbbb2222: 'connecting' },
+    });
+
+    render(<Sidebar />);
+    fireEvent.click(screen.getByTestId('sidebar-session-row-bbbb2222'));
+
+    expect(useStore.getState().activeSid).toBe('bbbb2222');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runtimeAttach).not.toHaveBeenCalled();
+    expect(runtimeDetach).not.toHaveBeenCalled();
+  });
+
+  // Task #673 P1 #2: double-click on the same sid while a resume is in
+  // flight must not issue a second /resume + open a second ws.
+  it('double-click on the same sid while resume is in flight only fires one /resume', async () => {
+    let resolveFirst!: (r: Response) => void;
+    const firstResp = new Promise<Response>((r) => {
+      resolveFirst = r;
+    });
+    const fetchMock = vi.fn(() => firstResp);
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    useStore.setState({
+      sessions: [
+        { sid: 'aaaa1111', createdAt: 0, alive: true },
+        { sid: 'bbbb2222', createdAt: 0, alive: true },
+      ],
+      activeSid: 'aaaa1111',
+      sessionStatuses: { aaaa1111: 'attached' /* bbbb2222: undefined */ },
+    });
+
+    render(<Sidebar />);
+    // First click — starts the resume; pendingResumeRef = 'bbbb2222'.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('sidebar-session-row-bbbb2222'));
+    });
+    // Second click on the same sid while resume is still in flight.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('sidebar-session-row-bbbb2222'));
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Let the in-flight resume resolve to drain the act() bookkeeping.
+    await act(async () => {
+      resolveFirst({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+        text: async () => '',
+      } as unknown as Response);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Only one detach+attach pair, even though we clicked twice.
+    expect(runtimeDetach).toHaveBeenCalledTimes(1);
+    expect(runtimeAttach).toHaveBeenCalledTimes(1);
   });
 
   it('clicking the × close button issues DELETE then prunes the row', async () => {
@@ -195,6 +362,9 @@ describe('Sidebar', () => {
     const state = useStore.getState();
     expect(state.sessions.map((s) => s.sid)).toEqual(['new-sid-xyz']);
     expect(state.activeSid).toBe('new-sid-xyz');
+    // Task #673: attach must fire AFTER createSession 200 so the ws upgrade
+    // finds a daemon RuntimeRegistry entry (no close(1008) race).
+    expect(runtimeAttach).toHaveBeenCalledWith('new-sid-xyz', 'test-token');
   });
 
   // ---- T11 / #671: lazy resume on row click ----
@@ -234,6 +404,14 @@ describe('Sidebar', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(useStore.getState().activeSid).toBe('bbbb2222');
+    // Task #673: idempotent attach can't reopen a stale entry, so we must
+    // detach BEFORE attach to force a fresh ws against the freshly-spawned
+    // daemon-side PTY.
+    expect(runtimeDetach).toHaveBeenCalledWith('bbbb2222');
+    expect(runtimeAttach).toHaveBeenCalledWith('bbbb2222', 'test-token');
+    const detachOrder = runtimeDetach.mock.invocationCallOrder[0]!;
+    const attachOrder = runtimeAttach.mock.invocationCallOrder[0]!;
+    expect(detachOrder).toBeLessThan(attachOrder);
   });
 
   it('resume returning 404 prunes the row from the store and does not setActive', async () => {

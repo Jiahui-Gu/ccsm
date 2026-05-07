@@ -107,6 +107,10 @@ export function Sidebar() {
       // instead of "NaN:NaN".
       const createdAt =
         typeof resp.createdAt === 'number' ? resp.createdAt : Date.now();
+      // Task #673: attach AFTER createSession returns 200 (daemon has just
+      // spawned the PTY, so the ws upgrade will find a RuntimeRegistry
+      // entry instead of being closed with 1008, 'session_not_spawned').
+      sessionRuntime.attach(resp.sid, tok);
       addSession({ sid: resp.sid, createdAt, alive: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -117,19 +121,38 @@ export function Sidebar() {
   };
 
   /**
-   * Row click handler — task #671. Two paths:
+   * Row click handler — task #671 + #673.
    *
-   *   1. Sid already has a live runtime entry (status `connecting` or
-   *      `attached`) → fast path: just `setActive`. This covers every
-   *      session created or attached in the current page lifetime that
-   *      still has a usable ws.
+   * Two paths:
    *
-   *   2. Sid is `idle` (typical of rows hydrated by #670 from
-   *      `listSessions` after a fresh page load) or in a terminal
-   *      `disconnected` / `exited` state (ws is gone, daemon will need
-   *      to re-spawn) → POST the daemon's /resume endpoint to spawn a
-   *      runtime, THEN `setActive`. The MainPane's existing attach flow
-   *      will pick it up.
+   *   1. Sid is currently `attached`, OR the runtime has an entry for it
+   *      that has NEVER been attached (`hasEverAttached === false`) — i.e.
+   *      a freshly-spawned session whose ws upgrade just hasn't completed
+   *      yet (or has been bouncing off a transient close before the first
+   *      onopen). → fast path: just `setActive`.
+   *
+   *      We KEY ON `hasEverAttached`, not `reconnectAttempts`. ws.onclose
+   *      bumps reconnectAttempts synchronously before the retry timer
+   *      fires, so in scenarios where the ws upgrade is rejected
+   *      back-to-back (e2e mock, daemon transient), attempts is already
+   *      > 0 by the time the user clicks even though semantically the
+   *      session has never confirmed live. `hasEverAttached` stays false
+   *      until the ws actually opens, which is the right signal.
+   *
+   *      A daemon kill+restart that previously had a live ws keeps
+   *      hasEverAttached=true on the stale entry, so we correctly fall to
+   *      slow-path /resume + detach + re-attach there. A page reload has
+   *      no entry at all — undefined → slow path, also correct.
+   *
+   *   2. Anything else (`idle` / `disconnected` / `exited` / undefined) →
+   *      POST /resume (so the daemon spawns `claude --resume <sid>`),
+   *      THEN `sessionRuntime.detach(sid)` to drop any stale entry,
+   *      THEN `sessionRuntime.attach(sid, tok)` for a fresh ws against
+   *      the freshly-spawned PTY, THEN `setActive`. Detach+attach (rather
+   *      than just attach) is required because attach is idempotent on
+   *      existing entries — without an explicit detach, a stale entry
+   *      from a prior daemon process (or a prior failed reconnect cycle)
+   *      would never reopen its ws.
    *
    * Errors:
    *   - 404 → daemon doesn't know this sid anymore. Prune the row from
@@ -137,10 +160,35 @@ export function Sidebar() {
    *   - other → leave the row in place; user can click again to retry.
    */
   const onSelectSession = async (sid: string): Promise<void> => {
+    // P1 #2: if a resume is already in flight for this exact sid, swallow
+    // the second click. Without this guard a double-click would issue two
+    // POST /resume + two attach() pairs, opening two ws against the same
+    // freshly-spawned PTY.
+    if (pendingResumeRef.current === sid) return;
+
     const status = sessionStatuses[sid];
-    // Fast path: the runtime is already live (in-flight or attached). No
-    // need to ask the daemon to re-spawn; setActive is enough.
-    if (status === 'connecting' || status === 'attached') {
+    // Fast path: a CONFIRMED live ws (`attached`), OR ANY status when the
+    // entry has never been attached in this runtime's lifetime — i.e. it's
+    // a freshly-spawned session whose ws upgrade just hasn't completed yet
+    // (or has bounced off a transient close before the first onopen).
+    //
+    // We KEY ON `hasEverAttached` (not `reconnectAttempts === 0`) because
+    // ws.onclose increments reconnectAttempts SYNCHRONOUSLY before the
+    // retry timer fires; in e2e where the mock daemon refuses ws upgrades,
+    // attempts is already 1 by the time the user clicks. `hasEverAttached`
+    // stays false until the ws *actually* opens, which is exactly the
+    // signal we want: "did the daemon ever confirm this sid is live?"
+    //
+    // After a daemon restart of a previously-attached session, the OLD
+    // entry still has hasEverAttached=true → slow path → /resume. After a
+    // page reload there is no entry at all → undefined → slow path. Both
+    // correct.
+    const runtimeEntry = sessionRuntime.get(sid);
+    const hasEverAttached = runtimeEntry?.hasEverAttached ?? false;
+    if (
+      status === 'attached' ||
+      (runtimeEntry !== undefined && !hasEverAttached)
+    ) {
       pendingResumeRef.current = null;
       setActive(sid);
       return;
@@ -159,6 +207,13 @@ export function Sidebar() {
       // we're still the most recent click.
       if (pendingResumeRef.current !== sid) return;
       pendingResumeRef.current = null;
+      // Task #673: drop any stale runtime entry first, then attach fresh.
+      // Plain `attach` is idempotent on existing entries; without detach,
+      // a `disconnected` entry left over from a prior daemon process (or
+      // a previous failed reconnect cycle) would never reopen its ws and
+      // the user would never see the resumed transcript.
+      sessionRuntime.detach(sid);
+      sessionRuntime.attach(sid, tok);
       setActive(sid);
     } catch (err) {
       // Same race guard for the failure branch — if the user already moved
