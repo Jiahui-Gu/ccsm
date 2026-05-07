@@ -101,8 +101,20 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright Chromium
-        run: pnpm e2e:install
+      - name: Install Playwright browsers (chromium everywhere; +firefox+webkit on windows)
+        # Task #766: ubuntu/macos run --project chromium only, so the default
+        # `pnpm e2e:install` (which installs only chromium) is enough there.
+        # windows-latest runs the full 4-browser matrix from
+        # playwright.config.ts, so it additionally needs firefox + webkit
+        # binaries. edge uses the system Edge install on windows runners and
+        # does not need a playwright download.
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            pnpm -F @ccsm/e2e-web exec playwright install chromium firefox webkit
+          else
+            pnpm e2e:install
+          fi
 
       - name: Install claude CLI (required by daemon node-pty spawn)
         # T7 p1-smoke spawns a real `claude` PTY via the daemon; the CLI must
