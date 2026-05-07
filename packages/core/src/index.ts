@@ -11,3 +11,13 @@ export {
   type WsClientOptions,
   type WsStatus,
 } from './ws/client.js';
+
+// Wave-2 T4 (#689): REST API helpers for /api/sessions.
+export {
+  HttpError,
+  createSession,
+  deleteSession,
+  listSessions,
+  resumeSession,
+  type SessionsApiOptions,
+} from './api/sessions.js';

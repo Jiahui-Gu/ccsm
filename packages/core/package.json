@@ -13,6 +13,10 @@
     "./ws/client": {
       "types": "./dist/ws/client.d.ts",
       "import": "./dist/ws/client.js"
+    },
+    "./api/sessions": {
+      "types": "./dist/api/sessions.d.ts",
+      "import": "./dist/api/sessions.js"
     }
   },
   "scripts": {
