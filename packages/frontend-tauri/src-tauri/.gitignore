@@ -1,0 +1,5 @@
+# Rust build artifacts
+/target
+
+# Tauri auto-generated schemas
+/gen/schemas

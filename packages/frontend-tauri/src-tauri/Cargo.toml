@@ -1,0 +1,20 @@
+[package]
+name = "ccsm-tauri"
+version = "0.0.0"
+edition = "2021"
+description = "ccsm Tauri 2 desktop shell"
+authors = ["ccsm-web contributors"]
+
+[lib]
+name = "ccsm_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros"] }
