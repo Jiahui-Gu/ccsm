@@ -132,6 +132,20 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
         cmd.env("CCSM_DB_PATH", p);
     }
 
+    // Task #694 [wave-2.5]: pin daemon to a fixed token + port so a browser can
+    // open `http://127.0.0.1:9876/?token=ccsm-dev-fixed-token` in parallel with
+    // the Tauri shell, both talking to the same daemon (shared sqlite => shared
+    // sessions in both UIs). The daemon already honors `CCSM_TOKEN` and `PORT`
+    // env vars (see packages/daemon/src/index.mts), so this is a Tauri-side
+    // wiring change only.
+    //
+    // SECURITY CAVEAT: a fixed token is acceptable interim because the daemon
+    // only listens on 127.0.0.1 (loopback-only); any local process can still
+    // reach it. This is NOT for production — wave-3 will replace with per-run
+    // ephemeral token + DNS-rebinding defense.
+    cmd.env("CCSM_TOKEN", "ccsm-dev-fixed-token");
+    cmd.env("PORT", "9876");
+
     #[cfg(windows)]
     {
         // tokio::process::Command exposes creation_flags directly on Windows.
