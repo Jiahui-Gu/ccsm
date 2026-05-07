@@ -3,6 +3,7 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { openDb } from './db.mjs';
 import { createDaemonHttp } from './http.mjs';
 import { attachWebSocket } from './ws.mjs';
 
@@ -61,7 +62,12 @@ async function listenWithRetry(
 async function main(): Promise<void> {
   const startPort = parsePort(process.env.PORT);
   const token = process.env.CCSM_TOKEN || generateToken();
-  const http = createDaemonHttp({ token });
+  // Persistence (#667). Open the SQLite KV before wiring HTTP so the in-memory
+  // sessions Map is hydrated from disk before the server starts accepting
+  // requests. CCSM_DB_PATH lets tests/lifecycle scripts point at a temp file.
+  const dbPath = process.env.CCSM_DB_PATH;
+  const db = openDb(dbPath ? { path: dbPath } : undefined);
+  const http = createDaemonHttp({ token, db });
   attachWebSocket(http.server, { token, sessions: http.sessions });
 
   const { port } = await listenWithRetry(http, startPort, PORT_RETRY_MAX);
@@ -76,20 +82,48 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.error(`[ccsm] received ${signal}, shutting down`);
+    // Synchronously flush any pending sessions write BEFORE we close the
+    // db handle. flushNow() also clears the debounce timer so the event
+    // loop has nothing left holding it open.
+    try {
+      http.persist?.flushNow();
+    } catch (err) {
+      console.error('[ccsm] flushNow error:', err);
+    }
     const timer = setTimeout(() => {
       console.error('[ccsm] shutdown timeout, forcing exit');
+      try {
+        db.close();
+      } catch {
+        // ignore — we're force-exiting anyway
+      }
       process.exit(0);
     }, SHUTDOWN_TIMEOUT_MS);
     timer.unref();
     http.server.close((err) => {
       if (err) console.error('[ccsm] server.close error:', err);
       clearTimeout(timer);
+      try {
+        db.close();
+      } catch (closeErr) {
+        console.error('[ccsm] db.close error:', closeErr);
+      }
       process.exit(0);
     });
   };
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // beforeExit fires when the event loop drains naturally (e.g. tests, or
+  // an unforeseen graceful unwind). Best-effort flush so we don't lose the
+  // last debounce window's worth of mutations.
+  process.on('beforeExit', () => {
+    try {
+      http.persist?.flushNow();
+    } catch {
+      // ignore — already shutting down
+    }
+  });
 }
 
 main().catch((err) => {

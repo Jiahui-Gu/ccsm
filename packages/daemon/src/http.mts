@@ -17,6 +17,12 @@ import type {
 } from '@ccsm/shared';
 
 import { requireAuth } from './auth.mjs';
+import type { KvDb } from './db.mjs';
+import {
+  createPersistController,
+  loadSessionsFromDb,
+  type PersistController,
+} from './persist.mjs';
 
 // API path constants — duplicated locally (not imported as a runtime value
 // from @ccsm/shared) so the daemon does not pull in @ccsm/shared at runtime.
@@ -57,11 +63,22 @@ export interface StubSession {
 
 export interface DaemonHttpOptions {
   token: string;
+  /** Optional KV-db handle. When provided:
+   *   - existing 'sessions' blob is loaded into the in-memory map at boot
+   *   - mutations (POST/DELETE) trigger a debounced write back
+   *  Omit in tests that don't care about persistence. */
+  db?: KvDb;
+  /** Override the persist debounce window (ms). Tests use this to make the
+   *  flush deterministic; production uses the default. */
+  persistDebounceMs?: number;
 }
 
 export interface DaemonHttp {
   server: Server;
   sessions: Map<string, StubSession>;
+  /** Persist controller. `null` when no db was supplied. The daemon entry
+   *  point uses this to flushNow() on SIGINT before closing the db. */
+  persist: PersistController | null;
 }
 
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
@@ -153,6 +170,7 @@ async function handleApi(
   url: URL,
   sessions: Map<string, StubSession>,
   expectedToken: string,
+  persist: PersistController | null,
 ): Promise<void> {
   if (!requireAuth(req, res, expectedToken)) return;
 
@@ -177,6 +195,7 @@ async function handleApi(
       stub.cwd = body.cwd;
     }
     sessions.set(sid, stub);
+    persist?.scheduleFlush();
     const resp: CreateSessionResponse = { sid, createdAt };
     writeJson(res, 200, resp);
     return;
@@ -203,6 +222,7 @@ async function handleApi(
       return;
     }
     sessions.delete(sid);
+    persist?.scheduleFlush();
     const resp: DeleteSessionResponse = { ok: true };
     writeJson(res, 200, resp);
     return;
@@ -218,6 +238,22 @@ async function handleApi(
 export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
   const sessions = new Map<string, StubSession>();
   const expectedToken = opts.token;
+
+  // Persistence wiring (#667). When a db is supplied we hydrate the map
+  // from the 'sessions' KV blob before the server starts accepting
+  // requests, then arm the debounced writer for subsequent mutations.
+  let persist: PersistController | null = null;
+  if (opts.db) {
+    loadSessionsFromDb(opts.db, sessions);
+    const persistOpts: Parameters<typeof createPersistController>[0] = {
+      db: opts.db,
+      sessions,
+    };
+    if (opts.persistDebounceMs !== undefined) {
+      persistOpts.debounceMs = opts.persistDebounceMs;
+    }
+    persist = createPersistController(persistOpts);
+  }
 
   const server = createServer((req, res) => {
     void handle(req, res);
@@ -242,7 +278,7 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
       }
 
       if (path.startsWith('/api/')) {
-        await handleApi(req, res, url, sessions, expectedToken);
+        await handleApi(req, res, url, sessions, expectedToken, persist);
         return;
       }
 
@@ -261,5 +297,5 @@ export function createDaemonHttp(opts: DaemonHttpOptions): DaemonHttp {
     }
   }
 
-  return { server, sessions };
+  return { server, sessions, persist };
 }
