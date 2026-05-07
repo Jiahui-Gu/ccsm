@@ -206,7 +206,7 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
     sessionStorage.clear();
   });
 
-  it('creates exactly one session despite StrictMode double-invoke', async () => {
+  it('does NOT auto-create a session on first paint (Task #716 — refresh must not multiply sessions)', async () => {
     render(
       <StrictMode>
         <MainPane />
@@ -215,15 +215,16 @@ describe('MainPane under React.StrictMode (T10 reshape of P1-3 regression)', () 
 
     await flushMicrotasks();
 
-    // Critical invariant carried over from T6: POST /api/sessions fires once
-    // even though the bootstrap effect ran twice (mount → cleanup → re-mount
-    // under StrictMode dev).
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // T10 invariant: runtime.attach was invoked at least once for the
-    // bootstrapped sid, but never with detach (detach belongs to the user-
-    // initiated close path in the sidebar, not React cleanup).
-    expect(runtimeAttach).toHaveBeenCalled();
-    expect(runtimeAttach.mock.calls[0]![0]).toBe('sid-test-1');
+    // Task #716: the bootstrap auto-create effect was removed because it
+    // raced useBootstrap.listSessions on every browser refresh and POSTed
+    // a fresh session each time. The user must now click + New Session
+    // explicitly. POST /api/sessions must NOT have fired here (no fetch
+    // call at all — useBootstrap lives outside MainPane and isn't mounted
+    // in this test). And no runtime.attach should happen, because attach
+    // is only invoked by the user-action callers (Sidebar onNewSession /
+    // onSelectSession) AFTER a daemon-side spawn HTTP returns 200.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runtimeAttach).not.toHaveBeenCalled();
     expect(runtimeDetach).not.toHaveBeenCalled();
   });
 
