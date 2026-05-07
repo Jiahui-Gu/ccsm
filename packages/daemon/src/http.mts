@@ -135,6 +135,17 @@ function handleCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
   // Cache preflight for 10 min — keeps Tauri webview from re-issuing OPTIONS
   // on every fetch. Spec lets browsers cap at their discretion (Chromium 2h).
   res.setHeader('Access-Control-Max-Age', '600');
+  // S2 #702 — Chrome 120+ Private Network Access (PNA): when a public-network
+  // page (https://cc-sm.pages.dev) initiates a fetch to a private/loopback
+  // address (127.0.0.1), the browser sends `Access-Control-Request-Private-
+  // Network: true` on the preflight and REQUIRES the response to echo back
+  // `Access-Control-Allow-Private-Network: true`, otherwise the actual
+  // request never fires. We only echo on demand (don't advertise the header
+  // to peers that didn't ask).
+  // Spec: https://wicg.github.io/private-network-access/#cors-preflight
+  if (req.headers['access-control-request-private-network'] === 'true') {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
   // Spec allows 200 or 204; manager validation script greps for 200 explicitly.
   res.statusCode = 200;
   res.end();
