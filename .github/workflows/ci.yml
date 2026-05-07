@@ -129,10 +129,21 @@ jobs:
         # windows.
         # `shell: bash` so the `|` in the regex is parsed by bash, not by
         # PowerShell on windows-latest (where `|` would be a pipeline).
+        #
+        # Task #766: ubuntu/macos limit to --project chromium. PR #1151 added
+        # firefox/webkit/edge projects to playwright.config.ts; firefox/webkit
+        # fail on ubuntu (vendor gap: WebKit HTTPS->loopback mixed-content +
+        # no PNA, firefox lacks the same loopback exception). Windows still
+        # runs the full 4-browser matrix to keep cross-browser coverage.
         shell: bash
         env:
           CI: 'true'
-        run: pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence|s2-pages-loopback"
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence|s2-pages-loopback"
+          else
+            pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence|s2-pages-loopback" --project chromium
+          fi
 
       - name: Upload snapshots
         if: always()
