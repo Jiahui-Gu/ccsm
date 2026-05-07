@@ -65,7 +65,23 @@ export async function snap(
 
   // Best-effort full-page screenshot. about:blank etc. may produce a tiny
   // image; that is fine — the .txt is the load-bearing artifact.
-  await page.screenshot({ path: pngPath, fullPage: true });
+  //
+  // Firefox enforces a hard 32767-pixel limit on either screenshot dimension
+  // (Task #752: surfaced when xterm's measure-row container reflows tall on
+  // firefox + the SPA layout, producing a fullPage taller than 32767 px and
+  // failing with "Cannot take screenshot larger than 32767"). Fall back to a
+  // viewport-only screenshot in that case so we still emit a non-empty .png
+  // and continue the test — the .txt sibling is the load-bearing artifact.
+  try {
+    await page.screenshot({ path: pngPath, fullPage: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/larger than 32767|too large/i.test(msg)) {
+      await page.screenshot({ path: pngPath, fullPage: false });
+    } else {
+      throw err;
+    }
+  }
 
   // Best-effort metadata capture. Each await is wrapped because some pages
   // (about:blank, error pages) throw on certain queries.
