@@ -15,6 +15,8 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use crate::job_object::JobObject;
+
 #[derive(Default)]
 pub struct DaemonState {
     // hold a kill sender; the wait task owns the Child (Child is not Send-friendly
@@ -115,6 +117,25 @@ pub async fn start_daemon(app: AppHandle, state: State<'_, DaemonState>) -> Resu
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
     let pid = child.id().unwrap_or(0);
     eprintln!("[daemon-mgr] spawned daemon pid={pid}");
+
+    // T9: bind the child to the app-wide Job Object so it gets kernel-killed
+    // if ccsm-tauri.exe dies (incl. TerminateProcess paths that skip Drop).
+    // Non-Windows: stub no-op, kill_on_drop is the soft baseline.
+    if pid != 0 {
+        let job: State<JobObject> = app.state();
+        if let Err(e) = job.assign(pid) {
+            // Don't abort spawn — soft `kill_on_drop` still covers normal exit
+            // paths. Surface the error so reviewers/users notice if Job binding
+            // ever regresses (e.g. permission tighten, AV interference).
+            eprintln!("[daemon-mgr] WARN: JobObject.assign(pid={pid}) failed: {e}");
+            let _ = app.emit(
+                "daemon-stderr",
+                format!("[daemon-mgr] job-object-assign-failed: {e}"),
+            );
+        } else {
+            eprintln!("[daemon-mgr] assigned pid={pid} to Job Object");
+        }
+    }
 
     let stdout = child.stdout.take().ok_or_else(|| "no stdout".to_string())?;
     let stderr = child.stderr.take().ok_or_else(|| "no stderr".to_string())?;
