@@ -53,6 +53,62 @@ pnpm -F @ccsm/frontend-web dev
 
 Then open `http://127.0.0.1:5173/?token=<token-from-daemon-stdout>`.
 
+## Deployment modes
+
+ccsm 支持三种部署模式, 共用同一份 `frontend-web` SPA 代码, 但分发渠道独立:
+
+### 1. Cloudflare Pages + 本地 daemon (S2, 推荐尝鲜)
+
+浏览器入口走 CDN 静态 SPA, daemon 仍跑在本机 loopback。SPA 在浏览器里
+fetch `http://127.0.0.1:9876/*` (HTTP + WS), Cloudflare 不参与鉴权也不
+代理流量。
+
+```sh
+# 1. 本机起 daemon (默认监听 127.0.0.1:9876)
+node packages/daemon/dist/index.mjs
+
+# 2. 浏览器开:
+#    https://cc-sm.pages.dev
+```
+
+token bootstrap 两条路径:
+
+- 把 daemon stdout 那行的 `?token=<t>` 拼到 Pages URL 后:
+  `https://cc-sm.pages.dev/?token=<token>`, SPA 写 sessionStorage;
+- 或直接开 `https://cc-sm.pages.dev/`, SPA 自动 `GET http://127.0.0.1:9876/token`
+  (该接口仅对 loopback origin + Pages allow-list origin 开放) 拿 token。
+
+约束: 仅 Chromium ≥120 / Firefox / Safari 等"把 127.0.0.1 当 secure context"的
+浏览器可用; daemon 必须升级到带 PNA (Private Network Access) preflight
+支持的版本 (S2 起)。
+
+### 2. daemon-embedded (经典模式)
+
+单进程 `ccsm` 同时 serve frontend-web bundle + daemon API/WS, 浏览器直接
+开 daemon 自带的 URL。同源, 无 CORS / PNA 烦恼。
+
+```sh
+node packages/daemon/dist/index.mjs
+# 终端会打:
+#   ccsm ready: http://127.0.0.1:17832/?token=<token>
+# 直接点开
+```
+
+适合不想配 Pages 的用户、离线环境、CI smoke。
+
+### 3. Tauri 桌面壳
+
+`ccsm-tauri.exe` (Rust 进程) 内嵌 webview, 启动时 spawn 本地 daemon (通过
+stdout handshake 拿到 port + token), 然后让 webview 加载 daemon-served
+SPA。安装包自带前端 bundle, 离线可用, 永远不 fetch Cloudflare Pages。
+
+```sh
+# 装好 ccsm-tauri 后双击启动即可, 不需要单独跑 daemon。
+ccsm-tauri
+```
+
+详细架构图见 [DESIGN.md §13 Deployment Modes](./DESIGN.md#13-deployment-modes-架构图)。
+
 ## Tests
 
 - **Daemon** (`packages/daemon`): `pnpm -F @ccsm/daemon test` — unit /
