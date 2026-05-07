@@ -13,6 +13,9 @@
 // the recorded spawn opts (which now include `sid` and `mode` per #668).
 
 import type { AddressInfo } from 'node:net';
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { createDaemonHttp, type DaemonHttp } from '../src/http.mjs';
@@ -281,5 +284,64 @@ describe('POST /api/sessions/:sid/resume (T#668)', () => {
     } finally {
       await tearDown(failing);
     }
+  });
+});
+
+// Task #700: GET / must serve the built SPA from packages/frontend-web/dist.
+// The path is hard-coded relative to this file via http.mts's
+// `resolve(HERE, '..', '..', 'frontend-web', 'dist')`. T6 (#686) renamed
+// `packages/frontend` -> `packages/frontend-web` and the daemon constant was
+// missed, causing every browser hit to return 503 "frontend not built". This
+// test pins the resolved path so any future rename of the frontend package
+// fails CI instead of being discovered by hand-testing.
+describe('GET / (Task #700: serves built SPA from frontend-web/dist)', () => {
+  // src lives at packages/daemon/src; this test file lives at packages/daemon/test.
+  // http.mts resolves dist as `<src>/../../frontend-web/dist`, i.e.
+  // `packages/frontend-web/dist`. We mirror that calc here so the test
+  // fails if either side moves.
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const FRONTEND_DIST = resolve(HERE, '..', '..', 'frontend-web', 'dist');
+  const FRONTEND_INDEX = resolve(FRONTEND_DIST, 'index.html');
+  const SENTINEL = '<div id="root"><!-- task-700-spa-sentinel --></div>';
+  let createdDist = false;
+  let createdIndex = false;
+  let preexistingIndex: Buffer | null = null;
+  let fx: Fixture;
+
+  beforeAll(async () => {
+    if (!existsSync(FRONTEND_DIST)) {
+      mkdirSync(FRONTEND_DIST, { recursive: true });
+      createdDist = true;
+    }
+    if (existsSync(FRONTEND_INDEX)) {
+      preexistingIndex = readFileSync(FRONTEND_INDEX);
+    } else {
+      createdIndex = true;
+    }
+    writeFileSync(FRONTEND_INDEX, `<!doctype html><html><body>${SENTINEL}</body></html>`);
+    fx = await makeFixture();
+  });
+
+  afterAll(async () => {
+    await tearDown(fx);
+    if (preexistingIndex !== null) {
+      writeFileSync(FRONTEND_INDEX, preexistingIndex);
+    } else if (createdIndex) {
+      try { rmSync(FRONTEND_INDEX); } catch { /* ignore */ }
+    }
+    if (createdDist) {
+      try { rmSync(FRONTEND_DIST, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+
+  it('returns 200 + the SPA index.html body (no 503 "frontend not built")', async () => {
+    const r = await fetch(`${fx.baseUrl}/`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type') ?? '').toContain('text/html');
+    const body = await r.text();
+    // If FRONTEND_DIST resolves to the wrong package (e.g. the pre-T6
+    // `packages/frontend/dist`) the server returns 503 "frontend not built";
+    // either the status check above or this body assertion will catch it.
+    expect(body).toContain(SENTINEL);
   });
 });

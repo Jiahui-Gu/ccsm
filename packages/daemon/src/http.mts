@@ -34,7 +34,12 @@ import type { RuntimeRegistry } from './runtime.mjs';
 const API_SESSIONS = '/api/sessions';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
-const FRONTEND_DIST = resolve(HERE, '..', '..', 'frontend', 'dist');
+// Path to the built SPA. The frontend package was renamed
+// `packages/frontend` -> `packages/frontend-web` in T6 (#686); keep this in
+// sync or `GET /` returns 503 "frontend not built". The
+// `serves built SPA` test in test/http.test.ts pins this so future renames
+// fail loudly.
+const FRONTEND_DIST = resolve(HERE, '..', '..', 'frontend-web', 'dist');
 const FRONTEND_INDEX = join(FRONTEND_DIST, 'index.html');
 const FRONTEND_ASSETS = join(FRONTEND_DIST, 'assets');
 
