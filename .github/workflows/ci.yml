@@ -115,21 +115,24 @@ jobs:
       - name: Build
         run: pnpm -r build
 
-      - name: 'Run e2e (excludes p1-smoke + p3-stress + session-persistence: all need authed claude)'
-        # p1-smoke + p3-stress + session-persistence spawn the real `claude` CLI which requires
-        # interactive auth on first run. CI runners have no Anthropic
-        # credentials and no way to seed `~/.claude/`, so the PTY exits
-        # immediately and the assertions can't run. Acceptance evidence for
-        # T7 / T12 lives in the PR description (snapshots taken on the dev's
-        # box, uploaded for manager multimodal review). On CI we still run
-        # the rig smoke + strictmode + groups + scrollback specs to keep the
-        # harness honest on BOTH ubuntu and windows.
+      - name: 'Run e2e (excludes p1-smoke + p3-stress + session-persistence + s2-pages-loopback: all need authed claude)'
+        # p1-smoke + p3-stress + session-persistence + s2-pages-loopback spawn the
+        # real `claude` CLI which requires interactive auth on first run. CI
+        # runners have no Anthropic credentials and no way to seed
+        # `~/.claude/`, so the PTY exits immediately and the assertions can't
+        # run. Acceptance evidence for T7 / T12 / S2-T9 / Task #751 lives in
+        # the PR description (snapshots taken on the dev's box, uploaded for
+        # manager multimodal review). The dedicated s2-acceptance CI job that
+        # runs ON a credentialled matrix runner is Task #755 (E in the S2
+        # split). On CI we still run the rig smoke + strictmode + groups +
+        # scrollback specs to keep the harness honest on BOTH ubuntu and
+        # windows.
         # `shell: bash` so the `|` in the regex is parsed by bash, not by
         # PowerShell on windows-latest (where `|` would be a pipeline).
         shell: bash
         env:
           CI: 'true'
-        run: pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence"
+        run: pnpm -F @ccsm/e2e-web exec playwright test --grep-invert "p1-smoke|p3-stress|session-persistence|s2-pages-loopback"
 
       - name: Upload snapshots
         if: always()
