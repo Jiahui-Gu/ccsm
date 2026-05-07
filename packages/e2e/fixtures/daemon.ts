@@ -71,11 +71,24 @@ export async function startDaemon(opts: StartDaemonOptions = {}): Promise<Daemon
 
   let stdoutBuf = '';
   let stderrBuf = '';
+  // Task #764: also forward daemon stdout/stderr to the test runner's stderr
+  // (line-prefixed) so post-ready failures (e.g. PTY spawn failing inside
+  // POST /api/sessions, returning 500) leave a diagnostic trail in CI logs.
+  // Previously stderr was only surfaced if the daemon failed to print its
+  // ready line — meaning a 500 from `pty_spawn_failed` left no clue why.
+  const forwardLines = (chunk: Buffer, tag: string): void => {
+    const text = chunk.toString('utf8');
+    for (const line of text.split(/\r?\n/)) {
+      if (line.length > 0) process.stderr.write(`[daemon ${tag}] ${line}\n`);
+    }
+  };
   proc.stdout?.on('data', (chunk: Buffer) => {
     stdoutBuf += chunk.toString('utf8');
+    forwardLines(chunk, 'out');
   });
   proc.stderr?.on('data', (chunk: Buffer) => {
     stderrBuf += chunk.toString('utf8');
+    forwardLines(chunk, 'err');
   });
 
   const ready = await new Promise<{ url: string; token: string } | Error>(
