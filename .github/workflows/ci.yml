@@ -5,6 +5,13 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # T14 (#681): nightly Windows tauri build at 08:00 UTC. Rust toolchain
+    # warm-up + tauri build is ~10 min; running it on every PR is wasteful.
+    # Nightly + workflow_dispatch + push-to-main is enough to catch regressions
+    # without blocking PR cycle.
+    - cron: '0 8 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -110,3 +117,54 @@ jobs:
           name: e2e-playwright-report-${{ matrix.os }}
           path: packages/e2e/playwright-report/
           if-no-files-found: ignore
+
+  tauri-build:
+    # T14 (#681): nightly Windows tauri build producing the .msi artifact.
+    # Skipped on pull_request (Rust compile is ~10 min and blocks PR cycle);
+    # runs on schedule (nightly), workflow_dispatch (manual), and push to main.
+    # NOT in the e2e matrix — actually packaging the .msi is independent of
+    # the per-PR build/e2e jobs.
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install Rust toolchain (stable msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/frontend-tauri/src-tauri -> target
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace (shared/core/ui/daemon — Tauri sidecar + frontend deps)
+        # Tauri build needs shared/core/ui dist for frontend-tauri's vite build
+        # and daemon dist for any future sidecar bundling (V0.5). Cheaper to do
+        # one ordered `-r build` than to enumerate and risk ordering bugs.
+        run: pnpm -r build
+
+      - name: Tauri build (.msi)
+        run: pnpm -F @ccsm/frontend-tauri tauri build
+
+      - name: Upload .msi artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccsm-tauri-msi
+          path: packages/frontend-tauri/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
